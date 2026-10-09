@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import { getAllKeyDefinitions } from "@nautilo/config-guard";
 import {
   type PersonalProviderCredentialRecord,
   type PersonalProviderId,
@@ -12,6 +11,10 @@ import {
   type PersonalProviderCustody,
 } from "@nautilo/operator-secrets";
 import {
+  PERSONAL_PROVIDER_KEY_CATALOGUE,
+  orderProviderKeys,
+} from "@nautilo/types";
+import {
   personalProviderCredentialRoutes,
   type PersonalProviderCredentialRouteDeps,
 } from "../../src/routes/personal-provider-credentials";
@@ -22,6 +25,7 @@ const USER_B = "22222222-2222-4222-8222-222222222222";
 const CREATED_AT = new Date("2026-09-28T10:00:00.000Z");
 const UPDATED_AT = new Date("2026-09-28T10:01:00.000Z");
 const SENTINEL = "sk-personal-sentinel-never-disclose";
+const ORIGINAL_GATEWAY_BASE_URL = process.env["NAUTILO_GATEWAY_BASE_URL"];
 
 type AuditEvent = Parameters<NonNullable<PersonalProviderCredentialRouteDeps["auditEvent"]>>[1];
 type ValidationResult = Awaited<ReturnType<NonNullable<PersonalProviderCredentialRouteDeps["validate"]>>>;
@@ -30,6 +34,11 @@ const apps: FastifyInstance[] = [];
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
+  if (ORIGINAL_GATEWAY_BASE_URL === undefined) {
+    delete process.env["NAUTILO_GATEWAY_BASE_URL"];
+  } else {
+    process.env["NAUTILO_GATEWAY_BASE_URL"] = ORIGINAL_GATEWAY_BASE_URL;
+  }
 });
 
 function key(userId: string, provider: PersonalProviderId): string {
@@ -46,6 +55,8 @@ function credential(
     revision?: number;
     validationStatus?: PersonalProviderCredentialRecord["validationStatus"];
     validatedAt?: Date | null;
+    destination?: string | null;
+    receiptReadStatus?: PersonalProviderCredentialRecord["receiptReadStatus"];
   },
 ): PersonalProviderCredentialRecord {
   const id = input.id ?? "33333333-3333-4333-8333-333333333333";
@@ -57,11 +68,14 @@ function credential(
     revision,
     validationStatus: input.validationStatus ?? "unverified",
     validatedAt: input.validatedAt ?? null,
+    destination: input.destination ?? null,
+    receiptReadStatus: input.receiptReadStatus ?? "unknown",
     envelope: encryptPersonalProviderCredential(custody, input.plaintext, {
       userId: input.userId,
       provider: input.provider,
       id,
       revision,
+      destination: input.destination ?? null,
     }),
     createdAt: CREATED_AT,
     updatedAt: UPDATED_AT,
@@ -79,7 +93,11 @@ type HarnessOptions = {
   readonly records?: readonly PersonalProviderCredentialRecord[];
   readonly policy?: () => boolean | Promise<boolean>;
   readonly capabilities?: (userId: string) => readonly string[] | Promise<readonly string[]>;
-  readonly validate?: (provider: PersonalProviderId, apiKey: string) => Promise<ValidationResult>;
+  readonly validate?: (
+    provider: PersonalProviderId,
+    apiKey: string,
+    destination: string | null,
+  ) => Promise<ValidationResult>;
   readonly fail?: ReadonlySet<string>;
   readonly captureLogs?: boolean;
 };
@@ -90,7 +108,13 @@ async function makeHarness(options: HarnessOptions = {}) {
   for (const record of options.records ?? []) records.set(key(record.userId, record.provider), record);
   const auditEvents: AuditEvent[] = [];
   const validatedSecrets: Array<{ provider: PersonalProviderId; apiKey: string }> = [];
+  const validatedDestinations: Array<string | null> = [];
   const calls: string[] = [];
+  const requeuedCredentials: Array<Readonly<{
+    payerHumanId: string;
+    credentialId: string;
+    credentialRevision: number;
+  }>> = [];
   const logLines: string[] = [];
   const db = {} as ReturnType<NonNullable<PersonalProviderCredentialRouteDeps["getDb"]>>;
   const fail = options.fail ?? new Set<string>();
@@ -133,8 +157,10 @@ async function makeHarness(options: HarnessOptions = {}) {
         userId: input.userId,
         provider: input.provider,
         revision: input.identity.revision,
-        validationStatus: "unverified",
-        validatedAt: null,
+        validationStatus: input.validationStatus ?? "unverified",
+        validatedAt: input.validatedAt ?? null,
+        destination: input.destination ?? null,
+        receiptReadStatus: input.receiptReadStatus ?? "unknown",
         envelope: input.envelope,
         createdAt: CREATED_AT,
         updatedAt: CREATED_AT,
@@ -153,8 +179,12 @@ async function makeHarness(options: HarnessOptions = {}) {
       const replacement: PersonalProviderCredentialRecord = {
         ...current,
         revision: input.expectedRevision + 1,
-        validationStatus: "unverified",
-        validatedAt: null,
+        validationStatus: input.validationStatus ?? "unverified",
+        validatedAt: input.validatedAt ?? null,
+        destination: input.destination === undefined
+          ? current.destination
+          : input.destination,
+        receiptReadStatus: input.receiptReadStatus ?? "unknown",
         envelope: input.envelope,
         updatedAt: UPDATED_AT,
       };
@@ -182,15 +212,27 @@ async function makeHarness(options: HarnessOptions = {}) {
         ...current,
         validationStatus: input.status,
         validatedAt: input.validatedAt,
+        receiptReadStatus: input.receiptReadStatus ?? current.receiptReadStatus,
         updatedAt: UPDATED_AT,
       };
       records.set(key(input.userId, input.provider), updated);
       return { status: "updated", credential: updated };
     },
-    validate: async (provider, apiKey) => {
+    validate: async (provider, apiKey, _signal, destination) => {
       maybeFail("validate");
       validatedSecrets.push({ provider, apiKey });
-      return options.validate?.(provider, apiKey) ?? { status: "accepted" };
+      validatedDestinations.push(destination ?? null);
+      return options.validate?.(provider, apiKey, destination ?? null) ?? {
+        status: (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(provider)
+          ? "accepted"
+          : "unverified",
+        receiptReadStatus: "unknown",
+      };
+    },
+    requeueBlockedSurplusAttempts: async (input) => {
+      maybeFail("requeueBlockedSurplusAttempts");
+      requeuedCredentials.push(input);
+      return 0;
     },
     auditEvent: (_request, event) => {
       maybeFail("audit");
@@ -214,7 +256,10 @@ async function makeHarness(options: HarnessOptions = {}) {
   personalProviderCredentialRoutes(app, deps);
   apps.push(app);
   await app.ready();
-  return { app, auditEvents, calls, custody, logLines, records, validatedSecrets };
+  return {
+    app, auditEvents, calls, custody, logLines, records,
+    requeuedCredentials, validatedDestinations, validatedSecrets,
+  };
 }
 
 function auth(userId = USER_A) {
@@ -234,11 +279,10 @@ describe("personal provider credential routes", () => {
 
     expect(response.statusCode).toBe(200);
     const result = body(response);
+    expect(result["allowPersonalProviderKeys"]).toBe(true);
     expect(result["credentials"]).toEqual([]);
     const providers = result["providers"] as Array<Record<string, unknown>>;
-    const definitions = getAllKeyDefinitions().filter(
-      ({ id }) => id !== "nautilo-gateway" && id !== "gateway",
-    );
+    const definitions = orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE);
     expect(providers.map(({ id }) => id)).toEqual(definitions.map(({ id }) => id));
     expect(providers).toEqual(definitions.map((definition) => ({
       id: definition.id,
@@ -246,14 +290,24 @@ describe("personal provider credential routes", () => {
       purpose: definition.purpose,
       ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
       ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
-      personalCapabilities: (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(definition.id)
-        ? ["chat"]
-        : [],
+      personalCapabilities: definition.personalCapabilities,
     })));
     const serializedProviders = JSON.stringify(providers);
     expect(serializedProviders).not.toContain("envVar");
     expect(serializedProviders).not.toContain("formatCheck");
     expect(serializedProviders).not.toContain("doctorHints");
+    expect(providers.find(({ id }) => id === "openai")?.["purpose"]).toBe(
+      "OpenAI text models; embeddings remain server-managed",
+    );
+    expect(providers.some(({ id }) => id === "gateway" || id === "nautilo-gateway")).toBe(false);
+    const personalChatIds = definitions
+      .filter(({ personalCapabilities }) => personalCapabilities.includes("chat"))
+      .map(({ id }) => id);
+    expect([...personalChatIds].sort()).toEqual(
+      (PERSONAL_CHAT_PROVIDER_IDS as readonly string[])
+        .filter((id) => definitions.some((definition) => definition.id === id))
+        .sort(),
+    );
     for (const definition of definitions) {
       expect(serializedProviders).not.toContain(definition.envVar);
     }
@@ -323,6 +377,121 @@ describe("personal provider credential routes", () => {
     }
   });
 
+  test("lists an empty account while personal keys are disabled without capability or custody", async () => {
+    const harness = await makeHarness({
+      policy: () => false,
+      fail: new Set(["capabilities", "custody", "validate"]),
+    });
+
+    const response = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(),
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(body(response)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [],
+    });
+    expect(harness.calls).toEqual(["policy", "list"]);
+  });
+
+  test("lists and deletes only the session owner's saved metadata while personal keys are disabled", async () => {
+    const sourceCustody = createPersonalProviderCustody();
+    const own = credential(sourceCustody, {
+      userId: USER_A,
+      provider: "openai",
+      plaintext: SENTINEL,
+      revision: 2,
+      validationStatus: "accepted",
+      validatedAt: UPDATED_AT,
+    });
+    const foreign = credential(sourceCustody, {
+      userId: USER_B,
+      provider: "anthropic",
+      plaintext: `${SENTINEL}-foreign`,
+    });
+    const harness = await makeHarness({
+      custody: createPersonalProviderCustody(),
+      records: [own, foreign],
+      policy: () => false,
+      fail: new Set(["capabilities", "custody", "validate"]),
+    });
+
+    const listed = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(USER_A),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(body(listed)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [{
+        provider: "openai",
+        id: own.id,
+        revision: 2,
+        validationStatus: "accepted",
+        validatedAt: UPDATED_AT.toISOString(),
+        destination: null,
+        receiptReadStatus: "unknown",
+        requiresReplacement: false,
+        masked: null,
+      }],
+    });
+    expect(listed.body).not.toContain(SENTINEL);
+    expect(listed.body).not.toContain(own.envelope.ciphertextBase64);
+    expect(harness.calls).toEqual(["policy", "list"]);
+
+    const staleDelete = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(USER_A), payload: { expectedRevision: 1 },
+    });
+    expect(staleDelete.statusCode).toBe(409);
+    expect(body(staleDelete)["error"]).toBe("credential_conflict");
+    expect(harness.records.get(key(USER_A, "openai"))).toEqual(own);
+
+    const otherSessionDelete = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(USER_B), payload: { expectedRevision: 2 },
+    });
+    expect(otherSessionDelete.statusCode).toBe(200);
+    expect(harness.records.get(key(USER_A, "openai"))).toEqual(own);
+
+    const deleted = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(USER_A), payload: { expectedRevision: 2 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(body(deleted)).toEqual({ deleted: true, committed: true });
+    expect(harness.records.has(key(USER_A, "openai"))).toBe(false);
+    expect(harness.records.get(key(USER_B, "anthropic"))).toEqual(foreign);
+    expect(harness.auditEvents).toHaveLength(1);
+    expect(harness.auditEvents[0]).toMatchObject({
+      actorId: USER_A,
+      provider: "openai",
+      credentialId: own.id,
+      revision: 2,
+      action: "deleted",
+    });
+    expect(harness.calls).not.toContain("capabilities");
+    expect(harness.calls).not.toContain("custody");
+    expect(harness.calls).not.toContain("validate");
+
+    for (const request of [
+      {
+        method: "PUT",
+        url: "/api/account/provider-credentials/anthropic",
+        payload: { apiKey: `${SENTINEL}-new` },
+      },
+      {
+        method: "POST",
+        url: "/api/account/provider-credentials/anthropic/validate",
+        payload: { expectedRevision: 1 },
+      },
+    ] as const) {
+      const response = await harness.app.inject({ ...request, headers: auth(USER_B) });
+      expect(response.statusCode).toBe(404);
+      expect(body(response)["error"]).toBe("personal_credentials_disabled");
+    }
+  });
+
   test("executes create, safe metadata, replace, validation, and idempotent delete", async () => {
     const harness = await makeHarness();
     const created = await harness.app.inject({
@@ -333,8 +502,9 @@ describe("personal provider credential routes", () => {
     expect(body(created)).toMatchObject({
       committed: true,
       credential: {
-        provider: "openai", revision: 1, validationStatus: "unverified",
-        validatedAt: null, requiresReplacement: false, masked: "sk-perso...",
+        provider: "openai", revision: 1, validationStatus: "accepted",
+        receiptReadStatus: "unknown", destination: null,
+        requiresReplacement: false, masked: "sk-perso...",
       },
     });
     const first = harness.records.get(key(USER_A, "openai"))!;
@@ -371,7 +541,11 @@ describe("personal provider credential routes", () => {
       committed: false,
       credential: { revision: 2, validationStatus: "accepted", masked: "sk-perso..." },
     });
-    expect(harness.validatedSecrets).toEqual([{ provider: "openai", apiKey: replacementSecret }]);
+    expect(harness.validatedSecrets).toEqual([
+      { provider: "openai", apiKey: SENTINEL },
+      { provider: "openai", apiKey: replacementSecret },
+      { provider: "openai", apiKey: replacementSecret },
+    ]);
 
     const deleted = await harness.app.inject({
       method: "DELETE", url: "/api/account/provider-credentials/openai",
@@ -421,7 +595,7 @@ describe("personal provider credential routes", () => {
     expect(response.body).not.toContain("tiny");
   });
 
-  test("stores a canonical non-chat provider without leaking it or granting chat capability", async () => {
+  test("stores a canonical research-only provider without leaking it or granting chat capability", async () => {
     const harness = await makeHarness();
     const created = await harness.app.inject({
       method: "PUT", url: "/api/account/provider-credentials/tavily",
@@ -443,12 +617,186 @@ describe("personal provider credential routes", () => {
       expect.objectContaining({ provider: "tavily", validationStatus: "unverified" }),
     ]);
     expect((result["providers"] as Array<Record<string, unknown>>)
-      .find(({ id }) => id === "tavily")?.["personalCapabilities"]).toEqual([]);
+      .find(({ id }) => id === "tavily")?.["personalCapabilities"]).toEqual(["research"]);
   });
 
-  test("rejects new retained-only providers while preserving revision conflict semantics", async () => {
+  test("saves Surplus inference readiness while warning separately about receipt access", async () => {
+    const harness = await makeHarness({
+      validate: async (provider) => provider === "surplus"
+        ? { status: "accepted", receiptReadStatus: "unavailable" }
+        : { status: "unverified", receiptReadStatus: "unknown" },
+    });
+    const response = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/surplus",
+      headers: auth(), payload: { apiKey: SENTINEL },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(body(response)).toMatchObject({
+      committed: true,
+      credential: {
+        provider: "surplus",
+        validationStatus: "accepted",
+        receiptReadStatus: "unavailable",
+        destination: null,
+        requiresReplacement: false,
+      },
+    });
+    expect(response.body).not.toContain(SENTINEL);
+    expect(harness.requeuedCredentials).toMatchObject([{ payerHumanId: USER_A, credentialRevision: 1 }]);
+  });
+
+  test("requeues the payer receipts using the current repaired Surplus credential", async () => {
+    let validationCount = 0;
+    const harness = await makeHarness({
+      validate: async () => {
+        validationCount += 1;
+        return {
+          status: "accepted",
+          receiptReadStatus: validationCount === 1 ? "unavailable" : "available",
+        };
+      },
+    });
+    const saved = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/surplus",
+      headers: auth(), payload: { apiKey: SENTINEL },
+    });
+    expect(saved.statusCode).toBe(200);
+    const savedCredential = body(saved)["credential"] as Record<string, unknown>;
+    const credentialId = savedCredential["id"];
+    if (typeof credentialId !== "string") {
+      throw new Error("Saved credential response lacked an ID");
+    }
+    const validated = await harness.app.inject({
+      method: "POST", url: "/api/account/provider-credentials/surplus/validate",
+      headers: auth(), payload: { expectedRevision: 1 },
+    });
+    expect(validated.statusCode).toBe(200);
+    expect(harness.requeuedCredentials).toEqual(Array.from({ length: 2 }, () => ({
+      payerHumanId: USER_A, credentialId, credentialRevision: 1,
+    })));
+    const replaced = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/surplus",
+      headers: auth(), payload: { apiKey: `${SENTINEL}-replacement`, expectedRevision: 1 },
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(harness.requeuedCredentials.at(-1)).toEqual({
+      payerHumanId: USER_A, credentialId, credentialRevision: 2,
+    });
+  });
+
+  test("does not report a committed key replacement as failed when receipt wake is unavailable", async () => {
+    const custody = createPersonalProviderCustody();
+    const existing = credential(custody, { userId: USER_A, provider: "surplus", plaintext: SENTINEL });
+    const harness = await makeHarness({ custody, records: [existing],
+      validate: async () => ({ status: "accepted" }),
+      fail: new Set(["requeueBlockedSurplusAttempts"]),
+    });
+    const response = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/surplus",
+      headers: auth(), payload: { apiKey: `${SENTINEL}-replacement`, expectedRevision: 1 },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(body(response)).toMatchObject({ committed: true, credential: { revision: 2 } });
+    const validated = await harness.app.inject({
+      method: "POST", url: "/api/account/provider-credentials/surplus/validate",
+      headers: auth(), payload: { expectedRevision: 2 },
+    });
+    expect(validated.statusCode).toBe(200);
+    expect(body(validated)).toMatchObject({ credential: { revision: 2, validationStatus: "accepted" } });
+  });
+
+  test("lists a legacy Gateway row, flags destination changes, and permits safe deletion", async () => {
+    process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-a/v1///";
+    const custody = createPersonalProviderCustody();
+    const existing = credential(custody, {
+      userId: USER_A,
+      provider: "gateway",
+      plaintext: SENTINEL,
+      destination: "https://gateway.example/tenant-a/v1",
+    });
+    const harness = await makeHarness({ custody, records: [existing] });
+
+    process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-b/v1";
+    const listed = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(),
+    });
+    const listedBody = body(listed);
+    expect(listedBody).toMatchObject({
+      credentials: [{
+        provider: "gateway",
+        destination: "https://gateway.example/tenant-a/v1",
+        requiresReplacement: true,
+      }],
+    });
+    const providerRows = listedBody["providers"] as Array<Record<string, unknown>>;
+    expect(providerRows.some(({ id }) => id === "gateway")).toBe(false);
+    const validation = await harness.app.inject({
+      method: "POST", url: "/api/account/provider-credentials/gateway/validate",
+      headers: auth(), payload: { expectedRevision: 1 },
+    });
+    expect(validation.statusCode).toBe(422);
+    expect(body(validation)).toEqual({
+      error: "invalid_provider", committed: false, retryable: false, repair: null,
+    });
+    const deleted = await harness.app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/gateway",
+      headers: auth(), payload: { expectedRevision: 1 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(harness.records.has(key(USER_A, "gateway"))).toBe(false);
+  });
+
+  test("does not replace a retained personal Gateway key", async () => {
+    process.env["NAUTILO_GATEWAY_BASE_URL"] = "https://gateway.example/tenant-a/v1";
+    const custody = createPersonalProviderCustody();
+    const existing = credential(custody, {
+      userId: USER_A, provider: "gateway", plaintext: `${SENTINEL}-old`,
+      destination: "https://gateway.example/tenant-a/v1",
+    });
+    const harness = await makeHarness({
+      custody,
+      records: [existing],
+    });
+    const response = await harness.app.inject({
+      method: "PUT", url: "/api/account/provider-credentials/gateway",
+      headers: auth(), payload: { apiKey: SENTINEL, expectedRevision: 1 },
+    });
+    expect(response.statusCode).toBe(422);
+    expect(body(response)).toEqual({
+      error: "invalid_provider", committed: false, retryable: false, repair: null,
+    });
+    expect(harness.records.get(key(USER_A, "gateway"))).toEqual(existing);
+    expect(harness.auditEvents).toEqual([]);
+  });
+
+  test("retired gateway rows remain readable and removable but cannot be renewed", async () => {
+    for (const provider of ["gateway", "nautilo-gateway"] as const) {
+      const custody = createPersonalProviderCustody();
+      const existing = credential(custody, { userId: USER_A, provider, plaintext: SENTINEL });
+      const harness = await makeHarness({ custody, records: [existing] });
+      for (const method of ["PUT", "POST"] as const) {
+        const response = await harness.app.inject({
+          method, url: `/api/account/provider-credentials/${provider}${method === "POST" ? "/validate" : ""}`,
+          headers: auth(), payload: method === "PUT"
+            ? { apiKey: SENTINEL, expectedRevision: 1 } : { expectedRevision: 1 },
+        });
+        expect(response.statusCode).toBe(422);
+        expect(body(response)["error"]).toBe("invalid_provider");
+      }
+      expect(harness.calls).not.toContain("custody");
+      expect(harness.validatedSecrets).toEqual([]);
+      expect(harness.records.get(key(USER_A, provider))).toEqual(existing);
+      const listed = await harness.app.inject({ method: "GET", url: "/api/account/provider-credentials", headers: auth() });
+      expect(body(listed)["credentials"]).toMatchObject([{ provider, revision: 1 }]);
+      const removed = await harness.app.inject({ method: "DELETE", url: `/api/account/provider-credentials/${provider}`, headers: auth(), payload: { expectedRevision: 1 } });
+      expect(removed.statusCode).toBe(200);
+      expect(harness.records.has(key(USER_A, provider))).toBe(false);
+    }
+  });
+
+  test("rejects new removed or unavailable providers while preserving revision conflict semantics", async () => {
     const harness = await makeHarness();
-    for (const provider of ["xai", "together", "nautilo-gateway", "gateway"] as const) {
+    for (const provider of ["nautilo-gateway", "gateway"] as const) {
       const response = await harness.app.inject({
         method: "PUT", url: `/api/account/provider-credentials/${provider}`,
         headers: auth(), payload: { apiKey: SENTINEL },
@@ -472,8 +820,8 @@ describe("personal provider credential routes", () => {
     expect(harness.auditEvents).toEqual([]);
   });
 
-  test("allows actor-scoped replacement of retained provider rows", async () => {
-    for (const provider of ["xai", "together", "nautilo-gateway", "gateway"] as const) {
+  test("keeps supported creation and retained-row replacement actor-scoped", async () => {
+    for (const provider of ["xai", "together"] as const) {
       const custody = createPersonalProviderCustody();
       const existing = credential(custody, {
         userId: USER_A, provider, plaintext: `${SENTINEL}-old-${provider}`,
@@ -504,14 +852,18 @@ describe("personal provider credential routes", () => {
       userId: USER_B, provider: "xai", plaintext: `${SENTINEL}-foreign-xai`,
     });
     const foreignHarness = await makeHarness({ custody, records: [foreign] });
-    const rejected = await foreignHarness.app.inject({
+    const created = await foreignHarness.app.inject({
       method: "PUT", url: "/api/account/provider-credentials/xai",
       headers: auth(USER_A), payload: { apiKey: `${SENTINEL}-actor-a` },
     });
-    expect(rejected.statusCode).toBe(422);
-    expect(body(rejected)["error"]).toBe("invalid_provider");
+    expect(created.statusCode).toBe(200);
+    expect(body(created)).toMatchObject({
+      committed: true,
+      credential: { provider: "xai", revision: 1 },
+    });
+    expect(foreignHarness.records.has(key(USER_A, "xai"))).toBe(true);
     expect(foreignHarness.records.get(key(USER_B, "xai"))).toEqual(foreign);
-    expect(foreignHarness.auditEvents).toEqual([]);
+    expect(foreignHarness.auditEvents).toHaveLength(1);
   });
 
   test("derives ownership exclusively from the session and never probes another Human's row", async () => {
@@ -689,7 +1041,17 @@ describe("personal provider credential routes", () => {
     const custody = createPersonalProviderCustody();
     const original = credential(custody, { userId: USER_A, provider: "openai", plaintext: SENTINEL });
     const validation = deferred<ValidationResult>();
-    const harness = await makeHarness({ custody, records: [original], validate: () => validation.promise });
+    let validationCalls = 0;
+    const harness = await makeHarness({
+      custody,
+      records: [original],
+      validate: () => {
+        validationCalls += 1;
+        return validationCalls === 1
+          ? validation.promise
+          : Promise.resolve({ status: "accepted", receiptReadStatus: "unknown" });
+      },
+    });
 
     const pending = harness.app.inject({
       method: "POST", url: "/api/account/provider-credentials/openai/validate",
@@ -701,13 +1063,13 @@ describe("personal provider credential routes", () => {
       headers: auth(), payload: { apiKey: `${SENTINEL}-new`, expectedRevision: 1 },
     });
     expect(replaced.statusCode).toBe(200);
-    validation.resolve({ status: "accepted" });
+    validation.resolve({ status: "accepted", receiptReadStatus: "unknown" });
 
     const stale = await pending;
     expect(stale.statusCode).toBe(409);
     expect(body(stale)["error"]).toBe("credential_conflict");
     expect(harness.records.get(key(USER_A, "openai"))).toMatchObject({
-      revision: 2, validationStatus: "unverified", validatedAt: null,
+      revision: 2, validationStatus: "accepted",
     });
     expect(harness.auditEvents.map((event) => event.action)).toEqual(["replaced"]);
   });
@@ -817,13 +1179,13 @@ describe("personal provider credential routes", () => {
     expect(harness.auditEvents).toEqual([]);
   });
 
-  test("keeps a saved key after validation fails so retry needs no new secret", async () => {
+  test("keeps a saved key after automatic validation fails so retry needs no new secret", async () => {
     let attempts = 0;
     const harness = await makeHarness({
       validate: async () => {
         attempts += 1;
         if (attempts === 1) throw new Error(`provider outage echoed ${SENTINEL}`);
-        return { status: "accepted" };
+        return { status: "accepted", receiptReadStatus: "unknown" };
       },
     });
     const saved = await harness.app.inject({
@@ -831,16 +1193,12 @@ describe("personal provider credential routes", () => {
       headers: auth(), payload: { apiKey: SENTINEL },
     });
     expect(saved.statusCode).toBe(200);
-    const first = await harness.app.inject({
-      method: "POST", url: "/api/account/provider-credentials/openai/validate",
-      headers: auth(), payload: { expectedRevision: 1 },
-    });
-    expect(first.statusCode).toBe(503);
-    expect(first.body).not.toContain(SENTINEL);
+    expect(saved.body).not.toContain(SENTINEL);
+    expect(saved.body).toContain('"validationStatus":"unavailable"');
     const listed = await harness.app.inject({
       method: "GET", url: "/api/account/provider-credentials", headers: auth(),
     });
-    expect(listed.body).toContain('"validationStatus":"unverified"');
+    expect(listed.body).toContain('"validationStatus":"unavailable"');
     const retried = await harness.app.inject({
       method: "POST", url: "/api/account/provider-credentials/openai/validate",
       headers: auth(), payload: { expectedRevision: 1 },

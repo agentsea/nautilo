@@ -1,3 +1,4 @@
+import { assertFixtureDbMutationAllowed } from "@nautilo/db/testing";
 import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
@@ -239,8 +240,10 @@ import {
 } from "../../src/routes/protected-task-requester-private-room.ts";
 
 const ENABLE_ENV = "NAUTILO_PROTECTED_TASK_MEMORY_WRITER_INTEGRATION";
-const EXPECTED_INSTANCE_ID = "qa-task-completion-e7ada3c6";
-const EXPECTED_POSTGRES_PORT = "6234";
+// The caller must first verify ownership of the disposable clone, then bind
+// both its instance identity and PostgreSQL endpoint explicitly for this run.
+const EXPECTED_INSTANCE_ENV = "NAUTILO_PROTECTED_TASK_QA_INSTANCE";
+const EXPECTED_POSTGRES_PORT_ENV = "NAUTILO_PROTECTED_TASK_QA_POSTGRES_PORT";
 const NOW = Date.parse("2042-07-08T09:00:00.000Z");
 const EXPIRES_AT = NOW + 60_000;
 const SERVER_SCOPE = "https://task-memory.integration.test";
@@ -297,11 +300,19 @@ function createMissingTaskResultCiphertextRepository<ProductResult>(
 
 function assertExactTarget(): void {
   if (process.env[ENABLE_ENV] !== "1") return;
-  if (process.env["NAUTILO_INSTANCE_ID"] !== EXPECTED_INSTANCE_ID) {
+  const expectedInstanceId = process.env[EXPECTED_INSTANCE_ENV];
+  const expectedPostgresPort = process.env[EXPECTED_POSTGRES_PORT_ENV];
+  if (
+    !expectedInstanceId
+    || !/^qa-[a-z0-9-]+$/.test(expectedInstanceId)
+    || process.env["NAUTILO_INSTANCE_ID"] !== expectedInstanceId
+    || !expectedPostgresPort
+  ) {
     throw new Error(
-      `${ENABLE_ENV}=1 requires NAUTILO_INSTANCE_ID=${EXPECTED_INSTANCE_ID}`,
+      `${ENABLE_ENV}=1 requires an explicitly bound disposable QA instance and PostgreSQL port`,
     );
   }
+  assertFixtureDbMutationAllowed();
   const product = new URL(resolveAppDatabaseConnectionString());
   const cryptoRaw = process.env["DB_CRYPTO_CONNECTION_STRING"];
   if (!cryptoRaw) throw new Error("DB_CRYPTO_CONNECTION_STRING is required");
@@ -310,7 +321,7 @@ function assertExactTarget(): void {
     if (
       !["postgres:", "postgresql:"].includes(url.protocol)
       || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)
-      || url.port !== EXPECTED_POSTGRES_PORT
+      || url.port !== expectedPostgresPort
       || url.username !== user
       || url.password.length === 0
       || url.pathname !== "/nautilo"

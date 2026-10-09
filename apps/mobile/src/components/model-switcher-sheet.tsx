@@ -1,4 +1,4 @@
-// D382 Batch 1a — bottom-sheet model picker. The composer's model chip opens
+// Bottom-sheet model picker. The composer's model chip opens
 // this. Fetches eligible models from the active server on open, lists them
 // (label + provider/subtitle), marks the selected one, and calls back with
 // the model id on tap. Uses the shared BottomSheet primitive (mirrors
@@ -51,14 +51,18 @@ export function ModelSwitcherSheet({
       try {
         const api = getApiClient(activeServer.serverUrl);
         const [list, retained] = await Promise.all([
-          api.getModels(),
+          api.getCallerModels({ includeUnavailable: true }),
           selectedModelId
             ? api.resolveRetainedModels([selectedModelId])
             : Promise.resolve([]),
         ]);
         if (cancelled) return;
         const byId = new Map(list.map((model) => [model.id, model]));
-        for (const model of retained) byId.set(model.id, model);
+        for (const model of retained) {
+          if (byId.has(model.id)) continue;
+          byId.set(model.id, { ...model, availability: "filtered",
+            unavailableReason: "This saved model is not available for your account." });
+        }
         setModels(Array.from(byId.values()));
       } catch (e) {
         if (cancelled) return;
@@ -91,6 +95,8 @@ export function ModelSwitcherSheet({
       visible={visible}
       onClose={onClose}
       snapPoints={['75%']}
+      keyboardBehavior="fillParent"
+      androidKeyboardInputMode="adjustPan"
       scrollable
       backdrop>
       <View style={styles.header}>

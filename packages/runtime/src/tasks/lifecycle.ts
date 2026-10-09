@@ -5,7 +5,8 @@ import {
   updateTaskIfCurrent,
   transitionTaskLifecyclePaused,
   transitionTaskLifecycleTerminal,
-  updateTask,
+  taskRequiresLocalExecutionRecapture,
+  TASK_LOCAL_EXECUTION_RECREATE_TEXT,
   type DirectDatabase,
   type Task,
 } from "@nautilo/db";
@@ -24,7 +25,7 @@ import { holdSecurityResearchDesktop, recoverSecurityResearchContextFailure } fr
 import { reportBackTaskCancellation } from "./report-back";
 
 /**
- * M147 (Phase 6) — task lifecycle: pause / unpause / stop.
+ * Task lifecycle: pause / unpause / stop.
  *
  * Each function is OWNER-AGNOSTIC — the caller (the `task` tool command or the
  * HTTP route) performs the owner check (`task.ownerId !== ctx.ownerId ⇒ "Task
@@ -139,7 +140,7 @@ export type ResumeFireMode =
   | "immediate";
 
 /**
- * D406 — decide when a resumed (unpaused) task should next fire. Pure +
+ * Decide when a resumed (unpaused) task should next fire. Pure +
  * timezone-aware so it is unit-testable without a DB.
  *
  *  - A preserved checkpoint (`hasResumableRun`) → fire NOW to continue the
@@ -180,7 +181,7 @@ export function computeResumeFireAt(
  *     mid-run by the user or the time-limit watchdog): set `next_fire_at = now`
  *     so the observer re-claims it immediately and `dispatchTaskRun` continues
  *     from the parked run's `graphThreadId` (does NOT cold-start).
- *  2. **Schedule re-arm** (D406 — no parked run; the task was a *dormant*
+ *  2. **Schedule re-arm** (no parked run; the task was a *dormant*
  *     recurring schedule toggled off while sleeping between fires): re-arm to
  *     the NEXT natural cron occurrence rather than firing immediately. Toggling
  *     a "every weekday 9am" reminder back on at 3pm must not fire at 3pm — it
@@ -210,6 +211,9 @@ export async function unpauseTask(
       message: `Cannot resume a ${task.status} task (only paused tasks resume).`,
     };
   }
+  if (taskRequiresLocalExecutionRecapture(task)) {
+    return { ok: false, status: "paused", message: TASK_LOCAL_EXECUTION_RECREATE_TEXT };
+  }
   // Defensive compatibility fence: a legacy caller must not turn an
   // externally-reviewed run into a fresh provider dispatch merely because it
   // managed to write `paused` before this lifecycle was installed.
@@ -223,11 +227,13 @@ export async function unpauseTask(
 
   // A parked (`paused`) run means there is a checkpoint to continue → fire now.
   // Absent that, a `cron` task is a dormant schedule → re-arm to its next
-  // occurrence instead of firing on re-enable (D406).
-  const fundingSnapshot = task.fundingMode === "caller"
-    ? await getTaskByIdWithMutationVersion(db, taskId) : undefined;
-  if (task.fundingMode === "caller" && (!fundingSnapshot || fundingSnapshot.status !== "paused")) {
+  // occurrence instead of firing on re-enable.
+  const fundingSnapshot = await getTaskByIdWithMutationVersion(db, taskId);
+  if (!fundingSnapshot || fundingSnapshot.status !== "paused") {
     return { ok: false, status: fundingSnapshot?.status ?? "not_found", message: "Task changed before resume. Reload and try again." };
+  }
+  if (taskRequiresLocalExecutionRecapture(fundingSnapshot)) {
+    return { ok: false, status: "paused", message: TASK_LOCAL_EXECUTION_RECREATE_TEXT };
   }
   const resumableRun = await getLatestResumableTaskRun(db, taskId);
   if (
@@ -245,15 +251,13 @@ export async function unpauseTask(
   );
 
   const patch = { status: "pending" as const, nextFireAt, fireLockId: null, fireLockedAt: null };
-  if (fundingSnapshot) {
+  {
     const rearmed = await updateTaskIfCurrent(db, {
       id: taskId, ownerId: fundingSnapshot.ownerId, expectedStatus: "paused",
       expectedMutationVersion: fundingSnapshot.mutationVersion,
       expectedContentRevision: fundingSnapshot.contentRevision,
     }, { ...patch, lastError: null });
     if (!rearmed) return { ok: false, status: "changed", message: "Task changed before resume. Reload and try again." };
-  } else {
-    await updateTask(db, taskId, patch);
   }
 
   const observer = deps.observer ?? getTaskObserver();
@@ -293,7 +297,7 @@ export async function stopTask(
   }
   // This is intentionally one transaction with every completion/error writer:
   // a serialized external run can exist before it gets a concrete jobId. The
-  // transition checks a D448 reservation under this same row lock, so a
+  // transition checks a Writer reservation under this same row lock, so a
   // concurrent canonical Writer save and Stop have one durable winner.
   const transition = await transitionTaskLifecycleTerminal(db, {
     taskId,

@@ -131,6 +131,24 @@ describe("M164 authorizeTaskApprovalResume", () => {
       capability: "use_server_provider_credentials",
     });
   });
+
+  test("caller-funded work rechecks invocation authority without requiring server funding", async () => {
+    let serverFundingChecks = 0;
+    const res = await authorizeTaskApprovalResume(
+      { taskId: "task-1", threadId: "subagent:thread-1", sessionUserId: "owner-1" },
+      {
+        db: fakeDb({
+          task: task({ requestorId: "owner-1", fundingMode: "caller" }),
+          run: run(),
+        }),
+        assertInvocation: async () => {},
+        assertServerFunding: async () => { serverFundingChecks += 1; },
+      },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(serverFundingChecks).toBe(0);
+  });
 });
 
 

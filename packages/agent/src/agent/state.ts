@@ -1,3 +1,5 @@
+import { parseGitHubInvocationBinding, type GitHubInvocationBinding } from "@nautilo/types";
+import { parseRelayHumanTerminalBinding, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import type { ForegroundModelControlSnapshot } from "../config/foreground-model-controls";
 import { Annotation } from "@langchain/langgraph";
 import type { BaseMessage } from "@langchain/core/messages";
@@ -43,6 +45,30 @@ export type TrustedExecutionEntrypoint =
   | "foreground.task_report_back"
   | "background.task"
   | "foreground.subagent";
+
+/** Content-free coordination metadata for one safe foreground context rebuild. */
+export interface ForegroundContextRefreshRequest {
+  readonly kind: "foreground_context_refresh";
+  readonly reason: "visible_assistant_text" | "context_pressure";
+  readonly status: "pending" | "ready";
+  readonly modelId: string;
+  readonly maximumContextCharacters: number;
+  readonly projectionFingerprint: string;
+}
+
+/** Runtime-stamped source needed to rebuild the accepted foreground request once. */
+export interface ForegroundContextRefreshSource {
+  readonly acceptedMessages: BaseMessage[];
+  /** Exact non-Human suffix not yet covered by the durable transcript cut. */
+  readonly retainedMessages?: BaseMessage[];
+  readonly acceptedMessageIds?: readonly number[];
+  /** Stable foreground execution identity used to exclude concurrent turns. */
+  readonly executionId?: string;
+  readonly triggerMessageId?: number;
+  readonly throughMessageIdInclusive?: number;
+  readonly subthreadParentRoomId?: string;
+  readonly subthreadAnchorMessageId?: number;
+}
 
 function parseTrustedExecutionEntrypoint(
   value: unknown,
@@ -100,6 +126,10 @@ export const NautiloStateAnnotation = Annotation.Root({
   }),
 
   /** Frozen once by fresh foreground ingress, retained across tool/approval resumes. */
+  foregroundFundingSnapshot: Annotation<import("../runtime/foreground-chat-funding").ForegroundFundingSnapshot | null>({
+    reducer: (_, update) => update, default: () => null,
+  }),
+
   foregroundModelControlSnapshot: Annotation<ForegroundModelControlSnapshot | null>({
     reducer: (_, update) => update,
     default: () => null,
@@ -216,6 +246,29 @@ export const NautiloStateAnnotation = Annotation.Root({
   ordinaryContentAccessRejectedToolCallIds: Annotation<string[]>({
     reducer: (_, update) => update,
     default: () => [],
+  }),
+
+  /** Server-selected mode, checkpointed before approval; never model arguments. */
+  delegatedLocalExecutionBindings: Annotation<Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>>({
+    reducer: (_, update) => update,
+    default: () => ({}),
+  }),
+  fullMacInvocationBindings: Annotation<Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>>({
+    reducer: (_, update) => update,
+    default: () => ({}),
+  }),
+
+  githubInvocationBindings: Annotation<Readonly<Record<string, GitHubInvocationBinding>>>({
+    reducer: (_, update) => Object.fromEntries(Object.entries(update ?? {}).flatMap(([id, value]) => {
+      const parsed = parseGitHubInvocationBinding(value); return parsed && parsed.toolCallId === id ? [[id, parsed]] : [];
+    })), default: () => ({}),
+  }),
+  /** Server-admitted exact handoff generation for each queued call. */
+  humanTerminalInvocationBindings: Annotation<Readonly<Record<string, RelayHumanTerminalBinding>>>({
+    reducer: (_, update) => Object.fromEntries(Object.entries(update ?? {}).flatMap(([id, value]) => {
+      const parsed = parseRelayHumanTerminalBinding(value); return parsed ? [[id, parsed]] : [];
+    })),
+    default: () => ({}),
   }),
 
   /** exact server-admitted binding for each queued semantic computer call. */
@@ -664,6 +717,47 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => null,
   }),
 
+  /** Trusted runtime opt-in. Missing and false keep every legacy/background graph unchanged. */
+  foregroundContextRefreshEligible: Annotation<boolean>({
+    reducer: (_, update) => update === true,
+    default: () => false,
+  }),
+
+  /** Runtime-owned accepted-request source; bounded at ingress rather than accumulated by nodes. */
+  foregroundContextRefreshSource: Annotation<ForegroundContextRefreshSource | null>({
+    reducer: (_, update) => update ?? null,
+    default: () => null,
+  }),
+
+  /** Pending is safe to checkpoint through interrupts; only ready may end an internal segment. */
+  foregroundContextRefresh: Annotation<ForegroundContextRefreshRequest | null>({
+    reducer: (_, update) => update ?? null,
+    default: () => null,
+  }),
+
+  /** Prevents an unchanged rebuilt projection from refreshing forever. */
+  foregroundContextRefreshLastProjection: Annotation<string>({
+    reducer: (_, update) => update,
+    default: () => "",
+  }),
+
+  /** Exact preparation basis reused when a visible text/tool batch settles. */
+  foregroundContextPreparedModelId: Annotation<string>({
+    reducer: (_, update) => update,
+    default: () => "",
+  }),
+  foregroundContextMaximumCharacters: Annotation<number>({
+    reducer: (_, update) => update,
+    default: () => 0,
+  }),
+  foregroundContextBoundToolTokens: Annotation<number>({
+    reducer: (_, update) => update,
+    default: () => 0,
+  }),
+  foregroundContextReservedMessageTokens: Annotation<number>({
+    reducer: (_, update) => update,
+    default: () => 0,
+  }),
   /** server-authored, revalidated live return decision for this wake. */
   taskReportBackContinuation: Annotation<import("../runtime/task-report-back-continuation").TaskReportBackContinuation | null>({
     reducer: (_, update) => update,
@@ -876,10 +970,22 @@ export type NautiloState = Omit<
   | "redirectAllowed"
   | "verifiedOrdinaryOrigin"
   | "trustedExecutionEntrypoint"
+  | "foregroundContextRefreshEligible"
+  | "foregroundContextRefreshSource"
+  | "foregroundContextRefresh"
+  | "foregroundContextRefreshLastProjection"
+  | "foregroundContextPreparedModelId"
+  | "foregroundContextMaximumCharacters"
+  | "foregroundContextBoundToolTokens"
+  | "foregroundContextReservedMessageTokens"
   | "taskReportBackContinuation"
   | "desktopAutomationProvenance"
   | "desktopAutomationRouteBinding"
   | "computerUseInvocationBindings"
+  | "humanTerminalInvocationBindings"
+  | "githubInvocationBindings"
+  | "fullMacInvocationBindings"
+  | "delegatedLocalExecutionBindings"
   | "ordinaryContentAccessBindings" | "ordinaryContentAccessRejectedToolCallIds"
   | "autoApprove"
   | "requiredHostRelays"
@@ -891,6 +997,7 @@ export type NautiloState = Omit<
   | "noProgressStreaks" | "noProgressPendingCorrection" | "noProgressPendingStop"
   | "projectionSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
   | "identityEnrollmentToolCallIds"
+  | "foregroundFundingSnapshot"
   | "approvalLaneKey"
   | "callingRoomId"
   | "currentTaskId"
@@ -900,6 +1007,7 @@ export type NautiloState = Omit<
   | "promptTimeReference"
   | "connectedAppProviderIds"
 > & {
+  foregroundFundingSnapshot?: import("../runtime/foreground-chat-funding").ForegroundFundingSnapshot | null;
   /** Legacy checkpoints resolve preferences when next invoked. */
   foregroundModelControlSnapshot?: ForegroundModelControlSnapshot | null;
   /** Empty only for legacy checkpoints; new ingress always checkpoints the exact reply lane. */
@@ -929,6 +1037,15 @@ export type NautiloState = Omit<
   verifiedOrdinaryOrigin?: VerifiedOrdinaryOrigin | null;
   /** omitted legacy checkpoints and invalid values remain fail-closed. */
   trustedExecutionEntrypoint?: TrustedExecutionEntrypoint | null;
+  /** Optional on legacy checkpoints; only trusted runtime ingress may enable it. */
+  foregroundContextRefreshEligible?: boolean;
+  foregroundContextRefreshSource?: ForegroundContextRefreshSource | null;
+  foregroundContextRefresh?: ForegroundContextRefreshRequest | null;
+  foregroundContextRefreshLastProjection?: string;
+  foregroundContextPreparedModelId?: string;
+  foregroundContextMaximumCharacters?: number;
+  foregroundContextBoundToolTokens?: number;
+  foregroundContextReservedMessageTokens?: number;
   /** absent on every non-report-back and legacy checkpoint. */
   taskReportBackContinuation?: import("../runtime/task-report-back-continuation").TaskReportBackContinuation | null;
   /** absent on legacy checkpoints and ordinary node-test fixtures. */
@@ -937,6 +1054,10 @@ export type NautiloState = Omit<
   desktopAutomationRouteBinding?: DesktopAutomationRouteBinding | null;
   /** per-call admission metadata; an absent/malformed map is empty. */
   computerUseInvocationBindings?: Readonly<Record<string, ComputerUseInvocationBinding>>;
+  delegatedLocalExecutionBindings?: Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>;
+  fullMacInvocationBindings?: Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>;
+  githubInvocationBindings?: Readonly<Record<string, GitHubInvocationBinding>>;
+  humanTerminalInvocationBindings?: Readonly<Record<string, RelayHumanTerminalBinding>>;
   ordinaryContentAccessBindings?: Readonly<Record<string, OrdinaryContentAccessBinding>>;
   ordinaryContentAccessRejectedToolCallIds?: string[];
   /** Omitted legacy checkpoints and fixtures default to Auto-Approve off. */

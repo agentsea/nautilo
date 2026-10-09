@@ -35,6 +35,7 @@ import {
   roomMembers,
   eq,
   inArray,
+  sql,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { ensureSession } from "@nautilo/agent";
@@ -72,6 +73,10 @@ let dmRoomId = "";
 // Group room ids.
 let groupRoomId = "";
 let groupUserMsgId = 0;
+let executionRoomId = "";
+let executionTriggerId = 0;
+let executionThroughId = 0;
+let cursorRoomId = "";
 // Subthread ids.
 let parentRoomId = "";
 let subRoomId = "";
@@ -160,6 +165,103 @@ beforeAll(async () => {
     .returning({ id: sessionMessages.id });
   groupUserMsgId = Number(grpU2!.id);
 
+  // ---- Foreground execution isolation: same Agent, overlapping executions. ----
+  executionRoomId = randomUUID();
+  const executionNs = await freshNamespace("foreground-execution-ns");
+  await db.insert(rooms).values({
+    id: executionRoomId, ownerId: owner, type: "private",
+    label: "foreground execution isolation",
+    graphThreadId: `room:${executionRoomId}`, namespaceId: executionNs,
+    humanActorIds: [userActor],
+  });
+  await db.insert(roomMembers).values({ roomId: executionRoomId, actorId: userActor, roomRole: "admin" });
+  await db.insert(roomMembers).values({ roomId: executionRoomId, actorId: agentAActor, roomRole: "member" });
+  const executionHumanSid = await ensureSession({
+    threadId: `foreground-execution-human-${ts}`,
+    ownerId: owner,
+    personaId: "owner",
+    roomId: executionRoomId,
+  });
+  const executionAgentSid = await ensureSession({
+    threadId: `foreground-execution-agent-${ts}`,
+    ownerId: owner,
+    personaId: "owner",
+    roomId: executionRoomId,
+    agentId: agentAId,
+  });
+  const [executionTrigger] = await db.insert(sessionMessages).values({
+    sessionId: executionHumanSid,
+    role: "user",
+    content: "active request",
+    createdAt: new Date(BASE + 14_000),
+  }).returning({ id: sessionMessages.id });
+  executionTriggerId = Number(executionTrigger!.id);
+  for (let index = 1; index <= 10; index += 1) {
+    await db.insert(sessionMessages).values({
+      sessionId: executionAgentSid,
+      role: "assistant",
+      content: `OWN-A${index}`,
+      createdAt: new Date(BASE + 14_000 + index * 10),
+      metadata: { nautilo_foreground_execution_id: "execution-a" },
+    });
+  }
+  await db.insert(sessionMessages).values({
+    sessionId: executionAgentSid,
+    role: "assistant",
+    content: "CONCURRENT-B-VISIBLE",
+    createdAt: new Date(BASE + 14_110),
+    metadata: { nautilo_foreground_execution_id: "execution-b" },
+  });
+  const [executionThrough] = await db.insert(sessionMessages).values({
+    sessionId: executionAgentSid,
+    role: "tool",
+    toolName: "lookup",
+    content: "OWN-A-LATER-TOOL",
+    createdAt: new Date(BASE + 14_120),
+    metadata: { nautilo_foreground_execution_id: "execution-a" },
+  }).returning({ id: sessionMessages.id });
+  executionThroughId = Number(executionThrough!.id);
+
+  // ---- Exact source cursor: deliberately insert the older row second so its
+  // message ID is higher while both timestamps collapse to the same JS ms. ----
+  cursorRoomId = randomUUID();
+  const cursorNs = await freshNamespace("foreground-cursor-ns");
+  await db.insert(rooms).values({
+    id: cursorRoomId, ownerId: owner, type: "private",
+    label: "foreground exact cursor",
+    graphThreadId: `room:${cursorRoomId}`, namespaceId: cursorNs,
+    humanActorIds: [userActor],
+  });
+  await db.insert(roomMembers).values({ roomId: cursorRoomId, actorId: userActor, roomRole: "admin" });
+  await db.insert(roomMembers).values({ roomId: cursorRoomId, actorId: agentAActor, roomRole: "member" });
+  const cursorAgentSid = await ensureSession({
+    threadId: `foreground-cursor-agent-${ts}`,
+    ownerId: owner,
+    personaId: "owner",
+    roomId: cursorRoomId,
+    agentId: agentAId,
+  });
+  const [newerCursorRow] = await db.insert(sessionMessages).values({
+    sessionId: cursorAgentSid,
+    role: "assistant",
+    content: "CURSOR-NEWER",
+  }).returning({ id: sessionMessages.id });
+  const [olderCursorRow] = await db.insert(sessionMessages).values({
+    sessionId: cursorAgentSid,
+    role: "assistant",
+    content: "CURSOR-OLDER-HIGHER-ID",
+  }).returning({ id: sessionMessages.id });
+  await db.update(sessionMessages)
+    .set({
+      createdAt: sql<Date>`'2026-06-10T10:00:40.000500Z'::timestamptz`,
+    })
+    .where(eq(sessionMessages.id, Number(newerCursorRow!.id)));
+  await db.update(sessionMessages)
+    .set({
+      createdAt: sql<Date>`'2026-06-10T10:00:40.000400Z'::timestamptz`,
+    })
+    .where(eq(sessionMessages.id, Number(olderCursorRow!.id)));
+
   // ---- Subthread (Flow 5): parent room + subthread rooted at an anchor. ----
   parentRoomId = randomUUID();
   subRoomId = randomUUID();
@@ -198,7 +300,14 @@ afterAll(async () => {
   if (!db) return;
   try {
     // Subthread room first (its FK to the parent anchor blocks anchor deletion).
-    for (const rid of [subRoomId, parentRoomId, groupRoomId, dmRoomId]) {
+    for (const rid of [
+      subRoomId,
+      parentRoomId,
+      cursorRoomId,
+      executionRoomId,
+      groupRoomId,
+      dmRoomId,
+    ]) {
       if (!rid) continue;
       const sess = await db.select({ id: sessions.id }).from(sessions).where(eq(sessions.roomId, rid));
       const ids = sess.map((s) => s.id);
@@ -268,6 +377,71 @@ describe("M168 Flow 2 (group) — one room transcript across bots, current msg e
     // Everything else is still present.
     expect(excluded.map((h) => h.snippet)).toContain("GROUP Nova chimes in");
     expect(excluded.length).toBe(withMsg.length - 1);
+  });
+});
+
+describe("foreground refresh source isolation", () => {
+  test("a concurrent same-Agent execution cannot evict the minimum ten owned anchors", async () => {
+    const deps = defaultBuildTranscriptContextDeps(db, {
+      getRecentConversationLimit: async () => 10,
+    });
+    const hits = await deps.readRoomTranscript({
+      kind: "room",
+      roomId: executionRoomId,
+      ownerId: owner,
+      agentId: agentAId,
+      excludeMessageId: executionTriggerId,
+      throughMessageIdInclusive: executionThroughId,
+      foregroundExecutionId: "execution-a",
+    });
+
+    expect(hits.map((hit) => hit.snippet)).toEqual([
+      "OWN-A1",
+      "OWN-A2",
+      "OWN-A3",
+      "OWN-A4",
+      "OWN-A5",
+      "OWN-A6",
+      "OWN-A7",
+      "OWN-A8",
+      "OWN-A9",
+      "OWN-A10",
+      "OWN-A-LATER-TOOL",
+    ]);
+  });
+
+  test("authorized source paging resolves sub-millisecond order from the DB cursor row", async () => {
+    const deps = defaultBuildTranscriptContextDeps(db, {
+      getRecentConversationLimit: async () => 1,
+    });
+    if (deps.readRoomTranscriptSourcePage === undefined) {
+      throw new Error("production authorized transcript pager missing");
+    }
+    const scope = {
+      kind: "room" as const,
+      roomId: cursorRoomId,
+      ownerId: owner,
+      agentId: agentAId,
+    };
+    const newest = await deps.readRoomTranscriptSourcePage(scope);
+    expect(newest.page.map((hit) => hit.snippet)).toEqual(["CURSOR-NEWER"]);
+    expect(newest.nextBefore?.orderTimestamp).toBe(
+      "2026-06-10T10:00:40.000500Z",
+    );
+
+    const older = await deps.readRoomTranscriptSourcePage(
+      scope,
+      newest.nextBefore,
+    );
+    expect(older.page.map((hit) => hit.snippet)).toEqual([
+      "CURSOR-OLDER-HIGHER-ID",
+    ]);
+    expect(older.page[0]!.messageId).toBeGreaterThan(
+      newest.page[0]!.messageId,
+    );
+    expect(older.nextBefore?.orderTimestamp).toBe(
+      "2026-06-10T10:00:40.000400Z",
+    );
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * D174 Phase 11.1–11.2 — canonical `POST /api/rooms/:roomId/messages` dispatcher.
+ * canonical `POST /api/rooms/:roomId/messages` dispatcher.
  *
  * **Agent-mediated branch:** `executeAgentMediatedRoomMessage` (extracted legacy
  * `/api/chat` job enqueue) — MR1 canonical JSON; optional `aliasHttpContract`
@@ -70,6 +70,7 @@ import {
   createConductorModelInvoker,
   createLiveShadowDataOperationPolicyBinding,
   isExplicitConductorSource,
+  filterWakeableAgents,
   resolveRoomSideModelId,
   buildRoutingView,
   eventBus,
@@ -103,6 +104,9 @@ import {
 } from "../routes/chat";
 import {
   normalizeChatAttachments,
+  assertChatAttachmentImageSupport,
+  pendingChatAttachmentsAreImages,
+  ImageAttachmentModelError,
   parseChatAttachmentRefs,
   validateClientPathSafe,
 } from "./attachments";
@@ -119,7 +123,7 @@ import {
   callerHasConfiguredPersonalFunding,
   callerMayUsePersonalChat,
 } from "../lib/foreground-chat-funding";
-import { resolveForegroundChatPreflightFunding } from "../lib/foreground-chat-preflight";
+import { resolveForegroundChatPreflightFunding, resolveForegroundChatPreflightModelId } from "../lib/foreground-chat-preflight";
 import { ModelFundingError } from "../lib/model-funding";
 import {
   clearPendingAgentRedirect,
@@ -184,24 +188,24 @@ import {
 
 export type RoomPostMessageBody = {
   content?: string;
-  /** M282 — Browser-prepared protected sibling for the same ordinary text. */
+  /** Browser-prepared protected sibling for the same ordinary text. */
   liveShadow?: unknown;
   /**
-   * D513 Phase 3.1 — raw optional session input carried only to the future
+   * raw optional session input carried only to the future
    * pre-enqueue binding seam. It is intentionally neither persisted nor
    * model-visible in this transport-only phase.
    */
     clientActionSessionId?: unknown;
-  /** M233 — picker-authored stable Human recipient ids; never inferred from content. */
+  /** picker-authored stable Human recipient ids; never inferred from content. */
   mentionedHumanUserIds?: unknown;
   /** Structured Room-wide Human mention intent. */
   mentionEveryone?: boolean;
   replyToMessageId?: number | null;
   attachments?: unknown;
-  /** D356 — metadata-only "focus on these artifacts" references (validated downstream). */
+  /** metadata-only "focus on these artifacts" references (validated downstream). */
   artifactRefs?: unknown;
   /**
-   * D423 Phase 4 — generic discriminated "focus on these resources" refs
+   * generic discriminated "focus on these resources" refs
    * (workspace artifact / local file). Shape/bounds validated here; kind
    * resolvers run downstream where the memory envelope is canonical.
    */
@@ -217,36 +221,36 @@ export type RoomPostMessageBody = {
   liveMiniAppSession?: LiveMiniAppSessionCapability | TrustedLiveMiniAppSessionContext | null;
   laneKey?: string;
   /**
-   * D371 R2 — optional per-turn model override. When a non-empty string that
+   * optional per-turn model override. When a non-empty string that
    * resolves via `getModelById(...)` in the executor, it overrides the agent
    * profile default for THIS turn only (per-thread override, decision A).
    * Otherwise dropped (behavior unchanged). Inert until R3 wires UI to set it.
    */
   model?: string | null;
   /**
-   * M087 — IANA timezone auto-detected by the client. Validated +
+   * IANA timezone auto-detected by the client. Validated +
    * resolved inside `executeAgentMediatedRoomMessage` (reads `request.body`
    * directly); declared here so the canonical room-message body type allows
    * it. Invalid/omitted → `users.timezone ?? "UTC"`.
    */
   userTimezone?: string | null;
   /**
-   * M134 Phase 4 — optional UI-selected bot (opens/continues focus without a
+   * optional UI-selected bot (opens/continues focus without a
    * `@mention`). Must be the actor id of an agent member of the room.
    */
   uiSelectedBotActorId?: string | null;
   /**
-   * D302 R13 — ask_user resume: the original message's `humanTurnId` (from the
+   * ask_user resume: the original message's `humanTurnId` (from the
    * `conductor.ask_user` event). When set on a `uiSelectedBotActorId` send, the
    * wake path reuses it as the bot-turn `sharedTurnId` so the re-sent human row
    * shares the persisted row's fingerprint and the read-time collapse dedupes
    * it (no double-post). Ignored on non-resume sends.
    */
   resumeTurnId?: string | null;
-  /** D302 P4 — persisted human message id for an ask_user resume (exclude from context block). */
+  /** persisted human message id for an ask_user resume (exclude from context block). */
   resumeMessageId?: number | null;
   /**
-   * M135 P7 — explicit "search room history" UI signal. When true the
+   * explicit "search room history" UI signal. When true the
    * Conductor consults the room-history evidence route regardless of reply
    * structure. Optional; defaults to false.
    */
@@ -358,14 +362,14 @@ function parseAdvancedVideoWorkcardContinuation(args: {
 }
 
 /**
- * M135 P6 — context window bounds for the woken-bot composite block.
+ * context window bounds for the woken-bot composite block.
  * `WINDOW_CAP` caps the DB fetch of "messages since the bot last spoke";
  * `MAX_LINES` caps the rendered block (oldest-first elision beyond it). The
  * cap keeps a bot that has been silent through a very long burst from pulling
  * unbounded history while still capturing the full recent diff.
  */
 /**
- * D271 — build the uploaded-attachment normalize args from the turn's envelope
+ * build the uploaded-attachment normalize args from the turn's envelope
  * + sender actor. The capability fence is enforced inside
  * `normalizeChatAttachments` against (uploaderActorId, writableNamespaceId).
  */
@@ -388,8 +392,8 @@ function uploadedAttachmentArgs(
 }
 
 /**
- * D391 — after the human message is persisted, stamp this turn's retained
- * attachments (images + audio) with the M134 `fingerprint` of the just-
+ * after the human message is persisted, stamp this turn's retained
+ * attachments (images + audio) with the `fingerprint` of the just-
  * inserted human row. The room history read joins attachments -> the deduped
  * message by `turn_id` (= fingerprint), so an attachment renders once per
  * turn regardless of how many per-bot copies of the message exist. Best-
@@ -445,7 +449,7 @@ type GroupRoomConductorAfterPersistArgs = {
   attachmentRefs: string[];
   artifactRefs: ChatArtifactRef[];
   /**
-   * D423 Phase 4 — generic focus refs (workspace artifact / local file).
+   * generic focus refs (workspace artifact / local file).
    * Unioned (kind-specific dedupe) on coalesce; resolved into the common
    * manifest inside `executeAgentMediatedRoomMessage`.
    */
@@ -457,7 +461,7 @@ type GroupRoomConductorAfterPersistArgs = {
   resumeTurnId?: string;
   searchHistoryFlag: boolean;
   /**
-   * D371 R2 — per-turn model override (nullable string). Forwarded to the
+   * per-turn model override (nullable string). Forwarded to the
    * agent-mediated send and the executor; null means "no override" (behavior
    * unchanged). See {@link RoomPostMessageBody.model}.
    */
@@ -470,15 +474,15 @@ type GroupRoomConductorAfterPersistArgs = {
   buildEnvelopeForRoom: NonNullable<ChatRoutesDeps["buildEnvelopeForRoom"]>;
   persistedHuman: PersistedHumanForRouting;
   /**
-   * D420 (Wave 2 task 2.2.1) — acceptance authority minted at the HTTP
+   * acceptance authority minted at the HTTP
    * boundary. Carried through the async conductor wake so the drain gate
    * inside `createForegroundJob` bypasses a turn accepted before drain.
    */
   acceptanceAuthority?: MaintenanceAcceptanceAuthority;
-  /** M254 — Human invocation admission for this accepted Room turn. */
+  /** Human invocation admission for this accepted Room turn. */
   invocationAuthority: AcceptedInvocationAuthority;
   assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
-  /** D513 — same process-local registry that created the opaque handle. */
+  /** same process-local registry that created the opaque handle. */
   clientActionBindingRegistry?: ReturnType<typeof getClientActionBindingRegistry>;
   /** One reservation's private surface context; never enters routing items or persistence. */
   foregroundTurnCoalescingContext?: NonNullable<ForegroundTurnCandidate["coalescingContext"]>;
@@ -488,7 +492,7 @@ type GroupRoomConductorAfterPersistArgs = {
 type ConductorWakeBot = { actorId: string; agentId: string };
 
 /**
- * D421 Phase 4.3 — canonical per-bot conductor wake body. Both the initial
+ * canonical per-bot conductor wake body. Both the initial
  * source wake and the accepted redirect target reuse this exact helper, so
  * the target inherits the original validated payload without a duplicate
  * runner, human persist, or room broadcast.
@@ -633,18 +637,15 @@ const conductorCoalescer = new ConductorCoalescer(
   },
 );
 
-// M171 (Phase H) — the legacy transient context blocks (peer-diff +
-// `buildSubthreadContextBlock`, deduped against the checkpoint via
-// `readGraphCheckpointText`) were deleted here: every flow now rebuilds the
-// full labelled history from the DB transcript in `resolveForegroundHistoryMessages`
-// (M168), which subsumes them. Only the live turn message is threaded forward.
+// Every flow rebuilds the full labelled history from the DB transcript in
+// `resolveForegroundHistoryMessages`. Only the live turn message is threaded forward.
 
 /**
- * M135 P8 — one structured log line per Conductor decision. Floor-manager
+ * one structured log line per Conductor decision. Floor-manager
  * outcomes read distinctly from deterministic routes via the controlled
  * `reasonCode`.
  *
- * D421 Phase 3 (3.1.1/3.1.3) — the always-on log exposes ONLY controlled
+ * the always-on log exposes ONLY controlled
  * fields: the terminal decision `kind`, the server-classified `reasonCode`
  * (never the raw `decision.reason`, which for Floor Manager outcomes can
  * carry model-generated semantic detail), the `source`, the selected public
@@ -810,24 +811,24 @@ export async function dispatchRoomMessageSend(
     /** Injected in `/api/chat` tests; production defaults to `defaultChatRoutesDeps`. */
     chatDeps?: ChatRoutesDeps;
     /**
-     * D420 (Wave 2 task 2.2.1) — maintenance admission gate. Defaults to the
+     * maintenance admission gate. Defaults to the
      * runtime singleton (production gate wired by `createApp`). Injected in
      * unit tests so the drain rejection can be exercised DB-free.
      */
     maintenanceGate?: MaintenanceGate;
-    /** M254 — injected only by hermetic route tests. */
+    /** injected only by hermetic route tests. */
     assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
     /** Injected by hermetic route tests; production reads current Human RBAC. */
     assertCanUseServerProviderCredentials?: (humanUserId: string, origin?: string) => Promise<void>;
     /**
      * When true (POST `/api/chat` alias only): success responses use HTTP **202** for
      * every branch (including human-only) and JSON matches deprecated `SendMessageResponse`
-     * (`laneKey` is always `room:<roomId>` per D174 Phase 11.2 MR3).
+     * (`laneKey` is always `room:<roomId>` by contract).
      */
     aliasHttpContract?: boolean;
     /** Verified paired-mobile provenance for this exact ordinary send. */
     ordinaryOrigin?: VerifiedOrdinaryOrigin;
-    /** M297 — injectable exact-pair admission seam for route tests. */
+    /** injectable exact-pair admission seam for route tests. */
     humanPairIsBlocked?: (firstUserId: string, secondUserId: string) => Promise<boolean>;
   },
 ): Promise<void> {
@@ -883,7 +884,7 @@ export async function dispatchRoomMessageSend(
     });
   }
 
-  // D298 — archived rooms are frozen/read-only. Reject the message here, which
+  // archived rooms are frozen/read-only. Reject the message here, which
   // also prevents the agent turns it would trigger (this is the single send
   // chokepoint for human messages + agent replies).
   if (await roomIsArchived(roomId)) {
@@ -923,7 +924,7 @@ export async function dispatchRoomMessageSend(
     typeof request.sessionUserId === "string" &&
     request.sessionUserId.length > 0 &&
     request.policyContext?.speakerTrust === "verified";
-  // D371 R2 — per-turn model override. Trim + non-empty wins; empty/absent
+  // per-turn model override. Trim + non-empty wins; empty/absent
   // drops to null (behavior unchanged). Resolution against `getModelById`
   // happens in the executor (`langgraph-executor.ts`); the server only
   // forwards the raw string here.
@@ -939,7 +940,7 @@ export async function dispatchRoomMessageSend(
   let attachmentRefs: string[] = [];
   let artifactRefs: ChatArtifactRef[] = [];
   let focusedResources: ChatFocusedResourceRef[] = [];
-  // D304 — currentFolder / workspacePath are advisory prompt context; a bad or
+  // currentFolder / workspacePath are advisory prompt context; a bad or
   // blocked value drops to null and never blocks the message. Only attachment
   // refs (a real capability) fail closed.
   currentFolder = validateClientPathSafe(opts.body.currentFolder, "currentFolder");
@@ -957,7 +958,7 @@ export async function dispatchRoomMessageSend(
     return reply.code(400).send({ error: msg });
   }
   try {
-    // D356 — metadata-only artifact references. Shape/bounds here; namespace
+    // metadata-only artifact references. Shape/bounds here; namespace
     // resolution happens downstream (executeAgentMediatedRoomMessage) where the
     // memory envelope is canonical.
     artifactRefs = parseChatArtifactRefs(opts.body.artifactRefs);
@@ -966,7 +967,7 @@ export async function dispatchRoomMessageSend(
     return reply.code(400).send({ error: msg });
   }
   try {
-    // D423 — generic focus refs. Shape/bounds here; kind resolvers run
+    // generic focus refs. Shape/bounds here; kind resolvers run
     // downstream. Local-file refs fail closed this phase (no relay identity).
     focusedResources = parseChatFocusedResourceRefs(opts.body.focusedResources);
   } catch (err) {
@@ -974,7 +975,7 @@ export async function dispatchRoomMessageSend(
     return reply.code(400).send({ error: msg });
   }
 
-  // D424 — ArtifactOpenCard authoring inputs: the external workspace-artifact
+  // ArtifactOpenCard authoring inputs: the external workspace-artifact
   // ids drawn from BOTH focus lanes (legacy `artifactRefs` + `focusedResources`
   // kind `workspace-artifact`; local-file / message-attachment focus never
   // become cards), plus the canonical room namespace id that gates which
@@ -1086,7 +1087,7 @@ export async function dispatchRoomMessageSend(
     replyToMessageId = replyRaw;
   }
 
-  // M134 — optional UI-selected bot. Must name an agent member of the room.
+  // optional UI-selected bot. Must name an agent member of the room.
   let uiSelectedBotActorId: string | null = null;
   const uiSelRaw = opts.body.uiSelectedBotActorId;
   if (uiSelRaw !== undefined && uiSelRaw !== null) {
@@ -1105,10 +1106,10 @@ export async function dispatchRoomMessageSend(
     uiSelectedBotActorId = sel;
   }
 
-  // M135 P7 — optional explicit "search room history" UI flag.
+  // optional explicit "search room history" UI flag.
   const searchHistoryFlag = opts.body.searchHistoryFlag === true;
 
-  // D302 R13 — ask_user resume turn id (reuse the persisted human row's
+  // ask_user resume turn id (reuse the persisted human row's
   // fingerprint so the re-sent human message collapses, no double-post).
   const resumeTurnId =
     typeof opts.body.resumeTurnId === "string" && isUuidString(opts.body.resumeTurnId.trim())
@@ -1126,7 +1127,7 @@ export async function dispatchRoomMessageSend(
   const chatDeps = resolvedChatRoutesDeps(app, opts.chatDeps);
   const alias = opts.aliasHttpContract === true;
 
-  // M254 R7 — an exact parked Task reply is ordinary Room history first,
+  // an exact parked Task reply is ordinary Room history first,
   // including in the strict 1H+1A ask-peer DM shape. Persist it through the
   // shared Human-only path; the post-persist hook independently checks both
   // responder and durable requestor authority (plus maintenance) before the
@@ -1179,13 +1180,13 @@ export async function dispatchRoomMessageSend(
       content = commandExpanded.content;
       handledAgentSlash ||= commandExpanded.handled;
     }
-    // M134 §2 — a "DM" for routing is STRICTLY 1 human + 1 agent. Everything
+    // a "DM" for routing is STRICTLY 1 human + 1 agent. Everything
     // else with ≥1 agent is a group room routed by the Conductor.
     if (advancedVideoWorkcardContinuation && !isDm) {
       return reply.code(400).send({ error: "advanced video workcards require a direct Genie room" });
     }
 
-    // M254 R2 — classify validated explicit intent before persistence. Reuse
+    // classify validated explicit intent before persistence. Reuse
     // the canonical mention parser, reply-to-Agent lookup, UI validation, and
     // slash resolvers instead of introducing a second free-text grammar.
     const replyTargetActorId = replyToMessageId !== undefined
@@ -1262,8 +1263,7 @@ export async function dispatchRoomMessageSend(
     // Check explicitly addressed mixed-Room targets before the personal
     // workload fence. A Community caller gets the precise foreign-Genie
     // denial without any Conductor or provider work.
-    if (!isDm) {
-      const explicitTargets = agentMembers.filter((member) =>
+    const explicitTargets = agentMembers.filter((member) =>
         member.agentId && (
           member.actorId === uiSelectedBotActorId
           || member.actorId === replyTargetActorId
@@ -1272,6 +1272,7 @@ export async function dispatchRoomMessageSend(
             && member.handle.length > 0
             && parseAgentMentions(contentRaw, member.handle).hasMention)
         ));
+    if (!isDm) {
       for (const target of explicitTargets) {
         if (!target.agentId) continue;
         try {
@@ -1292,7 +1293,10 @@ export async function dispatchRoomMessageSend(
       && detail.members.some((member) => member.kind === "user" && member.userId === sessionUserId)
       && agentMembers[0]?.agentOwnerUserId === sessionUserId
       && !mentionEveryoneRoutingHint;
-    const hasAuxiliaryWorkload = voiceMode || fullPrepared || attachmentRefs.length > 0
+    const hasNonImageAttachments = attachmentRefs.length > 0 && !(await pendingChatAttachmentsAreImages(
+      uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope),
+    ));
+    const hasAuxiliaryWorkload = voiceMode || fullPrepared || hasNonImageAttachments
       || artifactRefs.length > 0 || focusedResources.length > 0 || activeMiniApp !== null
       || liveMiniAppSession !== null || handledAgentSlash;
     let personalChatCandidate = ownPrivateDm
@@ -1314,7 +1318,7 @@ export async function dispatchRoomMessageSend(
     if (personalChatCandidate && hasAuxiliaryWorkload) {
       return reply.code(422).send({
         code: "unsupported_workload",
-        error: "Personal provider credentials support text chat only.",
+        error: "Personal provider credentials support chat and image attachments only.",
       });
     }
     if (!personalChatCandidate) {
@@ -1349,6 +1353,36 @@ export async function dispatchRoomMessageSend(
           ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
           liveShadow: opts.body.liveShadow,
         });
+      }
+    }
+
+    if (attachmentRefs.length > 0) {
+      try {
+        // Check potential responders before shared transcript publication. Explicit
+        // routing narrows the set; ordinary group routing can select any member.
+        let targets = explicitTargets.length > 0 ? explicitTargets : agentMembers;
+        if (!isDm || mentionEveryoneRoutingHint) {
+          const [roster, silence] = await Promise.all([
+            chatDeps.loadRoomRoster(detail.id),
+            loadActiveSilenceForRoom(getSharedDirectDb(), detail.id, new Date()),
+          ]);
+          const wakeableIds = new Set(filterWakeableAgents(roster.map((member) => ({
+            ...member, handle: member.handle ?? "", agentResponseMode: member.agentResponseMode ?? null,
+          })), silence).map((member) => member.actorId));
+          targets = targets.filter((member) => wakeableIds.has(member.actorId));
+        }
+        const models = await Promise.all(targets.filter((member) => !!member.agentId).map(async (member) => ({
+          id: await resolveForegroundChatPreflightModelId({
+            humanUserId: sessionUserId, roomId: detail.id, agentId: member.agentId!, turnModelId: model,
+          }),
+        })));
+        await assertChatAttachmentImageSupport({
+          ...uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope), models,
+          humanUserId: sessionUserId, fundingKind: personalChatCandidate ? "personal" : "server",
+        });
+      } catch (error) {
+        if (!(error instanceof ImageAttachmentModelError)) throw error;
+        return reply.code(422).send({ error: error.message, code: error.code, message: error.message });
       }
     }
 
@@ -1397,7 +1431,7 @@ export async function dispatchRoomMessageSend(
         ...(resumeMessageId !== undefined ? { resumeMessageId } : {}),
         clientActionSessionId: opts.body.clientActionSessionId,
         liveShadow: opts.body.liveShadow,
-        // D420 — authority carries through the conductor wake so a drain that
+        // authority carries through the conductor wake so a drain that
         // begins after this boundary check cannot reject the accepted turn.
         acceptanceAuthority,
         invocationAuthority,
@@ -2157,7 +2191,7 @@ export async function dispatchRoomMessageSend(
                 : { liveShadowRunAgentTurn }),
             }
           : {}),
-        // M168 — DM-subthread: anchor the transcript rebuild to the parent
+        // DM-subthread: anchor the transcript rebuild to the parent
         // window. No `currentMessageId` (the DM path persists its human row
         // AFTER history is built, so there is nothing to exclude).
         ...(detail.kind === "subthread" && detail.parentRoomId
@@ -2166,10 +2200,10 @@ export async function dispatchRoomMessageSend(
         ...(detail.kind === "subthread" && detail.threadRootMessageId != null
           ? { subthreadAnchorMessageId: detail.threadRootMessageId }
           : {}),
-        // D426 — the direct 1:1 route uses the same child-row / root-summary
+        // the direct 1:1 route uses the same child-row / root-summary
         // persistence contract as conductor wakes.
         ...(detail.kind === "subthread" ? { subthreadRoomId: detail.id } : {}),
-        // M135 P6 — DM bots get a server-time prefix on the human turn.
+        // DM bots get a server-time prefix on the human turn.
         serverTimePrefixIso: `${new Date().toISOString().slice(0, 19)}Z`,
         invocationAuthority,
         ...(advancedVideoWorkcardContinuation
@@ -2194,7 +2228,7 @@ export async function dispatchRoomMessageSend(
           .code(err.httpStatus)
           .send({ error: err.code, code: err.code, message: err.message });
       }
-      // D420 — the createForegroundJob seam gate rejected (drain began in the
+      // the createForegroundJob seam gate rejected (drain began in the
       // window between the boundary check and acceptance). Render the typed
       // retryable 503; no human row was persisted.
       if (isMaintenanceDrainError(err)) {
@@ -2743,7 +2777,7 @@ async function dispatchHumanOnlyRoomMessage(
       .send(strictShadowHttpBody(out.strictShadowFailure));
   }
 
-  // M254 R2/R7 — the Task reply hook sees only admitted, persisted messages.
+  // the Task reply hook sees only admitted, persisted messages.
   if (opts.content !== undefined) {
     void maybeResumeAwaitingTask(opts.detail.id, opts.sessionUserId, opts.content);
   }
@@ -2811,7 +2845,7 @@ async function dispatchHumanOnlyRoomMessage(
 }
 
 /**
- * M134 Phase 2/3 — group-room dispatch via the Room Conductor.
+ * group-room dispatch via the Room Conductor.
  *
  * A group room is anything with ≥1 agent that is NOT a strict 1-human-1-agent
  * DM. The Conductor decides which 0..N bots to wake deterministically; each
@@ -2845,28 +2879,28 @@ async function dispatchGroupRoomMessage(
     mentionedHumanUserIds: string[];
     mentionEveryone: boolean;
     ordinaryOrigin?: VerifiedOrdinaryOrigin;
-    /** D424 — external workspace-artifact ids that may become cards. */
+    /** external workspace-artifact ids that may become cards. */
     workspaceArtifactExternalIds: string[];
-    /** D424 — canonical room namespace id gating card authoring. */
+    /** canonical room namespace id gating card authoring. */
     canonicalRoomNamespaceId?: string;
     replyToMessageId?: number;
     uiSelectedBotActorId: string | null;
     searchHistoryFlag: boolean;
     /**
-     * D371 R2 — per-turn model override (nullable string). Forwarded to the
+     * per-turn model override (nullable string). Forwarded to the
      * conductor wake path and the executor; null means "no override".
      */
     model?: string | null;
-    /** D302 R13 — ask_user resume: reuse this turn id as the bot-turn sharedTurnId. */
+    /** ask_user resume: reuse this turn id as the bot-turn sharedTurnId. */
     resumeTurnId?: string;
-    /** D302 P4 — persisted human message id (filter from bot context block). */
+    /** persisted human message id (filter from bot context block). */
     resumeMessageId?: number;
     /**
-     * D420 — acceptance authority minted at the HTTP boundary; carried through
+     * acceptance authority minted at the HTTP boundary; carried through
      * the conductor wake so the drain gate bypasses this accepted turn.
      */
     acceptanceAuthority?: MaintenanceAcceptanceAuthority;
-    /** M254 — Human invocation admission for this accepted Room turn. */
+    /** Human invocation admission for this accepted Room turn. */
     invocationAuthority: AcceptedInvocationAuthority;
     assertCanInvokeAgent?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   clientActionSessionId?: unknown;
@@ -2919,7 +2953,7 @@ async function dispatchGroupRoomMessage(
     if (content === undefined) {
       return reply.code(400).send({ error: "full_encryption_resume_unsupported" });
     }
-    // D302 P4 — ask_user resume. The original human row was already persisted
+    // ask_user resume. The original human row was already persisted
     // before the picker appeared; do not write/broadcast it again.
     out = {
       messageId: opts.resumeMessageId ?? null,
@@ -2936,7 +2970,7 @@ async function dispatchGroupRoomMessage(
       clientActionSessionId: opts.clientActionSessionId,
       actorId: sessionActorId,
     }) ?? undefined;
-    // D302 P4 — optimistic delivery: persist + broadcast the human message
+    // optimistic delivery: persist + broadcast the human message
     // before any conductor/FM work, so send never waits on routing.
     const turnId = randomUUID();
     try {
@@ -3231,7 +3265,7 @@ async function dispatchGroupRoomMessage(
           sharedAgent.senderDeviceSigningPublicKey.fill(0);
         }
       }
-      // D391 — link this turn's retained attachments to the human message
+      // link this turn's retained attachments to the human message
       // fingerprint so they render from room history (once, not per-bot).
       if (sharedAgent?.representationMode === "full_encryption") {
         await stampRetainedAttachmentTurnId(persisted.messageId, normalizedAttachments.statuses);
@@ -3279,7 +3313,7 @@ async function dispatchGroupRoomMessage(
   }
 
   if (!opts.resumeTurnId && content !== undefined) {
-    // M254 R2/R7 — only a newly admitted, persisted Human message may attempt
+    // only a newly admitted, persisted Human message may attempt
     // the independently gated awaiting-Task resume.
     void maybeResumeAwaitingTask(detail.id, sessionUserId, content);
   }
@@ -3312,7 +3346,7 @@ async function dispatchGroupRoomMessage(
     ...(model ? { model } : {}),
     buildEnvelopeForRoom,
     persistedHuman: out,
-    // D420 — carry the HTTP-boundary acceptance authority through the async wake.
+    // carry the HTTP-boundary acceptance authority through the async wake.
     ...(opts.acceptanceAuthority ? { acceptanceAuthority: opts.acceptanceAuthority } : {}),
     invocationAuthority: opts.invocationAuthority,
     ...(opts.assertCanInvokeAgent ? { assertCanInvokeAgent: opts.assertCanInvokeAgent } : {}),
@@ -3674,7 +3708,7 @@ async function runGroupRoomConductorAfterPersist(
         },
       });
     }
-    // D281 — server-wide admin-configured Conductor model (DB-backed, live
+    // server-wide admin-configured Conductor model (DB-backed, live
     // via cache) overrides the env/runtime-config value when set. Empty ⇒
     // inherit the runtime config (which itself falls back to the default).
     kickServerModelConfigRefresh();
@@ -3730,7 +3764,7 @@ async function runGroupRoomConductorAfterPersist(
               now: asOf,
               members: roomMembers,
             }),
-          // D426 — normal requester-private Room focus is resolved in the
+          // normal requester-private Room focus is resolved in the
           // runtime before this one-shot root fallback. Live dispatch neither
           // reads nor establishes a durable Subthread Responder.
           resolveSubthreadRootAffinity: (subthreadRoomId, _asOf, currentMessageId) =>
@@ -4367,9 +4401,9 @@ async function runGroupRoomConductorAfterPersist(
       selectedHandles,
     });
 
-    // D421 Phase 4.3 — server-authored authority: ONLY an inferred
+    // server-authored authority: ONLY an inferred
     // single-wake group turn can redirect. Explicit mention/reply/UI,
-    // multi-wake, DM, and turns lacking the original D420 acceptance
+    // multi-wake, DM, and turns lacking the original acceptance
     // authority fail closed and never register pending context.
     const redirectAllowed = isRedirectAllowedForConductorWake(
       decision,

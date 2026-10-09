@@ -103,7 +103,8 @@ let persistedRoomSelection: {
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "off";
   servingProfileId?: string;
 } | null = null;
-const getRoomModelControlSelection = mock(async () => persistedRoomSelection);
+const getRoomModelControlSelection = mock(async (_roomId: string, _agentId: string) => persistedRoomSelection);
+const getRoomModelControlState = mock(async (roomId: string, agentId: string) => ({ selection: await getRoomModelControlSelection(roomId, agentId), effectiveModelId: undefined as string | undefined }));
 const updateRoomModelControlSelection = mock(
   async (
     _roomId: string,
@@ -141,6 +142,7 @@ beforeAll(async () => {
       resolveRetainedModels,
       updateProfile,
       getRoomModelControlSelection,
+    getRoomModelControlState,
       updateRoomModelControlSelection,
     },
   }));
@@ -155,6 +157,7 @@ beforeEach(() => {
   resolveRetainedModels.mockClear();
   updateProfile.mockClear();
   getRoomModelControlSelection.mockClear();
+  getRoomModelControlState.mockClear();
   updateRoomModelControlSelection.mockClear();
   persistedRoomSelection = null;
   retainedModelRows = [];
@@ -217,6 +220,52 @@ function optionNames(scope: ParentNode = container): string[] {
 }
 
 describe("ModelSwitcher", () => {
+  test("switching a known model updates capabilities without reloading the caller catalog", async () => {
+    const seen: Array<AssistantModelSummary | null> = [];
+    await act(async () => {
+      root.render(<MemoryRouter><ModelSwitcher roomId="room-1" agentId="agent-1"
+        onModelChange={(model) => seen.push(model)} /></MemoryRouter>);
+      await flush();
+    });
+    expect(getCallerModels).toHaveBeenCalledTimes(1);
+    openPicker();
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((row) => row.textContent?.includes("Kimi K3"))!;
+    await act(async () => { option.click(); await flush(); });
+    expect(seen.at(-1)?.id).toBe("fireworks:accounts/fireworks/models/kimi-k3");
+    expect(container.querySelector('[data-testid="composer-model-switcher"]')?.textContent).toContain("Kimi K3");
+    expect(getCallerModels).toHaveBeenCalledTimes(1);
+  });
+
+  test("shows loading copy instead of a raw provider path while catalog metadata is pending", async () => {
+    const rows = await getCallerModels();
+    getCallerModels.mockClear();
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    getCallerModels.mockImplementationOnce(async () => { await pending; return rows; });
+    persistedRoomSelection = { modelId: "fireworks:accounts/fireworks/models/kimi-k3" };
+    renderSwitcher();
+    await act(flush);
+    const trigger = container.querySelector('[data-testid="composer-model-switcher"]')!;
+    expect(trigger.textContent).toContain("Loading model…");
+    expect(trigger.textContent).not.toContain("accounts/");
+    await act(async () => { finish(); await flush(); });
+    expect(trigger.textContent).toContain("Kimi K3");
+  });
+
+  test("projects catalog capabilities for the executor-resolved inherited model and opens the existing picker", async () => {
+    profileResponse = { viewerRole: "owner", agent: { defaultModel: null } };
+    getRoomModelControlState.mockResolvedValueOnce({ selection: null, effectiveModelId: "openai:gpt-next" });
+    const seen: Array<AssistantModelSummary | null> = [];
+    await act(async () => {
+      root.render(<MemoryRouter><ModelSwitcher roomId="room-1" agentId="agent-1"
+        onModelChange={(model) => seen.push(model)} openRequest={1} /></MemoryRouter>);
+      await flush();
+    });
+    expect(seen.at(-1)?.id).toBe("openai:gpt-next");
+    expect(container.querySelector('[role="option"]')).not.toBeNull();
+  });
+
   test("groups selectable models by provider and orders rows by priority", async () => {
     renderSwitcher();
     await act(flush);

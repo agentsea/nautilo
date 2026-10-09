@@ -21,7 +21,7 @@ import {
 } from "../../src/tasks/report-back";
 
 /**
- * DB-free unit coverage for the M143 report-back finalizer's status-routing +
+ * DB-free unit coverage for the report-back finalizer's status-routing +
  * event-emission contract. The `wake` / `raw` delivery branches (which hit
  * `appendTranscriptMessages` / `JobManager`) are exercised by the live-PG
  * integration suite; here `calling_room_id` is null (silent task) so the
@@ -40,6 +40,7 @@ function fakeDb(
   runResultText: string | null = null,
   runLastError: string | null = null,
   hasRun = true,
+  newerRunId?: string,
 ): {
   db: DirectDatabase;
   setCalls: SetCall[];
@@ -75,6 +76,7 @@ function fakeDb(
     }),
     select: () => ({
       from: (t: unknown) => {
+        let ordered = false;
         const rows = t === tasks
           ? (taskRow ? [taskRow] : [])
           : hasRun
@@ -82,9 +84,9 @@ function fakeDb(
             : [];
         const query = {
           where: () => query,
-          orderBy: () => query,
+          orderBy: () => { ordered = true; return query; },
           limit: () => query,
-          for: async () => rows,
+          for: async () => ordered && newerRunId ? [{ ...runRow, id: newerRunId }] : rows,
         };
         return query;
       },
@@ -108,7 +110,7 @@ const baseTask = (over: Partial<Task> = {}): Task =>
     ...over,
   }) as unknown as Task;
 
-describe("M143 — report-back finalizer (silent + event routing)", () => {
+describe("report-back finalizer (silent + event routing)", () => {
   const resolveCallingRoomGraphThreadId = async (): Promise<string> =>
     "room:room-1";
 
@@ -169,6 +171,56 @@ describe("M143 — report-back finalizer (silent + event routing)", () => {
       type: "task.completed",
       status: "pending",
     });
+  });
+
+  test("approval-resumed cron completion settles its Run and restores pending without changing the next occurrence", async () => {
+    const nextFireAt = new Date("2026-10-08T14:32:00Z");
+    const { db, setCalls } = fakeDb(baseTask({ scheduleKind: "cron", nextFireAt }));
+    const events: ServerEvent[] = [];
+    expect(await reportBackTaskCompletion({ db, emit: event => events.push(event) }, {
+      taskId: "task-1", runId: "run-1", scheduleKind: "cron", resultText: "Python exited 0", requireRunningPair: true,
+    })).toBe(true);
+    expect(setCalls.find(call => call.table === "task_runs")?.payload).toMatchObject({ status: "completed", resultText: "Python exited 0" });
+    const taskPatch = setCalls.find(call => call.table === "tasks")?.payload;
+    expect(taskPatch).toMatchObject({ status: "pending", fireLockId: null, fireLockedAt: null, lastError: null });
+    expect(taskPatch).not.toHaveProperty("nextFireAt");
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "task.completed", taskRunId: "run-1", status: "pending" });
+  });
+
+  test("approval-resumed cron failure also restores the existing schedule", async () => {
+    const { db, setCalls } = fakeDb(baseTask({ scheduleKind: "cron" }));
+    const events: ServerEvent[] = [];
+    await reportBackTaskError({ db, emit: event => events.push(event) }, {
+      taskId: "task-1", runId: "run-1", scheduleKind: "cron", error: "fixture failure", requireRunningPair: true,
+    });
+    expect(setCalls.find(call => call.table === "task_runs")?.payload).toMatchObject({ status: "errored", lastError: "fixture failure" });
+    expect(setCalls.find(call => call.table === "tasks")?.payload).toMatchObject({ status: "pending" });
+    expect(events[0]).toMatchObject({ type: "task.errored", status: "pending" });
+  });
+
+  test("committed resumed cron completion can retry delivery without repeating writes or events", async () => {
+    const { db, setCalls } = fakeDb(baseTask({ scheduleKind: "cron", status: "pending" }), "completed", "saved result");
+    const events: ServerEvent[] = [];
+    const deps = { db, emit: (event: ServerEvent) => events.push(event) };
+    const input = { taskId: "task-1", runId: "run-1", scheduleKind: "cron", resultText: "saved result", requireRunningPair: true };
+    expect(await reportBackTaskCompletion(deps, input)).toBe(true);
+    expect(await reportBackTaskCompletion(deps, { ...input, resultText: "different result" })).toBe(false);
+    expect(setCalls).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  test("stale recurring resume does not rearm or announce completion after Pause, Stop, or a newer Run", async () => {
+    for (const change of ["pause", "stop", "new_run"] as const) {
+      const { db, setCalls } = fakeDb(baseTask({ scheduleKind: "cron", status: change === "pause" ? "paused" : change === "stop" ? "cancelled" : "running" }),
+        "running", null, null, true, change === "new_run" ? "run-2" : undefined);
+      const events: ServerEvent[] = [];
+      expect(await reportBackTaskCompletion({ db, emit: event => events.push(event) }, {
+        taskId: "task-1", runId: "run-1", scheduleKind: "cron", resultText: "stale result", requireRunningPair: true,
+      })).toBe(false);
+      expect(setCalls).toEqual([]);
+      expect(events).toEqual([]);
+    }
   });
 
   test("identical silent same-terminal retry does not duplicate the terminal event", async () => {

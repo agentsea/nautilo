@@ -29,7 +29,10 @@ describe("tool catalog registration", () => {
 
   // Built-in tools are counted separately from the active signed Computer Use catalog.
   test("registers all built-in tools including transcription and Connections", () => {
-    expect(catalog.size).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(catalog.size).toBe(114 + activeComputerUseHostToolDefinitions().length);
+    for (const name of ["exec_command", "write_stdin", "local_git", "read_shell_output"]) {
+      expect(catalog.get(name)).toBeDefined();
+    }
   });
 
   test("registers mini_app with static destructive approval", () => {
@@ -100,7 +103,7 @@ describe("tool catalog registration", () => {
     ).not.toThrow();
   });
 
-  test("M203 officecli is omitted when no usable OfficeCLI binary is available", () => {
+  test("officecli is omitted when no usable binary is available", () => {
     const gatedCatalog = new ToolCatalog();
     registerAllTools(gatedCatalog, { officeCliAvailable: () => false, publicBrowserUseAvailable: () => true });
     expect(gatedCatalog.get("officecli")).toBeUndefined();
@@ -159,12 +162,12 @@ describe("tool catalog registration", () => {
     }
   });
 
-  test("admin tier tools include run_shell, update_config, verify_identity (with relay)", () => {
+  test("admin tools retain configuration and identity but hide the legacy shell even with relay access", () => {
     const snap = catalog.getFiltered(undefined, {
       canReadWorkspace: true, canWriteWorkspace: true, canRunShell: true,
     });
     const names = snap.entries.map((e) => e.name);
-    expect(names).toContain("run_shell");
+    expect(names).not.toContain("run_shell");
     expect(names).toContain("update_config");
     expect(names).toContain("verify_identity");
   });
@@ -176,7 +179,7 @@ describe("tool catalog registration", () => {
     expect(names).toContain("find_explainer");
     expect(names).toContain("play_explainer");
     expect(names).toContain("search_memory");
-    // run_shell is relay-gated separately — see admin snapshot test with relay tokens
+    // The legacy shell stays hidden regardless of relay availability.
     expect(names).not.toContain("run_shell");
     expect(names).not.toContain("desktop_click");
   });
@@ -203,11 +206,11 @@ describe("tool catalog registration", () => {
     expect(names).not.toContain("search_memory");
   });
 
-  test("filesystem and shell tools include unified `file` + run_shell", () => {
+  test("filesystem tools stay available while the legacy shell is hidden", () => {
     const snap = catalog.getFiltered(undefined, { canRunShell: true });
     const names = snap.entries.map((e) => e.name);
     expect(names).toContain("file");
-    expect(names).toContain("run_shell");
+    expect(names).not.toContain("run_shell");
     expect(names).toContain("apply_patch");
   });
 
@@ -261,10 +264,10 @@ describe("tool catalog registration", () => {
   test("stats reflect correct distribution", () => {
     const stats = catalog.getStats();
     // Built-in tools are counted separately from the active signed Computer Use catalog.
-    expect(stats.total).toBe(108 + activeComputerUseHostToolDefinitions().length);
-    expect(stats.bySource.builtin).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.total).toBe(114 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.bySource.builtin).toBe(114 + activeComputerUseHostToolDefinitions().length);
     expect(stats.bySource.mcp).toBe(0);
-    expect(stats.enabled).toBe(108 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.enabled).toBe(114 + activeComputerUseHostToolDefinitions().length);
     expect(stats.byTier.admin).toBeGreaterThan(0);
     expect(stats.byTier.standard).toBeGreaterThan(0);
     expect(stats.byTier.high).toBeGreaterThan(0);

@@ -36,6 +36,9 @@ export const DURABLE_SLEEP_WORK_INTENT_POLICY_V1 = Object.freeze({
   }),
 } as const);
 
+/** Monotonic repair-code revision; reassessment never changes content generations. */
+export const DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION = 2;
+
 /** One centralized durable cooldown policy; quarantined work is never abandoned. */
 export const DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1 = Object.freeze({
   version: "durable-sleep-quarantine-recovery-v1",
@@ -111,6 +114,8 @@ export interface DurableSleepClaim {
   }>;
   /** Ephemeral content-free fact for per-run recovery diagnostics. */
   readonly recoveredFromQuarantine?: boolean;
+  /** Rebuilds a projection for existing content; never invokes the Organizer. */
+  readonly projectionRefreshOnly?: boolean;
 }
 
 export type DurableSleepChangeReason =
@@ -245,7 +250,16 @@ export class DurableSleepProviderOutcomeUnknownError extends Error {
   }
 }
 
+export type DurableSleepSettlementResult =
+  | { readonly status: "active" }
+  | { readonly status: "settled"; readonly reason: "record_lifecycle_obsolete" | "already_covered" | "publication_reconciled"; readonly timing?: Extract<DurableSleepLeaseResult, {status: "accepted"}>["timing"] }
+  | { readonly status: "superseded" | "lease_lost" };
+
+export type DurableSleepWaitingReason = "authority" | "search_projection" | "provider" | "capacity";
+
 export interface DurableSleepWorkPort {
+  /** Atomically settles proven obsolete/satisfied work using canonical metadata and the exact lease. */
+  settleCurrentState?(input: { readonly claim: DurableSleepClaim }): Promise<DurableSleepSettlementResult>;
   /** Claims at most one due generation and owns all lease/attempt policy. */
   claimNext(
     signal?: AbortSignal,
@@ -261,14 +275,17 @@ export interface DurableSleepWorkPort {
     readonly claim: DurableSleepClaim;
     /** Absolute epoch milliseconds for a readiness wait; omission is due now. */
     readonly nextAttemptAt?: number;
+    readonly waitingReason?: DurableSleepWaitingReason;
   }): Promise<DurableSleepLeaseResult>;
   complete(input: {
     readonly claim: DurableSleepClaim;
     readonly ordinaryFallbackReason?: DurableSleepOrdinaryFallbackReason;
+    readonly completionOutcome?: "completed" | "provider_outcome_unknown" | "dependency_repaired" | "dependency_retired";
   }): Promise<DurableSleepLeaseResult>;
   defer(input: {
     readonly claim: DurableSleepClaim;
     readonly failureCode: DurableSleepFailureCode;
+    readonly failureDetail?: DurableSleepFailureDetail;
   }): Promise<DurableSleepDeferralResult>;
   /** Coalesced admission is adapter-owned and monotonically generation-aware. */
   enqueue(input: {
@@ -325,6 +342,7 @@ export interface DurableSleepOrganizerView {
 
 export type DurableSleepTerminalOutcome =
   | "record_lifecycle_obsolete"
+  | "publication_reconciled"
   | "already_covered"
   | "unsupported_authority_shape"
   | "no_effective_audience"
@@ -554,6 +572,16 @@ export interface DurableSleepRunBudget {
   readonly maxWorkItems: number;
 }
 
+/**
+ * Process-local wall-clock fence supplied by the owning worker. The settlement
+ * reserve is unavailable to model calls so already-produced answers retain time
+ * for durable publication or cooperative lease release.
+ */
+export interface DurableSleepExecutionWindow {
+  readonly remainingMilliseconds: () => number;
+  readonly settlementReserveMilliseconds: number;
+}
+
 export interface DurableSleepRunResult {
   readonly usage: HierarchyBudgetUsage;
   /** Scheduler delay after a transient provider-lane failure or cooldown. */
@@ -653,6 +681,76 @@ function assertRunBudget(budget: DurableSleepRunBudget): void {
     if (!Number.isSafeInteger(value) || value < 0) {
       throw new RangeError(`durable Sleep ${name} must be a non-negative safe integer`);
     }
+  }
+}
+
+class DurableSleepExecutionWindowExhaustedError extends Error {
+  constructor() {
+    super("durable Sleep execution window is exhausted");
+    this.name = "DurableSleepExecutionWindowExhaustedError";
+  }
+}
+
+function assertExecutionWindow(window: DurableSleepExecutionWindow | undefined): void {
+  if (window === undefined) return;
+  if (
+    !Number.isSafeInteger(window.settlementReserveMilliseconds)
+    || window.settlementReserveMilliseconds < 0
+  ) {
+    throw new RangeError("durable Sleep settlement reserve must be a non-negative safe integer");
+  }
+  executionWindowRemaining(window);
+}
+
+function executionWindowRemaining(window: DurableSleepExecutionWindow): number {
+  const remaining = window.remainingMilliseconds();
+  if (!Number.isFinite(remaining) || remaining < 0) {
+    throw new RangeError("durable Sleep remaining execution time must be finite and non-negative");
+  }
+  return remaining;
+}
+
+function modelWindowRemaining(window: DurableSleepExecutionWindow | undefined): number {
+  return window === undefined
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, executionWindowRemaining(window) - window.settlementReserveMilliseconds);
+}
+
+async function runWithinModelWindow<Value>(input: Readonly<{
+  window?: DurableSleepExecutionWindow;
+  parentSignal?: AbortSignal;
+  invoke(signal?: AbortSignal): Promise<Value>;
+}>): Promise<Value> {
+  input.parentSignal?.throwIfAborted();
+  if (input.window === undefined) return input.invoke(input.parentSignal);
+  const remaining = modelWindowRemaining(input.window);
+  if (remaining <= 0) throw new DurableSleepExecutionWindowExhaustedError();
+
+  const controller = new AbortController();
+  let rejectInterruption!: (reason: unknown) => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectInterruption = reject;
+  });
+  const abortFromParent = () => {
+    const reason = new Error("durable Sleep model invocation aborted");
+    rejectInterruption(reason);
+    controller.abort(reason);
+  };
+  input.parentSignal?.addEventListener("abort", abortFromParent, { once: true });
+  const timer = setTimeout(() => {
+    const error = new DurableSleepExecutionWindowExhaustedError();
+    rejectInterruption(error);
+    controller.abort(error);
+  }, remaining);
+  timer.unref?.();
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => input.invoke(controller.signal)),
+      interrupted,
+    ]);
+  } finally {
+    clearTimeout(timer);
+    input.parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
@@ -874,10 +972,12 @@ export async function runDurableHierarchySleep(input: {
   readonly budget: DurableSleepRunBudget;
   readonly stageAdmission?: DurableSleepStageAdmission;
   readonly signal?: AbortSignal;
+  readonly executionWindow?: DurableSleepExecutionWindow;
   /** Deterministic test seam; production uses the process clock. */
   readonly now?: () => number;
 }): Promise<DurableSleepRunResult> {
   assertRunBudget(input.budget);
+  assertExecutionWindow(input.executionWindow);
   const admittedMaximumStage = input.stageAdmission?.maximumStage
     ?? DURABLE_SLEEP_ALL_STAGE_ADMISSION.maximumStage;
   requireDurableSleepStage(admittedMaximumStage, "stage admission maximum");
@@ -1005,6 +1105,7 @@ export async function runDurableHierarchySleep(input: {
   let superseded = 0;
   let leaseLost = 0;
   let pausedForBudget = false;
+  let maximumPreparationElapsedMs = 0;
   let modelRetryAfterMilliseconds: number | undefined;
   const operations = operationCounts();
   const failures: Partial<Record<DurableSleepFailureCode, number>> = {};
@@ -1039,7 +1140,7 @@ export async function runDurableHierarchySleep(input: {
       failureDetails[failureDetail] = (failureDetails[failureDetail] ?? 0) + 1;
     }
     try {
-      const result = await input.work.defer({ claim, failureCode });
+      const result = await input.work.defer({ claim, failureCode, ...(failureDetail === undefined ? {} : { failureDetail }) });
       switch (result.status) {
         case "deferred": deferred += 1; break;
         case "quarantined": quarantined += 1; break;
@@ -1064,13 +1165,16 @@ export async function runDurableHierarchySleep(input: {
     outcome: DurableSleepOrganizationOutcome;
   };
   const pendingOrganizer: PendingOrganizerItem[] = [];
+  const executionWindowExhausted = () => modelWindowRemaining(input.executionWindow) <= 0;
   const pauseClaim = async (
     claim: DurableSleepClaim,
     nextAttemptAt?: number,
+    waitingReason: DurableSleepWaitingReason = "capacity",
   ): Promise<void> => {
     const result = await input.work.pause({
       claim,
       ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }),
+      waitingReason,
     });
     if (result.status === "accepted") paused += 1;
     else if (result.status === "superseded") superseded += 1;
@@ -1083,7 +1187,7 @@ export async function runDurableHierarchySleep(input: {
   ): Promise<boolean> => {
     operations.no_change += 1;
     terminalOutcomes[reason] = (terminalOutcomes[reason] ?? 0) + 1;
-    const completion = await input.work.complete({ claim });
+    const completion = await input.work.complete({ claim, ...(reason === "provider_outcome_unknown" ? { completionOutcome: reason } : {}) });
     if (!acceptLeaseResult(completion)) return false;
     completed += 1;
     recordCompletedItem(claim, completion, mode);
@@ -1139,41 +1243,50 @@ export async function runDurableHierarchySleep(input: {
       signal?: AbortSignal,
     ): Promise<string> => {
       for (const item of invocationItems) await item.attempt?.assertCurrent();
-      diagnostics.modelAttempts += 1;
-      usage = addUsage(usage, {
-        modelCalls: 1,
-        visitedRecords: 0,
-        createdRecords: 0,
-        traversalWork: 0,
-      });
       const startedAt = now();
-      for (const item of invocationItems) {
-        if (item.accumulator === undefined) continue;
-        item.accumulator.promptConstructionElapsedMs += Math.max(
-          0,
-          Math.round(startedAt - organizerModelFinishedAt),
-        );
-        item.accumulator.promptInputCount =
-          1 + item.view.candidates.length + item.view.existingParents.length;
-        item.accumulator.promptCodePoints = Array.from(prompt).length;
-        item.accumulator.modelAttempts += 1;
-      }
       try {
-        return usesBatchPort
-          ? await input.semantic.invokeOrganizerBatch!(
-              invocationItems.map((item) => item.claim),
-              prompt,
-              signal,
-            )
-          : await input.semantic.invokeOrganizer(
-              invocationItems[0]!.claim,
-              prompt,
-              signal,
-            );
+        return await runWithinModelWindow({
+          ...(input.executionWindow === undefined ? {} : { window: input.executionWindow }),
+          ...(signal === undefined ? {} : { parentSignal: signal }),
+          invoke: (modelSignal) => {
+            modelSignal?.throwIfAborted();
+            diagnostics.modelAttempts += 1;
+            usage = addUsage(usage, {
+              modelCalls: 1,
+              visitedRecords: 0,
+              createdRecords: 0,
+              traversalWork: 0,
+            });
+            for (const item of invocationItems) {
+              if (item.accumulator === undefined) continue;
+              item.accumulator.promptConstructionElapsedMs += Math.max(
+                0,
+                Math.round(startedAt - organizerModelFinishedAt),
+              );
+              item.accumulator.promptInputCount =
+                1 + item.view.candidates.length + item.view.existingParents.length;
+              item.accumulator.promptCodePoints = Array.from(prompt).length;
+              item.accumulator.modelAttempts += 1;
+            }
+            return usesBatchPort
+              ? input.semantic.invokeOrganizerBatch!(
+                invocationItems.map((item) => item.claim),
+                prompt,
+                modelSignal,
+              )
+              : input.semantic.invokeOrganizer(
+                invocationItems[0]!.claim,
+                prompt,
+                modelSignal,
+              );
+          },
+        });
       } catch (error) {
-        diagnostics.modelFailures += 1;
-        for (const item of invocationItems) {
-          if (item.accumulator !== undefined) item.accumulator.modelFailures += 1;
+        if (!(error instanceof DurableSleepExecutionWindowExhaustedError)) {
+          diagnostics.modelFailures += 1;
+          for (const item of invocationItems) {
+            if (item.accumulator !== undefined) item.accumulator.modelFailures += 1;
+          }
         }
         throw error;
       } finally {
@@ -1219,6 +1332,14 @@ export async function runDurableHierarchySleep(input: {
         }
         return;
       }
+      if (error instanceof DurableSleepExecutionWindowExhaustedError) {
+        pausedForBudget = true;
+        for (const item of batch) {
+          item.outcome = "unavailable";
+          await pauseClaim(item.claim);
+        }
+        return;
+      }
       if (error instanceof DurableSleepOrganizationUnavailableError) {
         for (const item of batch) await deferClaim(item.claim, "authority_unavailable");
         return;
@@ -1228,7 +1349,7 @@ export async function runDurableHierarchySleep(input: {
           modelRetryAfterMilliseconds ?? 0,
           error.retryAfterMilliseconds,
         );
-        for (const item of batch) await pauseClaim(item.claim);
+        for (const item of batch) await pauseClaim(item.claim, now() + error.retryAfterMilliseconds, "provider");
         return;
       }
       if (input.signal?.aborted) {
@@ -1281,9 +1402,13 @@ export async function runDurableHierarchySleep(input: {
         } else if (error instanceof DurableSleepModelLaneUnavailableError) {
           item.outcome = "unavailable";
           modelRetryAfterMilliseconds = Math.max(modelRetryAfterMilliseconds ?? 0, error.retryAfterMilliseconds);
-          await pauseClaim(item.claim);
+          await pauseClaim(item.claim, now() + error.retryAfterMilliseconds, "provider");
         } else if (error instanceof DurableSleepProviderOutcomeUnknownError) {
           await completeTerminalClaim(item.claim, "provider_outcome_unknown");
+        } else if (error instanceof DurableSleepExecutionWindowExhaustedError) {
+          item.outcome = "unavailable";
+          pausedForBudget = true;
+          await pauseClaim(item.claim);
         } else {
           await deferClaim(item.claim, "unexpected_failure", "unexpected_model_invocation_failure");
         }
@@ -1433,6 +1558,18 @@ export async function runDurableHierarchySleep(input: {
   while (claimed < input.budget.maxWorkItems) {
     if (input.signal?.aborted) break;
     if (
+      maximumPreparationElapsedMs > 0
+      && modelWindowRemaining(input.executionWindow) <= maximumPreparationElapsedMs
+    ) {
+      if (pendingOrganizer.length > 0) await flushOrganizerBatch();
+      pausedForBudget = true;
+      break;
+    }
+    if (executionWindowExhausted()) {
+      pausedForBudget = true;
+      break;
+    }
+    if (
       admittedMaximumStage === "organization"
       && modelRetryAfterMilliseconds === undefined
       && input.semantic.modelLaneReadiness !== undefined
@@ -1509,6 +1646,16 @@ export async function runDurableHierarchySleep(input: {
     let unexpectedFailureDetail: DurableSleepFailureDetail =
       "unexpected_work_mutation_failure";
     try {
+      const settlement = await input.work.settleCurrentState?.({ claim });
+      if (settlement !== undefined && settlement.status !== "active") {
+        if (settlement.status === "settled") {
+          completed += 1;
+          operations.no_change += 1;
+          terminalOutcomes[settlement.reason] = (terminalOutcomes[settlement.reason] ?? 0) + 1;
+          recordCompletedItem(claim, { status: "accepted", ...(settlement.timing === undefined ? {} : { timing: settlement.timing }) }, "same_room");
+        } else acceptLeaseResult(settlement);
+        continue;
+      }
       if (
         claim.changeReason === "parent_conflict"
         && claimMaximumStage !== "organization"
@@ -1557,20 +1704,25 @@ export async function runDurableHierarchySleep(input: {
         const startedAt = now();
         let authority: DurableSleepReadinessResult;
         try {
-          authority = await input.semantic.ensureAuthority(claim, input.signal);
+          // Dependency repair must establish fresh authority from surviving evidence.
+          // Its predecessor projection can be the broken state being repaired.
+          authority = claim.changeReason === "dependency_lost"
+            ? { status: "ready" }
+            : await input.semantic.ensureAuthority(claim, input.signal);
         } finally {
           const elapsed = Math.max(0, Math.round(now() - startedAt));
           diagnostics.authorityElapsedMs += elapsed;
           if (itemAccumulator !== undefined) itemAccumulator.authorityElapsedMs = elapsed;
         }
         if (authority.status === "unavailable") {
-          await deferClaim(claim, authority.failureCode);
+          await deferClaim(claim, authority.failureCode, authority.failureDetail);
           continue;
         }
         if (authority.status === "waiting") {
           await pauseClaim(
             claim,
             requireReadinessWaitingRetryAt(authority, now()),
+            "authority",
           );
           continue;
         }
@@ -1598,7 +1750,9 @@ export async function runDurableHierarchySleep(input: {
         const startedAt = now();
         let projection: DurableSleepReadinessResult;
         try {
-          projection = await input.semantic.ensureSearchProjection(claim, input.signal);
+          projection = claim.changeReason === "dependency_lost"
+            ? { status: "ready" }
+            : await input.semantic.ensureSearchProjection(claim, input.signal);
         } finally {
           const elapsed = Math.max(
             0,
@@ -1610,13 +1764,14 @@ export async function runDurableHierarchySleep(input: {
           }
         }
         if (projection.status === "unavailable") {
-          await deferClaim(claim, projection.failureCode);
+          await deferClaim(claim, projection.failureCode, projection.failureDetail);
           continue;
         }
         if (projection.status === "waiting") {
           await pauseClaim(
             claim,
             requireReadinessWaitingRetryAt(projection, now()),
+            "search_projection",
           );
           continue;
         }
@@ -1633,7 +1788,10 @@ export async function runDurableHierarchySleep(input: {
           && checkpoint.status === "accepted"
           && checkpoint.timing !== undefined
         ) itemAccumulator.claimStoreElapsedMs += checkpoint.timing.mutationElapsedMs;
-        if (acceptLeaseResult(checkpoint)) checkpointed += 1;
+        if (acceptLeaseResult(checkpoint)) {
+          if (claim.projectionRefreshOnly === true) completed += 1;
+          else checkpointed += 1;
+        }
         continue;
       }
 
@@ -1650,13 +1808,17 @@ export async function runDurableHierarchySleep(input: {
         await attempt?.assertCurrent();
         unexpectedFailureDetail = "unexpected_dependency_loss_stage_failure";
         const dependencyBudget = remainingBudget(input.budget.hierarchy, usage);
-        const resolution = await input.semantic.resolveDependencyLoss({
+        const resolution = await runWithinModelWindow({
+          ...(input.executionWindow === undefined ? {} : { window: input.executionWindow }),
+          ...(input.signal === undefined ? {} : { parentSignal: input.signal }),
+          invoke: signal => input.semantic.resolveDependencyLoss({
           claim,
           idempotencyKey:
             `sleep-dependency-loss:${claim.logicalObjectRef}:${claim.generation}`,
           budget: dependencyBudget,
           ...(attempt ? { publication: attempt } : {}),
-          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          ...(signal === undefined ? {} : { signal }),
+          }),
         });
         if (resolution.status === "unavailable") {
           attemptOutcome = "unavailable";
@@ -1668,10 +1830,25 @@ export async function runDurableHierarchySleep(input: {
           await pauseClaim(
             claim,
             requireReadinessWaitingRetryAt(resolution, now()),
+            "authority",
           );
           continue;
         }
         if (resolution.status === "not_applicable") {
+          // The repair route did not consume stale projections as prerequisites.
+          // Authority must be current. The projection maintenance scan admits a
+          // separate exact search-stage claim when its current projection is missing.
+          const readiness = await input.semantic.ensureAuthority(claim, input.signal);
+          if (readiness.status === "waiting") {
+            attemptOutcome = "unavailable";
+            await pauseClaim(claim, requireReadinessWaitingRetryAt(readiness, now()), "authority");
+            continue;
+          }
+          if (readiness.status === "unavailable") {
+            attemptOutcome = "unavailable";
+            await deferClaim(claim, readiness.failureCode, readiness.failureDetail);
+            continue;
+          }
           operations.no_change += 1;
           unexpectedFailureDetail = "unexpected_work_mutation_failure";
           await attempt?.assertCurrent();
@@ -1692,7 +1869,8 @@ export async function runDurableHierarchySleep(input: {
           : "dissolve_parent";
         operations[operation] += 1;
         unexpectedFailureDetail = "unexpected_work_mutation_failure";
-        const completion = await input.work.complete({ claim });
+        const completion = await input.work.complete({ claim,
+          completionOutcome: resolution.outcome === "partial_replacement" ? "dependency_repaired" : "dependency_retired" });
         if (!acceptLeaseResult(completion)) continue;
         completed += 1;
         recordCompletedItem(claim, completion, "same_room");
@@ -1708,19 +1886,26 @@ export async function runDurableHierarchySleep(input: {
         break;
       }
 
-      attempt = await input.semantic.openOrganizationAttempt?.(claim, input.signal);
-      await attempt?.assertCurrent();
       unexpectedFailureDetail = "unexpected_candidate_stage_failure";
-      const candidateStartedAt = now();
+      const preparationStartedAt = now();
       let loaded: DurableSleepOrganizerViewResult;
       try {
+        attempt = await input.semantic.openOrganizationAttempt?.(claim, input.signal);
+        await attempt?.assertCurrent();
+        if (executionWindowExhausted()) {
+          attemptOutcome = "unavailable";
+          await pauseClaim(claim);
+          pausedForBudget = true;
+          break;
+        }
         loaded = await input.semantic.loadOrganizerView(claim, input.signal);
       } finally {
         const elapsed = Math.max(
           0,
-          Math.round(now() - candidateStartedAt),
+          Math.round(now() - preparationStartedAt),
         );
         diagnostics.candidateElapsedMs += elapsed;
+        maximumPreparationElapsedMs = Math.max(maximumPreparationElapsedMs, elapsed);
         if (itemAccumulator !== undefined) {
           itemAccumulator.sameRoomCandidateElapsedMs = elapsed;
         }
@@ -1735,6 +1920,7 @@ export async function runDurableHierarchySleep(input: {
         await pauseClaim(
           claim,
           requireReadinessWaitingRetryAt(loaded, now()),
+          "authority",
         );
         continue;
       }
@@ -1834,6 +2020,12 @@ export async function runDurableHierarchySleep(input: {
         attemptOutcome = "failed";
         continue;
       }
+      if (error instanceof DurableSleepExecutionWindowExhaustedError) {
+        attemptOutcome = "unavailable";
+        pausedForBudget = true;
+        await pauseClaim(claim);
+        break;
+      }
       if (input.signal?.aborted) break;
       if (error instanceof DurableSleepOrganizationUnavailableError) {
         attemptOutcome = "unavailable";
@@ -1846,10 +2038,7 @@ export async function runDurableHierarchySleep(input: {
           modelRetryAfterMilliseconds ?? 0,
           error.retryAfterMilliseconds,
         );
-        const result = await input.work.pause({ claim });
-        if (result.status === "accepted") paused += 1;
-        else if (result.status === "superseded") superseded += 1;
-        else leaseLost += 1;
+        await pauseClaim(claim, now() + error.retryAfterMilliseconds, "provider");
         continue;
       }
       await deferClaim(claim, "unexpected_failure", unexpectedFailureDetail);

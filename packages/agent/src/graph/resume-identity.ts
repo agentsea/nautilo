@@ -17,6 +17,8 @@ import {
 import { log, warn, runWithTurn } from "@nautilo/logger";
 import { emitChainedInterrupts, type StreamEventProcessor } from "./resume-approval";
 import { readTurnIdFromCheckpoint } from "./turn-id";
+import { streamForegroundGraph } from "./foreground-context-refresh";
+import { resolveGraphExecutionPolicy } from "./execution-policy";
 
 /**
  * Resume an interrupted graph after successful identity verification.
@@ -108,6 +110,7 @@ export async function resumeGraphWithIdentity(
   const resumeConfig = {
     configurable: { thread_id: threadId },
     version: "v2" as const,
+    recursionLimit: resolveGraphExecutionPolicy().recursionLimit,
     ...(signal ? { signal } : {}),
   };
 
@@ -123,7 +126,8 @@ export async function resumeGraphWithIdentity(
       if (memoryResume !== undefined) {
         await memoryResume.restoreIdentityCheckpoint(checkpoint);
       }
-      for await (const ev of graph.streamEvents(
+      for await (const ev of streamForegroundGraph(
+        graph,
         new Command({
           resume: { verified: true, memoryAccessEnvelope },
           ...(enrollmentToolCallIds.length === 0 ? {} : {
@@ -131,6 +135,12 @@ export async function resumeGraphWithIdentity(
           }),
         }),
         resumeConfig,
+        {
+          ...(processEvent?.rebuildForegroundContext === undefined
+            ? {}
+            : { rebuildForegroundContext: processEvent.rebuildForegroundContext }),
+          ...(signal === undefined ? {} : { signal }),
+        },
       )) {
         if (processEvent) {
           await Promise.resolve(processEvent.process(ev));

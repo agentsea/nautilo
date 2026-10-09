@@ -1,5 +1,32 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { TaskFundingBinding } from "@nautilo/types";
+import type { CapabilityFundingSession } from "./capability-funding";
 import type { PersonalProviderCredential } from "../providers/types";
 import type { UsageFundingProvenance } from "../usage/usage-context";
+
+/**
+ * The funding owner proved the original personal Surplus admission is still
+ * current, but no separate caller-owned credential exists for the selected
+ * model's direct provider. No direct-provider request was started.
+ */
+export class PersonalDirectFundingUnavailableError extends Error {
+  readonly code = "personal_credential_missing" as const;
+
+  constructor() {
+    super("The admitted personal funding source has no direct-provider credential for this model.");
+    this.name = "PersonalDirectFundingUnavailableError";
+  }
+}
+
+/** A later configured model has no route funded by the pinned personal payer. */
+export class PersonalModelFundingUnavailableError extends Error {
+  readonly code = "personal_credential_missing" as const;
+
+  constructor() {
+    super("The configured fallback model is unavailable with the admitted personal funding source.");
+    this.name = "PersonalModelFundingUnavailableError";
+  }
+}
 
 /**
  * Secret-bearing inputs for one admitted foreground provider attempt.
@@ -16,8 +43,18 @@ export interface ForegroundChatFundingAttempt {
  * Implementations pin the initially admitted funding class and re-evaluate
  * live policy and credential revision before later provider attempts.
  */
+export interface ForegroundFundingSnapshot {
+  readonly modelId: string;
+  readonly binding: TaskFundingBinding;
+}
+
 export interface ForegroundChatFundingSession {
+  readonly admission?: ForegroundFundingSnapshot;
   readonly kind: "personal" | "server";
+  /** Server-admitted operation family, never accepted from serialized input. */
+  readonly workload?: "research" | "decision";
+  /** Independently admitted child research/decision operations. Never serialized. */
+  readonly capabilityFunding?: CapabilityFundingSession;
   /**
    * Trusted foreground-only admission for the bounded native Task controls.
    * Background workers and sessions whose signed model cannot call functions
@@ -39,6 +76,16 @@ export interface ForegroundChatFundingSession {
   runAttempt<T>(
     modelId: string,
     callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+    transport?: "direct" | "surplus",
   ): Promise<T>;
-  recheckAttempt(modelId: string): Promise<void>;
+  recheckAttempt(modelId: string, transport?: "direct" | "surplus"): Promise<void>;
+}
+
+
+const resumeFunding = new AsyncLocalStorage<ForegroundChatFundingSession>();
+export function runWithForegroundFundingSession<T>(session: ForegroundChatFundingSession | null, run: () => T): T {
+  return session ? resumeFunding.run(session, run) : resumeFunding.exit(run);
+}
+export function getForegroundFundingSession(): ForegroundChatFundingSession | undefined {
+  return resumeFunding.getStore();
 }

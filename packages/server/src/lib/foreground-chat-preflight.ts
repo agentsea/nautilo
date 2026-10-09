@@ -23,7 +23,7 @@ export const DEFAULT_FOREGROUND_CHAT_PREFLIGHT_DEPS = Object.freeze({
 
 /** Project the executor's selected model before auxiliary work can spend.
  * This is not a funded session; dispatch still rechecks live authority. */
-export async function resolveForegroundChatPreflightFunding(
+export async function resolveForegroundChatPreflightModelId(
   input: Readonly<{
     humanUserId: string;
     roomId: string;
@@ -37,9 +37,17 @@ export async function resolveForegroundChatPreflightFunding(
   const plan = foregroundModelControlPlanFromSnapshot(snapshot, () =>
     input.turnModelId || profile?.defaultModel || deps.defaultForegroundModelId(),
   );
+  return plan.initialModelId;
+}
+
+export async function resolveForegroundChatPreflightFunding(
+  input: Readonly<{ humanUserId: string; roomId: string; agentId: string; turnModelId: string | null }>,
+  deps: ForegroundChatPreflightDeps = DEFAULT_FOREGROUND_CHAT_PREFLIGHT_DEPS,
+) {
+  const modelId = await resolveForegroundChatPreflightModelId(input, deps);
   return deps.resolveFunding({
     humanUserId: input.humanUserId,
-    modelId: plan.initialModelId,
+    modelId,
     workload: "foreground_text_chat",
   });
 }

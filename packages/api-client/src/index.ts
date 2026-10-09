@@ -43,6 +43,19 @@ export type {
   DeleteProviderCredentialResponse,
 } from "./client";
 export type {
+  PersonalCostsRangeKey,
+  PersonalCostsSummary,
+  PersonalCapabilityFundingPreference,
+  PersonalCapabilityFundingSource,
+  PersonalCapabilityModelOption,
+  PersonalCapabilityModelReadiness,
+  PersonalCapabilityPreferenceOverrides,
+  PersonalCapabilityPreferenceProjection,
+  PersonalCapabilityPreferencesResponse,
+  PersonalCapabilityRole,
+  ReplacePersonalCapabilityPreferencesRequest,
+} from "@nautilo/types";
+export type {
   EventFeedErrorCode,
   EventFeedListOptions,
   EventFeedMarkAllReadResult,

@@ -1,3 +1,4 @@
+import { gitHubReviewFromPendingApproval, parseGitHubPublishApproval } from "@nautilo/types";
 import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
@@ -58,8 +59,7 @@ import {
   type ToolLifecycleCandidates,
   type ToolTerminalJob,
 } from "./tool-lifecycle-reconciliation";
-import { preserveComputerUseResultForCard } from "../components/tool-card/renderers/computer-use";
-import { preserveConnectedAppResultForCard } from "../components/tool-card/renderers/connected-app-receipt";
+import { projectToolResultForCard } from "./local-execution-result-projection";
 import { VoicePlayer } from "./voice-player";
 import { resolveVoiceOwnership } from "./voice-ownership";
 import { apiClient, WS_URL } from "../lib/api";
@@ -112,6 +112,7 @@ import {
 } from "./composer-focused-resources-ref";
 import {
   desktopAPI,
+  getLocalExecutionAPI,
   initiatingClientSurfaceForWorkbench,
   computeInitialLastOpenAtSeed,
   getShellStateOnBoot,
@@ -120,6 +121,7 @@ import {
   type DesktopForegroundShadowAPI,
   type DesktopReadyToWorkAPI,
 } from "../lib/desktop";
+import { clearLocalExecutionHistoryOverlays, publishLocalExecutionHistoryOverlay } from "../lib/local-execution-observation";
 import { roomMessageSendFailureReason } from "../lib/room-message-send-failure";
 import { createWorkbenchDataOperationOwner } from "../lib/encryption-data-operation-policy";
 import { createRoomMessageOperations, isConfidentialRoomEvent } from "./room-message-operations";
@@ -2153,6 +2155,7 @@ export function NautiloRuntimeProvider({
       dataOperationOwner: createWorkbenchDataOperationOwner(), onProtectedRoomAccessState: observeProtectedRoomAccess});
   }, [auth.viewer.isVerified, auth.viewer.sessionUserId, auth.viewer.sessionActorId,
     desktopForegroundShadow, desktopForegroundShadowDeviceId, observeProtectedRoomAccess]);
+  const localExecutionHistoryScopeRef = useRef(0);
   const roomHistoryShadowReadAdapter = useMemo<
     RoomHistoryShadowReadAdapter | undefined
   >(() => {
@@ -2194,6 +2197,10 @@ export function NautiloRuntimeProvider({
     }
     return createRoomHistoryDataAdapter({
       owner: createWorkbenchDataOperationOwner(),
+      captureHistoryScope: (roomId) => {
+        const generation = localExecutionHistoryScopeRef.current;
+        return () => generation === localExecutionHistoryScopeRef.current && roomId === activeRoomIdRef.current;
+      },
       readerDeviceId,
       prioritize: (selection) => {pendingMountedBackfillPriorityRef.current = selection;},
       onAuthorityWaiting: (roomId) => {
@@ -2440,6 +2447,57 @@ export function NautiloRuntimeProvider({
   );
 
   const [messages, setMessages] = useState<ThreadMessageLike[]>([]);
+  const [localExecutionHistoryAdmission, setLocalExecutionHistoryAdmission] = useState(0);
+  const localExecutionHistoryReferences = useMemo(() => {
+    const references = new Map<string, { generation: string; executionId: string }>();
+    for (const message of messages) {
+      if (typeof message.content === "string") continue;
+      for (const part of message.content) {
+        if (part.type !== "tool-call" || (part.toolName !== "exec_command" && part.toolName !== "write_stdin")) continue;
+        try {
+          const value: unknown = typeof part.result === "string" ? JSON.parse(part.result) as unknown : part.result;
+          if (!value || typeof value !== "object" || !("generation" in value) || !("executionId" in value) ||
+            typeof value.generation !== "string" || typeof value.executionId !== "string") continue;
+          references.set(`${value.generation}\0${value.executionId}`, { generation: value.generation, executionId: value.executionId });
+        } catch { /* A malformed result never becomes a history lookup. */ }
+      }
+    }
+    return JSON.stringify([...references.values()]);
+  }, [messages]);
+  useEffect(() => {
+    const api = getLocalExecutionAPI();
+    localExecutionHistoryScopeRef.current += 1;
+    clearLocalExecutionHistoryOverlays(api);
+    const unsubscribe = subscribeCryptoAdmissionAccess(() => {
+      localExecutionHistoryScopeRef.current += 1;
+      clearLocalExecutionHistoryOverlays(api);
+      setLocalExecutionHistoryAdmission(value => value + 1);
+    });
+    let nativeGeneration: string | null | undefined;
+    const unsubscribeNative = api?.onChanged?.(({ generation }) => {
+      if (generation === nativeGeneration) return;
+      nativeGeneration = generation;
+      setLocalExecutionHistoryAdmission(value => value + 1);
+      if (generation !== null && shadowPolicyMode !== "plaintext_only") {
+        setAdmissionResumeGeneration(value => value + 1);
+      }
+    });
+    return () => { localExecutionHistoryScopeRef.current += 1; unsubscribe(); unsubscribeNative?.(); clearLocalExecutionHistoryOverlays(api); };
+  }, [activeRoomId, auth.viewer.sessionUserId, auth.viewer.sessionActorId, shadowPolicyMode]);
+  useEffect(() => {
+    const api = getLocalExecutionAPI();
+    if (!api?.historyForRoom || !activeRoomId || !auth.viewer.isVerified ||
+      shadowPolicyMode !== "plaintext_only" || !isCryptoAdmissionAllowed()) return;
+    const references = JSON.parse(localExecutionHistoryReferences) as { generation: string; executionId: string }[];
+    if (references.length === 0) return;
+    let current = true;
+    const generation = getCryptoAdmissionSnapshot().generation;
+    void api.historyForRoom({ roomId: activeRoomId, references }).then(overlays => {
+      if (!current || !isCryptoAdmissionGenerationCurrent(generation)) return;
+      for (const overlay of overlays) publishLocalExecutionHistoryOverlay(api, overlay);
+    }).catch(() => { /* Preserve unavailable/uncertain execution history. */ });
+    return () => { current = false; };
+  }, [activeRoomId, auth.viewer.isVerified, auth.viewer.sessionUserId, localExecutionHistoryReferences, shadowPolicyMode, localExecutionHistoryAdmission]);
   const [historyCursor, setHistoryCursor] = useState<{ id: string; createdAt: string } | null>(null);
   const retainedHistoryCursorRef = useRef(historyCursor);
   retainedHistoryCursorRef.current = historyCursor;
@@ -2736,7 +2794,7 @@ export function NautiloRuntimeProvider({
     dispatchApprovalLifecycle(action);
   }, []);
   const approvalAskState: ApprovalAskState = useMemo(
-    () => deriveApprovalAskView(approvalLifecycle),
+    () => ({ ...deriveApprovalAskView(approvalLifecycle), github: gitHubReviewFromPendingApproval(approvalLifecycle.pending) }),
     [approvalLifecycle],
   );
   // Refs mirror the pending payload so the stable WS handler and the
@@ -4471,6 +4529,7 @@ export function NautiloRuntimeProvider({
           ) {
             const artifacts = dedupeMessageArtifactOpenRefs(event.artifacts);
             const custom = {
+              ...(event.imageAssistance ? { imageAssistance: event.imageAssistance } : {}),
               ...(event.createdAt ? { sentAt: event.createdAt } : {}),
               ...(typeof event.authorAgentId === "string" && event.authorAgentId.length > 0
                 ? { authorAgentId: event.authorAgentId }
@@ -4699,9 +4758,7 @@ export function NautiloRuntimeProvider({
           // read_file, grep, etc.) can show actual output instead of
           // the legacy "Done (Xms)" placeholder.
           const activityEntry = toolActivityByIdRef.current.get(event.toolCallId);
-          const displayEventResult = preserveComputerUseResultForCard(event.toolName, event.result)
-            ?? preserveConnectedAppResultForCard(event.toolName, event.result)
-            ?? projectToolResultTextForDisplay(event.result);
+          const displayEventResult = projectToolResultForCard(event.toolName, event.result);
           const displayEventError = projectToolResultTextForDisplay(event.error);
           if (event.laneKey) {
             pendingBrowserResearchInterventionsRef.current.delete(`${event.laneKey}\0${event.toolCallId}`);
@@ -4998,6 +5055,17 @@ export function NautiloRuntimeProvider({
             setIsRunning(hasLiveJobForActiveRoom());
             setModelFallbackStatus(null);
           }
+          if (event.status === "failed" && event.errorCode === "image_assistance_failed"
+            && terminalRoomId !== null && terminalRoomId === activeRoomIdRef.current) {
+            if (!messagesRef.current.some((message) => message.id === `image-read-error:${event.jobId}`)) addMessage({
+              id: `image-read-error:${event.jobId}`,
+              role: "system",
+              content: [{ type: "text", text: "Image reading failed. Your images remain in this chat. Try again by reattaching them, or choose a model that supports images." }],
+            });
+            setIsRunning(hasLiveJobForActiveRoom());
+            setModelFallbackStatus(null);
+            break;
+          }
           if (event.status === "failed") {
             // render the friendly translator's one-line
             // sentence as the primary error copy. `event.message` is
@@ -5149,15 +5217,18 @@ export function NautiloRuntimeProvider({
           }
           approvalAskThreadIdRef.current = event.threadId;
           approvalAskLaneKeyRef.current = event.laneKey;
+          const parsedGitHub = parseGitHubPublishApproval(event.github);
+          const github = parsedGitHub?.approvalId === event.approvalId ? parsedGitHub : null;
+          const githubRequired = event.github !== undefined || event.tools.some(tool => tool.name === "local_github");
           const hasMediaGenerationField = event.mediaGeneration !== undefined;
-          const requiresExactReview = event.requiresExplicitReview === true || hasMediaGenerationField;
+          const requiresExactReview = event.requiresExplicitReview === true || hasMediaGenerationField || githubRequired;
           const mediaGeneration = isMediaGenerationApproval(event.mediaGeneration)
             ? event.mediaGeneration
             : null;
-          const canRenderExactReview = !requiresExactReview ||
+          const canRenderExactReview = (!githubRequired || github !== null) && (!requiresExactReview ||
             event.localMcpInstall !== undefined || event.structuredSsh !== undefined ||
-            mediaGeneration !== null;
-          const askPayload: ApprovalAskPayload = {
+            mediaGeneration !== null || github !== null);
+          const askPayload: ApprovalAskPayload & Pick<ApprovalAskState, "github"> = {
             ...(activeRoomIdRef.current ? { roomId: activeRoomIdRef.current } : {}),
             approvalId: event.approvalId,
             threadId: event.threadId,
@@ -5177,7 +5248,7 @@ export function NautiloRuntimeProvider({
                   : ["once", "room", "always", "deny"],
             scopeInfo: event.scopeInfo ?? [],
             localMcpInstall: event.localMcpInstall ?? null,
-            mediaGeneration,
+            mediaGeneration, github,
             structuredSsh: event.structuredSsh ?? null,
             requiresExplicitReview: requiresExactReview,
           };
@@ -7883,7 +7954,7 @@ export function NautiloRuntimeProvider({
         (!approvalAskState.approvalId ||
           (approvalAskState.localMcpInstall === null &&
             approvalAskState.mediaGeneration === null &&
-            approvalAskState.structuredSsh === null) ||
+            approvalAskState.structuredSsh === null && !parseGitHubPublishApproval(approvalAskState.github)) ||
           (verb !== "once" && verb !== "deny"))
       ) {
         dispatchCurrentApprovalLifecycle({
@@ -7912,6 +7983,7 @@ export function NautiloRuntimeProvider({
             clientActionSessionId: currentClientActionSessionIdForResume(),
             authorizationDeviceId: liveShadowMessageClient?.deviceId,
           },
+          parseGitHubPublishApproval(approvalAskState.github)?.digest,
         );
         if (!isCurrentSubmission()) return;
         // Accepted — close the dock. We deliberately do NOT append a
@@ -7943,6 +8015,7 @@ export function NautiloRuntimeProvider({
       approvalAskState.localMcpInstall,
       approvalAskState.mediaGeneration,
       approvalAskState.requiresExplicitReview,
+      approvalAskState.github,
       approvalAskState.structuredSsh,
       dispatchCurrentApprovalLifecycle,
       liveShadowMessageClient?.deviceId,

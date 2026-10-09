@@ -64,7 +64,7 @@ describe("ProviderKeyCoverage", () => {
       rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent),
     ).toEqual([
       "TypeSafeOpenRouterVenice",
-      "VeniceOpenRouterOpenAIAnthropicGoogleFireworksOpenAI-compatible Gateway",
+      "VeniceOpenRouterOpenAIAnthropicGooglexAIFireworksTogether AIOpenAI-compatible Gateway",
       "Surplus Intelligence",
       "VeniceOpenRouterOpenAI",
       "ElevenLabs",
@@ -220,7 +220,7 @@ describe("ProviderKeyCoverage", () => {
     expect(keyApi.getKeySummary).toHaveBeenCalledTimes(1);
   });
 
-  test("does not load or expose coverage without permission, and waits for summary when enabled", async () => {
+  test("does not expose coverage without permission and renders an unknown shell while loading", async () => {
     const pending = new Promise<never>(() => {});
     const disabledApi = {
       getKeySummary: mock(async () => pending),
@@ -243,8 +243,10 @@ describe("ProviderKeyCoverage", () => {
     const loading = render(
       <ProviderCredentialsEditor keyApi={disabledApi} enabled viewerIsVerified />,
     );
-    expect(loading.getByText("Loading…")).toBeTruthy();
-    expect(loading.queryByTestId("provider-key-coverage")).toBeNull();
+    expect(loading.getByText("Loading key status…")).toBeTruthy();
+    expect(loading.getByTestId("provider-key-coverage")).toBeTruthy();
+    expect(loading.getAllByLabelText("OpenAI: Checking coverage…")).toHaveLength(3);
+    expect(loading.queryAllByLabelText("OpenAI: API key configured")).toHaveLength(0);
     expect(disabledApi.getKeySummary).toHaveBeenCalledTimes(1);
   });
 });

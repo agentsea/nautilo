@@ -1,3 +1,6 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
+import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
+import type { HumanTerminalAdmissionPort } from "../tools/terminal/admission";
 import { resolveBrowserDecisionModel } from "../tools/browser/browser-snapshot";
 import { browserDecisionHandoffMessage, browserDecisionPlanError, browserObservationFromResult, interpretBrowserDecisionCall, settleBrowserDecision } from "../graph/browser-decision";
 import { randomUUID } from "node:crypto";
@@ -46,7 +49,7 @@ import type {
   RecallRecordsPort,
   RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
-import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
+import { personalToolCallSupported } from "../runtime/personal-tool-readiness";
 
 export {
   RelayUnavailableError,
@@ -76,7 +79,7 @@ type ApprovedToolCall = NonNullable<NautiloState["approvedToolCalls"]>[number];
 
 export const PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT = JSON.stringify({
   error: "unsupported_workload",
-  message: "Personal funding supports text chat and bounded native Task controls only. No tool was executed.",
+  message: "Personal funding is not available for one or more requested workflows. No tool was executed.",
   recovery: "continue_without_tools",
 });
 
@@ -162,7 +165,13 @@ export function normalizeAdmittedToolCalls(
   }));
 }
 
+type DelegatedLocalExecutionPort = import("../runtime/local-execution-delegation").DelegatedLocalExecutionPort;
+type LocalExecutionHistoryPort = import("../tools/local-execution/history").LocalExecutionHistoryPort;
+
 type ProtectedToolComposition = Readonly<{
+  delegatedLocalExecutionPort?: DelegatedLocalExecutionPort | undefined;
+  localExecutionHistoryPort?: LocalExecutionHistoryPort | undefined;
+  humanTerminalAdmissionPort?: HumanTerminalAdmissionPort | undefined;
   personalFunding?: boolean;
   personalTaskControls?: boolean;
   personalTaskRunnableModelIds?: readonly string[];
@@ -251,8 +260,7 @@ async function executeToolsNode(
   if (
     protectedComposition.personalFunding === true
     && (
-      protectedComposition.personalTaskControls !== true
-      || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+      toolCalls.some((call) => !personalToolCallSupported(call, protectedComposition.personalTaskControls === true))
     )
   ) {
     return {
@@ -404,6 +412,9 @@ async function invokeToolCall(
         };
     },
     {
+      ...(protectedComposition.delegatedLocalExecutionPort === undefined ? {} : { delegatedLocalExecutionPort: protectedComposition.delegatedLocalExecutionPort }),
+      ...(protectedComposition.localExecutionHistoryPort === undefined ? {} : { localExecutionHistoryPort: protectedComposition.localExecutionHistoryPort }),
+      ...(protectedComposition.humanTerminalAdmissionPort === undefined ? {} : { humanTerminalAdmissionPort: protectedComposition.humanTerminalAdmissionPort }),
       ...(protectedComposition.ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess: protectedComposition.ordinaryContentAccess }),
       ...(protectedComposition.recallRecordsPort === undefined
         ? {}
@@ -426,7 +437,7 @@ async function invokeToolCall(
       ...(protectedComposition.fullEncryptionOnly === true
         ? { fullEncryptionOnly: true }
         : {}),
-      ...(protectedComposition.personalTaskControls === true
+      ...(protectedComposition.personalTaskControls === true && !getCapabilityFundingSession()
         ? { personalTaskControls: true }
         : {}),
       ...(protectedComposition.personalTaskRunnableModelIds === undefined
@@ -593,6 +604,10 @@ function settleToolsNode(
     browserDecision,
     requiredHostRelays: remainingHostRelays,
     computerUseInvocationBindings: remainingComputerUseBindings,
+    delegatedLocalExecutionBindings: Object.fromEntries(Object.entries(state.delegatedLocalExecutionBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
+    fullMacInvocationBindings: Object.fromEntries(Object.entries(state.fullMacInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
+    githubInvocationBindings: Object.fromEntries(Object.entries(state.githubInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
+    humanTerminalInvocationBindings: Object.fromEntries(Object.entries(state.humanTerminalInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     ordinaryContentAccessBindings: Object.fromEntries(
       Object.entries(state.ordinaryContentAccessBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id)),
     ),
@@ -629,6 +644,9 @@ export function createToolsNode(input: Readonly<{
   personalTaskRunnableModelIds?: readonly string[];
   personalOnlyTaskModelIds?: readonly string[];
   ordinaryContentAccessForState?: OrdinaryContentAccessForState;
+  delegatedLocalExecutionPortForState?: (state: NautiloState) => DelegatedLocalExecutionPort | undefined;
+  localExecutionHistoryPortForState?: (state: NautiloState) => LocalExecutionHistoryPort | undefined;
+  humanTerminalAdmissionPortForState?: (state: NautiloState) => HumanTerminalAdmissionPort | undefined;
   recallRecordsPortForState?: RecallRecordsPortForState;
   liveShadowToolBoundaryForState?: LiveShadowToolBoundaryForState;
   protectedMemorySearchForState?: (
@@ -646,7 +664,11 @@ export function createToolsNode(input: Readonly<{
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
 }> = {}): typeof toolsNode {
   return async (state, config) => {
-    if (input.personalFunding === true) {
+    const capabilityFunding = getCapabilityFundingSession();
+    if (
+      input.personalFunding === true
+      && (capabilityFunding === undefined || capabilityFunding.parentFundingKind === "server")
+    ) {
       return executeToolsNode(state, config, {
         personalFunding: true,
         ...(input.personalTaskControls === true
@@ -670,6 +692,11 @@ export function createToolsNode(input: Readonly<{
     const projection = input.protectedMemoryProjectionPortForState?.(state);
     const fullEncryptionOnly = input.fullEncryptionOnlyForState?.(state) === true;
     return executeToolsNode(state, config, {
+      ...(input.personalFunding === true ? { personalFunding: true } : {}),
+      delegatedLocalExecutionPort: input.delegatedLocalExecutionPortForState
+        ? input.delegatedLocalExecutionPortForState(state) : getCurrentLocalExecutionDelegation(),
+      ...(input.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPort: input.localExecutionHistoryPortForState(state) }),
+      ...(input.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPort: input.humanTerminalAdmissionPortForState(state) }),
       ...(ordinaryContentAccess === undefined ? {} : { ordinaryContentAccess }),
       ...(recallRecordsPort === undefined ? {} : { recallRecordsPort }),
       ...(liveShadowToolBoundary === undefined

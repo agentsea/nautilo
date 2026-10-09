@@ -38,7 +38,7 @@ import {
 } from "../conductor/history-search";
 
 /**
- * M169 (R1) — injectable lookups for {@link readSubagentRunTranscript} so it is
+ * Injectable lookups for {@link readSubagentRunTranscript} so it is
  * unit-testable without a live DB. Defaults bind the real `@nautilo/agent`
  * queries.
  */
@@ -55,21 +55,18 @@ const defaultReadSubagentRunTranscriptDeps: ReadSubagentRunTranscriptDeps = {
 };
 
 /**
- * M169 (R1) — the production subagent-run transcript reader for the builder's
+ * The production subagent-run transcript reader for the builder's
  * `kind:"subagent"` scope. Reads the agent-authored run transcript
- * (`getRunAgentTranscript` — `assistant`/`tool` rows, M163), resolves the
- * Agent's label fields, and maps to `RoomHistoryHit[]` via the M166
+ * (`getRunAgentTranscript` — `assistant`/`tool` rows), resolves the
+ * Agent's label fields, and maps to `RoomHistoryHit[]` via the
  * `runAgentTranscriptToHits` helper.
  *
- * Labels (spec §4): display name is single-sourced on `profiles.name` (M156) →
+ * Labels: display name is single-sourced on `profiles.name` →
  * COALESCE to **"Genie"** (the seed Agent has no Profile row), NOT "Agent".
  * `@handle` comes from `agents.handle`; a missing handle falls back to `""`
  * (the renderer emits `(@):` — never a raw agent id). Returns `[]` for a run
  * with no agent-authored rows.
  *
- * DORMANT in M169 (R2): wired into the deps-factory slot below but called by NO
- * production `buildTranscriptContext({ kind:"subagent" })` path in this issue —
- * Phase H (or a future fresh-continuation feature) is the first real caller.
  */
 export async function readSubagentRunTranscript(
   scope: Extract<TranscriptContextScope, { kind: "subagent" }>,
@@ -91,7 +88,7 @@ export async function readSubagentRunTranscript(
 }
 
 /**
- * M168 — production `BuildTranscriptContextDeps` plus a `close()` hook for
+ * production `BuildTranscriptContextDeps` plus a `close()` hook for
  * lifecycle symmetry with the foreground executor's `finally`. Uses the
  * process-wide full-role `getSharedDirectDb()` pool when no db is injected;
  * `close()` is always a no-op (unit tests inject a fake db instead).
@@ -104,15 +101,13 @@ export interface DefaultTranscriptContextDeps extends BuildTranscriptContextDeps
  * Constructs both transcript readers over the full-role shared direct pool
  * (`getSharedDirectDb()` — BYPASSRLS, same handle pattern dispatch uses for
  * `roomMessagesSince` et al.):
- *  - **room** (C + D — DM / group): the bounded labelled Room transcript
+ *  - **room** (DM / group): the bounded labelled Room transcript
  *    (server-configured conversational rows plus intervening tools), with the
  *    current turn excluded by message ID/fingerprint.
- *  - **subthread** (E): parent up-to-anchor window (`parentMessagesUpToAnchor`)
+ *  - **subthread**: parent up-to-anchor window (`parentMessagesUpToAnchor`)
  *    plus the same bounded child-Room transcript, concatenated oldest→newest.
- *  - **subagent** (M169, F): `readSubagentRunTranscript` — DORMANT (no
- *    production `buildTranscriptContext({kind:"subagent"})` caller yet); the
- *    M168 throw-stub is replaced now that F lands second per the coordination
- *    note. Uses its own `@nautilo/agent` queries (NOT the shared direct handle
+ *  - **subagent**: `readSubagentRunTranscript` uses its own
+ *    `@nautilo/agent` queries (NOT the shared direct handle
  *    this factory reads through), so `close()` does not affect it.
  */
 export function defaultBuildTranscriptContextDeps(
@@ -158,13 +153,47 @@ export function defaultBuildTranscriptContextDeps(
       .limit(1);
     return actor?.id;
   };
+  const readBoundedRoomPage = async (
+    scope: Extract<TranscriptContextScope, { kind: "room" }>,
+    mode: "ordinary" | "authorized-source",
+    before?: Readonly<{ orderTimestamp: string; messageId: number }>,
+  ): Promise<RoomHistoryHit[]> => {
+    const botActorId = await resolveBotActorId(scope.agentId);
+    return recentBoundedRoomMessages(db, {
+      roomId: scope.roomId,
+      conversationalLimit: await recentConversationLimit(),
+      userId: scope.ownerId,
+      ...(scope.imageAssistanceTurnId
+        ? { imageAssistanceTurnId: scope.imageAssistanceTurnId }
+        : {}),
+      ...(scope.agentId ? { agentId: scope.agentId } : {}),
+      ...(botActorId ? { botActorId } : {}),
+      ...(scope.excludeMessageId != null
+        ? { excludeMessageId: scope.excludeMessageId }
+        : {}),
+      ...(scope.excludeMessageIds === undefined
+        ? {}
+        : { excludeMessageIds: scope.excludeMessageIds }),
+      ...(scope.throughMessageIdInclusive != null
+        ? { throughMessageIdInclusive: scope.throughMessageIdInclusive }
+        : {}),
+      ...(mode === "ordinary" && scope.foregroundExecutionId !== undefined
+        ? { foregroundExecutionId: scope.foregroundExecutionId }
+        : {}),
+      ...(mode === "authorized-source"
+        ? {
+            authorizedConversationWindow: true,
+            ...(before === undefined ? {} : { before }),
+          }
+        : {}),
+    });
+  };
   return {
     emitForegroundContextDiagnostic(diagnostic) {
       log(`[reflection-foreground-context] ${JSON.stringify(diagnostic)}`);
     },
     readRoomContextPolicy: serverContextPolicy,
     async readRoomTranscript(scope) {
-      const botActorId = await resolveBotActorId(scope.agentId);
       if (scope.subthread) {
         const parent =
           scope.subthread.anchorMessageId != null
@@ -174,33 +203,49 @@ export function defaultBuildTranscriptContextDeps(
                 limit: SUBTHREAD_PARENT_WINDOW,
               })
             : [];
-        const sub = await recentBoundedRoomMessages(db, {
-          roomId: scope.roomId,
-          conversationalLimit: await recentConversationLimit(),
-          userId: scope.ownerId,
-          ...(scope.agentId ? { agentId: scope.agentId } : {}),
-          ...(botActorId ? { botActorId } : {}),
-          ...(scope.excludeMessageId != null
-            ? { excludeMessageId: scope.excludeMessageId }
-            : {}),
-        });
+        const sub = await readBoundedRoomPage(scope, "ordinary");
         return [...parent, ...sub];
       }
-      return recentBoundedRoomMessages(db, {
-        roomId: scope.roomId,
-        conversationalLimit: await recentConversationLimit(),
-        userId: scope.ownerId,
-        ...(scope.agentId ? { agentId: scope.agentId } : {}),
-        ...(botActorId ? { botActorId } : {}),
-        ...(scope.excludeMessageId != null ? { excludeMessageId: scope.excludeMessageId } : {}),
-      });
+      return readBoundedRoomPage(scope, "ordinary");
+    },
+    async readRoomTranscriptSourcePage(scope, before) {
+      const fixedPrefix = before === undefined && scope.subthread
+        ? scope.subthread.anchorMessageId != null
+          ? await parentMessagesUpToAnchor(db, {
+              parentRoomId: scope.subthread.parentRoomId,
+              anchorMessageId: scope.subthread.anchorMessageId,
+              limit: SUBTHREAD_PARENT_WINDOW,
+            })
+          : []
+        : [];
+      const page = await readBoundedRoomPage(
+        scope,
+        "authorized-source",
+        before,
+      );
+      const first = page[0];
+      if (first !== undefined && first.sourceOrderTimestamp === undefined) {
+        throw new Error("Room transcript source page is missing its exact cursor");
+      }
+      return {
+        fixedPrefix,
+        page,
+        ...(first === undefined
+          ? {}
+          : {
+              nextBefore: {
+                orderTimestamp: first.sourceOrderTimestamp!,
+                messageId: first.messageId,
+              },
+            }),
+      };
     },
     async readRoomJournal(scope) {
       const [state] = await db
         .select({ rebuildRequestedAt: roomJournalState.rebuildRequestedAt })
         .from(roomJournalState)
         .where(eq(roomJournalState.roomId, scope.roomId));
-      // M230 — fail closed while an edit-triggered full rebuild is pending.
+      // fail closed while an edit-triggered full rebuild is pending.
       if (state?.rebuildRequestedAt != null) {
         return { rollup: null, events: [] };
       }

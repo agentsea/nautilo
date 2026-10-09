@@ -1,3 +1,10 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
+import { personalToolUnavailable } from "../runtime/personal-tool-readiness";
+import { createGitHubTool } from "./github/github";
+import { createHumanTerminalTool } from "./terminal/human-terminal";
+import { createLocalGitTool } from "./local-git/local-git";
+import { createReadShellOutputTool } from "./shell/read-shell-output";
+import { createExecCommandTool, createWriteStdinTool } from "./local-execution/local-execution";
 /**
  * Register all built-in tools in the catalog. One register call per tool.
  * This is the ONLY place tools are defined.
@@ -162,6 +169,14 @@ function isOfficeToolingEnabled(): boolean {
   return fromRuntimeConfig().nautilo_office_enabled;
 }
 
+const legacyShellUnavailable: NonNullable<ToolRegistration["unavailableInContext"]> = context => {
+  const capabilities = context?.["relayCapabilities"] as Readonly<Record<string, boolean>> | undefined;
+  return capabilities?.["canReplaceLegacyShellTools"] === true
+    && capabilities["canExecuteLocal"] === true && capabilities["canObserveLocalExecution"] === true
+    ? "Use the managed execution, typed Git, retained output, or Human terminal tools on this Desktop."
+    : null;
+};
+
 /** options for tool registration (test seams). */
 export interface RegisterAllToolsOptions {
   /**
@@ -201,13 +216,18 @@ export function registerAllTools(
   catalog: ToolCatalog,
   options: RegisterAllToolsOptions = {},
 ): void {
+  const register = (registration: Parameters<ToolCatalog["register"]>[0]) => catalog.register({
+    ...registration,
+    unavailableInContext: (context) => personalToolUnavailable(registration.name)
+      ?? registration.unavailableInContext?.(context) ?? null,
+  });
   const isOfficeCliAvailable = options.officeCliAvailable ?? officeCliAvailable;
   const mediaGenerationAvailable = options.mediaGenerationAvailable ?? ((kind: "video" | "music") =>
     hasMediaGenerationApprovalRuntime() && Boolean(process.env["VENICE_API_KEY"]?.trim()) && activeCatalogHasMediaKind(kind));
   // the factory itself accepts only a narrow port + trusted
   // context through the opaque catalog context. Registration deliberately
   // does not choose targets, relays, or filesystem authority.
-  catalog.register({
+  register({
     name: "apply_patch",
     factory: (ctx) => createApplyPatchTool(ctx),
     category: "files",
@@ -221,7 +241,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
   // --- Memory tools ---
-  catalog.register({
+  register({
     name: "search_memory",
     factory: (ctx) => createSearchMemoryTool(ctx),
     category: "knowledge",
@@ -234,7 +254,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "recall_records",
     factory: (ctx) => createRecallRecordsTool(ctx),
     category: "knowledge",
@@ -249,7 +269,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "session_search",
     factory: (ctx) => createSessionSearchTool(ctx),
     category: "knowledge",
@@ -260,7 +280,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "manage_memory",
     factory: (ctx) => createManageMemoryTool(ctx),
     category: "knowledge",
@@ -273,7 +293,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "list_my_users",
     factory: (ctx) => createListMyUsersTool(ctx),
     category: "communication",
@@ -285,7 +305,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "get_room_members",
     factory: (ctx) => createGetRoomMembersTool(ctx),
     category: "communication",
@@ -297,7 +317,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "react",
     factory: (ctx) => createReactTool(ctx),
     category: "communication",
@@ -308,7 +328,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "share_memory",
     factory: (ctx) => createShareMemoryTool(ctx),
     category: "knowledge",
@@ -325,7 +345,7 @@ export function registerAllTools(
   // share an existing workspace artifact with a known user.
   // Mirrors share_memory: moves an artifact row's namespace_id (no
   // bytes move); requires roster validation + hybrid sensitivity gate.
-  catalog.register({
+  register({
     name: "share_artifact",
     factory: (ctx) => createShareArtifactTool(ctx),
     category: "documents",
@@ -340,7 +360,7 @@ export function registerAllTools(
   });
 
   // b — drain nwState.emit channel-3 queue for a workspace artifact.
-  catalog.register({
+  register({
     name: "read_artifact_events",
     factory: (ctx) => createReadArtifactEventsTool(ctx),
     category: "files",
@@ -351,7 +371,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "create_scope",
     factory: (ctx) => createCreateScopeTool(ctx),
     category: "knowledge",
@@ -362,7 +382,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "find_scope",
     factory: (ctx) => createFindScopeTool(ctx),
     category: "knowledge",
@@ -373,7 +393,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "add_memory_to_scope",
     factory: (ctx) => createAddMemoryToScopeTool(ctx),
     category: "knowledge",
@@ -384,7 +404,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "close_scope",
     factory: (ctx) => createCloseScopeTool(ctx),
     category: "knowledge",
@@ -395,7 +415,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "task",
     factory: (ctx) => createTaskTool(ctx),
     category: "automation",
@@ -409,7 +429,7 @@ export function registerAllTools(
   // intent shortcuts (thin `createTask` wrappers on
   // engine). `in_private_namespace` is the only one carrying the high-impact
   // gate ( removed the legacy `do_in_private_namespace` it used to mirror).
-  catalog.register({
+  register({
     name: "in_scope",
     factory: (ctx) => createInScopeTool(ctx),
     category: "automation",
@@ -420,7 +440,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "in_background",
     factory: (ctx) => createInBackgroundTool(ctx),
     category: "automation",
@@ -431,7 +451,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "schedule",
     factory: (ctx) => createScheduleTool(ctx),
     category: "automation",
@@ -442,7 +462,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "in_private_namespace",
     factory: (ctx) => createInPrivateNamespaceTool(ctx),
     category: "automation",
@@ -454,7 +474,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "ask_peer",
     factory: (ctx) => createAskPeerTool(ctx),
     category: "communication",
@@ -469,11 +489,11 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  // (Stack-128) — `generate_repo_docs` entry tool. Thin
+  // `generate_repo_docs` entry tool. Thin
   // `repo_docs` task creator; a separate executor consumes the task.
   // Mints an async subagent that writes to a repo (potentially pushing or
   // opening a PR), so project execution retains its explicit approval gate.
-  catalog.register({
+  register({
     name: "generate_repo_docs",
     factory: (ctx) => createGenerateRepoDocsTool(ctx),
     category: "development",
@@ -489,7 +509,7 @@ export function registerAllTools(
   });
 
   // --- Web tools ---
-  catalog.register({
+  register({
     name: "run_web_search",
     factory: (ctx) => createRunWebSearchTool(ctx),
     category: "research",
@@ -500,7 +520,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  catalog.register({
+  register({
     name: "read_webpage",
     factory: (ctx) => createReadWebpageTool(ctx),
     category: "research",
@@ -534,7 +554,7 @@ export function registerAllTools(
   // Migration to executor:"relay" (when the current relay work wires
   // filesystem dispatch end-to-end) is a mechanical rewire — the
   // schema + dispatcher shapes stay put.
-  catalog.register({
+  register({
     name: "file",
     factory: (ctx) => createFileTool(ctx),
     category: "files",
@@ -547,7 +567,7 @@ export function registerAllTools(
   });
 
   // dedicated document conversion (local md→pdf/docx; optional CloudConvert).
-  catalog.register({
+  register({
     name: "convert",
     factory: (ctx) => createConvertTool(ctx),
     category: "documents",
@@ -565,11 +585,29 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
+  for (const [name, factory] of [["exec_command", createExecCommandTool], ["write_stdin", createWriteStdinTool]] as const) {
+    register({ name, factory, category: "development", executor: "relay", trustTier: "admin",
+      impact: "destructive", exposure: "discoverable", tags: ["shell", "command", "execution"],
+      requiresApproval: true, approvalLevel: "prove_it", requiredCapabilities: ["use_workstation"],
+      relayCapabilities: [name === "exec_command" ? "canExecuteLocal" : "canObserveLocalExecution"], resultScanPolicy: "on-suspicious" });
+  }
+
+  register({ name: "local_git", factory: () => createLocalGitTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
+    tags: ["git", "repository", "commit", "worktree"], requiresApproval: true, approvalLevel: "prove_it",
+    requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseLocalGit"], resultScanPolicy: "on-suspicious" });
+  register({ name: "read_shell_output", factory: () => createReadShellOutputTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "read-only", exposure: "discoverable",
+    tags: ["output", "logs", "search", "shell"], requiresApproval: false,
+    requiredCapabilities: ["use_workstation"], relayCapabilities: ["canReadShellOutput"], resultScanPolicy: "on-suspicious" });
+
   // --- Shell ---
   // Runs locally via child_process. Relay dispatch comes from dj-electron-v1.
-  catalog.register({
+  register({
     name: "run_shell",
     factory: () => createRunShellTool(),
+    // Retain the executor and historical contracts without offering this tool to agents.
+    unavailableInContext: () => "This legacy command tool is unavailable. Discover the tools supported in this conversation.",
     category: "development",
     executor: "relay",
     trustTier: "admin",
@@ -589,7 +627,7 @@ export function registerAllTools(
   // SSH is never admitted through a generic shell fallback. Invocation-service
   // performs the one meaningful exact review after Electron resolves user,
   // port, and host trust.
-  catalog.register({
+  register({
     name: "structured_ssh_auth",
     factory: () => createStructuredSshAuthTool(),
     category: "development",
@@ -604,7 +642,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  catalog.register({
+  register({
     name: "structured_ssh_exec",
     factory: () => createStructuredSshExecTool(),
     category: "development",
@@ -619,7 +657,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  catalog.register({
+  register({
     name: "structured_ssh_output",
     factory: () => createStructuredSshOutputTool(),
     category: "development",
@@ -638,7 +676,7 @@ export function registerAllTools(
     ["structured_ssh_copy_upload", createStructuredSshCopyUploadTool, "upload"],
     ["structured_ssh_copy_download", createStructuredSshCopyDownloadTool, "download"],
   ] as const) {
-    catalog.register({
+    register({
       name,
       factory,
       category: "development",
@@ -657,7 +695,7 @@ export function registerAllTools(
   // Electron owns target resolution and the canonical Current Folder
   // transition. The catalog factory supplies model schema only; invocation
   // dispatches the narrow prepare/commit protocol through the exact desktop.
-  catalog.register({
+  register({
     name: "select_current_folder",
     factory: () => createSelectCurrentFolderTool(),
     category: "files",
@@ -677,7 +715,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  // --- Terminal ( / ) ---
+  // --- Terminal ---
   // Interactive shared PTY. Distinct from run_shell (one-shot, prove_it):
   // per operator decision the terminal uses "basic normal gating,
   // NOT a PIN". The trust resolver is binary for relay tools (destructive |
@@ -685,9 +723,19 @@ export function registerAllTools(
   // allow: impact "high" (not "destructive") + requiresApproval:false →
   // `allow` for actors holding `use_workstation`. Runtime relay availability
   // remains a separate `canUseTerminal` requirement.
-  catalog.register({
+  register({ name: "local_github", factory: () => createGitHubTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
+    tags: ["github", "issues", "pull-requests"], requiresApproval: true,
+    fullEncryptionSupport: "supported", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseGitHub"], resultScanPolicy: "on-suspicious" });
+  register({ name: "human_terminal", factory: () => createHumanTerminalTool(), category: "development",
+    executor: "relay", trustTier: "admin", impact: "high", exposure: "discoverable",
+    tags: ["terminal", "human", "handoff", "interactive"], requiresApproval: false,
+    fullEncryptionSupport: "supported", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseHumanTerminal"], resultScanPolicy: "on-suspicious" });
+
+  register({
     name: "terminal",
     factory: () => createTerminalTool(),
+    unavailableInContext: legacyShellUnavailable,
     category: "development",
     executor: "relay",
     trustTier: "admin",
@@ -713,7 +761,7 @@ export function registerAllTools(
   // Desktop never branch on these names.
   reconcileComputerUseHostTools(catalog);
 
-  catalog.register({
+  register({
     name: "browser_snapshot",
     factory: (ctx) => createBrowserSnapshotTool(ctx),
     category: "computer",
@@ -728,7 +776,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_click",
     factory: () => createBrowserClickTool(),
     category: "computer",
@@ -743,7 +791,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_type",
     factory: () => createBrowserTypeTool(),
     category: "computer",
@@ -758,7 +806,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_press",
     factory: () => createBrowserPressTool(),
     category: "computer",
@@ -773,7 +821,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_read",
     factory: () => createBrowserReadTool(),
     category: "computer",
@@ -788,7 +836,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_read_page",
     factory: () => createBrowserReadPageTool(),
     category: "computer",
@@ -803,7 +851,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_screenshot",
     factory: (ctx) => createBrowserScreenshotTool(ctx),
     category: "computer",
@@ -819,7 +867,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_mouse",
     factory: () => createBrowserMouseTool(),
     category: "computer",
@@ -833,7 +881,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  catalog.register({
+  register({
     name: "browser_get",
     factory: () => createBrowserGetTool(),
     category: "computer",
@@ -848,7 +896,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_scroll",
     factory: () => createBrowserScrollTool(),
     category: "computer",
@@ -863,7 +911,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_back",
     factory: () => createBrowserBackTool(),
     category: "computer",
@@ -878,7 +926,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_open",
     factory: () => createBrowserOpenTool(),
     category: "computer",
@@ -893,7 +941,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_forward",
     factory: () => createBrowserForwardTool(),
     category: "computer",
@@ -908,7 +956,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_reload",
     factory: () => createBrowserReloadTool(),
     category: "computer",
@@ -923,7 +971,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_hover",
     factory: () => createBrowserHoverTool(),
     category: "computer",
@@ -938,7 +986,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_double_click",
     factory: () => createBrowserDoubleClickTool(),
     category: "computer",
@@ -953,7 +1001,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_drag",
     factory: () => createBrowserDragTool(),
     category: "computer",
@@ -968,7 +1016,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_select",
     factory: () => createBrowserSelectTool(),
     category: "computer",
@@ -983,7 +1031,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_set_checked",
     factory: () => createBrowserSetCheckedTool(),
     category: "computer",
@@ -998,7 +1046,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_scroll_into_view",
     factory: () => createBrowserScrollIntoViewTool(),
     category: "computer",
@@ -1013,7 +1061,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "browser_wait",
     factory: () => createBrowserWaitTool(),
     category: "computer",
@@ -1028,7 +1076,7 @@ export function registerAllTools(
     scanInvisibleUnicode: "strip",
   });
 
-  catalog.register({
+  register({
     name: "google_workspace",
     factory: () => createGoogleWorkspaceTool(),
     category: "integrations",
@@ -1047,7 +1095,7 @@ export function registerAllTools(
   // structured Hue requests are dispatched only to a capable local
   // relay. The server owns this contract; relay-side OpenHue execution is
   // deliberately not reachable through a shell or generic network tool.
-  catalog.register({
+  register({
     name: "hue_lights",
     factory: () => createHueLightsTool(),
     category: "devices",
@@ -1065,7 +1113,7 @@ export function registerAllTools(
     // LibreOffice office tool (server-side; nwuno engine). Convert/extract/
     // render + mutate (find-replace/template-fill/set-cell/…) on artifact-zone docs.
     // Low impact, no per-call approval; gated by use_project_content (same as file).
-    catalog.register({
+    register({
       name: "office",
       factory: (ctx) => createOfficeTool(ctx),
       category: "documents",
@@ -1086,7 +1134,7 @@ export function registerAllTools(
     // one verified edit → updated content returned. Hides coolwsd/WOPI/session
     // entirely from the model (no zone/inPlace knobs). Same trust profile as
     // `office`.
-    catalog.register({
+    register({
       name: "edit_doc",
       factory: (ctx) => createEditDocTool(ctx),
       category: "documents",
@@ -1113,7 +1161,7 @@ export function registerAllTools(
   // vendored binary and no OFFICECLI_PATH override, the tool is simply not
   // offered rather than registered as an always-failing tool.
   if (isOfficeCliAvailable()) {
-    catalog.register({
+    register({
       name: "officecli",
       factory: (ctx) => createOfficeCliTool(ctx),
       category: "documents",
@@ -1129,7 +1177,7 @@ export function registerAllTools(
   }
 
   // --- Config / onboarding ---
-  catalog.register({
+  register({
     name: "update_config",
     factory: () => createUpdateConfigTool(),
     category: "administration",
@@ -1149,7 +1197,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "check_config",
     factory: (ctx) => createCheckConfigTool(ctx),
     category: "administration",
@@ -1163,7 +1211,7 @@ export function registerAllTools(
   });
 
   // --- Connections / vault (the current implementation) ---
-  catalog.register({
+  register({
     name: "use_connection",
     factory: (ctx) => createUseConnectionTool(ctx),
     category: "integrations",
@@ -1177,7 +1225,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "list_connections",
     factory: (ctx) => createListConnectionsTool(ctx),
     category: "integrations",
@@ -1189,7 +1237,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "use_credential",
     factory: (ctx) => createUseCredentialAliasTool(ctx),
     category: "integrations",
@@ -1203,7 +1251,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "delete_connection",
     factory: (ctx) => createDeleteConnectionTool(ctx),
     category: "integrations",
@@ -1217,7 +1265,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "manage_profile",
     factory: (ctx) => createManageProfileTool(ctx),
     category: "settings",
@@ -1230,7 +1278,7 @@ export function registerAllTools(
 
   // the Agent generates + sets her own profile avatar (preview
   // → apply gate). Same tier as manage_profile (config / high / low).
-  catalog.register({
+  register({
     name: "manage_avatar",
     factory: (ctx) => createManageAvatarTool(ctx),
     category: "settings",
@@ -1241,7 +1289,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "onboarding_status",
     factory: (ctx) => createOnboardingStatusTool(ctx),
     category: "settings",
@@ -1253,7 +1301,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "launch_customization",
     factory: (ctx) => createLaunchCustomizationTool(ctx),
     category: "settings",
@@ -1264,7 +1312,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "guide_user",
     factory: (ctx) => createGuideUserTool(ctx),
     category: "help",
@@ -1276,7 +1324,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "find_voice",
     factory: (ctx) => createFindVoiceTool(ctx),
     category: "media",
@@ -1288,7 +1336,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "audition_voices",
     factory: (ctx) => createAuditionVoicesTool(ctx),
     category: "media",
@@ -1300,7 +1348,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "manage_voices",
     factory: (ctx) => createManageVoicesTool(ctx),
     category: "settings",
@@ -1312,7 +1360,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "transcribe_audio",
     factory: (ctx) => createTranscribeAudioTool(ctx),
     category: "media",
@@ -1330,7 +1378,7 @@ export function registerAllTools(
 
   // an explicitly approved, relay-backed MP4 copy into the
   // workspace artifact store. The tool never transcribes or extracts audio.
-  catalog.register({
+  register({
     name: "ingest_local_media",
     factory: (ctx) => createIngestLocalMediaTool(ctx),
     category: "media",
@@ -1347,7 +1395,7 @@ export function registerAllTools(
   // fixed-schema, explicitly approved MP4 → extraction through
   // the desktop relay. This is deliberately separate from generic convert and
   // from transcription (which is never invoked here).
-  catalog.register({
+  register({
     name: "extract_audio_from_video",
     factory: (ctx) => createExtractAudioFromVideoTool(ctx),
     category: "media",
@@ -1361,7 +1409,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "generate_image",
     factory: (ctx) => createGenerateImageTool(ctx),
     category: "media",
@@ -1377,7 +1425,7 @@ export function registerAllTools(
   // durable-submit runtime and a compatible signed catalog row are available.
   // The post-model path forces an exact Once/Deny approval and replaces model
   // args with a checkpoint-private prepared binding before InvocationService.
-  catalog.register({
+  register({
     isAvailable: () => mediaGenerationAvailable("video"),
     name: "generate_video",
     factory: () => createGenerateVideoTool(),
@@ -1395,7 +1443,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     isAvailable: () => mediaGenerationAvailable("music"),
     name: "generate_music",
     factory: () => createGenerateMusicTool(),
@@ -1412,7 +1460,7 @@ export function registerAllTools(
 
   // bounded, local-only metadata discovery. Playback is not
   // part of this tool and requires a later user-consented phase.
-  catalog.register({
+  register({
     name: "find_explainer",
     factory: () => createFindExplainerTool(),
     category: "help",
@@ -1430,7 +1478,7 @@ export function registerAllTools(
   // server route (`GET /api/explainers:id/media`) and plays a revocable Blob
   // URL. Mechanical confirmation gate: explicit user consent is required
   // before playback is resolved, preserving the consented-playback contract.
-  catalog.register({
+  register({
     name: "play_explainer",
     factory: () => createPlayExplainerTool(),
     category: "help",
@@ -1444,7 +1492,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "regenerate_soul",
     factory: (ctx) => createRegenerateSoulTool(ctx),
     category: "settings",
@@ -1468,7 +1516,7 @@ export function registerAllTools(
   // trustTier MUST be "guest" — this is how a restricted speaker verifies
   // their current Human identity. Verification never changes their role.
   // If this is set to anything higher, nobody can prove their identity.
-  catalog.register({
+  register({
     name: "verify_identity",
     // factory is context-free. The PIN subject is the
     // user driving the current turn (envelope.ownerId) and is resolved
@@ -1495,7 +1543,7 @@ export function registerAllTools(
   // redirect tool's prior classification. The server remains authoritative
   // for canonical target resolution, enqueue, focus transfer, and one-hop
   // depth revalidation.
-  catalog.register({
+  register({
     name: "skip",
     factory: (ctx) => createSkipTool(ctx),
     category: "meta",
@@ -1507,7 +1555,7 @@ export function registerAllTools(
   });
 
   // --- Time ---
-  catalog.register({
+  register({
     name: "get_current_time",
     factory: (ctx) => createGetCurrentTimeTool(ctx),
     category: "help",
@@ -1520,7 +1568,7 @@ export function registerAllTools(
   });
 
   // --- Meta ---
-  catalog.register({
+  register({
     name: "discover_tools",
     // Forward the runtime context (relayCapabilities + memoryAccessEnvelope +
     // actorRole). Without it, discover_tools filters the catalog with
@@ -1538,7 +1586,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "activate_tools",
     factory: (ctx) => createActivateToolsTool(ctx),
     category: "meta",
@@ -1566,22 +1614,25 @@ export function registerAllTools(
   // boundary; the runtime guest withhold is enforced by the guest toolPolicy
   // (trust/personal-policy-resolver.ts GUEST_ALLOWED_TOOLS), which does not
   // include `discover_models`.
-  catalog.register({
+  register({
     name: "evaluate_decisions",
     factory: (ctx) => createEvaluateDecisionsTool(ctx),
     category: "meta",
     trustTier: "standard",
     impact: "low",
     exposure: "discoverable",
-    requiredCapabilities: ["use_server_provider_credentials"],
     tags: ["classification", "scoring", "decisions", "models"],
-    isAvailable: options.decisionModelsAvailable ?? hasSelectableDecisionModel,
+    // Personal decision credentials are admitted by the request-local funding
+    // session. Legacy server calls retain their causal-Human credential guard
+    // in the transport, so static server-only RBAC must not hide this tool.
+    isAvailable: () => Boolean(getCapabilityFundingSession()
+      || (options.decisionModelsAvailable ?? hasSelectableDecisionModel)()),
     unavailableReason: "Configure a supported decision provider key and enable a decision model.",
     unavailableInContext: (ctx) => decisionToolUnavailable(ctx),
     resultScanPolicy: "always",
   });
 
-  catalog.register({
+  register({
     name: "discover_models",
     factory: (ctx) => createDiscoverModelsTool(ctx),
     category: "meta",
@@ -1592,7 +1643,7 @@ export function registerAllTools(
     resultScanPolicy: "never",
   });
 
-  catalog.register({
+  register({
     name: "deactivate_tools",
     factory: (ctx) => createDeactivateToolsTool(ctx),
     category: "meta",
@@ -1604,7 +1655,7 @@ export function registerAllTools(
   });
 
   // speaker-scoped skill authoring (manage_agents two-gate in body).
-  catalog.register({
+  register({
     name: "skill_manage",
     factory: (ctx) => createSkillManageTool(ctx),
     category: "extensions",
@@ -1616,7 +1667,7 @@ export function registerAllTools(
   });
 
   // mid-turn fallback to read one enabled skill body .
-  catalog.register({
+  register({
     name: "view_skill",
     factory: (ctx) => createViewSkillTool(ctx),
     category: "extensions",
@@ -1629,7 +1680,7 @@ export function registerAllTools(
 
   // / §2.1 — search the speaker's enabled skills (catalog-primary
   // v1). Read-only, guest-tier; paginates with explicit truncation .
-  catalog.register({
+  register({
     name: "discover_skills",
     factory: (ctx) => createDiscoverSkillsTool(ctx),
     category: "extensions",
@@ -1643,7 +1694,7 @@ export function registerAllTools(
   // / §2.1 — drop a skill body pulled by view_skill from the
   // engaged-set so the next pre-model rebuild omits it. No external side
   // effects (mutates thread-scoped graph state only); guest-tier, ungated.
-  catalog.register({
+  register({
     name: "eject",
     factory: (ctx) => createEjectSkillTool(ctx),
     category: "extensions",
@@ -1658,7 +1709,7 @@ export function registerAllTools(
   // minus `requiresTools` (commands carry no tool-gating). Genies can
   // create commands (operator decision: no create-gating, no approval
   // step). Same `manage_agents` two-gate as skill_manage.
-  catalog.register({
+  register({
     name: "command_manage",
     factory: (ctx) => createCommandManageTool(ctx),
     category: "extensions",
@@ -1671,7 +1722,7 @@ export function registerAllTools(
 
   // Mid-turn fallback to read one command body (DB row
   // or bundled official fallback). Read-only, guest-tier.
-  catalog.register({
+  register({
     name: "view_command",
     factory: (ctx) => createViewCommandTool(ctx),
     category: "extensions",
@@ -1685,7 +1736,7 @@ export function registerAllTools(
   // Search the speaker's command catalog (official +
   // DB merged, DB shadows official by name). Read-only, guest-tier;
   // paginates with explicit truncation .
-  catalog.register({
+  register({
     name: "discover_commands",
     factory: (ctx) => createDiscoverCommandsTool(ctx),
     category: "extensions",
@@ -1700,7 +1751,7 @@ export function registerAllTools(
   // are not per-turn engaged, so this is a no-op confirmation; guest-tier,
   // ungated. Named `eject_command` (NOT bare `eject`) to avoid colliding
   // with the skills `eject` tool.
-  catalog.register({
+  register({
     name: "eject_command",
     factory: (ctx) => createEjectCommandTool(ctx),
     category: "extensions",
@@ -1717,7 +1768,7 @@ export function registerAllTools(
   // allowlist + prove_it approval gate. Server-local (not a relay
   // tool) — the handler builds a Sandbox in-process from server
   // posture; see execute-artifact.ts for rationale.
-  catalog.register({
+  register({
     name: "execute_artifact",
     factory: () => createExecuteArtifactTool(),
     category: "development",
@@ -1736,7 +1787,7 @@ export function registerAllTools(
   });
 
   // installed mini-app source authoring (server DI via setMiniAppToolRuntime).
-  catalog.register({
+  register({
     name: "mini_app",
     factory: (ctx) => createMiniAppTool(ctx),
     category: "extensions",
@@ -1748,7 +1799,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
 
-  catalog.register({
+  register({
     name: "browse_web",
     factory: (ctx) => createBrowseWebTool(ctx as ConnectedWebAccountReadToolContext | undefined),
     category: "integrations",
@@ -1761,7 +1812,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
 
-  catalog.register({
+  register({
     name: "run_website_task",
     factory: (ctx) => createRunWebsiteTaskTool(ctx as ConnectedWebAccountReadToolContext | undefined),
     category: "integrations",
@@ -1779,7 +1830,7 @@ export function registerAllTools(
   // one Human-owned authenticated website-account read. The injected
   // server runtime re-checks exact Human + owned-Genie admission before it
   // can reach a profile; this entry only carries the existing Connections cap.
-  catalog.register({
+  register({
     name: "read_connected_web_account",
     factory: (ctx) => createConnectedWebAccountReadTool(ctx as ConnectedWebAccountReadToolContext | undefined),
     category: "integrations",
@@ -1792,7 +1843,7 @@ export function registerAllTools(
     resultScanPolicy: "on-suspicious",
   });
 
-  catalog.register({
+  register({
     name: "act_connected_web_account",
     factory: (ctx) => createConnectedWebAccountActionTool(ctx as ConnectedWebAccountReadToolContext | undefined),
     category: "integrations",
@@ -1809,7 +1860,7 @@ export function registerAllTools(
   // supervision of one already-admitted connected-website operation.
   // The injected server runtime owns authority, provider state, and every
   // durable transition; this catalog entry exposes no browser coordinates.
-  catalog.register({
+  register({
     name: "manage_connected_web_operation",
     factory: (ctx) => createManageConnectedWebOperationTool(ctx as ManageConnectedWebOperationToolContext | undefined),
     category: "integrations",
@@ -1829,7 +1880,7 @@ export function registerAllTools(
     resultScanPolicy: "always",
   });
 
-  catalog.register({
+  register({
     name: "control_connected_web_operation",
     factory: (ctx) => createControlConnectedWebOperationTool(ctx as ManageConnectedWebOperationToolContext | undefined),
     category: "integrations",
@@ -1855,7 +1906,7 @@ export function registerAllTools(
   // trust/personal-policy-resolver.ts (checkToolAccess) + nodes/post-model.ts
   // (resolveApprovalForToolCall). It is agent self-modification (adds to
   // the agent's own toolset), so audited on every mutation.
-  catalog.register({
+  register({
     name: "manage_local_mcp",
     factory: (ctx) => createManageLocalMcpTool(ctx),
     category: "extensions",
@@ -1869,12 +1920,12 @@ export function registerAllTools(
   });
 
   // --- Research ---
-  catalog.register({
+  register({
     name: "run_deep_research",
     unavailableInContext: (ctx) => ctx?.["deepResearchForegroundAvailable"] === true
       ? null
       : "Deep research cannot start from this turn. Wait until this Room's current reply finishes, then send a new request. No research was started.",
-    isAvailable: () => Boolean(process.env["TAVILY_API_KEY"]?.trim()),
+    isAvailable: () => Boolean(getCapabilityFundingSession() || process.env["TAVILY_API_KEY"]?.trim()),
     unavailableReason: "Deep research is unavailable because Tavily is not configured on this server. Configure the Tavily API key, then start a fresh deep research request. No research was started.",
     factory: () => createRunDeepResearchTool(),
     category: "research",
@@ -1892,7 +1943,7 @@ export function registerAllTools(
   // durable research record. The tool factory has no direct executor; the
   // invocation service attaches its private Task/TaskRun/model envelope only
   // after host and trust-policy admission.
-  catalog.register({
+  register({
     name: "security_scan",
     factory: () => createSecurityScanTool(),
     category: "development",

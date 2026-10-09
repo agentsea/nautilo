@@ -1,3 +1,4 @@
+import { imageAssistanceObservationMessages } from "../../src/executors/image-assistance";
 import { describe, expect, test } from "bun:test";
 import {
   AIMessage,
@@ -76,6 +77,20 @@ describe("protected conversation executor IO", () => {
       }],
     });
     expect(message.tool_calls?.[0]?.args).toMatchObject({ sessionToken: secret });
+  });
+
+  test("places the server execution identity in protected sensitive metadata", () => {
+    expect(protectedAgentMessagePayload(new ToolMessage({
+      content: "completed",
+      tool_call_id: "call-owned",
+    }), "turn-owned")).toEqual({
+      role: "tool",
+      content: "completed",
+      sensitiveMetadata: {
+        toolCallId: "call-owned",
+        foregroundExecutionId: "turn-owned",
+      },
+    });
   });
 
   test("accepts provider-native tool transport only when a canonical tool call preserves it", () => {
@@ -603,4 +618,299 @@ describe("protected conversation executor IO", () => {
       outcome: "authorization_callback_closed",
     });
   });
+
+  test("rereads a fresh authorized cut and excludes later Human input", async () => {
+    let opens = 0;
+    let lateRead:
+      | Parameters<
+        Parameters<typeof executeProtectedConversationTurn>[0]["execute"]
+      >[0]["readFreshHistory"]
+      | undefined;
+    const repository = {
+      withAgentTranscript: async <Value>(
+        input: Parameters<
+          ActiveConversationRepository["withAgentTranscript"]
+        >[0],
+      ) => {
+        opens += 1;
+        if (opens > 1) expect(input.upToMessageId).toBe(14);
+        if (opens === 3) {
+          return {
+            status: "unavailable" as const,
+            reason: "authorization_unavailable" as const,
+          };
+        }
+        const messages = opens === 1
+          ? []
+          : [
+              {
+                messageId: 8,
+                revision: 0,
+                createdAt: new Date("2027-01-15T07:59:59.000Z"),
+                author: {
+                  actorId: "actor-human",
+                  handle: "human",
+                  displayName: "Human",
+                },
+                payload: { role: "user" as const, content: "older request" },
+              },
+              {
+                messageId: 9,
+                revision: 0,
+                createdAt: new Date("2027-01-15T08:00:00.000Z"),
+                author: {
+                  actorId: "actor-human",
+                  handle: "human",
+                  displayName: "Human",
+                },
+                payload: { role: "user" as const, content: "coalesced request" },
+              },
+              {
+                messageId: 10,
+                revision: 0,
+                createdAt: new Date("2027-01-15T08:00:01.000Z"),
+                author: {
+                  actorId: "actor-human",
+                  handle: "human",
+                  displayName: "Human",
+                },
+                payload: { role: "user" as const, content: "accepted request" },
+              },
+              {
+                messageId: 11,
+                revision: 0,
+                createdAt: new Date("2027-01-15T08:00:02.000Z"),
+                author: {
+                  actorId: "actor-human",
+                  handle: "human",
+                  displayName: "Human",
+                },
+                payload: { role: "user" as const, content: "queued request" },
+              },
+              {
+                messageId: 12,
+                revision: 0,
+                createdAt: new Date("2027-01-15T08:00:03.000Z"),
+                author: {
+                  actorId: "actor-agent",
+                  handle: "agent",
+                  displayName: "Agent",
+                },
+                payload: {
+                  role: "assistant" as const,
+                  content: "working",
+                  sensitiveMetadata: { foregroundExecutionId: "turn-active" },
+                },
+              },
+              {
+                messageId: 13,
+                revision: 0,
+                createdAt: new Date("2027-01-15T08:00:03.500Z"),
+                author: {
+                  actorId: "actor-agent",
+                  handle: "agent",
+                  displayName: "Agent",
+                },
+                payload: {
+                  role: "assistant" as const,
+                  content: "concurrent turn output",
+                  sensitiveMetadata: { foregroundExecutionId: "turn-other" },
+                },
+              },
+              {
+                messageId: 14,
+                revision: 0,
+                createdAt: new Date("2027-01-15T08:00:04.000Z"),
+                author: {
+                  actorId: "actor-agent",
+                  handle: "agent",
+                  displayName: "Agent",
+                },
+                payload: {
+                  role: "tool" as const,
+                  content: "completed result",
+                  toolName: "lookup",
+                  sensitiveMetadata: { foregroundExecutionId: "turn-active" },
+                },
+              },
+            ];
+        return {
+          status: "executed" as const,
+          value: await input.execute(messages) as Value,
+        };
+      },
+      appendPreparedAgent: async () => ({
+        status: "committed" as const,
+        message: committedMessage,
+      }),
+    } as Pick<
+      ActiveConversationRepository,
+      "withAgentTranscript" | "appendPreparedAgent"
+    >;
+
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 20,
+      productReadAuthorization: Object.freeze({}) as never,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: {
+        transcriptOrigin: "main",
+        parentThreadId: null,
+        scopeId: null,
+        subthreadRoomId: null,
+        notificationContext: {
+          mentionedHumanUserIds: [],
+          causalHumanUserId: null,
+          causalHumanTurnId: null,
+        },
+      },
+      repository,
+      preparer: {
+        prepare: async (input) => ({
+          status: "prepared",
+          write: prepared(input.sessionId, input.idempotencyKey),
+        }),
+      },
+      execute: async ({ readFreshHistory }) => {
+        lateRead = readFreshHistory;
+        const available = await readFreshHistory({
+          excludeMessageId: 10,
+          excludeMessageIds: [9, 10],
+          throughMessageIdInclusive: 14,
+          foregroundExecutionId: "turn-active",
+          execute: (history) => history.map((hit) => ({
+            id: hit.messageId,
+            role: hit.role,
+            content: hit.snippet,
+          })),
+        });
+        let revokedCallbackCalls = 0;
+        const revoked = await readFreshHistory({
+          excludeMessageId: 10,
+          throughMessageIdInclusive: 14,
+          execute: () => {
+            revokedCallbackCalls += 1;
+            return "must not run";
+          },
+        });
+        return { available, revoked, revokedCallbackCalls };
+      },
+    });
+
+    expect(result).toEqual({
+      status: "executed",
+      value: {
+        available: {
+          status: "executed",
+          value: [
+            { id: 8, role: "user", content: "older request" },
+            { id: 12, role: "assistant", content: "working" },
+            { id: 14, role: "tool", content: "tool:lookup completed result" },
+          ],
+        },
+        revoked: {
+          status: "unavailable",
+          reason: "authorization_unavailable",
+        },
+        revokedCallbackCalls: 0,
+      },
+    });
+    expect(opens).toBe(3);
+    expect(await lateRead!({
+      excludeMessageId: 10,
+      throughMessageIdInclusive: 14,
+      execute: () => "must not run",
+    })).toEqual({
+      status: "unavailable",
+      reason: "authorization_unavailable",
+    });
+    expect(opens).toBe(3);
+  });
+
+  test("allows a trigger-equal protected cut before output is committed", async () => {
+    let observedCut: number | undefined;
+    const repository = {
+      withAgentTranscript: async <Value>(
+        input: Parameters<
+          ActiveConversationRepository["withAgentTranscript"]
+        >[0],
+      ) => {
+        if (input.upToMessageId !== undefined) {
+          observedCut = input.upToMessageId;
+        }
+        return {
+          status: "executed" as const,
+          value: await input.execute([]) as Value,
+        };
+      },
+      appendPreparedAgent: async () => ({
+        status: "committed" as const,
+        message: committedMessage,
+      }),
+    } as Pick<
+      ActiveConversationRepository,
+      "withAgentTranscript" | "appendPreparedAgent"
+    >;
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 20,
+      productReadAuthorization: Object.freeze({}) as never,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: {
+        transcriptOrigin: "main",
+        parentThreadId: null,
+        scopeId: null,
+        subthreadRoomId: null,
+        notificationContext: {
+          mentionedHumanUserIds: [],
+          causalHumanUserId: null,
+          causalHumanTurnId: null,
+        },
+      },
+      repository,
+      preparer: {
+        prepare: async (input) => ({
+          status: "prepared",
+          write: prepared(input.sessionId, input.idempotencyKey),
+        }),
+      },
+      execute: ({ readFreshHistory }) => readFreshHistory({
+        excludeMessageId: 10,
+        throughMessageIdInclusive: 10,
+        execute: (history) => history.length,
+      }),
+    });
+    expect(observedCut).toBe(10);
+    expect(result).toEqual({
+      status: "executed",
+      value: { status: "executed", value: 0 },
+    });
+  });
+});
+
+
+test("retains completed image observation pairs through the protected writer and deduplicates retry", async () => {
+  const payloads: unknown[] = [];
+  const messages = imageAssistanceObservationMessages({ status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"], inputDigest: "input-a", turnId: "turn-a", observations: "Visible total 123.45" });
+  const input = {
+    sessionId: "10000000-0000-4000-8000-000000000001", messages, authorization,
+    savedFingerprints: new Set<string>(),
+    preparer: { prepare: async (value: Parameters<ProtectedAgentMessageWritePreparer["prepare"]>[0]) => {
+      payloads.push(value.payload);
+      return { status: "prepared" as const, write: prepared(value.sessionId, value.idempotencyKey) };
+    } },
+    repository: { appendPreparedAgent: async () => ({ status: "committed" as const, message: committedMessage }) },
+  };
+  await persistProtectedAgentMessages(input);
+  await persistProtectedAgentMessages(input);
+  expect(payloads).toHaveLength(2);
+  expect(payloads[0]).toMatchObject({ role: "assistant", content: "", toolCalls: [{ name: "image_assistance", id: "image-assistance:turn-a:input-a" }] });
+  expect(payloads[1]).toMatchObject({ role: "tool", toolName: "image_assistance", sensitiveMetadata: { toolCallId: "image-assistance:turn-a:input-a" } });
+  expect(JSON.stringify(payloads[1])).toContain("123.45");
 });

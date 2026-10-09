@@ -1,6 +1,8 @@
 import { warn } from "@nautilo/logger";
 import { findResumedMemoryReviewAdmission, finishMemoryReviewTurn, memoryReviewCompletionState } from "../memory-review/admission";
-import type { ServerEvent } from "@nautilo/types";
+import { projectTaskTranscriptToolArgs, type ServerEvent } from "@nautilo/types";
+import type { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { projectSemanticComputerResult } from "@nautilo/agent";
 import { TokenBatcher, ToolCallTracker } from "../utils/token-batcher";
 import { processStreamEvent } from "./langgraph-executor";
 import { persistMessages } from "./persist-messages";
@@ -14,25 +16,80 @@ import {
   protectLiveShadowAssistantToken,
   publishLiveShadowRuntimeMessages,
 } from "../conversation/live-shadow-agent-runtime-events";
+import {
+  createForegroundContextRebuilder,
+  ForegroundContextReceipts,
+} from "./foreground-context-refresh";
+import { foregroundRecordContextPortForRoom } from
+  "../reflection/foreground-record-context";
+import { protectLiveShadowForegroundRecordContext } from
+  "../conversation/live-shadow-turn-context";
 
 export interface PersistingProcessorDeps {
   threadId: string;
   ownerId: string;
   agentId?: string;
   roomId?: string;
-  /** D426 — canonical child Room id for a resumed Subthread turn. */
+  /** Canonical child Room id for a resumed Subthread turn. */
   subthreadRoomId?: string;
   laneKey: string;
   eventBus: { emit(event: ServerEvent): void };
   humanTurnId?: string;
   causalHumanUserId?: string;
+  /** Ordinary Room-backed Task graphs suppress invocation telemetry. Restore
+   * their terminal events from newly inserted durable results, never tracing. */
+  taskToolLifecycle?: { taskId: string; taskRunId: string; isCurrent(): boolean };
 }
 
 /**
  * M070 — same stream adapter as auth resume sites used inline, plus
  * `messagesToPersist` → `persistMessages` (matches `langgraphExecutor`).
  */
-export function createPersistingProcessor(deps: PersistingProcessorDeps) {
+export function createPersistingProcessor(
+  deps: PersistingProcessorDeps,
+  internal: Readonly<{
+    createForegroundContextRebuilder: typeof createForegroundContextRebuilder;
+  }> = { createForegroundContextRebuilder },
+) {
+  // Room-backed Tasks have their own durable lifecycle projection and must not
+  // acquire foreground refresh behavior merely because they share a Room lane.
+  const foregroundRefreshEnabled =
+    deps.taskToolLifecycle === undefined
+    && deps.roomId !== undefined
+    && deps.agentId !== undefined
+    && deps.laneKey.startsWith("room:");
+  const foregroundContextReceipts = foregroundRefreshEnabled
+    ? new ForegroundContextReceipts(undefined, false)
+    : undefined;
+  let foregroundExecutionId = foregroundRefreshEnabled
+    ? deps.humanTurnId?.trim() || undefined
+    : undefined;
+  const rebuildForegroundContext = foregroundContextReceipts === undefined
+    ? undefined
+    : (transition: Parameters<ReturnType<typeof createForegroundContextRebuilder>>[0]) => {
+      const recordContextEligible =
+        transition.state.trustedExecutionEntrypoint === "foreground.main"
+        || transition.state.trustedExecutionEntrypoint === "foreground.fork";
+      const ordinaryRecordContext = recordContextEligible
+        ? foregroundRecordContextPortForRoom(deps.roomId!)
+        : undefined;
+      return internal.createForegroundContextRebuilder({
+        roomId: deps.roomId!,
+        ownerId: deps.ownerId,
+        agentId: deps.agentId!,
+        receipts: foregroundContextReceipts,
+        // A resume processor is created before the protected session enters
+        // its AsyncLocalStorage scope. Bind protection at rebuild time so the
+        // reader sees the current resume grant and policy instead of retaining
+        // the ordinary port selected outside that scope.
+        ...(ordinaryRecordContext === undefined
+          ? {}
+          : {
+              recordContext:
+                protectLiveShadowForegroundRecordContext(ordinaryRecordContext),
+            }),
+      })(transition);
+    };
   const tokenBatcher = new TokenBatcher({
     laneKey: deps.laneKey,
     ...(deps.agentId ? { authorAgentId: deps.agentId } : {}),
@@ -60,6 +117,7 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
       context.enforcementPolicy,
       context.observeBoundary,
       context.dataOperationPolicy,
+      foregroundExecutionId,
     );
     return liveShadowRuntime;
   };
@@ -67,6 +125,7 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
   const persistOrdinary = (
     messages: Parameters<typeof persistMessages>[2],
     assistantMessageKey?: string,
+    taskTurnId?: string,
   ) => persistMessages(deps.threadId, deps.ownerId, messages, savedFingerprints, {
     eventBus: { emit(event) {
       if (event.type === "session.persistence_failed") persistenceFailed = true;
@@ -89,12 +148,54 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
         : null,
     },
     laneKey: deps.laneKey,
+    ...(foregroundContextReceipts === undefined
+      ? {}
+      : {
+          ...(foregroundExecutionId === undefined
+            ? {}
+            : { foregroundExecutionId }),
+          onCommittedRows: (rows: readonly { id: string }[]) =>
+            foregroundContextReceipts.recordIds(
+              rows.map((row) => Number(row.id)),
+            ),
+          requireDurable: "foreground-context" as const,
+        }),
+    ...(taskTurnId && deps.roomId && deps.agentId && deps.taskToolLifecycle ? {
+      onToolCallsPersisted: (message: AIMessage) => {
+        const tracker = new ToolCallTracker(deps.agentId, taskTurnId);
+        for (const call of message.tool_calls ?? []) {
+          if (!deps.taskToolLifecycle?.isCurrent()) return;
+          if (!call.id || !call.name || call.name === "skip") continue;
+          // Preserve parseable canonical arguments through the existing Task
+          // preview redactor rather than provider tracing or raw byte prefixes.
+          deps.eventBus.emit({ ...tracker.toolStart(call.id, call.name),
+            laneKey: `room:${deps.roomId}`,
+            argsSummary: JSON.stringify(projectTaskTranscriptToolArgs(call.args)),
+          });
+        }
+      },
+      onToolResultPersisted: (message: ToolMessage) => {
+        if (!deps.taskToolLifecycle?.isCurrent() || !message.tool_call_id || !message.name) return;
+        const failed = message.status === "error" || message.additional_kwargs["nautilo_tool_status"] === "error";
+        const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content);
+        const tracker = new ToolCallTracker(deps.agentId, taskTurnId);
+        deps.eventBus.emit({ ...tracker.toolEnd(message.tool_call_id, message.name,
+          failed ? "error" : "success", undefined, projectSemanticComputerResult(message.name, content)),
+          laneKey: `room:${deps.roomId}` });
+      },
+    } : {}),
   });
 
   return {
+    ...(rebuildForegroundContext === undefined
+      ? {}
+      : { rebuildForegroundContext }),
     async beginResume(checkpointThreadId: string, turnId: string) {
       persistenceFailed = false;
       resumedMemory = undefined;
+      if (foregroundRefreshEnabled && foregroundExecutionId === undefined) {
+        foregroundExecutionId = turnId.trim() || undefined;
+      }
       if (!deps.agentId) return;
       try {
         resumedMemory = await findResumedMemoryReviewAdmission({ checkpointThreadId, turnId,
@@ -124,6 +225,9 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
             state: liveShadowStreamState,
             event,
             messagesToPersist,
+            ...(foregroundExecutionId === undefined
+              ? {}
+              : { foregroundExecutionId }),
           });
           for (const protectedEvent of protectedStream.events) {
             deps.eventBus.emit(protectedEvent);
@@ -140,13 +244,34 @@ export function createPersistingProcessor(deps: PersistingProcessorDeps) {
             laneKey: deps.laneKey,
             agentId: deps.agentId ?? "",
             messages: messagesToPersist,
+            ...(foregroundExecutionId === undefined
+              ? {}
+              : { foregroundExecutionId }),
+            ...(foregroundContextReceipts === undefined
+              ? {}
+              : {
+                  onCommittedMessageIds:
+                    foregroundContextReceipts.recordIds,
+                }),
             persistOrdinary: (messages) =>
               persistOrdinary([...messages], assistantMessageKey),
             warn: () => undefined,
           });
           for (const event of protectedEvents) deps.eventBus.emit(event);
         } else {
-          await persistOrdinary(messagesToPersist, assistantMessageKey);
+          // Read only server-owned graph input. A tracing event, another Task,
+          // or an unsuppressed foreground graph cannot manufacture lifecycle.
+          const data = ev && typeof ev === "object" ? (ev as { data?: { input?: unknown } }).data : undefined;
+          const input = data?.input && typeof data.input === "object" ? data.input as Record<string, unknown> : undefined;
+          const taskTurnId = deps.taskToolLifecycle && deps.roomId && deps.agentId
+            && input?.["taskRun"] === true && input["subagentRun"] === true
+            && input["suppressToolLifecycleEvents"] === true
+            && input["currentTaskId"] === deps.taskToolLifecycle.taskId
+            && input["currentTaskRunId"] === deps.taskToolLifecycle.taskRunId
+            && input["roomId"] === deps.roomId && input["agentId"] === deps.agentId
+            && typeof input["turnId"] === "string" && input["turnId"].length > 0
+            ? input["turnId"] : undefined;
+          await persistOrdinary(messagesToPersist, assistantMessageKey, taskTurnId);
         }
       }
     },

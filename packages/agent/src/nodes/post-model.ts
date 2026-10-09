@@ -1,3 +1,14 @@
+import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
+import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
+import { bindGitHubInvocation, prepareGitHubInvocation } from "../tools/invocation-service";
+import { githubApprovalId, githubPublishing, parseGitHubOperation, type GitHubInvocationBinding } from "@nautilo/types";
+import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { parseHumanTerminalOperation } from "../../../types/src/human-terminal";
+import { createHash } from "node:crypto";
+import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "@nautilo/relay";
+import type { VerifiedOrdinaryOrigin } from "@nautilo/types";
+import { isLocalExecutionTool, localExecutionOperation, writeStdinSchema } from "../tools/local-execution/local-execution";
+import { localGitSchema } from "../tools/local-git/local-git";
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
 import { actors, and, eq, getTaskById, roomMembers, taskRuns } from "@nautilo/db";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
@@ -79,7 +90,7 @@ import {
 } from "../runtime/ordinary-content-access";
 import { resolveRunShellTimeout } from "../tools/shell/run-shell";
 import { resolveToolsForExposure } from "./pre-model";
-import { resolveExecutionPolicy } from "./tools";
+import { resolveExecutionPolicy, getRelayRegistry } from "./tools";
 import { getOrdinaryHostResolver } from "../runtime/ordinary-host-resolver";
 import {
   checkCategoricalHostAdmissionPrerequisite,
@@ -108,7 +119,7 @@ import {
 } from "../tools/media/media-generation-approval-runtime";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
 import { personalFundingToolDenialMessage } from "./tools";
-import { isPersonalTaskControlCall } from "../runtime/personal-task-controls";
+import { personalToolCallSupported } from "../runtime/personal-tool-readiness";
 
 // ---------------------------------------------------------------------------
 // Interrupt payloads
@@ -154,6 +165,8 @@ interface IdentityChallengeEnrollPinPayload {
  * before. Production wires this from `createNautiloGraph`'s deps.
  */
 export interface PostModelDeps {
+  delegatedLocalExecutionPortForState?: (state: NautiloState) => DelegatedLocalExecutionPort | undefined;
+  humanTerminalAdmissionPortForState?: (state: NautiloState) => import("../tools/terminal/admission").HumanTerminalAdmissionPort | undefined;
   /** Request-local funding class. It is never copied into graph state. */
   foregroundChatFundingSession?: ForegroundChatFundingSession;
   /** Server-verified redundant self-contact check for an existing scheduled Task. */
@@ -322,6 +335,9 @@ export interface WorkstationApprovalOverrideRequest {
   readonly workspacePath: string;
   /** Paired-mobile turns pin any Workstation plan to this exact host. */
   readonly requiredRelayId?: string;
+  readonly verifiedOrdinaryOrigin?: VerifiedOrdinaryOrigin | null | undefined;
+  readonly agentId?: string;
+  readonly conversationId?: string;
   /**
    * Request-side audit envelope (ip / userAgent) from the
    * executing turn's `securityAuditClientMeta`, stamped onto the redacted
@@ -366,6 +382,7 @@ export type UncontainedHostCommandsDispatchResolver = (
     readonly executionClass: "real_workstation";
     /** Server-local activation fence; never serialized into a relay frame. */
     readonly activationSignal: AbortSignal;
+    readonly activationId: string;
   }
   | { readonly admitted: false; readonly reason: string }
   | Promise<
@@ -373,6 +390,7 @@ export type UncontainedHostCommandsDispatchResolver = (
       readonly admitted: true;
       readonly executionClass: "real_workstation";
       readonly activationSignal: AbortSignal;
+      readonly activationId: string;
     }
     | { readonly admitted: false; readonly reason: string }
   >;
@@ -399,6 +417,9 @@ export interface ApprovalAskInterruptPayload {
  *  `verb` is present for ask-interrupts; absent for legacy prove_it
  *  interrupts (which just returns `{ approved }` directly). */
 interface ResumeDecision {
+  githubApprovalId?: string;
+  githubDigest?: string;
+  githubLaneKey?: string;
   approved?: boolean;
   verb?: ApprovalReplyVerb;
   /** Exact approval receipt; mandatory with the digest for local MCPs. */
@@ -436,7 +457,7 @@ interface HostChoiceResumeDecision {
  *      - `require_approval`     → hand to the verb map (step 2)
  *
  *   2. For each `require_approval` tool, consult the verb map via
- *      `resolveApproval()`:
+ *      `resolveApproval`:
  *      - If an standing approval (room/server) matches → auto-approve
  *        (bypass interrupts); emit a grep-able auto-approval log line.
  *      - Else `verb === "ask"`      → new approval_ask interrupt
@@ -489,8 +510,7 @@ export function createPostModelNode(
     if (
       deps?.foregroundChatFundingSession?.kind === "personal"
       && (
-        deps.foregroundChatFundingSession.personalTaskControls !== true
-        || toolCalls.some((call) => !isPersonalTaskControlCall(call))
+        toolCalls.some((call) => !personalToolCallSupported(call, deps.foregroundChatFundingSession?.personalTaskControls === true))
       )
     ) {
       return {
@@ -713,6 +733,9 @@ export function createPostModelNode(
           continue;
         }
       }
+      if (tc.name === "local_github" && githubPublishing(tc.args) && decision.type === "read_only") {
+        forbidden.push({ tc, reason: "This actor has read-only GitHub access. Publishing is not permitted." }); continue;
+      }
       switch (decision.type) {
         case "allow":
         case "read_only":
@@ -767,6 +790,9 @@ export function createPostModelNode(
     // stable denial; one is pinned automatically; several pause for an
     // opaque, one-use human choice. The tools node resolves again immediately
     // before dispatch, so a host that changes after this point fails closed.
+    const delegatedLocalExecutionBindings: Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4> = {};
+    const delegatedPort = deps?.delegatedLocalExecutionPortForState
+      ? deps.delegatedLocalExecutionPortForState(state) : getCurrentLocalExecutionDelegation();
     const requiredHostByToolCall = new Map<string, string>();
     const verifiedOrdinaryOrigin = state.verifiedOrdinaryOrigin;
     if (verifiedOrdinaryOrigin && !catalog) {
@@ -781,7 +807,37 @@ export function createPostModelNode(
       const resolveCandidates = async (candidates: ToolCall[]): Promise<ToolCall[]> => {
         const retained: ToolCall[] = [];
         for (const tc of candidates) {
+          if (isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task") {
+            const registry = getRelayRegistry();
+            const operation = localExecutionOperation(tc.name, tc.args);
+            if (!delegatedPort || !registry || !tc.id) {
+              forbidden.push({ tc, reason: "This Task has no current delegated computer authority. Recreate it from the intended Mac and project." });
+              continue;
+            }
+            try {
+              const pin = state.delegatedLocalExecutionBindings?.[tc.id] ?? await task("pin_delegated_local_execution", async () =>
+                await delegatedPort.withAdmission(operation, source => Promise.resolve(bindDelegatedLocalExecution({ registry, source, state,
+                  invocationId: tc.id!, operation,
+                  ...(typeof tc.args["session_id"] === "string" ? { executionId: tc.args["session_id"] } : {}) }))))();
+              const current = pin && await delegatedPort.withAdmission(operation, source => Promise.resolve(bindDelegatedLocalExecution({ registry, source, state,
+                invocationId: tc.id!, operation, previous: pin,
+                ...(typeof tc.args["session_id"] === "string" ? { executionId: tc.args["session_id"] } : {}) })));
+              if (!current) throw new Error("Task target is unavailable or changed");
+              delegatedLocalExecutionBindings[tc.id] = current;
+              requiredHostByToolCall.set(tc.id, current.owner.relayId);
+              retained.push(tc);
+            } catch {
+              forbidden.push({ tc, reason: "The Task's original computer, project grant or definition is unavailable. No alternate host or replacement command was selected." });
+            }
+            continue;
+          }
           const policy = resolveExecutionPolicy(tc.name, catalog);
+          // The projected token chooses a read-only route; the host resolver
+          // still verifies the exact current Desktop's advertised capability.
+          const relayCapability = tc.name === "write_stdin" && writeStdinSchema.safeParse(tc.args).success
+            && localExecutionOperation(tc.name, tc.args) === "read"
+            && state.relayCapabilities?.["canReadLocalExecutionHistory"] === true
+            ? "canReadLocalExecutionHistory" : policy.relayCapability ?? "canReadWorkspace";
           const hostScope = resolveToolCallHostScope({
             classified: policy.hostScope,
             toolName: tc.name,
@@ -830,7 +886,7 @@ export function createPostModelNode(
             origin: verifiedOrdinaryOrigin,
             toolCallId: tc.id,
             toolName: tc.name,
-            relayCapability: policy.relayCapability ?? "canReadWorkspace",
+            relayCapability,
             ...(policy.hostedBy ? { hostedBy: policy.hostedBy } : {}),
           });
           if (resolution.status === "choice_required") {
@@ -854,7 +910,7 @@ export function createPostModelNode(
               origin: verifiedOrdinaryOrigin,
               toolCallId: tc.id,
               toolName: tc.name,
-              relayCapability: policy.relayCapability ?? "canReadWorkspace",
+              relayCapability,
               ...(policy.hostedBy ? { hostedBy: policy.hostedBy } : {}),
               choice: { choiceId: decision.choiceId, selector: decision.selector },
             });
@@ -872,12 +928,127 @@ export function createPostModelNode(
       pending = await resolveCandidates(pending);
     }
 
+    // Capture the selected mode inside a checkpointed task before any approval
+    // interrupt. Resume cannot bind a queued command to a replacement activation.
+    const fullMacInvocationBindings: Record<string, NonNullable<NautiloState["fullMacInvocationBindings"]>[string]> = { ...state.fullMacInvocationBindings };
+    const selectExecutionModes = async (calls: ToolCall[]) => {
+      const retained: ToolCall[] = [];
+      for (const tc of calls) {
+        if (tc.name !== "exec_command" || !tc.id || !deps?.resolveUncontainedHostCommandsDispatch) { retained.push(tc); continue; }
+        const origin = state.verifiedOrdinaryOrigin;
+        const humanId = causalHumanForExecution(state.causalHumanUserId) || origin?.userId;
+        const registry = getRelayRegistry();
+        if (origin?.kind !== "local_electron" || !humanId || origin.userId !== humanId || !registry
+          || state.trustedExecutionEntrypoint !== "foreground.main") { retained.push(tc); continue; }
+        const pin = state.fullMacInvocationBindings?.[tc.id] ?? await task("select_local_execution_mode", async () => {
+          const decision = await deps.resolveUncontainedHostCommandsDispatch!({ userId: humanId,
+            actorId, toolCallId: tc.id!, relayId: origin.relayId, foregroundLocalElectron: origin,
+            clientMeta: state.securityAuditClientMeta ?? null });
+          return { activationId: decision.admitted ? decision.activationId : null, relayId: origin.relayId,
+            desktopSessionId: origin.desktopSessionId, pairingGeneration: origin.pairingGeneration, humanUserId: humanId, agentId: state.agentId, roomId: state.roomId, conversationId: state.currentThreadId || state.langgraphThreadId };
+        })();
+        if (pin.humanUserId !== humanId || pin.agentId !== state.agentId || pin.roomId !== state.roomId || pin.conversationId !== (state.currentThreadId || state.langgraphThreadId)
+          || pin.relayId !== origin.relayId || pin.desktopSessionId !== origin.desktopSessionId || pin.pairingGeneration !== origin.pairingGeneration
+          || (pin.activationId !== null && (tc.args["tty"] === true
+            || registry.getCapabilities(origin.relayId)?.canExecuteFullMacOneShot !== true
+            || (registry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION))) {
+          forbidden.push({ tc, reason: "Full Mac supports one-shot pipe commands only on its exact current Desktop. No contained fallback was attempted." }); continue;
+        }
+        fullMacInvocationBindings[tc.id] = pin;
+        retained.push(tc);
+      }
+      return retained;
+    };
+    approved = await selectExecutionModes(approved); pending = await selectExecutionModes(pending);
+
+    // Actor permission does not mint contained execution authority. Even an
+    // already-allowed start must pass ordinary command approval. Foreground
+    // starts also acquire their plan there; delegated starts retain the exact
+    // Task binding without borrowing the foreground Workstation override.
+    const allowedManagedStarts = approved.filter(tc => tc.name === "exec_command");
+    approved = approved.filter(tc => tc.name !== "exec_command");
+    pending.push(...allowedManagedStarts);
+
     // semantic desktop tools never enter generic ask / prove_it /
     // Auto-Approve routing. A server-owned resolver must establish exact
     // live authority first. This wave has deliberately not added a durable
     // per-call binding channel from post-model to toolsNode/Electron, so an
     // otherwise-admitted result remains unavailable rather than being
     // downgraded to an unauthenticated relay call.
+    const humanTerminalInvocationBindings: Record<string, import("@nautilo/relay").RelayHumanTerminalBinding> = {};
+    const bindHumanTerminalCalls = (calls: ToolCall[]) => calls.filter(tc => {
+      if (tc.name !== "human_terminal") return true;
+      const registry = getRelayRegistry();
+      const origin = state.verifiedOrdinaryOrigin;
+      const humanId = causalHumanForExecution(state.causalHumanUserId) || origin?.userId;
+      const capability = origin?.kind === "local_electron" ? parseRelayHumanTerminalCapability(registry?.getCapabilities(origin.relayId)?.humanTerminal) : null;
+      const alreadySettled = state.messages.some(message => ToolMessage.isInstance(message) && message.tool_call_id === tc.id && message.name === "human_terminal");
+      const old = tc.id ? parseRelayHumanTerminalBinding(state.humanTerminalInvocationBindings?.[tc.id]) : null;
+      if (alreadySettled || !tc.id || !state.turnId || !state.roomId || !state.agentId || !humanId || !capability || !registry
+        || origin?.kind !== "local_electron" || origin.userId !== humanId || state.trustedExecutionEntrypoint !== "foreground.main"
+        || state.taskRun || state.subagentRun || !(state.currentThreadId || state.langgraphThreadId)
+        || (registry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION
+        || capability.owner.humanUserId !== humanId || capability.owner.agentId !== state.agentId || capability.owner.roomId !== state.roomId
+        || capability.owner.desktopSessionId !== origin.desktopSessionId || capability.owner.relayId !== origin.relayId
+        || registry.getPairingGeneration?.(origin.relayId) !== origin.pairingGeneration
+        || registry.getLocalExecutionPairingGeneration?.(origin.relayId) !== capability.owner.pairingGeneration
+        || (old && old.generation !== capability.generation)) {
+        forbidden.push({ tc, reason: "The exact Human terminal handoff changed or is unavailable. A queued input cannot move to a new handoff." }); return false;
+      }
+      humanTerminalInvocationBindings[tc.id] = old ?? { version: 1, generation: capability.generation,
+        invocationId: createHash("sha256").update(JSON.stringify([state.turnId, state.agentId, state.currentThreadId || state.langgraphThreadId, tc.id])).digest("hex"),
+        owner: { ...capability.owner, conversationId: state.currentThreadId || state.langgraphThreadId } };
+      return true;
+    });
+    approved = bindHumanTerminalCalls(approved); pending = bindHumanTerminalCalls(pending);
+    // The checkpointed task keeps the original account/target/body and custody
+    // generation through interrupt replay. Publishing never consults AutoApprove
+    // or standing command rules and cannot silently prepare a replacement.
+    const githubInvocationBindings: Record<string, GitHubInvocationBinding> = {};
+    const githubCalls = [...approved, ...pending].filter(tc => tc.name === "local_github");
+    approved = approved.filter(tc => tc.name !== "local_github");
+    pending = pending.filter(tc => tc.name !== "local_github");
+    for (const tc of githubCalls) {
+      const port = deps?.humanTerminalAdmissionPortForState?.(state);
+      const request = parseGitHubOperation(tc.args);
+      if (!tc.id || !port || !request) {
+        forbidden.push({ tc, reason: "GitHub requires an exact source-admitted account operation." }); continue;
+      }
+      const publishing = githubPublishing(request);
+      const captured = await task("prepare_exact_github_operation", async () => {
+        try {
+          if (publishing) return await prepareGitHubInvocation(state, tc, port);
+          return await port.withAdmission(() => {
+            const binding = bindGitHubInvocation(state, tc.id!, "read", state.githubInvocationBindings?.[tc.id!]);
+            return Promise.resolve(binding ? { binding, prepared: null } : null);
+          });
+        } catch { return null; }
+      })();
+      if (!captured || (captured.prepared && JSON.stringify(parseGitHubOperation(captured.prepared.request)) !== JSON.stringify(request))
+        || !bindGitHubInvocation(state, tc.id, publishing ? "prepare" : "read", captured.binding)) {
+        forbidden.push({ tc, reason: "The original GitHub account/profile/source binding is no longer available. Nothing was republished." }); continue;
+      }
+      try { await port.withAdmission(() => {
+        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", captured.binding)) return Promise.reject(new Error("GITHUB_AUTHORITY_CHANGED"));
+        return Promise.resolve();
+      }); } catch { forbidden.push({ tc, reason: "GitHub source admission changed. No account content was released." }); continue; }
+      if (!publishing) { githubInvocationBindings[tc.id] = captured.binding; approved.push(tc); continue; }
+      if (!captured.prepared) { forbidden.push({ tc, reason: "GitHub publishing preparation is unavailable." }); continue; }
+      const approvalId = githubApprovalId(captured.prepared), githubLaneKey = resolveLaneKey(state);
+      const decision: ResumeDecision | undefined = interrupt({ type: "approval_ask", approvalId,
+        tools: [{ name: tc.name, id: tc.id, args: {} }], userId: captured.binding.owner.humanUserId,
+        reason: "Publish this exact GitHub change using the displayed account?", reasonCode: "destructive-tool",
+        allowedVerbs: ["once", "deny"], requiresExplicitReview: true,
+        github: { version: 1, approvalId, digest: captured.prepared.digest, prepared: captured.prepared } });
+      if (decision?.approved !== true || decision.verb !== "once" || decision.githubApprovalId !== approvalId
+        || decision.githubDigest !== captured.prepared.digest || decision.githubLaneKey !== githubLaneKey
+        || !bindGitHubInvocation(state, tc.id, "prepare", captured.binding)) {
+        forbidden.push({ tc, reason: "GitHub publishing was denied or its exact review is stale. No publication was retried." }); continue;
+      }
+      githubInvocationBindings[tc.id] = { ...captured.binding, stage: "publish", prepared: captured.prepared,
+        approval: { verb: "once", approvalId, digest: captured.prepared.digest } };
+      approved.push(tc);
+    }
     const computerAdmissionResolver = deps?.resolveComputerUseAdmission;
     const computerUseInvocationBindings = new Map<string, ComputerUseInvocationBinding>();
     const computerUseNeedsUser: Array<{
@@ -1078,6 +1249,8 @@ export function createPostModelNode(
         capabilitylessExplicitApprovalLevel(tc.name) === "prove_it";
       if (
         overrideResolver &&
+        !delegatedLocalExecutionBindings[tc.id ?? ""] &&
+        !(tc.name === "exec_command" && tc.id && fullMacInvocationBindings[tc.id]?.activationId) &&
         approval.verb !== "block" &&
         !preservesCapabilitylessPinFloor &&
         state.userId
@@ -1085,12 +1258,15 @@ export function createPostModelNode(
         let overrideDecision: WorkstationAdmissionDecision | null = null;
         try {
           overrideDecision = await overrideResolver({
-            userId: state.userId,
+            userId: (isLocalExecutionTool(tc.name) || tc.name === "local_git") ? (causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "") : state.userId,
             toolCall: tc,
             actorId,
             roomId: state.roomId ?? "",
             currentFolder: state.currentFolder ?? "",
             workspacePath: state.workspacePath ?? "",
+            verifiedOrdinaryOrigin: state.verifiedOrdinaryOrigin,
+            agentId: state.agentId,
+            conversationId: state.currentThreadId || state.langgraphThreadId,
             ...(tc.id && requiredHostByToolCall.has(tc.id)
               ? { requiredRelayId: requiredHostByToolCall.get(tc.id)! }
               : {}),
@@ -1136,13 +1312,31 @@ export function createPostModelNode(
     // Run DB matches concurrently. Skip entirely for anonymous /
     // unauthenticated turns (no userId) — fail-closed to ask, no cross-user
     // leak.
-    const userIdForMatch = state.userId || "";
+    // Only a live, exact delegated Task source selects the requesting Human
+    // for the entire batch. Ordinary Tasks retain their legacy owner contract.
+    const causalHuman = causalHumanForExecution(state.causalHumanUserId);
+    let taskApprovalHuman: string | null = null;
+    if (state.trustedExecutionEntrypoint === "background.task" && deps?.delegatedLocalExecutionPortForState
+      && !delegatedPort && getCurrentLocalExecutionDelegation()) {
+      throw new Error("Delegated Task approval source unavailable");
+    }
+    if (state.trustedExecutionEntrypoint === "background.task" && delegatedPort) {
+      if (!causalHuman || delegatedPort.taskId !== state.currentTaskId || delegatedPort.taskRunId !== state.currentTaskRunId) {
+        throw new Error("Delegated Task approval source changed");
+      }
+      taskApprovalHuman = await delegatedPort.withAdmission("read", source => {
+        if (source.taskId !== state.currentTaskId || source.taskRunId !== state.currentTaskRunId
+          || source.delegation.humanUserId !== causalHuman) throw new Error("Delegated Task approval source changed");
+        return Promise.resolve(causalHuman);
+      });
+    }
+    const approvalHuman = taskApprovalHuman ?? state.userId ?? "";
     const roomIdForMatch = state.roomId ? state.roomId : null;
     const matchResults = await Promise.all(
       matchCandidates.map((cand) =>
-        userIdForMatch
+        approvalHuman
           ? matchStandingApprovalForTool({
-              userId: userIdForMatch,
+              userId: approvalHuman,
               roomId: roomIdForMatch,
               tc: cand.tc,
               matchCapabilityFn,
@@ -1160,7 +1354,7 @@ export function createPostModelNode(
           `[post_model] approval_auto_approved ${cand.tc.name} scope=${matched.scope} standingApprovalId=${matched.id}` +
             (matched.viaCapability ? ` capability=${matched.capabilitySlug}` : ""),
         );
-        if (deps?.recordAutoApproval && userIdForMatch) {
+        if (deps?.recordAutoApproval && approvalHuman) {
           const signatureKey = matched.viaCapability && matched.capabilitySlug
             ? capabilitySignatureKey(matched.capabilitySlug)
             : classifyCall(
@@ -1168,7 +1362,7 @@ export function createPostModelNode(
                 (cand.tc.args ?? {}) as Record<string, unknown>,
               ).signatureKey;
           deps.recordAutoApproval({
-            userId: userIdForMatch,
+            userId: approvalHuman,
             scope: matched.scope,
             toolName: cand.tc.name,
             signatureKey,
@@ -1503,9 +1697,9 @@ export function createPostModelNode(
       // verbatim.
       if (
         deps?.isPinEnrolled &&
-        state.userId
+        approvalHuman
       ) {
-        const enrolled = await deps.isPinEnrolled(state.userId);
+        const enrolled = await deps.isPinEnrolled(approvalHuman);
         if (!enrolled || replayingEnrollment) {
           const protectedMemoryTools: NonNullable<
             IdentityChallengeEnrollPinPayload["protectedMemoryTools"]
@@ -1531,13 +1725,13 @@ export function createPostModelNode(
             type: "identity_challenge",
             mode: "enrollPin",
             enrollmentToolCallIds,
-            ...(state.userId ? { userId: state.userId } : {}),
+            ...(approvalHuman ? { userId: approvalHuman } : {}),
             ...(protectedMemoryTools.length === 0
               ? {}
               : { protectedMemoryTools }),
           };
           log(
-            `[post_model] Logto user ${state.userId} has no PIN; interrupting for enrollPin before prove_it (${proveItBatch.length} tool(s) pending)`,
+            `[post_model] Logto user ${approvalHuman} has no PIN; interrupting for enrollPin before prove_it (${proveItBatch.length} tool(s) pending)`,
           );
           // Resume value is unused here — the route's resumeGraphWith-
           // Identity passes `{ verified: true, ... }` and we just
@@ -1553,7 +1747,7 @@ export function createPostModelNode(
         type: "prove_it_challenge",
         tools: await Promise.all(proveItBatch.map(async (tc) => ordinaryPreviewByCall.get(tc) ?? protectedMemoryEntries.get(tc)
           ?? interruptToolEntry(tc, state, protectedMemoryAccessPort))),
-        ...(state.userId ? { userId: state.userId } : {}),
+        ...(approvalHuman ? { userId: approvalHuman } : {}),
       };
       log(`[post_model] Interrupting for prove_it: ${proveItBatch.map((tc) => tc.name).join(", ")}`);
       const decision: ResumeDecision | undefined = interrupt(payload);
@@ -1571,6 +1765,9 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
+          fullMacInvocationBindings,
+          humanTerminalInvocationBindings, githubInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
           requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1590,7 +1787,7 @@ export function createPostModelNode(
     if (askBatch.length > 0) {
       const payload = buildAskPayload(
         askBatch,
-        state.userId || undefined,
+        approvalHuman || undefined,
         localMcpInstallApproval,
         localMcpInstallApprovalKey,
         mediaGenerationApproval,
@@ -1618,6 +1815,9 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
+          fullMacInvocationBindings,
+          humanTerminalInvocationBindings, githubInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
           requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1649,6 +1849,9 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
+          delegatedLocalExecutionBindings,
+          fullMacInvocationBindings,
+          humanTerminalInvocationBindings, githubInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
           requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1683,7 +1886,9 @@ export function createPostModelNode(
         return {
           messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
           approvedToolCalls: approved,
-          requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
+          delegatedLocalExecutionBindings,
+          fullMacInvocationBindings,
+          humanTerminalInvocationBindings, githubInvocationBindings, requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
           approvalDenied: true,
           identityEnrollmentToolCallIds: [],
@@ -1695,7 +1900,7 @@ export function createPostModelNode(
       askBatch = askBatch.filter(({ tc }) => approveFresh([tc]).length > 0);
       for (const { tc } of askBatch) {
         if (verb === "room" || verb === "always") {
-          if (state.userId) {
+          if (approvalHuman) {
             const capabilitySlug = standingApprovalCapabilityForTool(tc.name);
             const scope = standingApprovalScopeForVerb(verb, state.roomId);
             if (scope === null) {
@@ -1704,7 +1909,7 @@ export function createPostModelNode(
               );
             } else if (capabilitySlug) {
               await createCapabilityFn({
-                userId: state.userId,
+                userId: approvalHuman,
                 scope,
                 roomId: scope === "room" ? state.roomId : null,
                 capabilitySlug,
@@ -1716,7 +1921,7 @@ export function createPostModelNode(
                 (tc.args ?? {}) as Record<string, unknown>,
               );
               await createFn({
-                userId: state.userId,
+                userId: approvalHuman,
                 scope,
                 roomId: scope === "room" ? state.roomId : null,
                 toolName: tc.name,
@@ -1760,6 +1965,9 @@ export function createPostModelNode(
       return {
         messages: mergeMessagesPreservingInvariants(state.messages, denialMessages),
         approvedToolCalls: approved,
+        delegatedLocalExecutionBindings,
+        fullMacInvocationBindings,
+        humanTerminalInvocationBindings, githubInvocationBindings,
         computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
         requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
         pendingApproval: [],
@@ -1770,6 +1978,9 @@ export function createPostModelNode(
 
     return {
       approvedToolCalls: approved,
+      delegatedLocalExecutionBindings,
+      fullMacInvocationBindings,
+      humanTerminalInvocationBindings, githubInvocationBindings,
       computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
       requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
       pendingApproval: [],
@@ -2296,7 +2507,7 @@ function resolveImpactApprovalForToolCall(
   level: SecurityLevel,
   policy: CatalogApprovalPolicy | undefined,
 ): ResolvedApproval {
-  const baseImpact: ToolImpact = (policy?.impact ?? "destructive") as ToolImpact;
+  const baseImpact: ToolImpact = (isLocalExecutionTool(tc.name) ? "destructive" : policy?.impact ?? "destructive") as ToolImpact;
 
   // Website task admission follows the user's request without a second
   // confirmation. Keep high-impact classification and all capability/envelope
@@ -2332,8 +2543,23 @@ function resolveImpactApprovalForToolCall(
     );
   }
 
-  if (tc.name === "run_shell") {
-    const cmd = commandFromArgs(tc.args);
+  if (tc.name === "write_stdin" && localExecutionOperation(tc.name, (tc.args ?? {}) as Record<string, unknown>) !== "input") {
+    return resolveApproval({ toolImpact: "read-only", toolName: tc.name }, level);
+  }
+  if (tc.name === "human_terminal") {
+    const operation = parseHumanTerminalOperation(tc.args);
+    if (operation?.action === "read") return resolveApproval({ toolImpact: "read-only", toolName: tc.name }, level);
+    const command = operation?.action === "run" ? operation.command : operation?.action === "write" ? operation.data : "";
+    return resolveApproval({ toolImpact: baseImpact, toolName: tc.name, commandScan: scanCommand(command, level) }, level);
+  }
+  if (tc.name === "local_git") {
+    const parsed = localGitSchema.safeParse(tc.args);
+    const readOnly = parsed.success && (parsed.data.operation === "status" || parsed.data.operation === "diff");
+    return resolveApproval({ toolImpact: readOnly ? "read-only" : "destructive", toolName: tc.name }, level);
+  }
+  if (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "write_stdin") {
+    const raw = (tc.args as Record<string, unknown>)?.[tc.name === "exec_command" ? "cmd" : "chars"];
+    const cmd = tc.name === "run_shell" ? commandFromArgs(tc.args) : typeof raw === "string" ? raw : "";
     const commandScan = scanCommand(cmd, level);
     return resolveApproval(
       {
@@ -2659,8 +2885,9 @@ export function classifyReasonCodeForEntry(entry: { tc: ToolCall; approval: Reso
   const { approval, tc } = entry;
   if (approval.severity === "destructive-high") return "command-scanner-high";
   if (approval.severity === "destructive-medium") return "command-scanner-medium";
-  if (tc.name === "run_shell") {
-    const cmd = commandFromArgs(tc.args);
+  if (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "write_stdin") {
+    const raw = (tc.args as Record<string, unknown>)?.[tc.name === "exec_command" ? "cmd" : "chars"];
+    const cmd = tc.name === "run_shell" ? commandFromArgs(tc.args) : typeof raw === "string" ? raw : "";
     if (isExternalUnknownBinary(cmd)) return "external-binary";
   }
   if (approval.severity === "destructive-low" || approval.severity === "high-impact") return "destructive-tool";

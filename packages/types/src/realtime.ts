@@ -1,3 +1,4 @@
+import type { GitHubPublishApproval } from "./github-invocation";
 /**
  * @nautilo/types - Realtime Event Types
  *
@@ -12,6 +13,7 @@ import type { DocumentPatchEvent } from "./document-patches";
 import type { DocumentMutationCommittedEvent } from "./document-mutations";
 import type {
   AdvancedVideoWorkcardContinuation,
+  ImageAssistanceSummary,
   MaintenanceState,
   MessageAttachmentRef,
   MessageArtifactOpenRef,
@@ -64,6 +66,7 @@ export interface MessageTokensEvent {
 }
 
 export interface MessageNewEvent {
+  imageAssistance?: ImageAssistanceSummary;
   /** Persisted sent time; never a socket receipt or edit time. */
   createdAt?: string;
   type: "message.new";
@@ -250,6 +253,7 @@ export interface ThreadSummaryChangedEvent {
 }
 
 export interface JobStatusEvent {
+  errorCode?: "image_assistance_failed";
   type: "job.status";
   jobId: string;
   status: "queued" | "running" | "completed" | "failed" | "timed_out" | "cancelled";
@@ -1040,6 +1044,93 @@ function projectComputerResultForEvent(result: string): ToolResultEventProjectio
   return eventResultFits(projected) ? { result: projected, truncated: true } : null;
 }
 
+/** Validate the closed managed receipt before a presentation surface preserves
+ * its byte cursors. This grants no native execution or observation authority. */
+export function isLocalExecutionResultForPresentation(result: string): boolean {
+  let parsed: unknown;
+  try { parsed = JSON.parse(result); } catch { return false; }
+  const root = record(parsed);
+  const output = record(root?.["output"]);
+  const keys = ["executionId", "session_id", "generation", "state", "tty", "pid", "exitCode", "signal",
+    "terminationScope", "failureCode", "expiresAt", "resources", "output",
+    ...(root?.["historical"] === true ? ["historical"] : []),
+    ...(root?.["search"] !== undefined ? ["search"] : [])];
+  const outputKeys = ["data", "cursor", "nextCursor", "availableFrom", "produced", "gap", "hasMore"];
+  const cursorValue = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+  if (root === null || output === null || Object.keys(root).length !== keys.length
+    || Object.keys(root).some((key) => !keys.includes(key))
+    || Object.keys(output).length !== outputKeys.length || Object.keys(output).some((key) => !outputKeys.includes(key))
+    || typeof root["executionId"] !== "string" || root["executionId"].length === 0
+    || root["session_id"] !== root["executionId"] || typeof root["generation"] !== "string" || root["generation"].length === 0
+    || typeof root["state"] !== "string" || !["starting", "running", "cancelling", "completed", "cancelled", "failed", "unknown"].includes(root["state"])
+    || typeof root["tty"] !== "boolean"
+    || !(root["pid"] === null || (cursorValue(root["pid"]) && root["pid"] > 0))
+    || !(root["exitCode"] === null || (typeof root["exitCode"] === "number" && Number.isSafeInteger(root["exitCode"])))
+    || !(root["signal"] === null || typeof root["signal"] === "string")
+    || root["terminationScope"] !== "owned_process_group"
+    || !(root["failureCode"] === null || typeof root["failureCode"] === "string")
+    || !(root["expiresAt"] === null || (typeof root["expiresAt"] === "number" && Number.isFinite(root["expiresAt"])))
+    || typeof root["resources"] !== "string" || !["pending", "owned", "released", "release_failed"].includes(root["resources"])
+    || typeof output["data"] !== "string" || !cursorValue(output["cursor"]) || !cursorValue(output["nextCursor"])
+    || !cursorValue(output["availableFrom"]) || !cursorValue(output["produced"])
+    || output["availableFrom"] > output["cursor"] || output["cursor"] > output["nextCursor"] || output["nextCursor"] > output["produced"]
+    || resultByteLength(output["data"]) !== output["nextCursor"] - output["cursor"]
+    || typeof output["gap"] !== "boolean" || output["hasMore"] !== (output["nextCursor"] < output["produced"])) return false;
+  if (root["historical"] === true && (!["completed", "cancelled", "failed", "unknown"].includes(root["state"])
+    || !["released", "release_failed"].includes(root["resources"]) || root["expiresAt"] !== null
+    || (root["resources"] === "release_failed" && root["state"] !== "unknown"))) return false;
+  if (root["search"] !== undefined) {
+    const search = record(root["search"]);
+    const searchKeys = ["matchedAt", "nextSearchCursor", "complete", "gap", "availableFrom", "produced"];
+    if (!search || Object.keys(search).length !== searchKeys.length || Object.keys(search).some(key => !searchKeys.includes(key))
+      || !cursorValue(search["nextSearchCursor"]) || search["nextSearchCursor"] < output["availableFrom"] || search["nextSearchCursor"] > output["produced"]
+      || search["availableFrom"] !== output["availableFrom"] || search["produced"] !== output["produced"]
+      || typeof search["complete"] !== "boolean" || typeof search["gap"] !== "boolean"
+      || !(search["matchedAt"] === null || (cursorValue(search["matchedAt"]) && search["matchedAt"] === output["cursor"]
+        && search["matchedAt"] < search["nextSearchCursor"] && search["complete"] === false))
+      || (search["matchedAt"] === null && (output["cursor"] !== output["produced"] || output["data"] !== ""))
+      || (search["complete"] === true && (!["completed", "cancelled", "failed", "unknown"].includes(root["state"])
+        || !["released", "release_failed"].includes(root["resources"]) || search["nextSearchCursor"] !== output["produced"]))) return false;
+  }
+  return true;
+}
+
+/** Keep managed execution control fields intact while paging only retained output. */
+function projectLocalExecutionResultForEvent(result: string): ToolResultEventProjection | null {
+  if (!isLocalExecutionResultForPresentation(result)) return null;
+  const root = JSON.parse(result) as Record<string, unknown> & {
+    output: Record<string, unknown> & { data: string; cursor: number; produced: number };
+  };
+  const output = root.output;
+  if (eventResultFits(result)) return { result, truncated: false };
+
+  const data = output["data"];
+  const cursor = output["cursor"];
+  const produced = output["produced"];
+  const encodePrefix = (length: number): string => {
+    // JavaScript offsets count UTF-16 units; never split a surrogate pair.
+    if (length > 0 && length < data.length
+      && data.charCodeAt(length - 1) >= 0xd800 && data.charCodeAt(length - 1) <= 0xdbff
+      && data.charCodeAt(length) >= 0xdc00 && data.charCodeAt(length) <= 0xdfff) length -= 1;
+    const prefix = data.slice(0, length);
+    const nextCursor = cursor + resultByteLength(prefix);
+    return JSON.stringify({ ...root, output: { ...output, data: prefix, nextCursor, hasMore: nextCursor < produced } });
+  };
+  let best = encodePrefix(0);
+  // An administrator may configure less space than the control metadata itself.
+  // Do not evade that budget or discard identity fields to manufacture a receipt.
+  if (!eventResultFits(best)) return null;
+  let low = 0;
+  let high = Math.min(data.length, TOOL_RESULT_MAX_BYTES);
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    const candidate = encodePrefix(middle);
+    if (eventResultFits(candidate)) { best = candidate; low = middle + 1; }
+    else high = middle - 1;
+  }
+  return { result: best, truncated: true };
+}
+
 /**
  * Shared tool-end event projection. Ordinary results retain the historical
  * display cap behavior. apply_patch instead receives a JSON-safe presentation
@@ -1049,6 +1140,10 @@ export function projectToolResultForEvent(
   toolName: string,
   result: string,
 ): ToolResultEventProjection {
+  if (toolName === "exec_command" || toolName === "write_stdin") {
+    const projected = projectLocalExecutionResultForEvent(result);
+    if (projected !== null) return projected;
+  }
   // The audition card needs the complete slate, language/model references,
   // and sample text. These are structured UI data, not a text preview: slicing
   // them produces invalid JSON and removes the playable card. Use the same
@@ -1127,7 +1222,7 @@ export interface ShareMemoryApprovalPreview {
   } | undefined;
 }
 
-/** M088A — server-enriched context for `share_artifact` ask / prove_it UIs.
+/** server-enriched context for `share_artifact` ask / prove_it UIs.
  *
  * -P3: parallel fields to {@link ShareMemoryApprovalPreview} (`targetHandle` …
  * `sensitivity`) must stay aligned in the agent preview helpers.
@@ -1156,7 +1251,7 @@ export interface ProveItToolInfo {
   } | undefined;
   /** present when `name === "share_memory"`. */
   shareMemoryPreview?: ShareMemoryApprovalPreview | undefined;
-  /** M088A — present when `name === "share_artifact"`. */
+  /** present when `name === "share_artifact"`. */
   shareArtifactPreview?: ShareArtifactApprovalPreview | undefined;
 }
 
@@ -1303,6 +1398,7 @@ export interface ApprovalAskEvent {
   localMcpInstall?: LocalMcpInstallApproval | undefined;
   /** exact paid media quote requiring one explicit, non-standing approval. */
   mediaGeneration?: MediaGenerationApproval | undefined;
+  github?: GitHubPublishApproval | undefined;
   /** exact Electron-local SSH target selected after the first approval. */
   structuredSsh?: StructuredSshApproval | undefined;
   /** When true clients must not auto-resolve or offer room/always scope. */

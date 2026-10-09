@@ -94,6 +94,8 @@ export interface DurableRecordPublication {
   readonly idempotencyKey: string;
   /** Opaque proof/coordinate supplied by the pre-authorized product bridge. */
   readonly publicationBindingRef: string;
+  /** Attempt-scoped coordinate authorizing the predecessor read, when distinct. */
+  readonly predecessorReadBindingRef?: string;
   /** Immutable semantic cohort origin when current payload access differs. */
   readonly originPublicationBindingRef?: string;
 }

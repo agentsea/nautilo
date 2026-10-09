@@ -1,22 +1,30 @@
 import { describe, expect, test } from "bun:test";
 
+import type { LatticeCrypto } from "../../src/crypto/index.ts";
+import {
+  createInitialNamespaceKeyrings,
+  sealNamespaceKeyring,
+} from "../../src/namespace/keyrings.ts";
+import {
+  createNamespaceBinding,
+  namespaceBindingHash,
+  verifyNamespaceBindingProof,
+} from "../../src/namespace/bindings.ts";
+import {
+  withTaskRuntimeCheckpointNamespaceV1 as withTaskRuntimeCheckpointNamespace,
+  type TaskRuntimeCheckpointIdentityV1 as TaskRuntimeCheckpointIdentity,
+  type TaskRuntimeCheckpointNamespaceMaterialV1 as TaskRuntimeCheckpointNamespaceMaterial,
+} from "../../src/object/task-runtime-checkpoint-namespace-v1.ts";
+import type {
+  TaskRuntimeResultNamespaceSourceV1 as TaskRuntimeResultNamespaceSource,
+} from "../../src/object/task-runtime-result-preparation-v1.ts";
 import {
   accessRevision,
-  createInitialNamespaceKeyrings,
-  createNamespaceBinding,
   cryptoDeviceId,
   cryptoDomainId,
   domainEpoch,
-  namespaceBindingHash,
   namespaceId,
-  sealNamespaceKeyring,
-  verifyNamespaceBindingProof,
-  withTaskRuntimeCheckpointNamespace,
-  type LatticeCrypto,
-  type TaskRuntimeCheckpointIdentity,
-  type TaskRuntimeCheckpointNamespaceMaterial,
-  type TaskRuntimeResultNamespaceSource,
-} from "../../src/index.ts";
+} from "../../src/v2-types/ids.ts";
 import {
   withTaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionEvidenceInputV1,

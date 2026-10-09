@@ -68,7 +68,7 @@ describe("M084 — subagent tool whitelist validation", () => {
     if (!r.ok) expect(r.message).toContain("unavailable in this context");
   });
 
-  test("M150: relay tool ACCEPTED with skipRelayLiveCheck (authorization-only)", () => {
+  test("retired shell remains unavailable when relay liveness is skipped", () => {
     const r = validateSubagentToolWhitelist({
       requestedTools: ["run_shell"],
       parentEnvelope: env,
@@ -78,7 +78,8 @@ describe("M084 — subagent tool whitelist validation", () => {
       subagentDepth: 1,
       subagentMaxDepth: 3,
     });
-    expect(r).toEqual({ ok: true, whitelist: ["run_shell"] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.message).toContain("unavailable in this context");
   });
 
   test("M150: skipRelayLiveCheck still rejects a forbidden tool (RBAC enforced)", () => {

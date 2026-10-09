@@ -1,8 +1,11 @@
-import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewCompletionState } from "../memory-review/admission";
+import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
+import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
+import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewSourceIds, memoryReviewCompletionState } from "../memory-review/admission";
 import type { ServerEvent } from "@nautilo/types";
 import { StrictShadowEnforcementError } from "@nautilo/lattice-bridge";
 import {
   createNautiloGraph,
+  streamForegroundGraph,
   defaultPostModelDeps,
   deleteEphemeralCheckpointThread,
   selectPromptBriefMemories,
@@ -17,6 +20,10 @@ import {
   foregroundModelControlPlanFromSnapshot,
   collectPendingInterruptEvents,
   maybeSummarizeImagesWithVisionFallback,
+  modelSupportsInput,
+  imageAssistanceContext,
+  imageAssistanceInputDigest,
+  type ImageAssistanceResult,
   clearAgentTurnContext,
   clearAgentTurnContextByKey,
   turnContextKey,
@@ -45,6 +52,7 @@ import {
   resolveForegroundHistoryMessages,
   freshForegroundRecordContextEligible,
   freshForegroundActivationState,
+  foregroundContextRefreshEligibleForActivation,
   freshForegroundTurnScopedGraphContext,
   parseVerifiedOrdinaryOrigin,
 } from "./langgraph-executor";
@@ -99,6 +107,7 @@ import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
 import {
   assertForegroundChatFundingWorkloadSupported,
   openForegroundChatFundingSessionForInvocation,
+  openImageAssistanceForInvocation,
 } from "../foreground-chat-funding-port";
 
 function parseStringArray(raw: unknown): string[] {
@@ -213,6 +222,12 @@ export async function* forkLanggraphExecutor(
   // Seed exactly the same fresh lifecycle/activation projection as main turns;
   // do not borrow a parent turn's one-shot approval or activation state.
   const foregroundActivationState = freshForkActivationState(input);
+  const foregroundContextRefreshEligible = foregroundContextRefreshEligibleForActivation({
+    roomId,
+    agentId,
+    trustedExecutionEntrypoint: foregroundActivationState.trustedExecutionEntrypoint,
+  });
+  const foregroundExecutionId = turnId || jobId;
   const liveShadowContext = getCurrentLiveShadowTurnContext();
   await prepareForegroundEncryptedContext(() =>
     enforceLiveShadowForegroundHistoryBoundary({
@@ -230,6 +245,7 @@ export async function* forkLanggraphExecutor(
       liveShadowContext.enforcementPolicy,
       liveShadowContext.observeBoundary,
       liveShadowContext.dataOperationPolicy,
+      foregroundContextRefreshEligible ? foregroundExecutionId : undefined,
     );
   if (liveShadowRuntime !== undefined) {
     foregroundActivationState.suppressToolLifecycleEvents = true;
@@ -412,6 +428,8 @@ export async function* forkLanggraphExecutor(
       : resolvedInitialRecordContext.representation === "protected"
         ? resolvedInitialRecordContext
         : undefined;
+  const retainedImageResults: ImageAssistanceResult[] = protectedTurn ? retainedImageAssistance(protectedTurn.history) : [];
+  let imageReplyContext = "";
   const historyMessages = protectedTurn === undefined
     ? await prepareForegroundEncryptedContext(
       () => resolveForegroundHistoryMessages({
@@ -421,6 +439,11 @@ export async function* forkLanggraphExecutor(
         agentId,
         modelId,
         currentHumanText: message,
+        ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
+        onAuthorizedHistory: (hits) => {
+          retainedImageResults.push(...retainedImageAssistance(hits));
+          imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
+        },
         ...(initialRecordContext === undefined
           ? {}
           : { recordContext: initialRecordContext }),
@@ -428,11 +451,12 @@ export async function* forkLanggraphExecutor(
         ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
         ...(subthreadAnchorMessageId != null ? { subthreadAnchorMessageId } : {}),
         ...(currentMessageId != null ? { currentMessageId } : {}),
+        excludeMessageIds: memoryReviewSourceIds(input),
       }),
       liveShadowContext?.session?.authorizationDeadlineAt,
     )
     : buildProtectedRoomTranscriptContext(
-      protectedTurn.history,
+      imageAssistanceHistory(protectedTurn.history.filter((hit) => !memoryReviewSourceIds(input).includes(hit.messageId))),
       modelId,
     );
 
@@ -449,12 +473,80 @@ export async function* forkLanggraphExecutor(
 
   // Like the main executor, a live Shadow fork verifies all selected context
   // before allowing the image-summary model to run.
-  const visionSummaryBlocks = await maybeSummarizeImagesWithVisionFallback({
-    humanUserId: causalHumanUserId ?? "",
-    mainModelId: modelId,
-    images: multimodalImages,
-    signal,
+  const forkUserForTranscript = buildForegroundUserHumanMessage({
+    userText: message, attachmentTextBlocks, multimodalImages, modelId,
+    suppressImageDropNote: true,
   });
+  const savedFingerprints = new Set<string>();
+
+  const foregroundContextReceipts = new ForegroundContextReceipts(currentMessageId);
+
+  const persistOptsBase = {
+    ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, onCommittedRows: foregroundContextReceipts.recordRows, foregroundExecutionId } : {}),
+    ...await memoryReviewAdmission(memoryAccessEnvelope, checkpointThreadId, { threadId: transcriptThreadId, transcriptOwnerId: ownerId, turnId, input }),
+    agentId,
+    roomId,
+    ...(subthreadRoomId ? { subthreadRoomId } : {}),
+    laneKey: effectiveLaneKey,
+    eventBus,
+    ...(turnId ? { humanTurnId: turnId } : {}),
+    trustedExecutionEntrypoint: "foreground.fork" as const,
+    notificationContext: {
+      mentionedHumanUserIds: [],
+      causalHumanUserId,
+      causalHumanTurnId: causalHumanUserId ? turnId || null : null,
+    },
+  };
+
+  // Persist the CLEAN fork-user copy to the transcript — the server-time
+  // prefix (when present) lives only in the fork checkpoint + parent splice.
+  if (protectedTurn !== undefined && input["humanAlreadyPersisted"] !== true) {
+    throw new TypeError(
+      "Protected fork Human input must be coordinate-first persisted before Agent execution",
+    );
+  }
+  if (shouldPersistForkHumanMessage({
+    protectedTurn: protectedTurn !== undefined,
+    humanAlreadyPersisted: input["humanAlreadyPersisted"] === true,
+  })) {
+    await persistMessages(
+      transcriptThreadId,
+      ownerId,
+      [forkUserForTranscript],
+      savedFingerprints,
+      {
+        ...persistOptsBase,
+        requireDurable: foregroundContextRefreshEligible ? "foreground-context" as const : multimodalImages.length > 0,
+        ...(Array.isArray(input["retainedAttachmentIds"]) ? { retainedAttachmentIds: input["retainedAttachmentIds"] as string[] } : {}),
+        notificationContext: {
+          mentionedHumanUserIds,
+          ...(mentionEveryone ? { mentionEveryone: true } : {}),
+          causalHumanUserId: null,
+          causalHumanTurnId: null,
+        },
+      },
+    );
+  }
+
+  if (protectedTurn) imageReplyContext = protectedTurn.history.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
+  const needsImageAssistance = multimodalImages.length > 0 && !modelSupportsInput(modelId, "image");
+  if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
+  const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
+    turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,
+  }));
+  const assistance = needsImageAssistance && !retainedImageResultAvailable ? await openImageAssistanceForInvocation({
+    authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
+    causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork" ? "foreground.fork" : null,
+    modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+  }).catch((error) => failImageAssistance(error, signal)) : null;
+  const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
+    humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
+    images: multimodalImages, userText: message, turnId: turnId || jobId,
+    roomId, agentId, replyContext: imageReplyContext, retainedResults: retainedImageResults,
+    assistance, signal,
+  });
+  const visionSummaryBlocks = imageAssistanceResult ? [imageAssistanceContext(imageAssistanceResult)] : [];
+  const suppressImageDropNote = imageAssistanceResult !== null;
   const mergedAttachmentTextBlocks = [
     ...visionSummaryBlocks,
     ...attachmentTextBlocks,
@@ -478,16 +570,10 @@ export async function* forkLanggraphExecutor(
     attachmentTextBlocks: mergedAttachmentTextBlocks,
     multimodalImages,
     modelId,
+    suppressImageDropNote,
     ...(serverTimePrefixIso ? { serverTimePrefixIso } : {}),
   });
-  const forkUserForTranscript = serverTimePrefixIso
-    ? buildForegroundUserHumanMessage({
-        userText: message,
-        attachmentTextBlocks: mergedAttachmentTextBlocks,
-        multimodalImages,
-        modelId,
-      })
-    : forkUser;
+
 
   const clientVoiceMode = input["voiceMode"] === true;
   const hasElevenLabsKey = !!process.env["ELEVENLABS_API_KEY"]?.trim();
@@ -496,6 +582,19 @@ export async function* forkLanggraphExecutor(
   const forkMessages = [...historyMessages, ...inFlightMarker, forkUser];
 
   const graphInput = {
+    foregroundContextRefreshEligible,
+    foregroundContextRefresh: null,
+    foregroundContextRefreshLastProjection: "",
+    foregroundContextRefreshSource: foregroundContextRefreshEligible ? {
+      executionId: foregroundExecutionId,
+      acceptedMessageIds: memoryReviewSourceIds(input),
+      acceptedMessages: [...inFlightMarker, forkUser],
+      ...(foregroundContextReceipts.triggerMessageId === undefined ? {} : { triggerMessageId: foregroundContextReceipts.triggerMessageId }),
+      ...(foregroundContextReceipts.throughMessageIdInclusive === undefined ? {} : { throughMessageIdInclusive: foregroundContextReceipts.throughMessageIdInclusive }),
+      ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
+      ...(subthreadAnchorMessageId === undefined ? {} : { subthreadAnchorMessageId }),
+    } : null,
+
     noProgressStreaks: new Map(),
     browserDecision: null,
     noProgressPendingCorrection: null,
@@ -565,50 +664,23 @@ export async function* forkLanggraphExecutor(
   const liveShadowStreamState = Object.freeze({
     ordinals: new Map<string, number>(),
   });
-  const savedFingerprints = new Set<string>();
-
-  const persistOptsBase = {
-    ...await memoryReviewAdmission(memoryAccessEnvelope, checkpointThreadId, { threadId: transcriptThreadId, transcriptOwnerId: ownerId, turnId, input }),
-    agentId,
-    roomId,
-    ...(subthreadRoomId ? { subthreadRoomId } : {}),
-    laneKey: effectiveLaneKey,
-    eventBus,
-    ...(turnId ? { humanTurnId: turnId } : {}),
-    trustedExecutionEntrypoint: "foreground.fork" as const,
-    notificationContext: {
-      mentionedHumanUserIds: [],
-      causalHumanUserId,
-      causalHumanTurnId: causalHumanUserId ? turnId || null : null,
-    },
-  };
-
-  // Persist the CLEAN fork-user copy to the transcript — the server-time
-  // prefix (when present) lives only in the fork checkpoint + parent splice.
-  if (protectedTurn !== undefined && input["humanAlreadyPersisted"] !== true) {
-    throw new TypeError(
-      "Protected fork Human input must be coordinate-first persisted before Agent execution",
-    );
+  try {
+  if (imageAssistanceResult && !retainedImageResults.some((result) => result.inputDigest === imageAssistanceResult.inputDigest)) {
+    const observations = imageAssistanceObservationMessages(imageAssistanceResult);
+    if (protectedTurn) foregroundContextReceipts.recordIds((await protectedTurn.persist(observations, foregroundContextRefreshEligible ? foregroundExecutionId : undefined)).map((message) => Number(message.projection.messageId)));
+    else if (liveShadowRuntime) {
+      const protectedEvents = await publishLiveShadowRuntimeMessages({
+            ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
+            onCommittedMessageIds: foregroundContextReceipts.recordIds,
+        runtime: liveShadowRuntime, operationId: jobId, laneKey: effectiveLaneKey,
+        messages: observations, agentId, warn,
+        persistOrdinary: (messages) => persistMessages(transcriptThreadId, ownerId, [...messages], savedFingerprints, { ...persistOptsBase, requireDurable: true }),
+      });
+      for (const event of protectedEvents) yield event;
+    } else await persistMessages(transcriptThreadId, ownerId, observations, savedFingerprints, { ...persistOptsBase, requireDurable: true });
   }
-  if (shouldPersistForkHumanMessage({
-    protectedTurn: protectedTurn !== undefined,
-    humanAlreadyPersisted: input["humanAlreadyPersisted"] === true,
-  })) {
-    await persistMessages(
-      transcriptThreadId,
-      ownerId,
-      [forkUserForTranscript],
-      savedFingerprints,
-      {
-        ...persistOptsBase,
-        notificationContext: {
-          mentionedHumanUserIds,
-          ...(mentionEveryone ? { mentionEveryone: true } : {}),
-          causalHumanUserId: null,
-          causalHumanTurnId: null,
-        },
-      },
-    );
+  } catch (error) {
+    failImageAssistance(error, signal);
   }
 
   const protectedCheckpointSaver = protectedServices === undefined
@@ -711,7 +783,16 @@ export async function* forkLanggraphExecutor(
 
   let memoryReviewRecorded = false;
   try {
-    const eventStream = graph.streamEvents(graphInput, streamConfig);
+    const eventStream = streamForegroundGraph(graph, graphInput, streamConfig, {
+      signal,
+      ...(foregroundContextRefreshEligible ? {
+        rebuildForegroundContext: createForegroundContextRebuilder({
+          roomId, ownerId: ownerId, agentId, receipts: foregroundContextReceipts,
+          ...(protectedTurn === undefined ? {} : { protectedTurn }),
+          ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+        }),
+      } : {}),
+    });
 
     for await (const ev of eventStream) {
       if (signal.aborted) {
@@ -724,9 +805,11 @@ export async function* forkLanggraphExecutor(
       noteAgentProgressFromStreamEvent(ev, agentProgressHeartbeat);
 
       const { events, messagesToPersist, assistantMessageKey } = processStreamEvent(ev, tokenBatcher, toolTracker, streamCtx, sentenceDetector);
+      attributeImageAssistance(messagesToPersist, imageAssistanceResult);
       for (const event of events) {
         if (liveShadowRuntime !== undefined) {
           const protectedStream = await protectLiveShadowAssistantToken({
+            ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
             runtime: liveShadowRuntime,
             operationId: liveShadowContext!.operationId,
             laneKey: effectiveLaneKey,
@@ -755,6 +838,8 @@ export async function* forkLanggraphExecutor(
       if (messagesToPersist.length > 0) {
         if (liveShadowRuntime !== undefined) {
           const protectedEvents = await publishLiveShadowRuntimeMessages({
+            ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
+            onCommittedMessageIds: foregroundContextReceipts.recordIds,
             runtime: liveShadowRuntime,
             operationId: liveShadowContext!.operationId,
             laneKey: effectiveLaneKey,
@@ -785,7 +870,7 @@ export async function* forkLanggraphExecutor(
             },
           );
         } else {
-          await protectedTurn.persist(messagesToPersist);
+          foregroundContextReceipts.recordIds((await protectedTurn.persist(messagesToPersist, foregroundContextRefreshEligible ? foregroundExecutionId : undefined)).map((message) => Number(message.projection.messageId)));
         }
       }
     }

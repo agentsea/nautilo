@@ -249,6 +249,10 @@ export function bindReflectionSemanticDataOperationPort(input: Readonly<{
         throw error;
       }
     },
+    ...(input.work.settleCurrentState === undefined ? {} : {
+      settleCurrentState: (operation: Parameters<NonNullable<DurableSleepWorkPort["settleCurrentState"]>>[0]) =>
+        useSelection(selectionFor(operation.claim), undefined, () => input.work.settleCurrentState!(operation)),
+    }),
     checkpoint: input.work.checkpoint.bind(input.work),
     pause: input.work.pause.bind(input.work),
     complete: (operation: Parameters<DurableSleepWorkPort["complete"]>[0]) => {

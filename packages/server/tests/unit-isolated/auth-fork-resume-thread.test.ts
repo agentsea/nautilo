@@ -126,6 +126,7 @@ beforeAll(async () => {
       return true;
     },
     resumeCausalHumanUserIdForThread: async () => OWNER_ID,
+    resumeFundingForThread: async () => null,
     resumeThreadScopeForUser: async () => ({
       roomId: SUBTHREAD_ROOM_ID,
       kind: resumeRoomKind,

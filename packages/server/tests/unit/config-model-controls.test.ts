@@ -25,7 +25,7 @@ import {
   type ModelFundingDeps,
 } from "../../src/lib/model-funding";
 
-describe("GET /api/config/models D462 controls", () => {
+describe("GET /api/config/models controls", () => {
   afterEach(() => {
     resetRuntimeModelCatalog();
   });
@@ -134,6 +134,45 @@ describe("caller-scoped model availability", () => {
     resetRuntimeModelCatalog();
   });
 
+  test("a personal-only caller can discover image assistance for a text model without server funding", async () => {
+    const humanUserId = "synthetic-personal-human";
+    const custody = createPersonalProviderCustody();
+    const rows = new Map<PersonalProviderId, PersonalProviderCredentialRecord>();
+    for (const provider of ["fireworks", "anthropic"] as const) {
+      const id = `synthetic-${provider}-credential`;
+      rows.set(provider, {
+        id, userId: humanUserId, provider, revision: 1, validationStatus: "unverified",
+        destination: null, receiptReadStatus: "unknown", validatedAt: null,
+        envelope: encryptPersonalProviderCredential(custody, "synthetic-key", {
+          id, userId: humanUserId, provider, revision: 1,
+        }),
+        createdAt: new Date(0), updatedAt: new Date(0),
+      });
+    }
+    const fundingDeps: ModelFundingDeps = {
+      getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference: "server_first" }),
+      getCapabilities: async () => ["use_personal_provider_credentials"],
+      getCredential: async (userId, provider) => userId === humanUserId ? rows.get(provider) ?? null : null,
+      serverRoute: () => null,
+      readCustody: async () => custody,
+      decrypt: decryptPersonalProviderCredential,
+    };
+    const auxiliary: string[] = [];
+    const result = await resolveCallerModelAvailability(humanUserId,
+      "fireworks:accounts/fireworks/models/glm-5p3", { purpose: "chat", env: {} }, {
+        resolveFunding: async (input) => {
+          if (input.workload === "image_assistance") auxiliary.push(input.modelId);
+          return resolveModelFunding(input, fundingDeps);
+        },
+      });
+    expect(result.selectableInThisRelease).toBe(true);
+    expect(result.model.capabilities.vision).toBe(false);
+    expect(result.model.imageInput).toBe("assisted");
+    expect(result.funding?.kind).toBe("personal");
+    expect(auxiliary.length).toBeGreaterThan(0);
+    expect(JSON.stringify(result.model)).not.toContain("synthetic-key");
+  });
+
   test("a personal key cannot make an image-output model selectable for chat", async () => {
     let fundingCalls = 0;
     const result = await resolveCallerModelAvailability(
@@ -189,9 +228,10 @@ describe("caller-scoped model availability", () => {
     expect(result.selectableInThisRelease).toBe(true);
     expect(result.model.capabilities).toMatchObject({
       tools: true,
-      vision: false,
+      vision: true,
       webSearch: false,
     });
+    expect(result.model.imageInput).toBe("direct");
   });
 
   test("admits a server-funded Surplus-only route without changing personal capability isolation", async () => {
@@ -361,7 +401,9 @@ describe("caller-scoped model availability", () => {
       expect(body[0]?.availability).toBe("selectable");
       expect(body[0]?.capabilities).toMatchObject({ tools: false, vision: false, webSearch: false });
       expect(response.body).not.toContain("credential-1");
-      expect(response.body).not.toContain("funding");
+      expect(body[0]).toMatchObject({ fundingSource: "personal", fundingProviderRoute: "anthropic" });
+      expect(response.body).not.toContain("credentialRevision");
+      expect(response.body).not.toContain("payerHumanId");
       expect(calls).toEqual([{ humanUserId: "human-1", modelId, purpose: "chat-tools" }]);
     } finally {
       await app.close();
@@ -381,6 +423,8 @@ describe("caller-scoped model availability", () => {
           provider,
           revision: 1,
           validationStatus: "unverified",
+          destination: null,
+          receiptReadStatus: "unknown",
           validatedAt: null,
           envelope: encryptPersonalProviderCredential(custody, `synthetic-${provider}`, {
             id,
@@ -460,7 +504,8 @@ describe("caller-scoped model availability", () => {
         ]));
         expect(response.body).not.toContain("synthetic-anthropic");
         expect(response.body).not.toContain("synthetic-openrouter");
-        expect(response.body).not.toContain("funding");
+        expect(response.body).not.toContain("credentialRevision");
+        expect(response.body).not.toContain("payerHumanId");
       } finally {
         await app.close();
       }

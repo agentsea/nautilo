@@ -270,6 +270,8 @@ export interface EligibleModel {
   enabled: boolean;
   routing?: RoutingClass;
   capabilities: EligibleModelCapabilities;
+  /** Caller-authorized image input, including automatic assistance. */
+  imageInput?: "direct" | "assisted" | "unavailable";
   /** public projection of reviewed catalog controls; no provider selectors/provenance. */
   controls?: EligibleModelControls;
   availability: ModelAvailability;

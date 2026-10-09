@@ -1,4 +1,5 @@
-import { resolveRetainedModels, resolveCatalogModel, type ForegroundChatFundingSession } from "@nautilo/agent";
+import { prepareCapabilityFundingSession, capabilityFundingBinding } from "./capability-funding";
+import { resolveRetainedModels, resolveCatalogModel, type ForegroundChatFundingSession, type ForegroundFundingSnapshot } from "@nautilo/agent";
 import { getServerProviderPolicy, listPersonalProviderCredentials } from "@nautilo/db";
 import {
   assertCanInvokeAgent,
@@ -22,6 +23,7 @@ type FundingPortInput = Readonly<{
   roomId: string;
   agentId: string;
   entrypoint: "foreground.main" | "foreground.fork";
+  prior?: ForegroundFundingSnapshot;
 }>;
 
 export function usageFundingFor(decision: ModelFundingDecision) {
@@ -45,6 +47,10 @@ function assertSignedChatModel(modelId: string): void {
   const model = resolveRetainedModels([modelId], { purpose: "chat", env: {} })[0];
   if (!model || (model.availability !== "selectable" && model.availability !== "missing-key")) {
     throw new ModelFundingError("unsupported_provider");
+  }
+  const catalog = resolveCatalogModel(modelId, { env: {} });
+  if (catalog.workload !== "chat" || !catalog.output.includes("text")) {
+    throw new ModelFundingError("unsupported_workload");
   }
 }
 
@@ -95,17 +101,15 @@ export async function openForegroundChatFundingSession(
   const caps = await getUserCapabilities(input.humanUserId);
   const serverAllowed = caps.includes("use_server_provider_credentials");
   if (!policy.allowPersonalProviderKeys) {
-    if (serverAllowed) return null;
-    throw new ModelFundingError("personal_credentials_disabled");
+    if (!serverAllowed || input.prior?.binding.kind === "personal") throw new ModelFundingError("personal_credentials_disabled");
   }
   if (!caps.includes("use_personal_provider_credentials")) {
-    if (serverAllowed) return null;
-    throw new ModelFundingError("personal_credentials_forbidden");
+    if (!serverAllowed || input.prior?.binding.kind === "personal") throw new ModelFundingError("personal_credentials_forbidden");
   }
   if (!(await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId))) {
     // A member who also has server funding keeps the established foreign-DM
     // path. Personal-only callers cannot turn a foreign Room into server spend.
-    if (serverAllowed) return null;
+    if (serverAllowed && !input.prior) return null;
     throw new ModelFundingError("unsupported_workload");
   }
   await assertCanInvokeAgent({
@@ -119,32 +123,54 @@ export async function openForegroundChatFundingSession(
   // authorize an unsigned, disabled, or non-chat model identifier.
   assertSignedChatModel(input.modelId);
 
+  const prior = input.prior;
+  if (prior && prior.modelId !== input.modelId) throw new ModelFundingError("funding_source_changed");
+  const priorDecision: ModelFundingDecision | undefined = prior ? prior.binding.kind === "personal"
+    ? { ...prior.binding, humanUserId: input.humanUserId, payerHumanId: input.humanUserId, modelId: prior.modelId, workload: "foreground_text_chat" }
+    : { ...prior.binding, humanUserId: input.humanUserId, modelId: prior.modelId, workload: "foreground_text_chat" } : undefined;
   const admitted = await resolveModelFunding({
     humanUserId: input.humanUserId,
     modelId: input.modelId,
     workload: "foreground_text_chat",
+    ...(priorDecision ? { priorDecision } : {}),
   });
-  const resolveCandidate = (modelId: string) => {
+  const recheckAuthority = async () => {
+    if (!await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId)) throw new ModelFundingError("unsupported_workload");
+    await assertCanInvokeAgent({ humanUserId: input.humanUserId, origin: "room_message", roomId: input.roomId, agentId: input.agentId });
+  };
+  const resolveCandidate = async (modelId: string, transport?: "direct" | "surplus") => {
+    await recheckAuthority();
     assertSignedChatModel(modelId);
     return resolveModelFunding({
       humanUserId: input.humanUserId,
       modelId,
       workload: "foreground_text_chat",
       priorDecision: admitted,
+      ...(transport ? { transport } : {}),
     });
   };
   const runnableModelIds = await callerTaskModelIds(input.humanUserId);
+  let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
+    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind),
     personalTaskControls: admitted.kind === "personal"
       && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
     runnableModelIds,
     personalOnlyTaskModelIds: await personalOnlyTaskModelIds(input.humanUserId, runnableModelIds),
-    async recheckAttempt(modelId) {
-      await resolveCandidate(modelId);
+    async recheckAttempt(modelId, transport) {
+      const current = await resolveCandidate(modelId, transport);
+      if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"
+        && lastAttempt.modelId === modelId && lastAttempt.providerRoute === current.providerRoute
+        && (lastAttempt.credentialId !== current.credentialId
+          || lastAttempt.credentialRevision !== current.credentialRevision)) {
+        throw new ModelFundingError("personal_credential_stale");
+      }
     },
-    async runAttempt(modelId, run) {
-      const decision = await resolveCandidate(modelId);
+    async runAttempt(modelId, run, transport) {
+      const decision = await resolveCandidate(modelId, transport);
+      lastAttempt = decision;
       const usageFunding = usageFundingFor(decision);
       if (decision.kind === "server") return run({ usageFunding });
       return withAdmittedPersonalProviderKey(

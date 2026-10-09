@@ -1,3 +1,11 @@
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { parseGitHubCapability } from "@nautilo/types";
+import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
+import { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION } from "@nautilo/relay";
+import { parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "@nautilo/relay";
+import { parseRelayBasicExecutionCapability, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import { LOCAL_EXECUTION_MAX_IDENTITIES, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { ToolRelayRegistry } from "../nodes/tools";
 import {
   COMPUTER_USE_SEMANTIC_VERSION,
@@ -45,24 +53,30 @@ export function buildRuntimeCapabilityTokens(
   registry: ToolRelayRegistry | null,
   userId: string,
   /**
-   * D516 — foreground callers supply the exact Agent receiving a catalog.
+   * foreground callers supply the exact Agent receiving a catalog.
    * Omitting it deliberately keeps the semantic Computer use catalog absent:
    * a generic owner-wide relay union must never borrow another Agent's local
    * desktop-automation receipt.
    */
   currentAgentId?: string,
+  selectedRelayId?: string,
 ): Readonly<Record<string, boolean>> | undefined {
   if (!registry) return undefined;
   // Single capability used to detect any relay's presence; matches the
   // desktop-agent profile that today's relay clients advertise.
   const relayIds = registry
     .findByCapabilityForUser("canRunShell", userId)
+    .concat(registry.findByCapabilityForUser("canUseLocalGit", userId))
+    .concat(registry.findByCapabilityForUser("canReadShellOutput", userId))
+    .concat(registry.findByCapabilityForUser("canExecuteLocal", userId))
+    .concat(registry.findByCapabilityForUser("canReadLocalExecutionHistory", userId))
     .concat(registry.findByCapabilityForUser("canReadWorkspace", userId))
     .concat(registry.findByCapabilityForUser("canWriteWorkspace", userId))
     .concat(registry.findByCapabilityForUser("canControlDesktop", userId))
     .concat(registry.findByCapabilityForUser("canSeeDesktop", userId))
     .concat(registry.findByCapabilityForUser("canControlBrowser", userId))
     .concat(registry.findByCapabilityForUser("canUseTerminal", userId))
+    .concat(registry.findByCapabilityForUser("canUseHumanTerminal", userId))
     .concat(registry.findByCapabilityForUser("canUseGoogleWorkspace", userId))
     .concat(registry.findByCapabilityForUser("canControlHue", userId))
     .concat(registry.findByCapabilityForUser("canReadStructuredSshOutput", userId))
@@ -86,6 +100,47 @@ export function buildRuntimeCapabilityTokens(
     ? semanticComputerActions(semanticRouteCandidates[0], currentAgentId)
     : null;
   const tokens: Record<string, boolean> = {};
+  if (selectedRelayId !== undefined && registry.getUserId?.(selectedRelayId) === userId) {
+    const selected = registry.getCapabilities(selectedRelayId);
+    if (selected?.profile === "desktop-agent"
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION) {
+      if (selected.canUseLocalGit === true && isRelayLocalGitCapability(selected.localGit)) tokens["canUseLocalGit"] = true;
+      if (selected.canReadShellOutput === true) tokens["canReadShellOutput"] = true;
+    }
+    const github = parseGitHubCapability(selected?.github);
+    if (github && selected?.profile === "desktop-agent" && selected.canUseGitHub === true
+      && github.identity.humanUserId === userId && github.identity.relayId === selectedRelayId
+      && github.identity.desktopSessionId === registry.getDesktopSessionId?.(selectedRelayId)
+      && github.identity.pairingGeneration === registry.getLocalExecutionPairingGeneration?.(selectedRelayId)
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_GITHUB_PROTOCOL_VERSION) tokens["canUseGitHub"] = true;
+    const humanTerminal = parseRelayHumanTerminalCapability(selected?.humanTerminal);
+    if (selected?.profile === "desktop-agent" && selected.canUseHumanTerminal === true && humanTerminal
+      && humanTerminal.owner.humanUserId === userId && humanTerminal.owner.agentId === currentAgentId
+      && humanTerminal.owner.relayId === selectedRelayId
+      && humanTerminal.owner.desktopSessionId === registry.getDesktopSessionId?.(selectedRelayId)
+      && humanTerminal.owner.pairingGeneration === registry.getLocalExecutionPairingGeneration?.(selectedRelayId)
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION) tokens["canUseHumanTerminal"] = true;
+    const localExecution = parseRelayLocalExecutionCapability(selected?.localExecution);
+    if (selected?.profile === "desktop-agent" && selected.canExecuteLocal === true
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+      && (selected.basicExecution === undefined || selected.workstationProfileSnapshot !== undefined
+        || ((registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
+          && parseRelayBasicExecutionCapability(selected.basicExecution) !== null))
+      && localExecution !== null && localExecution.capacity <= LOCAL_EXECUTION_MAX_IDENTITIES) {
+      tokens["canExecuteLocal"] = true;
+      tokens["canDelegateLocalExecution"] = selected.canDelegateLocalExecution === true
+        && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION;
+      // Exposure only: older or incomplete replacement peers retain their tools.
+      tokens["canReplaceLegacyShellTools"] = localExecution.pty === true
+        && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION
+        && tokens["canUseLocalGit"] === true && tokens["canReadShellOutput"] === true;
+    }
+    if (selected?.profile === "desktop-agent" && selected.canReadLocalExecutionHistory === true
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION) tokens["canReadLocalExecutionHistory"] = true;
+    if (selected?.profile === "desktop-agent" && selected.canSearchLocalExecutionOutput === true
+      && (registry.getProtocolVersion?.(selectedRelayId) ?? 0) >= RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION) tokens["canSearchLocalExecutionOutput"] = true;
+    tokens["canObserveLocalExecution"] = tokens["canExecuteLocal"] === true || tokens["canReadLocalExecutionHistory"] === true;
+  }
   if (semanticRouteReady) {
     tokens["canUseComputer"] = true;
     tokens["canComputerDo"] = true;
@@ -134,7 +189,7 @@ export function buildRuntimeCapabilityTokens(
       tokens["canControlHue"] = true;
       tokens["control_home"] = true;
     }
-    // D500 — readiness is a secret-free aggregate of Electron-local managed
+    // readiness is a secret-free aggregate of Electron-local managed
     // capabilities. The catalog has one shared token for auth + exec and one
     // shared token for upload + download, so partial operation permissions
     // cannot be represented safely here. Emit each shared token only when all

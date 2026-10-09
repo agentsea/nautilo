@@ -1,3 +1,4 @@
+import { taskLocalExecutionOfflinePhase, claimTaskLocalExecutionOfflineRun } from "@nautilo/db";
 import {
   getLatestResumableTaskRun,
   getTaskById,
@@ -8,7 +9,7 @@ import {
   pauseClaimedTaskForFundingDenial,
   markTaskRunning,
   markTaskRunStatus,
-  updateTask,
+  memoizeTaskExecutionCoordinates,
   attachArtifactToNamespace,
   findArtifactByIdForNamespaces,
   rooms,
@@ -133,7 +134,7 @@ export interface DispatchTaskRunDeps {
   jobManager: TaskJobManager;
   /** Defaults to the process policy resolver. */
   resolver?: PolicyResolver;
-  /** D420 — gate scheduled/claimed task starts before any task-run write. */
+  /** Gate scheduled and claimed Task starts before any TaskRun write. */
   maintenanceGate?: MaintenanceGate;
   /**
    * Optional server-owned selection seam for an already-created TaskRun.
@@ -218,14 +219,14 @@ function readArtifactAwareAskPeerRefs(task: Task): ChatArtifactRef[] {
 }
 
 /**
- * M144 (R2, S3) — the seam's envelope discriminator. Pure + exported so the
+ * The envelope discriminator is pure and exported so the
  * dominant seam risk (a requester-only `in_background` task must NOT be
  * captured by the wide branch) is unit-testable without a DB.
  *
  * Both `in_background` and `in_private_namespace` are requester-only, so we key
  * on `use_scope` / `preset`, NOT on `target_user_ids` (which would mis-scope
  * every background task into the wide branch). `target_user_ids` is consumed
- * INSIDE the `namespace` branch (M165) to derive the run's namespace envelope —
+ * inside the `namespace` branch to derive the run's namespace envelope —
  * it does not select the mode.
  */
 export function resolveToolWhitelist(
@@ -241,15 +242,14 @@ export function resolveToolWhitelist(
         parentEnvelope: envelope,
         actorRole: "owner",
         toolPolicy: envelope.toolPolicy,
-        // M150 — authorization-only validation. A relay-executor tool
+        // Authorization-only validation. A relay-executor tool
         // (`run_shell`, fs writes) the owner is authorized for must NOT be
         // rejected at dispatch just because no relay is connected at this
         // instant. Relay PRESENCE is gated at run start: `task-run-executor`
         // threads live `relayCapabilities` into the run's catalog, so the tool
         // is available iff a relay is live then, else the run degrades to
-        // cloud-only (D1/R2). Pre-M150 this passed no relay tokens, so every
-        // `whitelist: ["run_shell"]` task was rejected here with "Tool(s)
-        // unavailable in this context" — even with a relay actually connected.
+        // cloud-only. Without this distinction, a valid `run_shell` whitelist
+        // would be rejected when the relay is temporarily disconnected.
         skipRelayLiveCheck: true,
         subagentDepth: task.depth + 1,
         subagentMaxDepth: MAX_SUBAGENT_DEPTH,
@@ -271,13 +271,13 @@ export function resolveToolWhitelist(
 }
 
 /**
- * M142 (spec §5.1) — the single dispatch seam. Called ONLY by the
+ * The single dispatch seam, called only by the
  * `TaskObserver`. Resolves the target room + thread, builds the run's memory
  * envelope + model, inserts a `task_runs` row, and creates the subagent job
  * (its own thread, a task-only lane) that runs `runScopeSubagentUntilPause`.
  *
- * Report-back is NOT here (M143). The run's completion handler
- * (`taskRunExecutor`) sets the interim terminal status; M143 replaces it.
+ * Report-back is handled separately. The run's completion handler
+ * (`taskRunExecutor`) sets the interim terminal status before report-back.
  */
 export async function dispatchTaskRun(
   task: Task,
@@ -288,7 +288,7 @@ export async function dispatchTaskRun(
   }
   const { db, jobManager } = deps;
   const resolver = deps.resolver ?? getPolicyResolver();
-  // M254 R6 — a durable Task never carries creation-time authority. Re-read
+  // A durable Task never carries creation-time authority. Re-read
   // the requestor's current RBAC state before resolving a Room, Scope, model,
   // TaskRun, or Job. Known absence is a lifecycle outcome; lookup failure is
   // still an exception and therefore fails closed without changing the Task.
@@ -328,7 +328,7 @@ export async function dispatchTaskRun(
     }
     return { kind: "authorization_paused" };
   }
-  // D420 (Wave 2 task 2.2.1) — dispatch can be called outside the observer
+  // Dispatch can be called outside the observer
   // in tests or future schedulers, so it re-checks admission immediately
   // before it can create a task run / Job. A drain rejection leaves the task
   // unstarted; TaskObserver's pre-claim gate prevents normal production
@@ -345,7 +345,7 @@ export async function dispatchTaskRun(
 
   // 1. Target room + graph thread.
   //
-  // M147 (R4) — resume detection. A parked (`paused`) run means this dispatch
+  // Resume detection. A parked (`paused`) run means this dispatch
   // is an UNPAUSE re-entry (the observer re-claimed the task after
   // `unpauseTask` set it back to `pending` + `next_fire_at = now`). The
   // preserved LangGraph checkpoint lives on the PRIOR run's `graphThreadId`, so
@@ -355,6 +355,8 @@ export async function dispatchTaskRun(
   // `tasks.target_room_id`, so `resolveTargetRoom` still returns the right
   // `roomId`; we only override the thread.
   const resumableRun = await getLatestResumableTaskRun(db, task.id);
+  const localExecutionOfflinePhase = resumableRun ? taskLocalExecutionOfflinePhase(task, resumableRun) : null;
+  const localExecutionOfflineResume = localExecutionOfflinePhase !== null;
   let fundingAdmission;
   try {
     fundingAdmission = await assertTaskFundingAdmission(task, resumableRun);
@@ -370,7 +372,7 @@ export async function dispatchTaskRun(
     return { kind: "authorization_paused" };
   }
   const deliveryOnlyResume = isSecurityReportDeliveryRetry(resumableRun);
-  const securityResearchResume = resumableRun !== undefined && Boolean(resumableRun.modelId)
+  const securityResearchResume = localExecutionOfflinePhase !== "cold" && resumableRun !== undefined && Boolean(resumableRun.modelId)
     && task.toolsMode === "whitelist" && task.toolsWhitelist?.includes("security_scan") === true;
   if (deliveryOnlyResume && !securityResearchResume) throw new Error("SECURITY_RESEARCH_RESUME_SCOPE_MISMATCH");
   const researchCheckpoint = securityResearchResume
@@ -386,6 +388,7 @@ export async function dispatchTaskRun(
     return { kind: "authorization_paused" };
   }
   const resolvedTarget = await resolveTargetRoom(task, { db });
+  task = resolvedTarget.memoizedTask ?? task;
   const { roomId, graphThreadId: freshThreadId } = resolvedTarget;
   if (
     resolvedTarget.createdHumanRoomMembers
@@ -395,18 +398,18 @@ export async function dispatchTaskRun(
     await deps.convergeCreatedRoomCatalog(resolvedTarget.createdHumanRoomMembers);
   }
   const graphThreadId = resumableRun?.graphThreadId ?? freshThreadId;
-  const isResume = resumableRun !== undefined;
+  const isResume = resumableRun !== undefined && localExecutionOfflinePhase !== "cold";
 
-  // M151 (R6 prerequisite) — persist `target_room_id` for ALL room-backed
+  // Persist `target_room_id` for all room-backed
   // targets. `resolveOrphan` + `resolveDm` already memoize it, but the
   // namespace resolvers return a `roomId` without persisting; the reply hook's
   // `findAwaitingTaskForRoom` matches on `tasks.target_room_id = roomId`, so a
   // namespace-target await task would otherwise be unfindable. Idempotent.
   if (roomId && task.targetRoomId !== roomId) {
-    await updateTask(db, task.id, { targetRoomId: roomId });
+    task = await memoizeTaskExecutionCoordinates(db, task, { targetRoomId: roomId });
   }
 
-  // M151 — the await set: the requester (the common namespace-await case where
+  // The await set includes the requester (the namespace-await case where
   // `target_user_ids` may be empty) ∪ the named targets (the `ask_peer` peer,
   // persisted into `target_user_ids` by `resolveDm`). Re-read so a peer
   // appended during this dispatch is included. Informational for the WS event
@@ -416,7 +419,7 @@ export async function dispatchTaskRun(
     new Set([awaitTask.requestorId, ...awaitTask.targetUserIds].filter(Boolean)),
   );
 
-  // M151 — the run's transcript session must be owned by a MEMBER of the
+  // The run's transcript session must be owned by a member of the
   // target room, else `getRoomMessagesAcrossMemberSessions` (member-owned only)
   // hides it. The room owner is always a member: requester for namespace/orphan
   // targets (unchanged), the PEER for an `ask_peer` DM. Fall back to the task
@@ -436,7 +439,7 @@ export async function dispatchTaskRun(
   // `orphan` rooms have no human members, so the agent RLS role cannot write a
   // `sessions` row scoped to them (`sessions_path_c` requires the writer be a
   // room member). The orphan room is still created + memoized on
-  // `tasks.target_room_id` (M143 report-back uses it); the 2a run itself
+  // `tasks.target_room_id` (report-back uses it); the run itself
   // persists its transcript with a NULL session room — the proven subagent
   // path. Room-backed (namespace) targets always include the owner as a
   // member, so they pass RLS and keep their room linkage.
@@ -453,7 +456,7 @@ export async function dispatchTaskRun(
     targetUserIds: awaitTask.targetUserIds,
   });
 
-  // D570 — `ask_peer` may carry an exact Artifact handoff prepared by the
+  // `ask_peer` may carry an exact Artifact handoff prepared by the
   // shortcut. Re-resolve every external id through the freshly built
   // requester+peer envelope, then attach it to the canonical Agent↔peer DM
   // namespace before the question is persisted. This is what makes the
@@ -509,14 +512,14 @@ export async function dispatchTaskRun(
     }
   }
 
-  // 3. Model. Two mutually-exclusive modes (D429 Phase 3):
+  // 3. Model. Two mutually-exclusive modes:
   //   - exact pin (`task.requestedModelId`): a STRICT same-model pin. The
   //     dispatch seam revalidates current credentials/routing/capabilities
   //     (a curated id may have lost its key since create-time) and throws a
   //     stable `[task-model-selection]` error if it is no longer runnable.
-  //     Phase 4 will enforce no cross-model fallback off this branch; here we
-  //     only resolve + flag it. We do NOT add any arbitrary fallback field.
-  //   - otherwise: the M152 multi-axis profile/spec resolver (unchanged).
+  //     The selected model is resolved and marked explicitly; no arbitrary
+  //     fallback field is added.
+  //   - otherwise: resolve the profile/spec selection.
   const profile = await getProfileByAgentId(task.agentId);
   // The Task resolver validates the inherited model with Task capabilities and
   // current operator routing consent. An exact pin validates its own route.
@@ -525,6 +528,10 @@ export async function dispatchTaskRun(
   if (fundingAdmission) {
     modelId = fundingAdmission.modelId;
     exactModelSelection = Boolean(task.requestedModelId);
+  } else if (localExecutionOfflineResume && resumableRun?.modelId) {
+    modelId = resolveExactTaskModelId({ requestedModelId: resumableRun.modelId,
+      toolsMode: task.toolsMode, toolsWhitelist: task.toolsWhitelist });
+    exactModelSelection = true;
   } else if (securityResearchResume && resumableRun?.modelId) {
     // The continuing graph retains its original model. Delivery-only Resume
     // makes no provider request; ordinary audit Resume revalidates eligibility.
@@ -542,7 +549,7 @@ export async function dispatchTaskRun(
   } else if (task.requestedModelId !== null && task.requestedModelId !== undefined) {
     // Revalidate the exact pin at dispatch time. `resolveExactTaskModelId`
     // throws a stable, prefixed error the observer records verbatim (mirrors
-    // the M152 `[task-model-selection]` contract). Curated-id membership,
+      // the `[task-model-selection]` contract. Curated-id membership,
     // credential/routing/disabled state, and strict tool-capability truth are
     // all checked here without a paid provider call.
     modelId = resolveExactTaskModelId({
@@ -581,7 +588,9 @@ export async function dispatchTaskRun(
     fundingBinding: fundingAdmission?.binding ?? null,
     fundingPredecessorRunId: fundingAdmission && resumableRun ? resumableRun.id : null,
   } as const;
-  const run = fundingAdmission
+  const run = localExecutionOfflineResume && resumableRun
+    ? await claimTaskLocalExecutionOfflineRun(db, { task, run: resumableRun, fireLockId: task.fireLockId })
+    : fundingAdmission
     ? task.fireLockId ? await startClaimedCallerTaskRun(db, {
       taskId: task.id, requestorId: task.requestorId, fireLockId: task.fireLockId,
       graphThreadId, modelId, fundingBinding: fundingAdmission.binding,
@@ -594,10 +603,10 @@ export async function dispatchTaskRun(
     ? await startTaskRunForWriterReviewVerification(db, runInput)
     : await insertTaskRun(db, runInput);
   if (!run) {
-    if (securityResearchResume || fundingAdmission) return { kind: "authorization_paused" };
+    if (localExecutionOfflineResume || securityResearchResume || fundingAdmission) return { kind: "authorization_paused" };
     throw new Error(`dispatchTaskRun: accepted Writer verification was no longer pending for task ${task.id}`);
   }
-  if (!fundingAdmission && !writerReviewVerification && !securityResearchResume) await markTaskRunning(db, task.id);
+  if (!localExecutionOfflineResume && !fundingAdmission && !writerReviewVerification && !securityResearchResume) await markTaskRunning(db, task.id);
 
   // 5. Create the subagent job on its OWN thread + a task-only lane, so no
   // human room lane is held. The executor runs `runScopeSubagentUntilPause`
@@ -612,7 +621,7 @@ export async function dispatchTaskRun(
     : task.preset === "schedule" && task.callingRoomId
       ? `${task.prompt}\n\n[Scheduled Task delivery] Your final answer is returned automatically to the conversation that scheduled this Task. If this is a reminder for the requesting Human, state the reminder in your final answer. Do not use ask_peer merely to deliver it to that same Human; use ask_peer when a separate conversation or reply is actually needed.`
       : task.prompt;
-  // D560 — a background Task has no ambient Desktop authority. Resolve the
+  // A background Task has no ambient Desktop authority. Resolve the
   // task's creation-time binding immediately before the Job is accepted and
   // carry it only when the exact relay/session/folder is still live. The graph
   // revalidates the same continuation at each host-scoped dispatch; an absent
@@ -635,7 +644,7 @@ export async function dispatchTaskRun(
     // Durable task identity for nested `task create` lineage. This is the
     // Task row id, not a lane/thread/Room-derived approximation.
     currentTaskId: task.id,
-    // M151 — transcript session owner (room member); see computation above.
+    // Transcript session owner (room member); see computation above.
     transcriptOwnerId,
     graphThreadId,
     turnId: run.id,
@@ -649,7 +658,7 @@ export async function dispatchTaskRun(
     // exposes receipt identity and cannot be supplied by a model tool call.
     ...(writerReviewVerification ? { writerReviewVerification: true } : {}),
     scheduleKind: task.scheduleKind,
-    // D363 — preset + metadata so the executor can branch to the repo-docs
+    // Preset and metadata let the executor branch to the repo-docs
     // wrapper (preset "repo_docs") and read its target/mode/publish from metadata.
     preset: task.preset,
     resultDelivery: task.resultDelivery,
@@ -663,9 +672,8 @@ export async function dispatchTaskRun(
       : {}),
     parentThreadId: task.callingRoomId ? `room:${task.callingRoomId}` : `task:${task.id}`,
     modelId,
-    // D429 Phase 3 — explicit job-input flag identifying an exact-model
-    // selection so Phase 4 can enforce no cross-model fallback off this run
-    // WITHOUT inferring exactness by comparing modelId to profile defaults.
+    // Explicit job-input flag identifying an exact-model selection. This
+    // avoids inferring exactness by comparing modelId to profile defaults.
     exactModelSelection,
     assistantName: profile?.name ?? "Genie",
     soulFile: profile?.soulFile ?? "",
@@ -686,11 +694,11 @@ export async function dispatchTaskRun(
       : {}),
     subagentDepth: task.depth + 1,
     subagentMaxDepth: 5,
-    // M147 (R4) — tell the executor to continue the preserved checkpoint on
+    // Tell the executor to continue the preserved checkpoint on
     // the reused `graphThreadId` instead of cold-starting the brief.
     ...(isResume ? { resumeFromCheckpoint: true } : {}),
     ...(deliveryOnlyResume ? { securityReportDeliveryOnly: true } : {}),
-    // M151 (Task Phase 7a) — await-response context. The executor forwards
+    // Await-response context. The executor forwards
     // these into `runScopeSubagentUntilPause`; the `await_reply` graph node
     // parks on `await_human_reply` after the agent's final message.
     awaitResponse: task.awaitResponse,
@@ -781,7 +789,7 @@ export async function dispatchTaskRun(
     `[task-dispatch] task=${task.id} run=${run.id} thread=${graphThreadId} lane=${laneKey} job=${created.id}`,
   );
 
-  // M143 — owner-scoped lifecycle signal that a run has fired.
+  // Owner-scoped lifecycle signal that a run has fired.
   eventBus.emit({
     type: "task.fired",
     taskId: task.id,

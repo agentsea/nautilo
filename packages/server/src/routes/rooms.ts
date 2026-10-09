@@ -377,6 +377,7 @@ function toListResponse(rows: RoomSummaryRow[]): ListRoomsResponse {
       lastMessageAt: r.lastMessageAt,
       unreadCount: r.unreadCount,
       kind: r.kind,
+      discoverable: r.discoverable !== false,
       parentRoomId: r.parentRoomId,
       threadRootMessageId: r.threadRootMessageId,
       // Fold the compact roster projection through only when the
@@ -1353,6 +1354,12 @@ export function roomsRoutes(
       if (typeof request.body?.public !== "boolean") {
         return reply.code(400).send({ error: "public is required" });
       }
+      if (
+        request.body.discoverable !== undefined &&
+        typeof request.body.discoverable !== "boolean"
+      ) {
+        return reply.code(400).send({ error: "discoverable must be a boolean" });
+      }
 
       const admin = await userHasCapability(sessionUserId, "manage_rooms");
       if (!admin) {
@@ -1361,13 +1368,18 @@ export function roomsRoutes(
 
       const targetKind = request.body.public ? "open" : "group";
       try {
-        const changed = await updateRoomVisibility(roomId, targetKind);
+        const changed = request.body.discoverable === undefined
+          ? await updateRoomVisibility(roomId, targetKind)
+          : await updateRoomVisibility(roomId, targetKind, request.body.discoverable);
         if (changed) {
           roomAudit(request, {
             kind: "room_visibility_changed",
             actorId: request.sessionActorId,
             roomId,
             newKind: targetKind,
+            ...(request.body.discoverable === undefined
+              ? {}
+              : { discoverable: request.body.discoverable }),
           });
         }
         return reply.send({ ok: true });
@@ -1506,6 +1518,12 @@ export function roomsRoutes(
       return reply.code(400).send({ error: "label must be at most 80 characters" });
     }
     if (
+      request.body?.discoverable !== undefined &&
+      typeof request.body.discoverable !== "boolean"
+    ) {
+      return reply.code(400).send({ error: "discoverable must be a boolean" });
+    }
+    if (
       request.body?.catalogueKind !== undefined &&
       request.body.catalogueKind !== "chat" &&
       request.body.catalogueKind !== "room"
@@ -1609,6 +1627,9 @@ export function roomsRoutes(
           creatorUserId: sessionUserId,
           creatorActorId: actorId,
           label,
+          ...(request.body.discoverable === undefined
+            ? {}
+            : { discoverable: request.body.discoverable }),
           ...(explicitMembers !== null
             ? {
                 members: explicitMembers.map((m) => ({

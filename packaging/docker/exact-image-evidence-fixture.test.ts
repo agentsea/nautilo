@@ -59,7 +59,7 @@ function serverNativeProbe(
     probe: {
       platform: manifest.architecture,
       encryptionInventory: { typescriptVersion: "5.9.3" },
-      sharp: { version: "0.35.4", sha256: "a".repeat(64) },
+      sharp: { version: "0.35.5", sha256: "a".repeat(64) },
       argon2: { verified: true, rejectedWrongValue: true },
       officecli: {
         browserExecutable: "/usr/bin/chromium",

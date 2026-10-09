@@ -192,6 +192,11 @@
     },
     {
       "kind": "root-override",
+      "name": "@modelcontextprotocol/sdk",
+      "reason": "Keep all shipped MCP transports on the supported patched 1.31.0 SDK release."
+    },
+    {
+      "kind": "root-override",
       "name": "body-parser",
       "reason": "Keep the shipped Express request parser on the audited patched release."
     },
@@ -209,6 +214,11 @@
       "kind": "root-override",
       "name": "jose",
       "reason": "Keep server authentication on the repository-approved JOSE version."
+    },
+    {
+      "kind": "root-override",
+      "name": "proxy-addr",
+      "reason": "Keep the shipped Express proxy address parser on the patched 2.0.8 release."
     },
     {
       "kind": "root-override",

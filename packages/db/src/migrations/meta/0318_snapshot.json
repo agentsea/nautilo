@@ -1,5 +1,5 @@
 {
-  "id": "8cacb4c7-61ac-41b9-a0c4-29eae474ec9c",
+  "id": "77fa3532-8d26-4697-9177-a7523232ea34",
   "prevId": "99780556-78d6-4788-ab5a-30b2c5992083",
   "version": "7",
   "dialect": "postgresql",
@@ -8735,6 +8735,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "recovery_state": {
+          "name": "recovery_state",
+          "type": "varchar(24)",
+          "primaryKey": false,
+          "notNull": false
+        },
         "failure_code": {
           "name": "failure_code",
           "type": "text",
@@ -8909,8 +8915,8 @@
           "method": "btree",
           "with": {}
         },
-        "uq_llm_usage_provider_request": {
-          "name": "uq_llm_usage_provider_request",
+        "uq_llm_usage_nonpersonal_provider_request": {
+          "name": "uq_llm_usage_nonpersonal_provider_request",
           "columns": [
             {
               "expression": "provider_route",
@@ -8926,7 +8932,35 @@
             }
           ],
           "isUnique": true,
-          "where": "\"llm_usage_events\".\"provider_request_id\" IS NOT NULL",
+          "where": "\"llm_usage_events\".\"provider_request_id\" IS NOT NULL AND \"llm_usage_events\".\"funding_kind\" IS DISTINCT FROM 'personal'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_llm_usage_personal_provider_request": {
+          "name": "uq_llm_usage_personal_provider_request",
+          "columns": [
+            {
+              "expression": "payer_human_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_route",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_request_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"llm_usage_events\".\"provider_request_id\" IS NOT NULL AND \"llm_usage_events\".\"funding_kind\" = 'personal'",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -8983,7 +9017,11 @@
         },
         "llm_usage_events_attempt_state_check": {
           "name": "llm_usage_events_attempt_state_check",
-          "value": "(\n        (\"llm_usage_events\".\"attempt_outcome\" IS NULL AND \"llm_usage_events\".\"cost_state\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"provider_route\" = 'surplus' AND \"llm_usage_events\".\"attempt_outcome\" IS NOT NULL AND \"llm_usage_events\".\"cost_state\" IS NOT NULL AND \"llm_usage_events\".\"endpoint\" IS NOT NULL AND length(\"llm_usage_events\".\"endpoint\") > 0)\n      )"
+          "value": "(\n        (\"llm_usage_events\".\"attempt_outcome\" IS NULL AND \"llm_usage_events\".\"cost_state\" IS NULL AND \"llm_usage_events\".\"recovery_state\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"attempt_outcome\" IS NOT NULL AND \"llm_usage_events\".\"cost_state\" IS NOT NULL AND \"llm_usage_events\".\"endpoint\" IS NOT NULL AND length(\"llm_usage_events\".\"endpoint\") > 0\n          AND (\"llm_usage_events\".\"provider_route\" = 'surplus' OR (\"llm_usage_events\".\"funding_kind\" = 'personal' AND \"llm_usage_events\".\"recovery_state\" IS NULL)))\n      )"
+        },
+        "llm_usage_events_recovery_state_check": {
+          "name": "llm_usage_events_recovery_state_check",
+          "value": "(\n        \"llm_usage_events\".\"recovery_state\" IS NULL\n        OR (\"llm_usage_events\".\"provider_route\" = 'surplus' AND \"llm_usage_events\".\"cost_state\" IN ('pending', 'unknown'))\n      )"
         },
         "llm_usage_events_cost_state_check": {
           "name": "llm_usage_events_cost_state_check",
@@ -9109,6 +9147,36 @@
           "primaryKey": false,
           "notNull": true
         },
+        "funding_kind": {
+          "name": "funding_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "payer_human_id": {
+          "name": "payer_human_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_route": {
+          "name": "provider_route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_revision": {
+          "name": "credential_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "estimated_cost_usd": {
           "name": "estimated_cost_usd",
           "type": "numeric(14, 8)",
@@ -9170,6 +9238,21 @@
           "columns": [
             {
               "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_provider_cost_events_payer_human_id": {
+          "name": "idx_provider_cost_events_payer_human_id",
+          "columns": [
+            {
+              "expression": "payer_human_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -9247,6 +9330,10 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {
+        "provider_cost_events_funding_provenance_check": {
+          "name": "provider_cost_events_funding_provenance_check",
+          "value": "(\n        (\"provider_cost_events\".\"funding_kind\" IS NULL AND \"provider_cost_events\".\"payer_human_id\" IS NULL AND \"provider_cost_events\".\"provider_route\" IS NULL AND \"provider_cost_events\".\"credential_id\" IS NULL AND \"provider_cost_events\".\"credential_revision\" IS NULL)\n        OR (\"provider_cost_events\".\"funding_kind\" = 'personal' AND \"provider_cost_events\".\"payer_human_id\" IS NOT NULL AND \"provider_cost_events\".\"provider_route\" IS NOT NULL AND length(\"provider_cost_events\".\"provider_route\") > 0 AND \"provider_cost_events\".\"credential_id\" IS NOT NULL AND \"provider_cost_events\".\"credential_revision\" IS NOT NULL AND \"provider_cost_events\".\"credential_revision\" >= 1)\n        OR (\"provider_cost_events\".\"funding_kind\" IN ('server', 'service') AND \"provider_cost_events\".\"payer_human_id\" IS NULL AND \"provider_cost_events\".\"provider_route\" IS NOT NULL AND length(\"provider_cost_events\".\"provider_route\") > 0 AND \"provider_cost_events\".\"credential_id\" IS NULL AND \"provider_cost_events\".\"credential_revision\" IS NULL)\n      )"
+        },
         "provider_cost_events_evidence_check": {
           "name": "provider_cost_events_evidence_check",
           "value": "(\n        (\"provider_cost_events\".\"evidence_state\" = 'actual' AND \"provider_cost_events\".\"actual_cost_usd\" IS NOT NULL)\n        OR (\"provider_cost_events\".\"evidence_state\" = 'estimated' AND \"provider_cost_events\".\"actual_cost_usd\" IS NULL AND \"provider_cost_events\".\"estimated_cost_usd\" IS NOT NULL)\n        OR (\"provider_cost_events\".\"evidence_state\" = 'unknown' AND \"provider_cost_events\".\"actual_cost_usd\" IS NULL AND \"provider_cost_events\".\"estimated_cost_usd\" IS NULL)\n      )"
@@ -22350,6 +22437,12 @@
           "primaryKey": false,
           "notNull": true
         },
+        "destination": {
+          "name": "destination",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "validation_status": {
           "name": "validation_status",
           "type": "varchar(16)",
@@ -22362,6 +22455,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "receipt_read_status": {
+          "name": "receipt_read_status",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'unknown'"
         },
         "created_at": {
           "name": "created_at",
@@ -22422,7 +22522,7 @@
       "checkConstraints": {
         "personal_provider_credentials_provider_check": {
           "name": "personal_provider_credentials_provider_check",
-          "value": "\"personal_provider_credentials\".\"provider\" in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert')"
+          "value": "\"personal_provider_credentials\".\"provider\" in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert', 'surplus')"
         },
         "personal_provider_credentials_revision_check": {
           "name": "personal_provider_credentials_revision_check",
@@ -22439,6 +22539,18 @@
         "personal_provider_credentials_validation_status_check": {
           "name": "personal_provider_credentials_validation_status_check",
           "value": "\"personal_provider_credentials\".\"validation_status\" in ('unverified', 'accepted', 'rejected', 'unavailable')"
+        },
+        "personal_provider_credentials_destination_check": {
+          "name": "personal_provider_credentials_destination_check",
+          "value": "\"personal_provider_credentials\".\"destination\" is null or \"personal_provider_credentials\".\"provider\" = 'gateway'"
+        },
+        "personal_provider_credentials_receipt_read_status_check": {
+          "name": "personal_provider_credentials_receipt_read_status_check",
+          "value": "\"personal_provider_credentials\".\"receipt_read_status\" in ('available', 'unavailable', 'unknown')"
+        },
+        "personal_provider_credentials_receipt_read_provider_check": {
+          "name": "personal_provider_credentials_receipt_read_provider_check",
+          "value": "\"personal_provider_credentials\".\"receipt_read_status\" = 'unknown' or \"personal_provider_credentials\".\"provider\" = 'surplus'"
         }
       },
       "isRLSEnabled": false
@@ -43794,157 +43906,6 @@
         }
       },
       "checkConstraints": {},
-      "isRLSEnabled": true
-    },
-    "public.task_run_message_associations": {
-      "name": "task_run_message_associations",
-      "schema": "",
-      "columns": {
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "session_id": {
-          "name": "session_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "message_id": {
-          "name": "message_id",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "published_revision": {
-          "name": "published_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "publication_key": {
-          "name": "publication_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_task_run_message_associations_run_kind_message": {
-          "name": "idx_task_run_message_associations_run_kind_message",
-          "columns": [
-            {
-              "expression": "task_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "kind",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "message_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "task_run_message_associations_task_run_id_task_runs_id_fk": {
-          "name": "task_run_message_associations_task_run_id_task_runs_id_fk",
-          "tableFrom": "task_run_message_associations",
-          "tableTo": "task_runs",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_run_message_associations_message": {
-          "name": "uq_task_run_message_associations_message",
-          "nullsNotDistinct": false,
-          "columns": [
-            "message_id"
-          ]
-        },
-        "uq_task_run_message_associations_publication": {
-          "name": "uq_task_run_message_associations_publication",
-          "nullsNotDistinct": false,
-          "columns": [
-            "task_run_id",
-            "kind",
-            "publication_key"
-          ]
-        }
-      },
-      "policies": {
-        "task_run_message_associations_product_select": {
-          "name": "task_run_message_associations_product_select",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true"
-        },
-        "task_run_message_associations_product_insert": {
-          "name": "task_run_message_associations_product_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_run_message_associations_kind_valid": {
-          "name": "task_run_message_associations_kind_valid",
-          "value": "\"task_run_message_associations\".\"kind\" IN ('transcript', 'raw_delivery', 'wake')"
-        },
-        "task_run_message_associations_message_positive": {
-          "name": "task_run_message_associations_message_positive",
-          "value": "\"task_run_message_associations\".\"message_id\" > 0"
-        },
-        "task_run_message_associations_revision_nonnegative": {
-          "name": "task_run_message_associations_revision_nonnegative",
-          "value": "\"task_run_message_associations\".\"published_revision\" >= 0"
-        },
-        "task_run_message_associations_publication_key_bounded": {
-          "name": "task_run_message_associations_publication_key_bounded",
-          "value": "octet_length(\"task_run_message_associations\".\"publication_key\") between 1 and 512"
-        }
-      },
       "isRLSEnabled": true
     }
   },

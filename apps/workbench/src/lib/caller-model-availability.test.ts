@@ -24,6 +24,16 @@ function row(
 }
 
 describe("loadCallerModelRows", () => {
+  test("supplements an existing caller snapshot without reloading its eligibility", async () => {
+    const getCallerModels = mock(async () => []);
+    const resolveRetainedModels = mock(async () => [row("legacy:model", "selectable")]);
+    const rows = await loadCallerModelRows({ getCallerModels, resolveRetainedModels },
+      ["legacy:model"], [row("personal:model", "selectable")]);
+    expect(getCallerModels).not.toHaveBeenCalled();
+    expect(rows.find((model) => model.id === "personal:model")?.availability).toBe("selectable");
+    expect(rows.find((model) => model.id === "legacy:model")?.availability).toBe("filtered");
+  });
+
   test("keeps caller availability authoritative and resolves only missing saved IDs", async () => {
     const resolveRetainedModels = mock(async () => [
       row("legacy:model", "selectable"),

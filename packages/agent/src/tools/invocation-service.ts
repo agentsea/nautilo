@@ -1,3 +1,22 @@
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { bindDelegatedLocalExecution } from "./local-execution/admission";
+import type { DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
+import { parseGitHubCapability, parseGitHubInvocationBinding, parseGitHubOperation, parseGitHubPreparedOperation, sameGitHubOwner, githubPublishing, type GitHubInvocationBinding } from "@nautilo/types";
+import { RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
+import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
+import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import type { HumanTerminalAdmissionPort } from "./terminal/admission";
+import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../../types/src/human-terminal";
+import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
+import { parseRelayBasicExecutionCapability, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { localGitSchema } from "./local-git/local-git";
+import { readShellOutputSchema } from "./shell/read-shell-output";
+import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import type { LocalExecutionHistoryPort } from "./local-execution/history";
+import { RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
+import { execCommandSchema, writeStdinSchema, isLocalExecutionTool, localExecutionOperation } from "./local-execution/local-execution";
+import { localExecutionId, sameLocalExecutionCaller } from "./local-execution/admission";
+import { LOCAL_EXECUTION_MAX_IDENTITIES, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBinding, type RelayLocalExecutionOwnerV1, type RelayLocalExecutionUncertaintyV1 } from "@nautilo/relay";
 import { browserToolMayMutate, isBrowserTool } from "@nautilo/relay";
 import { readBrowserHistory } from "./browser/browser-history";
 import { resolveBrowserDecisionModel } from "./browser/browser-snapshot";
@@ -279,6 +298,9 @@ export function resolveExecutionPolicy(
   toolName: string,
   catalog: Pick<ToolCatalog, "get">,
 ): ExecutionPolicy {
+  if (isLocalExecutionTool(toolName)) {
+    return { executor: "relay", impact: "destructive", hostScope: "required", relayCapability: "canExecuteLocal" };
+  }
   const entry = catalog.get(toolName);
   if (entry) {
     const executor = entry.executor === "relay" ? "relay" : "cloud";
@@ -420,9 +442,9 @@ function formatRelayToolError(
 ): string {
   const detail = result.error ?? "unknown error";
   const code = relayResultErrorCode(result);
-  const outputArtifact = tc.args["output_artifact"];
+  const outputArtifact = tc.name === "read_shell_output" ? tc.args : tc.args["output_artifact"];
   const knownContinuationCode =
-    tc.name === "run_shell"
+    (tc.name === "run_shell" || tc.name === "read_shell_output")
       ? code !== undefined && RUN_SHELL_OUTPUT_ARTIFACT_CONTINUATION_ERROR_CODES.has(code)
       : tc.name === "structured_ssh_output"
         ? code !== undefined && STRUCTURED_SSH_OUTPUT_ARTIFACT_CONTINUATION_ERROR_CODES.has(code)
@@ -464,6 +486,7 @@ export type ToolRelayRegistry = {
    * row id; null when not connected or never carried).
    */
   getPairingGeneration?(relayId: string): string | null | undefined;
+  isRelayHeartbeatFresh?(relayId: string): boolean;
   /**
    * the relay's validated advisory Workstation Profile binding snapshot
    * (null when none advertised / not connected). Advisory binding data only;
@@ -516,6 +539,9 @@ export type ToolRelayRegistry = {
       readonly timeoutMs?: number | undefined;
     },
   ): Promise<RelaySshPrepareResponseV1>;
+  getLocalExecutionPairingGeneration?(relayId: string): string | null;
+  getLocalExecutionWorkstationBinding?(relayId: string, executionId: string): RelayWorkstationShellBinding | null;
+  getLocalExecutionBinding?(relayId: string, executionId: string): RelayLocalExecutionBinding | null;
   dispatch(
     relayId: string,
     request: {
@@ -537,6 +563,13 @@ export type ToolRelayRegistry = {
        * it to the wire `relay:dispatch` message.
        */
       workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+      localExecutionDelegationCapture?: import("@nautilo/relay").RelayLocalExecutionDelegationCapture | undefined;
+      localExecutionBinding?: RelayLocalExecutionBinding | undefined;
+      localExecutionActivationSignal?: AbortSignal | undefined;
+      retainLocalExecutionSource?: (() => () => void) | undefined;
+      localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
+      humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
+      githubBinding?: GitHubInvocationBinding | undefined;
       /** server-owned marker for dispatches admitted by the live uncontained session resolver. */
       uncontainedHostCommandsSession?: true | undefined;
       onSecurityScanProgress?: ((progress: RelaySecurityScanProgressMessage) => void) | undefined;
@@ -668,10 +701,14 @@ function resolveExactTaskContinuationCapabilities(input: {
 /**
  * Structural view of `WorkstationDispatchPlan` read by the tools node. Only
  * the binding fields the tools node re-validates + the `relayId` it pins.
- * `executionClass` / `admittedAt` are not read here, so they are omitted
- * (the runtime plan carries them; extra fields are fine for assignability).
+ * `executionClass` additionally fences the typed Git lane. Admission timing
+ * remains owned by the registry.
  */
 export interface WorkstationDispatchPlanView {
+  readonly executionClass?: "basic_sandbox" | "profile_bound_sandbox" | "typed_broker" | "real_workstation";
+  readonly agentId?: string;
+  readonly roomId?: string;
+  readonly conversationId?: string;
   readonly toolCallId: string;
   readonly userId: string;
   readonly relayId: string;
@@ -683,8 +720,8 @@ export interface WorkstationDispatchPlanView {
    * Workstation session was activated with (never client-authored).
    */
   readonly pairingGeneration: string;
-  readonly profileId: string;
-  readonly profileRevision: number;
+  readonly profileId: string | null;
+  readonly profileRevision: number | null;
   readonly grantIds: readonly string[];
   readonly capabilityRevision: number;
   /**
@@ -706,6 +743,7 @@ export interface WorkstationDispatchPlanView {
  * from the live relay registry for the plan's `relayId`.
  */
 export interface WorkstationRelayFingerprintView {
+  readonly basicExecution?: ReturnType<typeof parseRelayBasicExecutionCapability>;
   readonly userId: string | null;
   readonly desktopSessionId: string | null;
   readonly capabilityRevision: number | null;
@@ -742,6 +780,49 @@ export type WorkstationPlanRevalidationReasonView =
  * exposed; the runtime `RelayActiveWorkstationSessionView` satisfies this
  * structurally without the agent importing the runtime package.
  */
+/** Bind only the exact current foreground and admitted Development account owner. */
+export function bindGitHubInvocation(state: NautiloState, toolCallId: string, stage: "read" | "prepare", previous?: GitHubInvocationBinding): GitHubInvocationBinding | null {
+  const registry = _relayRegistry, origin = state.verifiedOrdinaryOrigin;
+  const human = causalHumanForExecution(state.causalHumanUserId) || origin?.userId;
+  if (!registry || origin?.kind !== "local_electron" || !human || origin.userId !== human
+    || !toolCallId || !state.agentId || !state.roomId || !state.turnId || !(state.currentThreadId || state.langgraphThreadId)
+    || state.trustedExecutionEntrypoint !== "foreground.main" || state.taskRun || state.subagentRun) return null;
+  const caps = registry.getCapabilities(origin.relayId), capability = parseGitHubCapability(caps?.github);
+  const active = registry.getActiveWorkstationSession?.(human), profile = registry.getWorkstationProfileSnapshot?.(origin.relayId);
+  if (!capability || caps?.profile !== "desktop-agent" || caps.canUseGitHub !== true
+    || (registry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_GITHUB_PROTOCOL_VERSION
+    || registry.getUserId?.(origin.relayId) !== human || registry.getDesktopSessionId?.(origin.relayId) !== origin.desktopSessionId
+    || registry.getPairingGeneration?.(origin.relayId) !== origin.pairingGeneration
+    || registry.getLocalExecutionPairingGeneration?.(origin.relayId) !== capability.identity.pairingGeneration
+    || capability.identity.humanUserId !== human || capability.identity.relayId !== origin.relayId
+    || capability.identity.desktopSessionId !== origin.desktopSessionId || capability.identity.instanceId !== resolveInstance().instanceId
+    || !active || active.userId !== human || active.relayId !== origin.relayId || active.desktopSessionId !== origin.desktopSessionId
+    || active.capabilityRevision !== registry.getCapabilityRevision?.(origin.relayId)
+    || !profile || profile.profileId !== capability.identity.profileId || profile.profileRevision !== capability.identity.profileRevision
+    || profile.protectedPolicyVersion !== capability.identity.protectedPolicyVersion) return null;
+  const owner = { ...capability.identity, agentId: state.agentId, roomId: state.roomId,
+    conversationId: state.currentThreadId || state.langgraphThreadId, runId: state.turnId };
+  if (previous && (previous.toolCallId !== toolCallId || previous.generation !== capability.generation
+    || !sameGitHubOwner(previous.owner, owner))) return null;
+  return previous ?? { version: 1, generation: capability.generation, toolCallId, owner, stage };
+}
+
+export async function prepareGitHubInvocation(state: NautiloState, tc: { id?: string; args: Record<string, unknown> }, port: HumanTerminalAdmissionPort | undefined) {
+  const registry = _relayRegistry, binding = bindGitHubInvocation(state, tc.id ?? "", "prepare");
+  if (!registry || !binding || !port || !githubPublishing(tc.args)) throw new Error("GITHUB_UNAVAILABLE");
+  return port.withAdmission(async signal => {
+    if (!bindGitHubInvocation(state, binding.toolCallId, "prepare", binding)) throw new Error("GITHUB_AUTHORITY_CHANGED");
+    const result = await registry.dispatch(binding.owner.relayId, { toolName: "local_github", args: tc.args,
+      impact: "read-only", approvalObtained: false, githubBinding: binding, signal });
+    if (!bindGitHubInvocation(state, binding.toolCallId, "prepare", binding)) throw new Error("GITHUB_AUTHORITY_CHANGED");
+    const value = result.result as { ok?: unknown; prepared?: unknown } | undefined;
+    const prepared = result.status === "ok" && value?.ok === true ? parseGitHubPreparedOperation(value.prepared) : null;
+    if (!prepared || prepared.generation !== binding.generation || prepared.toolCallId !== binding.toolCallId
+      || JSON.stringify(parseGitHubOperation(prepared.request)) !== JSON.stringify(parseGitHubOperation(tc.args))) throw new Error("GITHUB_PREPARATION_UNAVAILABLE");
+    return { binding, prepared };
+  });
+}
+
 export interface ActiveWorkstationSessionView {
   readonly userId: string;
   readonly relayId: string;
@@ -935,6 +1016,9 @@ export type ServerToolInvocationContextOptions = Readonly<{
   readonly fullEncryptionOnly?: boolean;
   /** Exact invocation-bound organized Room recall capability. */
   readonly recallRecordsPort?: RecallRecordsPort;
+  readonly delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
+  readonly localExecutionHistoryPort?: LocalExecutionHistoryPort;
+  readonly humanTerminalAdmissionPort?: HumanTerminalAdmissionPort;
   /** Process-local protected Memory capability for this invocation only. */
   readonly protectedMemoryRepository?: ProtectedAgentMemoryRepository;
   readonly protectedMemorySearch?: ProtectedAgentMemorySearchPort;
@@ -956,6 +1040,9 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
     | ProtectedAgentMemoryScopeLifecyclePort
     | undefined;
   readonly #recallRecordsPort: RecallRecordsPort | undefined;
+  readonly delegatedLocalExecutionPort: DelegatedLocalExecutionPort | undefined;
+  readonly localExecutionHistoryPort: LocalExecutionHistoryPort | undefined;
+  readonly humanTerminalAdmissionPort: HumanTerminalAdmissionPort | undefined;
   readonly #fullEncryptionOnly: boolean;
   readonly #ordinaryContentAccess: OrdinaryContentAccessSelection | undefined;
   readonly #personalTaskControls: boolean;
@@ -976,6 +1063,9 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
       ...(options.personalOnlyTaskModelIds ?? []),
     ]);
     this.#recallRecordsPort = options.recallRecordsPort;
+    this.delegatedLocalExecutionPort = options.delegatedLocalExecutionPort;
+    this.localExecutionHistoryPort = options.localExecutionHistoryPort;
+    this.humanTerminalAdmissionPort = options.humanTerminalAdmissionPort;
     this.#fullEncryptionOnly = options.fullEncryptionOnly === true;
     this.#protectedMemoryRepository = options.protectedMemoryRepository;
     this.#protectedMemorySearch = options.protectedMemorySearch;
@@ -1316,11 +1406,21 @@ export function createNautiloToolInvocationSession(
   const taskCreationBrowserSessionId = taskCreationRelayId === null
     ? null
     : _relayRegistry?.getCapabilities(taskCreationRelayId)?.browserSessionId;
-  const taskCreationReturnContext = taskCreationReturnContextForState(
+  const taskLocalSourceEligible = Boolean(trustedContext.humanTerminalAdmissionPort && taskCreationRelayId
+    && _relayRegistry?.getCapabilities(taskCreationRelayId)?.canDelegateLocalExecution === true
+    && (_relayRegistry.getProtocolVersion?.(taskCreationRelayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION);
+  const taskCreationReturnBase = taskCreationReturnContextForState(
     state,
     taskCreationRelaySessionId,
     taskCreationBrowserSessionId,
+    { allowWorkspaceSource: taskLocalSourceEligible },
   );
+  const taskCreationReturnContext = taskCreationReturnBase && trustedContext.humanTerminalAdmissionPort
+    && taskLocalSourceEligible
+    ? { ...taskCreationReturnBase, localExecutionSource: {
+      roomId: state.roomId, conversationId: state.currentThreadId || state.langgraphThreadId, agentId: state.agentId,
+      withAdmission: trustedContext.humanTerminalAdmissionPort.withAdmission.bind(trustedContext.humanTerminalAdmissionPort),
+    } } : taskCreationReturnBase;
   const taskCreationLiveMiniAppContext = taskCreationLiveMiniAppContextForState(state);
   const taskCreationBackgroundTaskProvenance = taskCreationBackgroundTaskProvenanceForState(state);
   const taskCreationInvocationProvenance = taskCreationInvocationProvenanceForState(state);
@@ -1522,8 +1622,15 @@ export function createNautiloToolInvocationSession(
       });
       if (!localResearchContext && !localResearchHandoff && effectiveHostScope === "required" && !isSupportedComputerUseToolName(tc.name)) {
         const requiredRelayId = tc.id ? state.requiredHostRelays?.[tc.id] : undefined;
+        const delegatedPin = tc.id ? state.delegatedLocalExecutionBindings?.[tc.id] : undefined;
+        const delegatedSource = trustedContext.delegatedLocalExecutionPort;
+        const hasDelegatedTarget = isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task"
+          && delegatedSource !== undefined && delegatedPin?.version === 4 && !delegatedSource.signal.aborted
+          && delegatedSource.taskId === state.currentTaskId && delegatedSource.taskRunId === state.currentTaskRunId
+          && delegatedPin.authority.taskId === delegatedSource.taskId && delegatedPin.authority.taskRunId === delegatedSource.taskRunId
+          && delegatedPin.owner.relayId === requiredRelayId;
         if (
-          (!state.verifiedOrdinaryOrigin
+          (!state.verifiedOrdinaryOrigin && !hasDelegatedTarget
             && !hasAvailableTaskReportBackContinuation(state.taskReportBackContinuation))
           || !requiredRelayId
         ) {
@@ -1604,6 +1711,9 @@ export function createNautiloToolInvocationSession(
         } else if (policy.executor === "relay") {
           const relayResult = await executeViaRelayRaw(tc, policy, state, {
             toolCallId, fullEncryptionOnly,
+            ...(trustedContext.delegatedLocalExecutionPort === undefined ? {} : { delegatedLocalExecutionPort: trustedContext.delegatedLocalExecutionPort }),
+            ...(trustedContext.localExecutionHistoryPort === undefined ? {} : { localExecutionHistoryPort: trustedContext.localExecutionHistoryPort }),
+            ...(trustedContext.humanTerminalAdmissionPort === undefined ? {} : { humanTerminalAdmissionPort: trustedContext.humanTerminalAdmissionPort }),
             // provenance must retain the actual Task-selected model.
             // `requestedModelId` is only a capability-projection fallback and
             // can name a built-in candidate that the Task never selected.
@@ -1690,7 +1800,9 @@ export function createNautiloToolInvocationSession(
             // bypass scanning — same semantics as the cloud path's
             // catch-block errors below.
             const safeRelayError = redactSecrets(relayResult.errorMessage).text;
-            // ( / ) — in a background/async Task run there is no
+            const uncertaintyContent = relayResult.localExecutionUncertainty === undefined
+              ? undefined : JSON.stringify(relayResult.localExecutionUncertainty);
+            // in a background/async Task run there is no
             // present human to relay a "connect your relay" tool message to.
             // When the relay vanished mid-run (`relayUnavailable`), fail the
             // whole run with a recognizable `relay_unavailable` error rather
@@ -1707,7 +1819,7 @@ export function createNautiloToolInvocationSession(
                     tc.name,
                     "error",
                     safeRelayError,
-                    undefined,
+                    uncertaintyContent,
                     relayResult.runShellOutcome,
                   ),
                 );
@@ -1726,13 +1838,13 @@ export function createNautiloToolInvocationSession(
                   tc.name,
                   "error",
                   safeRelayError,
-                  undefined,
+                  uncertaintyContent,
                   relayResult.runShellOutcome,
                 ),
               );
             }
             const tm = new ToolMessage({
-              content: safeRelayError,
+              content: uncertaintyContent ?? safeRelayError,
               tool_call_id: toolCallId,
               name: tc.name,
               ...(relayResult.browserFailure ? { additional_kwargs: { nautilo_browser_failure: relayResult.browserFailure } } : {}),
@@ -2269,11 +2381,12 @@ type RelayDispatchOutcome =
        * relay-*returned* error (a real tool failure the agent should see) or a
        * timeout-tier violation. In a Task run this flag makes the dispatch seam
        * throw `RelayUnavailableError` so the run fails cleanly instead of the
-       * agent silently continuing cloud-only ( / ).
+       * agent silently continuing cloud-only.
        */
       relayUnavailable?: boolean;
       /** A dispatched Desktop shell lost its final relay receipt. */
       runShellOutcome?: "unknown";
+      localExecutionUncertainty?: RelayLocalExecutionUncertaintyV1;
       browserFailure?: "browser_observation_stale" | "browser_cancelled" | "browser_authority_lost" | "browser_outcome_unknown" | "browser_observation_invalid";
       /** A dispatched structured SSH operation lost its final relay receipt. */
       structuredSshOutcome?: "unknown";
@@ -3390,6 +3503,9 @@ async function executeViaRelayRaw(
   policy: ExecutionPolicy,
   state: NautiloState,
   opts: {
+    readonly delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
+  readonly localExecutionHistoryPort?: LocalExecutionHistoryPort;
+    readonly humanTerminalAdmissionPort?: HumanTerminalAdmissionPort;
     readonly extraNetworkAllowRules?: readonly NetworkAllowRule[];
     /** Stable lifecycle id generated before dispatch, including tc.id-less calls. */
     readonly toolCallId?: string;
@@ -3436,8 +3552,244 @@ async function executeViaRelayRaw(
     return await executeSelectCurrentFolderViaRelay(tc, state, _relayRegistry);
   }
 
+  if (tc.name === "local_github") {
+    const request = parseGitHubOperation(tc.args), port = opts.humanTerminalAdmissionPort;
+    const pinned = tc.id ? parseGitHubInvocationBinding(state.githubInvocationBindings?.[tc.id], tc.args) : null;
+    const publishing = githubPublishing(tc.args);
+    const unavailable = () => ({ ok: false as const, errorMessage: publishing
+      ? "GitHub publishing outcome is unconfirmed. Do not retry or recreate the publishing request; inspect GitHub with a read first."
+      : "GitHub source or account authority is unavailable. No account content was released." });
+    if (!request || !port || !pinned || pinned.stage !== (publishing ? "publish" : "read")
+      || !bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned)) return unavailable();
+    const registry = _relayRegistry;
+    try {
+      return await port.withAdmission(async signal => {
+        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned)) throw new Error("GITHUB_AUTHORITY_CHANGED");
+        const result = await registry.dispatch(pinned.owner.relayId, { toolName: tc.name, args: tc.args,
+          impact: publishing ? "destructive" : "read-only", approvalObtained: publishing,
+          githubBinding: pinned, signal: opts.signal ? AbortSignal.any([signal, opts.signal]) : signal });
+        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned)) throw new Error("GITHUB_AUTHORITY_CHANGED");
+        return result.status === "ok" ? { ok: true as const, rawContent: JSON.stringify(result.result),
+          ...(result.result && typeof result.result === "object" && "ok" in result.result && result.result.ok === false
+            ? { toolError: "GitHub operation was not confirmed. Follow the receipt; never retry an uncertain publication." } : {}) } : unavailable();
+      });
+    } catch { return unavailable(); }
+  }
+  if (tc.name === "human_terminal") {
+    const origin = state.verifiedOrdinaryOrigin;
+    const operation = parseHumanTerminalOperation(tc.args);
+    const registry = _relayRegistry;
+    const humanId = causalHumanForExecution(state.causalHumanUserId) || origin?.userId;
+    const consent = origin?.kind === "local_electron" ? parseRelayHumanTerminalCapability(registry.getCapabilities(origin.relayId)?.humanTerminal) : null;
+    const port = opts.humanTerminalAdmissionPort;
+    const pinned = tc.id ? parseRelayHumanTerminalBinding(state.humanTerminalInvocationBindings?.[tc.id]) : null;
+    if (!operation || !port || !consent || !pinned || pinned.generation !== consent.generation
+      || !sameHumanTerminalConsentOwner(pinned.owner, consent.owner) || pinned.owner.conversationId !== (state.currentThreadId || state.langgraphThreadId)
+      || origin?.kind !== "local_electron" || origin.userId !== humanId
+      || state.trustedExecutionEntrypoint !== "foreground.main" || state.taskRun || state.subagentRun
+      || !state.roomId || !state.agentId || !state.turnId || !tc.id || !(state.currentThreadId || state.langgraphThreadId)
+      || consent.owner.humanUserId !== humanId || consent.owner.agentId !== state.agentId || consent.owner.roomId !== state.roomId)
+      return { ok: false, errorMessage: operation?.action !== "read" && pinned
+        ? "Human terminal input outcome is unknown after authority changed. Do not retry it; ask the Human to inspect the terminal."
+        : "Human terminal handoff requires fresh source admission for this exact Human, Genie, Room and Desktop." };
+    const isCurrent = () => {
+      const caps = registry.getCapabilities(origin.relayId);
+      const current = parseRelayHumanTerminalCapability(caps?.humanTerminal);
+      return registry === _relayRegistry && caps?.profile === "desktop-agent" && caps.canUseHumanTerminal === true
+        && (registry.getProtocolVersion?.(origin.relayId) ?? 0) >= RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION
+        && registry.getUserId?.(origin.relayId) === humanId && registry.getDesktopSessionId?.(origin.relayId) === origin.desktopSessionId
+        && registry.getPairingGeneration?.(origin.relayId) === origin.pairingGeneration
+        && registry.getLocalExecutionPairingGeneration?.(origin.relayId) === consent.owner.pairingGeneration
+        && consent.owner.relayId === origin.relayId && consent.owner.desktopSessionId === origin.desktopSessionId
+        && current?.generation === consent.generation && sameHumanTerminalConsentOwner(current.owner, consent.owner);
+    };
+    try {
+      return await port.withAdmission(async signal => {
+        if (!isCurrent()) throw new Error("HUMAN_TERMINAL_AUTHORITY_CHANGED");
+        const binding = pinned;
+        const result = await registry.dispatch(origin.relayId, { toolName: tc.name, args: tc.args,
+          impact: operation.action === "read" ? "read-only" : "high", approvalObtained: true,
+          humanTerminalBinding: binding, signal: opts.signal ? AbortSignal.any([signal, opts.signal]) : signal });
+        if (!isCurrent()) throw new Error("HUMAN_TERMINAL_AUTHORITY_CHANGED");
+        return result.status === "ok" ? { ok: true as const, rawContent: JSON.stringify(result.result),
+          ...(result.result && typeof result.result === "object" && "ok" in result.result && result.result.ok === false
+            ? { toolError: "Human terminal operation was not confirmed. Follow its receipt; do not retry uncertain input." } : {}) }
+          : { ok: false as const, errorMessage: "The exact Human terminal handoff refused this operation. Do not retry uncertain input." };
+      });
+    } catch {
+      return { ok: false, errorMessage: operation.action !== "read"
+        ? "Human terminal input outcome is unknown. Do not retry it; ask the Human to inspect the terminal."
+        : "Human terminal source authority is unavailable. No terminal output was released." };
+    }
+  }
+  if (isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task") {
+    const port = opts.delegatedLocalExecutionPort;
+    const operation = localExecutionOperation(tc.name, tc.args);
+    const humanId = causalHumanForExecution(state.causalHumanUserId);
+    if (!port || !humanId || !tc.id || !state.agentId || !state.currentTaskId || !state.currentTaskRunId
+      || port.taskId !== state.currentTaskId || port.taskRunId !== state.currentTaskRunId
+      || !(state.currentThreadId || state.langgraphThreadId)
+      || !(tc.name === "exec_command" ? execCommandSchema : writeStdinSchema).safeParse(tc.args).success) {
+      return { ok: false, errorMessage: "This Task has no current local project authority. Recreate it from the intended computer and project; no command was sent." };
+    }
+    const registry = _relayRegistry;
+    let sent = false;
+    let received = false;
+    let dispatchedBinding: import("@nautilo/relay").RelayLocalExecutionBindingV4 | undefined;
+    try {
+      return await port.withAdmission(operation, async source => {
+        const delegation = source.delegation;
+        const relayId = delegation.target.relayId;
+        const caps = registry.getCapabilities(relayId);
+        const contract = parseRelayLocalExecutionCapability(caps?.localExecution);
+        const desktopSessionId = registry.getDesktopSessionId?.(relayId);
+        const pairingGeneration = registry.getLocalExecutionPairingGeneration?.(relayId);
+        const isCurrent = () => registry === _relayRegistry && registry.getUserId?.(relayId) === humanId
+          && registry.getPairingGeneration?.(relayId) === delegation.target.pairingGeneration
+          && registry.getDesktopSessionId?.(relayId) === desktopSessionId
+          && registry.getLocalExecutionPairingGeneration?.(relayId) === pairingGeneration
+          && parseRelayLocalExecutionCapability(registry.getCapabilities(relayId)?.localExecution)?.generation === contract?.generation
+          && registry.getCapabilities(relayId)?.canDelegateLocalExecution === true;
+        if (!contract || contract.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || !desktopSessionId || !pairingGeneration
+          || caps?.profile !== "desktop-agent" || caps.canExecuteLocal !== true
+          || (registry.getProtocolVersion?.(relayId) ?? 0) < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+          || delegation.humanUserId !== humanId || delegation.agentId !== state.agentId
+          || delegation.target.instanceId !== resolveInstance().instanceId || !isCurrent()
+          || (tc.args["tty"] === true && !contract.pty)
+          || !isRelayLocalExecutionSearchAllowed(tc.name, tc.args, caps, registry.getProtocolVersion?.(relayId) ?? 0)) {
+          return { ok: false as const, relayUnavailable: true,
+            errorMessage: "The Task's original computer is offline or its local execution authority changed. Bring that same computer online; no alternate computer or command replay was attempted." };
+        }
+        const previous = state.delegatedLocalExecutionBindings?.[tc.id!];
+        const binding = previous && bindDelegatedLocalExecution({ registry, source, state,
+          invocationId: tc.id!, operation, previous,
+          ...(typeof tc.args["session_id"] === "string" ? { executionId: tc.args["session_id"] } : {}) });
+        if (!binding) return { ok: false as const,
+          errorMessage: "The original Task command binding changed. No command was restarted or rebound to another computer generation." };
+        source.signal.throwIfAborted();
+        if (!isCurrent()) throw new Error("TASK_LOCAL_EXECUTION_AUTHORITY_UNAVAILABLE");
+        sent = true;
+        dispatchedBinding = binding;
+        const result = await registry.dispatch(relayId, { toolName: tc.name, args: tc.args, localExecutionBinding: binding,
+          impact: operation === "read" ? "read-only" : "high", approvalObtained: true,
+          ...(port.retain ? { retainLocalExecutionSource: () => port.retain!() } : {}),
+          signal: opts.signal ? AbortSignal.any([source.signal, opts.signal]) : source.signal });
+        received = true;
+        if (!isCurrent()) throw new Error("TASK_LOCAL_EXECUTION_AUTHORITY_UNAVAILABLE");
+        return result.status === "ok"
+          ? { ok: true as const, rawContent: typeof result.result === "string" ? result.result : JSON.stringify(result.result) }
+          : { ok: false as const, errorMessage: result.error ?? "The exact delegated project refused this operation. Do not replay uncertain commands." };
+      });
+    } catch (error) {
+      const localExecutionUncertainty: RelayLocalExecutionUncertaintyV1 | undefined = dispatchedBinding
+        && operation !== "read" && (received || isRunShellOutcomeUnknown(error))
+        ? { version: 1, kind: "local_execution_outcome_unknown", generation: dispatchedBinding.generation,
+          executionId: dispatchedBinding.executionId, session_id: dispatchedBinding.executionId,
+          operation, outcome: "unknown", recovery: "read_or_cancel_same_execution",
+          message: "Task command outcome is unconfirmed. Read or stop this same execution; do not relaunch or resend input." }
+        : undefined;
+      return { ok: false, ...(localExecutionUncertainty ? { localExecutionUncertainty } : {}), errorMessage: sent && operation !== "read"
+        ? "The delegated command outcome is unknown after authority or transport changed. Do not replay it; inspect its retained execution receipt."
+        : "Task local execution authority is no longer current. No result content was released; recreate the Task from its intended computer and project if its definition or grant changed." };
+    }
+  }
   const capability = policy.relayCapability ?? "canReadWorkspace";
-  const userId = state.userId ?? "";
+  const isManagedExecution = isLocalExecutionTool(tc.name);
+  const userId = isManagedExecution || tc.name === "local_git" || tc.name === "read_shell_output"
+    ? (causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "")
+    : state.userId ?? "";
+  if (isManagedExecution && (!userId || !tc.id || !state.agentId || !state.turnId
+      || !(state.currentThreadId || state.langgraphThreadId)
+      || state.trustedExecutionEntrypoint !== "foreground.main"
+      || state.verifiedOrdinaryOrigin?.kind !== "local_electron"
+      || state.verifiedOrdinaryOrigin.userId !== userId)) {
+    return { ok: false, errorMessage: "Error: local execution requires a verified initiating Human and exact foreground computer/run identity." };
+  }
+  if (isManagedExecution && !(tc.name === "exec_command" ? execCommandSchema : writeStdinSchema).safeParse(tc.args).success) {
+    return { ok: false, errorMessage: "Error: local execution arguments do not match the supported contract." };
+  }
+  if (isManagedExecution && tc.args["search"] !== undefined) {
+    const origin = state.verifiedOrdinaryOrigin;
+    if (origin?.kind !== "local_electron" || !isRelayLocalExecutionSearchAllowed(tc.name, tc.args,
+      _relayRegistry.getCapabilities(origin.relayId), _relayRegistry.getProtocolVersion?.(origin.relayId) ?? 0)) {
+      return { ok: false, errorMessage: "Error: retained output search is unavailable on this computer. No command or input was sent." };
+    }
+  }
+  if (tc.name === "local_git" || tc.name === "read_shell_output") {
+    const origin = state.verifiedOrdinaryOrigin;
+    const caps = origin?.kind === "local_electron" ? _relayRegistry.getCapabilities(origin.relayId) : undefined;
+    if (origin?.kind !== "local_electron" || origin.userId !== userId
+      || state.trustedExecutionEntrypoint !== "foreground.main" || !tc.id || !state.agentId
+      || _relayRegistry.getUserId?.(origin.relayId) !== userId
+      || _relayRegistry.getDesktopSessionId?.(origin.relayId) !== origin.desktopSessionId
+      || _relayRegistry.getPairingGeneration?.(origin.relayId) !== origin.pairingGeneration
+      || (_relayRegistry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
+      || caps?.profile !== "desktop-agent"
+      || !(tc.name === "local_git" ? localGitSchema : readShellOutputSchema).safeParse(tc.args).success
+      || !(tc.name === "local_git" ? caps.canUseLocalGit === true && isRelayLocalGitCapability(caps.localGit) : caps.canReadShellOutput === true)) {
+      return { ok: false, errorMessage: "Error: this local tool requires its supported contract on the exact initiating Desktop." };
+    }
+  }
+  const historyOrigin = state.verifiedOrdinaryOrigin?.kind === "local_electron" ? state.verifiedOrdinaryOrigin : null;
+  const retainedExecution = tc.name === "write_stdin" && historyOrigin
+    ? _relayRegistry.getLocalExecutionBinding?.(historyOrigin.relayId, tc.args["session_id"] as string) : null;
+  const currentExecutionGeneration = historyOrigin
+    ? parseRelayLocalExecutionCapability(_relayRegistry.getCapabilities(historyOrigin.relayId)?.localExecution)?.generation : undefined;
+  const historyRegistry = _relayRegistry;
+  const recoverExecutionHistory = async (
+    expired?: Pick<RelayLocalExecutionBinding, "generation" | "executionId">,
+  ): Promise<RelayDispatchOutcome> => {
+    if (tc.name !== "write_stdin" || localExecutionOperation(tc.name, tc.args) !== "read" || !historyOrigin) {
+      return { ok: false, errorMessage: "Error: only an authorized execution read can recover saved history." };
+    }
+    const registry = historyRegistry;
+    const origin = historyOrigin;
+    const pairingGeneration = registry.getLocalExecutionPairingGeneration?.(origin.relayId);
+    const port = opts.localExecutionHistoryPort;
+    const isCurrent = () => registry === _relayRegistry && registry.getUserId?.(origin.relayId) === userId
+      && registry.getDesktopSessionId?.(origin.relayId) === origin.desktopSessionId
+      && registry.getPairingGeneration?.(origin.relayId) === origin.pairingGeneration
+      && registry.getLocalExecutionPairingGeneration?.(origin.relayId) === pairingGeneration
+      && registry.getCapabilities(origin.relayId)?.profile === "desktop-agent"
+      && registry.getCapabilities(origin.relayId)?.canReadLocalExecutionHistory === true
+      && isRelayLocalExecutionSearchAllowed(tc.name, tc.args, registry.getCapabilities(origin.relayId), registry.getProtocolVersion?.(origin.relayId) ?? 0)
+      && (registry.getProtocolVersion?.(origin.relayId) ?? 0) >= RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION;
+    if (!port || !pairingGeneration || !state.roomId || state.trustedExecutionEntrypoint !== "foreground.main"
+      || state.taskRun || state.subagentRun || !isCurrent()) {
+      return { ok: false, errorMessage: "Error: execution history is unavailable for the current conversation and computer. No command was restarted." };
+    }
+    try {
+      return await port.withReference(tc.args["session_id"] as string, async (reference) => {
+        if (!isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+        // An expired live receipt can recover only that original execution,
+        // never a same-named reference from another host generation.
+        if (expired && (reference.generation !== expired.generation || reference.executionId !== expired.executionId)) {
+          throw new Error("LOCAL_EXECUTION_HISTORY_REFERENCE_CHANGED");
+        }
+        const binding: RelayLocalExecutionHistoryBindingV1 = {
+          version: 1, ...reference, invocationId: tc.id!, reader: {
+            instanceId: resolveInstance().instanceId, humanUserId: userId, agentId: state.agentId,
+            conversationId: state.currentThreadId || state.langgraphThreadId, roomId: state.roomId,
+            relayId: origin.relayId, desktopSessionId: origin.desktopSessionId, pairingGeneration,
+          },
+        };
+        const result = await registry.dispatch(origin.relayId, { toolName: "write_stdin", args: tc.args,
+          impact: "read-only", approvalObtained: true, localExecutionHistoryBinding: binding,
+          ...(opts.signal === undefined ? {} : { signal: opts.signal }) });
+        if (!isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+        return result.status === "ok"
+          ? { ok: true as const, rawContent: typeof result.result === "string" ? result.result : JSON.stringify(result.result) }
+          : { ok: false as const, errorMessage: "Error: the saved execution result is unavailable. No command was restarted." };
+      });
+    } catch {
+      return { ok: false, errorMessage: "Error: the saved execution result could not be authorized or recovered. No command was restarted." };
+    }
+  };
+  if (tc.name === "write_stdin" && localExecutionOperation(tc.name, tc.args) === "read" && historyOrigin
+    && (!retainedExecution || retainedExecution.generation !== currentExecutionGeneration
+      || retainedExecution.owner.desktopSessionId !== historyOrigin.desktopSessionId)) {
+    return await recoverExecutionHistory();
+  }
   const isStructuredSsh = tc.name === "structured_ssh_auth" || tc.name === "structured_ssh_exec" || tc.name === "structured_ssh_copy_upload" || tc.name === "structured_ssh_copy_download";
   const isStructuredSshOutput = tc.name === "structured_ssh_output";
   const isSemanticComputerUse = isSupportedComputerUseToolName(tc.name);
@@ -3645,9 +3997,13 @@ async function executeViaRelayRaw(
   // computed from the relay caps + sandbox profile exactly as before.
   // -----------------------------------------------------------------
   const isRunShellOutputArtifact =
-    tc.name === "run_shell" && tc.args["output_artifact"] !== undefined;
+    tc.name === "read_shell_output" || (tc.name === "run_shell" && tc.args["output_artifact"] !== undefined);
+  const fullMacPin = tc.name === "exec_command" && tc.id ? state.fullMacInvocationBindings?.[tc.id] : undefined;
+  const isFullMacStart = fullMacPin?.activationId != null;
   const planRegistry = _workstationDispatchPlanRegistry;
-  let plan = !isSemanticComputerUse && !isRunShellOutputArtifact && planRegistry
+  // Continuations use the retained start binding after exact caller validation;
+  // a new Current Folder plan cannot change or invalidate that execution.
+  let plan = !isFullMacStart && tc.name !== "write_stdin" && !isSemanticComputerUse && !isRunShellOutputArtifact && planRegistry
     ? planRegistry.get(tc.id ?? "")
     : null;
   // -----------------------------------------------------------------
@@ -3667,9 +4023,9 @@ async function executeViaRelayRaw(
   // -----------------------------------------------------------------
   if (
     (relayId === undefined || state.verifiedOrdinaryOrigin?.kind === "local_electron") &&
-    plan === null &&
+    !isFullMacStart && plan === null &&
     planRegistry?.readmit !== undefined &&
-    tc.name === "run_shell" &&
+    (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "local_git") &&
     !isRunShellOutputArtifact &&
     tc.args["execution"] !== "workstation"
   ) {
@@ -3682,7 +4038,7 @@ async function executeViaRelayRaw(
           userId,
           currentFolder: state.currentFolder ?? "",
           executionClass:
-            tc.args["git"] !== undefined ? "typed_broker" : "profile_bound_sandbox",
+            tc.name === "local_git" || tc.args["git"] !== undefined ? "typed_broker" : "profile_bound_sandbox",
           fingerprint: refreshFingerprint,
         });
         if (readmitted !== null) {
@@ -3755,7 +4111,7 @@ async function executeViaRelayRaw(
     if (
       plan.currentFolder !== undefined &&
       plan.currentFolder.length > 0 &&
-      state.currentFolder !== plan.currentFolder
+      (plan.executionClass === "basic_sandbox" ? Boolean(state.currentFolder) && state.currentFolder !== plan.currentFolder : state.currentFolder !== plan.currentFolder)
     ) {
       warn(
         `[nautilo/tools] Workstation dispatch plan for ${formatToolLogLabel(tc)} ` +
@@ -4165,6 +4521,7 @@ async function executeViaRelayRaw(
     tc.name === "run_shell" && tc.args["execution"] === "workstation";
   let isRealWorkstationRunShell = explicitlyRequestedRealWorkstation;
   let uncontainedActivationSignal: AbortSignal | undefined;
+  let fullMacActivationSignal: AbortSignal | undefined;
   const origin = state.verifiedOrdinaryOrigin;
   const localOrigin = origin?.kind === "local_electron" ? origin : null;
   const isUncontainedCandidate =
@@ -4209,6 +4566,20 @@ async function executeViaRelayRaw(
       }
     }
   }
+  if (isFullMacStart) {
+    const resolver = defaultPostModelDeps.resolveUncontainedHostCommandsDispatch;
+    if (!resolver || !localOrigin || fullMacPin.humanUserId !== userId || fullMacPin.agentId !== state.agentId || fullMacPin.roomId !== state.roomId
+      || fullMacPin.conversationId !== (state.currentThreadId || state.langgraphThreadId) || fullMacPin.relayId !== relayId || fullMacPin.desktopSessionId !== localOrigin.desktopSessionId
+      || fullMacPin.pairingGeneration !== localOrigin.pairingGeneration || localOrigin.userId !== userId
+      || relayCaps?.canExecuteFullMacOneShot !== true || (_relayRegistry.getProtocolVersion?.(relayId) ?? 0) < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION
+      || tc.args["tty"] === true) return { ok: false, errorMessage: "Error: the approved Full Mac one-shot activation is unavailable. Do not replay this command." };
+    const decision = await resolver({ userId, actorId: state.memoryAccessEnvelope?.actorId ?? userId, toolCallId: tc.id!, relayId,
+      foregroundLocalElectron: localOrigin, clientMeta: state.securityAuditClientMeta ?? null });
+    if (!decision.admitted || decision.activationId !== fullMacPin.activationId || decision.activationSignal.aborted) {
+      return { ok: false, errorMessage: "Error: the approved Full Mac activation ended or changed. Do not replay this command." };
+    }
+    fullMacActivationSignal = decision.activationSignal;
+  }
   const dispatchArgs = isRealWorkstationRunShell
     ? { ...tc.args, execution: "workstation" }
     : tc.args;
@@ -4235,10 +4606,14 @@ async function executeViaRelayRaw(
   // only after that revalidation succeeds. The plan never widens
   // `allowedRoots` (computed above exactly as before); the binding is admission
   // metadata only.
-  const shellBinding =
-    plan !== null && tc.name === "run_shell" && !isRealWorkstationRunShell && !isRunShellOutputArtifact
+  let shellBinding =
+    plan !== null && (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "local_git") && !isRealWorkstationRunShell && !isFullMacStart && !isRunShellOutputArtifact
       ? (buildWorkstationShellBindingFromPlan(plan, tc.id ?? "") ?? undefined)
       : undefined;
+
+  if (tc.name === "local_git" && (shellBinding === undefined || plan?.executionClass !== "typed_broker")) {
+    return { ok: false, errorMessage: "Error: local_git requires a current typed Git plan on the selected Development workstation." };
+  }
 
   // protected-shell enforcement — a Full Workstation eligible relay
   // (one advertising an active Workstation Profile binding snapshot) must
@@ -4261,7 +4636,7 @@ async function executeViaRelayRaw(
   // defense-in-depth at the dispatch seam. Non-Full-Mode behavior is
   // byte-for-byte preserved: no advertised profile + no active session
   // bound here ⇒ the generic sandbox path remains valid.
-  if (tc.name === "run_shell" && !isRealWorkstationRunShell &&
+  if ((tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "local_git") && !isRealWorkstationRunShell && !isFullMacStart &&
     !isRunShellOutputArtifact && shellBinding === undefined) {
     const advertisedProfile =
       _relayRegistry.getWorkstationProfileSnapshot?.(relayId) ?? null;
@@ -4304,6 +4679,64 @@ async function executeViaRelayRaw(
             currentFolder: state.currentFolder ?? "",
           }),
       };
+    }
+  }
+
+  let localExecutionBinding: RelayLocalExecutionBinding | undefined;
+  if (isManagedExecution) {
+    const capability = parseRelayLocalExecutionCapability(relayCaps?.localExecution);
+    const desktopSessionId = _relayRegistry.getDesktopSessionId?.(relayId);
+    const pairingGeneration = _relayRegistry.getLocalExecutionPairingGeneration?.(relayId);
+    if (capability === null || capability.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || relayCaps?.profile !== "desktop-agent" || relayCaps.canExecuteLocal !== true
+      || (_relayRegistry.getProtocolVersion?.(relayId) ?? 0) < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+      || !desktopSessionId || !pairingGeneration || _relayRegistry.getUserId?.(relayId) !== userId
+      || state.verifiedOrdinaryOrigin?.kind !== "local_electron" || state.verifiedOrdinaryOrigin.relayId !== relayId
+      || state.verifiedOrdinaryOrigin.desktopSessionId !== desktopSessionId
+      || _relayRegistry.getPairingGeneration?.(relayId) !== state.verifiedOrdinaryOrigin.pairingGeneration
+      || (tc.args["tty"] === true && !capability.pty)) {
+      return { ok: false, errorMessage: "Error: the selected Desktop does not support this contained execution contract." };
+    }
+    const operation = localExecutionOperation(tc.name, tc.args);
+    const caller = { instanceId: resolveInstance().instanceId, humanUserId: userId, agentId: state.agentId,
+      conversationId: state.currentThreadId || state.langgraphThreadId, relayId, desktopSessionId, pairingGeneration };
+    const owner: RelayLocalExecutionOwnerV1 = { ...caller, runId: state.currentTaskRunId || turnContextKey(state.turnId, state.agentId),
+      serverBindingId: plan?.serverBindingId ?? `instance:${caller.instanceId}`,
+      profileId: plan?.profileId ?? null, profileRevision: plan?.profileRevision ?? null,
+      grantIds: plan?.grantIds ?? [], grantRevision: plan?.grantRevision ?? null,
+      protectedPolicyVersion: plan?.protectedPolicyVersion ?? null };
+    if (operation === "start") {
+      const identity = { generation: capability.generation, invocationId: tc.id!,
+        executionId: localExecutionId(capability.generation, owner, tc.id!), operation, owner };
+      if (isFullMacStart) {
+        localExecutionBinding = { ...identity, version: 3, authority: { kind: "full_mac", activationId: fullMacPin.activationId!, roomId: state.roomId } };
+      } else if (plan?.executionClass === "basic_sandbox") {
+        const basic = parseRelayBasicExecutionCapability(relayCaps.basicExecution);
+        if (!basic || (_relayRegistry.getProtocolVersion?.(relayId) ?? 0) < RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
+          || plan.agentId !== state.agentId || plan.roomId !== state.roomId || plan.conversationId !== caller.conversationId
+          || plan.currentFolder !== basic.currentFolder || plan.serverBindingId !== basic.serverBindingId
+          || plan.protectedPolicyVersion !== basic.protectedPolicyVersion) {
+          return { ok: false, errorMessage: "Error: Basic execution authority changed; request a fresh contained command." };
+        }
+        localExecutionBinding = { ...identity, version: 2, authority: { kind: "basic", roomId: state.roomId, currentFolder: basic.currentFolder,
+          capabilityRevision: plan.capabilityRevision, protectedPolicyVersion: basic.protectedPolicyVersion } };
+      } else {
+        if (!shellBinding) return { ok: false, errorMessage: "Error: contained command requires a current Basic or Development plan." };
+        localExecutionBinding = { ...identity, version: 1 };
+      }
+    } else {
+      const original = _relayRegistry.getLocalExecutionBinding?.(relayId, tc.args["session_id"] as string);
+      if (!original || !sameLocalExecutionCaller(original, caller, capability.generation)
+        || (original.version !== 1 && original.authority.roomId !== state.roomId)
+        || (original.version === 3 && operation === "input")) {
+        return { ok: false, errorMessage: "Error: execution is unavailable for this Human, Agent, run, or current computer authority." };
+      }
+      if (operation === "input") {
+        shellBinding = _relayRegistry.getLocalExecutionWorkstationBinding?.(relayId, original.executionId) ?? undefined;
+        if (original.owner.profileId !== null && shellBinding === undefined) {
+          return { ok: false, errorMessage: "Error: original contained execution authority is unavailable for input." };
+        }
+      }
+      localExecutionBinding = { ...original, invocationId: tc.id!, operation };
     }
   }
 
@@ -4414,7 +4847,7 @@ async function executeViaRelayRaw(
           && pending?.call.name === "browser_screenshot"));
       if (expectsBrowserVisualObservation) relayDispatchArgs["_visualObservation"] = true;
     }
-    const result = await _relayRegistry.dispatch(relayId, {
+    const dispatch = (sourceSignal?: AbortSignal) => _relayRegistry!.dispatch(relayId, {
       toolName: isStructuredSsh ? "ssh" : tc.name,
       args: structuredSsh?.args ?? (tc.name === "security_scan" ? trustedDispatchArgs : relayDispatchArgs),
       ...(tc.name === "security_scan" && state.currentTaskId && state.currentTaskRunId ? {
@@ -4433,7 +4866,7 @@ async function executeViaRelayRaw(
       allowedRoots: dispatchAllowedRoots,
       ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}),
       sandboxProfile,
-      ...(isRealWorkstationRunShell
+      ...(isRealWorkstationRunShell || isFullMacStart
         ? { executionClass: "real_workstation" as const }
         : isStructuredSsh
           ? { executionClass: "structured-ssh" as const }
@@ -4445,7 +4878,9 @@ async function executeViaRelayRaw(
           ? { executionClass: "browser" as const }
           : {}),
       ...(shellBinding !== undefined ? { workstationShellBinding: shellBinding } : {}),
-      ...(uncontainedActivationSignal !== undefined
+      ...(localExecutionBinding !== undefined ? { localExecutionBinding } : {}),
+      ...(fullMacActivationSignal !== undefined ? { localExecutionActivationSignal: fullMacActivationSignal } : {}),
+      ...(uncontainedActivationSignal !== undefined || isFullMacStart
         ? { uncontainedHostCommandsSession: true as const }
         : {}),
       ...(structuredSsh !== undefined ? { sshBinding: structuredSsh.binding } : {}),
@@ -4520,13 +4955,37 @@ async function executeViaRelayRaw(
           }
         : {}),
       ...(((tc.name === "run_shell" && typeof tc.args["command"] === "string")
+        || isManagedExecution
         || isStructuredSsh
         || isSemanticComputerUse
         || tc.name.startsWith("browser_")
         || tc.name === "security_scan") && dispatchSignal
-        ? { signal: dispatchSignal }
-        : {}),
+        ? { signal: sourceSignal ? AbortSignal.any([dispatchSignal, sourceSignal]) : dispatchSignal }
+        : sourceSignal ? { signal: sourceSignal } : {}),
     });
+    const result = await (async () => {
+      if (localExecutionBinding?.version !== 3) return dispatch();
+      const source = opts.humanTerminalAdmissionPort;
+      if (!source) throw new Error("LOCAL_EXECUTION_SOURCE_UNAVAILABLE");
+      // This port is the existing ordinary foreground Room/Agent/protected
+      // source owner. It grants neither a terminal handoff nor Full Mac consent.
+      let received = false;
+      const sourceRevoked = new AbortController();
+      try { return await source.withAdmission(async signal => {
+        const result = await dispatch(AbortSignal.any([signal, sourceRevoked.signal]));
+        received = true;
+        return result;
+      }); }
+      catch (error) {
+        if (received) {
+          sourceRevoked.abort();
+          const failure = new Error("Full Mac execution outcome is unknown after source authority changed; no result content was released. Do not replay the command.");
+          Object.assign(failure, { runShellOutcome: "unknown", reason: "source_authority_changed" });
+          throw failure;
+        }
+        throw error;
+      }
+    })();
 
     // `resolveDispatch` handed us the particular activation object that
     // admitted this command. A later activation must not make an old result
@@ -4541,6 +5000,13 @@ async function executeViaRelayRaw(
     }
 
     if (result.status === "error") {
+      // Expiry retires the live output window, not the authorized sealed final
+      // receipt. Recover only an exact structured read expiry; transport loss,
+      // owner refusal, input and cancellation must keep their original meaning.
+      if (result.errorCode === "LOCAL_EXECUTION_RECEIPT_EXPIRED" && tc.name === "write_stdin"
+        && localExecutionBinding?.operation === "read" && historyOrigin?.relayId === relayId) {
+        return await recoverExecutionHistory(localExecutionBinding);
+      }
       if (tc.name.startsWith("browser_")) {
         const code = result.errorCode;
         if (code === "browser_observation_stale" || code === "browser_cancelled" || code === "browser_authority_lost"
@@ -4642,9 +5108,19 @@ async function executeViaRelayRaw(
     // post-send unknown discriminant may widen a thrown raw-shell outcome.
     const uncontainedHostOutcomeUnknown =
       isRealWorkstationRunShell && isRunShellOutcomeUnknown(error);
+    // Only the runtime's post-send discriminant establishes uncertain effects.
+    // A never-admitted/pre-send error must not manufacture an actionable locator.
+    const localExecutionUncertainty: RelayLocalExecutionUncertaintyV1 | undefined =
+      isManagedExecution && isRunShellOutcomeUnknown(error) && localExecutionBinding !== undefined
+        ? { version: 1, kind: "local_execution_outcome_unknown", generation: localExecutionBinding.generation,
+            executionId: localExecutionBinding.executionId, session_id: localExecutionBinding.executionId,
+            operation: localExecutionBinding.operation, outcome: "unknown", recovery: "read_or_cancel_same_execution",
+            message: "Execution outcome is unconfirmed. Read or stop this same execution; do not relaunch the command or resend input." }
+        : undefined;
     return {
       ok: false,
       ...(browserMutationOutcomeUnknown ? { browserFailure: "browser_outcome_unknown" as const } : {}),
+      ...(localExecutionUncertainty === undefined ? {} : { localExecutionUncertainty }),
       errorMessage: browserMutationOutcomeUnknown
         ? `Error: ${tc.name} outcome is unknown because its final receipt was lost. Do not replay it blindly. Obtain a fresh browser observation and inspect the result before deciding how to recover.\nUnderlying relay error: ${msg}`
         : desktopMutationOutcomeUnknown
@@ -4654,17 +5130,20 @@ async function executeViaRelayRaw(
           ? uncontainedHostOutcomeUnknownGuidance()
         : structuredSshOutcomeUnknown
           ? structuredSshUnknownOutcomeGuidance(structuredSsh?.binding.operation)
-          : `Error dispatching ${tc.name} to relay: ${msg}`,
+          : isManagedExecution && isRunShellOutcomeUnknown(error)
+            ? `Error: local execution delivery or cleanup outcome is unknown. Retrieve or stop the same session_id ${localExecutionBinding?.executionId ?? "unavailable"}; do not relaunch the command or repeat input.`
+            : `Error dispatching ${tc.name} to relay: ${msg}`,
       // a thrown dispatch (e.g. the device disconnected/slept while the
       // call was in flight) is a relay-unavailable failure, not a tool error.
       // a structurally confirmed post-send SSH outcome is different:
       // the exact broker operation may have run, so do not label it a
       // pre-effect relay-unavailable failure or encourage a blind retry.
       relayUnavailable: !structuredSshOutcomeUnknown &&
+        !(isManagedExecution && isRunShellOutcomeUnknown(error)) &&
         !browserMutationOutcomeUnknown &&
         !desktopMutationOutcomeUnknown &&
         !uncontainedHostOutcomeUnknown,
-      ...(tc.name === "run_shell" && isRunShellOutcomeUnknown(error)
+      ...((tc.name === "run_shell" || isManagedExecution) && isRunShellOutcomeUnknown(error)
         ? { runShellOutcome: "unknown" as const }
         : uncontainedHostOutcomeUnknown
           ? { runShellOutcome: "unknown" as const }
@@ -4941,6 +5420,7 @@ function readWorkstationRelayFingerprint(relayId: string): WorkstationRelayFinge
     // when either side is absent.
     grantRevision: grant?.revision ?? null,
     protectedPolicyVersion: profile?.protectedPolicyVersion ?? null,
+    basicExecution: parseRelayBasicExecutionCapability(_relayRegistry?.getCapabilities(relayId)?.basicExecution),
   };
 }
 
@@ -5030,6 +5510,7 @@ export function buildWorkstationShellBindingFromPlan(
   // as a weaker binding; the caller treats null as no valid plan-bound shell
   // binding and follows the existing fail-closed re-authorize path.
   if (
+    plan.executionClass === "basic_sandbox" || plan.profileId === null || plan.profileRevision === null ||
     plan.currentFolder === undefined ||
     plan.currentFolder.length === 0 ||
     plan.grantRevision === undefined ||
@@ -5086,8 +5567,9 @@ export function validateBeforeExecution(
   args: Record<string, unknown>,
   level: SecurityLevel,
 ): string | null {
-  if (toolName === "run_shell") {
-    const command = typeof args["command"] === "string" ? args["command"] : "";
+  if (toolName === "run_shell" || toolName === "exec_command" || toolName === "write_stdin" || toolName === "human_terminal") {
+    const rawCommand = args[toolName === "exec_command" ? "cmd" : toolName === "write_stdin" ? "chars" : toolName === "human_terminal" && args["action"] === "write" ? "data" : "command"];
+    const command = typeof rawCommand === "string" ? rawCommand : "";
     if (!command) return null;
 
     const result = scanCommand(command, level);

@@ -6,6 +6,7 @@ import {
   conversationMatchesQuery,
   isConversationVisibleToViewer,
   isGroupChatConversation,
+  isRoomDiscoverable,
 } from "./rooms";
 
 const VIEWER = "user-viewer";
@@ -43,11 +44,20 @@ function room(overrides: Partial<RoomSummaryDto> = {}): RoomSummaryDto {
 }
 
 describe("human-facing conversation catalogue", () => {
-  test("places explicit public and private named spaces in Rooms", () => {
+  test("places explicit public, external, and private named spaces in Rooms", () => {
     expect(conversationCatalogueKind(room({ kind: "open", type: "shared" }), VIEWER)).toBe("room");
     expect(conversationCatalogueKind(room({ kind: "private", type: "room" }), VIEWER)).toBe("room");
     expect(conversationCatalogueLabel(room({ kind: "open" }), VIEWER)).toBe("Public room");
+    expect(conversationCatalogueLabel(room({ kind: "open", discoverable: true }), VIEWER)).toBe("Public room");
+    expect(conversationCatalogueLabel(room({ kind: "open", discoverable: false }), VIEWER)).toBe("External room");
     expect(conversationCatalogueLabel(room({ type: "room" }), VIEWER)).toBe("Private room");
+  });
+
+  test("treats legacy open-room responses without discoverable as public", () => {
+    expect(isRoomDiscoverable(room({ kind: "open", discoverable: undefined }))).toBe(true);
+    expect(isRoomDiscoverable(room({ kind: "open", discoverable: true }))).toBe(true);
+    expect(isRoomDiscoverable(room({ kind: "open", discoverable: false }))).toBe(false);
+    expect(isRoomDiscoverable(room({ kind: "private", discoverable: true }))).toBe(false);
   });
 
   test("splits exact 1:1 Human and Genie chats by the other participant", () => {

@@ -7,6 +7,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 
 import type {
   ActiveConversationRepository,
+  AgentTranscriptOpenResult,
   ProtectedAgentMessageWritePreparer,
 } from "./active-conversation-repository";
 import type {
@@ -54,8 +55,23 @@ export interface ProtectedConversationExecutorTurnScope {
   readonly history: readonly RoomHistoryHit[];
   /** Already-authorized protected Journal only; absence never falls back. */
   readonly journal?: RoomJournalContext;
+  /**
+   * Opens a newly authorized transcript snapshot through the durable cut.
+   * Decrypted hits are valid only for the supplied callback; callers must
+   * rebuild their derived context before it returns.
+   */
+  readonly readFreshHistory: <Value>(input: Readonly<{
+    readonly throughMessageIdInclusive: number;
+    readonly excludeMessageId: number;
+    readonly excludeMessageIds?: readonly number[];
+    readonly foregroundExecutionId?: string;
+    readonly execute: (
+      history: readonly RoomHistoryHit[],
+    ) => Value | PromiseLike<Value>;
+  }>) => Promise<AgentTranscriptOpenResult<Value>>;
   readonly persist: (
     messages: readonly BaseMessage[],
+    foregroundExecutionId?: string,
   ) => Promise<readonly ProtectedMessageDtoV2[]>;
 }
 

@@ -4,6 +4,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { act } from "react";
 import type { AgentProfileFull } from "@nautilo/types";
+import type { AssistantModelSummary } from "@nautilo/api-client/browser";
 
 const agent: AgentProfileFull = {
   name: "Terra",
@@ -23,14 +24,7 @@ const agent: AgentProfileFull = {
   fallback: { enabled: false, chain: [] },
 };
 let keySummaryCalls = 0;
-let callerModels: Array<{
-  id: string;
-  displayName: string;
-  provider: string;
-  priority: number;
-  costCoefficient: number;
-  availability: "selectable";
-}> = [];
+let callerModels: AssistantModelSummary[] = [];
 let capabilities = new Set<string>();
 
 mock.module("../../../hooks/use-profile", () => ({
@@ -85,6 +79,7 @@ beforeEach(() => {
   reapplyHappyDomGlobals();
   cleanup();
   keySummaryCalls = 0;
+  agent.defaultModel = null;
   callerModels = [{
     id: "openrouter:openai/gpt-5.4",
     displayName: "GPT-5.4 via OpenRouter",
@@ -100,6 +95,14 @@ beforeEach(() => {
 });
 
 describe("ModelSection Agent scope", () => {
+  test("shows the current admitted payer and explains request-time rechecking", async () => {
+    agent.defaultModel = "openrouter:openai/gpt-5.4";
+    callerModels[0] = { ...callerModels[0]!, fundingSource: "personal", fundingProviderRoute: "surplus" };
+    const view = render(<MemoryRouter><ModelSection /></MemoryRouter>);
+    expect(await view.findByText("Your key")).toBeTruthy();
+    expect(view.getByText(/Funding is checked again when each request starts/).textContent).toContain("surplus");
+  });
+
   test("names the Agent whose default model is being configured", async () => {
     const view = render(<MemoryRouter><ModelSection /></MemoryRouter>);
 

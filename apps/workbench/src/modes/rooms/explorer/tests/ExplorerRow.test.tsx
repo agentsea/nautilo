@@ -160,6 +160,50 @@ describe("Explorer Room notification preference", () => {
   });
 });
 
+describe("Explorer room visibility labels", () => {
+  test("labels External distinctly while legacy open rows remain Public", async () => {
+    const external = render(
+      <ExplorerRow
+        row={{
+          id: "groups:external",
+          kind: "room",
+          depth: 0,
+          label: "# External",
+          roomId: "external",
+          isSubthread: false,
+          roomKind: "open",
+          roomDiscoverable: false,
+        }}
+        isActive={false}
+        onActivate={() => {}}
+      />,
+    );
+    expect(external.getByLabelText("External room")).toBeTruthy();
+    fireEvent.click(external.getByLabelText("Actions for # External"));
+    expect(await external.findByText("◐ Visibility: External…")).toBeTruthy();
+    external.unmount();
+
+    const legacyPublic = render(
+      <ExplorerRow
+        row={{
+          id: "public:legacy",
+          kind: "room",
+          depth: 0,
+          label: "# Legacy public",
+          roomId: "legacy",
+          isSubthread: false,
+          roomKind: "open",
+        }}
+        isActive={false}
+        onActivate={() => {}}
+      />,
+    );
+    expect(legacyPublic.getByLabelText("Public room")).toBeTruthy();
+    fireEvent.click(legacyPublic.getByLabelText("Actions for # Legacy public"));
+    expect(await legacyPublic.findByText("◐ Visibility: Public…")).toBeTruthy();
+  });
+});
+
 describe("Explorer Agent avatars", () => {
   test("shows the current display name before the stable federated handle", () => {
     const view = render(

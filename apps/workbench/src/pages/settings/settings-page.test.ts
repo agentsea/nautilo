@@ -18,8 +18,6 @@ test("Desktop-only settings are reachable only in the Desktop shell", () => {
     .toEqual({ desktop: true });
   expect("settings.playback" in WORKBENCH_APPLICATION_TARGETS).toBeFalse();
   expect(visibleSettingsSections({ ...shared, isDesktopShell: true })
-    .some((section) => section.id === "costs")).toBeFalse();
-  expect(visibleSettingsSections({ ...shared, isDesktopShell: true })
     .some((section) => section.id === "invite-people")).toBeTrue();
   expect(WORKBENCH_APPLICATION_TARGETS["settings.invite_people"].availability)
     .toEqual({ anyCapabilities: ["create_invites"] });
@@ -41,6 +39,12 @@ test("personal API keys have a permanent Settings destination", () => {
   }
   expect(WORKBENCH_APPLICATION_TARGETS["settings.personal_api_keys"].href)
     .toBe("/settings#personal-provider-keys");
+  expect(WORKBENCH_APPLICATION_TARGETS["costs.personal"].href)
+    .toBe("/account/costs");
+});
+
+test("personal costs deep-link through the personal API key area", () => {
+  expect(activeSectionForHash("personal-costs")).toBe("personal-provider-keys");
 });
 
 test("self-service invitations expose only bounded ladder targets", () => {

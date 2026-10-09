@@ -3,10 +3,13 @@ import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { LLMResult } from "@langchain/core/outputs";
 import { recordLlmUsage, type RecordUsageInput } from "./record-usage";
 import { getUsageContext, normalizeUsageRoomId } from "./usage-context";
-import { createToolProviderCostRecorder } from "./provider-cost-recorder";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
+import {
+  createToolProviderCostRecorder,
+  providerToolEstimateReceipt,
+  type ProviderCostRecorder,
+} from "./provider-cost-recorder";
 
-interface ExtractedUsage {
+export interface ExtractedUsage {
   inputTokens: number;
   outputTokens: number;
   totalTokens?: number;
@@ -14,6 +17,8 @@ interface ExtractedUsage {
   cachedInputTokens: number;
   cacheCreationTokens: number;
   actualCostUsd: number | null;
+  /** Content-free provider response/request identity when the adapter exposes one. */
+  providerRequestId?: string;
 }
 
 function asRecord(v: unknown): Record<string, unknown> | undefined {
@@ -22,6 +27,31 @@ function asRecord(v: unknown): Record<string, unknown> | undefined {
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+function explicitProviderRequestId(record: Record<string, unknown> | undefined): string | undefined {
+  if (!record) return undefined;
+  for (const key of [
+    "request_id", "requestID", "requestId", "_request_id",
+    "response_id", "responseId", "id",
+  ] as const) {
+    const candidate = record[key];
+    if (typeof candidate !== "string") continue;
+    const normalized = candidate.trim();
+    if (!normalized || /^(?:run|lc[_-]?run|langchain)[_:-]/iu.test(normalized)) continue;
+    return normalized;
+  }
+  return undefined;
+}
+
+function recognizedProviderMessageId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  // LangChain callback run ids are commonly UUIDs or `run-*`. Only accept
+  // provider-owned response-id namespaces from AIMessage.id.
+  return /^(?:chatcmpl-|resp_|msg_|gen-)/u.test(normalized)
+    ? normalized
+    : undefined;
 }
 
 export function extractNativeWebSearchRequests(output: LLMResult): number {
@@ -61,14 +91,20 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
   let cachedInputTokens = 0;
   let cacheCreationTokens = 0;
   let actualCostUsd: number | null = null;
+  const explicitMetadataRequestIds = new Set<string>();
+  const fallbackMessageRequestIds = new Set<string>();
 
   const generations = (output.generations ?? []) as unknown[][];
   for (const row of generations) {
     for (const gen of row) {
       const message = asRecord(asRecord(gen)?.["message"]);
+      const messageRequestId = recognizedProviderMessageId(message?.["id"]);
       const um = asRecord(message?.["usage_metadata"]);
       const respMeta = asRecord(message?.["response_metadata"]);
       const respUsage = asRecord(respMeta?.["usage"]);
+      const responseRequestId = explicitProviderRequestId(respMeta);
+      if (responseRequestId) explicitMetadataRequestIds.add(responseRequestId);
+      else if (messageRequestId) fallbackMessageRequestIds.add(messageRequestId);
       if (um) {
         inputTokens += num(um["input_tokens"]);
         outputTokens += num(um["output_tokens"]);
@@ -101,14 +137,15 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
       }
       // Provider-reported cost (OpenRouter surfaces `usage.cost` on response_metadata).
       const cost = respUsage?.["cost"] ?? respMeta?.["cost"];
-      if (typeof cost === "number" && Number.isFinite(cost) && cost > 0) {
+      if (typeof cost === "number" && Number.isFinite(cost) && cost >= 0) {
         actualCostUsd = (actualCostUsd ?? 0) + cost;
       }
     }
   }
 
+  const llmOutput = asRecord(output.llmOutput);
+  const outputRequestId = explicitProviderRequestId(llmOutput);
   if (inputTokens === 0 && outputTokens === 0) {
-    const llmOutput = asRecord(output.llmOutput);
     const tokenUsage = asRecord(llmOutput?.["tokenUsage"]) ?? asRecord(llmOutput?.["estimatedTokenUsage"]);
     if (tokenUsage) {
       inputTokens = num(tokenUsage["promptTokens"]);
@@ -117,7 +154,19 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
     }
   }
 
-  if (inputTokens === 0 && outputTokens === 0) return null;
+  // Prefer an adapter's explicit request reference over its response/message
+  // identity. Some providers expose both for the same wire and they need not
+  // be equal. Conflicting ids at the same evidence level remain unbound.
+  const providerRequestId = explicitMetadataRequestIds.size > 0
+    ? explicitMetadataRequestIds.size === 1
+      ? explicitMetadataRequestIds.values().next().value as string
+      : undefined
+    : outputRequestId
+      ?? (fallbackMessageRequestIds.size === 1
+        ? fallbackMessageRequestIds.values().next().value as string
+        : undefined);
+  if (inputTokens === 0 && outputTokens === 0 && actualCostUsd === null
+    && providerRequestId === undefined) return null;
 
   return {
     inputTokens,
@@ -127,12 +176,15 @@ export function extractUsageFromLLMResult(output: LLMResult): ExtractedUsage | n
     cachedInputTokens,
     cacheCreationTokens,
     actualCostUsd,
+    ...(providerRequestId === undefined ? {} : { providerRequestId }),
   };
 }
 
 type RecordUsageFn = (input: RecordUsageInput) => void;
 
 let recordUsageImpl: RecordUsageFn = recordLlmUsage;
+let createProviderCostRecorderImpl: (context?: Record<string, unknown>) => ProviderCostRecorder =
+  createToolProviderCostRecorder;
 
 /**
  * Test-only seam to assert exactly-once persistence without touching the DB.
@@ -143,6 +195,16 @@ export function __setUsageRecorderForTests(fn: RecordUsageFn | null): void {
     throw new Error("Usage recorder test seam requires NAUTILO_TEST_MODE=stub");
   }
   recordUsageImpl = fn ?? recordLlmUsage;
+}
+
+/** Test-only seam for native provider-tool surcharge receipts. */
+export function __setProviderCostRecorderForTests(
+  fn: ((context?: Record<string, unknown>) => ProviderCostRecorder) | null,
+): void {
+  if (process.env["NAUTILO_TEST_MODE"] !== "stub") {
+    throw new Error("Provider cost recorder test seam requires NAUTILO_TEST_MODE=stub");
+  }
+  createProviderCostRecorderImpl = fn ?? createToolProviderCostRecorder;
 }
 
 /**
@@ -163,27 +225,35 @@ class UsageCallbackHandler extends BaseCallbackHandler {
     // Surplus has a durable pre-wire attempt row and exact buyer receipt.
     // Recording a second callback row would double-count this invocation.
     if (ctx?.funding?.providerRoute === "surplus") return;
+    if (ctx?.trackedAttemptId) {
+      if (usage) ctx.onAttemptUsage?.(usage);
+      return;
+    }
     const nativeSearchRequests = extractNativeWebSearchRequests(output);
     const nativeSearchProvider = this.modelId.startsWith("openai:")
       ? "openai"
       : this.modelId.startsWith("anthropic:") ? "anthropic" : null;
-    if (nativeSearchRequests > 0 && nativeSearchProvider) {
-      const recordProviderCost = createToolProviderCostRecorder({
+    if (nativeSearchRequests > 0 && nativeSearchProvider
+      && usage?.actualCostUsd == null && ctx?.funding?.providerRoute !== "surplus") {
+      const recordProviderCost = createProviderCostRecorderImpl({
         userId: ctx?.userId,
         roomId: ctx?.roomId,
         agentId: ctx?.metadata?.["agentId"],
         turnId: ctx?.metadata?.["turnId"],
       });
-      const estimatedCostUsd = estimateProviderToolCostUsd(
+      const costEvidence = providerToolEstimateReceipt(
         `${nativeSearchProvider}:web_search_call`,
         nativeSearchRequests,
+        nativeSearchRequests,
+        "request",
       );
-      if (estimatedCostUsd) void recordProviderCost({
+      if (costEvidence.estimatedCostUsd) void recordProviderCost({
         provider: nativeSearchProvider,
         operation: "native_web_search",
+        ...(ctx?.funding ? { usageFunding: ctx.funding } : {}),
         receiptId: `${runId ?? randomUUID()}:native-web-search`,
-        estimatedCostUsd,
-        evidenceState: "estimated",
+        ...costEvidence,
+        attemptOutcome: "succeeded",
       });
     }
     if (!usage) return;
@@ -193,6 +263,10 @@ class UsageCallbackHandler extends BaseCallbackHandler {
         callType: ctx?.callType ?? "other",
         userId: ctx?.userId ?? ctx?.funding?.humanUserId ?? null,
         roomId: normalizeUsageRoomId(ctx?.roomId),
+        ...(typeof ctx?.metadata?.["taskId"] === "string"
+          && ctx.metadata["taskId"].trim().length > 0
+          ? { taskId: ctx.metadata["taskId"].trim() }
+          : {}),
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         ...(usage.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),

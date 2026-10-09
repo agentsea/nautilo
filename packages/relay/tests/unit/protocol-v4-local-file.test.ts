@@ -19,9 +19,9 @@ import {
 } from "../../src/constants";
 import type { RelayCapabilities } from "../../src/types";
 
-describe("relay protocol v19 — local-file, media extraction, Desktop Filesystem Grants", () => {
+describe("Relay local-file, media extraction, and filesystem-grant protocols", () => {
   test("keeps v4 local-file, media v5, v9 Desktop Filesystem Grants, and capability updates v7", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(20);
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     expect(LOCAL_FILE_PROTOCOL_VERSION).toBe(4);
     expect(MEDIA_EXTRACTION_PROTOCOL_VERSION).toBe(5);
     expect(DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION).toBe(9);
@@ -35,15 +35,15 @@ describe("relay protocol v19 — local-file, media extraction, Desktop Filesyste
         zone: "current",
         args: { path: "notes.md" },
       },
-      allowedRoots: ["/Users/alice/Projects/demo"],
+      allowedRoots: ["/path/to/project"],
     };
     const grant: RelayDesktopFilesystemGrantRequest = {
       version: RELAY_DESKTOP_FILESYSTEM_GRANT_REQUEST_VERSION,
       grantIds: ["grant-1"],
-      requestedRoot: "/Users/alice/Projects/demo",
+      requestedRoot: "/path/to/project",
       operation: "read",
       subject: {
-        userId: "alice",
+        userId: "user-1",
         instanceId: "instance-A",
         relayId: "relay-1",
         agentScope: "workstation",
@@ -88,7 +88,7 @@ describe("relay protocol v19 — local-file, media extraction, Desktop Filesyste
         zone: "current",
         args: { path: "notes.md", query: "TODO" },
       },
-      allowedRoots: ["/Users/alice/Projects/demo"],
+      allowedRoots: ["/path/to/project"],
     };
     const msg: RelayDispatchMessage = {
       type: "relay:dispatch",
@@ -121,14 +121,14 @@ describe("relay protocol v19 — local-file, media extraction, Desktop Filesyste
         command: "undo",
         args: { path: "draft.md", zone: "current" },
       },
-      allowedRoots: ["/Users/alice/current"],
+      allowedRoots: ["/path/to/current"],
     };
     const officeOp: RelayLocalFileRequest = {
       operation: {
         kind: "office",
         operation: { command: "view", path: "report.docx", zone: "current" },
       },
-      allowedRoots: ["/Users/alice/current"],
+      allowedRoots: ["/path/to/current"],
     };
     expect(fileOp.operation.kind).toBe("file");
     expect(historyOp.operation.kind).toBe("history");
@@ -176,7 +176,7 @@ describe("relay protocol v19 — local-file, media extraction, Desktop Filesyste
         zone: "current",
         args: { path: "large.html", sessionId: "11111111-1111-4111-8111-111111111111" },
       },
-      allowedRoots: ["/Users/alice/project"],
+      allowedRoots: ["/path/to/project"],
     };
     expect(docOp.operation.kind).toBe("document");
     if (docOp.operation.kind === "document") {

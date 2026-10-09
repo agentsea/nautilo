@@ -2,12 +2,13 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, ToolMessage, AIMessage } from "@langchain/core/messages";
 import {
   logicalMessageKey,
+  parseImageAssistanceSummary,
   type AdvancedVideoWorkcardContinuation,
   type MessageAttachmentRef,
   type MessageArtifactOpenRef,
   type ServerEvent,
 } from "@nautilo/types";
-import { appendTranscriptMessages, computeMessageFingerprint } from "@nautilo/agent";
+import { appendTranscriptMessages, computeMessageFingerprint, ImageAssistanceError } from "@nautilo/agent";
 import type { AppendNotificationContext } from "@nautilo/trust";
 import {
   type MemoryReviewAdmission,
@@ -58,11 +59,19 @@ function persistDebugRole(msg: BaseMessage): string {
 }
 
 export interface PersistMessagesOptions {
+  /** Durable rows for an invocation-owned narrative read fence. */
+  onCommittedRows?: (rows: readonly { id: string; role: string }[]) => void;
+  /** Same ordinary Task resume boundary for newly inserted assistant calls. */
+  onToolCallsPersisted?: (message: AIMessage) => void;
+  /** Internal Task resume observer, called only for this append's inserted tool rows. */
+  onToolResultPersisted?: (message: ToolMessage) => void;
+  /** Stop before main inference if a required auxiliary result was not retained. */
+  requireDurable?: boolean | "foreground-context";
   memoryReview?: MemoryReviewAdmission;
   agentId?: string;
   roomId?: string;
   /**
-   * D426 — the child Room that owns this persisted row. When present, the
+   * the child Room that owns this persisted row. When present, the
    * agent store stamps every inserted row with this id and transactionally
    * refreshes the parent anchor's authoritative thread summary. This is
    * deliberately distinct from `roomId`: callers must pass the canonical
@@ -70,40 +79,42 @@ export interface PersistMessagesOptions {
    */
   subthreadRoomId?: string;
   humanTurnId?: string;
-  /** D521 — identity shared with the streamed visible assistant bubble. */
+  /** identity shared with the streamed visible assistant bubble. */
   assistantMessageKey?: string;
   /** Server/runtime-stamped provenance; absent/unknown stays fail-closed. */
   trustedExecutionEntrypoint?: DurableToolExecutionEntrypoint;
-  /** M233 — explicit per-append notification facts; never inferred here. */
+  /** explicit per-append notification facts; never inferred here. */
   notificationContext?: AppendNotificationContext;
-  /** D124 — room-scoped WS lane (`room:<uuid>`); required to fan out `message.new` for user rows. */
+  /** room-scoped WS lane (`room:<uuid>`); required to fan out `message.new` for user rows. */
   laneKey?: string;
   eventBus: { emit(event: ServerEvent): void };
   /**
-   * M143 — per-row `session_messages.metadata`. Set ONLY on a single-message
+   * per-row `session_messages.metadata`. Set ONLY on a single-message
    * persist (the Task report-back synthetic human input row) — it is applied
    * to every row in this call.
    */
   metadata?: Record<string, unknown>;
   /** Internal supervision tags tool plumbing only; a deliberate answer stays visible. */
   internalToolMetadata?: Record<string, unknown>;
+  /** Server-owned identity for one active foreground execution. */
+  foregroundExecutionId?: string;
   /**
-   * M143 — when true, do NOT emit `message.new` for `user` rows inserted by
+   * when true, do NOT emit `message.new` for `user` rows inserted by
    * this call. The Task report-back synthetic input row is hidden from chat
    * render; emitting `message.new` would leak it onto live WS clients even
    * though the DB read filters hide it on reload.
    */
   suppressUserMessageEvents?: boolean;
   /**
-   * D391 — retained attachment ids uploaded with this (human) turn. When set
-   * and a human row is persisted, stamp `turn_id` (= that row's M134
+   * retained attachment ids uploaded with this (human) turn. When set
+   * and a human row is persisted, stamp `turn_id` (= that row's
    * fingerprint) on these attachments so they render from room history. Passed
    * ONLY on the human persist call. Best-effort: a stamp failure just means the
    * image won't render from history, never a turn failure.
    */
   retainedAttachmentIds?: readonly string[];
   /**
-   * D424 — ArtifactOpenCard authoring for the human row persisted by this
+   * ArtifactOpenCard authoring for the human row persisted by this
    * call. External workspace-artifact ids (legacy `artifactRefs` +
    * `focusedResources` kind `workspace-artifact`) that may become cards.
    * Resolved to internal `artifacts.id` gated on the canonical room namespace
@@ -161,7 +172,7 @@ export async function persistMessages(
 ): Promise<void> {
   const newPairs: Array<{ msg: BaseMessage; fp: string }> = [];
   for (const msg of messages) {
-    // M135 P6 — transient room-context blocks are injected into the woken
+    // transient room-context blocks are injected into the woken
     // bot's LLM turn + checkpoint (for the re-wake "seen" set) but must NEVER
     // reach the visible transcript. Skip them at the persistence boundary.
     if ((msg.additional_kwargs as { nautilo_transient_context?: unknown } | undefined)
@@ -214,9 +225,12 @@ export async function persistMessages(
         : {}),
       ...(options.metadata ? { metadata: options.metadata } : {}),
       ...(options.internalToolMetadata ? { internalToolMetadata: options.internalToolMetadata } : {}),
+      ...(options.foregroundExecutionId
+        ? { foregroundExecutionId: options.foregroundExecutionId }
+        : {}),
     });
 
-    // D426 — the store recomputed this snapshot in the append transaction.
+    // the store recomputed this snapshot in the append transaction.
     // Publish only after that transaction resolves, on the PARENT lane where
     // the anchor renders. This is intentionally unrelated to message.new, so
     // it cannot affect unread, conductor, prompt, or job state.
@@ -236,11 +250,12 @@ export async function persistMessages(
     // in-memory set. Rows that errored stay outside the set so the
     // next persist call in this turn gets a fresh attempt.
     const failed = new Set(result.failedIndices);
+    if (failed.size === 0) options.onCommittedRows?.(result.insertedRows);
     for (let i = 0; i < newPairs.length; i++) {
       if (!failed.has(i)) savedFingerprints.add(newPairs[i]!.fp);
     }
 
-    // D513 Phase 3.2 — this is the smallest durable boundary for a direct
+    // this is the smallest durable boundary for a direct
     // Human turn: append has completed successfully and the Human row was not
     // one of a partial failure's rejected indices. This private notification
     // carries only the existing turn id; it is not a transcript field or a
@@ -263,7 +278,7 @@ export async function persistMessages(
       });
     }
 
-    // D513 Phase 3.3 — observe only a ToolMessage that this exact append
+    // observe only a ToolMessage that this exact append
     // actually inserted. `insertedRows` is the durable store receipt; saved
     // fingerprints and a ToolMessage's content/name alone are insufficient
     // because replay/dedup must not regain automatic-presentation eligibility.
@@ -271,7 +286,10 @@ export async function persistMessages(
       result.insertedRows.flatMap((row) => row.fingerprint ? [row.fingerprint] : []),
     );
     for (const pair of newPairs) {
-      if (!(pair.msg instanceof ToolMessage) || !insertedFingerprints.has(pair.fp)) continue;
+      if (!insertedFingerprints.has(pair.fp)) continue;
+      if (AIMessage.isInstance(pair.msg)) options.onToolCallsPersisted?.(pair.msg as AIMessage);
+      if (!(pair.msg instanceof ToolMessage)) continue;
+      options.onToolResultPersisted?.(pair.msg as ToolMessage);
       if (typeof pair.msg.name !== "string" || typeof pair.msg.content !== "string") continue;
       notifyDurableToolResultLifecycle({
         kind: "tool_result_persisted",
@@ -362,7 +380,7 @@ export async function persistMessages(
               `Persisted user message ${row.id} ordinary content is unavailable`,
             );
           }
-          // D424 — author ArtifactOpenCards for the human row (best-effort,
+          // author ArtifactOpenCards for the human row (best-effort,
           // gated on canonical-room-namespace attachment). Record the durable
           // relation, hydrate safe current metadata, and attach it to the
           // `message.new` event. Assistant/tool rows never author cards.
@@ -406,7 +424,7 @@ export async function persistMessages(
                   }
                 } catch (e) {
                   warn(
-                    `[nautilo/executor] D424 artifact card persist/hydrate failed: ${e instanceof Error ? e.message : String(e)}`,
+                    `[nautilo/executor] artifact card persist/hydrate failed: ${e instanceof Error ? e.message : String(e)}`,
                   );
                 }
               }
@@ -439,7 +457,7 @@ export async function persistMessages(
               : {}),
           });
         } else if (
-          // M158 — the agent's visible reply must also emit `message.new` so the
+          // the agent's visible reply must also emit `message.new` so the
           // server's unread recompute (`publishUnreadForNewMessage`) fires and
           // lights the dot for human recipients in a backgrounded room. Without
           // this, a 1:1 user↔agent reply never triggers an unread delta (the
@@ -461,6 +479,11 @@ export async function persistMessages(
             ...(row.createdAt ? { createdAt: row.createdAt } : {}),
             role: "ai",
             content: row.content,
+            ...(() => {
+              const message = newPairs.find((pair) => pair.fp === row.fingerprint)?.msg;
+              const imageAssistance = parseImageAssistanceSummary(message?.additional_kwargs["nautilo_image_assistance"]);
+              return imageAssistance ? { imageAssistance } : {};
+            })(),
             ...(options.agentId ? { authorAgentId: options.agentId } : {}),
             ...(options.assistantMessageKey
               ? { assistantMessageKey: options.assistantMessageKey }
@@ -471,6 +494,8 @@ export async function persistMessages(
     }
 
     if (failed.size > 0) {
+      if (options.requireDurable === "foreground-context") throw new Error("Unable to save conversation before refreshing context");
+      if (options.requireDurable) throw new ImageAssistanceError("save");
       warn(
         `[nautilo/executor] partial persist failure thread=${threadId} failed=${failed.size}/${newMessages.length}`,
       );
@@ -497,5 +522,7 @@ export async function persistMessages(
       errorCode: classifyDbError(error),
       droppedCount: newMessages.length,
     });
+    if (options.requireDurable === "foreground-context") throw new Error("Unable to save conversation before refreshing context", { cause: error });
+    if (options.requireDurable) throw new ImageAssistanceError("save");
   }
 }

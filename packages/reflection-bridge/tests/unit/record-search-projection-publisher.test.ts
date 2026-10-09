@@ -38,6 +38,8 @@ for (const representation of ["ordinary", "protected"] as const) {
       const calls: string[] = [];
       let published: unknown;
       const publisher = new DualModeRecordSearchProjectionPublisher({
+        commitments: {roomAnchor: () => `h1.${"a".repeat(43)}`},
+        bindings: {resolve: async () => ({status: "available", binding: {roomAnchorRef: "room:one"}})} as never,
         repository: {
           read: async () => {
             calls.push(`open:${representation}`);
@@ -80,6 +82,8 @@ for (const representation of ["ordinary", "protected"] as const) {
     test("fails closed on generation drift and never calls the provider", async () => {
       let embedded = false;
       const publisher = new DualModeRecordSearchProjectionPublisher({
+        commitments: {roomAnchor: () => `h1.${"a".repeat(43)}`},
+        bindings: {resolve: async () => ({status: "available", binding: {roomAnchorRef: "room:one"}})} as never,
         repository: { read: async () => ({ status: "available", record: record(4) }) } as never,
         embedding: {
           embed: async () => {

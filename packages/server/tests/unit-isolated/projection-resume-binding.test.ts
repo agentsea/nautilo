@@ -66,6 +66,7 @@ beforeAll(async () => {
     resumeThreadMembershipForUser: async () => true,
     projectionResumeBindingForThread: async () => binding,
     resumeCausalHumanUserIdForThread: async () => INITIATOR.userId,
+    resumeFundingForThread: async () => null,
     auditEvent: async (event) => { auditEvents.push(event); },
   });
   await app.ready();

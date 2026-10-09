@@ -15,6 +15,8 @@ const credential = {
   validatedAt: "2026-09-28T10:01:00.000Z",
   requiresReplacement: false,
   masked: "sk-proj-...",
+  destination: "https://api.openai.com/v1",
+  receiptReadStatus: "available" as const,
 };
 const providers = [{
   id: "openai",
@@ -22,14 +24,16 @@ const providers = [{
   purpose: "GPT models + embeddings",
   signupUrl: "https://platform.openai.com/api-keys",
   formatHint: "sk-proj-...",
-  personalCapabilities: ["chat" as const],
+  personalCapabilities: ["chat" as const, "research" as const],
+  destination: "https://api.openai.com/v1",
 }, {
   id: "tavily",
   name: "Tavily",
   purpose: "Web search — enables internet access",
   signupUrl: "https://app.tavily.com/home",
   formatHint: "tvly-...",
-  personalCapabilities: [],
+  personalCapabilities: ["research" as const],
+  destination: null,
 }];
 
 function requestUrl(input: Parameters<typeof fetch>[0]): string {
@@ -70,7 +74,13 @@ describe("personal provider credentials client contract", () => {
         authorization: new Headers(init?.headers).get("authorization"),
         body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
       });
-      if (method === "GET") return json(200, { credentials: [credential], providers });
+      if (method === "GET") {
+        return json(200, {
+          allowPersonalProviderKeys: false,
+          credentials: [credential],
+          providers,
+        });
+      }
       if (method === "PUT") return json(200, { credential, committed: true });
       if (url.endsWith("/validate")) {
         return json(200, { credential, committed: false });
@@ -81,7 +91,11 @@ describe("personal provider credentials client contract", () => {
     const client = new NautiloApiClient(BASE);
     client.setToken("human-session");
 
-    expect(await client.listProviderCredentials()).toEqual({ credentials: [credential], providers });
+    expect(await client.listProviderCredentials()).toEqual({
+      allowPersonalProviderKeys: false,
+      credentials: [credential],
+      providers,
+    });
     expect(await client.putProviderCredential("openai/custom", {
       apiKey: "sk-request-only",
       expectedRevision: 1,
@@ -128,20 +142,46 @@ describe("personal provider credentials client contract", () => {
 
     const client = new NautiloApiClient(BASE);
     expect(await client.listProviderCredentials()).toEqual({
+      allowPersonalProviderKeys: true,
       credentials: [credential],
       providers: [],
     });
   });
 
+  test("keeps known provider capabilities and ignores future rolling-upgrade values", async () => {
+    globalThis.fetch = (() => Promise.resolve(json(200, {
+      credentials: [],
+      providers: [{
+        ...providers[0],
+        personalCapabilities: ["chat", "research", "future-capability"],
+      }],
+    }))) as unknown as typeof fetch;
+
+    const result = await new NautiloApiClient(BASE).listProviderCredentials();
+    expect(result.providers[0]?.personalCapabilities).toEqual(["chat", "research"]);
+  });
+
   test("defaults a missing masked preview from an older server to null", async () => {
-    const { masked: _masked, ...olderCredential } = credential;
+    const {
+      masked: _masked,
+      destination: _destination,
+      receiptReadStatus: _receiptReadStatus,
+      ...olderCredential
+    } = credential;
+    const olderProviders = providers.map(({ destination: _providerDestination, ...provider }) => provider);
     globalThis.fetch = (async () => json(200, {
       credentials: [olderCredential],
-      providers,
+      providers: olderProviders,
     })) as unknown as typeof fetch;
 
     const client = new NautiloApiClient(BASE);
-    expect((await client.listProviderCredentials()).credentials[0]?.masked).toBeNull();
+    const result = await client.listProviderCredentials();
+    expect(result.credentials[0]).toMatchObject({
+      masked: null,
+      destination: null,
+      receiptReadStatus: "unknown",
+    });
+    expect(result.providers[0]?.destination).toBeNull();
   });
 
   test("rejects a success response that contains secret material", async () => {
@@ -188,6 +228,21 @@ describe("personal provider credentials client contract", () => {
     });
     expect((error as Record<string, unknown>)["apiKey"]).toBeUndefined();
     expect(JSON.stringify(error)).not.toContain("sk-request-only");
+  });
+
+  test("preserves fixed-destination repair without turning it into a user URL choice", async () => {
+    globalThis.fetch = (async () => json(409, {
+      error: "credential_destination_changed",
+      committed: false,
+      retryable: false,
+      repair: "replace_credential",
+    })) as unknown as typeof fetch;
+    const error = await new NautiloApiClient(BASE).putProviderCredential("gateway", {
+      apiKey: "request-only",
+      expectedRevision: 2,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProviderCredentialApiError);
+    expect(error).toMatchObject({ error: "credential_destination_changed", repair: "replace_credential" });
   });
 
   test("does not reflect an unrecognized server error containing a key", async () => {

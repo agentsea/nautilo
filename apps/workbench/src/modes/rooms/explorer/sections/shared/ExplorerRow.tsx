@@ -102,7 +102,6 @@ export function ExplorerRow({
     placement: "below" | "above";
   } | null>(null);
   const [archiving, setArchiving] = useState(false);
-  const [visibilityBusy, setVisibilityBusy] = useState(false);
   const [leaving, setLeaving] = useState(false);
   const [editing, setEditing] = useState(false);
   const [renameBusy, setRenameBusy] = useState(false);
@@ -123,7 +122,8 @@ export function ExplorerRow({
     importantUnreadCount: row.importantUnreadCount ?? 0,
     label: row.label,
   });
-  const isPublic = row.roomKind === "open";
+  const isOpen = row.roomKind === "open";
+  const isExternal = isOpen && row.roomDiscoverable === false;
   const roomOverride = notifications.snapshot?.preferences.roomOverrides.find(
     (override) => override.roomId === row.roomId,
   );
@@ -205,32 +205,6 @@ export function ExplorerRow({
     },
     [closeMenu, row.label, row.roomId],
   );
-
-  const handleVisibilityToggle = useCallback(async () => {
-    if (visibilityBusy) return;
-    closeMenu();
-    const makePublic = !isPublic;
-    setVisibilityBusy(true);
-    try {
-      await apiClient.setRoomVisibility(row.roomId, makePublic);
-      window.dispatchEvent(
-        new CustomEvent("nautilo:room-members-changed", { detail: { roomId: row.roomId } }),
-      );
-      toast.show({
-        variant: "success",
-        title: makePublic ? "Room is now public" : "Room is now private",
-        message: makePublic ? "Public 🌐" : "Private",
-      });
-    } catch (e) {
-      toast.show({
-        variant: "error",
-        title: "Could not change visibility",
-        message: e instanceof Error ? e.message : "Try again.",
-      });
-    } finally {
-      setVisibilityBusy(false);
-    }
-  }, [closeMenu, isPublic, row.roomId, toast, visibilityBusy]);
 
   const handleArchive = useCallback(async () => {
     if (archiving) return;
@@ -420,9 +394,9 @@ export function ExplorerRow({
               </span>
             ) : null}
             <span className="min-w-0 flex-1 truncate">{rowLabel(row)}</span>
-            {row.roomKind === "open" ? (
-              <span className="shrink-0" aria-label="Public room">
-                🌐
+            {isOpen ? (
+              <span className="shrink-0" aria-label={isExternal ? "External room" : "Public room"}>
+                {isExternal ? "◌" : "🌐"}
               </span>
             ) : null}
             {attention?.hasUnread ? (
@@ -464,7 +438,7 @@ export function ExplorerRow({
               aria-expanded={menuOpen}
               aria-haspopup="menu"
               aria-label={`Actions for ${row.label}`}
-              disabled={archiving || visibilityBusy || leaving}
+              disabled={archiving || leaving}
               className="flex h-6 w-6 items-center justify-center rounded text-foreground-muted outline-none hover:bg-background-element hover:text-foreground focus-visible:ring-1 focus-visible:ring-[var(--primary)]"
               data-testid="explorer-row-menu"
             >
@@ -516,12 +490,11 @@ export function ExplorerRow({
                 <button
                   type="button"
                   role="menuitem"
-                  onClick={() => void handleVisibilityToggle()}
-                  disabled={visibilityBusy}
+                  onClick={() => dispatchManage("members")}
                   className={menuItemClass}
                   data-testid="explorer-row-visibility"
                 >
-                  ◐ {isPublic ? "Make private" : "Make public"}
+                  ◐ Visibility: {isExternal ? "External" : isOpen ? "Public" : "Private"}…
                 </button>
                 <div role="none" className="px-2 py-1.5">
                   <label
@@ -567,7 +540,7 @@ export function ExplorerRow({
                   ) : null}
                 </div>
                 <div className="my-0.5 border-t border-border" role="separator" />
-                {isPublic && auth.viewer.sessionActorId !== null ? (
+                {isOpen && auth.viewer.sessionActorId !== null ? (
                   <button
                     type="button"
                     role="menuitem"

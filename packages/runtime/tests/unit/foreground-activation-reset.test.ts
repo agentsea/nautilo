@@ -5,7 +5,10 @@
  * makes report-back foreground wakes meter as `subagent` instead of `chat`.
  */
 import { describe, expect, test } from "bun:test";
-import { freshForegroundActivationState } from "../../src/executors/langgraph-executor";
+import {
+  foregroundContextRefreshEligibleForActivation,
+  freshForegroundActivationState,
+} from "../../src/executors/langgraph-executor";
 import {
   freshForkActivationState,
   shouldPersistForkHumanMessage,
@@ -118,6 +121,62 @@ describe("freshForegroundActivationState — D447 / ISSUE-M217", () => {
     expect(resolveScopeSubagentExecutionEntrypoint(false, undefined)).toBe("foreground.subagent");
     expect(resolveScopeSubagentExecutionEntrypoint(true, "background.task")).toBe("background.task");
     expect(resolveScopeSubagentExecutionEntrypoint(true, undefined)).toBeNull();
+  });
+});
+
+describe("foreground context refresh activation", () => {
+  const eligible = (input: Record<string, unknown>) => {
+    const activation = freshForegroundActivationState(input);
+    return foregroundContextRefreshEligibleForActivation({
+      roomId: "room-1",
+      agentId: "agent-1",
+      trustedExecutionEntrypoint: activation.trustedExecutionEntrypoint,
+      supervisionActive: activation.suppressToolLifecycleEvents,
+    });
+  };
+
+  test("admits direct foreground and native report-back executions", () => {
+    expect(eligible({ causalHumanUserId: "user-1" })).toBe(true);
+    expect(eligible({ metadata: { originatedBy: "task" } })).toBe(true);
+  });
+
+  test("rejects inferred, supervised, child-task, and subagent provenance", () => {
+    expect(eligible({})).toBe(false);
+    expect(eligible({
+      metadata: {
+        originatedBy: "connected_web_operation",
+        operationId: "operation-1",
+        controlEpoch: 1,
+      },
+    })).toBe(false);
+    for (const trustedExecutionEntrypoint of ["background.task", "foreground.subagent", null]) {
+      expect(foregroundContextRefreshEligibleForActivation({
+        roomId: "room-1",
+        agentId: "agent-1",
+        trustedExecutionEntrypoint,
+      })).toBe(false);
+    }
+  });
+
+  test("admits only Human-authorized forks", () => {
+    for (const input of [
+      {},
+      { causalHumanUserId: "user-1", metadata: { originatedBy: "task" } },
+      { causalHumanUserId: "user-1", humanAlreadyPersisted: true },
+    ]) {
+      const activation = freshForkActivationState(input);
+      expect(foregroundContextRefreshEligibleForActivation({
+        roomId: "room-1",
+        agentId: "agent-1",
+        trustedExecutionEntrypoint: activation.trustedExecutionEntrypoint,
+      })).toBe(false);
+    }
+    const direct = freshForkActivationState({ causalHumanUserId: "user-1" });
+    expect(foregroundContextRefreshEligibleForActivation({
+      roomId: "room-1",
+      agentId: "agent-1",
+      trustedExecutionEntrypoint: direct.trustedExecutionEntrypoint,
+    })).toBe(true);
   });
 });
 

@@ -1,41 +1,10 @@
 /**
- * D418 task 3.1.2 — the first authoritative `WorkstationDispatchPlan`
- * admission slice.
- *
- * Before the post-model can auto-approve a Full Workstation operation, the
- * server-side override resolver selects the EXACT active-session-bound relay
- * and admits ONE transient plan keyed by tool-call id binding:
- *
- *   toolCallId + userId + relayId + instanceId + desktopSessionId +
- *   serverBindingId + profileId + profileRevision + grantIds +
- *   capabilityRevision + executionClass
- *
- * The tools node consumes that plan at dispatch time and pins the relay
- * selection to `plan.relayId` (after re-validating the bound relay is still
- * the exact bound relay). It MUST NOT choose a different first-eligible relay
- * after approval: a plan whose bound relay no longer exactly matches fails
- * closed rather than falling back to another relay.
- *
- * Authority boundary — the plan is ADMISSION METADATA ONLY:
- *   - It never replaces the local Electron grant authority. The relay-local
- *     resolver reloads the live grant and decides every filesystem access, so
- *     a stale or revoked plan fails closed on the relay.
- *   - It carries NO roots. Generic `allowedRoots` never becomes workstation
- *     authority: the tools node computes `allowedRoots` from the sandbox
- *     profile + relay caps exactly as before; the plan only selects the
- *     relay, it does not widen any seatbelt.
- *   - It is created ONLY by the server-side resolver (which reads the live
- *     `InMemoryWorkstationSessionRegistry`), so a bare D375-style client
- *     Auto-Approve flag can never self-authorize a plan. The post-model
- *     skips the resolver entirely for anonymous turns.
- *
- * Transience: plans live in an in-memory `Map` keyed by `toolCallId` and
- * expire after a bounded TTL (lazy purge on read). A relay disconnect /
- * desktop-session replacement / session invalidation collapses to
- * `invalidateForBinding` so a plan never outlives the relay binding it
- * pins. The tools node re-validates independently at dispatch time, so a
- * plan whose binding drifted between admission and dispatch still fails
- * closed even if the registry was not yet swept.
+ * Canonical transient admission plans for one exact Desktop tool call.
+ * Development pins its active profile and grants. Basic pins the selected
+ * foreground Human/Agent/Room and advertised root without fabricating either.
+ * These are admission metadata: Electron independently revalidates local
+ * identity, protected paths and containment before starting any process.
+ * Plans share one registry and existing expiry/invalidation owner.
  */
 
 import type { WorkstationExecutionClass } from "@nautilo/trust";
@@ -50,7 +19,7 @@ import type { WorkstationExecutionClass } from "@nautilo/trust";
  * tool-call id + execution class + admission timestamp) so the resolver can
  * admit a plan directly from the live session without a remap.
  */
-export interface WorkstationDispatchPlan {
+export interface ProfileWorkstationDispatchPlan {
   /** The tool-call id this plan pins. Keyed in the plan registry. */
   readonly toolCallId: string;
   readonly userId: string;
@@ -59,7 +28,7 @@ export interface WorkstationDispatchPlan {
   readonly desktopSessionId: string;
   readonly serverBindingId: string;
   /**
-   * D418 Commit 2 — the server-derived `pairingGeneration` the active Full
+   * Commit 2 — the server-derived `pairingGeneration` the active Full
    * Workstation session was activated with. Sourced from the validated
    * relay-token row id (never client-authored). Re-validation requires the
    * live relay's advertised pairing generation to still match; a re-pair
@@ -73,16 +42,16 @@ export interface WorkstationDispatchPlan {
   /** Monotonic revision of the advertised capability state at admission. */
   readonly capabilityRevision: number;
   /**
-   * D418 Commit 3 — the execution class the admission reasons about
+   * Commit 3 — the execution class the admission reasons about
    * (`profile_bound_sandbox` / `typed_broker` / `real_workstation`). This
    * replaces the old six-value operation taxonomy; the concrete tool /
    * operation identity stays separate from this field.
    */
-  readonly executionClass: WorkstationExecutionClass;
+  readonly executionClass: Exclude<WorkstationExecutionClass, "basic_sandbox">;
   /** ISO timestamp the plan was admitted (used for lazy TTL purge). */
   readonly admittedAt: string;
   /**
-   * D440 Phase 1 — the Current Folder the operation was admitted for. The
+   * Phase 1 — the Current Folder the operation was admitted for. The
    * plan is admitted from a per-dispatch request, so the selected Current
    * Folder is pinned here for revision-coherence. The dispatch seam fails
    * closed when the live Current Folder drifts from this value (a re-bind
@@ -93,7 +62,7 @@ export interface WorkstationDispatchPlan {
    */
   readonly currentFolder?: string;
   /**
-   * D440 Phase 1 — the durable grant-store revision advertised by the bound
+   * Phase 1 — the durable grant-store revision advertised by the bound
    * relay at admission (the advisory grant snapshot's `revision`). Carried
    * so a grant-store change between admission and dispatch is detectable
    * as a binding drift. Optional in the structural type only; profile-bound
@@ -101,7 +70,7 @@ export interface WorkstationDispatchPlan {
    */
   readonly grantRevision?: number | null;
   /**
-   * D440 Phase 1 — the protected-policy version advertised by the bound
+   * Phase 1 — the protected-policy version advertised by the bound
    * relay's Workstation Profile snapshot at admission. Carried so a
    * protected-policy change between admission and dispatch is detectable
    * as a binding drift (protected paths are a security-sensitive authority
@@ -110,6 +79,21 @@ export interface WorkstationDispatchPlan {
    */
   readonly protectedPolicyVersion?: number | null;
 }
+
+export interface BasicWorkstationDispatchPlan extends Omit<ProfileWorkstationDispatchPlan,
+  "executionClass" | "profileId" | "profileRevision" | "grantIds" | "grantRevision" | "currentFolder" | "protectedPolicyVersion"> {
+  readonly executionClass: "basic_sandbox";
+  readonly profileId: null;
+  readonly profileRevision: null;
+  readonly grantIds: readonly [];
+  readonly grantRevision: null;
+  readonly currentFolder: string;
+  readonly protectedPolicyVersion: number;
+  readonly agentId: string;
+  readonly roomId: string;
+  readonly conversationId: string;
+}
+export type WorkstationDispatchPlan = ProfileWorkstationDispatchPlan | BasicWorkstationDispatchPlan;
 
 /**
  * The live relay-binding fingerprint read from the
@@ -124,13 +108,14 @@ export interface WorkstationDispatchPlan {
  * state. All five are re-validated against the plan's binding fields.
  */
 export interface WorkstationRelayFingerprint {
+  readonly basicExecution?: { readonly currentFolder: string; readonly serverBindingId: string; readonly protectedPolicyVersion: number } | null;
   readonly userId: string | null;
   readonly desktopSessionId: string | null;
   readonly capabilityRevision: number | null;
   readonly profileId: string | null;
   readonly profileRevision: number | null;
   /**
-   * D418 Commit 2 — the live relay's server-derived pairing generation, or
+   * Commit 2 — the live relay's server-derived pairing generation, or
    * `null` when the relay is not connected or never carried one. A `null`
    * value fails re-validation closed (`relay_not_connected`); a non-null
    * value that does not match the plan's `pairingGeneration` fails closed
@@ -139,7 +124,7 @@ export interface WorkstationRelayFingerprint {
    */
   readonly pairingGeneration: string | null;
   /**
-   * D440 Phase 1 — the live relay's advertised durable grant-store revision
+   * Phase 1 — the live relay's advertised durable grant-store revision
    * (the advisory grant snapshot's `revision`), or `null`/absent when the
    * relay is not connected or did not advertise a grant snapshot. When both
    * the plan and the fingerprint carry a non-null value, a mismatch fails
@@ -148,7 +133,7 @@ export interface WorkstationRelayFingerprint {
    */
   readonly grantRevision?: number | null;
   /**
-   * D440 Phase 1 — the live relay's advertised protected-policy version
+   * Phase 1 — the live relay's advertised protected-policy version
    * (from the Workstation Profile snapshot), or `null`/absent when the
    * relay is not connected or did not advertise a profile snapshot. Same
    * skip / mismatch semantics as `grantRevision`; a mismatch fails closed
@@ -158,7 +143,7 @@ export interface WorkstationRelayFingerprint {
 }
 
 /**
- * D440 Phase 1 — the live binding tuple for an active Full Workstation
+ * Phase 1 — the live binding tuple for an active Full Workstation
  * session, used by {@link InMemoryWorkstationDispatchPlanRegistry.readmit}
  * to re-admit a TTL-expired / missing plan for the SAME authority tuple
  * without forcing a fresh approval. Structurally a subset of
@@ -218,6 +203,14 @@ export function revalidatePlanAgainstRelay(
   plan: WorkstationDispatchPlan,
   fingerprint: WorkstationRelayFingerprint,
 ): WorkstationPlanRevalidationResult {
+  if (plan.executionClass === "basic_sandbox") {
+    const basic = fingerprint.basicExecution;
+    if (!basic || plan.profileId !== null || plan.profileRevision !== null || plan.grantRevision !== null || plan.grantIds.length !== 0
+      || !plan.agentId || !plan.roomId || !plan.conversationId || basic.currentFolder !== plan.currentFolder
+      || basic.serverBindingId !== plan.serverBindingId || basic.protectedPolicyVersion !== plan.protectedPolicyVersion) {
+      return { ok: false, reason: "binding_metadata_missing", detail: "Basic selection or protected policy changed" };
+    }
+  }
   if (
     (plan.executionClass === "profile_bound_sandbox" || plan.executionClass === "typed_broker") &&
     (
@@ -243,8 +236,7 @@ export function revalidatePlanAgainstRelay(
     fingerprint.userId === null ||
     fingerprint.desktopSessionId === null ||
     fingerprint.capabilityRevision === null ||
-    fingerprint.profileId === null ||
-    fingerprint.profileRevision === null ||
+    (plan.executionClass !== "basic_sandbox" && (fingerprint.profileId === null || fingerprint.profileRevision === null)) ||
     fingerprint.pairingGeneration === null
   ) {
     return {
@@ -268,7 +260,7 @@ export function revalidatePlanAgainstRelay(
     };
   }
   if (fingerprint.pairingGeneration !== plan.pairingGeneration) {
-    // D418 Commit 2 — the relay re-paired (new server-derived pairing
+    // Commit 2 — the relay re-paired (new server-derived pairing
     // generation) while desktopSessionId is reused. This is a binding-stale
     // denial: the relay is still connected, but it is no longer the EXACT
     // bound relay, so the plan fails closed. The distinct
@@ -291,17 +283,16 @@ export function revalidatePlanAgainstRelay(
       detail: `relay ${plan.relayId} capabilityRevision ${fingerprint.capabilityRevision} does not match plan ${plan.capabilityRevision}`,
     };
   }
-  if (
-    fingerprint.profileId !== plan.profileId ||
-    fingerprint.profileRevision !== plan.profileRevision
-  ) {
+  if (plan.executionClass !== "basic_sandbox" && (
+    fingerprint.profileId !== plan.profileId || fingerprint.profileRevision !== plan.profileRevision
+  )) {
     return {
       ok: false,
       reason: "profile_binding_mismatch",
       detail: `relay ${plan.relayId} profile ${fingerprint.profileId}@${fingerprint.profileRevision} does not match plan ${plan.profileId}@${plan.profileRevision}`,
     };
   }
-  // D440 Phase 1 — revision-coherent grant-store + protected-policy checks.
+  // Phase 1 — revision-coherent grant-store + protected-policy checks.
   // Missing v2 metadata was rejected above for profile-bound plans. When
   // both sides carry a value, a mismatch is authority drift and fails closed
   // — a grant-store or protected-policy change is never silently re-bound.
@@ -348,12 +339,12 @@ export interface WorkstationDispatchPlanRegistryOptions {
    */
   readonly ttlMs?: number;
   /**
-   * D440 Phase 1 — optional same-authority re-admission source. Returns the
+   * Phase 1 — optional same-authority re-admission source. Returns the
    * LIVE binding tuple for a user (sourced from the active Full Workstation
    * session registry in production), or `null` when no session is active.
    * When wired, the dispatch seam can re-admit a TTL-expired / missing plan
    * for the SAME authority tuple without forcing a fresh approval; when
-   * absent (legacy wiring / pre-D440), `readmit` returns `null` and the
+   * absent (legacy wiring), `readmit` returns `null` and the
    * dispatch seam fails closed exactly as before. The provider never reads
    * roots or sandbox state — only the binding tuple.
    */
@@ -440,7 +431,7 @@ export class InMemoryWorkstationDispatchPlanRegistry {
   }
 
   /**
-   * D440 Phase 1 — same-authority re-admission. When a dispatch seam finds
+   * Phase 1 — same-authority re-admission. When a dispatch seam finds
    * no live plan for a tool-call id (missing OR TTL-expired) but the active
    * Full Workstation session is still bound to the exact same authority
    * tuple the relay now advertises, re-admit ONE fresh plan for this
@@ -471,7 +462,7 @@ export class InMemoryWorkstationDispatchPlanRegistry {
     readonly executionClass: WorkstationExecutionClass;
     readonly fingerprint: WorkstationRelayFingerprint;
   }): WorkstationDispatchPlan | null {
-    if (input.toolCallId.length === 0) return null;
+    if (input.toolCallId.length === 0 || input.executionClass === "basic_sandbox") return null;
     if (this.getActiveBinding === undefined) return null;
     const binding = this.getActiveBinding({
       userId: input.userId,

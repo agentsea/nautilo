@@ -1,10 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   getCostsSummary as getCostsSummaryDefault,
+  getPersonalCostsSummary as getPersonalCostsSummaryDefault,
   PROVIDER_TOOL_PRICING_VERSION,
   type CostsSummary,
+  type PersonalCostsData,
 } from "@nautilo/db";
 import { getModelById, PRICING_VERSION } from "@nautilo/agent";
+import type { PersonalCostsRangeKey, PersonalCostsSummary } from "@nautilo/types";
 import { userHasCapability } from "@nautilo/trust";
 
 export interface CostsRoutesDeps {
@@ -12,6 +15,10 @@ export interface CostsRoutesDeps {
   hasBillingCapability?: (userId: string) => Promise<boolean>;
   /** Aggregation source; defaults to the DB query. Injectable for tests. */
   getCostsSummary?: (range: { sinceIso: string; untilIso: string }) => Promise<CostsSummary>;
+  getPersonalCostsSummary?: (input: {
+    payerHumanId: string;
+    range: { sinceIso: string; untilIso: string };
+  }) => Promise<PersonalCostsData>;
 }
 
 const RANGE_DAYS: Record<string, number> = {
@@ -21,6 +28,10 @@ const RANGE_DAYS: Record<string, number> = {
 };
 
 const DEFAULT_RANGE = "30d";
+
+function isPersonalCostsRangeKey(value: string): value is PersonalCostsRangeKey {
+  return value === "7d" || value === "30d" || value === "90d";
+}
 
 const PROVIDER_COST_COVERAGE = {
   state: "partial" as const,
@@ -86,6 +97,35 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
     deps.hasBillingCapability ??
     ((userId: string) => userHasCapability(userId, "manage_billing"));
   const getSummary = deps.getCostsSummary ?? getCostsSummaryDefault;
+  const getPersonalSummary = deps.getPersonalCostsSummary ?? getPersonalCostsSummaryDefault;
+
+  app.get("/api/account/costs", async (request, reply) => {
+    const payerHumanId = request.sessionUserId;
+    if (!payerHumanId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const query = request.query as Record<string, unknown>;
+    const requestedRange = typeof query["range"] === "string" ? query["range"] : DEFAULT_RANGE;
+    const rangeKey: PersonalCostsRangeKey = isPersonalCostsRangeKey(requestedRange)
+      ? requestedRange : DEFAULT_RANGE;
+    const until = new Date();
+    const since = new Date(until.getTime() - RANGE_DAYS[rangeKey]! * 24 * 60 * 60 * 1000);
+    const data = await getPersonalSummary({
+      payerHumanId,
+      range: { sinceIso: since.toISOString(), untilIso: until.toISOString() },
+    });
+    const response: PersonalCostsSummary = {
+      currency: "USD",
+      range: { key: rangeKey, since: since.toISOString(), until: until.toISOString() },
+      pricingVersion: PRICING_VERSION,
+      ...data,
+      byModel: data.byModel.map((row) => ({
+        ...row,
+        displayName: getModelById(row.model)?.displayName ?? row.model,
+      })),
+    };
+    return reply.send(response);
+  });
 
   app.get("/api/costs", async (request, reply) => {
     if (!(await requireBilling(request, reply, hasCap))) return;
@@ -118,6 +158,9 @@ export function costsRoutes(app: FastifyInstance, deps: CostsRoutesDeps = {}): v
           : row.name ?? (row.userId ? "unknown user" : "system / background"),
       })),
       timeSeries: summary.timeSeries,
+      recovery: summary.recovery,
+      serviceOperations: summary.serviceOperations,
+      serviceRecovery: summary.serviceRecovery,
     });
   });
 }

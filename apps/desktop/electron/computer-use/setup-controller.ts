@@ -134,7 +134,15 @@ class ComputerUseRevocationError extends Error {
 export function createComputerUseSetupController(
   dependencies: ComputerUseSetupControllerDependencies,
 ) {
-  const revokeAndFence = async (): Promise<ComputerUseRevocationResult> => {
+  let reductionEpoch = Symbol();
+  let mutationTail: Promise<void> = Promise.resolve();
+  const mutate = <T>(operation: () => Promise<T>): Promise<T> => {
+    const result = mutationTail.then(operation, operation);
+    mutationTail = result.then(() => undefined, () => undefined);
+    return result;
+  };
+
+  const revokeStoredAndFence = async (): Promise<ComputerUseRevocationResult> => {
     const revoked = await dependencies.store.revoke();
     if (!revoked.ok) {
       throw new ComputerUseRevocationError(
@@ -165,6 +173,12 @@ export function createComputerUseSetupController(
       );
     }
     return revoked.data;
+  };
+
+  const revokeAndFence = (): Promise<ComputerUseRevocationResult> => {
+    // Invalidate pending enables before queued storage work can delay Off.
+    reductionEpoch = Symbol();
+    return mutate(revokeStoredAndFence);
   };
 
   /**
@@ -296,7 +310,17 @@ export function createComputerUseSetupController(
         throw new Error("Connect this signed-in Nautilo Desktop before enabling Computer use.");
       }
       const runtime = snapshotRuntime(observed);
+      const epoch = reductionEpoch;
+      const assertCurrentSetup = () => {
+        if (epoch !== reductionEpoch) {
+          throw new Error("Computer use setup was cancelled by a local Off. Try again.");
+        }
+        if (!sameRuntime(dependencies.getRuntime(), runtime)) {
+          throw new Error("The Desktop connection changed during Computer use setup. Try again.");
+        }
+      };
       const initialAttestation = await dependencies.attestActivation(runtime);
+      assertCurrentSetup();
       if (!attestationMatchesRuntime(initialAttestation, runtime)) {
         throw new Error("Nautilo could not attest this exact Desktop connection. Computer use was not changed.");
       }
@@ -304,6 +328,7 @@ export function createComputerUseSetupController(
         throw new Error("Your account does not currently have permission to control this Desktop.");
       }
       const verified = await dependencies.verifyOwnPin(pin, runtime.humanUserId);
+      assertCurrentSetup();
       if (verified === null || verified.humanUserId !== runtime.humanUserId) {
         throw new Error("Your PIN could not be verified. Computer use was not changed.");
       }
@@ -312,13 +337,12 @@ export function createComputerUseSetupController(
         runtime.humanUserId,
         requestedAgentId,
       );
+      assertCurrentSetup();
       if (!agentId) {
         throw new Error("Choose a Genie you currently own before enabling Computer use.");
       }
-      if (!sameRuntime(dependencies.getRuntime(), runtime)) {
-        throw new Error("The Desktop connection changed during Computer use setup. Try again.");
-      }
       const finalAttestation = await dependencies.attestActivation(runtime);
+      assertCurrentSetup();
       if (!attestationMatchesRuntime(finalAttestation, runtime)
         || !sameRuntime(dependencies.getRuntime(), runtime)) {
         throw new Error("The Desktop connection changed during Computer use setup. Try again.");
@@ -326,28 +350,40 @@ export function createComputerUseSetupController(
       if (!finalAttestation.controlDesktop) {
         throw new Error("Desktop control permission changed during setup. Computer use was not enabled.");
       }
-      const minted = await dependencies.store.mint({
-        instanceId: runtime.instanceId,
-        humanUserId: runtime.humanUserId,
-        agentId,
-        serverBindingId: runtime.serverBindingId,
-        relayId: runtime.relayId,
-        pairingGeneration: runtime.pairingGeneration,
-      });
-      if (!minted.ok) {
-        throw new Error("Nautilo could not enable Computer use on this Mac.");
-      }
-      if (!sameRuntime(dependencies.getRuntime(), runtime)) {
-        try {
-          await revokeAndFence();
-        } catch {
-          throw new Error("The Desktop connection changed during setup. Computer use is blocked, but local cleanup needs attention.");
+      await mutate(async () => {
+        assertCurrentSetup();
+        const minted = await dependencies.store.mint({
+          instanceId: runtime.instanceId,
+          humanUserId: runtime.humanUserId,
+          agentId,
+          serverBindingId: runtime.serverBindingId,
+          relayId: runtime.relayId,
+          pairingGeneration: runtime.pairingGeneration,
+        });
+        if (!minted.ok) {
+          throw new Error("Nautilo could not enable Computer use on this Mac.");
         }
-        throw new Error("The Desktop connection changed during setup. Computer use was not enabled.");
-      }
+        if (epoch !== reductionEpoch || !sameRuntime(dependencies.getRuntime(), runtime)) {
+          // Keep stale-mint rollback in the same mutation section: it must
+          // never revoke a fresh enable admitted after the Human's Off.
+          if (epoch === reductionEpoch) reductionEpoch = Symbol();
+          try {
+            await revokeStoredAndFence();
+          } catch {
+            throw new Error("Computer use setup was cancelled, but local cleanup needs attention.");
+          }
+          if (epoch !== reductionEpoch && sameRuntime(dependencies.getRuntime(), runtime)) {
+            throw new Error("Computer use setup was cancelled by a local Off. Try again.");
+          }
+          throw new Error("The Desktop connection changed during setup. Computer use was not enabled.");
+        }
+      });
+      assertCurrentSetup();
       // The bearer is deliberately allowed to leave scope here. Neither it nor
       // the PIN is accepted by the store or returned to the renderer.
-      return await localStatus();
+      const enabled = await localStatus();
+      assertCurrentSetup();
+      return enabled;
     },
 
     /** Revocation is always local, immediate, and PIN-free—even while disconnected. */

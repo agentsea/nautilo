@@ -1,4 +1,18 @@
+import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "@nautilo/relay";
+import { parseGitHubCapability, parseGitHubInvocationBinding, type GitHubInvocationBinding } from "../../types/src/github-invocation";
+import { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "@nautilo/relay";
+import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
+import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
+import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { parseRelayBasicExecutionCapability } from "@nautilo/relay";
+import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
+import { parseRelayLocalExecutionBinding, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION,
+  LOCAL_EXECUTION_MAX_IDENTITIES, type RelayLocalExecutionBinding } from "@nautilo/relay";
 import type { RelaySecurityScanProgressMessage } from "@nautilo/relay";
+import type { FullWorkstationBinding } from "./workstation-session-registry";
 import { securityScanRelayRequestSchema } from "@nautilo/types";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -266,6 +280,7 @@ export interface RemotePresenceCapabilitySummary {
   readonly canControlDesktop?: boolean;
   readonly canControlBrowser?: boolean;
   readonly canUseTerminal?: boolean;
+  readonly canUseHumanTerminal?: boolean;
   readonly canSeeDesktop?: boolean;
   readonly canReadWorkspace?: boolean;
   readonly canWriteWorkspace?: boolean;
@@ -601,6 +616,7 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canReplayResearchConsent",
   "canRecoverResearchConsent",
   "canUseTerminal",
+  "canUseGitHub", "canUseHumanTerminal",
   "hasPendingTerminalHandoff",
   "canUseGoogleWorkspace",
   "canSeeDesktop",
@@ -608,6 +624,13 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canWriteWorkspace",
   "canBrowsePairedFilesystem",
   "canRunShell",
+  "canUseLocalGit",
+  "canReadShellOutput",
+  "canExecuteLocal",
+  "canDelegateLocalExecution",
+  "canExecuteFullMacOneShot",
+  "canSearchLocalExecutionOutput",
+  "canReadLocalExecutionHistory",
   "canReadStructuredSshOutput",
   "localFileExecution",
   "applyPatchExecution",
@@ -667,6 +690,36 @@ function parseKnownCapabilityFields(
   protocolVersion: number,
 ): { ok: true; fields: Record<string, unknown> } | { ok: false; error: string } {
   const fields: Record<string, unknown> = {};
+  if (raw["localGit"] !== undefined) {
+    if (!isRelayLocalGitCapability(raw["localGit"]) || raw["profile"] !== "desktop-agent"
+      || protocolVersion < RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION) return { ok: false, error: "capabilities.localGit is invalid or unsupported" };
+    fields["localGit"] = raw["localGit"];
+  }
+  if (raw["github"] !== undefined) {
+    const github = parseGitHubCapability(raw["github"]);
+    if (!github || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_GITHUB_PROTOCOL_VERSION) return { ok: false, error: "capabilities.github is invalid or unsupported" };
+    fields["github"] = github;
+  }
+  if (raw["humanTerminal"] !== undefined) {
+    const capability = parseRelayHumanTerminalCapability(raw["humanTerminal"]);
+    if (!capability || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION)
+      return { ok: false, error: "capabilities.humanTerminal is invalid or unsupported" };
+    fields["humanTerminal"] = capability;
+  }
+  if (raw["basicExecution"] !== undefined) {
+    const basic = parseRelayBasicExecutionCapability(raw["basicExecution"]);
+    if (basic === null || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_BASIC_EXECUTION_PROTOCOL_VERSION) {
+      return { ok: false, error: "capabilities.basicExecution is invalid or unsupported" };
+    }
+    fields["basicExecution"] = basic;
+  }
+  if (raw["localExecution"] !== undefined) {
+    const capability = parseRelayLocalExecutionCapability(raw["localExecution"]);
+    if (capability === null || capability.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || raw["profile"] !== "desktop-agent"
+      || protocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION) return { ok: false, error: "capabilities.localExecution is invalid or unsupported" };
+    fields["localExecution"] = capability;
+  }
+
   if (raw["computerUseSemanticVersion"] !== undefined) {
     if (raw["profile"] !== "desktop-agent" || raw["computerUseSemanticVersion"] !== COMPUTER_USE_SEMANTIC_VERSION) {
       return { ok: false, error: `capabilities.computerUseSemanticVersion requires desktop-agent and version ${COMPUTER_USE_SEMANTIC_VERSION}` };
@@ -843,6 +896,7 @@ function parseCapabilityUpdate(value: unknown, protocolVersion: number): {
 }
 
 interface PendingDispatch {
+  localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   resolve: (result: RelayDispatchResult) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout> | undefined;
@@ -1200,6 +1254,8 @@ function pendingDispatchError(
 
 /** Electron needs a short, bounded window to return its canonical final receipt. */
 const RUN_SHELL_RESULT_RECEIPT_GRACE_MS = 5_000;
+/** Native timer ceiling; observation waits may need more than one segment. */
+const MAX_NODE_TIMEOUT_MS = 2 ** 31 - 1;
 // Hue's executor owns and reaps the pairing process at its setup deadline.
 // Allow its terminal receipt to arrive before abandoning the server wait.
 const HUE_SETUP_RESULT_RECEIPT_GRACE_MS = 5_000;
@@ -1211,9 +1267,10 @@ function isRawRunShellCommand(request: {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
 }): boolean {
-  return request.toolName === "run_shell" &&
-    typeof request.args["command"] === "string" &&
-    request.args["command"].length > 0;
+  return (request.toolName === "run_shell" && typeof request.args["command"] === "string" && request.args["command"].length > 0)
+    || request.toolName === "exec_command"
+    || (request.toolName === "write_stdin" && (request.args["cancel"] === true
+      || (typeof request.args["chars"] === "string" && request.args["chars"].length > 0)));
 }
 
 function isStructuredSshDispatch(request: {
@@ -1855,6 +1912,148 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   private relays = new Map<string, RelayEntry>();
   private nextRelayConnectionGeneration = 1;
   private pending = new Map<string, PendingDispatch>();
+  private localExecutions = new Map<string, { generation: string; records: Map<string, {
+    binding: RelayLocalExecutionBinding; shellBinding: RelayWorkstationShellBinding | null; fingerprint: string;
+    cancelled: boolean; authorityRevoked: boolean; resourcesReleased: boolean; detach: () => void;
+  }> }>();
+
+  /** Server-owned revocation; references and discovery revisions are never authority. */
+  revokeLocalExecutionsForWorkstationBinding(binding: FullWorkstationBinding, revokedGrantIds?: readonly string[]): number {
+    const generation = this.localExecutions.get(binding.relayId);
+    const matching = [...generation?.records.values() ?? []].filter(record => {
+      const shell = record.shellBinding;
+      return !record.authorityRevoked && shell !== null
+        && shell.subject.userId === binding.userId && shell.subject.instanceId === binding.instanceId
+        && shell.relayId === binding.relayId && shell.desktopSessionId === binding.desktopSessionId
+        && shell.serverBindingId === binding.serverBindingId && shell.pairingGeneration === binding.pairingGeneration
+        && shell.profileId === binding.profileId && shell.profileRevision === binding.profileRevision
+        && (revokedGrantIds === undefined || shell.grantIds.some(id => revokedGrantIds.includes(id)));
+    });
+    // Fence every matched identity before any transport callback can re-enter.
+    for (const record of matching) {
+      record.cancelled = true;
+      record.authorityRevoked = true;
+      record.detach();
+    }
+    for (const record of matching) if (!record.resourcesReleased) this.deliverLocalExecutionCancellation(record.binding);
+    return matching.length;
+  }
+
+  getLocalExecutionWorkstationBinding(relayId: string, executionId: string): RelayWorkstationShellBinding | null {
+    if (!this.getLocalExecutionBinding(relayId, executionId)) return null;
+    const binding = this.localExecutions.get(relayId)?.records.get(executionId)?.shellBinding;
+    return binding ? structuredClone(binding) : null;
+  }
+
+  getLocalExecutionPairingGeneration(relayId: string): string | null {
+    return this.relays.get(relayId)?.pairingGenerationRef ?? null;
+  }
+
+  getLocalExecutionBinding(relayId: string, executionId: string): RelayLocalExecutionBinding | null {
+    const capability = parseRelayLocalExecutionCapability(this.relays.get(relayId)?.capabilities.localExecution);
+    const generation = this.localExecutions.get(relayId);
+    if (capability === null || generation?.generation !== capability.generation) return null;
+    const record = generation.records.get(executionId);
+    return record ? structuredClone(record.binding) : null;
+  }
+
+  private admitLocalExecution(relayId: string, request: {
+    toolName: string; args: Record<string, unknown>; localExecutionBinding?: RelayLocalExecutionBinding | undefined;
+    workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+    signal?: AbortSignal | undefined;
+    localExecutionActivationSignal?: AbortSignal | undefined;
+    retainLocalExecutionSource?: (() => () => void) | undefined;
+  }): void {
+    const entry = this.relays.get(relayId);
+    const capability = parseRelayLocalExecutionCapability(entry?.capabilities.localExecution);
+    const binding = parseRelayLocalExecutionBinding(request.localExecutionBinding);
+    if (!entry || capability === null || binding === null || entry.capabilities.profile !== "desktop-agent"
+      || (entry.capabilities.canExecuteLocal !== true && !(binding.version === 4 && binding.operation === "cancel"))
+      || entry.protocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+      || (binding.version === 4 && (entry.protocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || (entry.capabilities.canDelegateLocalExecution !== true && binding.operation !== "cancel")
+        || binding.authority.delegation.target.pairingGeneration !== entry.pairingGeneration))
+      || (binding.version === 3 && (entry.protocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION
+        || entry.capabilities.canExecuteFullMacOneShot !== true || request.args["tty"] === true || binding.operation === "input"))
+      || (binding.version === 2 && (entry.protocolVersion < RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
+        || (binding.operation === "start" && (parseRelayBasicExecutionCapability(entry.capabilities.basicExecution)?.currentFolder !== binding.authority.currentFolder
+          || parseRelayBasicExecutionCapability(entry.capabilities.basicExecution)?.serverBindingId !== binding.owner.serverBindingId
+          || parseRelayBasicExecutionCapability(entry.capabilities.basicExecution)?.protectedPolicyVersion !== binding.authority.protectedPolicyVersion
+          || entry.capabilityRevision !== binding.authority.capabilityRevision))))
+      || capability.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || binding.generation !== capability.generation
+      || binding.owner.humanUserId !== entry.userId || binding.owner.relayId !== relayId
+      || binding.owner.desktopSessionId !== entry.desktopSessionId || binding.owner.pairingGeneration !== entry.pairingGenerationRef
+      || (request.toolName === "exec_command") !== (binding.operation === "start")
+      || (binding.operation !== "start" && request.args["session_id"] !== binding.executionId)
+      || (binding.operation !== "start" && binding.operation !== (request.args["cancel"] === true ? "cancel"
+        : typeof request.args["chars"] === "string" && request.args["chars"].length > 0 ? "input" : "read"))) {
+      throw new Error("LOCAL_EXECUTION_BINDING_INVALID");
+    }
+    let generation = this.localExecutions.get(relayId);
+    if (generation?.generation !== binding.generation) {
+      for (const record of generation?.records.values() ?? []) record.detach();
+      generation = { generation: binding.generation, records: new Map() };
+      this.localExecutions.set(relayId, generation);
+    }
+    const original = generation.records.get(binding.executionId);
+    const fingerprint = createHash("sha256").update(JSON.stringify([request.args, binding.owner, binding.version !== 1 ? binding.authority : null])).digest("hex");
+    if (binding.operation !== "start") {
+      if (!original || original.binding.version !== binding.version
+        || (binding.version !== 1 && original.binding.version !== 1 && JSON.stringify(original.binding.authority) !== JSON.stringify(binding.authority))
+        || JSON.stringify(original.binding.owner) !== JSON.stringify(binding.owner)
+        || (original.authorityRevoked && binding.operation !== "cancel")
+        || (binding.operation === "input" && (original.cancelled
+          || JSON.stringify(request.workstationShellBinding ?? null) !== JSON.stringify(original.shellBinding)))) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+      if (binding.operation === "cancel") original.cancelled = true;
+      return;
+    }
+    if (original) {
+      if (original.cancelled || original.binding.invocationId !== binding.invocationId
+        || original.fingerprint !== fingerprint) throw new Error("LOCAL_EXECUTION_REQUEST_CONFLICT");
+      return;
+    }
+    if (generation.records.size >= capability.capacity) throw new Error("LOCAL_EXECUTION_CAPACITY_REACHED");
+    const stored = { binding: structuredClone(binding), shellBinding: request.workstationShellBinding ? structuredClone(request.workstationShellBinding) : null,
+      fingerprint, cancelled: false, authorityRevoked: false, resourcesReleased: false, detach: () => undefined as void };
+    const onAbort = () => {
+      stored.cancelled = true;
+      this.deliverLocalExecutionCancellation(binding);
+    };
+    const signals = [request.signal, request.localExecutionActivationSignal].filter((value): value is AbortSignal => value !== undefined);
+    for (const signal of signals) signal.addEventListener("abort", onAbort, { once: true });
+    const releaseSource = request.retainLocalExecutionSource?.();
+    stored.detach = () => { for (const signal of signals) signal.removeEventListener("abort", onAbort); releaseSource?.(); };
+    generation.records.set(binding.executionId, stored);
+    if (signals.some(signal => signal.aborted)) onAbort();
+  }
+  private deliverLocalExecutionCancellation(binding: RelayLocalExecutionBinding): void {
+    const current = this.relays.get(binding.owner.relayId);
+    if (!current || current.userId !== binding.owner.humanUserId || current.desktopSessionId !== binding.owner.desktopSessionId
+      || current.pairingGenerationRef !== binding.owner.pairingGeneration
+      || parseRelayLocalExecutionCapability(current.capabilities.localExecution)?.generation !== binding.generation) return;
+    try { current.send({ type: "relay:dispatch", correlationId: `${binding.owner.relayId}:${randomUUID()}`,
+      toolName: "write_stdin", args: { session_id: binding.executionId, cancel: true }, impact: "destructive", approvalObtained: true,
+      localExecutionBinding: { ...binding, operation: "cancel", invocationId: `${binding.invocationId}:abort` } }); } catch { /* cancellation remains queued in its original record */ }
+  }
+  private reconcileLocalExecutionGeneration(relayId: string): void {
+    const generation = this.localExecutions.get(relayId);
+    if (!generation) return;
+    const capability = parseRelayLocalExecutionCapability(this.relays.get(relayId)?.capabilities.localExecution);
+    // Discovery loss is not proof that the Desktop execution generation died.
+    // Keep fenced identities and queued cleanup until its contract returns.
+    if (!capability) return;
+    if (capability.generation !== generation.generation) {
+      for (const record of generation.records.values()) record.detach();
+      this.localExecutions.delete(relayId);
+      return;
+    }
+    // Deliver after the registration/capability acknowledgement has entered
+    // the socket. This is event ordering, not an execution timeout.
+    const delivery = setTimeout(() => {
+      for (const record of generation.records.values()) if (record.cancelled && !record.resourcesReleased) this.deliverLocalExecutionCancellation(record.binding);
+    }, 0);
+    delivery.unref();
+  }
   private pendingMcpPreflights = new Map<string, PendingMcpPreflight>();
   private pendingMcpConfigures = new Map<string, PendingMcpConfigure>();
   private pendingSshPrepares = new Map<string, PendingSshPrepare>();
@@ -2279,6 +2478,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       lastSeen: Date.now(),
       send,
     });
+    this.reconcileLocalExecutionGeneration(relayId);
     // notify only after the new entry is fully visible to consumers.
     // A re-register carries both snapshots; a first registration has null
     // previous. If either side lacks a server-derived pairing generation, it
@@ -2341,6 +2541,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     // parse above returns before reaching here, so the prior state is left
     // intact.
     entry.capabilities = copyRelayCapabilities(parsed.capabilities);
+    this.reconcileLocalExecutionGeneration(input.relayId);
     if (parsed.snapshot !== undefined) {
       entry.desktopFilesystemGrantSnapshot = structuredClone(parsed.snapshot);
     } else {
@@ -2782,6 +2983,14 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       desktopFilesystemGrantRequest?: RelayDesktopFilesystemGrantRequest | undefined;
       /** opaque generic-shell binding metadata; local relay state remains authority. */
       workstationShellBinding?: RelayWorkstationShellBinding | undefined;
+      localExecutionDelegationCapture?: RelayLocalExecutionDelegationCapture | undefined;
+      localExecutionBinding?: RelayLocalExecutionBinding | undefined;
+      /** Retained activation fence; never serialized. */
+      localExecutionActivationSignal?: AbortSignal | undefined;
+      retainLocalExecutionSource?: (() => () => void) | undefined;
+      localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
+      githubBinding?: GitHubInvocationBinding | undefined;
+      humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
       /** server-owned marker for a live-session-admitted uncontained raw shell. */
       uncontainedHostCommandsSession?: true | undefined;
       /** validated, secret-free structured SSH admission metadata. */
@@ -2839,6 +3048,73 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       throw new Error("Hosted MCP dispatch Relay binding changed before dispatch");
     }
 
+    if (request.toolName === "local_git" || request.toolName === "read_shell_output") {
+      const supported = entry.protocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
+        && entry.capabilities.profile === "desktop-agent"
+        && (request.toolName === "local_git"
+          ? entry.capabilities.canUseLocalGit === true && isRelayLocalGitCapability(entry.capabilities.localGit)
+          : entry.capabilities.canReadShellOutput === true);
+      if (!supported || request.hostedBy !== undefined) throw new Error("LOCAL_TOOL_UNAVAILABLE");
+    }
+    if (request.toolName === "local_github" || request.githubBinding !== undefined) {
+      const binding = parseGitHubInvocationBinding(request.githubBinding, request.args);
+      if (!binding || !isRelayGitHubDispatch(request.toolName, request.args, binding, entry.capabilities, entry.protocolVersion)
+        || binding.owner.humanUserId !== entry.userId || binding.owner.relayId !== relayId
+        || binding.owner.desktopSessionId !== entry.desktopSessionId || binding.owner.pairingGeneration !== entry.pairingGenerationRef
+        || request.hostedBy !== undefined || request.humanTerminalBinding !== undefined || request.localExecutionBinding !== undefined
+        || request.localExecutionHistoryBinding !== undefined || request.workstationShellBinding !== undefined || request.uncontainedHostCommandsSession === true
+        || (binding.stage === "publish" && request.approvalObtained !== true) || request.executionClass === "real_workstation") throw new Error("GITHUB_UNAVAILABLE");
+    }
+    if (request.toolName === "human_terminal" || request.humanTerminalBinding !== undefined) {
+      const binding = parseRelayHumanTerminalBinding(request.humanTerminalBinding);
+      const capability = parseRelayHumanTerminalCapability(entry.capabilities.humanTerminal);
+      if (request.toolName !== "human_terminal" || !binding || !capability || !parseHumanTerminalOperation(request.args)
+        || entry.protocolVersion < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION || entry.capabilities.profile !== "desktop-agent"
+        || entry.capabilities.canUseHumanTerminal !== true || request.hostedBy !== undefined
+        || request.localExecutionBinding !== undefined || request.localExecutionHistoryBinding !== undefined
+        || binding.generation !== capability.generation || !sameHumanTerminalConsentOwner(binding.owner, capability.owner)
+        || binding.owner.humanUserId !== entry.userId || binding.owner.relayId !== relayId
+        || binding.owner.desktopSessionId !== entry.desktopSessionId || binding.owner.pairingGeneration !== entry.pairingGenerationRef)
+        throw new Error("HUMAN_TERMINAL_UNAVAILABLE");
+    }
+    if (request.toolName === "__local_execution_delegate" || request.localExecutionDelegationCapture !== undefined) {
+      const capture = parseRelayLocalExecutionDelegationCapture(request.localExecutionDelegationCapture);
+      if (!capture || request.toolName !== "__local_execution_delegate" || Object.keys(request.args).length !== 0
+        || request.localExecutionBinding !== undefined || request.workstationShellBinding !== undefined || request.hostedBy !== undefined
+        || entry.capabilities.profile !== "desktop-agent" || entry.capabilities.canDelegateLocalExecution !== true
+        || entry.protocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || capture.source.target.relayId !== relayId || capture.source.humanUserId !== entry.userId
+        || capture.desktopSessionId !== entry.desktopSessionId || capture.pairingGeneration !== entry.pairingGenerationRef
+        || capture.source.target.pairingGeneration !== entry.pairingGeneration) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+    }
+    if ((request.toolName === "exec_command" || request.toolName === "write_stdin" || request.localExecutionBinding !== undefined || request.localExecutionHistoryBinding !== undefined)
+      && !isRelayLocalExecutionSearchAllowed(request.toolName, request.args, entry.capabilities, entry.protocolVersion)) {
+      throw new Error("LOCAL_EXECUTION_SEARCH_UNAVAILABLE");
+    }
+    if (request.localExecutionHistoryBinding !== undefined) {
+      const history = parseRelayLocalExecutionHistoryBinding(request.localExecutionHistoryBinding);
+      if (history === null || request.localExecutionBinding !== undefined || request.hostedBy !== undefined
+        || !isRelayLocalExecutionHistoryRead(request.toolName, request.args, history)
+        || entry.capabilities.profile !== "desktop-agent" || entry.capabilities.canReadLocalExecutionHistory !== true
+        || entry.protocolVersion < RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION
+        || history.reader.humanUserId !== entry.userId || history.reader.relayId !== relayId
+        || history.reader.desktopSessionId !== entry.desktopSessionId || history.reader.pairingGeneration !== entry.pairingGenerationRef) {
+        throw new Error("LOCAL_EXECUTION_HISTORY_BINDING_INVALID");
+      }
+    }
+    const managedExecution = request.localExecutionHistoryBinding === undefined &&
+      (request.toolName === "exec_command" || request.toolName === "write_stdin" || request.localExecutionBinding !== undefined);
+    const managedYieldMs = managedExecution && request.args["yield_time_ms"] !== undefined ? request.args["yield_time_ms"] : 0;
+    if (managedExecution) {
+      // Validate before reserving an invocation identity or sending effects.
+      if (typeof managedYieldMs !== "number" || !Number.isSafeInteger(managedYieldMs)
+        || managedYieldMs < 0 || managedYieldMs > MAX_NODE_TIMEOUT_MS
+        || (request.timeout !== undefined && (!Number.isSafeInteger(request.timeout)
+          || request.timeout < 0 || request.timeout > MAX_NODE_TIMEOUT_MS))) {
+        throw new Error("LOCAL_EXECUTION_RESPONSE_WAIT_INVALID");
+      }
+      this.admitLocalExecution(relayId, request);
+    }
     const isComputerUseDispatch = request.executionClass === "computer_use";
     if (isComputerUseDispatch || request.desktopAutomationBinding !== undefined) {
       const binding = request.desktopAutomationBinding;
@@ -2901,11 +3177,14 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       request.signal !== undefined && request.timeout === undefined;
     // The relay still receives exactly `request.timeout`; only this server
     // registry waits a little longer for Electron's final process receipt.
-    const receiptDeadlineMs = timeoutMs +
+    // A managed yield is intentional observation time, not an execution
+    // deadline. Preserve the existing response/receipt budget after that wait.
+    const responseWaitMs = timeoutMs + (typeof managedYieldMs === "number" ? managedYieldMs : 0);
+    const receiptDeadlineMs = responseWaitMs +
       (rawRunShellCommand ? this.runShellResultReceiptGraceMs : 0);
 
     return new Promise<RelayDispatchResult>((resolve, reject) => {
-      const timer = taskOwnedScanStart || signalOwnedDesktopAutomation ? undefined : setTimeout(() => {
+      const expireReceipt = () => {
         const pending = this.pending.get(correlationId);
         if (pending === undefined) return;
         if (pending.effectfulDesktopAutomation && pending.dispatched) {
@@ -2921,9 +3200,23 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
           correlationId,
           pending,
           "timeout",
-          `Relay dispatch timed out after ${timeoutMs}ms (tool: ${request.toolName})`,
+          `Relay dispatch timed out after ${responseWaitMs}ms (tool: ${request.toolName})`,
         );
-      }, receiptDeadlineMs);
+      };
+      // Node otherwise overflows MAX_INT32 + the response/grace budget into
+      // an immediate timer. Retain the existing pending timer as the sole
+      // cancellation owner while scheduling each native-sized segment.
+      const scheduleManagedReceipt = (remainingMs: number): ReturnType<typeof setTimeout> => {
+        const segmentMs = Math.min(remainingMs, MAX_NODE_TIMEOUT_MS);
+        return setTimeout(() => {
+          const current = this.pending.get(correlationId);
+          if (!current || current.receiptGraceReason !== undefined) return;
+          if (remainingMs > segmentMs) current.timer = scheduleManagedReceipt(remainingMs - segmentMs);
+          else expireReceipt();
+        }, segmentMs);
+      };
+      const timer = taskOwnedScanStart || signalOwnedDesktopAutomation ? undefined
+        : managedExecution ? scheduleManagedReceipt(receiptDeadlineMs) : setTimeout(expireReceipt, receiptDeadlineMs);
 
       const pending: PendingDispatch = {
         resolve,
@@ -2954,6 +3247,9 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         structuredSshProgressEnds: { stdout: 0, stderr: 0 },
         structuredSshTransferStarted: false,
         lastStructuredSshTransferBytes: 0,
+        ...(request.localExecutionBinding ? { localExecutionBinding: request.localExecutionBinding } : {}),
+        ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
+        ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),
       };
       this.pending.set(correlationId, pending);
 
@@ -2979,6 +3275,11 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
           entry.protocolVersion >= DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION
             ? { desktopFilesystemGrantRequest: request.desktopFilesystemGrantRequest }
             : {}),
+          ...(request.localExecutionDelegationCapture !== undefined ? { localExecutionDelegationCapture: request.localExecutionDelegationCapture } : {}),
+          ...(request.localExecutionBinding !== undefined ? { localExecutionBinding: request.localExecutionBinding } : {}),
+          ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
+          ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),
+          ...(request.localExecutionHistoryBinding !== undefined ? { localExecutionHistoryBinding: request.localExecutionHistoryBinding } : {}),
           ...(request.workstationShellBinding !== undefined
             ? { workstationShellBinding: request.workstationShellBinding }
             : {}),
@@ -3370,6 +3671,23 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     clearTimeout(p.timer);
     this.pending.delete(correlationId);
     this.detachPendingAbort(p);
+    const execution = p.localExecutionBinding;
+    const receipt = result.status === "ok" && typeof result.result === "object" && result.result !== null
+      ? result.result as Record<string, unknown> : null;
+    if (execution && receipt?.["resources"] === "released"
+      && ["completed", "cancelled", "failed"].includes(String(receipt["state"]))) {
+      const generation = this.localExecutions.get(execution.owner.relayId);
+      if (generation?.generation === execution.generation) {
+        const record = generation.records.get(execution.executionId);
+        if (record) { record.resourcesReleased = true; record.detach(); }
+      }
+    }
+    if (execution && execution.operation !== "cancel"
+      && this.localExecutions.get(execution.owner.relayId)?.records.get(execution.executionId)?.authorityRevoked) {
+      if (execution.operation === "read") p.resolve({ status: "error", errorCode: "LOCAL_EXECUTION_AUTHORITY_REVOKED", error: "Local execution authority was revoked" });
+      else p.reject(new RelayDispatchOutcomeUnknownError("raw-run-shell", "cancel"));
+      return;
+    }
     if (p.effectfulDesktopAutomation && p.receiptGraceReason !== undefined && result.status === "error") {
       // Older Relay Hosts discard the callback on abort. That transport error
       // is not the executor's effect receipt, nor proof of a Human Stop. Keep

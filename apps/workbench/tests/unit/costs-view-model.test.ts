@@ -5,10 +5,14 @@ import {
   MODEL_BADGE_PENDING,
   MODEL_BADGE_UNKNOWN,
   buildModelBarRows,
+  callTypeLabel,
   modelRowBadges,
   modelRowTitle,
+  normalizeAdminCosts,
+  normalizePersonalCosts,
   type CostsModelBarInput,
 } from "../../src/pages/costs/costs-view-model";
+import type { CostsSummary } from "../../src/lib/costs-api";
 
 function modelRow(
   overrides: Partial<CostsModelBarInput> & Pick<CostsModelBarInput, "model">,
@@ -32,35 +36,38 @@ function modelRow(
 
 describe("M217 — costs view-model badges", () => {
   test("explicit estimate only → no badges", () => {
-    expect(modelRowBadges({ hasActual: false, hasFallbackEstimate: false })).toEqual([]);
+    expect(
+      modelRowBadges({ hasActual: false, hasFallbackEstimate: false }),
+    ).toEqual([]);
   });
 
   test("provider actual only → actual badge unchanged", () => {
-    expect(modelRowBadges({ hasActual: true, hasFallbackEstimate: false })).toEqual([
-      MODEL_BADGE_ACTUAL,
-    ]);
+    expect(
+      modelRowBadges({ hasActual: true, hasFallbackEstimate: false }),
+    ).toEqual([MODEL_BADGE_ACTUAL]);
   });
 
   test("fallback estimate only → fallback estimate badge", () => {
-    expect(modelRowBadges({ hasActual: false, hasFallbackEstimate: true })).toEqual([
-      MODEL_BADGE_FALLBACK_ESTIMATE,
-    ]);
+    expect(
+      modelRowBadges({ hasActual: false, hasFallbackEstimate: true }),
+    ).toEqual([MODEL_BADGE_FALLBACK_ESTIMATE]);
   });
 
   test("mixed actual + fallback aggregate → both badges (actual first)", () => {
-    expect(modelRowBadges({ hasActual: true, hasFallbackEstimate: true })).toEqual([
-      MODEL_BADGE_ACTUAL,
-      MODEL_BADGE_FALLBACK_ESTIMATE,
-    ]);
+    expect(
+      modelRowBadges({ hasActual: true, hasFallbackEstimate: true }),
+    ).toEqual([MODEL_BADGE_ACTUAL, MODEL_BADGE_FALLBACK_ESTIMATE]);
   });
 
   test("unresolved marketplace attempts remain visible", () => {
-    expect(modelRowBadges({
-      hasActual: false,
-      hasFallbackEstimate: false,
-      pendingAttempts: 2,
-      unknownAttempts: 1,
-    })).toEqual([MODEL_BADGE_PENDING, MODEL_BADGE_UNKNOWN]);
+    expect(
+      modelRowBadges({
+        hasActual: false,
+        hasFallbackEstimate: false,
+        pendingAttempts: 2,
+        unknownAttempts: 1,
+      }),
+    ).toEqual([MODEL_BADGE_PENDING, MODEL_BADGE_UNKNOWN]);
   });
 
   test("modelRowTitle preserves raw model id for diagnosis", () => {
@@ -71,7 +78,6 @@ describe("M217 — costs view-model badges", () => {
       }),
     ).toBe("GPT-5.6 Terra (openai:gpt-5.6-terra)");
   });
-
 });
 
 describe("M217 — buildModelBarRows renders every model", () => {
@@ -170,13 +176,91 @@ describe("M217 — buildModelBarRows renders every model", () => {
     const badgeByKey = Object.fromEntries(rows.map((r) => [r.key, r.badges]));
 
     expect(badgeByKey["openai:gpt-5.6-terra"]).toEqual([]);
-    expect(badgeByKey["openrouter:anthropic/claude-opus-4"]).toEqual([MODEL_BADGE_ACTUAL]);
-    expect(badgeByKey["fireworks:accounts/fireworks/models/qwen3-235b"]).toEqual([
-      MODEL_BADGE_FALLBACK_ESTIMATE,
+    expect(badgeByKey["openrouter:anthropic/claude-opus-4"]).toEqual([
+      MODEL_BADGE_ACTUAL,
     ]);
+    expect(
+      badgeByKey["fireworks:accounts/fireworks/models/qwen3-235b"],
+    ).toEqual([MODEL_BADGE_FALLBACK_ESTIMATE]);
     expect(badgeByKey["gateway:custom/experimental-model"]).toEqual([
       MODEL_BADGE_ACTUAL,
       MODEL_BADGE_FALLBACK_ESTIMATE,
     ]);
   });
+});
+
+test("admin headlines derive the current estimate without double-counting historical estimates", () => {
+  const data = {
+    totals: {
+      calls: 1,
+      providerOperations: 0,
+      unknownProviderOperations: 0,
+      pendingModelAttempts: 0,
+      unknownModelAttempts: 0,
+      inputTokens: 1,
+      cachedInputTokens: 0,
+      outputTokens: 1,
+      totalTokens: 2,
+      estimatedCostUsd: 5,
+      actualCostUsd: 3,
+      totalCostUsd: 4,
+    },
+    byModel: [],
+    byCallType: [],
+    byProvider: [{
+      provider: "tavily",
+      operation: "search",
+      operations: 3,
+      unknownOperations: 1,
+      estimatedCostUsd: 1,
+      actualCostUsd: 2,
+      totalCostUsd: 3,
+    }],
+    byUser: [],
+    timeSeries: [],
+  } as unknown as CostsSummary;
+  expect(normalizeAdminCosts(data).totals.estimatedCostUsd).toBe(1);
+  expect(normalizeAdminCosts(data).byProvider[0]).toMatchObject({
+    unknownOperations: 1,
+    estimatedCostUsd: 1,
+    actualCostUsd: 2,
+    totalCostUsd: 3,
+  });
+  expect(data.totals.estimatedCostUsd).toBe(5);
+});
+
+test("labels research and decision workloads", () => {
+  expect(callTypeLabel("decision")).toBe("Decision");
+  expect(callTypeLabel("deep_research")).toBe("Deep research");
+  expect(callTypeLabel("future_workload")).toBe("future_workload");
+});
+
+test("provider normalization retains evidence buckets and safely defaults legacy fields", () => {
+  const data = {
+    totals: {
+      calls: 0, providerOperations: 2, inputTokens: 0, cachedInputTokens: 0,
+      outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0.02,
+      actualCostUsd: 0, totalCostUsd: 0.02,
+    },
+    byModel: [], byCallType: [], byTask: [], timeSeries: [],
+    byProvider: [
+      { provider: "tavily", operation: "search", operations: 1,
+        unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0.02,
+        totalCostUsd: 0.02 },
+      { provider: "legacy", operation: "read", operations: 1,
+        totalCostUsd: 0 },
+    ],
+    recovery: {
+      pendingAttempts: 0, unknownAttempts: 0, retryableAttempts: 0,
+      blockedAttempts: 0, attempts: [],
+    },
+  } as unknown as Parameters<typeof normalizePersonalCosts>[0];
+  expect(normalizePersonalCosts(data).byProvider).toEqual([
+    { provider: "tavily", operation: "search", operations: 1,
+      unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0.02,
+      totalCostUsd: 0.02 },
+    { provider: "legacy", operation: "read", operations: 1,
+      unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0,
+      totalCostUsd: 0 },
+  ]);
 });

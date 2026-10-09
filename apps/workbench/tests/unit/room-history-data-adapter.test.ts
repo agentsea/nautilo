@@ -11,6 +11,8 @@ import type {
 } from "@nautilo/lattice-bridge/client/browser";
 
 import { createRoomHistoryDataAdapter } from "../../src/adapters/room-history-data-adapter";
+import { restoreSessionMessages } from "../../src/adapters/session-rehydrate";
+import type { DesktopLocalExecutionHistoryOverlay } from "../../src/lib/desktop";
 
 const ROOM_ID = "40000000-0000-4000-8000-000000000313";
 const SESSION_ID = "41000000-0000-4000-8000-000000000313";
@@ -49,6 +51,133 @@ function authority(keyClass: "human" | "ai", domainKeyGeneration: number) {
 }
 
 describe("Room history data adapter", () => {
+  test.each(["strict", "fallback"] as const)("authenticates helper coordinates before hiding them under %s", async (shadowBehavior) => {
+    const summary = { status: "completed" as const, modelId: "model-a", modelDisplayName: "Model A", attachmentIds: ["image-a"] };
+    const payloads = [
+      { role: "assistant" as const, content: "", toolCalls: [{ id: "image-assistance:digest", name: "image_assistance", args: {} }] },
+      { role: "tool" as const, content: JSON.stringify({ ...summary, inputDigest: "digest", observations: "Retained private image evidence" }), toolName: "image_assistance", sensitiveMetadata: { toolCallId: "image-assistance:digest", toolStatus: "success" } },
+      { role: "assistant" as const, content: "The invoice total is 123.45.", sensitiveMetadata: { imageAssistance: summary } },
+    ];
+    const messages = payloads.map((payload, index) => ({
+      id: String(27 + index), sessionId: SESSION_ID, role: payload.role,
+      content: payload.content, editRevision: 0, logicalMessageKey: `logical:${27 + index}`,
+      ...(payload.role === "tool" ? { toolName: payload.toolName } : {}),
+      ...(payload.role === "assistant" ? { toolCalls: JSON.stringify(payload.toolCalls ?? []) } : {}),
+      ...(index === 2 ? { imageAssistance: summary } : {}),
+    }));
+    const coordinates = messages.map((message) => ({
+      sessionId: SESSION_ID, messageId: Number(message.id), editRevision: 0,
+      role: message.role, logicalMessageKey: message.logicalMessageKey,
+    }));
+    const sidecar = roomHistoryShadowReadResponseV1Schema.parse({
+      responseVersion: 1, status: "ready", operationId: "history:helper-pair",
+      clientRequestKey: "history:helper-page", selectedCoordinateDigestBase64url: DIGEST,
+      selectedCount: 3, selectedCoordinates: coordinates, eligibleCount: 3,
+      authority: authority("ai", 8), signerEvidence: [],
+      acknowledgement: { status: "already_recorded" },
+      records: coordinates.map((coordinate) => ({
+        kind: "live_shadow", coordinate, shadowOperationId: "helper:turn",
+        shadowOperationFamily: "shared_execution", shadowTranscriptOrdinal: coordinate.messageId - 26,
+        ordinaryPayloadBytesBase64url: base64url(encodeMessagePayloadV2(payloads[coordinate.messageId - 27])),
+        protectedMessage: {
+          dtoVersion: 2, projection: { ...coordinate, messageId: String(coordinate.messageId),
+            roomId: ROOM_ID, namespaceId: NAMESPACE_ID, createdAt: "2026-09-08T12:00:00.000Z" },
+          protectedPayload: { status: "pending", reason: "shadow_pending" },
+        },
+        retainedGeneration: { namespaceGeneration: 5, accessRevision: 4,
+          headDigestBase64url: DIGEST, publicationDigestBase64url: DIGEST,
+          publicationSetDigestBase64url: DIGEST, audienceFingerprintBase64url: DIGEST },
+      })),
+    });
+    let calls = 0;
+    const adapter = createRoomHistoryDataAdapter({
+      readerDeviceId: "device:browser",
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({ policy: { mode: "shadow_encryption", shadowBehavior }, revalidationToken: 1 }),
+        revalidate: async () => undefined,
+      } }),
+      read: async (readerInput, acknowledgement) => {
+        calls += 1;
+        expect(readerInput.records.map((record) => record.messageId)).toEqual(["27", "28", "29"]);
+        expect(acknowledgement.selectedCoordinates).toEqual(coordinates);
+        expect(acknowledgement.eligibleCoordinates).toEqual(coordinates);
+        expect(acknowledgement.eligibleRecords).toHaveLength(3);
+        expect(readerInput.records[0]?.ordinarySibling?.payload).toEqual(payloads[0]);
+        expect(readerInput.records[2]?.ordinarySibling?.payload).toEqual(payloads[2]);
+        return shadowBehavior === "strict" ? {
+          records: messages.map((message, index) => ({ sessionId: SESSION_ID, messageId: message.id,
+            editRevision: 0, status: "verified" as const, verification: "signed_representation_authenticated" as const,
+            payload: payloads[index] })), eligibleCount: 3, verifiedCount: 3, fallbackCounts: {},
+        } : {
+          records: messages.map((message) => ({ sessionId: SESSION_ID, messageId: message.id,
+            editRevision: 0, status: "fallback" as const, reason: "retained_key_material_unavailable" as const })),
+          eligibleCount: 3, verifiedCount: 0, fallbackCounts: { retained_key_material_unavailable: 3 },
+        };
+      },
+    });
+    const reconciled = await adapter.reconcile({ roomId: ROOM_ID, messages, sidecar });
+    expect(reconciled).toHaveLength(3);
+    const displayed = restoreSessionMessages(reconciled);
+    expect(displayed).toHaveLength(1);
+    expect(displayed[0]?.id).toBe("29");
+    expect(displayed[0]?.metadata?.custom?.imageAssistance).toEqual(summary);
+    expect(JSON.stringify(displayed)).not.toContain("Retained private image evidence");
+    const missingPair = await adapter.reconcile({ roomId: ROOM_ID, messages: [messages[2]], sidecar })
+      .then(() => null, (error: unknown) => error);
+    expect(missingPair).toMatchObject({ failureClass: "integrity" });
+    expect(calls).toBe(1);
+  });
+  test.each(["verified", "fallback", "stale_scope", "wrong_revision"] as const)(
+    "local execution overlay requires exact admitted protected row: %s", async (scenario) => {
+      const coordinate = { sessionId: SESSION_ID, messageId: 27, editRevision: 0, role: "tool" as const, logicalMessageKey: "logical:27" };
+      const content = JSON.stringify({ generation: "old-generation", executionId: "execution-a", session_id: "execution-a", state: "running" });
+      const payload = { role: "tool" as const, content, toolName: "exec_command", sensitiveMetadata: { toolCallId: "call-a" } };
+      const sidecar = roomHistoryShadowReadResponseV1Schema.parse({
+        responseVersion: 1, status: "ready", operationId: "history:execution", clientRequestKey: "history:execution-page",
+        selectedCoordinateDigestBase64url: DIGEST, selectedCount: 1, selectedCoordinates: [coordinate], eligibleCount: 1,
+        authority: authority("ai", 8), signerEvidence: [], acknowledgement: { status: "already_recorded" },
+        records: [{ kind: "existing_representation", coordinate, representationMode: "protected-only",
+          selectedSource: { role: "tool", logicalMessageKey: "logical:27" },
+          protectedMessage: { dtoVersion: 2, projection: { messageId: "27", logicalMessageKey: "logical:27", sessionId: SESSION_ID,
+            roomId: ROOM_ID, namespaceId: NAMESPACE_ID, role: "tool", createdAt: "2026-09-08T12:00:00.000Z", editRevision: 0 },
+          protectedPayload: { status: "pending", reason: "shadow_pending" } },
+          repair: { identityDigestBase64url: DIGEST, allocationDigestBase64url: DIGEST, attestationDigestBase64url: DIGEST,
+            publisherSignerKeyId: "device:key:one", publisherSigningPublicKeyBase64url: DIGEST,
+            publisherKind: "human_device", publisherHumanId: PUBLISHER_HUMAN_ID },
+          retainedGeneration: { namespaceGeneration: 5, accessRevision: 4, headDigestBase64url: DIGEST,
+            publicationDigestBase64url: DIGEST, publicationSetDigestBase64url: DIGEST, audienceFingerprintBase64url: DIGEST } }],
+      });
+      const overlay: DesktopLocalExecutionHistoryOverlay & { sessionId: string; messageId: string; editRevision: number } = {
+        generation: "old-generation", executionId: "execution-a", sessionId: SESSION_ID, messageId: "27", editRevision: scenario === "wrong_revision" ? 1 : 0,
+        snapshot: { archived: true, generation: "old-generation", executionId: "execution-a", session_id: "execution-a", state: "completed", tty: false,
+          pid: 42, exitCode: 7, signal: null, terminationScope: "owned_process_group", failureCode: null, expiresAt: null, resources: "released",
+          output: { data: "final", cursor: 0, nextCursor: 5, availableFrom: 0, produced: 5, gap: false, hasMore: false } },
+      };
+      const published: DesktopLocalExecutionHistoryOverlay[] = [];
+      let current = true;
+      const adapter = createRoomHistoryDataAdapter({ readerDeviceId: "device:browser",
+        owner: bindEncryptionDataOperationOwner({ policy: {
+          resolve: async () => ({ policy: { mode: "encrypted_only", shadowBehavior: "strict" }, revalidationToken: 1 }),
+          revalidate: async () => undefined,
+        } }),
+        captureHistoryScope: () => () => current,
+        onLocalExecutionHistory: value => published.push(value),
+        read: async () => {
+          if (scenario === "stale_scope") current = false;
+          return { records: scenario === "fallback"
+            ? [{ sessionId: SESSION_ID, messageId: "27", editRevision: 0, status: "fallback", reason: "current_read_authority_unavailable" }]
+            : [{ sessionId: SESSION_ID, messageId: "27", editRevision: 0, status: "verified", verification: "signed_representation_authenticated", payload }],
+          eligibleCount: 1, verifiedCount: scenario === "fallback" ? 0 : 1, fallbackCounts: {}, localExecutionHistoryOverlays: [overlay] };
+        },
+      });
+      const rows = await adapter.reconcile({ roomId: ROOM_ID,
+        messages: [{ id: "27", sessionId: SESSION_ID, role: "tool", content: "Encrypted history is unavailable on this device.", editRevision: 0 }], sidecar });
+      expect(published).toHaveLength(scenario === "verified" ? 1 : 0);
+      if (scenario !== "fallback") expect(rows[0]?.content).toBe(content);
+      else expect(rows[0]?.historyUnavailable).toBe(true);
+    },
+  );
+
   test.each(["fallback", "strict"] as const)("pending public membership keys preserve %s policy", async (shadowBehavior) => {
     const waitingRooms: string[] = [];
     const adapter = createRoomHistoryDataAdapter({

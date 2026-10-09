@@ -23,7 +23,7 @@ const SNAPSHOT: RelayWorkstationProfileSnapshot = {
   ],
 };
 
-describe("D418 advisory Workstation Profile binding snapshot protocol", () => {
+describe("Advisory Workstation Profile binding snapshot protocol", () => {
   test("parses a strict snapshot and carries only redacted binding fields", () => {
     const parsed = parseRelayWorkstationProfileSnapshot(SNAPSHOT);
     expect(parsed).toEqual({ ok: true, snapshot: SNAPSHOT });
@@ -113,7 +113,7 @@ describe("D418 advisory Workstation Profile binding snapshot protocol", () => {
       parseRelayWorkstationProfileSnapshot({
         ...SNAPSHOT,
         capabilities: [
-          { id: "cap-bun", backend: "sandboxed", executable: "/Users/alice/.bun/bin/bun" },
+          { id: "cap-bun", backend: "sandboxed", executable: "/path/to/tool/bin/bun" },
         ],
       }),
     ).toMatchObject({ ok: false });
@@ -142,7 +142,7 @@ describe("D418 advisory Workstation Profile binding snapshot protocol", () => {
   });
 });
 
-describe("D418 protocol v7 profile snapshot wire compatibility", () => {
+describe("Protocol v7 profile snapshot wire compatibility", () => {
   const CAPS: RelayCapabilities = {
     profile: "desktop-agent",
     workstationProfileSnapshot: SNAPSHOT,
@@ -192,8 +192,8 @@ describe("D418 protocol v7 profile snapshot wire compatibility", () => {
     expect(parseRelayWorkstationProfileSnapshot(wire)).toEqual({ ok: true, snapshot: SNAPSHOT });
   });
 
-  test("capability updates remain v7 while the additive relay protocol is v18", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(20);
+  test("capability updates remain v7 in the current Relay protocol", () => {
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     expect(CAPABILITY_UPDATE_PROTOCOL_VERSION).toBe(7);
   });
 });

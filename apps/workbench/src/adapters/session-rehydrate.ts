@@ -11,22 +11,22 @@ import {
   type DataOperationFailureClass,
   type MessagePayloadV2,
 } from "@nautilo/lattice-bridge";
-import type {
-  AdvancedVideoWorkcardContinuation,
-  MessageArtifactOpenRef,
-  MessageAttachmentRef,
-  RoomHistoryTerminalExecutionSummary,
+import {
+  parseImageAssistanceSummary,
+  type AdvancedVideoWorkcardContinuation,
+  type MessageArtifactOpenRef,
+  type MessageAttachmentRef,
+  type ImageAssistanceSummary,
+  type RoomHistoryTerminalExecutionSummary,
 } from "@nautilo/types";
 import {
   parseSerializedToolArgsForDisplay,
   projectToolArgsForCardDisplay,
-  projectToolResultTextForDisplay,
 } from "../components/tool-argument-preview";
-import { preserveComputerUseResultForCard } from "../components/tool-card/renderers/computer-use";
-import { preserveConnectedAppResultForCard } from "../components/tool-card/renderers/connected-app-receipt";
+import { projectToolResultForCard } from "./local-execution-result-projection";
 import { isShareRejection } from "./live-shadow-message-projection";
 /**
- * Stable Assistant UI metadata key for D424's server-authored open-card
+ * Stable Assistant UI metadata key for server-authored open-card
  * pointers. Keep this deliberately distinct from composer `artifactRefs`:
  * these are already authorized, room-scoped pointers received from history
  * or realtime, never a client-side inference from authored prose.
@@ -54,7 +54,7 @@ export function dedupeMessageArtifactOpenRefs(
 
 /**
  * Rehydrate outcome. Callers key off `status` so the PIN-at-start
- * gate (D085) can distinguish a 401 (drop token, show gate with
+ * gate can distinguish a 401 (drop token, show gate with
  * "session expired") from an empty session (fresh start, no gate)
  * from a transport failure (soft error, no token action).
  */
@@ -165,19 +165,18 @@ export async function reconcileFetchedRoomHistoryPage(
   return messages;
 }
 
-/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages (D181). */
+/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages. */
 /**
  * Sentinel "before id" for the "load latest" pagination call.
  *
  * 2147483647 == Postgres int4 max (`session_messages.id` is SERIAL,
  * which is int4-typed). Using `Number.MAX_SAFE_INTEGER` here causes
  * a binding-time OUT_OF_RANGE error from the driver because 2^53-1
- * overflows int4 (D181 smoke 2026-05-18 — first attempt failed
- * silently at the drizzle-orm wrapper layer with "Failed query"
- * and the underlying PG error was hidden).
+ * overflows int4 and can fail at the query wrapper before the underlying
+ * Postgres error is surfaced.
  */
 export const LATEST_SENTINEL_BEFORE_ID = 2147483647;
-/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages (D181). */
+/** Sentinel cursor for "load latest N messages" on GET /api/rooms/:id/messages. */
 /**
  * Sentinel "before" timestamp for the "load latest" pagination call.
  *
@@ -186,12 +185,13 @@ export const LATEST_SENTINEL_BEFORE_ID = 2147483647;
  * roll the year over a SQL TIMESTAMP boundary. The earlier sentinel
  * `9999-12-31T23:59:59.999Z` rolled to year 10000 in CET (+1h) and
  * Postgres rejected the query with no out-of-range diagnostic
- * (D181 smoke 2026-05-18). 2099 is still ~70 years past any real
+ * when parsing that timestamp. 2099 is still ~70 years past any real
  * workbench message; refresh in 2090 if anyone still cares.
  */
 export const LATEST_SENTINEL_BEFORE_AT = "2099-12-31T00:00:00.000Z";
 
 interface StoredToolCall {
+  authorAgentId?: string;
   id?: string;
   name?: string;
   args?: Record<string, unknown>;
@@ -265,6 +265,9 @@ export interface StoredSessionMessageDto {
   content: string;
   toolCalls?: string | null;
   toolName?: string | null;
+  /** Ordinary persisted display correlation, never protected-source authority. */
+  toolCallId?: string;
+  toolStatus?: "success" | "error";
   displayContent?: string;
   createdAt?: string;
   editedAt?: string | null;
@@ -282,14 +285,14 @@ export interface StoredSessionMessageDto {
    * tool payload. Never accepted as authority from the ordinary sibling. */
   authenticatedToolCallId?: string;
   replyToMessageId?: number | null;
-  /** D124 — persisted human author (`sessions.owner_id`) for room fan-in. */
+  /** Persisted human author (`sessions.owner_id`) for room fan-in. */
   sourceUserId?: string;
-  /** D300 — authoring agent (`sessions.agent_id`) for assistant/tool rows. */
+  /** Authoring agent (`sessions.agent_id`) for assistant/tool rows. */
   authorAgentId?: string;
   /** External harness that authored this Task result; `authorAgentId` is its delegator. */
   authorHarnessId?: string;
   /**
-   * D426 — authoritative denormalized child-reply summary on a parent-room
+   * Authoritative denormalized child-reply summary on a parent-room
    * anchor row. They join author provenance in Assistant UI's supported
    * `metadata.custom` shape so HTTP hydration and live WS snapshots converge.
    */
@@ -297,18 +300,19 @@ export interface StoredSessionMessageDto {
   lastReplyAt?: string | null;
   summaryRevision?: number;
   /**
-   * D212 / M121 — aggregated emoji reactions inlined by
+   * Aggregated emoji reactions inlined by
    * `GET /api/rooms/:id/messages` (omitted when empty). Carried into
    * `metadata.custom.reactions` so the bubble can render a reaction strip.
    */
   reactions?: { emoji: string; count: number }[];
   /**
-   * D424/D570 — server-authorized Workspace document pointers. Normally a
+   * Server-authorized Workspace document pointers. Normally a
    * human-authored focus send; also present on the trusted ask_peer assistant
    * question that carries documents into the exact peer DM.
    */
   artifacts?: MessageArtifactOpenRef[];
   attachments?: MessageAttachmentRef[];
+  imageAssistance?: ImageAssistanceSummary;
   workcardContinuation?: AdvancedVideoWorkcardContinuation;
   /** Protected-history-only terminal outcomes mapped to this Human input. */
   terminalExecutions?: readonly RoomHistoryTerminalExecutionSummary[];
@@ -329,6 +333,8 @@ export function projectAuthenticatedRoomHistoryPayload(
     historyUnavailableReason: _historyUnavailableReason,
     authenticatedToolStatus: _authenticatedToolStatus,
     authenticatedToolCallId: _authenticatedToolCallId,
+    toolCallId: _ordinaryToolCallId,
+    toolStatus: _ordinaryToolStatus,
     // Ordinary blob references are not authenticated by the protected text payload.
     attachments: _attachments,
     ...availableRow
@@ -337,6 +343,7 @@ export function projectAuthenticatedRoomHistoryPayload(
     ...availableRow,
     content: payload.content,
     toolCalls: JSON.stringify(payload.toolCalls ?? []),
+    imageAssistance: parseImageAssistanceSummary(payload.sensitiveMetadata?.["imageAssistance"]),
   });
   if (payload.role === "tool") {
     const explicitStatus = payload.sensitiveMetadata?.["toolStatus"];
@@ -376,21 +383,34 @@ function parseToolCalls(raw: string | null | undefined): StoredToolCall[] {
   }
 }
 
+function displayToolCallId(row: Pick<StoredSessionMessageDto,
+  "authenticatedToolCallId" | "authenticatedToolStatus" | "toolCallId" | "historyUnavailable"
+>): string | undefined {
+  if (row.historyUnavailable === true) return undefined;
+  const id = row.authenticatedToolCallId
+    ?? (row.authenticatedToolStatus === undefined ? row.toolCallId : undefined);
+  return typeof id === "string" && id.length > 0 ? id : undefined;
+}
+
 function consumePendingToolCall(
   pending: StoredToolCall[],
-  authenticatedToolCallId?: string,
+  toolCallId?: string,
+  authorAgentId?: string,
+  toolName?: string,
 ): StoredToolCall | undefined {
-  if (authenticatedToolCallId === undefined) return pending.shift();
-  const firstMatch = pending.findIndex((call) => call.id === authenticatedToolCallId);
-  if (firstMatch < 0) return undefined;
-  const matched = pending[firstMatch];
-  // A resumed graph can persist the same logical call more than once before
-  // its one result. Retire every copy so later reuse of that id cannot consume
-  // a stale redacted checkpoint projection.
+  if (toolCallId === undefined) return undefined;
+  const candidates = pending.filter((call) => call.id === toolCallId
+    && (authorAgentId === undefined || call.authorAgentId === authorAgentId));
+  // Same-id resumed rows belong to one author. Cross-Agent duplicates without
+  // a result author cannot establish which call supplied the displayed args.
+  if (new Set(candidates.map((call) => call.authorAgentId)).size > 1) return undefined;
+  const matched = candidates[0];
+  if (matched === undefined) return undefined;
   for (let index = pending.length - 1; index >= 0; index -= 1) {
-    if (pending[index]?.id === authenticatedToolCallId) pending.splice(index, 1);
+    if (pending[index]?.id === toolCallId
+      && pending[index]?.authorAgentId === matched.authorAgentId) pending.splice(index, 1);
   }
-  return matched;
+  return toolName === undefined || matched.name === toolName ? matched : undefined;
 }
 
 function parseCanonicalArgs(raw: unknown): Readonly<
@@ -463,10 +483,12 @@ export function roomHistoryShadowOrdinarySibling(
   } else if (message.role === "assistant") {
     const toolCalls = parseCanonicalToolCalls(message.toolCalls);
     if (toolCalls === null) return null;
+    const imageAssistance = parseImageAssistanceSummary(message.imageAssistance);
     payload = Object.freeze({
       role: "assistant",
       content: message.content,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
+      ...(imageAssistance ? { sensitiveMetadata: { imageAssistance: { ...imageAssistance } } } : {}),
     });
   } else if (message.role === "tool") {
     const toolName = message.toolName
@@ -583,9 +605,7 @@ export function withholdRoomHistoryShadowPayloads(
 }
 
 function restoreToolResultContent(content: string, toolName: string): string {
-  return preserveComputerUseResultForCard(toolName, content)
-    ?? preserveConnectedAppResultForCard(toolName, content)
-    ?? projectToolResultTextForDisplay(content)
+  return projectToolResultForCard(toolName, content)
     ?? "";
 }
 
@@ -612,6 +632,7 @@ export function restoreSessionMessages(
   // the next page. The cap also bounds malformed assistant-only history.
   const pendingToolCalls: StoredToolCall[] = [];
   for (const m of messages) {
+    if (m.role === "tool" && m.toolName === "image_assistance") continue;
     if (m.workcardContinuation?.kind === "advanced_video") {
       restored.push({
         id: m.id,
@@ -626,7 +647,7 @@ export function restoreSessionMessages(
       // primitive contract. Preserve page-local tool-call pairing boundaries.
       if (m.role === "user") pendingToolCalls.length = 0;
       else if (m.role === "tool") {
-        consumePendingToolCall(pendingToolCalls, m.authenticatedToolCallId);
+        consumePendingToolCall(pendingToolCalls, displayToolCallId(m), m.authorAgentId, m.toolName ?? undefined);
       }
       continue;
     } else if (m.role === "user") {
@@ -690,7 +711,8 @@ export function restoreSessionMessages(
       const calls = parseToolCalls(m.toolCalls);
       const availablePendingSlots = MAX_PENDING_TOOL_CALLS_PER_PAGE - pendingToolCalls.length;
       if (availablePendingSlots > 0) {
-        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip").slice(0, availablePendingSlots));
+        pendingToolCalls.push(...calls.filter((call) => call.name !== "skip" && call.name !== "image_assistance").slice(0, availablePendingSlots)
+          .map((call) => ({ ...call, ...(m.authorAgentId === undefined ? {} : { authorAgentId: m.authorAgentId }) })));
       }
       if (m.content.trim() && !calls.some((call) => call.name === "skip")) {
         const custom: Record<string, unknown> = { ...(m.createdAt ? { sentAt: m.createdAt } : {}) };
@@ -710,6 +732,9 @@ export function restoreSessionMessages(
         const artifacts = dedupeMessageArtifactOpenRefs(m.artifacts);
         if (artifacts !== undefined) {
           custom[MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY] = artifacts;
+        }
+        if (m.imageAssistance && m.historyUnavailable !== true) {
+          custom.imageAssistance = m.imageAssistance;
         }
         if (m.reactions && m.reactions.length > 0) custom.reactions = m.reactions;
         if (typeof m.replyCount === "number" && Number.isFinite(m.replyCount)) {
@@ -749,16 +774,18 @@ export function restoreSessionMessages(
       // Skip calls are never queued for presentation, including when Room
       // history already omitted their result. Do not consume a sibling slot.
       if (storedToolName === "skip") continue;
-      // Consume before every skip so empty/react results cannot leave a stale
-      // call behind. Protected rows use their locally authenticated exact id;
-      // legacy ordinary rows retain the prior FIFO behavior.
+      // Consume only the exact persisted id. Completion order can differ from
+      // declaration order; legacy rows without an id cannot borrow call args.
+      // Protected projection strips ordinary IDs before installing verified ones.
       const call = consumePendingToolCall(
         pendingToolCalls,
-        m.authenticatedToolCallId,
+        displayToolCallId(m),
+        m.authorAgentId,
+        storedToolName,
       );
       if (!m.content.trim()) continue;
       const toolName = storedToolName ?? call?.name ?? "tool result";
-      // D212 P0 — reactions render as a strip on the target message, not
+      // Reactions render as a strip on the target message, not
       // as a restored tool card. Consume the pairing (above) then skip.
       if (toolName === "react") continue;
       const custom: Record<string, unknown> = { ...(m.createdAt ? { sentAt: m.createdAt } : {}) };
@@ -772,11 +799,12 @@ export function restoreSessionMessages(
           custom.historyUnavailableReason = m.historyUnavailableReason;
         }
       }
-      const isError = m.authenticatedToolStatus === "error"
-        || (m.authenticatedToolStatus === "unspecified"
+      const toolStatus = m.authenticatedToolStatus ?? m.toolStatus;
+      const isError = toolStatus === "error"
+        || (toolStatus === "unspecified"
           && toolName === "share_memory"
           && isShareRejection(m.content))
-        || (m.authenticatedToolStatus === undefined
+        || (toolStatus === undefined
           && m.displayContent?.includes("[error]") === true);
       restored.push({
         id: m.id,
@@ -784,7 +812,7 @@ export function restoreSessionMessages(
         content: [
           {
             type: "tool-call" as const,
-            toolCallId: m.authenticatedToolCallId ?? call?.id ?? `restored-${m.id}`,
+            toolCallId: displayToolCallId(m) ?? call?.id ?? `restored-${m.id}`,
             toolName,
             args: (call?.args ?? {}) as Record<string, never>,
             result: restoreToolResultContent(m.content, toolName),

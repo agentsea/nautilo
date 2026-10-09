@@ -1,3 +1,5 @@
+import { encodeLiveShadowOrdinaryPayloadV2 } from "../../src/server/message/postgres-live-shadow-client-verification";
+import { encodeMessagePayloadV2 } from "../../src/message/message-payload-v2";
 import { describe, expect, test } from "bun:test";
 import {
   agentId, agentRuntimeGeneration, authorizationRevision,
@@ -16,7 +18,7 @@ function fixture(mode: "shadow_encryption" | "full_encryption") {
   } as never;
   const signer = deriveAgentRuntimeObjectSignerPublic(crypto, runtime);
   const authorization = new AbortController();
-  const state = { now: NOW, writes: [] as string[], ordinals: [] as number[], diagnostics: [] as unknown[] };
+  const state = { now: NOW, writes: [] as string[], publications: [] as Record<string, unknown>[], ordinals: [] as number[], diagnostics: [] as unknown[] };
   const session = createLiveShadowAgentTurnSession({
     crypto,
     representationMode: mode,
@@ -52,7 +54,8 @@ function fixture(mode: "shadow_encryption" | "full_encryption") {
           createdAt: NOW,
         };
       },
-      publishReservedLiveShadowAgent: async () => {
+      publishReservedLiveShadowAgent: async (request: Record<string, unknown>) => {
+        state.publications.push(request);
         state.writes.push("publish");
         return { status: "allocated" };
       },
@@ -177,5 +180,30 @@ for (const mode of ["shadow_encryption", "full_encryption"] as const) {
         expect(state.writes).toEqual(["publish", "complete", "evidence"]);
       } finally { session.destroy(); }
     });
+  });
+}
+
+
+for (const mode of ["shadow_encryption", "full_encryption"] as const) {
+  test(`${mode} keeps image attribution parity while protecting ordinary metadata`, async () => {
+    const { session, state } = fixture(mode);
+    const imageAssistance = { status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"] };
+    const payload = { role: "assistant" as const, content: "Total 123.45", sensitiveMetadata: { imageAssistance } };
+    try {
+      const result = await session.publishMessage({ payload, stage: "assistant_message" });
+      expect(result.status).toBe("protected");
+      expect(state.publications).toHaveLength(1);
+      const published = state.publications[0]!;
+      if (mode === "full_encryption") {
+        expect(published["metadata"]).toBeNull();
+        expect(published["content"]).toBeNull();
+      } else {
+        expect(published["metadata"]).toEqual({ nautilo_image_assistance: imageAssistance });
+        expect(encodeLiveShadowOrdinaryPayloadV2({
+          role: "assistant", content: String(published["content"]), tool_calls: null, tool_name: null,
+          metadata_json: JSON.stringify(published["metadata"]),
+        }, null)).toEqual(encodeMessagePayloadV2(payload));
+      }
+    } finally { session.destroy(); }
   });
 }

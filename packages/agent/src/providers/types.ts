@@ -15,6 +15,8 @@ export interface ProviderInitOptions {
  */
 export type PersonalProviderCredential = Readonly<{
   apiKey: string;
+  /** Exact administrator-owned endpoint admitted for a personal Gateway key. */
+  destination?: string | undefined;
 }>;
 
 export type UniversalModelOptions = Record<string, unknown> & Readonly<{

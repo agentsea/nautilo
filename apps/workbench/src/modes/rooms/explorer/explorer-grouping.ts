@@ -201,6 +201,7 @@ function flatRoomRow(args: {
     importantUnreadCount: importantOf(room),
     lastActivityAt: activityMs(room),
     roomKind: room.kind,
+    roomDiscoverable: room.discoverable,
     ...(handle ? { handle } : {}),
   };
 }
@@ -281,6 +282,7 @@ function buildRoomLeafRow(args: {
     importantUnreadCount: importantOf(room),
     lastActivityAt: activityMs(room),
     roomKind: room.kind,
+    roomDiscoverable: room.discoverable,
     ...(threadsContainer ? { children: [threadsContainer] } : {}),
   };
 }
@@ -451,14 +453,24 @@ export function groupRoomsForExplorer(args: {
   for (const room of topLevel) {
     const roster = rosterFor(rosters, room.id);
 
-    // Public/open rooms are channel-like and get their own home. Keyed on
-    // room.kind (always known), so a freshly created public room appears
-    // immediately — before its roster has been fetched. Without this, open
-    // rooms matched no classifier below and were silently dropped.
-    if (room.kind === "open") {
+    // Discoverable open rooms are channel-like and get their own home. Missing
+    // discoverable is the legacy Public fallback. External rooms remain in the
+    // member's Groups list even before their roster has been fetched.
+    if (room.kind === "open" && room.discoverable !== false) {
       publicRows.push(
         flatRoomRow({
           id: `public:${room.id}`,
+          label: roomLabelForExplorer(room),
+          room,
+        }),
+      );
+      continue;
+    }
+
+    if (room.kind === "open") {
+      groupsRows.push(
+        flatRoomRow({
+          id: `groups:${room.id}`,
           label: roomLabelForExplorer(room),
           room,
         }),

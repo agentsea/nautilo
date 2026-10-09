@@ -1,3 +1,4 @@
+import type { ExtractedUsage } from "./usage-callback";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 /**
@@ -7,6 +8,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export type UsageCallType =
   | "chat"
   | "subagent"
+  | "decision"
+  | "deep_research"
   | "conductor"
   | "room_stenographer"
   | "room_reflection"
@@ -63,6 +66,9 @@ export interface UsageContext {
   modelControl?: UsageModelControlMetadata;
   /** Trusted, non-secret funding provenance for the exact attempt. */
   funding?: UsageFundingProvenance;
+  /** Durable pre-wire owner; callbacks update this attempt rather than insert another row. */
+  trackedAttemptId?: string;
+  onAttemptUsage?: (usage: ExtractedUsage) => void;
 }
 
 const storage = new AsyncLocalStorage<UsageContext>();

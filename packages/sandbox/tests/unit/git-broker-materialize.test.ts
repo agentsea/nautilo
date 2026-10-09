@@ -1,5 +1,5 @@
 /**
- * D440 Phase 3 — unit tests for broker-controlled worktree materialization.
+ * Unit tests for broker-controlled worktree materialization.
  *
  * Pure parsing, validation, and broker-owned filesystem code. No Git
  * subprocess; no sandbox-exec required. Exercises the manifest threat
@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { rejects } from "node:assert/strict";
 import {
   chmodSync,
   existsSync,
@@ -31,6 +32,8 @@ import {
   MAX_WORKTREE_FILE_COUNT,
   MAX_WORKTREE_TOTAL_BYTES,
   parseLsTreeZ,
+  parseNetworkManifest,
+  validateNetworkLinks,
   safeMkdirsForFile,
   writeBlobAtomic,
 } from "../../src/git-broker/materialize";
@@ -49,9 +52,37 @@ function manifest(records: Buffer[]): Buffer {
 
 const OID = "0123456789abcdef0123456789abcdef01234567";
 
+test("network symlinks require a safe relative graph while legacy parser keeps rejecting them", async () => {
+  const root = mkTmp("network-manifest-links-");
+  try {
+    const bytes = manifest([record("100644", "blob", OID, "a.txt"), record("120000", "blob", OID, "link", 5)]);
+    const parsed = parseNetworkManifest(bytes, root, { fileCount: 3, blobBytes: 32, totalBytes: 64 });
+    await validateNetworkLinks(parsed, root, async () => Buffer.from("a.txt"));
+    expect(parsed.entries[1]?.mode).toBe("120000");
+    expect(() => parseLsTreeZ(bytes, root)).toThrow(/symlink/);
+    await rejects(validateNetworkLinks(parsed, root, async () => Buffer.from("../xx")), /Escaping symlink/);
+    symlinkSync("/outside", join(root, "other"));
+    await rejects(validateNetworkLinks(parsed, root, async () => Buffer.from("other")), /Unsafe existing symlink target/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("network manifest rejects malformed UTF8, ambiguous object IDs and normalized case collisions", () => {
+  const root = mkTmp("network-manifest-encoding-");
+  const limits = { fileCount: 5, blobBytes: 32, totalBytes: 64 };
+  try {
+    expect(() => parseNetworkManifest(manifest([record("100644", "blob", "a".repeat(41), "a")]), root, limits)).toThrow();
+    expect(() => parseNetworkManifest(manifest([Buffer.concat([Buffer.from(`100644 blob ${OID} 1\t`), Buffer.from([0xff])])]), root, limits)).toThrow();
+    expect(() => parseNetworkManifest(manifest([record("100644", "blob", OID, "é"), record("100644", "blob", OID, "e\u0301")]), root, limits)).toThrow();
+    expect(() => parseNetworkManifest(Buffer.alloc(0), root, { ...limits, totalBytes: 1.5 })).toThrow();
+    for (const path of [".secret", ".secrets", "credentials", "credentials.json", "link/credentials"]) {
+      expect(() => parseNetworkManifest(manifest([record("100644", "blob", OID, path)]), root, limits)).toThrow();
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 describe("parseLsTreeZ — accept", () => {
   test("regular + executable blobs parse", () => {
-    const root = mkTmp("d440-mat-ok-");
+    const root = mkTmp("git-materialize-ok-");
     const out = manifest([
       record("100644", "blob", OID, "public.txt"),
       record("100755", "blob", OID, "bin/run.sh"),
@@ -65,7 +96,7 @@ describe("parseLsTreeZ — accept", () => {
   });
 
   test("public .env.example terminal suffix is allowed", () => {
-    const root = mkTmp("d440-mat-envex-");
+    const root = mkTmp("git-materialize-envex-");
     const out = manifest([record("100644", "blob", OID, ".env.example")]);
     const m = parseLsTreeZ(out, root);
     expect(m.entries[0]?.path).toBe(".env.example");
@@ -73,7 +104,7 @@ describe("parseLsTreeZ — accept", () => {
   });
 
   test("nested directories parse with forward-slash paths", () => {
-    const root = mkTmp("d440-mat-nested-");
+    const root = mkTmp("git-materialize-nested-");
     const out = manifest([record("100644", "blob", OID, "a/b/c/deep.txt")]);
     const m = parseLsTreeZ(out, root);
     expect(m.entries[0]?.path).toBe("a/b/c/deep.txt");
@@ -81,7 +112,7 @@ describe("parseLsTreeZ — accept", () => {
   });
 
   test("empty input -> empty manifest", () => {
-    const root = mkTmp("d440-mat-empty-");
+    const root = mkTmp("git-materialize-empty-");
     const m = parseLsTreeZ(Buffer.alloc(0), root);
     expect(m.entries.length).toBe(0);
     rmSync(root, { recursive: true, force: true });
@@ -90,7 +121,7 @@ describe("parseLsTreeZ — accept", () => {
 
 describe("parseLsTreeZ — reject", () => {
   test("gitlink/submodule entry (type commit) -> deny-submodules", () => {
-    const root = mkTmp("d440-mat-sub-");
+    const root = mkTmp("git-materialize-sub-");
     const out = manifest([record("160000", "commit", OID, "vendor")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(GitPreflightError);
     expect(() => parseLsTreeZ(out, root)).toThrow(/gitlink\/submodule/);
@@ -98,14 +129,14 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("tree entry (type tree) -> deny-submodules", () => {
-    const root = mkTmp("d440-mat-tree-");
+    const root = mkTmp("git-materialize-tree-");
     const out = manifest([record("040000", "tree", OID, "sub")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/gitlink\/submodule/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("symlink mode 120000 -> deny-escaping-symlink (all symlinks rejected)", () => {
-    const root = mkTmp("d440-mat-sym-");
+    const root = mkTmp("git-materialize-sym-");
     const out = manifest([record("120000", "blob", OID, "link")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(GitPreflightError);
     expect(() => parseLsTreeZ(out, root)).toThrow(/symlink/);
@@ -113,28 +144,28 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("unsafe mode -> deny-path-not-regular", () => {
-    const root = mkTmp("d440-mat-mode-");
+    const root = mkTmp("git-materialize-mode-");
     const out = manifest([record("100666", "blob", OID, "weird.txt")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/unsafe mode/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("absolute path -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-mat-abs-");
+    const root = mkTmp("git-materialize-abs-");
     const out = manifest([record("100644", "blob", OID, "/etc/passwd")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/absolute manifest path/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("parent traversal -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-mat-trav-");
+    const root = mkTmp("git-materialize-trav-");
     const out = manifest([record("100644", "blob", OID, "../escape.txt")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/escapes target root/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("control byte in path -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-mat-ctrl-");
+    const root = mkTmp("git-materialize-ctrl-");
     const rec = Buffer.concat([
       Buffer.from(`100644 blob ${OID} 8\t`),
       Buffer.from("bad\x01name.txt"),
@@ -145,7 +176,7 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("duplicate path -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-mat-dup-");
+    const root = mkTmp("git-materialize-dup-");
     const out = manifest([
       record("100644", "blob", OID, "same.txt"),
       record("100644", "blob", OID, "same.txt"),
@@ -155,7 +186,7 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("live .env -> deny-live-env before mutation", () => {
-    const root = mkTmp("d440-mat-liveenv-");
+    const root = mkTmp("git-materialize-liveenv-");
     const out = manifest([record("100644", "blob", OID, ".env")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(GitPreflightError);
     expect(() => parseLsTreeZ(out, root)).toThrow(/live secret variant/);
@@ -163,28 +194,28 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("live .env.local -> deny-live-env", () => {
-    const root = mkTmp("d440-mat-envlocal-");
+    const root = mkTmp("git-materialize-envlocal-");
     const out = manifest([record("100644", "blob", OID, ".env.local")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/live secret variant/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test(".git governance entry -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-mat-git-");
+    const root = mkTmp("git-materialize-git-");
     const out = manifest([record("100644", "blob", OID, ".git/HEAD")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/governance entry/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("malformed oid -> deny-pathspec-outside-target", () => {
-    const root = mkTmp("d440-mat-badoid-");
+    const root = mkTmp("git-materialize-badoid-");
     const out = manifest([record("100644", "blob", "nothex", "f.txt")]);
     expect(() => parseLsTreeZ(out, root)).toThrow(/malformed oid/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("file count overflow -> deny-add-bounds", () => {
-    const root = mkTmp("d440-mat-count-");
+    const root = mkTmp("git-materialize-count-");
     const recs: Buffer[] = [];
     for (let i = 0; i <= MAX_WORKTREE_FILE_COUNT; i++) {
       recs.push(record("100644", "blob", OID, `f${i}.txt`));
@@ -194,14 +225,14 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("per-blob byte overflow -> deny-add-bounds (pre-mutation)", () => {
-    const root = mkTmp("d440-mat-blob-");
+    const root = mkTmp("git-materialize-blob-");
     const out = manifest([record("100644", "blob", OID, "big.txt", 200)]);
     expect(() => parseLsTreeZ(out, root, 4096, 64, 1024)).toThrow(/exceeds 64 bytes/);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("total byte overflow -> deny-add-bounds (pre-mutation)", () => {
-    const root = mkTmp("d440-mat-total-");
+    const root = mkTmp("git-materialize-total-");
     const out = manifest([
       record("100644", "blob", OID, "a.txt", 40),
       record("100644", "blob", OID, "b.txt", 40),
@@ -212,7 +243,7 @@ describe("parseLsTreeZ — reject", () => {
   });
 
   test("malformed size field -> deny-add-bounds", () => {
-    const root = mkTmp("d440-mat-badsize-");
+    const root = mkTmp("git-materialize-badsize-");
     const rec = Buffer.from(`100644 blob ${OID} -\tgitlink.txt\0`, "utf8");
     // type is blob but size is `-` (gitlink shape) -> malformed size.
     expect(() => parseLsTreeZ(rec, root)).toThrow(/malformed size/);
@@ -222,7 +253,7 @@ describe("parseLsTreeZ — reject", () => {
 
 describe("writeBlobAtomic + safeMkdirsForFile", () => {
   test("writes a regular file with mode 0644", () => {
-    const root = mkTmp("d440-mat-w644-");
+    const root = mkTmp("git-materialize-w644-");
     const path = resolve(root, "file.txt");
     writeBlobAtomic(path, Buffer.from("hello\n"), false);
     expect(existsSync(path)).toBe(true);
@@ -232,7 +263,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
   });
 
   test("writes an executable file with mode 0755", () => {
-    const root = mkTmp("d440-mat-w755-");
+    const root = mkTmp("git-materialize-w755-");
     const path = resolve(root, "bin", "run.sh");
     safeMkdirsForFile(path, root);
     writeBlobAtomic(path, Buffer.from("#!/bin/sh\n"), true);
@@ -241,7 +272,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
   });
 
   test("nested directories are created safely", () => {
-    const root = mkTmp("d440-mat-nest-");
+    const root = mkTmp("git-materialize-nest-");
     const path = resolve(root, "a", "b", "c", "deep.txt");
     safeMkdirsForFile(path, root);
     writeBlobAtomic(path, Buffer.from("x"), false);
@@ -250,7 +281,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
   });
 
   test("writeBlobAtomic refuses to overwrite an existing path", () => {
-    const root = mkTmp("d440-mat-over-");
+    const root = mkTmp("git-materialize-over-");
     const path = resolve(root, "file.txt");
     writeBlobAtomic(path, Buffer.from("first"), false);
     expect(() => writeBlobAtomic(path, Buffer.from("second"), false)).toThrow();
@@ -259,7 +290,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
   });
 
   test("safeMkdirsForFile rejects a symlink planted on the chain", () => {
-    const root = mkTmp("d440-mat-symchain-");
+    const root = mkTmp("git-materialize-symchain-");
     const real = resolve(root, "real");
     mkdirSync(real, { recursive: true });
     const link = resolve(root, "link");
@@ -270,7 +301,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
   });
 
   test("safeMkdirsForFile rejects an escaping path", () => {
-    const root = mkTmp("d440-mat-escape-");
+    const root = mkTmp("git-materialize-escape-");
     const path = resolve(root, "..", "escape.txt");
     expect(() => safeMkdirsForFile(path, root)).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });
@@ -279,7 +310,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
 
 describe("cleanupMaterialization", () => {
   test("removes only broker-written files + empty dirs", () => {
-    const root = mkTmp("d440-mat-clean-");
+    const root = mkTmp("git-materialize-clean-");
     const a = resolve(root, "a.txt");
     const b = resolve(root, "sub", "b.txt");
     safeMkdirsForFile(b, root);
@@ -294,7 +325,7 @@ describe("cleanupMaterialization", () => {
   });
 
   test("leaves operator-added files untouched and reports residual dir", () => {
-    const root = mkTmp("d440-mat-op-");
+    const root = mkTmp("git-materialize-op-");
     const a = resolve(root, "a.txt");
     writeBlobAtomic(a, Buffer.from("a"), false);
     const opFile = resolve(root, "operator.txt");

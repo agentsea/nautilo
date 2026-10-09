@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyReport } from "@nautilo/config-guard";
+import { PROVIDER_KEY_CATALOGUE, orderProviderKeys, type ProviderKeyCatalogueEntry } from "@nautilo/types";
 import { ApiError } from "@nautilo/api-client/browser";
 import { apiClient } from "../../../lib/api";
-import { orderProviderKeys } from "../../../lib/provider-key-display";
 import { useAuth } from "../../../hooks/use-auth";
 import { useCan } from "../../../hooks/use-can";
 import {
@@ -85,12 +85,16 @@ export function ProviderCredentialsEditor({
   const [rowActions, setRowActions] = useState<Record<string, RowAction>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const mutatingRowsRef = useRef(new Set<string>());
+  const loadGenerationRef = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGenerationRef.current;
     try {
       const { keys } = await keyApi.getKeySummary();
+      if (generation !== loadGenerationRef.current) return;
       setState({ kind: "ready", keys });
     } catch (e) {
+      if (generation !== loadGenerationRef.current) return;
       if (e instanceof ApiError && e.status === 403) {
         setState({ kind: "forbidden" });
       } else {
@@ -102,6 +106,17 @@ export function ProviderCredentialsEditor({
     }
   }, [keyApi]);
 
+  const providerRows = useMemo(() => {
+    const reports = new Map(state.kind === "ready" ? state.keys.map((key) => [key.id, key]) : []);
+    const catalogueIds = new Set<string>(PROVIDER_KEY_CATALOGUE.map((provider) => provider.id));
+    return orderProviderKeys([
+      ...PROVIDER_KEY_CATALOGUE.map((provider) => ({ provider, report: reports.get(provider.id) })),
+      ...(state.kind === "ready" ? state.keys
+        .filter((key) => !catalogueIds.has(key.id))
+        .map((key) => ({ provider: key as ProviderKeyCatalogueEntry, report: key })) : []),
+    ].map((row) => ({ ...row, id: row.provider.id })));
+  }, [state]);
+
   useEffect(() => {
     if (!enabled) return;
     void load();
@@ -111,7 +126,7 @@ export function ProviderCredentialsEditor({
     setRowActions((prev) => ({ ...prev, [id]: next }));
   };
 
-  const saveRow = async (report: KeyReport) => {
+  const saveRow = async (report: ProviderKeyCatalogueEntry) => {
     const value = (editing[report.id] ?? "").trim();
     if (!value) {
       setRowState(report.id, { error: "Value required" });
@@ -271,30 +286,32 @@ export function ProviderCredentialsEditor({
       description="Add or change API keys for this server. Values are stored by the server; after saving, only a masked preview is shown. Deployment and identity settings remain platform-controlled."
       actions={validateButton}
     >
-      {state.kind === "loading" ? (
-        <p className="text-sm text-foreground-muted">Loading…</p>
-      ) : state.kind === "error" ? (
-        <p className="text-sm text-[var(--error)]">{state.message}</p>
-      ) : state.kind === "forbidden" ? (
-        <p className="text-sm text-foreground-muted">
-          You do not have permission to manage API keys on this server.
-        </p>
-      ) : state.keys.length === 0 ? (
-        <p className="text-sm text-foreground-muted">No keys registered.</p>
-      ) : (
-        <div>
+      <div>
+          {state.kind === "loading" ? (
+            <p className="mb-3 text-sm text-foreground-muted">Loading key status…</p>
+          ) : state.kind === "error" ? (
+            <p role="alert" className="mb-3 text-sm text-[var(--error)]">{state.message}</p>
+          ) : state.kind === "forbidden" ? (
+            <p className="mb-3 text-sm text-foreground-muted">You do not have permission to manage API keys on this server.</p>
+          ) : null}
           {validateError ? (
             <p className="mb-3 text-xs text-[var(--error)]">
               Validation failed: {validateError}
             </p>
           ) : null}
-          <ProviderKeyCoverage keys={state.keys} />
-          {orderProviderKeys(state.keys).map((k) => {
+          <ProviderKeyCoverage
+            keys={state.kind === "ready" ? state.keys : []}
+            unknownStatusLabel={state.kind === "ready"
+              ? undefined
+              : state.kind === "loading" ? "Checking coverage…" : "Coverage unavailable"}
+          />
+          {providerRows.map(({ provider: k, report }) => {
             const editingValue = editing[k.id];
             const isEditing = editingValue !== undefined;
             const row = rowActions[k.id] ?? "idle";
             const rowBusy = row === "saving" || row === "validating" || row === "deleting";
-            const hasKey = k.status !== "missing";
+            const statusReady = state.kind === "ready";
+            const hasKey = statusReady && report !== undefined && report.status !== "missing";
             return (
               <FieldRow
                 key={k.id}
@@ -321,13 +338,15 @@ export function ProviderCredentialsEditor({
               >
                 <div className="flex flex-col gap-2">
                   <div className="flex items-center gap-2">
-                    {statusPill(k.status)}
+                    {state.kind === "ready"
+                      ? report ? statusPill(report.status) : <StatusPill tone="muted">Status unavailable</StatusPill>
+                      : <StatusPill tone="muted">Checking status…</StatusPill>}
                     <code className="rounded bg-background-element px-1.5 py-0.5 text-[11px] text-foreground-muted">
                       {k.envVar}
                     </code>
-                    {k.masked ? (
+                    {report?.masked ? (
                       <code className="text-[11px] text-foreground-dim">
-                        {k.masked}
+                        {report.masked}
                       </code>
                     ) : null}
                     {k.required ? (
@@ -335,8 +354,8 @@ export function ProviderCredentialsEditor({
                     ) : null}
                   </div>
 
-                  {k.hint ? (
-                    <p className="text-xs text-foreground-muted">{k.hint}</p>
+                  {report?.hint ? (
+                    <p className="text-xs text-foreground-muted">{report.hint}</p>
                   ) : null}
 
                   {isEditing ? (
@@ -361,7 +380,7 @@ export function ProviderCredentialsEditor({
                           variant="primary"
                           onClick={() => void saveRow(k)}
                           loading={row === "saving"}
-                          disabled={!editingValue.trim()}
+                          disabled={!statusReady || !editingValue.trim()}
                         >
                           Save
                         </Button>
@@ -392,13 +411,13 @@ export function ProviderCredentialsEditor({
                       <span className="text-xs text-foreground-muted">Delete this server key?</span>
                       <Button
                         loading={row === "deleting"}
-                        onClick={() => void deleteRow(k)}
+                        onClick={() => report && void deleteRow(report)}
                       >
                         Delete key
                       </Button>
                       <Button
                         variant="ghost"
-                        disabled={rowBusy}
+                        disabled={!statusReady || rowBusy}
                         onClick={() => setConfirmDelete(null)}
                       >
                         Cancel
@@ -407,7 +426,7 @@ export function ProviderCredentialsEditor({
                   ) : (
                     <div className="flex items-center gap-2">
                       <Button
-                        disabled={rowBusy}
+                        disabled={!statusReady || rowBusy}
                         ariaLabel={`${hasKey ? "Replace" : "Add"} ${k.name} key`}
                         onClick={() =>
                           setEditing((p) => ({ ...p, [k.id]: "" }))
@@ -421,7 +440,7 @@ export function ProviderCredentialsEditor({
                             loading={row === "validating"}
                             disabled={rowBusy || validating}
                             ariaLabel={`Validate ${k.name} key`}
-                            onClick={() => void validateRow(k)}
+                            onClick={() => report && void validateRow(report)}
                           >
                             Validate
                           </Button>
@@ -447,7 +466,6 @@ export function ProviderCredentialsEditor({
             );
           })}
         </div>
-      )}
     </SectionCard>
   );
 }

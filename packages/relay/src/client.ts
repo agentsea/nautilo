@@ -1,3 +1,17 @@
+import { parseRelayLocalExecutionDelegationCapture } from "./protocol";
+import { isRelayGitHubDispatch } from "./protocol";
+import { parseGitHubInvocationBinding } from "../../types/src/github-invocation";
+import { isRelayLocalExecutionSearchAllowed } from "./protocol";
+import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
+import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
+import { parseRelayHumanTerminalBinding, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "./protocol";
+import { parseRelayHumanTerminalCapability } from "./types";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
+import { parseRelayBasicExecutionCapability } from "./types";
+import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "./protocol";
+import { parseRelayLocalExecutionCapability } from "./types";
+import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION } from "./protocol";
+import { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES } from "./protocol";
 import { isSecurityScanProgress } from "./security-scan-progress";
 import WebSocket from "ws";
 import { randomUUID } from "node:crypto";
@@ -110,7 +124,7 @@ export interface RelayAdvertisedMcpTool {
 }
 
 /**
- * D384 Phase 5 — relay-side MCP hosting seam. The binary (headless
+ * Phase 5 — relay-side MCP hosting seam. The binary (headless
  * `bin/nautilo-relay` or Electron) constructs an `McpClientManager`-backed
  * adapter and passes it in; the shared relay client owns the wire protocol
  * (`relay:configure-mcp` in, `relay:advertise-mcp-tools` out) and routes
@@ -121,7 +135,7 @@ export interface RelayAdvertisedMcpTool {
 export interface RelayMcpHost {
   /** Reconcile the set of MCP servers to host (server→relay). Idempotent. */
   configure(servers: RelayMcpServerConfig[]): void | Promise<void>;
-  /** D503 v12: local-only prerequisite report. It never returns env values. */
+  /** v12: local-only prerequisite report. It never returns env values. */
   preflight?(server: RelayMcpServerConfig): Promise<{
     status: "ready" | "blocked";
     machineLabel: string;
@@ -129,7 +143,7 @@ export interface RelayMcpHost {
     environment: readonly { name: string; present: boolean }[];
     failure?: RelayMcpFailure | undefined;
   }>;
-  /** D503 v12: reconcile the fleet and report the exact target outcome. */
+  /** v12: reconcile the fleet and report the exact target outcome. */
   configureWithOutcome?(
     servers: RelayMcpServerConfig[],
     operation: RelayMcpConfigureOperation,
@@ -154,7 +168,7 @@ export interface RelayMcpHost {
   stop?(): Promise<void>;
 }
 
-/** D453 host seam. It deliberately has no generic dispatch/sandbox surface. */
+/** host seam. It deliberately has no generic dispatch/sandbox surface. */
 export interface RelayCodexSession {
   readonly relayId: string;
   readonly relaySessionId: string;
@@ -164,7 +178,7 @@ export interface RelayCodexSession {
   readonly capabilityRevision: number;
 }
 
-/** D516 — server-acknowledged topology exposed only to Electron main. */
+/** server-acknowledged topology exposed only to Electron main. */
 export interface RelayDesktopTopology {
   readonly relayId: string;
   readonly relaySessionId: string;
@@ -193,7 +207,7 @@ export interface RelayCodexHostPort {
   onDisconnected?(): void;
 }
 
-/** D452 v14 Electron ACP seam. It carries typed commands and semantic data only. */
+/** v14 Electron ACP seam. It carries typed commands and semantic data only. */
 export type RelayAcpSession = AcpSocketScope;
 export interface RelayAcpHostTransport {
   send(message: RelayAcpClientMessage): boolean;
@@ -210,7 +224,7 @@ export interface RelayAcpHostPort {
   onDisconnected?(): void | Promise<void>;
 }
 
-/** D452 v17 — injected Electron-only Claude Connections discovery seam. */
+/** v17 — injected Electron-only Claude Connections discovery seam. */
 export type RelayClaudeConnectionSession = RelayClaudeConnectionScope;
 export interface RelayClaudeConnectionHostTransport {
   send(message: RelayClaudeConnectionDiscoveryResult): boolean;
@@ -223,7 +237,7 @@ export interface RelayClaudeConnectionHostPort {
   onDisconnected?(): void | Promise<void>;
 }
 
-/** D452 v18 — injected Desktop-local Claude execution forwarding seam. */
+/** v18 — injected Desktop-local Claude execution forwarding seam. */
 export type RelayClaudeExecutionSession = RelayClaudeExecutionSocketScope;
 export interface RelayClaudeExecutionHostTransport {
   send(message: RelayClaudeExecutionDesktopEvent): boolean;
@@ -247,7 +261,7 @@ export interface RelayClientOptions {
     request: RelayDispatchRequest,
     signal: AbortSignal,
   ) => Promise<RelayDispatchResult>;
-  /** D500 v13: Electron-local preparation of one exact SSH operation. */
+  /** v13: Electron-local preparation of one exact SSH operation. */
   onSshPrepare?: (
     request: RelaySshPrepareRequestV1,
     signal: AbortSignal,
@@ -258,23 +272,23 @@ export interface RelayClientOptions {
   onStatusChange?: (status: RelayStatus) => void;
   /** Called once when the server rejects or revokes this client's token. */
   onAuthenticationRequired?: () => void | Promise<void>;
-  /** D384 Phase 5 — optional relay-side MCP host (see {@link RelayMcpHost}). */
+  /** Phase 5 — optional relay-side MCP host (see {@link RelayMcpHost}). */
   mcpHost?: RelayMcpHost;
   /**
-   * D418 protocol v7 — per Electron main-process-launch identity. When
+   * protocol v7 — per Electron main-process-launch identity. When
    * provided, the register frame carries it and `updateCapabilities` is
    * enabled. Omitted by the headless relay, which cannot advertise
    * desktop-session capability state.
    */
   desktopSessionId?: string;
   /**
-   * D418 protocol v7 — starting monotonic revision advertised at register.
+   * protocol v7 — starting monotonic revision advertised at register.
    * Each `updateCapabilities` call sends a strictly greater revision.
    * Defaults to 0.
    */
   initialCapabilityRevision?: number;
   /**
-   * D418 reconnect/session split-brain fix — dynamic capability source used
+   * reconnect/session split-brain fix — dynamic capability source used
    * to build the `relay:register` frame on EVERY connect (initial AND
    * reconnect). When provided, the register frame advertises the CURRENT
    * capability state (including the live advisory grant / profile binding
@@ -284,24 +298,24 @@ export interface RelayClientOptions {
    * server relay registry's profile snapshot with null while a Full
    * Workstation session remains active. The desktop relay wires this to its
    * shared capability builder; the headless relay omits it and registers
-   * the static `capabilities` value, byte-for-byte pre-D418. A throw is
+   * the static `capabilities` value, byte-for-byte as in the legacy implementation. A throw is
    * treated as "use the static `capabilities` fallback" so a builder fault
    * never blocks registration.
    */
   getCapabilities?: () => RelayCapabilities | Promise<RelayCapabilities>;
-  /** D516 — cleared on socket loss; never contains grant, PIN, or policy data. */
+  /** cleared on socket loss; never contains grant, PIN, or policy data. */
   onDesktopTopologyChange?: (topology: RelayDesktopTopology | null) => void;
   /** Optional Electron-owned Codex host. Headless callers omit this. */
   codexHostPort?: RelayCodexHostPort;
   /** Optional Electron-owned built-in ACP readiness host. */
   acpHostPort?: RelayAcpHostPort;
-  /** D452 v17 — no SDK dependency here; Electron injects the host when available. */
+  /** v17 — no SDK dependency here; Electron injects the host when available. */
   claudeConnectionHostPort?: RelayClaudeConnectionHostPort;
-  /** D452 v18 — distinct from discovery; Desktop owns its active execution. */
+  /** v18 — distinct from discovery; Desktop owns its active execution. */
   claudeExecutionHostPort?: RelayClaudeExecutionHostPort;
-  /** Electron-local instance identity for D502 continuation owner binding. */
+  /** Electron-local instance identity for continuation owner binding. */
   runShellOwnerInstanceId?: string;
-  /** Electron-local instance identity for D504 browser-page continuation. */
+  /** Electron-local instance identity for browser-page continuation. */
   browserPageOwnerInstanceId?: string;
 }
 
@@ -318,7 +332,7 @@ export interface RelayClient {
    */
   getAcknowledgedCapabilityRevision(): number | null;
   /**
-   * D418 protocol v7 — atomically replace this relay's advertised capability
+   * protocol v7 — atomically replace this relay's advertised capability
    * state on the server. Serializes and coalesces concurrent calls: only the
    * latest full `capabilities` object is sent, and partial capability state is
    * never merged. Resolves once the server acknowledges the applied revision.
@@ -348,7 +362,18 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   // every replacement socket still gets its own shutdown slot.
   const stoppedMcpHostSocketGenerations = new Set<number>();
   let negotiatedProtocolVersion = RELAY_MIN_SUPPORTED_PROTOCOL_VERSION;
-  const pendingCancellers = new Map<string, AbortController>();
+  type PendingDispatchCancellation = { controller: AbortController; managed: boolean };
+  const pendingCancellers = new Map<string, Set<PendingDispatchCancellation>>();
+  function retirePendingDispatches(includeManaged: boolean): void {
+    for (const [correlationId, pending] of pendingCancellers) {
+      for (const entry of pending) {
+        if (entry.managed && !includeManaged) continue;
+        entry.controller.abort();
+        pending.delete(entry);
+      }
+      if (pending.size === 0) pendingCancellers.delete(correlationId);
+    }
+  }
   // Never replay Codex work across a socket: the server gives every v8 socket
   // a fresh opaque session. The host receives a new transport only after ack.
   let authenticatedCodexSession: RelayCodexSession | null = null;
@@ -573,7 +598,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     },
   };
 
-  // D418 protocol v7 — the issued revision stays monotonic across reconnects
+  // protocol v7 — the issued revision stays monotonic across reconnects
   // because the server rejects stale/duplicate revisions. It is deliberately
   // separate from acknowledgedCapabilityRevision: callers may only observe
   // the latter as server truth.
@@ -782,6 +807,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
 
   let authenticationRequiredNotified = false;
   function markAuthenticationRequired(): void {
+    retirePendingDispatches(true);
     setStatus("error");
     if (authenticationRequiredNotified) return;
     authenticationRequiredNotified = true;
@@ -1037,7 +1063,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       subject.capabilityRevision === acknowledgedRevision;
   }
 
-  /** D516 — desktop effects require the exact current local relay topology. */
+  /** desktop effects require the exact current local relay topology. */
   function matchesCurrentDesktopAutomationBinding(
     binding: DesktopAutomationInvocationBinding,
   ): boolean {
@@ -1094,7 +1120,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     send({ type: "relay:ssh-prepared", requestId: parsed.request.requestId, status: "ok", response: response.response });
   }
 
-  // D384 Phase 5 — turn hosted-MCP tool-set changes into advertise frames.
+  // Phase 5 — turn hosted-MCP tool-set changes into advertise frames.
   // Registered once; fires on connect, tools/list_changed, and teardown ([]).
   options.mcpHost?.onToolsChanged((serverName, tools) => {
     send({ type: "relay:advertise-mcp-tools", serverName, tools });
@@ -1135,7 +1161,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     }
   }
 
-  // D418 protocol v7 — reject the in-flight capability update (if any) and
+  // protocol v7 — reject the in-flight capability update (if any) and
   // drain + reject any queued updates when the socket drops or the client
   // disconnects, so callers don't hang on acks that will never arrive.
   function abortCapabilityUpdates(error: Error): void {
@@ -1303,6 +1329,106 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       canContinueBrowserPageRead &&
       negotiatedProtocolVersion >= RELAY_BROWSER_PAGE_SNAPSHOT_REFERENCE_PROTOCOL_VERSION &&
       registeredCapabilities.canInspectBrowserPageSnapshot === true;
+    if (msg.toolName === "local_git" || msg.toolName === "read_shell_output") {
+      const supported = negotiatedProtocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
+        && registeredCapabilities.profile === "desktop-agent"
+        && (msg.toolName === "local_git"
+          ? registeredCapabilities.canUseLocalGit === true && isRelayLocalGitCapability(registeredCapabilities.localGit)
+          : registeredCapabilities.canReadShellOutput === true);
+      if (!supported || msg.hostedBy !== undefined) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_TOOL_UNAVAILABLE", error: "This local tool is unavailable on this Desktop version." });
+        return;
+      }
+    }
+    if (msg.toolName === "local_github" || msg.githubBinding !== undefined) {
+      const binding = parseGitHubInvocationBinding(msg.githubBinding, msg.args);
+      if (!binding || !isRelayGitHubDispatch(msg.toolName, msg.args, binding, registeredCapabilities, negotiatedProtocolVersion)
+        || binding.owner.humanUserId !== options.userId || binding.owner.relayId !== relayId
+        || binding.owner.desktopSessionId !== desktopSessionId || !desktopTopology || binding.owner.pairingGeneration !== desktopTopology.pairingGeneration || binding.owner.instanceId !== options.runShellOwnerInstanceId
+        || msg.hostedBy !== undefined || msg.humanTerminalBinding !== undefined || msg.localExecutionBinding !== undefined
+        || msg.localExecutionHistoryBinding !== undefined || msg.workstationShellBinding !== undefined || msg.uncontainedHostCommandsSession === true
+        || (binding.stage === "publish" && msg.approvalObtained !== true) || msg.executionClass === "real_workstation") {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "GITHUB_UNAVAILABLE", error: "GitHub custody is unavailable." });
+        return;
+      }
+    }
+    if (msg.toolName === "human_terminal" || msg.humanTerminalBinding !== undefined) {
+      const binding = parseRelayHumanTerminalBinding(msg.humanTerminalBinding);
+      const capability = parseRelayHumanTerminalCapability(registeredCapabilities.humanTerminal);
+      if (msg.toolName !== "human_terminal" || !binding || !capability || !parseHumanTerminalOperation(msg.args)
+        || negotiatedProtocolVersion < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION || registeredCapabilities.canUseHumanTerminal !== true
+        || registeredCapabilities.profile !== "desktop-agent" || msg.hostedBy !== undefined
+        || msg.localExecutionBinding !== undefined || msg.localExecutionHistoryBinding !== undefined
+        || binding.generation !== capability.generation || !sameHumanTerminalConsentOwner(binding.owner, capability.owner)
+        || binding.owner.humanUserId !== options.userId || binding.owner.relayId !== relayId
+        || binding.owner.desktopSessionId !== desktopSessionId || desktopTopology === null
+        || binding.owner.pairingGeneration !== desktopTopology.pairingGeneration) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "HUMAN_TERMINAL_UNAVAILABLE", error: "The exact Human terminal handoff is unavailable." });
+        return;
+      }
+    }
+    if ((msg.toolName === "exec_command" || msg.toolName === "write_stdin" || msg.localExecutionBinding !== undefined || msg.localExecutionHistoryBinding !== undefined)
+      && !isRelayLocalExecutionSearchAllowed(msg.toolName, msg.args, registeredCapabilities, negotiatedProtocolVersion)) {
+      send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_EXECUTION_SEARCH_UNAVAILABLE", error: "Retained output search is unavailable for this request or peer." });
+      return;
+    }
+    let validatedManagedExecution = false;
+    if (msg.localExecutionHistoryBinding !== undefined) {
+      const history = parseRelayLocalExecutionHistoryBinding(msg.localExecutionHistoryBinding);
+      if (history === null || msg.localExecutionBinding !== undefined || msg.hostedBy !== undefined
+        || !isRelayLocalExecutionHistoryRead(msg.toolName, msg.args, history)
+        || registeredCapabilities.profile !== "desktop-agent" || registeredCapabilities.canReadLocalExecutionHistory !== true
+        || negotiatedProtocolVersion < RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION
+        || history.reader.humanUserId !== options.userId || history.reader.relayId !== relayId
+        || history.reader.desktopSessionId !== desktopSessionId || desktopTopology === null
+        || history.reader.pairingGeneration !== desktopTopology.pairingGeneration || history.reader.instanceId !== options.runShellOwnerInstanceId) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_EXECUTION_HISTORY_BINDING_INVALID", error: "Local execution history authority is unavailable" });
+        return;
+      }
+    } else if (msg.toolName === "exec_command" || msg.toolName === "write_stdin" || msg.localExecutionBinding !== undefined) {
+      const binding = parseRelayLocalExecutionBinding(msg.localExecutionBinding);
+      const capability = parseRelayLocalExecutionCapability(registeredCapabilities.localExecution);
+      if (binding === null || capability === null || msg.hostedBy !== undefined
+        || (msg.toolName !== "exec_command" && msg.toolName !== "write_stdin")
+        || registeredCapabilities.profile !== "desktop-agent"
+        || (registeredCapabilities.canExecuteLocal !== true && !(binding.version === 4 && binding.operation === "cancel"))
+        || negotiatedProtocolVersion < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || (binding.version === 4 && (negotiatedProtocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+          || (registeredCapabilities.canDelegateLocalExecution !== true && binding.operation !== "cancel")))
+        || (binding.version === 3 && (negotiatedProtocolVersion < RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION
+          || registeredCapabilities.canExecuteFullMacOneShot !== true || msg.args["tty"] === true || binding.operation === "input"))
+        || (binding.version === 2 && (negotiatedProtocolVersion < RELAY_BASIC_EXECUTION_PROTOCOL_VERSION
+          || (binding.operation === "start" && (parseRelayBasicExecutionCapability(registeredCapabilities.basicExecution)?.currentFolder !== binding.authority.currentFolder
+            || parseRelayBasicExecutionCapability(registeredCapabilities.basicExecution)?.serverBindingId !== binding.owner.serverBindingId
+            || parseRelayBasicExecutionCapability(registeredCapabilities.basicExecution)?.protectedPolicyVersion !== binding.authority.protectedPolicyVersion))))
+        || capability.capacity > LOCAL_EXECUTION_MAX_IDENTITIES
+        || binding.generation !== capability.generation || binding.owner.humanUserId !== options.userId
+        || binding.owner.relayId !== relayId || binding.owner.desktopSessionId !== desktopSessionId
+        || desktopTopology === null || binding.owner.pairingGeneration !== desktopTopology.pairingGeneration
+        || binding.owner.instanceId !== options.runShellOwnerInstanceId
+        || (msg.toolName === "exec_command") !== (binding.operation === "start")
+        || (binding.operation !== "start" && msg.args["session_id"] !== binding.executionId)
+        || (binding.operation !== "start" && binding.operation !== (msg.args["cancel"] === true ? "cancel"
+          : typeof msg.args["chars"] === "string" && msg.args["chars"].length > 0 ? "input" : "read"))) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_EXECUTION_BINDING_INVALID", error: "Local execution identity or executor contract is unavailable" });
+        return;
+      }
+      validatedManagedExecution = true;
+    }
+    if (msg.toolName === "__local_execution_delegate" || msg.localExecutionDelegationCapture !== undefined) {
+      const capture = parseRelayLocalExecutionDelegationCapture(msg.localExecutionDelegationCapture);
+      if (!capture || msg.toolName !== "__local_execution_delegate" || Object.keys(msg.args).length !== 0
+        || msg.localExecutionBinding !== undefined || msg.localExecutionHistoryBinding !== undefined || msg.hostedBy !== undefined
+        || msg.workstationShellBinding !== undefined || msg.uncontainedHostCommandsSession === true
+        || registeredCapabilities.profile !== "desktop-agent" || registeredCapabilities.canDelegateLocalExecution !== true
+        || negotiatedProtocolVersion < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
+        || capture.desktopSessionId !== desktopSessionId || capture.pairingGeneration !== desktopTopology?.pairingGeneration
+        || capture.source.humanUserId !== options.userId || capture.source.target.relayId !== relayId
+        || capture.source.target.instanceId !== options.runShellOwnerInstanceId) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_EXECUTION_DELEGATION_UNAVAILABLE", error: "Task project capture is unavailable" });
+        return;
+      }
+    }
     const request: RelayDispatchRequest = {
       correlationId: msg.correlationId,
       toolName: msg.toolName,
@@ -1320,7 +1446,16 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         ? { desktopAutomationBinding: parsedDesktopAutomationBinding.binding }
         : {}),
       ...(parsedComputerUseRequest !== undefined ? { computerUseRequest: parsedComputerUseRequest } : {}),
+      ...(msg.toolName === "read_shell_output" && negotiatedProtocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION ? {
+        runShellOwnerBinding: { instanceId: options.runShellOwnerInstanceId ?? "", userId: options.userId,
+          relayId, desktopSessionId: desktopSessionId ?? null },
+      } : {}),
       workstationShellBinding: msg.workstationShellBinding,
+      localExecutionDelegationCapture: msg.localExecutionDelegationCapture,
+      localExecutionBinding: msg.localExecutionBinding,
+      localExecutionHistoryBinding: msg.localExecutionHistoryBinding,
+      githubBinding: msg.githubBinding,
+      humanTerminalBinding: msg.humanTerminalBinding,
       uncontainedHostCommandsSession: msg.uncontainedHostCommandsSession,
       sandboxProfile: msg.sandboxProfile,
       executionClass: msg.executionClass,
@@ -1329,10 +1464,10 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           if (isSecurityScanProgress(progress)) send({ ...progress, type: "relay:security-scan-progress", correlationId: msg.correlationId });
         },
       } : {}),
-      // D502: this is intentionally a run_shell-only local callback, not a
+      // this is intentionally a run_shell-only local callback, not a
       // generic streaming hook. The Electron child supervisor remains free to
       // drain pipes while this best-effort websocket observation is coalesced.
-      ...(msg.toolName === "run_shell" && negotiatedProtocolVersion >= RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION
+      ...((msg.toolName === "run_shell" || msg.localExecutionBinding !== undefined || msg.localExecutionDelegationCapture !== undefined) && negotiatedProtocolVersion >= RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION
         ? {
             runShellOwnerBinding: {
               instanceId: options.runShellOwnerInstanceId ?? "",
@@ -1384,7 +1519,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
             },
           }
         : {}),
-      // D500 v15: Structured SSH has its own bounded observation channel. It
+      // v15: Structured SSH has its own bounded observation channel. It
       // is deliberately not a generic process stream and only exists for an
       // exact already-authorized structured SSH dispatch on a negotiated peer.
       ...(msg.toolName === "ssh" && msg.executionClass === "structured-ssh" &&
@@ -1433,10 +1568,19 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     };
 
     const ac = new AbortController();
-    pendingCancellers.set(msg.correlationId, ac);
+    const cancellation: PendingDispatchCancellation = { controller: ac, managed: validatedManagedExecution };
+    const pending = pendingCancellers.get(msg.correlationId) ?? new Set<PendingDispatchCancellation>();
+    pending.add(cancellation);
+    pendingCancellers.set(msg.correlationId, pending);
+    const releaseCancellation = () => {
+      pending.delete(cancellation);
+      if (pending.size === 0 && pendingCancellers.get(msg.correlationId) === pending) {
+        pendingCancellers.delete(msg.correlationId);
+      }
+    };
     const start = Date.now();
 
-    // D384/D565 — hosted MCP tools route to the McpClientManager only when
+    // hosted MCP tools route to the McpClientManager only when
     // v19 binds the request to this exact Relay. Tool-name discovery alone is
     // never dispatch authority and cannot shadow a built-in on current peers.
     // Pre-v19 compatibility retains the legacy name route until both peers
@@ -1456,7 +1600,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         error: "Hosted MCP dispatch provenance is invalid or unavailable",
         durationMs: Date.now() - start,
       });
-      pendingCancellers.delete(msg.correlationId);
+      releaseCancellation();
       return;
     }
     if (
@@ -1483,7 +1627,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           durationMs: Date.now() - start,
         });
       } finally {
-        pendingCancellers.delete(msg.correlationId);
+        releaseCancellation();
       }
       return;
     }
@@ -1512,7 +1656,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         durationMs: Date.now() - start,
       });
     } finally {
-      pendingCancellers.delete(msg.correlationId);
+      releaseCancellation();
     }
   }
 
@@ -1736,16 +1880,15 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         break;
 
       case "relay:cancel": {
-        const ac = pendingCancellers.get(msg.correlationId);
-        if (ac) ac.abort();
+        for (const pending of pendingCancellers.get(msg.correlationId) ?? []) pending.controller.abort();
         break;
       }
 
       case "relay:configure-mcp": {
-        // D384 Phase 5 — server→relay: (re)configure the hosted MCP fleet.
+        // Phase 5 — server→relay: (re)configure the hosted MCP fleet.
         // Idempotent reconcile; the host emits advertise frames as tools come
         // up. Sent post-register for v3 relays and on mcp_servers mutations.
-        // D503 v12 adds an optional correlated target outcome. The old
+        // v12 adds an optional correlated target outcome. The old
         // fire-and-forget behavior remains byte-for-byte available when the
         // operation envelope is absent or this relay negotiated v9–v11.
         if (
@@ -1784,7 +1927,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         break;
 
       case "relay:capabilities-updated": {
-        // D418 protocol v7 — server ack for an in-flight update. Resolve or
+        // protocol v7 — server ack for an in-flight update. Resolve or
         // reject the matching pending update; ignore stray acks (e.g. after a
         // reconnect that reset the in-flight state).
         const ack = msg;
@@ -1861,7 +2004,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       };
 
       socket.on("open", () => {
-        // D418 reconnect/session split-brain fix — advertise the CURRENT
+        // reconnect/session split-brain fix — advertise the CURRENT
         // capability state on every register (initial AND reconnect), not
         // the frozen `options.capabilities` captured at construction. A
         // reconnect that re-registered frozen pre-activation capabilities
@@ -1871,7 +2014,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         // shell. The dynamic getter is async-capable; a throw falls back to
         // the static capabilities so a builder fault never blocks
         // registration. The headless relay omits the getter and registers
-        // the static value, byte-for-byte pre-D418.
+        // the static value, byte-for-byte as in the legacy implementation.
         void (async () => {
           let capabilities = options.capabilities;
           if (options.getCapabilities) {
@@ -1907,9 +2050,13 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
                 minimum: RELAY_MIN_SUPPORTED_PROTOCOL_VERSION,
                 maximum: RELAY_PROTOCOL_VERSION,
               },
-              capabilitiesByProtocolVersion: {
-                [String(RELAY_PROTOCOL_VERSION)]: capabilities,
-              },
+              capabilitiesByProtocolVersion: Object.fromEntries(Array.from(
+                { length: RELAY_PROTOCOL_VERSION - RELAY_MIN_SUPPORTED_PROTOCOL_VERSION + 1 },
+                (_, offset) => {
+                  const version = RELAY_MIN_SUPPORTED_PROTOCOL_VERSION + offset;
+                  return [String(version), projectRelayCapabilitiesForProtocol(capabilities, version)];
+                },
+              )),
               token: options.token,
               ...(desktopSessionId !== undefined ? { desktopSessionId } : {}),
               capabilityRevision: registration.revision,
@@ -1986,8 +2133,10 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         // or schedule another reconnect.
         if (!active) return;
         stopHeartbeat();
-        pendingCancellers.forEach((ac) => ac.abort());
-        pendingCancellers.clear();
+        // Ordinary transport loss is not authority loss for a validated
+        // contained execution. Keep its controller until the RPC settles so
+        // explicit cancellation or later client retirement can still stop it.
+        retirePendingDispatches(tokenRejected || intentionalDisconnect);
         authenticatedCodexSession = null;
         deactivateCodexHost();
         deactivateClaudeConnectionHost();
@@ -2028,8 +2177,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       intentionalDisconnect = true;
       cancelReconnect();
       stopHeartbeat();
-      pendingCancellers.forEach((ac) => ac.abort());
-      pendingCancellers.clear();
+      retirePendingDispatches(true);
       authenticatedCodexSession = null;
       deactivateCodexHost();
       deactivateClaudeConnectionHost();
@@ -2062,7 +2210,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           disconnectError ??= error instanceof Error ? error : new Error(String(error));
         }
       } else if (socketToClose?.readyState === WebSocket.CONNECTING) {
-        // `close()` is not reliable while ws is still establishing the TCP
+        // `close` is not reliable while ws is still establishing the TCP
         // connection. Terminating the exact owned socket guarantees its close
         // event settles the matching connect promise and cannot leave a raw
         // connection that later opens after this client was retired.

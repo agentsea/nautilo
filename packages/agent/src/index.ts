@@ -38,19 +38,36 @@ export {
 } from "./utils/tool-argument-redaction";
 export {
   maybeSummarizeImagesWithVisionFallback,
-  type TextOnlyImagePolicy,
+  ImageAssistanceError,
+  imageAssistanceInputDigest,
+  imageAssistanceSummary,
+  imageAssistanceContext,
+  type ImageAssistanceResult,
 } from "./chat/vision-fallback";
 export {
   hasRunnableChatProviderCredentials,
   modelHasRunnableCredentials,
 } from "./chat/model-runtime-credentials";
-export { parseVisionCandidateIds } from "./chat/vision-candidates";
 
 // Graph
 export {
   createNautiloGraph,
   type NautiloGraphDeps,
 } from "./agent/graph";
+export {
+  acceptedForegroundMessages,
+  foregroundContextProjectionFingerprint,
+  foregroundContextNarrativeAllowanceCharacters,
+  foregroundContextReservedMessageTokens,
+  foregroundContextRefreshInput,
+  streamForegroundGraph,
+  type ForegroundContextRebuild,
+  type ForegroundContextRefreshTransition,
+  type ForegroundGraph,
+  type ForegroundGraphOutcome,
+  type RebuildForegroundContext,
+  type StreamForegroundGraphOptions,
+} from "./graph/foreground-context-refresh";
 export {
   createEncryptedCheckpointSaver,
   encryptedCheckpointShadowNamespaceId,
@@ -165,7 +182,13 @@ export {
   type NoProgressAction,
   type NoProgressOutcome,
 } from "./graph/no-progress";
-export { NautiloStateAnnotation, MAX_SUBAGENT_DEPTH, type NautiloState } from "./agent/state";
+export {
+  NautiloStateAnnotation,
+  MAX_SUBAGENT_DEPTH,
+  type ForegroundContextRefreshRequest,
+  type ForegroundContextRefreshSource,
+  type NautiloState,
+} from "./agent/state";
 export {
   decodeTransientAgentRuntimeConfiguration,
   runNautiloTransientProtectedModelDispatch,
@@ -179,9 +202,11 @@ export {
   runWithInitiatingClientSurface,
 } from "./runtime/initiating-client-surface-context";
 export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
-export type {
-  ForegroundChatFundingAttempt,
-  ForegroundChatFundingSession,
+export {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingAttempt,
+  type ForegroundChatFundingSession,
 } from "./runtime/foreground-chat-funding";
 export {
   runScopeSubagentUntilPause,
@@ -1378,6 +1403,8 @@ export {
   createDeepResearchAgent,
   createDeepResearchGraph,
   fromDeepResearchConfig,
+  fromAdmittedDeepResearchModelPlan,
+  runWithDeepResearchFunding,
   DeepResearchUnavailableError,
   deepResearchModelPlanFromConfiguration,
   resolveDeepResearchModelPlan,
@@ -1390,8 +1417,11 @@ export {
   type DeepResearchAgentState,
 } from "./subagents/deep-research/index";
 export {
+  admittedDeepResearchTaskMetadata,
   deepResearchTaskMetadata,
+  parseDeepResearchTaskMetadataValue,
   readDeepResearchTaskMetadata,
+  type AdmittedDeepResearchTaskMetadata,
   type DeepResearchTaskMetadata,
 } from "./subagents/deep-research/shared/task-metadata";
 
@@ -1429,3 +1459,17 @@ export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-cont
 
 export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
+
+export { normalizeGatewayBaseUrl } from "./providers/universal";
+
+export { getCapabilityFundingSession, runWithCapabilityFundingSession, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
+
+export { isSupportedPersonalTool } from "./runtime/personal-tool-readiness";
+
+export { resolveSurplusDecisionServingAvailability, resolveQualifiedSurplusDecisionRoute } from "./providers/surplus-decision-route";
+
+export { runWithForegroundFundingSession, type ForegroundFundingSnapshot } from "./runtime/foreground-chat-funding";
+export { readForegroundFundingForThread } from "./graph/turn-id";
+export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
+
+export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";

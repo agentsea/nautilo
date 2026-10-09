@@ -20,6 +20,8 @@ type TestMessage = {
   content: string | null;
   toolCalls: string | null;
   toolName: string | null;
+  toolCallId?: string;
+  toolStatus?: "success" | "error";
   createdAt: Date;
   editedAt?: Date | null;
   editRevision?: number;
@@ -30,6 +32,7 @@ type TestMessage = {
   sourceUserId?: string;
   authorAgentId?: string;
   authorHarnessId?: string;
+  imageAssistance?: import("@nautilo/types").ImageAssistanceSummary;
 };
 
 const getLatestSession = mock<() => Promise<TestSession | null>>(() =>
@@ -110,7 +113,7 @@ const searchChats = mock<
 const getRoomMessagesAround = mock<
   (_args: Record<string, unknown>) => Promise<Record<string, unknown> | null>
 >(() => Promise.resolve(null));
-// M125 Phase 2.5 — sessions.ts switched its dep from
+// sessions.ts switched its dep from
 // `getRoomGraphThreadForOwnerSession` (took a caller-supplied
 // `defaultAgentId`, which scoped the membership join to the operator's
 // agent and 404'd non-operator room owners) to
@@ -132,8 +135,8 @@ import {
 } from "@nautilo/trust";
 import * as actualTrust from "@nautilo/trust";
 
-// Unscoped/global transcript readers remain `read_memories` gated. M259 moves
-// exact Room readers to membership, so tests also flip this to `[]` to prove a
+// Unscoped/global transcript readers remain `read_memories` gated. Exact Room
+// readers use membership, so tests also flip this to `[]` to prove a
 // Guest member still reads the selected Room without gaining global search.
 const getUserCapabilitiesMock = mock(
   async (_userId: string): Promise<string[]> => ["read_memories"],
@@ -263,7 +266,7 @@ beforeEach(() => {
  */
 describe("sessions endpoint — guest isolation", () => {
   test("non-owner role receives empty latest session without querying owner history", async () => {
-    // M133 — a guest has no `read_memories` capability → gate denies.
+    // a guest has no `read_memories` capability → gate denies.
     getUserCapabilitiesMock.mockImplementation(async () => []);
     const app = makeApp("guest", "guest-session-user");
     try {
@@ -278,6 +281,51 @@ describe("sessions endpoint — guest isolation", () => {
 });
 
 describe("sessions endpoint — thread_id convention independence", () => {
+  test("latest history hides retained helper protocol and projects only final answer attribution", async () => {
+    getLatestSession.mockResolvedValueOnce(makeSession());
+    const imageAssistance = {
+      status: "completed" as const, modelId: "openai:synthetic-vision",
+      modelDisplayName: "Synthetic Vision", attachmentIds: ["synthetic-image"],
+    };
+    getLatestSessionMessages.mockResolvedValueOnce([
+      { ...makeMessage("1", ""), toolCalls: JSON.stringify([{ id: "image-assistance:synthetic", name: "image_assistance", args: {} }]) },
+      { ...makeMessage("2", "retained auxiliary observations"), role: "tool", toolName: "image_assistance" },
+      { ...makeMessage("3", "main answer"), imageAssistance },
+    ]);
+    const app = makeApp("owner");
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/sessions/latest?limit=3" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        messages: [{ id: "3", content: "main answer", imageAssistance }],
+        pageInfo: { oldestCursor: { id: "1" } },
+      });
+      expect(response.body).not.toContain("retained auxiliary observations");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("a helper-only history page retains its original continuation cursor", async () => {
+    getRoomMessagesAcrossMemberSessions.mockResolvedValueOnce({
+      messages: [
+        { ...makeMessage("1", ""), toolCalls: JSON.stringify([{ id: "image-assistance:synthetic", name: "image_assistance", args: {} }]) },
+        { ...makeMessage("2", "retained observations"), role: "tool", toolName: "image_assistance" },
+      ],
+      hasMoreBefore: true,
+    });
+    const app = makeApp("owner");
+    try {
+      const response = await app.inject({ method: "GET",
+        url: `/api/rooms/${ROOM_ID}/messages?beforeId=9&beforeCreatedAt=2026-01-01T00:00:09.000Z&limit=2` });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        messages: [], pageInfo: { hasMoreBefore: true, oldestCursor: { id: "1", createdAt: "2026-01-01T00:00:01.000Z" } },
+      });
+    } finally {
+      await app.close();
+    }
+  });
   test("default latest route loads owner latest session and persisted message tail", async () => {
     getLatestSession.mockResolvedValueOnce(makeSession({ sessionId: "session-default" }));
     getLatestSessionMessages.mockResolvedValueOnce([
@@ -444,6 +492,40 @@ describe("sessions endpoint — thread_id convention independence", () => {
     } finally {
       await app.close();
     }
+  });
+
+  test("Shadow selection retains the helper protocol siblings until reader attestation", async () => {
+    const messages: TestMessage[] = [
+      { ...makeMessage("1", ""), role: "assistant", logicalMessageKey: "logical:1",
+        toolCalls: JSON.stringify([{ id: "image-assistance:fixture", name: "image_assistance", args: {} }]), editRevision: 0 },
+      { ...makeMessage("2", '{"status":"completed","observations":"retained evidence"}'),
+        role: "tool", logicalMessageKey: "logical:2", toolName: "image_assistance", editRevision: 0 },
+      { ...makeMessage("3", "The main answer"), role: "assistant", logicalMessageKey: "logical:3", editRevision: 0 },
+    ];
+    const selectedCoordinates = messages.map((message) => ({
+      sessionId: "40000000-0000-4000-8000-000000000275",
+      messageId: Number(message.id), editRevision: 0,
+      role: message.role as "assistant" | "tool", logicalMessageKey: message.logicalMessageKey!,
+    }));
+    getRoomMessagesAcrossMemberSessionsWithSelection.mockResolvedValueOnce({
+      messages, hasMoreBefore: true, selectedCoordinates,
+    });
+    projectRoomHistoryShadowRead.mockResolvedValueOnce({
+      responseVersion: 1, status: "ineligible", selectedCount: 3, eligibleCount: 0,
+    });
+    const app = makeApp("owner", "owner-user", { shadowRead: true });
+    try {
+      const res = await app.inject({ method: "GET",
+        url: `/api/rooms/${ROOM_ID}/messages?beforeId=9&beforeCreatedAt=2026-01-01T00:00:09.000Z&shadowReadVersion=1&shadowReadRequestKey=history%3Ahelper` });
+      expect(res.statusCode).toBe(200);
+      const body = res.json<{ messages: TestMessage[]; shadowEncryption: { selectedCount: number }; pageInfo: { oldestCursor: { id: string } } }>();
+      expect(body.messages.map((message) => message.id)).toEqual(["1", "2", "3"]);
+      expect(body.messages[0]?.toolCalls).toBe(messages[0]?.toolCalls);
+      expect(body.messages[1]?.toolName).toBe("image_assistance");
+      expect(body.shadowEncryption.selectedCount).toBe(3);
+      expect(body.pageInfo.oldestCursor.id).toBe("1");
+      expect(projectRoomHistoryShadowRead).toHaveBeenCalledWith(expect.objectContaining({ selectedCoordinates }));
+    } finally { await app.close(); }
   });
 
   test("rejects a non-member before selected history or terminal sidecar projection", async () => {
@@ -670,7 +752,7 @@ describe("sessions endpoint — thread_id convention independence", () => {
     } finally { await app.close(); }
   });
 
-  test("older room history serializes authoritative D426 root summaries and preserves quote replies", async () => {
+  test("older room history serializes authoritative root summaries and preserves quote replies", async () => {
     getRoomMessagesAcrossMemberSessions.mockResolvedValueOnce({
       messages: [
         {
@@ -732,7 +814,7 @@ describe("sessions endpoint — thread_id convention independence", () => {
   });
 });
 
-describe("D430 Room search and around routes", () => {
+describe("Room search and around routes", () => {
   const searchUrl = `/api/rooms/${ROOM_ID}/messages/search?query=launch&mode=prefix`;
 
   test("enforces authentication then exact membership; Guest members need no read_memories", async () => {
@@ -894,7 +976,7 @@ describe("D430 Room search and around routes", () => {
   });
 });
 
-describe("D470 Chats search route", () => {
+describe("Chats search route", () => {
   const searchUrl = "/api/rooms/search?query=launch&mode=prefix";
 
   test("enforces authentication and capability before the one set-wise store read", async () => {
@@ -1092,4 +1174,37 @@ describe("D470 Chats search route", () => {
 afterAll(() => {
   setBootstrapOwnerId(PREV_OWNER_ENV);
   setBootstrapDefaultAgentId(PREV_AGENT_ENV);
+});
+
+
+test("Session, Room and around HTTP retain exact closed tool presentation", async () => {
+  const rows: TestMessage[] = [
+    { ...makeMessage("1", "assistant"), toolCallId: "not-a-tool", toolStatus: "error" },
+    { ...makeMessage("2", "file output"), role: "tool", toolName: "exec_command", toolCallId: "file-call", toolStatus: "success" },
+    { ...makeMessage("3", "chmod refused"), role: "tool", toolName: "exec_command", toolCallId: "chmod-call", toolStatus: "error" },
+  ];
+  getLatestSession.mockResolvedValue(makeSession());
+  getLatestSessionMessages.mockResolvedValue(rows);
+  getSessionMessages.mockResolvedValue(rows);
+  getRoomMessagesAcrossMemberSessions.mockResolvedValue({ messages: rows, hasMoreBefore: false });
+  getRoomMessagesAround.mockResolvedValue({ messages: rows,
+    target: { createdAt: rows[1]!.createdAt, messageId: 2 }, includedToolCallCompanion: true,
+    hasOlder: false, hasNewer: false });
+  const app = makeApp("owner", "owner-user");
+  try {
+    for (const url of [
+      "/api/sessions/latest?limit=3", "/api/sessions/latest?limit=3&offset=0",
+      `/api/rooms/${ROOM_ID}/messages?beforeId=9&beforeCreatedAt=2026-01-01T00:00:09.000Z&limit=3`,
+      `/api/rooms/${ROOM_ID}/messages/2/around?limit=3`,
+    ]) {
+      const result = await app.inject({ method: "GET", url });
+      expect(result.statusCode).toBe(200);
+      const messages = result.json<{ messages: Record<string, unknown>[] }>().messages;
+      expect(messages[0]).not.toHaveProperty("toolCallId");
+      expect(messages[0]).not.toHaveProperty("toolStatus");
+      expect(messages[1]).toMatchObject({ toolCallId: "file-call", toolStatus: "success" });
+      expect(messages[2]).toMatchObject({ toolCallId: "chmod-call", toolStatus: "error" });
+      expect(messages.every((row) => !("metadata" in row))).toBe(true);
+    }
+  } finally { await app.close(); }
 });

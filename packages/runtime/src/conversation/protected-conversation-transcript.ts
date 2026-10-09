@@ -174,10 +174,18 @@ export function protectedTranscriptMessagesToHistoryHits(
       messageId: message.messageId,
       ts: new Date(message.createdAt.getTime()),
       role: message.payload.role,
+      toolName: message.payload.toolName,
       authorDisplayName: message.author.displayName,
       handle: message.author.handle,
       authorActorId: message.author.actorId,
       snippet,
+      ...(typeof message.payload.sensitiveMetadata?.["foregroundExecutionId"] === "string"
+        && message.payload.sensitiveMetadata["foregroundExecutionId"].length > 0
+        ? {
+            foregroundExecutionId:
+              message.payload.sensitiveMetadata["foregroundExecutionId"],
+          }
+        : {}),
       ...(message.reactions === undefined
         ? {}
         : {

@@ -60,6 +60,9 @@ import type {
 import type {
   ReadyToWorkAggregateStatus,
   ReadyToWorkSelection,
+  ReadyToWorkComponentSelection,
+  AgentAccessChoice,
+  AgentAccessStatus,
 } from "../../../desktop/electron/ready-to-work-contract";
 import type {
   MiniAppRecoveryOpenInput,
@@ -675,6 +678,12 @@ export interface DesktopWorkstationProfilesAPI {
     WorkstationProfileIpcResult<{
       seed: DesktopWorkstationProfileSeedDescriptor;
       review: DesktopWorkstationDiscoveryReview;
+      scope: {
+        currentProject: string | null;
+        roots: readonly { path: string; access: readonly string[] }[];
+        network: { mode: ProfileNetworkMode; allow: readonly { kind: string; value: string }[] };
+        environmentKeys: readonly string[];
+      };
     }>
   >;
   /**
@@ -1312,9 +1321,8 @@ export interface TerminalSessionInfo {
   controller: TerminalController;
   /** P2.2b — the agent tried to write while the user holds the lock (pending request). */
   requested: boolean;
-  /** main-owned per-PTY consent: true once the user has explicitly
-   * handed this one PTY to Genie. Survives retake for the PTY's lifetime;
-   * not durable (cleared when the PTY exits or Electron main quits). */
+  /** Main-owned per-PTY consent, revoked when the Human takes control.
+   * Not durable: also cleared when the PTY exits or Electron main quits. */
   agentControlConsented: boolean;
 }
 
@@ -1324,6 +1332,10 @@ export interface TerminalSessionInfo {
  * so the terminal surface/launcher must feature-detect before use.
  */
 export interface DesktopTerminalAPI {
+  /** Selection intent only; main and the admitted foreground turn own authority. */
+  setHandoffContext?: (selection: { roomId: string; agentId: string } | null) => Promise<void>;
+  /** Explicit consent for this existing Human terminal and selected chat/Genie. */
+  grantHumanControl?: (sessionId: string, selection: { roomId: string; agentId: string }) => Promise<boolean>;
   create: (opts?: {
     cwd?: string;
     cols?: number;
@@ -1373,6 +1385,77 @@ export interface DesktopTerminalAPI {
   onRequest: (
     handler: (evt: { sessionId: string; requested: boolean }) => void,
   ) => () => void;
+}
+
+export interface LocalExecutionSearchProgress {
+  readonly matchedAt: number | null;
+  readonly nextSearchCursor: number;
+  readonly complete: boolean;
+  readonly gap: boolean;
+  readonly availableFrom: number;
+  readonly produced: number;
+}
+
+export interface LocalExecutionSnapshot {
+  readonly executionId: string;
+  readonly session_id: string;
+  readonly generation: string;
+  readonly state: "starting" | "running" | "cancelling" | "completed" | "cancelled" | "failed" | "unknown";
+  readonly tty: boolean;
+  readonly pid: number | null;
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+  readonly terminationScope: "owned_process_group";
+  readonly output: {
+    readonly data: string;
+    readonly cursor: number;
+    readonly nextCursor: number;
+    readonly availableFrom: number;
+    readonly produced: number;
+    readonly gap: boolean;
+    readonly hasMore: boolean;
+  };
+  readonly failureCode: string | null;
+  readonly expiresAt: number | null;
+  readonly resources: "pending" | "owned" | "released" | "release_failed";
+  /** A durable history overlay; never evidence that a process is currently live. */
+  readonly archived?: true;
+  /** A historical ToolMessage receipt; presentation only, never live authority. */
+  readonly historical?: true;
+  /** Coordinates for this search observation, never an output paging cursor. */
+  readonly search?: LocalExecutionSearchProgress;
+}
+
+export interface DesktopLocalExecutionHistoryOverlay {
+  readonly generation: string;
+  readonly executionId: string;
+  readonly snapshot: LocalExecutionSnapshot & { readonly archived: true };
+}
+
+/** A routing locator only; it deliberately contains no inferred process snapshot. */
+export interface LocalExecutionUncertainty {
+  readonly version: 1;
+  readonly kind: "local_execution_outcome_unknown";
+  readonly generation: string;
+  readonly executionId: string;
+  readonly session_id: string;
+  readonly operation: "start" | "read" | "input" | "cancel";
+  readonly outcome: "unknown";
+  readonly recovery: "read_or_cancel_same_execution";
+  readonly message: string;
+}
+
+export interface DesktopLocalExecutionAPI {
+  /** Content-free invalidation; every read still checks the current Human and owner. */
+  onChanged?: (listener: (event: { generation: string | null }) => void) => () => void;
+  read: (input: { generation: string; executionId: string; cursor: number; maxBytes: number }) => Promise<LocalExecutionSnapshot>;
+  cancel: (input: { generation: string; executionId: string; cursor: number; maxBytes: number }) => Promise<LocalExecutionSnapshot>;
+  openPreview: (input: { generation: string; executionId: string; url: string }) => Promise<void>;
+  /** Read archived execution receipts only for references in authenticated room history. */
+  historyForRoom?: (input: {
+    roomId: string;
+    references: readonly { generation: string; executionId: string }[];
+  }) => Promise<readonly DesktopLocalExecutionHistoryOverlay[]>;
 }
 
 export interface DesktopColdBootAPI {
@@ -1523,6 +1606,14 @@ export interface DesktopHermesConnectionAPI {
 
 /** renderer-safe desired startup posture, never a feature authority. */
 export interface DesktopReadyToWorkAPI {
+  /** Optional additive contract; older Desktops retain their existing controls. */
+  getAgentAccess?: () => Promise<AgentAccessStatus>;
+  chooseAgentAccess?: (input: { choice: AgentAccessChoice; pin?: string; profileId?: string; profileRevision?: number }) => Promise<AgentAccessStatus>;
+  restoreDevelopment?: () => Promise<AgentAccessStatus>;
+  enrollComponents?: (input: { selection: ReadyToWorkComponentSelection; pin: string }) => Promise<ReadyToWorkAggregateStatus>;
+  disableComponents?: () => Promise<ReadyToWorkAggregateStatus>;
+  restoreComponents?: () => Promise<ReadyToWorkAggregateStatus>;
+  onAgentAccessChanged?: (handler: () => void) => () => void;
   get: () => Promise<ReadyToWorkAggregateStatus>;
   enroll: (input: {
     selection: ReadyToWorkSelection;
@@ -1703,6 +1794,8 @@ interface NautiloDesktopAPI {
   googleWorkspace?: DesktopGoogleWorkspaceAPI;
   /** terminal (PTY) work surface bridge (desktop only; feature-detect). */
   terminal?: DesktopTerminalAPI;
+  /** Exact managed local command lifecycle (desktop only; feature-detect). */
+  localExecution?: DesktopLocalExecutionAPI;
   /** local Desktop Filesystem Grant administration (desktop only; feature-detect). */
   desktopFilesystemGrants?: DesktopFilesystemGrantsAPI;
   /**
@@ -1951,6 +2044,13 @@ export const isDesktop: boolean =
 export const desktopAPI: NautiloDesktopAPI | null = isDesktop
   ? (window as unknown as { nautiloDesktop: NautiloDesktopAPI }).nautiloDesktop
   : null;
+
+/** Read the current preload bridge so late preload installation remains observable. */
+export function getLocalExecutionAPI(): DesktopLocalExecutionAPI | undefined {
+  return typeof window === "undefined"
+    ? undefined
+    : (window as unknown as { nautiloDesktop?: NautiloDesktopAPI }).nautiloDesktop?.localExecution;
+}
 
 /** Subscribe when the running preload supports protected-Room access updates. */
 export function subscribeToDesktopProtectedRoomAccessState(

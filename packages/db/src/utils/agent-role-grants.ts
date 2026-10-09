@@ -10,6 +10,7 @@ export const SENSITIVE_TABLES = [
   // Server-wide provider admission is owned by the product control plane.
   "server_provider_policy",
   "personal_provider_credentials",
+  "personal_capability_preferences",
   "credentials",
   "recovery_codes",
   "logto_account_security",

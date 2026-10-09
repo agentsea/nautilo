@@ -2,16 +2,19 @@ import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
+import type { DesktopReadyToWorkAPI } from "../../../lib/desktop";
+let readyToWork: DesktopReadyToWorkAPI | undefined;
+
 let grants: Array<Record<string, unknown>> = [];
 let capabilities = ["use_workstation"];
 let shellConsent: "none" | "session" | "durable" = "none";
 const list = mock(async () => ({ ok: true as const, data: { grants, revision: 1 } }));
-const pick = mock(async () => "/Users/alice/Documents/approved");
+const pick = mock(async () => "/tmp/alice/Documents/approved");
 const validate = mock(async () => ({
   ok: true as const,
   data: {
-    canonicalRoot: "/Users/alice/Documents/approved",
-    filesystemIdentity: { realRoot: "/Users/alice/Documents/approved", device: 1, inode: 2 },
+    canonicalRoot: "/tmp/alice/Documents/approved",
+    filesystemIdentity: { realRoot: "/tmp/alice/Documents/approved", device: 1, inode: 2 },
   },
 }));
 const create = mock(async () => ({ ok: true as const, data: { grant: {}, revision: 2 } }));
@@ -36,7 +39,7 @@ const runDiscoveryReview = mock(async () => ({
     review: {
       generatedAt: "2026-07-13T12:00:00.000Z",
       platform: "darwin",
-      home: "/Users/alice",
+      home: "/tmp/alice",
       networkMode: "host",
       rows: [{ tool: "git", status: "found", note: "Found on PATH" }],
       hostNetworkImplication: "Uses the desktop's available network.",
@@ -91,7 +94,7 @@ const deactivateActiveProfile = mock(async () => ({
   data: { cleared: 1, skipped: [] },
 }));
 const getShellStatus = mock(async () => ({
-  workspacePath: "/Users/alice/project",
+  workspacePath: "/tmp/alice/project",
   consented: shellConsent !== "none",
   consent: shellConsent,
 }));
@@ -112,6 +115,7 @@ const disableUncontained = mock(async () => ({ ok: true as const }));
 mock.module("../../../lib/desktop", () => ({
   isDesktop: true,
   desktopAPI: {
+    get readyToWork() { return readyToWork; },
     desktopFilesystemGrants: { list, pick, validate, create, revoke },
     workstationProfiles: {
       getSeedDescriptor,
@@ -134,12 +138,16 @@ mock.module("../../../lib/desktop", () => ({
   },
 }));
 
+let submitPinDirectly: ((pin: string) => void) | null = null;
 mock.module("../../../components/pin-dialog", () => ({
-  PinDialog: ({ onSubmit }: { onSubmit: (pin: string) => void }) => (
-    <button onClick={() => onSubmit("123456")} aria-label="Submit test PIN">
-      Submit test PIN
-    </button>
-  ),
+  PinDialog: ({ onSubmit, submitting = false, submittingLabel }: {
+    onSubmit: (pin: string) => void; submitting?: boolean; submittingLabel?: string;
+  }) => {
+    submitPinDirectly = onSubmit;
+    return <button disabled={submitting} onClick={() => onSubmit("123456")} aria-label="Submit test PIN">
+      {submitting ? submittingLabel : "Submit test PIN"}
+    </button>;
+  },
 }));
 
 mock.module("../../../hooks/use-auth", () => ({
@@ -159,7 +167,7 @@ function activeGrant(id = "grant-1") {
     grant: {
       schemaVersion: 1,
       id,
-      canonicalRoot: "/Users/alice/Documents/approved",
+      canonicalRoot: "/tmp/alice/Documents/approved",
       access: ["read", "create_modify"],
       origin: "user_picker",
       lifetime: "durable",
@@ -174,7 +182,7 @@ function activeGrant(id = "grant-1") {
       policyVersion: 1,
       lastUsedAt: "2026-07-12T12:30:00.000Z",
       filesystemIdentity: {
-        realRoot: "/Users/alice/Documents/approved",
+        realRoot: "/tmp/alice/Documents/approved",
         device: 1,
         inode: 2,
       },
@@ -186,6 +194,7 @@ beforeEach(() => {
   reapplyHappyDomGlobals();
   cleanup();
   grants = [];
+  readyToWork = undefined;
   capabilities = ["use_workstation"];
   shellConsent = "none";
   activeProfileSummary = null;
@@ -373,12 +382,12 @@ describe("DesktopFilesystemAccessSection", () => {
     const view = render(<DesktopFilesystemAccessSection />);
 
     await waitFor(() => {
-      expect(view.getByText("/Users/alice/Documents/approved")).toBeTruthy();
+      expect(view.getByText("/tmp/alice/Documents/approved")).toBeTruthy();
     });
 
     expect(view.getByText("read, create_modify")).toBeTruthy();
     expect(view.getByText("durable / user_picker")).toBeTruthy();
-    expect(view.getByRole("button", { name: "Revoke access to /Users/alice/Documents/approved" })).toBeTruthy();
+    expect(view.getByRole("button", { name: "Revoke access to /tmp/alice/Documents/approved" })).toBeTruthy();
     expect(view.getByText("Additional guarded locations")).toBeTruthy();
     expect(view.getByText(/do not add it again below/i)).toBeTruthy();
     expect(view.getByText(/covers safe canonical descendants for its declared operations/i)).toBeTruthy();
@@ -391,7 +400,7 @@ describe("DesktopFilesystemAccessSection", () => {
 
     expect(await view.findByRole("heading", { name: "Host command access" })).toBeTruthy();
     expect(await view.findByText("Allowed this session")).toBeTruthy();
-    expect(view.getByText("/Users/alice/project")).toBeTruthy();
+    expect(view.getByText("/tmp/alice/project")).toBeTruthy();
 
     fireEvent.click(view.getByRole("button", { name: "Revoke host command access" }));
 
@@ -407,7 +416,7 @@ describe("DesktopFilesystemAccessSection", () => {
     const view = render(<DesktopFilesystemAccessSection />);
 
     expect(await view.findByText("Always allowed")).toBeTruthy();
-    expect(view.getByText("/Users/alice/project")).toBeTruthy();
+    expect(view.getByText("/tmp/alice/project")).toBeTruthy();
   });
 
   test("picks and validates without auto-creating, then creates only selected operations", async () => {
@@ -417,7 +426,7 @@ describe("DesktopFilesystemAccessSection", () => {
     fireEvent.click(view.getByRole("button", { name: "Add location" }));
 
     await waitFor(() => {
-      expect(validate).toHaveBeenCalledWith("/Users/alice/Documents/approved");
+      expect(validate).toHaveBeenCalledWith("/tmp/alice/Documents/approved");
       expect(view.getByText("Choose allowed operations")).toBeTruthy();
     });
 
@@ -430,9 +439,9 @@ describe("DesktopFilesystemAccessSection", () => {
 
     await waitFor(() => {
       expect(create).toHaveBeenCalledWith({
-        canonicalRoot: "/Users/alice/Documents/approved",
+        canonicalRoot: "/tmp/alice/Documents/approved",
         filesystemIdentity: {
-          realRoot: "/Users/alice/Documents/approved",
+          realRoot: "/tmp/alice/Documents/approved",
           device: 1,
           inode: 2,
         },
@@ -447,7 +456,7 @@ describe("DesktopFilesystemAccessSection", () => {
     const view = render(<DesktopFilesystemAccessSection />);
 
     const button = await view.findByRole("button", {
-      name: "Revoke access to /Users/alice/Documents/approved",
+      name: "Revoke access to /tmp/alice/Documents/approved",
     });
     fireEvent.click(button);
 
@@ -507,6 +516,28 @@ describe("DesktopFilesystemAccessSection", () => {
       expect(deactivateActiveProfile).toHaveBeenCalled();
       expect(view.getByRole("button", { name: "Enable Developer Workstation with PIN" })).toBeTruthy();
     });
+  });
+
+  test("shows pending PIN activation, rejects reentry, and allows retry after failure", async () => {
+    let rejectActivation: (error: Error) => void = () => { throw new Error("Activation not started"); };
+    selectActiveProfile.mockImplementationOnce(() => new Promise((_, reject) => { rejectActivation = reject; }));
+    const view = render(<DesktopFilesystemAccessSection />);
+    fireEvent.click(await view.findByRole("button", { name: "Acknowledge and prepare Developer Workstation" }));
+    fireEvent.click(await view.findByRole("button", { name: "Enable Developer Workstation with PIN" }));
+    act(() => {
+      submitPinDirectly?.("123456");
+      submitPinDirectly?.("123456");
+    });
+    expect(selectActiveProfile).toHaveBeenCalledTimes(1);
+    const submit = view.getByRole("button", { name: "Submit test PIN" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    expect(submit.textContent).toBe("Checking and enabling…");
+    await act(async () => { rejectActivation(new Error("Activation interrupted")); });
+    expect(submit.disabled).toBe(false);
+    fireEvent.click(submit);
+    await waitFor(() => expect(view.queryByRole("button", { name: "Submit test PIN" }) === null).toBe(true));
+    expect(selectActiveProfile).toHaveBeenCalledTimes(2);
+    expect(view.getByText(/Active for this session/)).toBeTruthy();
   });
 
   test("refreshes when the footer changes the authoritative profile session", async () => {
@@ -572,4 +603,21 @@ describe("DesktopFilesystemAccessSection", () => {
     expect(runDiscoveryReview).not.toHaveBeenCalled();
     expect(listProfiles).not.toHaveBeenCalled();
   });
+});
+
+test("supported Desktop settings use one Agent access control and retain profile review without a competing switch", async () => {
+  const access = { sandboxedChoice: "basic" as const, choiceReason: "default" as const, readiness: "ready" as const, reason: null, repairAction: null,
+    fullMac: { state: "inactive" as const, eligible: true }, capabilities: { commands: true, interactiveContainedTerminals: true, fullMacOneShot: false } };
+  readyToWork = {
+    getAgentAccess: async () => access, chooseAgentAccess: async () => access, restoreDevelopment: async () => access, onAgentAccessChanged: () => () => {},
+    get: async () => ({ mode: "standard", components: [] }), enroll: async () => ({ mode: "ready", components: [] }), disable: async () => ({ mode: "standard", components: [] }), restore: async () => ({ mode: "ready", components: [] }),
+    onStatusChanged: () => () => {}, onRestoreRendererOwners: () => () => {}, acknowledgeRendererOwners: async () => {}, reportRendererOwners: async () => ({ mode: "standard", components: [] }),
+  };
+  const view = render(<DesktopFilesystemAccessSection />);
+  await view.findByText("Commands ready.");
+  expect(view.getAllByRole("radiogroup", { name: "Agent access on this Mac" })).toHaveLength(1);
+  expect(view.queryByRole("switch", { name: /developer environment/ })).toBeNull();
+  expect(view.queryByText("Uncontained host commands")).toBeNull();
+  expect(view.getByRole("heading", { name: "Developer environment" })).toBeTruthy();
+  expect(getUncontainedStatus).toHaveBeenCalledTimes(0);
 });

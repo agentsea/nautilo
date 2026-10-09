@@ -44,7 +44,7 @@ function harness() {
       else if (sql.includes("from memories")) rows = [{id: "memory-1", content_revision: state.memoryRevision, crypto_mapping_state: "verified", crypto_access_revision: state.memoryAccessRevision, scope_origin_namespace_id: null, crypto_required_namespace_fingerprint: state.memoryMappingCurrent ? fingerprintRequiredMemoryNamespaces(state.memoryAttachments) : digest(9)}];
       else if (sql.includes("from memory_scopes")) rows = [];
       else if (sql.includes("from memory_namespaces")) rows = state.memoryAttachments.map(namespace_id => ({namespace_id}));
-      else if (sql.startsWith("select namespace_access_revision from rooms")) return [{namespace_access_revision: 11}] as unknown as readonly Row[];
+      else if (sql.startsWith("select namespace_access_revision from rooms")) return [{namespace_access_revision: "11"}] as unknown as readonly Row[];
       else if (sql.includes("from rooms")) {if (sql.endsWith("for update")) onRoomLock?.(); rows = state.rooms.filter(room => parameters.includes(room.namespace_id));}
       else throw new Error(`Unexpected product SQL: ${sql}`);
       return structuredClone(rows) as readonly Row[];
@@ -205,7 +205,7 @@ describe("Reflection semantic metadata source plan", () => {
     expect(await readPostgresReflectionSemanticSourcePlan({...f, coordinates: selected})).toBeNull();
     expect(f.queries.filter(sql => sql.includes("from memory_namespaces")).every(sql => !sql.includes("limit"))).toBe(true);
   });
-  test.each(["ready", "missing", "stale"])("preparation shares policy/Room fences and wakes missing or stale keys after release %s", async mode => {
+  test.each(["ready", "missing", "stale"])("accepts PostgreSQL bigint text while sharing preparation fences %s", async mode => {
     const missing = mode !== "ready";
     const f = harness(); f.state.missingBundle = mode === "missing";
     if (mode === "stale") {

@@ -22,6 +22,8 @@ export interface RecordUsageInput {
   callType: UsageCallType;
   userId?: string | null;
   roomId?: string | null;
+  /** Trusted durable Task identity projected by the execution owner. */
+  taskId?: string | null;
   inputTokens?: number;
   outputTokens?: number;
   reasoningTokens?: number;
@@ -81,6 +83,7 @@ async function recordLlmUsageAsync(input: RecordUsageInput): Promise<void> {
   await insertLlmUsageEvent({
     userId: input.userId ?? funding?.humanUserId ?? null,
     roomId: normalizeUsageRoomId(input.roomId),
+    taskId: input.taskId ?? null,
     callType: input.callType,
     provider: getProviderFromModelId(input.model),
     model: input.model,

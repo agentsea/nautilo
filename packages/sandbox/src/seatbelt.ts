@@ -1,6 +1,6 @@
 /**
  * macOS Seatbelt (`sandbox-exec`) arg builder for `@nautilo/sandbox`.
- * D060 Phase 2 task 2.2.
+ * Phase 2 task 2.2.
  *
  * Port: Spacebot `src/sandbox.rs:640-830` (`wrap_sandbox_exec`) for
  * the env handling + spawn shape. Gemini CLI's `seatbeltArgsBuilder.ts`
@@ -46,6 +46,7 @@ import type { SandboxConfig, SpawnArgs } from "./types";
 
 export interface SandboxExecBuildOptions {
   readonly workspace: string;
+  readonly managedHome?: string;
   readonly dataDir: string;
   readonly toolsBin: string;
   readonly config: SandboxConfig;
@@ -71,12 +72,12 @@ export interface SandboxExecBuildOptions {
    * `Sandbox.wrap()`.
    */
   readonly networkAccess?: boolean;
-  /** Local Nautilo proxy URL when D103 proxy-allowlist is active. */
+  /** Local Nautilo proxy URL when proxy-allowlist is active. */
   readonly networkProxyUrl?: string;
-  /** Local Nautilo proxy port when D103 proxy-allowlist is active. */
+  /** Local Nautilo proxy port when proxy-allowlist is active. */
   readonly networkProxyPort?: number;
   /**
-   * D418 A2 — optional override for the narrow macOS xcrun cache
+   * A2 — optional override for the narrow macOS xcrun cache
    * exception dir. Production leaves this undefined so
    * `buildSbplProfile` defaults to `os.tmpdir()` on Darwin; tests
    * supply a controlled dir for deterministic cross-platform asserts.
@@ -147,7 +148,8 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   }
   const pathVal = pathSegments.join(pathDelimiter);
   env["PATH"] = pathVal;
-  // HOME = workspace matches bwrap — keeps tools that read HOME
+  // Local managed HOME overrides the legacy workspace default in both backends.
+  // This keeps tools that read HOME
   // (npm, python's `~/.cache`, etc.) constrained to the same
   // writable scope the sandbox allows.
   //
@@ -158,7 +160,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // real HOME. Matches Spacebot's port semantic and is the lesser
   // evil vs leaking HOME-relative reads into the agent's actual
   // home directory. Documented in `packages/sandbox/README.md`.
-  env["HOME"] = opts.workspace;
+  env["HOME"] = opts.managedHome ?? opts.workspace;
   env["TMPDIR"] = "/tmp";
   env["CI"] = "true";
   env["DEBIAN_FRONTEND"] = "noninteractive";

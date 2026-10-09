@@ -29,9 +29,9 @@ const CAPABILITIES: RelayCapabilities = {
   canSearchResearchWeb: true,
 };
 
-describe("D504 browser-page continuation and snapshot-reference protocols", () => {
+describe("Browser-page continuation and snapshot-reference protocols", () => {
   test("keeps v12 continuation while projecting v13 inspection away", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(20);
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     expect(RELAY_BROWSER_PAGE_CONTINUATION_PROTOCOL_VERSION).toBe(12);
     expect(RELAY_BROWSER_PAGE_SNAPSHOT_REFERENCE_PROTOCOL_VERSION).toBe(13);
     expect(BROWSER_RESEARCH_READ_PROTOCOL_VERSION).toBe(12);
@@ -155,7 +155,7 @@ describe("D504 browser-page continuation and snapshot-reference protocols", () =
         version: 1,
         reference: "b".repeat(43),
         title: "Previous page",
-        finalUrl: "https://person:secret@example.test/previous",
+        finalUrl: "https://user:fixture@example.invalid/previous",
       }],
     })).toEqual({ ok: false, error: "browser research read result is malformed" });
     const continuation = {

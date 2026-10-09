@@ -201,6 +201,8 @@ export interface WhoamiResponse {
    */
   capabilities: CapabilitySlug[];
   features?: {
+    /** Server supports open rooms excluded from discovery. */
+    roomDiscoverability?: boolean;
     office: {
       enabled: boolean;
     };

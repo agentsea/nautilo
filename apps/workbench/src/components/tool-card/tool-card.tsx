@@ -29,6 +29,7 @@
 
 import {
   Component,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -387,6 +388,11 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
     registerKnownFilePath(stagedEnvelope.path);
   }, [stagedEnvelope]);
   const [expanded, setExpanded] = useState(savedExpansionChoice ?? defaultExpanded);
+  const semanticStateScope = `${toolCallId}\u0000${rawResultText ?? ""}`;
+  const [reportedSemanticState, setReportedSemanticState] = useState<{ scope: string; state: ToolCardState | null } | null>(null);
+  const reportSemanticState = useCallback((next: ToolCardState | null) => {
+    setReportedSemanticState({ scope: semanticStateScope, state: next });
+  }, [semanticStateScope]);
   useEffect(() => {
     if (defaultExpanded && !((toolName === "run_shell" || isStructuredSshTool(toolName)) && manuallyCollapsedRef.current)) {
       setExpanded(true);
@@ -419,17 +425,21 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
         : connectedOperation.receipt?.outcome === "failed" ? "error" : "blocked"
     : connectedStatusLabel ? connectedObservation.status === "loading" ? "pending" : connectedObservation.status === "unavailable" ? "unknown" : "awaiting"
       : connectedOperation?.lifecycle === "attention" ? "blocked" : null;
-  const semanticState = connectedState ?? renderer?.stateOverride?.({
+  const canonicalSemanticState = connectedState ?? renderer?.stateOverride?.({
     resultText: rendererResultText,
     resultTruncated,
     state: derivedState,
   }) ?? null;
+  const semanticState = renderer?.reportsLiveState && reportedSemanticState?.scope === semanticStateScope
+    ? reportedSemanticState.state ?? canonicalSemanticState
+    : canonicalSemanticState;
   // A canonical cancelled receipt is terminal execution truth. It must win
   // even if a surrounding renderer supplied a stale optimistic success
   // override while the transport itself completed normally.
   // A file body can itself contain a cancellation-shaped JSON document.
   // Persisted file outcome (including unknown) is independent of those bytes.
-  const state = toolName === "file" && stateOverride !== undefined ? stateOverride : derivedState === "cancelled"
+  const state = toolName === "file" && stateOverride !== undefined ? stateOverride : derivedState === "cancelled" &&
+    !(renderer?.receiptOverridesTransportCancellation === true && semanticState !== null)
     ? "cancelled"
     : event?.browserResearchIntervention && derivedState === "running"
       ? "blocked"
@@ -542,7 +552,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
       return;
     }
     if (!renderer?.autoExpandOnResult && !recovery) return;
-    if ((toolName === "run_shell" || isStructuredSshTool(toolName)) && manuallyCollapsedRef.current) return;
+    if ((toolName === "run_shell" || isStructuredSshTool(toolName) || renderer?.observeWhileCollapsed === true) && manuallyCollapsedRef.current) return;
     if (
       toolName === "run_shell" &&
       (event?.startedAt === undefined || event.startedAt < TOOL_CARD_UI_SESSION_STARTED_AT)
@@ -675,7 +685,8 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
         </p>
       )}
 
-      {expanded && (
+      {(expanded || renderer?.observeWhileCollapsed === true) && (
+        <div hidden={!expanded}>
         <ToolCardBodyErrorBoundary toolName={toolName}>
           {localControl && !readOnly ? <LocalToolControlBody receipt={localControl} /> : expandedContent !== undefined ? (
             expandedContent
@@ -688,6 +699,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
               event={displayEvent}
               resultText={rendererResultText}
               resultTruncated={resultTruncated}
+              {...(renderer.reportsLiveState ? { onSemanticStateChange: reportSemanticState } : {})}
               elapsedMs={durationMs ?? undefined}
               runShellProgress={runShellProgress}
               runShellContinuity={runShellContinuity?.state}
@@ -705,6 +717,7 @@ export function ToolCard(props: ToolCardProps): React.ReactElement {
             />
           )}
         </ToolCardBodyErrorBoundary>
+        </div>
       )}
 
       {/* The positioned card root contains this absolute sr-only box so a

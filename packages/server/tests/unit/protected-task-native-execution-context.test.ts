@@ -63,6 +63,7 @@ function task(overrides: Partial<Task> = {}): Task {
     fireLockId: null,
     fireLockedAt: null,
     lastError: null,
+    localExecutionDelegation: null,
     metadata: {},
     fundingMode: "legacy_server",
     contentRepresentation: "protected",

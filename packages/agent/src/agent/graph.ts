@@ -1,3 +1,5 @@
+import { getForegroundFundingSession } from "../runtime/foreground-chat-funding";
+import { runWithCapabilityFundingSession } from "../runtime/capability-funding";
 import {
   StateGraph,
   END,
@@ -41,6 +43,11 @@ import type {
   ProtectedTaskGraphNodeName,
   ProtectedTaskNodeSettlementScope,
 } from "../graph/protected-task-node-settlement-scope";
+import { resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
+import {
+  foregroundContextProjectionFingerprint,
+  type ForegroundGraph,
+} from "../graph/foreground-context-refresh";
 
 function hasVisibleTerminalContent(content: unknown): boolean {
   if (typeof content === "string") return content.trim().length > 0;
@@ -142,7 +149,7 @@ export function shouldContinue(
  */
 export function shouldContinueAfterTools(
   state: NautiloState,
-): "tools" | "pre_model" | "browser_decision" | typeof END {
+): "tools" | "pre_model" | "browser_decision" | "foreground_context_refresh" | typeof END {
   if (state.approvedToolCalls?.length) return "tools";
   if (state.noProgressPendingCorrection || state.noProgressPendingStop || state.approvalDenied
     || state.modelRejectedToolCallIds?.length || state.projectionRejectedToolCallIds?.length
@@ -157,23 +164,100 @@ export function shouldContinueAfterTools(
     if (message.name === "skip" && successfulIntentionalSilenceResult(message)) return END;
   }
   const decision = currentBrowserDecision(state);
-  return decision?.phase === "decide" || decision?.phase === "observe" ? "browser_decision" : "pre_model";
+  if (decision?.phase === "decide" || decision?.phase === "observe") return "browser_decision";
+  if (
+    state.foregroundContextRefreshEligible === true
+    && state.foregroundContextRefresh?.status === "pending"
+  ) return "foreground_context_refresh";
+  return "pre_model";
 }
 
-interface CompiledGraph {
+interface CompiledGraph extends ForegroundGraph {
   // Input accepts Record for normal invocations and Command for resume
   invoke(input: unknown, config?: Record<string, unknown>): Promise<unknown>;
   stream(input: unknown, config?: Record<string, unknown>): Promise<AsyncIterable<unknown>>;
-  streamEvents(input: unknown, config?: Record<string, unknown>): AsyncIterable<unknown>;
-  getState(config: Record<string, unknown>): Promise<{ values: Record<string, unknown> } | undefined>;
-  updateState(
-    inputConfig: Record<string, unknown>,
-    values: Record<string, unknown>,
-    asNode?: string,
-  ): Promise<unknown>;
+}
+
+/** @internal Exported for focused routing tests. */
+export function shouldContinueAfterPreModel(
+  state: NautiloState,
+): "agent" | "foreground_context_refresh" {
+  return state.foregroundContextRefreshEligible === true
+    && state.foregroundContextRefresh?.reason === "context_pressure"
+    && state.foregroundContextRefresh.status === "pending"
+    ? "foreground_context_refresh"
+    : "agent";
+}
+
+/** @internal Exported for focused routing tests. */
+export function shouldContinueAfterBrowserDecision(
+  state: NautiloState,
+): "model_output_preflight" | "browser_decision" | "foreground_context_refresh" | "pre_model" {
+  const phase = currentBrowserDecision(state)?.phase;
+  if (phase === "waiting") return "model_output_preflight";
+  if (phase === "observe" || phase === "decide") return "browser_decision";
+  if (
+    state.foregroundContextRefreshEligible === true
+    && state.foregroundContextRefresh?.status === "pending"
+  ) return "foreground_context_refresh";
+  return "pre_model";
+}
+
+/** A parked question resumes and persists its Human reply before refreshing. */
+export function shouldContinueAfterAwaitReply(
+  state: NautiloState,
+): "foreground_context_refresh" | "pre_model" {
+  return state.foregroundContextRefreshEligible === true
+    && state.awaitResponse !== true
+    && state.foregroundContextRefresh?.reason === "visible_assistant_text"
+    && state.foregroundContextRefresh.status === "pending"
+    ? "foreground_context_refresh"
+    : "pre_model";
+}
+
+export async function visibleTextRefreshAfterAgent(
+  state: NautiloState,
+  update: Partial<NautiloState>,
+): Promise<Partial<NautiloState>> {
+  if (state.foregroundContextRefreshEligible !== true) return update;
+  const messages = update.messages ?? state.messages;
+  const response = messages[messages.length - 1];
+  if (
+    !response
+    || !AIMessage.isInstance(response)
+    || (!response.tool_calls?.length && state.awaitResponse !== true)
+    || !hasVisibleTerminalContent(response.content)
+  ) return update;
+  const modelId = update.model ?? state.foregroundContextPreparedModelId ?? state.model ?? "";
+  const maximumContextCharacters = modelId === state.foregroundContextPreparedModelId
+    ? state.foregroundContextMaximumCharacters ?? 0
+    : Math.max(
+      0,
+      await resolvePreparedMessageBudget(modelId)
+        - (state.foregroundContextBoundToolTokens ?? 0)
+        - (state.foregroundContextReservedMessageTokens ?? 0),
+    ) * 4;
+  return {
+    ...update,
+    foregroundContextRefresh: {
+      kind: "foreground_context_refresh",
+      reason: "visible_assistant_text",
+      status: "pending",
+      modelId,
+      maximumContextCharacters,
+      projectionFingerprint: foregroundContextProjectionFingerprint(
+        messages,
+        modelId,
+        maximumContextCharacters,
+      ),
+    },
+  };
 }
 
 export interface NautiloGraphDeps extends PostModelDeps {
+  readonly delegatedLocalExecutionPortForState?: (state: NautiloState) => import("../runtime/local-execution-delegation").DelegatedLocalExecutionPort | undefined;
+  readonly humanTerminalAdmissionPortForState?: (state: NautiloState) => import("../tools/terminal/admission").HumanTerminalAdmissionPort | undefined;
+  readonly localExecutionHistoryPortForState?: (state: NautiloState) => import("../tools/local-execution/history").LocalExecutionHistoryPort | undefined;
   /** Request-local foreground funding authority; never persisted in graph state. */
   readonly foregroundChatFundingSession?: ForegroundChatFundingSession;
   readonly researchNoteDraft?: ResearchNoteDraft;
@@ -210,6 +294,10 @@ export function createNautiloGraph(
   policyResolver?: PolicyResolver | null,
   deps?: NautiloGraphDeps,
 ): CompiledGraph {
+  const restoredFunding = getForegroundFundingSession();
+  if (!deps?.foregroundChatFundingSession && restoredFunding) deps = { ...deps, foregroundChatFundingSession: restoredFunding };
+  const withinFunding = <Args extends unknown[], Result>(run: (...args: Args) => Result) =>
+    (...args: Args): Result => runWithCapabilityFundingSession(deps?.foregroundChatFundingSession?.capabilityFunding, () => run(...args));
   const nodeSettlement = deps?.protectedTaskNodeSettlementScope;
   const postModelNode = createPostModelNode(policyResolver, deps);
   const graphProjectionPreflightNode = createProjectionPreflightNode(
@@ -249,6 +337,9 @@ export function createNautiloGraph(
     ),
   });
   const graphToolsNode = createToolsNode({
+    ...(deps?.delegatedLocalExecutionPortForState === undefined ? {} : { delegatedLocalExecutionPortForState: deps.delegatedLocalExecutionPortForState }),
+    ...(deps?.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPortForState: deps.localExecutionHistoryPortForState }),
+    ...(deps?.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPortForState: deps.humanTerminalAdmissionPortForState }),
     personalFunding: deps?.foregroundChatFundingSession?.kind === "personal",
     personalTaskControls: deps?.foregroundChatFundingSession?.personalTaskControls === true,
     ...(deps?.foregroundChatFundingSession?.runnableModelIds === undefined
@@ -293,10 +384,18 @@ export function createNautiloGraph(
     config: Parameters<typeof preModelNode>[1],
   ) => ({
       ...await draftNodes.prepare(state, config),
+      foregroundFundingSnapshot: deps?.foregroundChatFundingSession?.admission ?? null,
       // Ordinary Genie reasoning suspends an unfinished fast segment. The evidence remains checkpointed.
       browserDecision: state.browserDecision ? { ...state.browserDecision, phase: "handoff" as const, pending: null } : null,
     });
   const browserDecisionNode = createBrowserDecisionNode(deps);
+  const graphAgentNode = async (
+    state: Parameters<typeof draftNodes.agent>[0],
+    config: Parameters<typeof draftNodes.agent>[1],
+  ) => await visibleTextRefreshAfterAgent(
+    state,
+    await draftNodes.agent(state, config),
+  );
   const ordinaryContentAccessPreflightNode =
     createOrdinaryContentAccessPreflightNode(
       deps?.ordinaryContentAccessForState,
@@ -307,17 +406,17 @@ export function createNautiloGraph(
     .addNode("pre_model", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "pre_model",
-      graphPreModelNode,
+      withinFunding(graphPreModelNode),
     ))
     .addNode("browser_decision", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "browser_decision",
-      browserDecisionNode,
+      withinFunding(browserDecisionNode),
     ))
     .addNode("agent", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "agent",
-      draftNodes.agent,
+      withinFunding(graphAgentNode),
     ))
     .addNode("model_output_preflight", withProtectedTaskNodeSettlement(
       nodeSettlement,
@@ -337,36 +436,38 @@ export function createNautiloGraph(
     .addNode("post_model", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "post_model",
-      postModelNode,
+      withinFunding(postModelNode),
     ))
     .addNode("tools", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "tools",
-      graphToolsNode,
+      withinFunding(graphToolsNode),
     ))
     .addNode("await_reply", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "await_reply",
       awaitReplyNode,
     ))
+    .addNode("foreground_context_refresh", (state) => ({
+      foregroundContextRefresh: state.foregroundContextRefresh == null
+        ? null
+        : { ...state.foregroundContextRefresh, status: "ready" as const },
+    }))
     .setEntryPoint("pre_model")
-    .addEdge("pre_model", "agent")
+    .addConditionalEdges("pre_model", shouldContinueAfterPreModel)
     .addEdge("agent", "model_output_preflight")
     .addEdge("model_output_preflight", "projection_preflight")
     .addEdge("projection_preflight", "ordinary_content_access_preflight")
     .addEdge("ordinary_content_access_preflight", "post_model")
     .addConditionalEdges("post_model", shouldContinue)
     .addConditionalEdges("tools", shouldContinueAfterTools)
-    .addConditionalEdges("browser_decision", (state) => {
-      const phase = currentBrowserDecision(state)?.phase;
-      return phase === "waiting" ? "model_output_preflight"
-        : phase === "observe" || phase === "decide" ? "browser_decision" : "pre_model";
-    })
+    .addEdge("foreground_context_refresh", END)
+    .addConditionalEdges("browser_decision", shouldContinueAfterBrowserDecision)
     // on resume the await_reply node injects the human reply + clears
     // `awaitResponse`, then drives one more turn that reaches real END. (The
     // first-entry interrupt throws to suspend, so this edge is only traversed
     // post-resume.)
-    .addEdge("await_reply", "pre_model");
+    .addConditionalEdges("await_reply", shouldContinueAfterAwaitReply);
 
   if (checkpointSaver) {
     return workflow.compile({ checkpointer: checkpointSaver }) as CompiledGraph;

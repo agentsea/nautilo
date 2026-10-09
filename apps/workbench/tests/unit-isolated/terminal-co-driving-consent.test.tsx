@@ -89,15 +89,15 @@ describe("terminal co-driving consent", () => {
     host.remove();
   });
 
-  test("surface routes first handoff to grant and repeat handoff to setController without optimistic state", async () => {
+  test("surface keeps legacy transfers separate from scoped consent without optimistic controller state", async () => {
     const source = await Bun.file(
       new URL("../../src/apps/terminal-surface.tsx", import.meta.url).pathname,
     ).text();
 
-    expect(source).toContain("if (sandboxed || agentControlConsented)");
+    expect(source).toContain("if (sandboxed || (!api.grantHumanControl && agentControlConsented))");
     expect(source).toContain('await api.setController(activeSessionId, "agent");');
     expect(source).toContain("setConsentDialogOpen(true);");
-    expect(source).toContain("await api.grantAgentControl(activeSessionId);");
+    expect(source).toContain("await api.grantAgentControl(sid);");
     expect(source).toContain("setAgentControlConsented(true);");
     expect(source).toMatch(
       /setAgentControlConsented\(true\);\s+setConsentDialogOpen\(false\);\s+setConsentForRequest\(false\);/,
@@ -112,11 +112,11 @@ describe("terminal co-driving consent", () => {
     ).text();
 
     expect(source).toContain("const session = (await api.list()).find");
-    expect(source).toContain("session.sandboxed || session.agentControlConsented");
+    expect(source).toContain("session.sandboxed || (!api.grantHumanControl && session.agentControlConsented)");
     expect(source).toContain('await api.setController(sid, "agent");');
     expect(source).toContain("setTerminalControlConsentSessionId(sid);");
     expect(source).toContain("await api.grantAgentControl(sid);");
-    expect(source).toContain("if (granted) setTerminalControlConsentSessionId(null);");
+    expect(source).toMatch(/if \(granted\) \{\s+setTerminalControlConsentSessionId\(null\);/);
     expect(source).toContain("await api.clearRequest(sid);");
     expect(source).not.toContain("setTerminalControlRequestSessionId(null);\n    void api.setController");
   });

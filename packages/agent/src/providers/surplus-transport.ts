@@ -69,7 +69,7 @@ function surplusErrorCode(error: unknown): string | undefined {
   return normalized || undefined;
 }
 
-/** Only a proven pre-service refusal may switch transports. */
+/** Classify proven pre-service refusal independently of answer-recovery eligibility. */
 export function isSafeSurplusDirectFallback(
   error: unknown,
   responseStatus: number | undefined,
@@ -249,7 +249,7 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
   }
 }
 
-/** Server-funded, pinned text-chat wire. Caller owns attempt persistence. */
+/** Pinned text-chat wire within the admitted payer. Caller owns attempt persistence. */
 export function createSurplusChatModel(input: CreateSurplusChatModelInput): ChatModel {
   const apiKey = input.apiKey.trim();
   if (!apiKey) throw new Error("Surplus credential is not configured.");

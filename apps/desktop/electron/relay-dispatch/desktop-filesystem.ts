@@ -58,7 +58,7 @@ export interface DesktopFilesystemGrantAuthorityResolveInput {
   /** Concrete operation derived from the dispatch; null when undeterminable. */
   readonly concreteOperation: DesktopFilesystemAccessOperation | null;
   /**
-   * D448: a strict apply-patch envelope derives this complete set from its
+   * a strict apply-patch envelope derives this complete set from its
    * parsed operations. The local resolver checks every member; a server grant
    * cannot reduce it to a scalar or add unrelated authority.
    */
@@ -130,7 +130,7 @@ function localOfficeIsMutating(wire: Record<string, unknown>): boolean {
 
 /**
  * Maps a concrete relay dispatch to the Desktop filesystem access operation it needs.
- * Returns `null` when the operation cannot be determined safely — the D418 path
+ * Returns `null` when the operation cannot be determined safely — the  path
  * rejects such dispatches rather than defaulting to `read`.
  */
 export function deriveDesktopFilesystemAccessOperation(
@@ -165,12 +165,13 @@ export function deriveDesktopFilesystemAccessOperation(
     }
     return null;
   }
-  if (req.toolName === "run_shell") return "execute";
+  if (req.toolName === "run_shell" || req.toolName === "exec_command" || req.toolName === "local_git") return "execute";
+  if (req.toolName === "write_stdin") return req.args["chars"] ? "execute" : "read";
   if (req.toolName === "terminal" && req.args["action"] === "spawn") return "execute";
   return null;
 }
 
-/** Exact D418 effect set for structural local-file mutations. */
+/** Exact  effect set for structural local-file mutations. */
 export function deriveDesktopFilesystemAccessOperations(
   req: RelayDispatchRequest,
 ): readonly DesktopFilesystemAccessOperation[] | null {

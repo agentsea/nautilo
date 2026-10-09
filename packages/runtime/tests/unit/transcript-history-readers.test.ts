@@ -9,7 +9,7 @@ import {
 } from "@nautilo/runtime";
 
 /**
- * M168 Commit 1 — unit coverage for the transcript readers + production deps
+ * unit coverage for the transcript readers + production deps
  * factory, exercised with fake `TypedRoomHistorySearchDb` handles (no DB). SQL-level
  * filtering (deaf windows, `excludeMessageId`) is proven against real Postgres
  * in `transcript-context-flows.integration.test.ts`; here we cover the TS-side
@@ -125,7 +125,7 @@ function parameterValues(query: SQL): unknown[] {
   return values;
 }
 
-describe("allRoomMessages (M168 R4)", () => {
+describe("allRoomMessages ", () => {
   test("maps user/assistant/tool authors and returns oldest-first", async () => {
     // SQL returns newest-first; the reader reverses to oldest-first.
     const rows = [
@@ -188,7 +188,7 @@ describe("allRoomMessages (M168 R4)", () => {
   });
 });
 
-describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
+describe("recentBoundedRoomMessages (full retained evidence)", () => {
   test("preserves full user, assistant, and tool content", async () => {
     const longUser = `user:${"u".repeat(400)}`;
     const longAssistant = `assistant:${"a".repeat(400)}`;
@@ -196,7 +196,10 @@ describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
     const hits = await recentBoundedRoomMessages(
       fakeDb([
         userRow(1, longUser, "2026-06-01T10:00:00Z"),
-        agentRow(2, longAssistant, "2026-06-01T10:00:01Z"),
+        {
+          ...agentRow(2, longAssistant, "2026-06-01T10:00:01Z"),
+          foreground_execution_id: "turn-owned",
+        },
         agentRow(3, longTool, "2026-06-01T10:00:02Z", "tool"),
       ]),
       { roomId: "r1" },
@@ -206,6 +209,7 @@ describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
       longAssistant,
       longTool,
     ]);
+    expect(hits[1]!.foregroundExecutionId).toBe("turn-owned");
   });
 
   test("passes the configured conversation limit into the bounded query", async () => {
@@ -225,9 +229,162 @@ describe("recentBoundedRoomMessages (M219 full retained evidence)", () => {
     expect(queryText).toContain("nautilo_browser_decision_observation");
     expect(queryText).toContain("browser-choice:%");
   });
+
+  test("caps refresh history and admits only this Agent output after the trigger", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 47,
+        foregroundExecutionId: "turn-owned",
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("sm.id <=");
+    expect(text).toContain("sm.id <");
+    expect(text).toContain("sm.id >");
+    expect(text).toContain("sm.role IN ('assistant', 'tool')");
+    expect(text).toContain("s.agent_id =");
+    expect(text).toContain("nautilo_foreground_execution_id");
+    expect(parameters).toContain(41);
+    expect(parameters).toContain(47);
+    expect(parameters).toContain("agent-refresh");
+    expect(parameters).toContain("turn-owned");
+  });
+
+  test("pages protected candidates by structural assistant boundaries and a strict tuple cursor", async () => {
+    const queries: SQL[] = [];
+    const before = {
+      orderTimestamp: "2026-06-01T10:00:05.000000Z",
+      messageId: 55,
+    };
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-protected-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 60,
+        before,
+        authorizedConversationWindow: true,
+        conversationalLimit: 10,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("page_eligible");
+    expect(text).toContain("page_cursor");
+    expect(text).toContain("e.ts < cursor.ts");
+    expect(text).toContain("e.message_id < cursor.message_id");
+    expect(parameters).toContain(55);
+    expect(parameters).not.toContain("turn-owned");
+  });
+
+  test("excludes every accepted coalesced Human coordinate and its room fingerprint", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 43,
+        excludeMessageIds: [41, 43],
+        throughMessageIdInclusive: 47,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("sm.id NOT IN");
+    expect(text).toContain("accepted_sm.fingerprint = sm.fingerprint");
+    expect(parameters).toContain(41);
+    expect(parameters).toContain(43);
+  });
+
+  test("retains a first-turn tool-only tail when no conversational anchor remains", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages(
+      {
+        async execute(query) {
+          queries.push(query);
+          return [];
+        },
+      },
+      {
+        roomId: "room-refresh",
+        agentId: "agent-refresh",
+        excludeMessageId: 41,
+        throughMessageIdInclusive: 43,
+      },
+    );
+
+    const text = JSON.stringify(queries[0]);
+    const parameters = parameterValues(queries[0]!);
+    expect(text).toContain("first.message_id IS NULL");
+    expect(text).toContain("e.message_id >");
+    expect(parameters.filter((value) => value === 41)).not.toHaveLength(0);
+  });
+
+  test("rejects a refresh cut without its trigger and Agent identity", async () => {
+    const db = { execute: async () => [] };
+    const missingTrigger = await recentBoundedRoomMessages(db, {
+      roomId: "room-refresh",
+      throughMessageIdInclusive: 47,
+    }).catch((error: unknown) => error);
+    expect(missingTrigger).toBeInstanceOf(TypeError);
+    expect((missingTrigger as Error).message).toContain(
+      "requires its trigger and Agent identity",
+    );
+    const missingAgent = await recentBoundedRoomMessages(db, {
+      roomId: "room-refresh",
+      excludeMessageId: 41,
+      throughMessageIdInclusive: 47,
+    }).catch((error: unknown) => error);
+    expect(missingAgent).toBeInstanceOf(TypeError);
+    expect((missingAgent as Error).message).toContain(
+      "requires its trigger and Agent identity",
+    );
+  });
+
+  test("allows a trigger-equal cut before the first active-turn output", async () => {
+    const queries: SQL[] = [];
+    await recentBoundedRoomMessages({
+      async execute(query) {
+        queries.push(query);
+        return [];
+      },
+    }, {
+      roomId: "room-refresh",
+      agentId: "agent-refresh",
+      excludeMessageId: 41,
+      throughMessageIdInclusive: 41,
+    });
+    expect(parameterValues(queries[0]!)).toContain(41);
+  });
 });
 
-describe("defaultBuildTranscriptContextDeps (M168 Commit 1, M219 bounded context)", () => {
+describe("defaultBuildTranscriptContextDeps (bounded context)", () => {
   test("reads the latest rollup and active events after it", async () => {
     const { db, calls } = scriptedDb([
       [{ rebuildRequestedAt: null }],
@@ -405,8 +562,8 @@ describe("defaultBuildTranscriptContextDeps (M168 Commit 1, M219 bounded context
     expect(hits.map((h) => h.snippet)).toEqual(["SUB ONLY"]);
   });
 
-  test("readSubagentTranscript is wired to readSubagentRunTranscript (M169 Phase F)", () => {
-    // M169 replaced M168's Phase-F throw-stub: the slot now delegates to the
+  test("readSubagentTranscript is wired to readSubagentRunTranscript ", () => {
+    // The slot delegates to the
     // dormant `readSubagentRunTranscript` reader (still called by NO production
     // `buildTranscriptContext({kind:"subagent"})` path — R2). The reader uses
     // its own `@nautilo/agent` queries (not the factory's `RoomHistorySearchDb`
@@ -416,4 +573,23 @@ describe("defaultBuildTranscriptContextDeps (M168 Commit 1, M219 bounded context
     expect(typeof deps.readSubagentTranscript).toBe("function");
     expect(typeof readSubagentRunTranscript).toBe("function");
   });
+});
+
+
+test("same-turn image result is selected past the Human fence without widening other history", async () => {
+  const queries: SQL[] = [];
+  await recentBoundedRoomMessages({ execute: async (query) => { queries.push(query); return []; } }, {
+    roomId: "room-a", agentId: "agent-a", excludeMessageId: 42, imageAssistanceTurnId: "turn-a",
+  });
+  const text = JSON.stringify(queries[0]);
+  const parameters = parameterValues(queries[0]!);
+  expect(text).toContain("sm.id <");
+  expect(text).toContain("current_image_result");
+  expect(text).toContain("nautilo_tool_result");
+  expect(text).toContain("starts_with");
+  expect(text).toContain("s.agent_id =");
+  expect(text).toContain("LEFT JOIN earliest first ON true");
+  expect(parameters).toContain("image-assistance:turn-a:");
+  expect(parameters).toContain("agent-a");
+  expect(parameters).toContain(42);
 });

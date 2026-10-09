@@ -3,6 +3,7 @@ import { log } from "@nautilo/logger";
 import { z } from "zod";
 import {
   getTaskToolRuntime,
+  resolveTaskToolCreateLineage,
   type TaskToolCreateInput,
 } from "../task-tool-runtime";
 import {
@@ -14,10 +15,10 @@ import {
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 
 /**
- * M144 — `in_scope` intent shortcut (M084 `delegate_to_subagent` parity, async).
+ * `in_scope` intent shortcut for asynchronous scoped work.
  *
  * A thin `TaskCreateInput` builder: it pre-fills the scope-memory preset and
- * calls the shared M142 `createTask()`. NO execution / envelope / whitelist
+ * calls the shared `createTask()`. NO execution / envelope / whitelist
  * logic lives here — the dispatch seam (`dispatch-task-run.ts`) builds the
  * `ScopeMemoryEnvelope` and validates the whitelist at dispatch time.
  */
@@ -65,6 +66,12 @@ export function createInScopeTool(context?: unknown) {
       });
       if (selectionError) return selectionError;
       const rt = getTaskToolRuntime();
+      const lineage = await resolveTaskToolCreateLineage({
+        ownerId: ctx.ownerId,
+        db: rt.db,
+        ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+      });
+      if (!lineage.ok) return lineage.message;
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
         requestorId: ctx.causalHumanUserId,
@@ -83,7 +90,8 @@ export function createInScopeTool(context?: unknown) {
         awaitResponse: false,
         callingRoomId: ctx.roomId || null,
         targetUserIds: [ctx.causalHumanUserId],
-        depth: 0,
+        ...(lineage.parentTaskId ? { parentTaskId: lineage.parentTaskId } : {}),
+        depth: lineage.depth,
         ...(args.model_selection !== undefined
           ? { selectionProfile: args.model_selection }
           : {}),

@@ -1655,7 +1655,7 @@ export class JobManager {
       if (this.isThreadStopped(threadId)) {
         const vids = this.coalescer.dropLaneVirtualIds(merged.laneKey);
         if (vids) {
-          // D420 (Wave 2 task 2.2.3) — a buffered burst arrived mid-turn and
+          // A buffered burst arrived mid-turn and
           // the thread is now stopped; terminalize its queued acceptances as
           // user_cancelled. Fire-and-forget with loud logging (race fallback
           // after the main turn completed; the Stop route is the awaitable

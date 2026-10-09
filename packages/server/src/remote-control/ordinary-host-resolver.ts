@@ -3,7 +3,7 @@ import type {
   OrdinaryHostResolution,
 } from "@nautilo/agent";
 import { randomUUID } from "node:crypto";
-import { HEARTBEAT_TIMEOUT_MS, RELAY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { HEARTBEAT_TIMEOUT_MS, RELAY_MIN_SUPPORTED_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { RemotePairingStore } from "./pairing-store";
 
 type LiveHost = {
@@ -25,6 +25,9 @@ export interface OrdinaryHostRegistry {
 /**
  * Joins one verified controller to exact active bindings and current live
  * Relay generations. It never chooses among several eligible computers.
+ * Transport compatibility uses the supported floor; each operation still owns
+ * its negotiated feature/version checks at dispatch. New optional features must
+ * not invalidate an otherwise eligible older host for unrelated operations.
  */
 export function createOrdinaryHostResolver(input: {
   pairingStore: Pick<RemotePairingStore, "listActiveHostBindingsForController">;
@@ -87,7 +90,7 @@ export function createOrdinaryHostResolver(input: {
         const capabilities = input.registry.getCapabilities(live.relayId);
         if (
           live.userId !== origin.userId ||
-          live.protocolVersion < RELAY_PROTOCOL_VERSION ||
+          live.protocolVersion < RELAY_MIN_SUPPORTED_PROTOCOL_VERSION ||
           live.capabilities.profile !== "desktop-agent" ||
           !Number.isFinite(live.lastSeenAt) ||
           live.lastSeenAt > nowMs ||
@@ -138,7 +141,7 @@ export function createOrdinaryHostResolver(input: {
         const live = exact[0]!;
         if (
           live.userId !== origin.userId ||
-          live.protocolVersion < RELAY_PROTOCOL_VERSION ||
+          live.protocolVersion < RELAY_MIN_SUPPORTED_PROTOCOL_VERSION ||
           live.capabilities.profile !== "desktop-agent" ||
           !live.desktopSessionId ||
           !Number.isFinite(live.lastSeenAt) ||

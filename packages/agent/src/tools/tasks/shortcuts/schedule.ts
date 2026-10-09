@@ -1,9 +1,11 @@
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { log } from "@nautilo/logger";
 import { z } from "zod";
 import { CronExpressionParser } from "cron-parser";
 import {
   getTaskToolRuntime,
+  resolveTaskToolCreateLineage,
   type TaskToolCreateInput,
 } from "../task-tool-runtime";
 import {
@@ -19,9 +21,9 @@ import {
 } from "../../../runtime/personal-task-controls";
 
 /**
- * M145 (spec §7) — `schedule` shortcut. A thin `TaskCreateInput` builder that
+ * `schedule` shortcut. A thin `TaskCreateInput` builder that
  * authors a one-shot (concrete offset-qualified ISO datetime) or recurring
- * (raw 5-field cron) task on the existing M142 engine. No execution, no
+ * (raw 5-field cron) task on the existing Task engine. No execution, no
  * scheduler, no recurrence compiler — validation + a `createTask()` call only.
  */
 const scheduleSchema = z.object({
@@ -109,7 +111,7 @@ export function createScheduleTool(context?: unknown) {
             : { selectionProfile: args.model_selection }),
         });
       const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
-      const callerFundedToolFree = personalTaskControls || personalOnlyCreate;
+      const callerFundedToolFree = !getCapabilityFundingSession() && (personalTaskControls || personalOnlyCreate);
       if (callerFundedToolFree && ctx.currentTaskId) {
         return "Personal scheduled Tasks can only be created from the foreground parent chat.";
       }
@@ -153,6 +155,13 @@ export function createScheduleTool(context?: unknown) {
         cron = args.when.cron;
       }
 
+      const lineage = callerFundedToolFree
+        ? { ok: true as const, depth: 0, parentTaskId: undefined }
+        : await resolveTaskToolCreateLineage({
+            ownerId: ctx.ownerId, db: rt.db,
+            ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+          });
+      if (!lineage.ok) return lineage.message;
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
         requestorId: ctx.causalHumanUserId,
@@ -171,7 +180,8 @@ export function createScheduleTool(context?: unknown) {
         ...(callerFundedToolFree ? { toolsWhitelist: [] } : {}),
         callingRoomId: ctx.roomId || null,
         targetUserIds: [ctx.causalHumanUserId],
-        depth: 0,
+        ...(lineage.parentTaskId ? { parentTaskId: lineage.parentTaskId } : {}),
+        depth: lineage.depth,
         ...(args.model_selection !== undefined
           ? { selectionProfile: args.model_selection }
           : {}),

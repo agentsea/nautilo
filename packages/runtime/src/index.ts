@@ -1,4 +1,4 @@
-// D421 Phase 4.2/4.3 — re-export the per-agent turnContextId helper so the
+// Re-export the per-agent turnContextId helper so the
 // server can compute the same composite key the executor / tools use, without
 // taking a direct dependency on the agent package's internal module path.
 export {
@@ -27,8 +27,8 @@ export type {
   Observer,
   RelayRegistry,
 } from "./types";
-// M042A: canonical RuntimePolicyContext re-exported from @nautilo/trust
-// for consumers that previously imported it from @nautilo/runtime.
+// Compatibility re-export for callers that import RuntimePolicyContext from
+// the runtime package.
 export type { RuntimePolicyContext } from "@nautilo/trust";
 export {
   createDomainMemoryCryptoSession,
@@ -80,7 +80,7 @@ export {
   type DurableToolResultLifecycleObserver,
 } from "./durable-tool-result-lifecycle";
 export { InMemoryLaneLock, laneLock } from "./lane-lock";
-// D421 Phase 4.2 — runtime-internal one-hop redirect completion seam.
+// Runtime-internal one-hop redirect completion seam.
 export {
   setRedirectCompletionHook,
   getRedirectCompletionHook,
@@ -311,7 +311,7 @@ export {
   type InMemoryRelayRegistryRemotePresenceChangedInput,
   type InMemoryRelayRegistryOptions,
 } from "./relay-registry";
-// D418 — server-side Full Workstation session registry (policy-state foundation).
+// Server-side Full Workstation session registry (policy-state foundation).
 export {
   FULL_WORKSTATION_AGENT_SCOPE,
   InMemoryWorkstationSessionRegistry,
@@ -333,7 +333,7 @@ export {
   type DisableDenialCode,
   type InvalidateResult,
 } from "./workstation-session-registry";
-// D418 task 3.1.2 — transient WorkstationDispatchPlan admission store.
+// Transient WorkstationDispatchPlan admission store.
 export {
   InMemoryWorkstationDispatchPlanRegistry,
   revalidatePlanAgainstRelay,
@@ -345,7 +345,7 @@ export {
   type WorkstationPlanRevalidationResult,
 } from "./workstation-dispatch-plan";
 export { botThreadId } from "./conductor/thread-id";
-// M142 — Task primitive async engine (Phase 2a).
+// Durable Task observer and dispatch engine.
 export {
   TaskObserver,
   type TaskObserverDeps,
@@ -537,12 +537,13 @@ export {
   type DelegatedTaskFailureReceipt,
   type ReportBackDeps,
 } from "./tasks/report-back";
-// M164 — Task/subagent approval interrupt surfacing + owner-only resume.
+// Task and subagent approval events and owner-authorized resume.
 export {
   emitTaskInterruptEvent,
   replayTaskInterruptEvents,
   buildTaskInterruptEvent,
   patchTaskApprovalEvent,
+  taskApprovalRecipient,
   type TaskInterruptContext,
   type TaskApprovalPatchContext,
 } from "./tasks/emit-task-interrupt";
@@ -751,3 +752,8 @@ export {
   assertProtectedTaskJobReferenceV1,
   type ProtectedTaskJobReferenceV1,
 } from "./tasks/protected-task-job-reference";
+export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-terminal-admission";
+
+export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type TaskLocalExecutionSource, type DelegatedTaskIdentity } from "./tasks/local-execution-delegation";
+
+export { setTaskLocalExecutionSourceComposition, resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable, isTaskLocalExecutionOfflineSourceReady } from "./tasks/local-execution-delegation";

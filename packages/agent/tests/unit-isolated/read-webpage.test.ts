@@ -1,5 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import { ToolMessage } from "@langchain/core/messages";
+import { PROVIDER_TOOL_PRICING_VERSION } from "@nautilo/db";
 
 // This is deliberately local characterization coverage. Wave 2 will turn these
 // classes into production provider/fallback metadata; do not use this table to
@@ -150,7 +151,7 @@ describe("read-webpage", () => {
     expect(JSON.stringify(calls)).toContain("Bearer tvly-test");
   });
 
-  test("records a successful Tavily extraction and never prices a failed URL", async () => {
+  test("records successful and provider-rejected Tavily extractions with independent cost evidence", async () => {
     const receipts: Array<Record<string, unknown>> = [];
     const recordProviderCost = async (receipt: Record<string, unknown>) => { receipts.push(receipt); };
     const success = buildReadWebpageFetcher({
@@ -180,6 +181,21 @@ describe("read-webpage", () => {
       receiptId: "extract-request-1",
       estimatedCostUsd: "0.01600000",
       evidenceState: "estimated",
+      attemptOutcome: "succeeded",
+      pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
+      measuredUnits: 2,
+      unitType: "credit",
+    }, {
+      provider: "tavily",
+      operation: "extract",
+      receiptId: null,
+      estimatedCostUsd: "0.00800000",
+      evidenceState: "estimated",
+      attemptOutcome: "failed",
+      failureCode: "provider_result_failed",
+      pricingVersion: PROVIDER_TOOL_PRICING_VERSION,
+      measuredUnits: null,
+      unitType: null,
     }]);
   });
 

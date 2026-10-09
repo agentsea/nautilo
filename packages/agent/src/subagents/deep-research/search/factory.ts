@@ -1,17 +1,76 @@
-import { randomUUID } from "node:crypto";
 import type { Configuration } from "../shared/config";
 import type { SearchResultItem, SearchResults } from "./types";
 import { getUsageContext } from "../../../usage/usage-context";
 import {
+  beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
+  openProviderCostAttempt,
+  providerToolEstimateReceipt,
+  type ProviderCostReceipt,
+  type ProviderCostRecorder,
 } from "../../../usage/provider-cost-recorder";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
-import { assertDeepResearchServerFunding } from "../shared/funding";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
+import { assertDeepResearchServerFunding, getDeepResearchFunding } from "../shared/funding";
 
 export type SearchProvider = "tavily" | "openai" | "anthropic" | "duckduckgo" | "exa" | "none";
 
-export type SearchTool = (query: string) => Promise<SearchResults>;
+export type SearchTool = (
+  query: string,
+  options?: Readonly<{ signal?: AbortSignal }>,
+) => Promise<SearchResults>;
+
+export async function runRecordedDeepResearchTavilySearch(
+  invoke: () => Promise<unknown>,
+  recordProviderCost: ProviderCostRecorder,
+  searchDepth: "basic" | "advanced",
+  signal?: AbortSignal,
+): Promise<unknown> {
+  signal?.throwIfAborted();
+  const costAttempt = await openProviderCostAttempt(recordProviderCost, {
+    provider: "tavily",
+    operation: "deep_research_search",
+  });
+  let settled = false;
+  let failureCode = "provider_transport_unknown";
+  const settle = async (receipt: ProviderCostReceipt) => {
+    if (!costAttempt || settled) return;
+    settled = true;
+    await costAttempt(receipt);
+  };
+  try {
+    signal?.throwIfAborted();
+    const rawResults = await invoke();
+    // The SDK fulfills with an error envelope for transport and result failures.
+    // That envelope does not prove whether a charge occurred.
+    if (rawResults && typeof rawResults === "object" && "error" in rawResults
+      && typeof rawResults.error === "string" && rawResults.error.trim()) {
+      failureCode = "provider_result_unavailable";
+      throw new Error("Deep Research search returned no usable provider response.");
+    }
+    const receiptId = rawResults && typeof rawResults === "object"
+      && "request_id" in rawResults && typeof rawResults.request_id === "string"
+      ? rawResults.request_id : null;
+    await settle({
+      provider: "tavily", operation: "deep_research_search",
+      receiptId,
+      ...providerToolEstimateReceipt("tavily:credit", null,
+        searchDepth === "advanced" ? 2 : 1, "credit"),
+      attemptOutcome: "succeeded",
+    });
+    // Cancellation stops delivery, but cannot erase a completed paid request.
+    signal?.throwIfAborted();
+    return rawResults;
+  } catch (error) {
+    const cancelled = signal?.aborted === true;
+    await settle({
+      provider: "tavily", operation: "deep_research_search",
+      evidenceState: "unknown", attemptOutcome: cancelled ? "cancelled" : "unknown",
+      failureCode: cancelled ? "request_cancelled" : failureCode,
+    });
+    throw error;
+  }
+}
 
 export function buildSearchTool(cfg: Configuration, _callbacks?: unknown[]): SearchTool {
   const provider: SearchProvider = cfg.search_api;
@@ -35,45 +94,58 @@ export function buildSearchTool(cfg: Configuration, _callbacks?: unknown[]): Sea
 }
 
 function buildTavilySearch(cfg: Configuration): SearchTool {
-  return async (query: string): Promise<SearchResults> => {
+  return async (query: string, options = {}): Promise<SearchResults> => {
+    const funding = getDeepResearchFunding();
     try {
-      await assertDeepResearchServerFunding("deep_research_tavily");
-      const tavilyModule = await import("@langchain/tavily");
-      const TavilySearchCtor = (tavilyModule as Record<string, unknown>)["TavilySearch"] as
-        | (new (c: Record<string, unknown>) => { invoke: (input: unknown) => Promise<unknown> })
-        | undefined;
-      if (typeof TavilySearchCtor !== "function") {
-        return { provider: "tavily", query, items: [] };
-      }
-      const tool = new TavilySearchCtor({
-        apiKey: process.env["TAVILY_API_KEY"],
-        maxResults: cfg.search_max_results,
-        searchDepth: cfg.search_depth,
-        includeImages: false,
-        includeAnswer: false,
-        includeRawContent: false,
-      });
-      const rawResults = await tool.invoke({ query });
+      const { TavilySearch } = await import("@langchain/tavily");
       const usage = getUsageContext();
-      const estimatedCostUsd = estimateProviderToolCostUsd("tavily:credit", cfg.search_depth === "advanced" ? 2 : 1);
-      if (estimatedCostUsd) {
+      const invoke = async (apiKey: string, recordProviderCost: ReturnType<typeof createToolProviderCostRecorder>) => {
+        const tool = new TavilySearch({
+          tavilyApiKey: apiKey,
+          maxResults: cfg.search_max_results,
+          searchDepth: cfg.search_depth,
+          includeImages: false,
+          includeAnswer: false,
+          includeRawContent: false,
+        });
+        // @langchain/tavily currently exposes a Zod-v3 schema whose inferred
+        // invoke input does not interoperate with the workspace Zod types.
+        const invokeTool = tool.invoke.bind(tool) as (
+          input: { query: string },
+          config?: { signal?: AbortSignal },
+        ) => Promise<unknown>;
+        return runRecordedDeepResearchTavilySearch(
+          () => invokeTool({ query }, options.signal ? { signal: options.signal } : undefined),
+          recordProviderCost,
+          cfg.search_depth,
+          options.signal,
+        );
+      };
+      let rawResults: unknown;
+      if (funding) {
+        const capability = getCapabilityFundingSession();
+        if (!capability) throw new Error("Admitted Deep Research Tavily authority is unavailable.");
+        const service = await capability.openService("tavily", funding.tavilyFunding);
+        rawResults = await service.runAttempt(async ({ apiKey, usageFunding }) => {
+          const recorder = await beginToolProviderCostAttempt({
+            userId: usage?.userId, roomId: usage?.roomId,
+            agentId: usage?.metadata?.["agentId"], turnId: usage?.metadata?.["turnId"],
+          }, { provider: "tavily", operation: "deep_research_search", usageFunding });
+          return invoke(apiKey, recorder);
+        });
+      } else {
+        await assertDeepResearchServerFunding("deep_research_tavily");
         const recordProviderCost = createToolProviderCostRecorder({
           userId: usage?.userId,
           roomId: usage?.roomId,
           agentId: usage?.metadata?.["agentId"],
           turnId: usage?.metadata?.["turnId"],
         });
-        await recordProviderCost({
-          provider: "tavily",
-          operation: "deep_research_search",
-          receiptId: randomUUID(),
-          estimatedCostUsd,
-          evidenceState: "estimated",
-        });
+        rawResults = await invoke(process.env["TAVILY_API_KEY"] ?? "", recordProviderCost);
       }
       return { provider: "tavily", query, items: parseTavilyResults(rawResults) };
     } catch (error) {
-      if (error instanceof ServerProviderCredentialsDeniedError) throw error;
+      if (options.signal?.aborted || funding || error instanceof ServerProviderCredentialsDeniedError) throw error;
       return { provider: "tavily", query, items: [] };
     }
   };

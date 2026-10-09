@@ -14,7 +14,6 @@ describe("model role candidates", () => {
     "memoryReview",
     "webSearchSynthesis",
     "systemTasks",
-    "visionFallback",
   ] as const;
   const deepResearchRoles = [
     "deepResearchSupervisor",
@@ -47,7 +46,7 @@ describe("model role candidates", () => {
         "venice:minimax-m3-preview",
       ]);
       expect(MODEL_ROLE_CANDIDATES[role].some((id) => id.startsWith("openai:")), role)
-        .toBe(role === "webSearchSynthesis" || role === "visionFallback" ? false : true);
+        .toBe(role === "webSearchSynthesis" ? false : true);
     }
   });
 

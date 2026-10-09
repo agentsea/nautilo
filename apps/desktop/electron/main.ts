@@ -1,4 +1,7 @@
 import "./instance-argv-bootstrap.ts";
+import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
+import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
+import { parseReadyToWorkComponentSelection, type AgentAccessStatus } from "./ready-to-work-contract";
 
 import {
   app,
@@ -61,6 +64,14 @@ import {
   getRelayStatus,
   getPersistedDesktopRelayId,
   refreshDesktopRelayCapabilities,
+  refreshDesktopRelayCurrentFolder,
+  fenceActiveLocalExecutions,
+  fenceDevelopmentLocalExecutions,
+  getAcknowledgedLocalExecutionCapabilities,
+  readActiveLocalExecution,
+  getActiveLocalExecutionGeneration,
+  getLocalExecutionCustodyScope,
+  subscribeLocalExecutionChanges,
   setActiveRelay,
   DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE,
   deriveComputerUseServerBindingId,
@@ -84,6 +95,8 @@ import {
   loadConfig,
   readyToWorkProtectedReceiptFilePath,
   readyToWorkStateFilePath,
+  readyToWorkRememberedStateFilePath,
+  readyToWorkRememberedReceiptFilePath,
   saveCodexConnectionIntent,
   saveHermesConnectionIntent,
   saveConfig,
@@ -99,9 +112,16 @@ import {
   type ReadyToWorkComponentId,
   type ReadyToWorkCodingHarnessStatus,
   type ReadyToWorkDesiredState,
+  type ReadyToWorkSelection,
   type ReadyToWorkBinding,
 } from "./ready-to-work-contract";
-import { ReadyToWorkStore } from "./ready-to-work-store";
+import { ReadyToWorkPersistenceError, ReadyToWorkStore } from "./ready-to-work-store";
+import { openLocalExecutionPreview } from "./local-execution-preview";
+import { LocalExecutionHistoryStore, type LocalExecutionHistoryScope } from "./local-execution-history";
+import { hasVerifiedLocalExecutionReference, projectLocalExecutionHistory, projectVerifiedLocalExecutionHistory, readLocalExecutionHistoryPage, readLocalExecutionWithExpiredHistory, executionBelongsToConversation, type LocalExecutionHistoryReference } from "./local-execution-history-projection";
+import { RUN_SHELL_OUTPUT_ARTIFACT_PAGE_BYTES } from "./run-shell-output-continuity";
+import { migrateRememberedReadyToWork } from "./ready-to-work-persistence";
+import { ReadyToWorkRemembered, settleReadyCleanup } from "./ready-to-work-remembered";
 import {
   isReadyToWorkStorageProtected,
   ReadyToWorkProtectedReceiptStore,
@@ -190,13 +210,18 @@ import {
   type NavigationGuardController,
 } from "./navigation-guards";
 import { attachEditableContextMenu } from "./editable-context-menu";
-import { registerTerminalHost, disposeAllTerminals } from "./terminal-host";
+import { registerTerminalHost, disposeAllTerminals, grantHumanTerminalConsent,
+  peekHumanTerminalConsent, revokeHumanTerminalConsent } from "./terminal-host";
+import { sameHumanTerminalConsentOwner, type HumanTerminalConsentOwner,
+  type HumanTerminalOwner } from "../../../packages/types/src/human-terminal";
 import { createWorkstationShellHost } from "./workstation-shell-host";
 import {
   WorkstationShellConsentStore,
   type WorkstationShellSubject,
 } from "./workstation-shell-consent-store";
 import { createGitHubCliConnection } from "./github-cli-connection";
+import { createGitHubInstallation, type GitHubInstallation } from "./github-broker/installation";
+import { probeDesktopGitHubRuntime } from "./github-cli-runtime";
 import {
   createGoogleWorkspaceAuth,
 } from "./google-workspace-auth";
@@ -749,6 +774,9 @@ crashReporter.start({
 const serverSessions = new ServerSessionRegistry();
 let miniAppRecoveryRuntime: MiniAppDraftRecoveryRuntime | null = null;
 let miniAppRecoveryAuthGeneration = 0;
+type HumanTerminalSelection = Readonly<{ roomId: string; agentId: string }>;
+let humanTerminalSelection: HumanTerminalSelection | null = null;
+let humanTerminalLocalFence: ((owner: HumanTerminalConsentOwner) => boolean) | null = null;
 const miniAppRecoveryObservedSenders = new Set<number>();
 let mainWindow: BaseWindow | null = null;
 let mainNavigationGuard: NavigationGuardController | null = null;
@@ -2612,7 +2640,7 @@ function commitCurrentFolderPath(
     sendToActiveRenderer("workspace:pathChanged", p);
   }
   if (options.refreshRelay !== false) {
-    void refreshRelayForCurrentFolder("current-folder commit");
+    void refreshRelayForCurrentFolder("current-folder commit", true);
   }
 }
 
@@ -2678,7 +2706,7 @@ async function selectCurrentFolderFromMobile(input: {
       return { ok: false, error: "Could not save that folder selection." };
     }
     setTimeout(() => {
-      void refreshRelayForCurrentFolder("mobile Current Folder selection");
+      void refreshRelayForCurrentFolder("mobile Current Folder selection", true);
     }, 250);
     return { ok: true, label: path.basename(canonicalCandidate) };
   } catch {
@@ -2703,7 +2731,7 @@ function commitMobileCurrentFolderSelection(input: {
     return { ok: false, error: "Could not save that folder selection." };
   }
   setTimeout(() => {
-    void refreshRelayForCurrentFolder("mobile Current Folder selection");
+    void refreshRelayForCurrentFolder("mobile Current Folder selection", true);
   }, 250);
   return { ok: true, label: input.label };
 }
@@ -3164,6 +3192,13 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
   const relayOpts: StartRelayOptions = {
     serverUrl,
     userId,
+    localExecutionHistoryWriter: localExecutionHistoryWriter(serverUrl, userId),
+    localExecutionHistoryReader: localExecutionHistoryReader(serverUrl, userId),
+    humanTerminalConsent: () => {
+      const consent = peekHumanTerminalConsent();
+      return consent && humanTerminalLocalFence?.(consent.owner) ? consent : null;
+    },
+    verifyHumanTerminal: verifyHumanTerminalForRelay,
     relayIdentityFilePath: desktopRelayIdentityFilePath(),
     localFileHistoryRootDir: localFileHistoryDirPath(),
     legacyLocalHistoryRelayIdentityFilePath: legacySharedRelayIdentityFilePath(),
@@ -3228,6 +3263,7 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       }
       return built.value;
     },
+    onCapabilitiesAcknowledged: publishAgentAccessChanged,
     onComputerUseTopologyChange: (refreshRelayCapabilities) =>
       reconcileComputerUseTopology(refreshRelayCapabilities),
     computerUseDispatch: async (invocation) => {
@@ -3338,6 +3374,23 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     // prerequisite — share the single main-process authority with the
     // relay so the resolver and snapshot builder see overlay grants.
     desktopFilesystemGrantAuthority: desktopFilesystemGrantStore,
+    localExecutionDelegation: {
+      grants: desktopFilesystemGrantStore,
+      readConnection: () => {
+        const current = currentReadyBinding();
+        const runtime = getActiveComputerUseRuntime();
+        if (!current || !runtime || getRelayStatus() !== "connected" || current.humanId !== runtime.humanUserId) return null;
+        const profile = activeWorkstationProfileController.getActiveSession();
+        return {
+          humanUserId: runtime.humanUserId, instanceId: runtime.instanceId, relayId: runtime.relayId,
+          desktopSessionId: runtime.desktopSessionId, pairingGeneration: runtime.pairingGeneration,
+          serverOrigin: current.authority.scope, serverFingerprint: current.authority.serverFingerprint,
+          profile: profile ? { id: profile.profileId, revision: profile.profileRevision } : null,
+          epoch: JSON.stringify([miniAppRecoveryAuthGeneration, current.authority.revision,
+            current.authority.connectionAttemptId, profile?.compiledAt ?? null]),
+        };
+      },
+    },
     // share the single main-process active-profile controller so the
     // relay advertises the controller's redacted profile snapshot from the
     // SAME store the main process owns (no duplicate profile stores).
@@ -3509,7 +3562,8 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
  * Current Folder root and server-private binding metadata stay exact. The
  * always-present Genie Workspace remains unchanged throughout this lifecycle.
  */
-async function refreshRelayForCurrentFolder(reason: string): Promise<void> {
+async function refreshRelayForCurrentFolder(reason: string, preserveSession = false): Promise<void> {
+  if (preserveSession && await refreshDesktopRelayCurrentFolder()) return;
   const serverUrl = resolvedServerUrl();
   if (!serverUrl) {
     log.info(
@@ -3617,6 +3671,12 @@ function broadcastAuthState(state: "signed-in" | "signed-out"): void {
 }
 
 function invalidateMiniAppRecoveryAuthentication(): void {
+  githubCliConnection.cancel();
+  githubAccountCustody.retire();
+  clearHumanTerminalHandoff();
+  readyToWorkGeneration += 1;
+  readyVerifiedBinding = null;
+  readyToWorkCoordinatorBinding = null;
   miniAppRecoveryAuthGeneration += 1;
   miniAppRecoveryRuntime?.invalidateAll();
 }
@@ -4164,6 +4224,7 @@ async function resolveReadyToWorkBindingForSession(
   if (!activeSession.signedIn) {
     throw new Error("Ready to work requires a signed-in Nautilo Human");
   }
+  const authGeneration = miniAppRecoveryAuthGeneration;
   const authority = authoritativeConnectionSnapshot();
   if (!authority || !authority.serverFingerprint) {
     throw new Error("Ready to work requires the active Desktop server authority");
@@ -4204,7 +4265,9 @@ async function resolveReadyToWorkBindingForSession(
   if (!humanId) {
     throw new Error("Ready to work could not verify the signed-in Nautilo Human");
   }
-  return {
+  if (serverSessions.active !== activeSession || authGeneration !== miniAppRecoveryAuthGeneration ||
+    JSON.stringify(authoritativeConnectionSnapshot()) !== JSON.stringify(authority)) throw new Error("Ready authority changed during authentication");
+  const binding: ReadyToWorkBinding = {
     humanId,
     authority: {
       scope: authority.scope,
@@ -4213,6 +4276,8 @@ async function resolveReadyToWorkBindingForSession(
       serverFingerprint: authority.serverFingerprint,
     },
   };
+  readyVerifiedBinding = { binding, session: activeSession, authGeneration };
+  return binding;
 }
 
 async function resolveReadyToWorkBinding(
@@ -4319,15 +4384,34 @@ function throwMiniAppRecoveryIpcError(error: unknown): never {
 }
 
 function readyToWorkStore(): ReadyToWorkStore {
-  return new ReadyToWorkStore({ filePath: readyToWorkStateFilePath() });
+  return new ReadyToWorkStore({ filePath: readyToWorkStateFilePath(), rememberedFilePath: readyToWorkRememberedStateFilePath() });
 }
 
 function readyToWorkProtectedReceiptStore(): ReadyToWorkProtectedReceiptStore {
   return new ReadyToWorkProtectedReceiptStore({
     filePath: readyToWorkProtectedReceiptFilePath(),
+    rememberedFilePath: readyToWorkRememberedReceiptFilePath(),
     safeStorage,
   });
 }
+
+let readyVerifiedBinding: Readonly<{ binding: ReadyToWorkBinding; session: Pick<ServerSession, "serverUrl" | "signedIn">; authGeneration: number }> | null = null;
+function currentReadyBinding(): ReadyToWorkBinding | null {
+  const verified = readyVerifiedBinding;
+  if (!verified || verified.session !== serverSessions.active || !verified.session.signedIn ||
+    verified.authGeneration !== miniAppRecoveryAuthGeneration) return null;
+  const authority = authoritativeConnectionSnapshot();
+  return authority.scope === verified.binding.authority.scope && authority.serverFingerprint === verified.binding.authority.serverFingerprint
+    && authority.revision === verified.binding.authority.revision && authority.connectionAttemptId === verified.binding.authority.connectionAttemptId ? verified.binding : null;
+}
+function readyBindingIsCurrent(binding: ReadyToWorkBinding, generation: number): boolean {
+  const current = currentReadyBinding();
+  return generation === readyToWorkGeneration && current !== null && current.humanId === binding.humanId &&
+    current.authority.scope === binding.authority.scope && current.authority.serverFingerprint === binding.authority.serverFingerprint &&
+    current.authority.revision === binding.authority.revision && current.authority.connectionAttemptId === binding.authority.connectionAttemptId;
+}
+const readyRemembered = new ReadyToWorkRemembered({ desired: readyToWorkStore(), receipt: readyToWorkProtectedReceiptStore() }, currentReadyBinding);
+const readyToWorkPersistence = readyRemembered.persistence;
 
 let readyToWorkCoordinatorBinding: ReadyToWorkBinding | null = null;
 let readyToWorkGeneration = 0;
@@ -4365,11 +4449,14 @@ async function readyToWorkStatusForSender(
   resolveSessionFromSender(e);
   try {
     const binding = await resolveReadyToWorkBinding(e);
-    const desired = readyToWorkStore().loadFor(binding);
+    readyToWorkPersistence.retryStatus();
+    const attention = readyToWorkPersistence.attention();
+    if (attention) return attention;
+    const desired = readyRemembered.loadFor(binding);
     if (desired) return await refreshReadyToWorkStatus(desired, generation);
     return attachReadyCodingHarnessPreview(readyToWorkAggregateStatus(desired));
   } catch {
-    return readyToWorkAggregateStatus(null);
+    return readyToWorkPersistence.attention() ?? readyToWorkAggregateStatus(null);
   }
 }
 
@@ -5106,6 +5193,8 @@ const activeWorkstationProfileController =
     authority: desktopFilesystemGrantStore,
     filePath: workstationProfilesFilePath(),
     onActiveProfileChanged: (reason) => {
+      fenceDevelopmentLocalExecutions();
+      publishAgentAccessChanged();
       // skip the fire-and-forget re-advertise for the activate reason:
       // the `selectActiveProfile` handler (sole activate() caller) performs the
       // authoritative awaited completion refresh, and a second refresh here
@@ -5115,6 +5204,69 @@ const activeWorkstationProfileController =
       reAdvertiseDesktopFilesystemGrantSnapshot(reason);
     },
   });
+
+// Cutover composition for the admitted connection and private broker provider.
+// Not activated while legacy shell cleanup remains unqualified. No account storage.
+let githubInstallationOwner: { key: string; pending: Promise<GitHubInstallation> } | null = null;
+const githubAccountCustody = {
+  getInstallation: getGitHubInstallation,
+  retire(): void {
+    if (githubInstallationOwner) void githubInstallationOwner.pending.then(installation => installation.retire()).catch(() => undefined);
+    githubInstallationOwner = null;
+  },
+};
+async function getGitHubInstallation(): Promise<GitHubInstallation> {
+  const session = serverSessions.active;
+  if (!session?.signedIn) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const binding = await resolveReadyToWorkBindingForSession(session);
+  const key = JSON.stringify([authGeneration, binding]);
+  const isOwnerCurrent = () => {
+    const current = currentReadyBinding();
+    return serverSessions.active === session && session.signedIn && miniAppRecoveryAuthGeneration === authGeneration
+      && current !== null && JSON.stringify(current) === JSON.stringify(binding);
+  };
+  if (!isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+  if (githubInstallationOwner?.key === key) return await githubInstallationOwner.pending;
+  if (githubInstallationOwner) {
+    void githubInstallationOwner.pending.then(installation => installation.retire()).catch(() => undefined);
+  }
+  const pending = Promise.resolve().then(() => {
+    const runtime = probeDesktopGitHubRuntime({ isPackaged: app.isPackaged });
+    if (!runtime.ok || !isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+    return createGitHubInstallation({ executable: runtime.binaryPath, executableSha256: runtime.executableSha256,
+      homeDir: app.getPath("home"), authority: async () => {
+        if (!isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+        const folder = currentFolderPath;
+        const folderRevision = currentFolderRevision;
+        const workspace = genieWorkspaceRoot;
+        if (!workspace) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+        // Retained grant IDs cover processes still draining after reduction;
+        // released historical grants no longer count as writable authority.
+        const listed = await desktopFilesystemGrantStore.list({ userId: binding.humanId, includeHistory: true });
+        const custody = getLocalExecutionCustodyScope();
+        if (!listed.ok || custody === null || !isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+        const revision = listed.data.revision;
+        return {
+          writableRoots: [...new Set([workspace, ...(folder ? [folder] : []), ...custody.roots,
+            ...listed.data.grants.filter(item => (item.status === "active" || custody.grantIds.includes(item.grant.id))
+              && (item.grant.access.includes("create_modify") || item.grant.access.includes("delete")))
+              .map(item => item.grant.canonicalRoot)])],
+          isCurrent: () => isOwnerCurrent() && desktopFilesystemGrantStore.getRevision() === revision
+            && currentFolderRevision === folderRevision && currentFolderPath === folder && genieWorkspaceRoot === workspace && custody.isCurrent(),
+        };
+      } });
+  });
+  const owner = { key, pending };
+  githubInstallationOwner = owner;
+  try { return await pending; }
+  catch {
+    // Missing installation can be repaired. A resolved identity that later
+    // retires is never silently repinned for this same owner.
+    if (githubInstallationOwner === owner) githubInstallationOwner = null;
+    throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
+  }
+}
 
 ipcMain.handle("githubCli:status", async (e) => {
   assertMainWindowSender(e);
@@ -5448,7 +5600,10 @@ function hermesConnectionStatus(): HermesConnectionStatus {
 }
 
 async function publishReadyToWorkOwnerObservation(): Promise<void> {
-  const desired = readyToWorkStore().load();
+  const attention = readyToWorkPersistence.attention();
+  if (attention) { publishReadyToWorkStatus(attention); return; }
+  const binding = currentReadyBinding();
+  const desired = binding ? readyRemembered.loadFor(binding) : null;
   if (!desired) return;
   const generation = readyToWorkGeneration;
   const status = await readyToWorkOperationQueue.run(async () =>
@@ -5531,6 +5686,7 @@ function requestReadyRendererOwners(input: Readonly<{ voice: boolean | null; aut
 }
 
 async function disableReadyWorkstationOwner(): Promise<void> {
+  fenceDevelopmentLocalExecutions();
   // Revoke local compiler authority and begin advertising its removal before
   // any token or server work. Remote cleanup is bounded best effort only.
   await activeWorkstationProfileController.deactivate().catch(() => undefined);
@@ -5555,8 +5711,9 @@ async function disableReadyWorkstationOwner(): Promise<void> {
 }
 
 async function restoreReadyWorkstation(desired: ReadyToWorkDesiredState): Promise<ReadyOwnerResult> {
+  const generation = readyToWorkGeneration;
   const binding: ReadyToWorkBinding = { humanId: desired.humanId, authority: desired.authority };
-  const protectedReceipt = readyToWorkProtectedReceiptStore().readFor(binding);
+  const protectedReceipt = readyRemembered.readReceipt(binding);
   if (!protectedReceipt.ok) {
     const reason = protectedReceipt.code === "unavailable"
       ? "os_protection_unavailable"
@@ -5567,6 +5724,7 @@ async function restoreReadyWorkstation(desired: ReadyToWorkDesiredState): Promis
   }
   const local = activeWorkstationProfileController.getActiveSession();
   const server = await getWorkstationServerSessionStatus();
+  if (generation !== readyToWorkGeneration) return readyOwnerResult("workstation_settings", false, "authority_changed");
   if (local?.profileId === protectedReceipt.profileId &&
     local.profileRevision === protectedReceipt.profileRevision && server.confirmed &&
     server.session?.profileId === local.profileId && server.session.profileRevision === local.profileRevision) {
@@ -5577,27 +5735,28 @@ async function restoreReadyWorkstation(desired: ReadyToWorkDesiredState): Promis
     profileRevision: protectedReceipt.profileRevision,
     proof: { startupReceipt: protectedReceipt.receipt },
     networkTimeoutMs: 5_000,
-  });
+  }, () => readyBindingIsCurrent(binding, generation));
   if (!activated.ok) {
     const reason = readyToWorkWorkstationFailureReason(activated.code);
     return readyOwnerResult("workstation_settings", false, reason);
   }
   const nextReceipt = activated.data.startupReceipt;
-  if (nextReceipt && !readyToWorkProtectedReceiptStore().save({
-    binding,
-    profileId: activated.data.summary.profileId,
-    profileRevision: activated.data.summary.profileRevision,
-    receipt: nextReceipt,
-  })) {
-    await disableReadyWorkstationOwner();
-    return readyOwnerResult("workstation_settings", false, "os_protection_unavailable");
+  const receiptResult = await readyToWorkPersistence.saveReceiptOrRollback(
+    () => !nextReceipt || readyRemembered.refresh(binding, protectedReceipt.receipt, {
+      profileId: activated.data.summary.profileId,
+      profileRevision: activated.data.summary.profileRevision,
+      receipt: nextReceipt,
+    }, () => readyBindingIsCurrent(binding, generation)), disableReadyWorkstationOwner, () => readyBindingIsCurrent(binding, generation),
+  );
+  if (receiptResult !== "saved") {
+    return readyOwnerResult("workstation_settings", false, receiptResult === "stale" ? "authority_changed" : "saved_state_unavailable");
   }
   return readyOwnerResult("workstation_settings", true);
 }
 
 async function observeReadyWorkstation(desired: ReadyToWorkDesiredState): Promise<ReadyOwnerResult> {
   const binding: ReadyToWorkBinding = { humanId: desired.humanId, authority: desired.authority };
-  const protectedReceipt = readyToWorkProtectedReceiptStore().readFor(binding);
+  const protectedReceipt = readyRemembered.readReceipt(binding);
   if (!protectedReceipt.ok) {
     const reason = protectedReceipt.code === "unavailable"
       ? "os_protection_unavailable"
@@ -5661,11 +5820,12 @@ async function observeReadyComputerUse(): Promise<ReadyOwnerResult> {
 async function enableReadyComputerUseDuringEnrollment(
   pin: string,
   expectedHumanUserId: string,
+  isCurrent: () => boolean = () => true,
 ): Promise<boolean> {
   const setup = computerUseSetup;
-  if (!setup) return false;
+  if (!setup || !isCurrent()) return false;
   const current = await awaitReadyToWorkValueBounded(setup.status(), 5_000, null);
-  if (!current || current.state !== "not-enabled") return false;
+  if (!isCurrent() || !current || current.state !== "not-enabled") return false;
 
   // OS grants and provider readiness are repairs, not a reason to discard the
   // rest of a valid Ready selection. Reconciliation reports their exact
@@ -5681,7 +5841,7 @@ async function enableReadyComputerUseDuringEnrollment(
     5_000,
     null,
   );
-  if (!projection?.effectiveProvider) return false;
+  if (!isCurrent() || !projection?.effectiveProvider) return false;
 
   const accessToken = await awaitReadyToWorkValueBounded(
     getValidAccessToken({
@@ -5691,6 +5851,7 @@ async function enableReadyComputerUseDuringEnrollment(
     5_000,
     null,
   );
+  if (!isCurrent()) return false;
   if (!accessToken) {
     throw new Error("Ready to work requires an authenticated Nautilo Human");
   }
@@ -5700,9 +5861,13 @@ async function enableReadyComputerUseDuringEnrollment(
     null,
   );
   const agentId = ownedAgents?.[0]?.agentId ?? null;
-  if (!agentId) return false;
+  if (!isCurrent() || !agentId) return false;
 
   const enabled = await setup.enable(pin, agentId);
+  if (!isCurrent()) {
+    await setup.disable();
+    return false;
+  }
   if (enabled.state !== "enabled") {
     throw new Error("Nautilo could not enable Computer use for Ready to work");
   }
@@ -5713,12 +5878,16 @@ async function enableReadyComputerUseDuringEnrollment(
         5_000,
         null,
       );
-      return enabledProjection?.effectiveProvider !== null &&
+      return isCurrent() && enabledProjection?.effectiveProvider !== null &&
         enabledProjection?.effectiveProvider !== undefined;
     },
     disable: async () => { await setup.disable(); },
   });
   if (!retained) return false;
+  if (!isCurrent()) {
+    await setup.disable();
+    return false;
+  }
   await awaitReadyToWorkBounded(
     refreshComputerUseRelay("Ready-to-work enrollment enabled Computer use"),
     5_000,
@@ -5845,21 +6014,58 @@ async function readyToWorkActiveBindingMatches(binding: ReadyToWorkBinding): Pro
   }
 }
 
+async function migrateReadySelection(binding: ReadyToWorkBinding, generation: number): Promise<void> {
+  // Only the shipped contained Development profile may migrate. The server
+  // revalidates its existing startup proof before local compilation.
+  let activated = false;
+  try {
+    const result = await migrateRememberedReadyToWork({
+      desired: readyToWorkStore(), receipt: readyToWorkProtectedReceiptStore(), binding,
+      isCurrent: () => readyBindingIsCurrent(binding, generation),
+      validate: async proof => {
+        const seed = materializeSeedProfileForReview();
+        if (!seed.ok || proof.profileId !== seed.profile.id) return null;
+        const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: proof.profileId });
+        if (!stored.ok || stored.data.profile.revision !== proof.profileRevision ||
+          generation !== readyToWorkGeneration || !await readyToWorkActiveBindingMatches(binding) || generation !== readyToWorkGeneration) return null;
+        const result = await activateStoredWorkstationProfile({ profileId: proof.profileId, profileRevision: proof.profileRevision,
+          proof: { startupReceipt: proof.receipt }, networkTimeoutMs: 5_000 }, () => readyBindingIsCurrent(binding, generation));
+        if (!result.ok) return null;
+        activated = true;
+        return { profileId: result.data.summary.profileId, profileRevision: result.data.summary.profileRevision,
+          receipt: result.data.startupReceipt ?? proof.receipt };
+      },
+    });
+    if (activated && result !== "migrated") await disableReadyWorkstationOwner();
+  } catch (error) {
+    readyToWorkPersistence.recordFailure(error, activated);
+    if (activated) await disableReadyWorkstationOwner();
+  }
+}
+
 async function reconcileReadyToWorkNow(
   binding: ReadyToWorkBinding,
   trigger: "startup" | "relay_reconnect" | "explicit_restore",
   generation: number,
+  componentsOnly = false,
 ) {
   if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
-  const desired = readyToWorkStore().loadFor(binding);
+  if (!componentsOnly && !readyRemembered.loadFor(binding) && readyRemembered.mayMigrate()) await migrateReadySelection(binding, generation);
+  if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
+  const desired = readyRemembered.loadFor(binding);
+  const mayRestore = readyToWorkPersistence.mayRestore(!componentsOnly && trigger === "explicit_restore" && desired !== null);
+  const attention = readyToWorkPersistence.attention();
+  if (attention) return attention;
   if (!desired) return attachReadyCodingHarnessPreview(readyToWorkAggregateStatus(null));
+  if (!mayRestore) return await refreshReadyToWorkStatus(desired, generation);
   readyToWorkCoordinatorBinding = binding;
   const status = await readyToWorkCoordinator.reconcile({
-    desired,
+    desired: componentsOnly ? createReadyToWorkDesiredState(binding, { ...desired.components, workstation: false }) : desired,
     trigger,
     isCurrent: async () => {
+      if (readyToWorkPersistence.attention()) return false;
       if (generation !== readyToWorkGeneration) return false;
-      const persisted = readyToWorkStore().loadFor(binding);
+      const persisted = readyRemembered.loadFor(binding);
       if (!persisted ||
         persisted.components.voice !== desired.components.voice ||
         persisted.components.auto_approve !== desired.components.auto_approve ||
@@ -5868,11 +6074,12 @@ async function reconcileReadyToWorkNow(
         persisted.components.coding_connection !== desired.components.coding_connection) {
         return false;
       }
-      return await readyToWorkActiveBindingMatches(binding);
+      return await readyToWorkActiveBindingMatches(binding) && generation === readyToWorkGeneration &&
+        readyToWorkPersistence.attention() === null;
     },
   });
   if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
-  return await attachReadyCodingHarnessStatuses(status);
+  return componentsOnly ? await refreshReadyToWorkStatus(desired, generation) : await attachReadyCodingHarnessStatuses(status);
 }
 
 function enabledReadyCodingHarnessStatuses(): ReadyToWorkCodingHarnessStatus[] {
@@ -5902,12 +6109,16 @@ function enabledReadyCodingHarnessStatuses(): ReadyToWorkCodingHarnessStatus[] {
 function attachReadyCodingHarnessPreview(
   status: import("./ready-to-work-contract").ReadyToWorkAggregateStatus,
 ): import("./ready-to-work-contract").ReadyToWorkAggregateStatus {
+  const attention = readyToWorkPersistence.attention();
+  if (attention) return attention;
   return withReadyToWorkCodingHarnesses(status, enabledReadyCodingHarnessStatuses());
 }
 
 async function attachReadyCodingHarnessStatuses(
   status: import("./ready-to-work-contract").ReadyToWorkAggregateStatus,
 ): Promise<import("./ready-to-work-contract").ReadyToWorkAggregateStatus> {
+  const attention = readyToWorkPersistence.attention();
+  if (attention) return attention;
   if (status.mode !== "ready") return attachReadyCodingHarnessPreview(status);
   const coding = status.components.find((component) => component.id === "coding_connection");
   if (!coding || coding.state === "off_by_choice") return status;
@@ -5936,13 +6147,15 @@ async function attachReadyCodingHarnessStatuses(
     if (hermesIndex === -1) harnesses.push(hermesStatus);
     else harnesses[hermesIndex] = hermesStatus;
   }
-  return withReadyToWorkCodingHarnesses(status, harnesses);
+  return readyToWorkPersistence.attention() ?? withReadyToWorkCodingHarnesses(status, harnesses);
 }
 
 async function refreshReadyToWorkStatus(
   desired: ReadyToWorkDesiredState,
   generation: number,
 ): Promise<import("./ready-to-work-contract").ReadyToWorkAggregateStatus> {
+  const attention = readyToWorkPersistence.attention();
+  if (attention) return attention;
   if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
   const observed: Partial<Record<ReadyToWorkComponentId, ReadyOwnerResult>> = {};
   if (desired.components.workstation) {
@@ -5961,7 +6174,7 @@ async function refreshReadyToWorkStatus(
     );
   }
   const binding: ReadyToWorkBinding = { humanId: desired.humanId, authority: desired.authority };
-  const persisted = readyToWorkStore().loadFor(binding);
+  const persisted = readyRemembered.loadFor(binding);
   if (!persisted ||
     persisted.components.voice !== desired.components.voice ||
     persisted.components.auto_approve !== desired.components.auto_approve ||
@@ -5982,7 +6195,8 @@ async function refreshReadyToWorkStatus(
 function publishReadyToWorkStatus(
   status: import("./ready-to-work-contract").ReadyToWorkAggregateStatus,
 ): void {
-  sendToActiveRenderer("readyToWork:statusChanged", status);
+  sendToActiveRenderer("readyToWork:statusChanged", readyToWorkPersistence.attention() ?? status);
+  publishAgentAccessChanged();
 }
 
 async function reconcileReadyForServerSession(
@@ -6001,7 +6215,9 @@ async function reconcileReadyForServerSession(
   } catch {
     // Standard, signed-out, foreign, and unavailable startup contexts are
     // deliberately silent and fail closed. Explicit Restore remains the
-    // Human-visible retry path.
+    // Human-visible retry path. Uninterpretable persistence remains visible.
+    const attention = readyToWorkPersistence.attention();
+    if (attention) publishReadyToWorkStatus(attention);
   }
 }
 
@@ -6022,6 +6238,87 @@ async function verifyReadyEnrollmentPin(serverUrl: string, pin: string): Promise
   if (!response.ok) throw new Error(response.status === 401 ? "That PIN is incorrect." : "Nautilo could not verify your PIN.");
 }
 
+/** Content-free invalidation; renderer reads current owners, never cached authority. */
+function publishAgentAccessChanged(): void {
+  sendToActiveRenderer("readyToWork:agentAccessChanged", null);
+}
+
+async function agentAccessStatusForSender(e: Electron.IpcMainInvokeEvent): Promise<AgentAccessStatus> {
+  assertMainWindowSender(e);
+  const session = resolveSessionFromSender(e);
+  const renderer = e.sender;
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const generation = readyToWorkGeneration;
+  const current = () => !renderer.isDestroyed() && activeRenderer() === renderer && serverSessions.active === session
+    && resolveSessionFromSender(e) === session && miniAppRecoveryAuthGeneration === authGeneration && generation === readyToWorkGeneration;
+  const unavailable = () => projectAgentAccess({ desired: null, persistenceUnavailable: true, authenticated: false,
+    connected: false, commandAvailable: false, ptyAvailable: false, developmentReady: false, developmentReason: null,
+    fullMac: { state: "unconfirmed", eligible: false }, fullMacOneShot: false });
+  let knownDesired: ReadyToWorkDesiredState | null = null;
+  let choiceKnown = false;
+  try {
+    const binding = await resolveReadyToWorkBinding(e);
+    if (!current()) return unavailable();
+    readyToWorkPersistence.retryStatus();
+    const attention = readyToWorkPersistence.attention();
+    const desired = readyRemembered.loadFor(binding);
+    knownDesired = desired;
+    choiceKnown = attention === null;
+    const observed = desired?.components.workstation ? await observeReadyWorkstation(desired) : null;
+    const fullMac = getRelayStatus() === "connected" ? await readUncontainedHostCommandsStatus() : null;
+    if (!current() || !readyBindingIsCurrent(binding, generation)) return unavailable();
+    const capability = getAcknowledgedLocalExecutionCapabilities();
+    const profile = capability?.workstationProfileSnapshot;
+    const local = activeWorkstationProfileController.getActiveSession();
+    const matchesProfile = local !== null && profile?.profileId === local.profileId && profile.profileRevision === local.profileRevision;
+    const available = capability?.canExecuteLocal === true && capability.localExecution !== undefined
+      && (desired?.components.workstation ? matchesProfile : profile === undefined && capability.basicExecution !== undefined);
+    return projectAgentAccess({ desired, persistenceUnavailable: attention !== null, authenticated: true,
+      connected: getRelayStatus() === "connected", commandAvailable: available,
+      ptyAvailable: capability?.localExecution?.pty === true,
+      developmentReady: observed?.state === "ready" && matchesProfile, developmentReason: observed?.reason ?? null,
+      fullMac: { state: !fullMac?.confirmed ? "unconfirmed" : fullMac.active ? "active" : "inactive", eligible: fullMac?.eligible === true },
+      fullMacOneShot: capability?.canExecuteFullMacOneShot === true });
+  } catch {
+    if (!current()) return unavailable();
+    return projectAgentAccess({ desired: knownDesired, persistenceUnavailable: !choiceKnown || readyToWorkPersistence.attention() !== null,
+      authenticated: false, connected: getRelayStatus() === "connected", commandAvailable: false, ptyAvailable: false,
+      developmentReady: false, developmentReason: null, fullMac: { state: "unconfirmed", eligible: false }, fullMacOneShot: false });
+  }
+}
+
+ipcMain.handle("readyToWork:getAgentAccess", (e) => readyToWorkOperationQueue.run(() => agentAccessStatusForSender(e)));
+ipcMain.handle("readyToWork:chooseAgentAccess", async (e, raw: unknown) => {
+  assertMainWindowSender(e);
+  const request = ipcRecord(raw);
+  if (request?.["choice"] === "basic" && Object.keys(request).length === 1) {
+    await disableDevelopmentForSender(e);
+  } else if (request?.["choice"] === "development"
+    && Object.keys(request).sort().join(",") === "choice,pin,profileId,profileRevision"
+    && typeof request["pin"] === "string" && typeof request["profileId"] === "string" && request["profileId"].trim() !== ""
+    && typeof request["profileRevision"] === "number" && Number.isSafeInteger(request["profileRevision"]) && request["profileRevision"] > 0) {
+    await enrollReadyToWork(e, { selection: selectionForAgentAccess(null, "development"), pin: request["pin"] }, "development",
+      { profileId: request["profileId"], profileRevision: request["profileRevision"] });
+  } else throw new Error("Agent access requires the exact reviewed Development profile");
+  publishAgentAccessChanged();
+  return readyToWorkOperationQueue.run(() => agentAccessStatusForSender(e));
+});
+ipcMain.handle("readyToWork:restoreDevelopment", async (e) => {
+  resolveSessionFromSender(e);
+  const generation = readyToWorkGeneration;
+  return readyToWorkOperationQueue.run(async () => {
+    await readyToWorkCleanupPromise;
+    const binding = await resolveReadyToWorkBinding(e);
+    const desired = readyRemembered.loadFor(binding);
+    if (desired?.components.workstation && readyBindingIsCurrent(binding, generation) && readyToWorkPersistence.mayRestore(true)) {
+      await restoreReadyWorkstation(desired);
+      if (!readyBindingIsCurrent(binding, generation)) throw new Error("Agent access identity changed during restore");
+    }
+    publishAgentAccessChanged();
+    return agentAccessStatusForSender(e);
+  });
+});
+
 // the renderer may submit one transient own-Human PIN during
 // enrollment, but no receipt, binding, identity, or owner authority crosses.
 ipcMain.handle("readyToWork:get", async (e) => {
@@ -6030,13 +6327,16 @@ ipcMain.handle("readyToWork:get", async (e) => {
     await readyToWorkStatusForSender(e, generation));
 });
 
-ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
+async function enrollReadyToWork(
+  e: Electron.IpcMainInvokeEvent, raw: unknown, target: "all" | "components" | "development",
+  reviewedProfile?: Readonly<{ profileId: string; profileRevision: number }>,
+) {
   const request = ipcRecord(raw);
-  const selection = request && Object.keys(request).sort().join(",") === "pin,selection"
-    ? parseReadyToWorkSelection(request["selection"])
+  const submittedSelection = request && Object.keys(request).sort().join(",") === "pin,selection"
+    ? (target === "components" ? parseReadyToWorkComponentSelection(request["selection"]) : parseReadyToWorkSelection(request["selection"]))
     : null;
   const pin = request?.["pin"];
-  if (!selection) throw new Error("Ready-to-work selection is invalid");
+  if (!submittedSelection) throw new Error("Ready-to-work selection is invalid");
   if (typeof pin !== "string" || !/^\d{6,8}$/.test(pin)) {
     throw new Error("Ready to work requires your 6–8 digit PIN");
   }
@@ -6048,7 +6348,19 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
     }
     const binding = await resolveReadyToWorkBinding(e);
     const session = resolveSessionFromSender(e);
-    const previous = readyToWorkStore().loadFor(binding);
+    readyRemembered.assertWritable();
+    const previous = readyRemembered.previousFor(binding);
+    // Old Workbench aggregate writers cannot change or restore the keyed
+    // primary access choice. They can still edit the other Ready components.
+    const keyed = readyRemembered.loadFor(binding);
+    if (target === "all" && keyed && (submittedSelection as ReadyToWorkSelection).workstation !== keyed.components.workstation) {
+      throw new Error("Use Agent access on this Mac to change Basic or Development");
+    }
+    const effectiveTarget = target === "all" && keyed ? "components" : target;
+    const selection = effectiveTarget === "development" ? selectionForAgentAccess(previous, "development")
+      : effectiveTarget === "components" ? selectionForReadyComponents(previous, submittedSelection)
+        : submittedSelection as ReadyToWorkSelection;
+    if (effectiveTarget === "components" && readyToWorkPersistence.attention()) throw new Error("Repair saved access before changing Ready components");
     let activatedWorkstation = false;
     let activatedComputerUse = false;
     let receiptToPersist: Readonly<{
@@ -6057,13 +6369,19 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
       receipt: string;
     }> | null = null;
 
-    if (selection.workstation) {
+    if (selection.workstation && effectiveTarget !== "components") {
       if (!isReadyToWorkStorageProtected(safeStorage)) {
         throw new Error("Ready to work cannot protect its Workstation startup receipt on this Mac");
       }
       const selectors = await readyToWorkProfileSelectors();
       if (!selectors.ok) throw new Error(selectors.message);
-      const existingReceipt = readyToWorkProtectedReceiptStore().readFor(binding);
+      if (effectiveTarget === "development" && (!reviewedProfile || selectors.profileId !== reviewedProfile.profileId
+        || selectors.profileRevision !== reviewedProfile.profileRevision)) {
+        throw new Error("Development profile changed. Review its current scope before confirming again.");
+      }
+      if (!readyBindingIsCurrent(binding, generation)) throw new Error("Agent access identity changed during review");
+      const existingReceipt = readyRemembered.readReceipt(binding);
+      if (existingReceipt.ok) receiptToPersist = existingReceipt;
       let canPreserveReceipt = existingReceipt.ok &&
         existingReceipt.profileId === selectors.profileId &&
         existingReceipt.profileRevision === selectors.profileRevision;
@@ -6086,7 +6404,7 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
             profileRevision: selectors.profileRevision,
             proof: { startupReceipt: existingReceipt.receipt },
             networkTimeoutMs: 5_000,
-          });
+          }, () => readyBindingIsCurrent(binding, generation));
           if (restored.ok) {
             activatedWorkstation = true;
             if (restored.data.startupReceipt) {
@@ -6118,7 +6436,7 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
           profileRevision: selectors.profileRevision,
           proof: { pin },
           networkTimeoutMs: 5_000,
-        });
+        }, () => readyBindingIsCurrent(binding, generation));
         if (!activated.ok) throw new Error(activated.message);
         activatedWorkstation = true;
         if (!activated.data.startupReceipt) {
@@ -6136,10 +6454,11 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
     }
 
     try {
-      if (selection.computer_use) {
+      if (selection.computer_use && effectiveTarget !== "development") {
         activatedComputerUse = await enableReadyComputerUseDuringEnrollment(
           pin,
           binding.humanId,
+          () => readyBindingIsCurrent(binding, generation),
         );
       }
     } catch (error) {
@@ -6151,31 +6470,20 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
     // The PIN/activation ceremony is asynchronous. Never persist its result
     // after the Human, active session, or complete authority marker changed.
     if (generation !== readyToWorkGeneration ||
-      !await readyToWorkActiveBindingMatches(binding)) {
+      !await readyToWorkActiveBindingMatches(binding) || generation !== readyToWorkGeneration) {
       if (activatedComputerUse) await disableReadyComputerUseOwner().catch(() => undefined);
       if (activatedWorkstation) await disableReadyWorkstationOwner();
       throw new Error("Ready to work active Desktop authority changed during enrollment");
     }
 
     const desired = createReadyToWorkDesiredState(binding, selection);
-    let persistedNewReceipt = false;
     try {
-      if (receiptToPersist !== null) {
-        persistedNewReceipt = readyToWorkProtectedReceiptStore().save({
-          binding,
-          ...receiptToPersist,
-        });
-        if (!persistedNewReceipt) {
-          throw new Error("Nautilo could not protect the Workstation startup receipt");
-        }
-      }
-      // A narrowed same-binding selection is durable before any removed owner
-      // is turned off, so a crash can only restart the narrower posture.
-      readyToWorkStore().save(desired);
+      if (effectiveTarget === "components") readyRemembered.saveComponents(desired, () => readyBindingIsCurrent(binding, generation));
+      else readyRemembered.save(desired, receiptToPersist, () => readyBindingIsCurrent(binding, generation));
     } catch (error) {
-      if (persistedNewReceipt) {
-        try { readyToWorkProtectedReceiptStore().clear(); } catch { /* rollback continues */ }
-      }
+      readyToWorkPersistence.recordFailure(error, activatedComputerUse || activatedWorkstation);
+      // A proof written before a failed intent commit is not authority; leave
+      // foreign records intact and let the keyed owner collect orphan proof.
       if (activatedComputerUse) await disableReadyComputerUseOwner().catch(() => undefined);
       if (activatedWorkstation) await disableReadyWorkstationOwner();
       throw error;
@@ -6190,17 +6498,61 @@ ipcMain.handle("readyToWork:enroll", async (e, raw: unknown) => {
         coding_connection: previous.components.coding_connection && !selection.coding_connection,
       };
       if (Object.values(removed).some(Boolean)) {
-        if (removed.workstation) {
-          try { readyToWorkProtectedReceiptStore().clear(); } catch { /* intent is already narrowed */ }
-        }
         await readyToWorkCoordinator.disable(createReadyToWorkDesiredState(binding, removed));
       }
     }
-    const status = await reconcileReadyToWorkNow(binding, "explicit_restore", generation);
+    const status = effectiveTarget === "development" ? await refreshReadyToWorkStatus(desired, generation)
+      : await reconcileReadyToWorkNow(binding, "explicit_restore", generation, effectiveTarget === "components");
     if (generation === readyToWorkGeneration) publishReadyToWorkStatus(status);
     return status;
   });
+}
+
+ipcMain.handle("readyToWork:enroll", (e, raw: unknown) => enrollReadyToWork(e, raw, "all"));
+ipcMain.handle("readyToWork:enrollComponents", (e, raw: unknown) => enrollReadyToWork(e, raw, "components"));
+
+ipcMain.handle("readyToWork:restoreComponents", (e) => {
+  resolveSessionFromSender(e);
+  const generation = readyToWorkGeneration;
+  return readyToWorkOperationQueue.run(async () => {
+    await readyToWorkCleanupPromise;
+    const binding = await resolveReadyToWorkBinding(e);
+    const status = await reconcileReadyToWorkNow(binding, "explicit_restore", generation, true);
+    if (readyBindingIsCurrent(binding, generation)) publishReadyToWorkStatus(status);
+    return status;
+  });
 });
+
+function disableReadyComponentsForSender(e: Electron.IpcMainInvokeEvent) {
+  const session = resolveSessionFromSender(e);
+  // Reduce immediately, before queued enrollment can complete; this never
+  // touches the Development proof or its live execution owner.
+  readyToWorkGeneration += 1;
+  const generation = readyToWorkGeneration;
+  const binding = currentReadyBinding();
+  let desired: ReadyToWorkDesiredState | null = null;
+  try {
+    if (!binding) throw new Error("Ready identity is unavailable");
+    const previous = readyRemembered.loadFor(binding);
+    desired = createReadyToWorkDesiredState(binding, selectionForReadyComponents(previous,
+      { voice: false, auto_approve: false, computer_use: false, coding_connection: false }));
+    readyRemembered.saveComponents(desired, () => currentReadyBinding() === binding);
+    readyToWorkPersistence.didReduceComponents();
+  } catch (error) { readyToWorkPersistence.recordReductionFailure(error); }
+  const cleanup = Promise.all([
+    disableReadyComputerUseOwner(), requestReadyRendererOwners({ voice: false, autoApprove: false }),
+  ]);
+  readyToWorkCleanupPromise = settleReadyCleanup(readyToWorkCleanupPromise, [cleanup]);
+  return readyToWorkOperationQueue.run(async () => {
+    await readyToWorkCleanupPromise;
+    if (generation !== readyToWorkGeneration || serverSessions.active !== session) return readyToWorkAggregateStatus(null);
+    const status = desired ? await refreshReadyToWorkStatus(desired, generation)
+      : attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
+    if (generation === readyToWorkGeneration && serverSessions.active === session) publishReadyToWorkStatus(status);
+    return status;
+  });
+}
+ipcMain.handle("readyToWork:disableComponents", disableReadyComponentsForSender);
 
 ipcMain.handle("readyToWork:restore", async (e) => {
   const generation = readyToWorkGeneration;
@@ -6208,32 +6560,36 @@ ipcMain.handle("readyToWork:restore", async (e) => {
     await readyToWorkCleanupPromise;
     if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
     const binding = await resolveReadyToWorkBinding(e);
-    const status = await reconcileReadyToWorkNow(binding, "explicit_restore", generation);
+    const status = await reconcileReadyToWorkNow(binding, "explicit_restore", generation, readyRemembered.loadFor(binding) !== null);
     if (generation === readyToWorkGeneration) publishReadyToWorkStatus(status);
     return status;
   });
 });
 
 ipcMain.handle("readyToWork:disable", (e) => {
+  resolveSessionFromSender(e);
+  const selected = currentReadyBinding();
+  if (selected && readyRemembered.loadFor(selected)) return disableReadyComponentsForSender(e);
   // Authority-reducing Off needs no Human/network lookup: sender-gate, capture
   // the sole local selection, then synchronously disarm restart before any
   // queued or remote work can delay it.
   resolveSessionFromSender(e);
-  const desired = readyToWorkStore().load();
-  readyToWorkStore().clear();
-  try {
-    readyToWorkProtectedReceiptStore().clear();
-  } catch {
-    // Durable intent is already disarmed. A stale opaque ciphertext is not
-    // authority and must not prevent Standard or owner shutdown.
-  }
   readyToWorkCoordinatorBinding = null;
   readyToWorkGeneration += 1;
+  const ownerCleanup = readyToWorkPersistence.disable((desired, failedReduction) => {
+    // A failed disk mutation must never prevent the live local fence. When
+    // saved selection is unreadable, stop the access owners without inventing
+    // a desired binding or altering independent coding-harness preferences.
+    if (desired?.components.workstation || (!desired && failedReduction)) fenceDevelopmentLocalExecutions();
+    if (desired) return readyToWorkCoordinator.disable(desired);
+    if (failedReduction) return Promise.all([
+      disableReadyWorkstationOwner(), disableReadyComputerUseOwner(),
+      requestReadyRendererOwners({ voice: false, autoApprove: false }),
+    ]).then(() => undefined);
+    return Promise.resolve();
+  }).catch(() => undefined);
   const status = attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
   publishReadyToWorkStatus(status);
-  const ownerCleanup = desired
-    ? readyToWorkCoordinator.disable(desired).catch(() => undefined)
-    : Promise.resolve();
   readyToWorkCleanupPromise = awaitReadyToWorkBounded(
     Promise.all([readyToWorkCleanupPromise, ownerCleanup]),
     5_000,
@@ -6274,10 +6630,12 @@ ipcMain.handle("readyToWork:reportRendererOwners", async (e, raw: unknown) => {
   const autoApprove = request["autoApprove"];
   const generation = readyToWorkGeneration;
   return await readyToWorkOperationQueue.run(async () => {
+    const attention = readyToWorkPersistence.attention();
+    if (attention) return attention;
     if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
     const binding = await resolveReadyToWorkBinding(e);
     if (generation !== readyToWorkGeneration) return attachReadyCodingHarnessPreview(readyToWorkCoordinator.reset());
-    const desired = readyToWorkStore().loadFor(binding);
+    const desired = readyRemembered.loadFor(binding);
     if (!desired) return attachReadyCodingHarnessPreview(readyToWorkAggregateStatus(null));
     const observed: Partial<Record<ReadyToWorkComponentId, ReadyOwnerResult>> = {};
     if (desired.components.voice) {
@@ -6593,6 +6951,7 @@ ipcMain.handle(
       grantId: args.grantId,
     });
     if (!revoked.ok) return grantStoreFailure(revoked.code);
+    fenceActiveLocalExecutions(args.grantId, revoked.data.grant.canonicalRoot);
     // re-advertise the advisory snapshot from local state (never renderer data).
     reAdvertiseDesktopFilesystemGrantSnapshot(
       "Desktop Filesystem Grant revoke",
@@ -6961,8 +7320,11 @@ async function verifyUncontainedHostCommandsForRelay(binding: {
   readonly userId: string;
   readonly relayId: string;
   readonly desktopSessionId: string | null;
+  readonly activationId?: string;
 }): Promise<boolean> {
   const current = uncontainedHostCommandsBinding();
+  const session = serverSessions.active;
+  const authGeneration = miniAppRecoveryAuthGeneration;
   if (
     current === null ||
     binding.instanceId !== desktopInstance.instanceId ||
@@ -6984,15 +7346,19 @@ async function verifyUncontainedHostCommandsForRelay(binding: {
       { headers: { authorization: `Bearer ${bearerToken}` } },
     );
     if (!response.ok) return false;
-    const body = await response.json() as { active?: unknown };
-    return body.active === true;
+    const body = await response.json() as { active?: unknown; activationId?: unknown };
+    const freshUserId = await currentDesktopFilesystemGrantUserId();
+    const fresh = uncontainedHostCommandsBinding();
+    return body.active === true && (binding.activationId === undefined || body.activationId === binding.activationId)
+      && fresh !== null && fresh.relayId === current.relayId && fresh.desktopSessionId === current.desktopSessionId
+      && fresh.serverUrl === current.serverUrl && freshUserId === userId
+      && serverSessions.active === session && miniAppRecoveryAuthGeneration === authGeneration && getRelayStatus() === "connected";
   } catch {
     return false;
   }
 }
 
-ipcMain.handle("uncontainedHostCommands:getStatus", async (e) => {
-  assertMainWindowSender(e);
+async function readUncontainedHostCommandsStatus() {
   const binding = uncontainedHostCommandsBinding();
   if (!binding) {
     return { confirmed: false, active: false, eligible: false, reason: "desktop_binding_unavailable", activatedAt: null } as const;
@@ -7032,6 +7398,10 @@ ipcMain.handle("uncontainedHostCommands:getStatus", async (e) => {
   } catch {
     return { confirmed: false, active: false, eligible: false, reason: "server_status_unavailable", activatedAt: null } as const;
   }
+}
+ipcMain.handle("uncontainedHostCommands:getStatus", (e) => {
+  assertMainWindowSender(e);
+  return readUncontainedHostCommandsStatus();
 });
 
 ipcMain.handle("uncontainedHostCommands:activate", async (e, args: { pin?: unknown }) => {
@@ -7102,29 +7472,29 @@ ipcMain.handle("uncontainedHostCommands:disable", async (e) => {
   }
 });
 
-/**
- * narrow activation-preparation IPC. The renderer supplies NO roots,
- * env, executables, or discovered facts. Electron main materializes the seed
- * profile and runs the advisory discovery adapters itself, returning only the
- * review facts + seed identity for the operator to review before a future
- * Enable-with-PIN step. This does NOT activate the profile, does NOT create or
- * update a stored profile, does NOT grant roots, and does NOT call the server
- * activation route — those are explicit separate flows.
- */
-ipcMain.handle("workstationProfiles:prepareActivation", async (e) => {
+/** Review the actual stored configuration, without activating or granting it. */
+async function prepareDevelopmentReviewForSender(e: Electron.IpcMainInvokeEvent) {
   assertMainWindowSender(e);
+  const generation = readyToWorkGeneration;
+  const binding = await resolveReadyToWorkBinding(e);
   const seed = materializeSeedProfileForReview();
   if (!seed.ok) return profileIpcFailure(seed.code, seed.message);
-  const review = await runSeedDiscoveryReview(seed.profile);
+  const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: seed.profile.id });
+  if (!stored.ok && stored.code !== "profile_not_found") return profileIpcFailure("invalid_request", "Development profile could not be read.");
+  const profile = stored.ok ? stored.data.profile : seed.profile;
+  const review = await runSeedDiscoveryReview(profile);
+  if (!readyBindingIsCurrent(binding, generation)) return profileIpcFailure("invalid_request", "The selected Desktop identity changed during review.");
   if (!review.ok) return profileIpcFailure(review.code, review.message);
   return {
     ok: true,
     data: {
-      seed: buildSeedDescriptor(seed.profile),
+      seed: buildSeedDescriptor(profile),
       review: review.review,
+      scope: developmentProfileScope(profile, currentFolderPath ?? genieWorkspaceRoot ?? null),
     },
   } as const;
-});
+}
+ipcMain.handle("workstationProfiles:prepareActivation", prepareDevelopmentReviewForSender);
 
 // ── Workstation Profile management bridge (narrow, sender-gated) ───────
 //
@@ -7234,42 +7604,31 @@ ipcMain.handle("workstationProfiles:materializeSeedProfile", async (e) => {
   } as const;
 });
 
-ipcMain.handle("workstationProfiles:deactivateActiveProfile", async (e) => {
-  assertMainWindowSender(e);
-  // No renderer-supplied subject / grantIds: the controller revokes the
-  // session it owns. This is authority-reducing only; it adds no authority.
+async function disableDevelopmentForSender(e: Electron.IpcMainInvokeEvent) {
+  resolveSessionFromSender(e);
+  readyToWorkGeneration += 1;
+  readyToWorkCoordinatorBinding = null;
+  fenceDevelopmentLocalExecutions();
+  const localDeactivation = activeWorkstationProfileController.deactivate();
+  const durableReduction = readyRemembered.disableDevelopment(async () => { await localDeactivation; });
 
-  // Best-effort server-side Full Workstation session
-  // teardown. POST to the authoritative `/api/workstation-access/disable`
-  // route with the user's Logto bearer token. The server route is
-  // authenticated + user-bound + idempotent + capability-independent (B3),
-  // so a user whose capability was revoked mid-session can still tear down
-  // their own server-side session (the one the approval override reads).
-  // This is BEST-EFFORT ONLY: a network / server failure or a missing token
-  // / server URL NEVER blocks local deactivation — the local
-  // `ActiveWorkstationProfileController` remains the fail-closed authority
-  // for the desktop's policy-pack grants. A stale server session left by a
-  // failed teardown is reconciled by the next local activate / server
-  // switch / sign-out. No PIN, command output, or secret is sent.
   const serverUrl = resolvedServerUrl();
-  if (serverUrl) {
-    try {
-      const bearerToken = await getValidAccessToken({
-        refresh: refreshTokens,
-        onObservedRejection: onLogtoRefreshFailed,
-      });
-      if (bearerToken) {
-        await disableWorkstationProfileViaServer({
-          serverUrl,
-          bearerToken,
-        });
-      }
-    } catch {
-      // Swallow — local deactivation must proceed regardless.
+  const ownerSession = serverSessions.active;
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const remoteCleanup = (async () => {
+    if (!serverUrl) return;
+    const bearerToken = await awaitReadyToWorkValueBounded(getValidAccessToken({ refresh: refreshTokens,
+      onObservedRejection: onLogtoRefreshFailed }).catch(() => null), 5_000, null);
+    if (bearerToken && ownerSession === serverSessions.active && authGeneration === miniAppRecoveryAuthGeneration) {
+      await disableWorkstationProfileViaServer({ serverUrl, bearerToken });
     }
-  }
-
-  const deactivated = await activeWorkstationProfileController.deactivate();
+  })();
+  // A new enrollment cannot overtake old server cleanup and then be disabled
+  // by its late response. Local revocation already began synchronously above.
+  readyToWorkCleanupPromise = settleReadyCleanup(readyToWorkCleanupPromise, [durableReduction, remoteCleanup]);
+  await readyToWorkCleanupPromise;
+  const deactivated = await localDeactivation;
+  void publishReadyToWorkOwnerObservation().catch(() => undefined);
   if (deactivated.ok) {
     return {
       ok: true,
@@ -7290,7 +7649,8 @@ ipcMain.handle("workstationProfiles:deactivateActiveProfile", async (e) => {
     "invalid_request",
     "The active workstation profile could not be deactivated.",
   );
-});
+}
+ipcMain.handle("workstationProfiles:deactivateActiveProfile", disableDevelopmentForSender);
 
 // ── Workstation Profile activation seam (selectActiveProfile) ──────────
 //
@@ -7582,11 +7942,14 @@ async function activateStoredWorkstationProfile(
     proof?: unknown;
     networkTimeoutMs?: number;
   }>,
+  isCurrent: () => boolean = () => true,
 ): Promise<WorkstationProfileIpcResult<Readonly<{
   summary: ActiveWorkstationProfileSummary;
   outcome: string;
   startupReceipt?: string;
 }>>> {
+    const cancelled = () => profileIpcFailure<never>("server_activation_failed", "Workstation activation was cancelled");
+    if (!isCurrent()) return cancelled();
     // The caller supplies only profile selectors plus one opaque proof.
     if (
       typeof args?.profileId !== "string" ||
@@ -7615,6 +7978,7 @@ async function activateStoredWorkstationProfile(
     //    profile. A mismatch is the "wrong revision" rejection.
     const store = activeWorkstationProfileController.getProfileStore();
     const stored = await store.get({ profileId });
+    if (!isCurrent()) return cancelled();
     if (!stored.ok) {
       if (stored.code === "profile_not_found") {
         return profileIpcFailure(
@@ -7663,6 +8027,7 @@ async function activateStoredWorkstationProfile(
     const bearerToken = args.networkTimeoutMs === undefined
       ? await tokenPromise
       : await awaitReadyToWorkValueBounded(tokenPromise, args.networkTimeoutMs, null);
+    if (!isCurrent()) return cancelled();
     if (bearerToken === null) {
       return profileIpcFailure(
         "server_activation_failed",
@@ -7682,6 +8047,7 @@ async function activateStoredWorkstationProfile(
       ...(args.networkTimeoutMs === undefined ? {} : { timeoutMs: args.networkTimeoutMs }),
     });
 
+    if (!isCurrent()) return cancelled();
     if (!serverResult.ok) {
       // Map the server denial to a typed IPC failure. NO compile / activate
       // happens on any server failure — the desktop adds no authority until
@@ -7722,6 +8088,7 @@ async function activateStoredWorkstationProfile(
     //    authoritative main-side identity (userId from the relay pairing),
     //    never from the renderer.
     const userId = await currentDesktopFilesystemGrantUserId();
+    if (!isCurrent()) return cancelled();
     if (userId === null) {
       // Server proof succeeded but the desktop cannot resolve its own relay
       // user identity — do NOT compile. Surface as a typed failure.
@@ -7748,6 +8115,7 @@ async function activateStoredWorkstationProfile(
       );
     }
 
+    if (!isCurrent()) return cancelled();
     const activated = await activeWorkstationProfileController.activate({
       profileId,
       facts: factsResult.facts,
@@ -7763,6 +8131,11 @@ async function activateStoredWorkstationProfile(
       );
     }
 
+    if (!isCurrent()) {
+      await disableReadyWorkstationOwner();
+      return cancelled();
+    }
+
     // 5. Explicitly await the relay update ACK. The controller callback is
     // fire-and-forget for existing callers, so it is not sufficient here.
     // If acknowledgement fails, revoke local compiled authority and await a
@@ -7771,6 +8144,10 @@ async function activateStoredWorkstationProfile(
     const advertised = args.networkTimeoutMs === undefined
       ? await advertisement
       : await awaitReadyToWorkValueBounded(advertisement, args.networkTimeoutMs, false);
+    if (!isCurrent()) {
+      await disableReadyWorkstationOwner();
+      return cancelled();
+    }
     if (!advertised) {
       await activeWorkstationProfileController.deactivate();
       const rollback = refreshDesktopRelayCapabilities("workstation profile activation rollback");
@@ -7787,6 +8164,10 @@ async function activateStoredWorkstationProfile(
       authorization: serverResult.authorization,
       ...(args.networkTimeoutMs === undefined ? {} : { timeoutMs: args.networkTimeoutMs }),
     });
+    if (!isCurrent()) {
+      await disableReadyWorkstationOwner();
+      return cancelled();
+    }
     if (!completed.ok) {
       await activeWorkstationProfileController.deactivate();
       const rollback = refreshDesktopRelayCapabilities("workstation profile completion rollback");
@@ -7816,11 +8197,18 @@ ipcMain.handle(
   "workstationProfiles:selectActiveProfile",
   async (e, args: { profileId?: unknown; profileRevision?: unknown; pin?: unknown }) => {
     assertMainWindowSender(e);
+    const ownerSession = resolveSessionFromSender(e);
+    const generation = readyToWorkGeneration;
+    const authGeneration = miniAppRecoveryAuthGeneration;
+    const isCurrent = () => generation === readyToWorkGeneration && authGeneration === miniAppRecoveryAuthGeneration &&
+      ownerSession === serverSessions.active && ownerSession.signedIn && !e.sender.isDestroyed();
+    await readyToWorkCleanupPromise;
+    if (!isCurrent()) return profileIpcFailure("server_activation_failed", "Workstation activation was cancelled");
     const activated = await activateStoredWorkstationProfile({
       profileId: args?.profileId,
       profileRevision: args?.profileRevision,
       proof: { pin: args?.pin },
-    });
+    }, isCurrent);
     if (!activated.ok) return activated;
     // The opaque startup receipt is main-only and never crosses this existing
     // renderer surface.
@@ -8470,6 +8858,8 @@ ipcMain.handle("foregroundShadow:history:reconcile", async (e, raw: unknown) => 
     FOREGROUND_SHADOW_HISTORY_IPC_MAX_BYTES,
   );
   assertForegroundShadowHistoryShape(value);
+  const historySession = resolveSessionFromSender(e);
+  const historyAuthGeneration = miniAppRecoveryAuthGeneration;
   const { controller } = await foregroundShadowControllerForSender(e);
   const result = await controller.reconcileHistory(
     value.readerInput as Parameters<
@@ -8488,7 +8878,20 @@ ipcMain.handle("foregroundShadow:history:reconcile", async (e, raw: unknown) => 
       errorName: error instanceof Error ? error.name : typeof error,
     });
   }
-  return result;
+  if (!hasVerifiedLocalExecutionReference(result) || e.sender.isDestroyed() ||
+    serverSessions.active !== historySession || activeRenderer() !== e.sender ||
+    miniAppRecoveryAuthGeneration !== historyAuthGeneration) return result;
+  const historyContext = await localExecutionHistoryContext(e).catch(() => null);
+  if (historyContext === null || !historyContext.isCurrent() || miniAppRecoveryAuthGeneration !== historyAuthGeneration) return result;
+  try {
+    const readerInput = value.readerInput as Parameters<ElectronForegroundShadowController["reconcileHistory"]>[0];
+    const room = await historyContext.client.getRoom(readerInput.sourceRoomId);
+    if (!historyContext.isCurrent() || typeof room.graphThreadId !== "string") return result;
+    const localExecutionHistoryOverlays = await projectVerifiedLocalExecutionHistory({ result,
+      store: localExecutionHistoryStore(), scope: historyContext.scope, graphThreadId: room.graphThreadId,
+      isCurrent: historyContext.isCurrent });
+    return historyContext.isCurrent() ? { ...result, localExecutionHistoryOverlays } : result;
+  } catch { return result; }
 });
 
 /**
@@ -9553,9 +9956,250 @@ ipcMain.handle("workspace:listRecent", (e) => {
   return listRecentCurrentFolders();
 });
 
+let localExecutionHistoryStoreValue: LocalExecutionHistoryStore | null = null;
+function localExecutionHistoryStore(): LocalExecutionHistoryStore {
+  return localExecutionHistoryStoreValue ??= new LocalExecutionHistoryStore({
+    directory: path.join(app.getPath("userData"), "local-execution-history"), storage: safeStorage,
+  });
+}
+
+function localExecutionHistoryWriter(serverUrl: string, humanUserId: string): NonNullable<StartRelayOptions["localExecutionHistoryWriter"]> {
+  // Pin identity while this authenticated owner is created. Logout/retirement
+  // may change the active UI before its final process cleanup finishes.
+  const authority = authoritativeConnectionSnapshot();
+  const origin = new URL(serverUrl).origin;
+  const fingerprint = authority.scope === origin ? authority.serverFingerprint : null;
+  return (owner, snapshot) => {
+    if (!fingerprint || owner.humanUserId !== humanUserId || owner.instanceId !== desktopInstance.instanceId) {
+      return Promise.reject(new Error("LOCAL_EXECUTION_HISTORY_OWNER_UNAVAILABLE"));
+    }
+    return localExecutionHistoryStore().save({ version: 1, owner, generation: snapshot.generation,
+      scope: { origin, serverFingerprint: fingerprint, instanceId: owner.instanceId,
+        humanUserId, relayId: owner.relayId, pairingGeneration: owner.pairingGeneration },
+      snapshot: { ...snapshot, expiresAt: null } });
+  };
+}
+
+async function localExecutionHistoryContext(event: Electron.IpcMainInvokeEvent) {
+  const session = resolveSessionFromSender(event);
+  const renderer = event.sender;
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const binding = await resolveReadyToWorkBindingForSession(session);
+  const runtime = getActiveComputerUseRuntime();
+  if (!runtime || runtime.humanUserId !== binding.humanId || runtime.instanceId !== desktopInstance.instanceId) {
+    throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_UNAVAILABLE");
+  }
+  const scope: LocalExecutionHistoryScope = { instanceId: runtime.instanceId,
+    origin: binding.authority.scope, serverFingerprint: binding.authority.serverFingerprint,
+    humanUserId: runtime.humanUserId, relayId: runtime.relayId, pairingGeneration: runtime.pairingGeneration };
+  const isCurrent = () => {
+    const current = authoritativeConnectionSnapshot();
+    const topology = getActiveComputerUseRuntime();
+    return !renderer.isDestroyed() && serverSessions.active === session && activeRenderer() === renderer &&
+      authGeneration === miniAppRecoveryAuthGeneration && resolveSessionFromSender(event) === session &&
+      current.scope === scope.origin && current.serverFingerprint === scope.serverFingerprint &&
+      current.revision === binding.authority.revision && current.connectionAttemptId === binding.authority.connectionAttemptId &&
+      topology?.instanceId === scope.instanceId && topology.humanUserId === scope.humanUserId &&
+      topology.relayId === scope.relayId && topology.pairingGeneration === scope.pairingGeneration;
+  };
+  const client = await remoteControlClientForSender(event);
+  if (!isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+  return { scope, client, isCurrent };
+}
+
+function localExecutionHistoryReader(serverUrl: string, humanUserId: string): NonNullable<StartRelayOptions["localExecutionHistoryReader"]> {
+  const origin = new URL(serverUrl).origin;
+  return async (binding, args, signal) => {
+    const session = serverSessions.active;
+    const authGeneration = miniAppRecoveryAuthGeneration;
+    const runtime = getActiveComputerUseRuntime();
+    if (!session || !runtime || binding.reader.humanUserId !== humanUserId
+      || runtime.humanUserId !== humanUserId || runtime.instanceId !== binding.reader.instanceId
+      || runtime.relayId !== binding.reader.relayId || runtime.desktopSessionId !== binding.reader.desktopSessionId
+      || runtime.pairingGeneration !== binding.reader.pairingGeneration) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    const authenticated = await resolveReadyToWorkBindingForSession(session);
+    if (authenticated.humanId !== humanUserId || authenticated.authority.scope !== origin) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    const isCurrent = () => !signal?.aborted && serverSessions.active === session
+      && authGeneration === miniAppRecoveryAuthGeneration && getActiveComputerUseRuntime() === runtime
+      && authoritativeConnectionSnapshot().revision === authenticated.authority.revision
+      && authoritativeConnectionSnapshot().serverFingerprint === authenticated.authority.serverFingerprint;
+    const token = await getValidAccessToken({ refresh: refreshTokens, onObservedRejection: onLogtoRefreshFailed });
+    if (!token || !isCurrent()) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    const client = new NautiloApiClient(serverUrl.replace(/\/$/, ""));
+    client.setToken(token);
+    const room = await client.getRoom(binding.reader.roomId);
+    if (!isCurrent() || !executionBelongsToConversation(binding.reader.conversationId, room.graphThreadId)
+      || !room.members.some(member => member.kind === "agent" && member.agentId === binding.reader.agentId)) throw new Error("LOCAL_EXECUTION_HISTORY_OWNER_CHANGED");
+    // Protected Agent source admission is supplied by the authenticated Relay
+    // request, not by this Human membership check or a renderer history cache.
+    return readLocalExecutionHistoryPage({ store: localExecutionHistoryStore(), binding,
+      ...(typeof args["search"] === "string" ? { search: args["search"] } : {}),
+      scope: { origin, serverFingerprint: authenticated.authority.serverFingerprint,
+        instanceId: runtime.instanceId, humanUserId, relayId: runtime.relayId, pairingGeneration: runtime.pairingGeneration },
+      cursor: args["cursor"] === undefined ? 0 : args["cursor"] as number,
+      maxBytes: args["max_output_bytes"] === undefined ? RUN_SHELL_OUTPUT_ARTIFACT_PAGE_BYTES : args["max_output_bytes"] as number,
+      isCurrent });
+  };
+}
+
+ipcMain.handle("localExecution:historyForRoom", async (event, raw: unknown) => {
+  const input = raw as { roomId?: unknown; references?: unknown } | null;
+  if (!input || typeof input.roomId !== "string" || !Array.isArray(input.references)) throw new Error("Invalid history request");
+  const references: LocalExecutionHistoryReference[] = input.references.map((value: unknown) => {
+    if (!value || typeof value !== "object" || !("generation" in value) || !("executionId" in value) ||
+      typeof value.generation !== "string" || typeof value.executionId !== "string") throw new Error("Invalid history reference");
+    return { generation: value.generation, executionId: value.executionId };
+  });
+  const context = await localExecutionHistoryContext(event);
+  const policy = await context.client.admin.encryptionTransition.getPolicy();
+  if (policy.policy.mode !== "plaintext_only" || !context.isCurrent()) return [];
+  const room = await context.client.getRoom(input.roomId);
+  if (typeof room.graphThreadId !== "string" || !context.isCurrent()) return [];
+  const overlays = await projectLocalExecutionHistory({ store: localExecutionHistoryStore(), scope: context.scope,
+    graphThreadId: room.graphThreadId, references, isCurrent: context.isCurrent });
+  // A transition while opening local history cannot fall back to Plain reads.
+  const currentPolicy = await context.client.admin.encryptionTransition.getPolicy();
+  return context.isCurrent() && currentPolicy.policy.mode === "plaintext_only" &&
+    currentPolicy.policy.revision === policy.policy.revision ? overlays : [];
+});
+
+function parseLocalExecutionViewRequest(value: unknown): import("./relay-dispatch/local-execution").LocalExecutionViewRequest {
+  if (value === null || typeof value !== "object") throw new Error("Invalid execution reference");
+  const request = value as Record<string, unknown>;
+  if (typeof request["generation"] !== "string" || typeof request["executionId"] !== "string" ||
+      typeof request["cursor"] !== "number" || typeof request["maxBytes"] !== "number") {
+    throw new Error("Invalid execution reference");
+  }
+  return { generation: request["generation"], executionId: request["executionId"],
+    cursor: request["cursor"], maxBytes: request["maxBytes"] };
+}
+
+subscribeLocalExecutionChanges((generation) => {
+  const session = serverSessions.active;
+  const renderer = activeRenderer();
+  if (!session || !renderer || renderer.isDestroyed() || serverSessions.active !== session) return;
+  renderer.send("localExecution:changed", { generation });
+});
+
+async function readLocalExecutionForSender(event: Electron.IpcMainInvokeEvent, raw: unknown, cancel = false) {
+  assertMainWindowSender(event);
+  const session = resolveSessionFromSender(event);
+  const renderer = event.sender;
+  const request = parseLocalExecutionViewRequest(raw);
+  const isCurrent = () => !renderer.isDestroyed() && serverSessions.active === session && activeRenderer() === renderer
+    && getActiveLocalExecutionGeneration() === request.generation && resolveSessionFromSender(event) === session;
+  return readLocalExecutionWithExpiredHistory({ request, cancel, isCurrent,
+    readLive: () => readActiveLocalExecution(request, cancel),
+    openHistory: async () => {
+      const context = await localExecutionHistoryContext(event);
+      return { scope: context.scope, store: localExecutionHistoryStore(), isCurrent: context.isCurrent };
+    },
+  });
+}
+ipcMain.handle("localExecution:read", async (event, request: unknown) =>
+  await readLocalExecutionForSender(event, request));
+ipcMain.handle("localExecution:cancel", async (event, request: unknown) =>
+  await readLocalExecutionForSender(event, request, true));
+ipcMain.handle("localExecution:openPreview", async (event, request: unknown) => {
+  await openLocalExecutionPreview(request, {
+    capture: () => ({ session: resolveSessionFromSender(event), renderer: event.sender }),
+    read: readActiveLocalExecution,
+    isCurrent: ({ session, renderer }, generation) =>
+      !renderer.isDestroyed() && serverSessions.active === session && activeRenderer() === renderer &&
+      getActiveLocalExecutionGeneration() === generation && resolveSessionFromSender(event) === session,
+    send: ({ renderer }, url) => renderer.send("browserControl:openRequested", { url }),
+  });
+});
+
 // PTY session host (terminal work surface). Reuses the
 // main-window sender guard; pushes output on the main window's webContents.
+function clearHumanTerminalHandoff(): void {
+  humanTerminalLocalFence = null;
+  const consent = peekHumanTerminalConsent();
+  if (consent) revokeHumanTerminalConsent(consent.generation);
+}
+
+// The renderer supplies selection intent only. The main-owned reference fences
+// stale asynchronous consent after a Room/Genie switch; it grants no execution.
+ipcMain.handle("terminal:set-handoff-context", (event, raw: unknown) => {
+  assertMainWindowSender(event);
+  const value = raw as Record<string, unknown> | null;
+  if (raw !== null && (!value || typeof value !== "object" || Array.isArray(value)
+    || Object.keys(value).length !== 2 || !["roomId", "agentId"].every(key =>
+      typeof value[key] === "string" && value[key].length > 0 && value[key].trim() === value[key]))) {
+    throw new Error("Human terminal selection is invalid.");
+  }
+  if (value && humanTerminalSelection !== null && humanTerminalSelection.roomId === value["roomId"] && humanTerminalSelection.agentId === value["agentId"]) return;
+  clearHumanTerminalHandoff();
+  humanTerminalSelection = value ? { roomId: value["roomId"] as string, agentId: value["agentId"] as string } : null;
+});
+
+ipcMain.handle("terminal:grant-human-control", async (event, raw: unknown): Promise<boolean> => {
+  assertMainWindowSender(event);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).length !== 3
+    || !["sessionId", "roomId", "agentId"].every(key => typeof (raw as Record<string, unknown>)[key] === "string")) return false;
+  const request = raw as { sessionId: string; roomId: string; agentId: string };
+  const sessionId = request.sessionId;
+  const selection = humanTerminalSelection;
+  if (!selection || selection.roomId !== request.roomId || selection.agentId !== request.agentId) return false;
+  const renderer = event.sender;
+  const session = resolveSessionFromSender(event);
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const runtime = getActiveComputerUseRuntime();
+  if (!runtime) return false;
+  const authenticated = await resolveReadyToWorkBindingForSession(session);
+  const owner: HumanTerminalConsentOwner = { ...selection, humanUserId: authenticated.humanId,
+    relayId: runtime.relayId, desktopSessionId: runtime.desktopSessionId,
+    pairingGeneration: runtime.pairingGeneration, serverOrigin: authenticated.authority.scope,
+    serverFingerprint: authenticated.authority.serverFingerprint };
+  const isCurrent = () => !renderer.isDestroyed() && activeRenderer() === renderer
+    && serverSessions.active === session && resolveSessionFromSender(event) === session
+    && humanTerminalSelection === selection && miniAppRecoveryAuthGeneration === authGeneration
+    && sameComputerUseRuntimeIdentity(getActiveComputerUseRuntime(), runtime) && runtime.humanUserId === owner.humanUserId
+    && getRelayStatus() === "connected"
+    && authoritativeConnectionSnapshot().scope === owner.serverOrigin
+    && authoritativeConnectionSnapshot().serverFingerprint === owner.serverFingerprint
+    && authoritativeConnectionSnapshot().revision === authenticated.authority.revision
+    && authoritativeConnectionSnapshot().connectionAttemptId === authenticated.authority.connectionAttemptId;
+  if (!isCurrent()) return false;
+  const client = await remoteControlClientForSender(event);
+  const room = await client.getRoom(selection.roomId);
+  if (!isCurrent() || room.id !== selection.roomId
+    || !room.members.some(member => member.kind === "agent" && member.agentId === selection.agentId)) return false;
+  // Room membership confirms the displayed selection, never future protected
+  // Agent access. Canonical foreground dispatch must independently admit it.
+  const consent = grantHumanTerminalConsent(sessionId, owner);
+  if (!consent) return false;
+  humanTerminalLocalFence = candidate => sameHumanTerminalConsentOwner(owner, candidate) && isCurrent();
+  renderer.once("destroyed", () => { revokeHumanTerminalConsent(consent.generation); });
+  try { await refreshDesktopRelayCapabilities("Human terminal consent changed"); }
+  catch {
+    revokeHumanTerminalConsent(consent.generation);
+    return false;
+  }
+  if (!isCurrent() || peekHumanTerminalConsent()?.generation !== consent.generation) {
+    revokeHumanTerminalConsent(consent.generation);
+    return false;
+  }
+  return true;
+});
+
+/** The caller is an already-admitted foreground Relay request. Human metadata
+ * checks cannot substitute for that request's independent source/crypto gate. */
+async function verifyHumanTerminalForRelay(owner: HumanTerminalOwner): Promise<boolean> {
+  const fence = humanTerminalLocalFence;
+  if (!fence?.(owner)) return false;
+  const bearer = await getValidAccessToken({ refresh: refreshTokens, onObservedRejection: onLogtoRefreshFailed });
+  if (!bearer || humanTerminalLocalFence !== fence || !fence(owner)) return false;
+  const client = new NautiloApiClient(owner.serverOrigin);
+  client.setToken(bearer);
+  const room = await client.getRoom(owner.roomId);
+  return humanTerminalLocalFence === fence && fence(owner) && room.id === owner.roomId
+    && room.members.some(member => member.kind === "agent" && member.agentId === owner.agentId);
+}
+
 registerTerminalHost({
+  humanTerminalInputCapacity: LOCAL_EXECUTION_MAX_IDENTITIES,
   ipcMain,
   assertSender: assertMainWindowSender,
   getWebContents: () => activeRenderer(),
@@ -9565,6 +10209,9 @@ registerTerminalHost({
   // callable and lets the prompt state that a handoff is waiting.
   onAgentHandoffChanged: async () => {
     await refreshDesktopRelayCapabilities("terminal handoff changed");
+  },
+  onHumanTerminalConsentChanged: async () => {
+    await refreshDesktopRelayCapabilities("Human terminal consent changed");
   },
 });
 
@@ -11234,6 +11881,9 @@ function commitDesktopConnectionAuthority(
     connectionAttemptId: attemptId,
     serverFingerprint,
   });
+  readyToWorkGeneration += 1;
+  readyVerifiedBinding = null;
+  readyToWorkCoordinatorBinding = null;
   saveConfig(committedConfig);
   if (sourceDevelopmentAuthority) {
     const committedAuthority = projectActiveAuthority(committedConfig);
@@ -11842,8 +12492,28 @@ ipcMain.handle("servers:forget", async (e, rawUrl: unknown) => {
     }
   })?.url;
 
+  if (serverSessions.active && allAliases.some(alias => new URL(alias).origin === new URL(serverSessions.active!.serverUrl).origin)) {
+    readyToWorkGeneration += 1;
+    readyVerifiedBinding = null;
+    readyToWorkCoordinatorBinding = null;
+    fenceActiveLocalExecutions();
+    void activeWorkstationProfileController.deactivate().catch(() => undefined);
+  }
+  let rememberedRemovalFailed = false;
+  try {
+    const verifiedFingerprint = fingerprint ?? (new URL(serverUrl).origin === authoritativeConnectionSnapshot().scope
+      ? authoritativeConnectionSnapshot().serverFingerprint : null);
+    if (!verifiedFingerprint) throw new ReadyToWorkPersistenceError("unavailable");
+    for (const alias of allAliases) readyRemembered.remove({ kind: "server", origin: new URL(alias).origin,
+      serverFingerprint: verifiedFingerprint }, () => true);
+  } catch (error) {
+    rememberedRemovalFailed = true;
+    readyToWorkPersistence.recordFailure(error, true);
+  }
+  // Existing Forget teardown still fences live authority when disk reduction fails.
   const result = await serverSessions.forget(serverUrl, allAliases, fallback);
   if (!result.ok) return result;
+  if (rememberedRemovalFailed) return { ok: false as const, reason: "config-clear-failed" as const };
   try {
     for (const alias of allAliases) {
       clearTokensFor(alias);
@@ -12660,6 +13330,7 @@ function onRelayStatusChange(status: RelayStatus): void {
   // instead of waiting for a settings refresh or a power-state transition.
   reconcileRemoteControlKeepAwake();
   sendToActiveRenderer("relay:status", status);
+  publishAgentAccessChanged();
   void publishReadyToWorkOwnerObservation().catch(() => undefined);
   updateTrayMenu();
   // reflect the active session's relay connection state

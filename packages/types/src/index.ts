@@ -25,6 +25,9 @@ export * from "./message-action-contract";
 export * from "./mobile-user-agreement";
 export * from "./model-selection";
 export * from "./profile";
+export * from "./personal-costs";
+export * from "./personal-capability-preferences";
+export * from "./provider-key-catalogue";
 export * from "./public-product-links";
 export * from "./protected-message";
 export * from "./protected-message-realtime";
@@ -65,3 +68,10 @@ export type { EmbeddingProvider, EmbeddingWithProvenanceV1 } from "./embedding";
 export * from "./voice-stream";
 
 export * from "./moderation";
+
+export { isLocalExecutionReadArgs } from "./local-execution-read";
+
+export * from "./github-invocation";
+
+export * from "./github-broker";
+export * from "./local-execution-delegation";

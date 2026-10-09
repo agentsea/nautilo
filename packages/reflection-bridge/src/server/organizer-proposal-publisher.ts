@@ -650,10 +650,16 @@ export class OrganizerProposalPublisher {
     const changed = plan.selectedInputs.find((coordinate) =>
       coordinate.role === "changed"
     );
+    const exposedInputs = plan.predecessorOnlyRecordRef === undefined
+      ? plan.selectedInputs
+      : plan.selectedInputs.filter((coordinate) =>
+        coordinate.kind !== "record"
+        || coordinate.recordRef !== plan.predecessorOnlyRecordRef
+      );
     if (
       changed?.kind !== "record"
       || changed.recordRef !== input.changedRecordRef
-      || exposures.length !== plan.selectedInputs.length
+      || exposures.length !== exposedInputs.length
       || this.#crossRoomFences === undefined
     ) return unavailable("publication_plan_invalid");
     const fenced = await this.#crossRoomFences.revalidate({
@@ -741,7 +747,7 @@ export class OrganizerProposalPublisher {
       }
     }
     if (
-      plan.selectedInputs.some((coordinate) => !identities.has(
+      exposedInputs.some((coordinate) => !identities.has(
         coordinate.kind === "record"
           ? `record\0${coordinate.recordRef}`
           : `source\0${coordinate.logicalSourceRef}`,
@@ -1184,7 +1190,9 @@ export class OrganizerProposalPublisher {
 
     const predecessorReadBinding = predecessor === undefined
       ? undefined
-      : bindings.records.get(predecessor.recordRef)?.readBindingRef;
+      : bindings.exactPlan === undefined
+        ? this.#room.readBindingRef
+        : bindings.records.get(predecessor.recordRef)?.readBindingRef;
     const inheritedRootReadBindings = new Map<string, string>();
     if (
       predecessorReadBinding !== undefined
@@ -1413,6 +1421,9 @@ export class OrganizerProposalPublisher {
         : { predecessor: { recordRef: predecessorRef, relation: proposedRelation } }),
       idempotencyKey: publicationIdempotencyKey,
       publicationBindingRef: bindings.publicationBindingRef,
+      ...(predecessorReadBinding === undefined
+        ? {}
+        : { predecessorReadBindingRef: predecessorReadBinding }),
       ...(bindings.originPublicationBindingRef === undefined
         ? {}
         : { originPublicationBindingRef: bindings.originPublicationBindingRef }),

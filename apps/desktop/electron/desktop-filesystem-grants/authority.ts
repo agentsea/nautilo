@@ -1,5 +1,5 @@
 /**
- * D418 prerequisite — the single Electron-main desktop-filesystem-grant authority.
+ * The single Electron-main desktop-filesystem-grant authority.
  *
  * One instance of this service is shared by the grant IPC handlers, the
  * desktop relay authority resolver, and the advisory grant snapshot builder.
@@ -116,6 +116,9 @@ export class DesktopFilesystemGrantAuthority {
     return previous.then(operation).finally(release);
   }
 
+  /** Synchronous final fence for callers that inspected an awaited local grant list. */
+  getRevision(): number { return this.revision; }
+
   private materialize(entry: OverlayEntry): DesktopFilesystemGrant {
     const grant = entry.grant;
     return {
@@ -175,11 +178,19 @@ export class DesktopFilesystemGrantAuthority {
   async create(input: {
     userId: string;
     grant: DesktopFilesystemGrant;
+    /** Optional compare-and-create fence for derived durable grants. */
+    expectedRevision?: number;
   }): Promise<DesktopFilesystemGrantStoreResult<{ grant: DesktopFilesystemGrant; revision: number }>> {
+    if (input.expectedRevision !== undefined && isEphemeralDesktopFilesystemGrant(input.grant)) {
+      return resultError("invalid_grant", "revision-fenced creation requires a durable grant");
+    }
     if (isEphemeralDesktopFilesystemGrant(input.grant)) {
       return this.addEphemeral({ grant: input.grant, userId: input.userId });
     }
     return this.serialized(async () => {
+      if (input.expectedRevision !== undefined && input.expectedRevision !== this.revision) {
+        return resultError("invalid_grant", "grant authority changed before creation");
+      }
       const created = await this.store.create(input);
       if (!created.ok) return created;
       this.revision += 1;

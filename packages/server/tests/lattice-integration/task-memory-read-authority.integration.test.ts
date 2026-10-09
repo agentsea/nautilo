@@ -1,3 +1,4 @@
+import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { randomUUID } from "node:crypto";
 
 import { afterAll, describe, expect, test } from "bun:test";
@@ -41,6 +42,7 @@ afterAll(async () => {
 
 describe.serial("Task Memory read authority", () => {
   test("retains an audience edge hidden by Agent RLS and rejects stale Scope authority", async () => {
+    bootstrapTestDbInstance();
     const admin = createDirectDb(3);
     const requesterUserId = randomUUID();
     const foreignUserId = randomUUID();

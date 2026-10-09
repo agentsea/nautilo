@@ -1,12 +1,12 @@
 /**
- * D418 — ActiveWorkstationProfileController state machine tests.
+ * ActiveWorkstationProfileController state machine tests.
  *
  * Covers activate, replace (swap), failed-replacement preserves prior state,
  * deactivate, snapshot redaction, and the onActiveProfileChanged callback.
  * The controller is exercised against in-memory profile + grant stores and a
  * shared DesktopFilesystemGrantAuthority overlay, with no Electron runtime.
  */
-import { beforeAll, describe, expect, mock, test } from "bun:test";
+import { beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import * as path from "node:path";
 
 import {
@@ -25,6 +25,7 @@ import type { DesktopFilesystemGrantStorage } from "../../electron/desktop-files
 import { DesktopFilesystemGrantAuthority } from "../../electron/desktop-filesystem-grants/authority";
 import { WorkstationProfileStore } from "../../electron/workstation-profiles/store";
 import type { WorkstationProfileStorage } from "../../electron/workstation-profiles/storage";
+import type { ActiveWorkstationProfileController as ActiveWorkstationProfileControllerInstance } from "../../electron/workstation-profiles/active-controller";
 
 // The controller imports `paths.ts`, which imports Electron's `app`. Every
 // other desktop unit test mocks `paths` so the SUT can load without an
@@ -208,7 +209,7 @@ function createFixtureWithProfileStorage(
 }
 
 interface ControllerFixture {
-  controller: ActiveWorkstationProfileController;
+  controller: ActiveWorkstationProfileControllerInstance;
   authority: DesktopFilesystemGrantAuthority;
   durable: DesktopFilesystemGrantStore;
   profileStore: WorkstationProfileStore;
@@ -259,6 +260,18 @@ async function activePolicyPackGrantIds(
   return merged.data.grants
     .filter((g) => g.grant.origin === "policy_pack" && g.status === "active")
     .map((g) => g.grant.id);
+}
+
+function barrier() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
+async function expectHiddenAuthority(controller: ActiveWorkstationProfileControllerInstance) {
+  expect(controller.getActiveSession()).toBeNull();
+  expect(controller.getActiveNetworkPolicy()).toBeNull();
+  expect(await controller.getProfileSnapshot()).toBeUndefined();
 }
 
 describe("ActiveWorkstationProfileController — activate", () => {
@@ -325,7 +338,7 @@ describe("ActiveWorkstationProfileController — activate", () => {
   });
 });
 
-describe("ActiveWorkstationProfileController — store error mapping (D418)", () => {
+describe("ActiveWorkstationProfileController — store error mapping", () => {
   test("returns store_unavailable when the profile store cannot be read", async () => {
     const { controller, authority } = createFixtureWithProfileStorage(
       createThrowingProfileStorage(),
@@ -482,6 +495,133 @@ describe("ActiveWorkstationProfileController — deactivate", () => {
   });
 });
 
+describe("ActiveWorkstationProfileController — immediate authority reduction", () => {
+  test("hides all authority getters before deactivation queued behind activation can run", async () => {
+    const { controller, profileStore } = createFixture();
+    await profileStore.create({ profile: validProfile("profile-a") });
+    await profileStore.create({ profile: validProfile("profile-b") });
+    expect((await controller.activate({ profileId: "profile-a", facts: validFacts(), subject: subject() })).ok).toBe(true);
+    const entered = barrier();
+    const resume = barrier();
+    const originalGet = profileStore.get.bind(profileStore);
+    const get = spyOn(profileStore, "get").mockImplementation(async (input) => {
+      entered.release();
+      await resume.promise;
+      return originalGet(input);
+    });
+    const activation = controller.activate({ profileId: "profile-b", facts: validFacts(), subject: subject() });
+    await entered.promise;
+    expect(controller.getActiveSession()?.profileId).toBe("profile-a");
+    const cleanup = controller.deactivate();
+    try {
+      await expectHiddenAuthority(controller);
+      resume.release();
+      expect((await activation).ok).toBe(true);
+      expect((await cleanup).ok).toBe(true);
+      await expectHiddenAuthority(controller);
+    } finally {
+      resume.release();
+      await Promise.allSettled([activation, cleanup]);
+      get.mockRestore();
+    }
+  });
+
+  test("hides all authority getters while grant teardown is still running", async () => {
+    const { controller, authority, profileStore } = createFixture();
+    await profileStore.create({ profile: validProfile("profile-a") });
+    expect((await controller.activate({ profileId: "profile-a", facts: validFacts(), subject: subject() })).ok).toBe(true);
+    const entered = barrier();
+    const resume = barrier();
+    const originalList = authority.list.bind(authority);
+    const list = spyOn(authority, "list").mockImplementation(async (input) => {
+      entered.release();
+      await resume.promise;
+      return originalList(input);
+    });
+    const cleanup = controller.deactivate();
+    try {
+      await expectHiddenAuthority(controller);
+      await entered.promise;
+      await expectHiddenAuthority(controller);
+      resume.release();
+      expect((await cleanup).ok).toBe(true);
+      await expectHiddenAuthority(controller);
+    } finally {
+      resume.release();
+      await Promise.allSettled([cleanup]);
+      list.mockRestore();
+    }
+  });
+
+  test("overlapping reductions prevent a queued activation from exposing authority until a fresh activation", async () => {
+    const { controller, authority, profileStore, changes } = createFixture();
+    await profileStore.create({ profile: validProfile("profile-a") });
+    await profileStore.create({ profile: validProfile("profile-b") });
+    expect((await controller.activate({ profileId: "profile-a", facts: validFacts(), subject: subject() })).ok).toBe(true);
+    const entered = [barrier(), barrier()];
+    const resume = [barrier(), barrier()];
+    let call = 0;
+    const originalList = authority.list.bind(authority);
+    const list = spyOn(authority, "list").mockImplementation(async (input) => {
+      const index = call++;
+      if (index < entered.length) {
+        entered[index]!.release();
+        await resume[index]!.promise;
+      }
+      return originalList(input);
+    });
+    const firstCleanup = controller.deactivate();
+    await entered[0]!.promise;
+    const activation = controller.activate({ profileId: "profile-b", facts: validFacts(), subject: subject() });
+    const secondCleanup = controller.deactivate();
+    try {
+      await expectHiddenAuthority(controller);
+      resume[0]!.release();
+      expect((await firstCleanup).ok).toBe(true);
+      expect((await activation).ok).toBe(true);
+      await entered[1]!.promise;
+      await expectHiddenAuthority(controller);
+      resume[1]!.release();
+      expect((await secondCleanup).ok).toBe(true);
+      await expectHiddenAuthority(controller);
+      expect(changes).toEqual([
+        "workstation profile activate", "workstation profile deactivate",
+        "workstation profile activate", "workstation profile deactivate",
+      ]);
+      expect((await controller.activate({ profileId: "profile-a", facts: validFacts(), subject: subject() })).ok).toBe(true);
+      expect(controller.getActiveSession()?.profileId).toBe("profile-a");
+      expect(controller.getActiveNetworkPolicy()).not.toBeNull();
+      expect((await controller.getProfileSnapshot())?.profileId).toBe("profile-a");
+    } finally {
+      for (const gate of resume) gate.release();
+      await Promise.allSettled([firstCleanup, activation, secondCleanup]);
+      list.mockRestore();
+    }
+  });
+
+  test("teardown rejection stays hidden through failed activation and exposes only a fresh successful activation", async () => {
+    const { controller, authority, profileStore } = createFixture();
+    await profileStore.create({ profile: validProfile("profile-a") });
+    await profileStore.create({ profile: validProfile("profile-b") });
+    expect((await controller.activate({ profileId: "profile-a", facts: validFacts(), subject: subject() })).ok).toBe(true);
+    const list = spyOn(authority, "list").mockImplementationOnce(async () => { throw new Error("fixture teardown failed"); });
+    try {
+      const cleanup = controller.deactivate().catch((error: unknown) => error);
+      await expectHiddenAuthority(controller);
+      expect(await cleanup).toMatchObject({ message: "fixture teardown failed" });
+      await expectHiddenAuthority(controller);
+    } finally {
+      list.mockRestore();
+    }
+    expect((await controller.activate({ profileId: "missing", facts: validFacts(), subject: subject() })).ok).toBe(false);
+    await expectHiddenAuthority(controller);
+    expect((await controller.activate({ profileId: "profile-b", facts: validFacts(), subject: subject() })).ok).toBe(true);
+    expect(controller.getActiveSession()?.profileId).toBe("profile-b");
+    expect(controller.getActiveNetworkPolicy()).not.toBeNull();
+    expect((await controller.getProfileSnapshot())?.profileId).toBe("profile-b");
+  });
+});
+
 describe("ActiveWorkstationProfileController — snapshot redaction", () => {
   test("the advertised snapshot carries only the strict redacted binding fields and round-trips the protocol parser", async () => {
     const { controller, profileStore } = createFixture();
@@ -540,7 +680,7 @@ describe("ActiveWorkstationProfileController — shared authority / store access
   });
 });
 
-describe("ActiveWorkstationProfileController — D418 B5 active network policy", () => {
+describe("ActiveWorkstationProfileController — active network policy", () => {
   test("getActiveNetworkPolicy returns the complete active-profile network policy (LOCAL authority, not the wire snapshot)", async () => {
     const { controller, profileStore } = createFixture();
     await profileStore.create({
@@ -549,7 +689,7 @@ describe("ActiveWorkstationProfileController — D418 B5 active network policy",
           mode: "proxy_allowlist",
           allow: [
             { id: "registry", kind: "domain", value: "registry.npmjs.org" },
-            { id: "lab", kind: "cidr", value: "10.0.0.0/8" },
+            { id: "lab", kind: "cidr", value: "192.0.2.0/24" },
           ],
         },
       }),
@@ -566,7 +706,7 @@ describe("ActiveWorkstationProfileController — D418 B5 active network policy",
       mode: "proxy_allowlist",
       allow: [
         { id: "registry", kind: "domain", value: "registry.npmjs.org" },
-        { id: "lab", kind: "cidr", value: "10.0.0.0/8" },
+        { id: "lab", kind: "cidr", value: "192.0.2.0/24" },
       ],
     });
 

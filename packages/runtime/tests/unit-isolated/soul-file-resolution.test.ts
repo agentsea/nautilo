@@ -1,5 +1,5 @@
 /**
- * D201 — per-user soul must come from profiles.soul_file only.
+ * Per-user soul must come from profiles.soul_file only.
  * Empty/null profile soul must NOT fall back to the operator's disk mirror.
  */
 import { afterAll, describe, expect, mock, test } from "bun:test";
@@ -10,6 +10,10 @@ let loadSoulFromDiskCalls = 0;
 let capturedGraphSoulFile: string | undefined;
 let capturedGraphAssistantName: string | undefined;
 let capturedGraphModel: string | null | undefined;
+
+// Match the production no-image result; an array would falsely signal completion.
+const noImageAssistance: typeof realNautiloAgent.maybeSummarizeImagesWithVisionFallback =
+  async () => null;
 
 mock.module("@nautilo/agent", () => ({
   ...realNautiloAgent,
@@ -47,13 +51,13 @@ mock.module("@nautilo/agent", () => ({
     },
   }),
   getDefaultModel: () => ({ id: "test-model" }),
-  // Model availability is covered by M252's dedicated runtime tests. Keep this
-  // D201 identity fixture focused on which profile owns the selected value.
+  // Model availability has dedicated runtime tests. Keep this
+  // identity fixture focused on which profile owns the selected value.
   resolveModelRole: (
     _role: string,
     options?: { configuredId?: string | null },
   ) => options?.configuredId?.trim() || "test-model",
-  maybeSummarizeImagesWithVisionFallback: async () => [],
+  maybeSummarizeImagesWithVisionFallback: noImageAssistance,
   getAgentDisplayNameById: async () => null,
   getPromptBrief: async () => "",
   appendTranscriptMessages: async () => ({
@@ -77,7 +81,7 @@ afterAll(() => {
   mock.module("@nautilo/trust", () => realTrust);
 });
 
-describe("langgraph executor soul resolution (D201)", () => {
+describe("langgraph executor soul resolution", () => {
   test("empty profile soul passes empty string — no disk fallback", async () => {
     loadSoulFromDiskCalls = 0;
     capturedGraphSoulFile = undefined;
@@ -85,7 +89,7 @@ describe("langgraph executor soul resolution (D201)", () => {
     capturedGraphModel = undefined;
 
     const ac = new AbortController();
-    // M125 Phase 2.6 — executor now requires an explicit agentId (no
+    // The executor now requires an explicit agentId (no
     // bootstrap fallback). Provide one so we still exercise the
     // soul-resolution path under test.
     const gen = langgraphExecutor(
@@ -94,7 +98,7 @@ describe("langgraph executor soul resolution (D201)", () => {
         message: "hi",
         agentId: "default-agent",
       },
-      "job-d201-soul",
+      "job-agent-soul",
       "app:default",
       ac.signal,
     );
@@ -120,7 +124,7 @@ describe("langgraph executor soul resolution (D201)", () => {
         message: "hi",
         agentId: "agent-casey",
       },
-      "job-d317-foreign-agent-identity",
+      "job-foreign-agent-identity",
       "room:test:user:alex:bot:agent-casey",
       ac.signal,
     );
@@ -136,18 +140,18 @@ describe("langgraph executor soul resolution (D201)", () => {
 });
 
 /**
- * M125 Phase 2.6 / QA #11 — the executor must throw loudly when no
+ * The executor must throw loudly when no
  * agentId resolves (neither `input.agentId` nor `memoryAccessEnvelope.agentId`).
- * Pre-M125 it silently borrowed `getBootstrapDefaultAgentId()` and
+ * Previously it silently borrowed `getBootstrapDefaultAgentId()` and
  * dispatched the turn into the operator's agent partition. Background
  * jobs and stale callers must now fail at the source.
  */
-describe("langgraph executor — M125 Phase 2.6 (agentId required)", () => {
+describe("langgraph executor — agentId required", () => {
   test("throws when neither input.agentId nor envelope.agentId is set", async () => {
     const ac = new AbortController();
     const gen = langgraphExecutor(
       { ownerId: "user-x", message: "hi" },
-      "job-m125-no-agent",
+      "job-no-agent",
       "app:default",
       ac.signal,
     );

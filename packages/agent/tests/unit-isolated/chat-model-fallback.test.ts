@@ -8,13 +8,19 @@
  * factory, model-health, provider, and database boundaries mocked.
  */
 
-import { AIMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { ChatGenerationChunk } from "@langchain/core/outputs";
+import { CallbackManager } from "@langchain/core/callbacks/manager";
 import type { BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { ChatModel } from "../../src/providers/types";
-import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
+import {
+  PersonalDirectFundingUnavailableError,
+  PersonalModelFundingUnavailableError,
+  type ForegroundChatFundingSession,
+} from "../../src/runtime/foreground-chat-funding";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
@@ -32,6 +38,8 @@ import {
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
+
+const actualCanUseQualifiedSurplusChatRoute = canUseQualifiedSurplusChatRoute;
 
 const actualTrust = await import("@nautilo/trust");
 const fundingAdmission = mock(async (_userId: string, _origin?: string) => undefined);
@@ -65,9 +73,13 @@ const createUniversalModelMock = mock(
 const markModelInvokeFailureMock = mock((_modelId: string, _message: string): void => {});
 const invokeSurplusChatAttemptMock = mock(async (_input?: {
   config: RunnableConfig;
+  apiKey: string;
   route: { catalogModelId: string };
   messages: BaseMessage[];
-  funding: Extract<UsageFundingProvenance, { kind: "server" | "service" }>;
+  tools: StructuredTool[];
+  toolBindingOptions?: Record<string, unknown>;
+  funding: UsageFundingProvenance;
+  hasDeliveredOutput: () => boolean;
   invokeModel: (
     model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
     messages: BaseMessage[],
@@ -76,6 +88,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
 }): Promise<
   { kind: "served"; response: AIMessage } | { kind: "direct_fallback" }
 > => ({ kind: "direct_fallback" }));
+let surplusQualificationOverride: boolean | undefined;
 let cachedServerModelConfig: { preferSurplus: boolean } | null = null;
 
 function modelIdsFromCalls(): string[] {
@@ -135,6 +148,8 @@ beforeAll(() => {
     throw new Error("network disabled in chat-model-fallback unit test");
   }) as unknown as typeof fetch;
   mock.module("@nautilo/db", () => ({
+    beginPersonalLlmAttempt: async () => {},
+    settlePersonalLlmAttempt: async () => {},
     db: {},
     profiles: {},
     agents: {},
@@ -163,7 +178,8 @@ beforeAll(() => {
   }));
 
   mock.module("../../src/providers/surplus-attempt", () => ({
-    canUseQualifiedSurplusChatRoute,
+    canUseQualifiedSurplusChatRoute: (...args: Parameters<typeof canUseQualifiedSurplusChatRoute>) =>
+      surplusQualificationOverride ?? actualCanUseQualifiedSurplusChatRoute(...args),
     invokeSurplusChatAttempt: invokeSurplusChatAttemptMock,
   }));
 });
@@ -177,6 +193,7 @@ let invokeChatModelWithFallback: (
   laneKey: string | null,
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
+    toolBindingOptions?: Record<string, unknown>;
     fundingHumanUserId?: string;
     fundingSession?: ForegroundChatFundingSession;
     serverFundedService?: "shared_memory_maintenance";
@@ -224,6 +241,7 @@ afterAll(() => {
 
 afterEach(() => {
   cachedServerModelConfig = null;
+  surplusQualificationOverride = undefined;
   invokeSurplusChatAttemptMock.mockReset();
   invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
 });
@@ -1556,10 +1574,42 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 
-  test("does not replay an uncertain Surplus outcome through direct or chain providers", async () => {
+  test("uses direct same-model after an undelivered Surplus outcome despite earlier turn output", async () => {
+    policyState = { enabled: true, chain: [B] };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      expect(input?.hasDeliveredOutput()).toBe(false);
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (modelId): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => new AIMessage(`direct answer from ${modelId}`) }),
+    }) as unknown as AuraModel);
+
+    const turnId = "surplus-earlier-output";
+    const result = await runWithTurn(turnId, async () => {
+      getOrCreateAgentTurnContextByKey(turnContextKey(turnId, "agent-1")).assistantVisibleOutput = true;
+      return await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null);
+    });
+
+    expect(result.modelUsed).toBe(A);
+    expect(result.response.content).toBe(`direct answer from ${A}`);
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("keeps an uncertain Surplus failure terminal after its own streamed output was delivered", async () => {
     policyState = { enabled: true, chain: [B] };
     const uncertain = new SurplusOutcomeUnknownError();
-    invokeSurplusChatAttemptMock.mockRejectedValue(uncertain);
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      const [manager] = await CallbackManager.configure(input?.config.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-surplus"] },
+        [messages],
+      );
+      await manager!.handleLLMNewToken("visible answer", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({ text: "visible answer", message: new AIMessageChunk("visible answer") }),
+      });
+      expect(input?.hasDeliveredOutput()).toBe(true);
+      throw uncertain;
+    });
 
     const thrown = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null)
       .catch((error: unknown) => error);
@@ -2313,7 +2363,94 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     _resetAgentTurnContextsForTests();
   });
 
-  test("keeps fallback personal, binds zero tools, and attributes each exact attempt", async () => {
+  test.each([
+    { cachedPreference: true, admittedRoute: "anthropic", expectedTransport: "direct" },
+    { cachedPreference: false, admittedRoute: "surplus", expectedTransport: "surplus" },
+  ] as const)(
+    "keeps an admitted server $expectedTransport route when the global preference changes",
+    async ({ cachedPreference, admittedRoute, expectedTransport }) => {
+      cachedServerModelConfig = { preferSurplus: cachedPreference };
+      const session: ForegroundChatFundingSession = {
+        kind: "server",
+        async recheckAttempt() {},
+        async runAttempt(_modelId, callback) {
+          return callback({
+            usageFunding: {
+              kind: "server",
+              humanUserId: "human-1",
+              providerRoute: admittedRoute,
+            },
+          });
+        },
+      };
+      invokeSurplusChatAttemptMock.mockResolvedValue({
+        kind: "served",
+        response: new AIMessage("surplus pinned"),
+      });
+      createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+        bindTools: () => ({ invoke: async () => new AIMessage("direct pinned") }),
+      }) as unknown as AuraModel);
+
+      const result = await invokeChatModelWithFallback(
+        messages, [], A, "owner-1", "agent-1", null, undefined,
+        { fundingSession: session, sameModelRetryMode: "none" },
+      );
+
+      expect(result.response.content).toBe(`${expectedTransport} pinned`);
+      expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(expectedTransport === "surplus" ? 1 : 0);
+      expect(createUniversalModelMock).toHaveBeenCalledTimes(expectedTransport === "direct" ? 1 : 0);
+    },
+  );
+
+  test("re-admits a server Surplus refusal on direct and records direct provenance", async () => {
+    cachedServerModelConfig = { preferSurplus: false };
+    const transports: Array<"direct" | "surplus" | undefined> = [];
+    const surplusFunding: UsageFundingProvenance[] = [];
+    let directFunding: UsageFundingProvenance | undefined;
+    const session: ForegroundChatFundingSession = {
+      kind: "server",
+      async recheckAttempt() {},
+      async runAttempt(_modelId, callback, transport) {
+        transports.push(transport);
+        return callback({
+          usageFunding: {
+            kind: "server",
+            humanUserId: "human-1",
+            providerRoute: transport === "direct" ? "anthropic" : "surplus",
+          },
+        });
+      },
+    };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      if (input) surplusFunding.push(input.funding);
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        directFunding = getUsageContext()?.funding;
+        return new AIMessage("server direct fallback");
+      } }),
+    }) as unknown as AuraModel);
+
+    const result = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    );
+
+    expect(result.response.content).toBe("server direct fallback");
+    expect(transports).toEqual([undefined, "direct"]);
+    expect(surplusFunding).toHaveLength(1);
+    expect(surplusFunding[0]).toMatchObject({
+      kind: "server", humanUserId: "human-1", providerRoute: "surplus",
+    });
+    expect(directFunding).toMatchObject({
+      kind: "server", humanUserId: "human-1", providerRoute: "anthropic",
+    });
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps definitive-refusal fallback personal, binds zero tools, and attributes each exact attempt", async () => {
     delete process.env["ANTHROPIC_API_KEY"];
     delete process.env["OPENAI_API_KEY"];
     policyState = { enabled: true, chain: [A, B] };
@@ -2346,7 +2483,7 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
           invoke: async () => {
             observedFunding.push(getUsageContext()?.funding);
             if (modelId === A) {
-              throw Object.assign(new Error("provider unavailable"), { status: 503 });
+              throw Object.assign(new Error("provider rate limited"), { status: 429 });
             }
             return new AIMessage("personal success");
           },
@@ -2377,7 +2514,49 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
   });
 
-  test("rechecks the pinned session before a same-model short retry", async () => {
+  test("does not widen an uncertain personal 503 after partial output into chain fallback", async () => {
+    policyState = { enabled: true, chain: [A, B] };
+    const turnId = "personal-unknown-after-partial-output";
+    const attempts: string[] = [];
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt() { throw new Error("must not recheck for fallback"); },
+      async runAttempt(modelId, callback) {
+        attempts.push(modelId);
+        return callback({
+          personalCredential: { apiKey: `personal-${modelId}` },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: modelId.split(":", 1)[0]!, credentialId: `credential-${modelId}`,
+            credentialRevision: 1,
+          },
+        });
+      },
+    };
+    let invokes = 0;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          getOrCreateAgentTurnContextByKey(turnContextKey(turnId, "agent-1")).assistantVisibleOutput = true;
+          throw Object.assign(new Error("provider unavailable"), { status: 503 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await runWithTurn(turnId, () => invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session, sameModelRetryMode: "none" },
+    )).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
+    expect(attempts).toEqual([A]);
+    expect(invokes).toBe(1);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("does not short-retry an uncertain personal 503", async () => {
     const rechecks: string[] = [];
     let invokes = 0;
     const session: ForegroundChatFundingSession = {
@@ -2397,9 +2576,85 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
       bindTools: () => ({
         invoke: async () => {
           invokes += 1;
-          if (invokes === 1) {
-            throw Object.assign(new Error("retry me"), { status: 503 });
-          }
+          throw Object.assign(new Error("outcome unknown"), { status: 503 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
+    expect(invokes).toBe(1);
+    expect(rechecks).toEqual([]);
+  });
+
+  test("does not retry or fall back after an unverified personal 499 with timeout-shaped wording", async () => {
+    policyState = { enabled: true, chain: [A, B] };
+    const attempts: string[] = [];
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(modelId, callback) {
+        attempts.push(modelId);
+        return callback({
+          personalCredential: { apiKey: `personal-${modelId}` },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: modelId.split(":", 1)[0]!, credentialId: `credential-${modelId}`,
+            credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          throw Object.assign(new Error("provider request timed out"), { status: 499 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    ).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("TIMEOUT");
+    expect(attempts).toEqual([A]);
+    expect(invokes).toBe(1);
+    expect(rechecks).toEqual([]);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("rechecks the pinned session before retrying a definitive personal refusal", async () => {
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: "personal-key" },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "anthropic", credentialId: "credential-1", credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          if (invokes === 1) throw Object.assign(new Error("rate limited"), { status: 429 });
           return new AIMessage("retried");
         },
       }),
@@ -2414,6 +2669,44 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(result.modelUsed).toBe(A);
     expect(invokes).toBe(2);
     expect(rechecks).toEqual([A]);
+  });
+
+  test("does not retry a personal refusal after assistant-visible partial output", async () => {
+    const turnId = "personal-refusal-after-partial-output";
+    const rechecks: string[] = [];
+    let invokes = 0;
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt(modelId) { rechecks.push(modelId); },
+      async runAttempt(_modelId, callback) {
+        return callback({
+          personalCredential: { apiKey: "personal-key" },
+          usageFunding: {
+            kind: "personal", humanUserId: "human-1", payerHumanId: "human-1",
+            providerRoute: "anthropic", credentialId: "credential-1", credentialRevision: 1,
+          },
+        });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({
+        invoke: async () => {
+          invokes += 1;
+          getOrCreateAgentTurnContextByKey(turnContextKey(turnId, "agent-1")).assistantVisibleOutput = true;
+          throw Object.assign(new Error("late rate limit"), { status: 429 });
+        },
+      }),
+      invoke: async () => new AIMessage("unused"),
+    }));
+
+    const thrown = await runWithTurn(turnId, () => invokeChatModelWithFallback(
+      messages, [], A, "owner-1", "agent-1", null, undefined,
+      { fundingSession: session },
+    )).then(() => null, (error: unknown) => error);
+
+    expect(classifyError(thrown).category).toBe("RATE_LIMIT");
+    expect(invokes).toBe(1);
+    expect(rechecks).toEqual([]);
   });
 
   test("does not classify an injected funding failure as a provider fallback", async () => {
@@ -2501,5 +2794,209 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(classifyError(thrown).category).toBe("SERVICE_ERROR");
     expect(modelOptionsFromCalls()[0]?.["personalCredential"]).toEqual({ apiKey: "personal-openrouter-key" });
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("personal marketplace invocation", () => {
+  beforeEach(() => {
+    createUniversalModelMock.mockReset(); invokeSurplusChatAttemptMock.mockReset(); fundingAdmission.mockClear();
+    policyState = { enabled: false, chain: [] }; _resetAgentTurnContextsForTests();
+  });
+  function session(directAvailable: boolean | ((modelId: string) => boolean) = true): ForegroundChatFundingSession {
+    return { kind: "personal", recheckAttempt: async () => {},
+      async runAttempt(modelId, run, transport) {
+        const hasDirect = typeof directAvailable === "function"
+          ? directAvailable(modelId)
+          : directAvailable;
+        if (transport === "direct" && !hasDirect) {
+          throw new PersonalDirectFundingUnavailableError();
+        }
+        const route = transport === "direct" ? modelId.split(":", 1)[0]! : "surplus";
+        return run({ usageFunding: { kind: "personal", humanUserId: "payer", payerHumanId: "payer",
+          providerRoute: route, credentialId: `caller-${route}`, credentialRevision: 1 },
+          personalCredential: { apiKey: `caller-secret-${route}` } });
+      } };
+  }
+  test("uses the personal marketplace key before the matching caller direct key", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      expect(input!.apiKey).toBe("caller-secret-surplus");
+      expect(input!.funding).toMatchObject({ kind: "personal", providerRoute: "surplus", credentialId: "caller-surplus" });
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (_model, options) => {
+      expect(options?.["personalCredential"]).toEqual({ apiKey: "caller-secret-anthropic" });
+      return { bindTools: () => ({ invoke: async () => new AIMessage("caller direct answer") }) } as unknown as AuraModel;
+    });
+    const result = await invokeChatModelWithFallback([new HumanMessage("Synthetic personal text")], [], A,
+      "payer", "agent-1", null, undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" });
+    expect(result.response.content).toBe("caller direct answer");
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1); expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+    expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("keeps admitted research tools on a personal Surplus-only attempt", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    const researchTool = { name: "search", description: "closed research search", schema: {} } as StructuredTool;
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      expect(input!.apiKey).toBe("caller-secret-surplus");
+      expect(input!.tools.map((tool) => tool.name)).toEqual(["search"]);
+      expect(input!.toolBindingOptions).toEqual({ tool_choice: "required" });
+      expect(input!.funding).toMatchObject({ kind: "personal", providerRoute: "surplus" });
+      return { kind: "served", response: new AIMessage("research answer") };
+    });
+    const fundingSession: ForegroundChatFundingSession = { ...session(false), workload: "research" };
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("research")], [researchTool], A,
+      "payer", "agent-1", null, undefined,
+      { fundingSession, modelFallbackMode: "none", sameModelRetryMode: "none", toolBindingOptions: { tool_choice: "required" } },
+    );
+
+    expect(result.response.content).toBe("research answer");
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+  test("falls back directly after an undelivered uncertain personal research Surplus attempt", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      const [manager] = await CallbackManager.configure(input?.config.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-research-surplus"] },
+        [[new HumanMessage("research")]],
+      );
+      await manager!.handleLLMNewToken("", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({
+          text: "",
+          message: new AIMessageChunk({
+            content: "",
+            tool_call_chunks: [{ id: "call-search", name: "search", args: '{"query":"topic"}', index: 0, type: "tool_call_chunk" }],
+          }),
+        }),
+      });
+      expect(input?.hasDeliveredOutput()).toBe(false);
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (_model, options): Promise<AuraModel> => ({
+      bindTools: (boundTools: StructuredTool[]) => ({
+        invoke: async () => {
+          expect(boundTools.map((tool: StructuredTool) => tool.name)).toEqual(["search"]);
+          expect(options?.["personalCredential"]).toEqual({ apiKey: "caller-secret-anthropic" });
+          return new AIMessage("direct research answer");
+        },
+      }),
+    }) as unknown as AuraModel);
+    const researchTool = { name: "search", description: "closed research search", schema: {} } as StructuredTool;
+    const fundingSession: ForegroundChatFundingSession = { ...session(true), workload: "research" };
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("research")], [researchTool], A,
+      "payer", "agent-1", null, undefined,
+      { fundingSession, modelFallbackMode: "none", sameModelRetryMode: "none" },
+    );
+
+    expect(result.response.content).toBe("direct research answer");
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+  test("delivered uncertain marketplace output stays terminal and missing direct credentials stop exact fallback", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    const turnId = "personal-marketplace-delivered";
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      const [manager] = await CallbackManager.configure(input?.config.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-personal-surplus"] },
+        [[new HumanMessage("text")]],
+      );
+      await manager!.handleLLMNewToken("visible personal answer", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({ text: "visible personal answer", message: new AIMessageChunk("visible personal answer") }),
+      });
+      expect(input?.hasDeliveredOutput()).toBe(true);
+      throw new SurplusOutcomeUnknownError();
+    });
+    const uncertain = await runWithTurn(turnId, async () => {
+      return await invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+        undefined, { fundingSession: session(), modelFallbackMode: "none", sameModelRetryMode: "none" })
+        .then(() => null, (error: unknown) => error);
+    });
+    expect(uncertain).toBeInstanceOf(SurplusOutcomeUnknownError);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    invokeSurplusChatAttemptMock.mockImplementation(async () => ({ kind: "direct_fallback" }));
+    const missingDirect = await invokeChatModelWithFallback([new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(false), modelFallbackMode: "none", sameModelRetryMode: "none" })
+      .then(() => null, (error: unknown) => error);
+    expect(missingDirect).toBeInstanceOf(PersonalDirectFundingUnavailableError);
+    expect((missingDirect as PersonalDirectFundingUnavailableError).code).toBe("personal_credential_missing");
+    expect(createUniversalModelMock).not.toHaveBeenCalled(); expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("advances a foreground personal chain when safe Surplus fallback has no direct credential", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    policyState = { enabled: true, chain: [B] };
+    const attemptedRoutes: string[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      attemptedRoutes.push(input!.route.catalogModelId);
+      return input!.route.catalogModelId === A
+        ? { kind: "direct_fallback" }
+        : { kind: "served", response: new AIMessage("personal chain answer") };
+    });
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession: session(false), sameModelRetryMode: "none" },
+    );
+
+    expect(result.modelUsed).toBe(B);
+    expect(result.response.content).toBe("personal chain answer");
+    expect(attemptedRoutes).toEqual([A, B]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("advances the personal chain when the request is not qualified and only the next model has a direct credential", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    surplusQualificationOverride = false;
+    policyState = { enabled: true, chain: [B] };
+    createUniversalModelMock.mockImplementation(async (modelId) => ({
+      bindTools: () => ({ invoke: async () => new AIMessage(`direct answer from ${modelId}`) }),
+    }) as unknown as AuraModel);
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, {
+        fundingSession: session((modelId) => modelId === B),
+        sameModelRetryMode: "none",
+      },
+    );
+
+    expect(result.modelUsed).toBe(B);
+    expect(result.response.content).toBe(`direct answer from ${B}`);
+    expect(invokeSurplusChatAttemptMock).not.toHaveBeenCalled();
+    expect(modelIdsFromCalls()).toEqual([B]);
+  });
+  test("skips an unfunded personal candidate between a safe refusal and a runnable chain model", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    policyState = { enabled: true, chain: [B, C] };
+    const attemptedRoutes: string[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      attemptedRoutes.push(input!.route.catalogModelId);
+      return input!.route.catalogModelId === A
+        ? { kind: "direct_fallback" }
+        : { kind: "served", response: new AIMessage("third model answer") };
+    });
+    const base = session(false);
+    const fundingSession: ForegroundChatFundingSession = {
+      ...base,
+      async recheckAttempt(modelId, transport) {
+        if (modelId === B) throw new PersonalModelFundingUnavailableError();
+        return base.recheckAttempt(modelId, transport);
+      },
+    };
+
+    const result = await invokeChatModelWithFallback(
+      [new HumanMessage("text")], [], A, "payer", "agent-1", null,
+      undefined, { fundingSession, sameModelRetryMode: "none" },
+    );
+
+    expect(result.modelUsed).toBe(C);
+    expect(result.response.content).toBe("third model answer");
+    expect(attemptedRoutes).toEqual([A, C]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
 });

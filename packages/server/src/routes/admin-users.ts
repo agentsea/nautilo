@@ -289,12 +289,24 @@ function rolloutStatusPayload(status: NonNullable<Awaited<ReturnType<typeof getR
   };
 }
 
+export interface AdminUsersRoutesDeps {
+  /** Account loss fences existing authority regardless of retained Role grants. */
+  readonly onAuthorityRevoked?: (userId: string) => void;
+}
+
 /**
- * D219 — admin user directory, soft-delete, and password reset.
- * Promotion/demotion is intentionally NOT here; use M128's
+ * Admin user directory, soft-delete, and password reset.
+ * Promotion/demotion is intentionally NOT here; use the
  * PUT/DELETE /api/groups/:id/members/:userId routes.
  */
-export function adminUsersRoutes(app: FastifyInstance): void {
+export function adminUsersRoutes(app: FastifyInstance, deps: AdminUsersRoutesDeps = {}): void {
+  const revokeCommittedAccount = (userId: string) => {
+    try { deps.onAuthorityRevoked?.(userId); }
+    catch (error) {
+      // The account mutation committed; preserve its successful receipt.
+      warn(`[admin-users] post-commit authority revocation failed: ${String(error)}`);
+    }
+  };
   app.post<{ Body: unknown }>("/api/admin/users/rollout/plan", async (request, reply) => {
     const callerUserId = await requireAdmin(request, reply);
     if (!callerUserId) return;
@@ -779,6 +791,7 @@ export function adminUsersRoutes(app: FastifyInstance): void {
         })
         .where(and(eq(users.id, request.params.id), isNull(users.disabledAt)))
         .returning({ id: users.id });
+      revokeCommittedAccount(request.params.id);
       const auditRecorded = changed.length > 0
         ? audit(request, {
             kind: "user_disabled",
@@ -915,7 +928,7 @@ export function adminUsersRoutes(app: FastifyInstance): void {
     },
   );
 
-  // Stack 66 (D220) — HARD delete a user account. Irreversible; distinct from
+  // HARD delete a user account. Irreversible; distinct from
   // /disable (soft-delete). Removes the user, the agents they own, and their
   // rooms/sessions, then revokes the Logto identity. Cascade ordering mirrors
   // `bin/nautilo-dev cleanup-test-cruft` (the proven teardown): NO-ACTION FK
@@ -942,7 +955,7 @@ export function adminUsersRoutes(app: FastifyInstance): void {
 
       let deletion;
       try {
-        deletion = await deleteLocalUserAccount(targetUserId);
+        deletion = await deleteLocalUserAccount(targetUserId, { onCommitted: revokeCommittedAccount });
       } catch (error) {
         if (error instanceof AccountDeletionIneligibleError) {
           const raced = error.eligibility;

@@ -22,6 +22,7 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import {
   parseProtectedMessageDtoV2,
+  parseImageAssistanceSummary,
   type ProtectedMessageDtoV2,
 } from "@nautilo/types";
 
@@ -295,7 +296,7 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
   /** Exact cancellation signal of the retained foreground authorization. */
   authorizationSignal?: AbortSignal;
   checkpoint?: LiveShadowAgentTurnSession["checkpoint"];
-  /** Standing M294 recipient key when the per-turn plan carries only a reference. */
+  /** Standing recipient key when the per-turn plan carries only a reference. */
   recipientKeyId?: string;
   resolveCurrentDeviceWrappedAgentObjectAuthorization:
     ResolveCurrentDeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorization;
@@ -864,7 +865,13 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
           transcriptOrigin: "main",
           parentThreadId: null,
           scopeId: null,
-          metadata: null,
+          metadata: full ? null : (() => {
+            const imageAssistance = request.payload.role === "assistant"
+              ? parseImageAssistanceSummary(request.payload.sensitiveMetadata?.["imageAssistance"]) : undefined;
+            if (imageAssistance) return { nautilo_image_assistance: imageAssistance };
+            const toolCallId = request.payload.role === "tool" ? request.payload.sensitiveMetadata?.["toolCallId"] : undefined;
+            return typeof toolCallId === "string" ? { nautilo_tool_result: { toolCallId } } : null;
+          })(),
           subthreadRoomId: null,
           replyToMessageId: null,
           notificationContext: {

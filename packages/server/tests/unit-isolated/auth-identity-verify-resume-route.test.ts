@@ -1,6 +1,6 @@
 /**
- * M063 — POST /api/auth/identity-verify-resume (Logto mid-session identity PIN).
- * PR review M-2 — branches + dispatch into `resumeGraphWithIdentity`.
+ * POST /api/auth/identity-verify-resume (Logto mid-session identity PIN).
+ * Covers branches and dispatch into `resumeGraphWithIdentity`.
  *
  * Mock isolation: import real `@nautilo/agent` and override only resume
  * helpers — partial mocks leak across files in one `bun test` process.
@@ -14,7 +14,7 @@ mock.module("../../src/lib/server-direct-db", () => ({
   getServerDirectDb: unexpectedDatabaseAccess,
 }));
 
-// M125 Phase 2.8 — `resumeGraphWithIdentity` reordered args to
+// `resumeGraphWithIdentity` receives arguments in the order
 // (threadId, policyContext, agentId, processor, laneKey). The spy
 // signature reflects the new order.
 const resumeIdentitySpy = mock(
@@ -88,6 +88,40 @@ const OWNER_ACTOR_ID = "owner-actor-id";
 const OWNER_ID = "owner-user-id";
 await installResumeInvocationAuthority(OWNER_ID);
 const VALID_PIN = "654321";
+
+function assertFreshResumeDeps(value: unknown, threadId: string): void {
+  expect(value).toEqual({
+    ...resumedMemoryDepsValue,
+    fullEncryptionOnlyForState: expect.any(Function) as unknown,
+    humanTerminalAdmissionPortForState: expect.any(Function) as unknown,
+  });
+  const deps = value as {
+    fullEncryptionOnlyForState(): boolean;
+    humanTerminalAdmissionPortForState(state: import("@nautilo/agent").NautiloState):
+      ReturnType<typeof realRuntime.foregroundHumanTerminalAdmissionPort>;
+  };
+  expect(deps.fullEncryptionOnlyForState()).toBe(false);
+  const state = {
+    causalHumanUserId: OWNER_ID, agentId: "resumed-agent",
+    roomId: "40000000-0000-4000-8000-000000000322", currentThreadId: threadId,
+    trustedExecutionEntrypoint: "foreground.main",
+    verifiedOrdinaryOrigin: { kind: "local_electron", userId: OWNER_ID },
+  } as unknown as import("@nautilo/agent").NautiloState;
+  const port = deps.humanTerminalAdmissionPortForState(state);
+  expect(typeof port?.withAdmission).toBe("function");
+  // Construct a fresh source port for the current state; a retained port from
+  // the paused invocation must not be copied into the resumed graph.
+  const freshPort = deps.humanTerminalAdmissionPortForState({ ...state });
+  expect(typeof freshPort?.withAdmission).toBe("function");
+  expect(freshPort).not.toBe(port);
+  for (const changed of [
+    { causalHumanUserId: "other-human" }, { agentId: "other-agent" },
+    { roomId: "other-room" }, { currentThreadId: "other-thread" },
+    { verifiedOrdinaryOrigin: null }, { trustedExecutionEntrypoint: "background.task" },
+  ]) {
+    expect(deps.humanTerminalAdmissionPortForState({ ...state, ...changed } as import("@nautilo/agent").NautiloState)).toBeUndefined();
+  }
+}
 
 async function waitForCallCount(
   readCount: () => number,
@@ -183,6 +217,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
       resumeThreadMembershipForUser: async () => true,
       resumeThreadScopeForUser: async () => ({ roomId, kind: "direct" }),
       resumeCausalHumanUserIdForThread: async () => OWNER_ID,
+      resumeFundingForThread: async () => null,
       resumeAgentIdForThread: async () => options?.protectedResume === undefined
         ? null
         : "resumed-agent",
@@ -370,8 +405,8 @@ describe("POST /api/auth/identity-verify-resume", () => {
     await app.close();
   });
 
-  test("happy path → 200; resumeGraphWithIdentity receives ids + laneKey + agentId (envelope-derived, M125)", async () => {
-    // M125 Phase 2.4 — agentId now comes from `request.memoryEnvelope.agentId`,
+  test("happy path → 200; resumeGraphWithIdentity receives ids + laneKey + agentId (envelope-derived)", async () => {
+    // agentId comes from `request.memoryEnvelope.agentId`,
     // not the bootstrap default. The stub stamps `"stub-envelope-agent"`
     // unless `agentIdForSession` overrides.
     setBootstrapDefaultAgentId("env-default-agent");
@@ -396,7 +431,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
     await waitForCallCount(() => resumeIdentitySpy.mock.calls.length, 1);
     expect(resumeIdentitySpy).toHaveBeenCalledTimes(1);
 
-    // M125 Phase 2.8 — new arg order: (threadId, pc, agentId, processor, laneKey)
+    // Argument order: (threadId, pc, agentId, processor, laneKey)
     const call = resumeIdentitySpy.mock.calls[0]!;
     expect(call[0]).toBe("thread-happy");
     expect(call[1]).toMatchObject({
@@ -443,7 +478,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
     expect(call[2]).toBe("resumed-agent");
     expect(call[4]).toBe("room:protected-identity");
     expect(call[7]).toBeInstanceOf(AbortSignal);
-    expect(call[9]).toBe(resumedMemoryDepsValue);
+    assertFreshResumeDeps(call[9], "thread-protected-identity");
     expect(h.buildEnvelopeCalls).toEqual([[
       OWNER_ACTOR_ID,
       "room:protected-identity",
@@ -489,7 +524,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
     expect(call[2]).toBe("resumed-agent");
     expect(call[4]).toBe("room:protected-enrollment");
     expect(call[7]).toBeInstanceOf(AbortSignal);
-    expect(call[9]).toBe(resumedMemoryDepsValue);
+    assertFreshResumeDeps(call[9], "thread-protected-enrollment");
     expect(h.buildEnvelopeCalls).toEqual([[
       OWNER_ACTOR_ID,
       "room:protected-enrollment",
@@ -583,7 +618,7 @@ describe("POST /api/auth/identity-verify-resume", () => {
     await app.close();
   });
 
-  test("M125 Phase 2.4 — missing envelope.agentId → 409 agent_id_required_to_resume; resume not dispatched", async () => {
+  test("missing envelope.agentId → 409 agent_id_required_to_resume; resume not dispatched", async () => {
     // Override the stub so the bearer session does NOT stamp an envelope
     // agentId, simulating a half-bound user (valid JWT, zero owned agents).
     const sessionStore = new SessionStore(undefined, { persistPath: null });

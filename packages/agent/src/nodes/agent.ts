@@ -1,3 +1,5 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
+import { personalToolReady } from "../runtime/personal-tool-readiness";
 import {
   foregroundModelControlPlanFromSnapshot,
   loadForegroundModelControlSnapshot,
@@ -204,7 +206,7 @@ export async function agentNode(
   // repeat the actor boundary here because provider binding is an independent
   // authority site and a guest can share the owner's graph checkpoint.
   const personalTaskControls = foregroundChatFundingSession?.kind === "personal"
-    && foregroundChatFundingSession.personalTaskControls === true;
+    && foregroundChatFundingSession.personalTaskControls === true && !getCapabilityFundingSession();
   const activatedToolNames = personalTaskControls
     ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES]
     : selectedActivatedToolNamesForActor(state.actorRole, state.activatedToolNames);
@@ -300,7 +302,7 @@ export async function agentNode(
   // provider binding empty is an execution fence in addition to route/tool
   // admission owned by the server and graph.
   const invocationTools = foregroundChatFundingSession?.kind === "personal"
-    ? personalTaskControls ? filterPersonalTaskControlTools(tools) : []
+    ? getCapabilityFundingSession() ? tools.filter((tool) => personalToolReady(tool.name)) : personalTaskControls ? filterPersonalTaskControlTools(tools) : []
     : tools;
   // Recompute only the stable intent category here for telemetry parity with
   // pre_model; the persisted activation set remains the binding authority.
@@ -370,6 +372,7 @@ export async function agentNode(
         ...(state.agentId ? { agentId: state.agentId } : {}),
         ...(state.turnId ? { turnId: state.turnId } : {}),
         ...(state.currentTaskId ? { taskId: state.currentTaskId } : {}),
+        ...(state.currentTaskRunId ? { taskRunId: state.currentTaskRunId } : {}),
       },
     },
     () =>

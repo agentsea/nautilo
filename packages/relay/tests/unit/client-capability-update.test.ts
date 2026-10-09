@@ -109,13 +109,19 @@ async function connectClient(
     initialCapabilityRevision?: number;
     protocolVersion?: number;
     reconnectDelayMs?: number;
+    capabilities?: RelayCapabilities;
+    runShellOwnerInstanceId?: string;
+    onDispatch?: (request: import("../../src/protocol").RelayDispatchRequest) => Promise<import("../../src/protocol").RelayDispatchResult>;
   },
 ): Promise<ReturnType<typeof createRelayClient>> {
   const client = createRelayClient({
     serverUrl: "http://127.0.0.1:9",
     userId: "user-1",
     relayId: "relay-1",
-    capabilities: CAPS,
+    capabilities: options.capabilities ?? CAPS,
+    ...(options.runShellOwnerInstanceId !== undefined
+      ? { runShellOwnerInstanceId: options.runShellOwnerInstanceId }
+      : {}),
     ...(options.desktopSessionId !== undefined
       ? { desktopSessionId: options.desktopSessionId }
       : {}),
@@ -125,7 +131,7 @@ async function connectClient(
     ...(options.reconnectDelayMs !== undefined
       ? { reconnectDelayMs: options.reconnectDelayMs }
       : {}),
-    onDispatch: async () => ({ status: "ok" }),
+    onDispatch: options.onDispatch ?? (async () => ({ status: "ok" })),
   });
   const connectPromise = client.connect();
   const ws = created[created.length - 1]!;
@@ -144,7 +150,7 @@ async function connectClient(
   return client;
 }
 
-describe("createRelayClient updateCapabilities (D418 protocol v7)", () => {
+describe("createRelayClient capability updates", () => {
   beforeEach(() => {
     created.length = 0;
   });
@@ -152,7 +158,7 @@ describe("createRelayClient updateCapabilities (D418 protocol v7)", () => {
   afterEach(() => {});
 
   test("keeps Claude execution as an exact v18 Desktop-only capability", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(20);
+    expect(RELAY_PROTOCOL_VERSION).toBe(28);
     const execution: RelayCapabilities = {
       profile: "desktop-agent",
       claudeExecution: { version: 2 },
@@ -167,6 +173,165 @@ describe("createRelayClient updateCapabilities (D418 protocol v7)", () => {
       profile: "desktop-agent",
       claudeExecution: { version: 1 } as never,
     }, 18).claudeExecution).toBeUndefined();
+  });
+
+  test("projects managed execution only to protocol v20 and newer peers", () => {
+    const execution: RelayCapabilities = {
+      profile: "desktop-agent",
+      canExecuteLocal: true,
+      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 2 },
+    };
+
+    expect(projectRelayCapabilitiesForProtocol(execution, 19)).toEqual({ profile: "desktop-agent" });
+    expect(projectRelayCapabilitiesForProtocol(execution, 20)).toEqual(execution);
+    expect(projectRelayCapabilitiesForProtocol(execution, 21)).toEqual(execution);
+  });
+
+  test("dispatches retained shell output only on v22 with the option-owned binding", async () => {
+    const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
+    const client = await connectClient({
+      desktopSessionId: "desktop-session-1",
+      protocolVersion: 22,
+      runShellOwnerInstanceId: "instance-from-options",
+      capabilities: { profile: "desktop-agent", canReadShellOutput: true },
+      onDispatch: async (request) => {
+        dispatched.push(request);
+        return { status: "ok", result: { data: "saved output" } };
+      },
+    });
+    try {
+      const ws = created[0]!;
+      ws.triggerMessage(JSON.stringify({
+        type: "relay:dispatch",
+        correlationId: "read-output-call",
+        toolName: "read_shell_output",
+        args: { session_id: "execution-fixture", query: "failure" },
+        impact: "read-only",
+        approvalObtained: true,
+        // An incoming value cannot choose or override the host owner binding.
+        runShellOwnerBinding: { instanceId: "model-supplied-instance", userId: "other-user" },
+      }));
+      await tick();
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]!.runShellOwnerBinding).toEqual({
+        instanceId: "instance-from-options",
+        userId: "user-1",
+        relayId: "relay-1",
+        desktopSessionId: "desktop-session-1",
+      });
+      const result = ws.sent.map((raw) => JSON.parse(raw) as { type: string; correlationId?: string; status?: string })
+        .find((message) => message.type === "relay:result" && message.correlationId === "read-output-call");
+      expect(result?.status).toBe("ok");
+    } finally {
+      await client.disconnect();
+    }
+  });
+
+  test.each([
+    { label: "old protocol", protocolVersion: 21, capabilities: { profile: "desktop-agent", canReadShellOutput: true } as RelayCapabilities },
+    { label: "missing capability", protocolVersion: 22, capabilities: { profile: "desktop-agent" } as RelayCapabilities },
+  ])("refuses retained shell output with $label", async ({ protocolVersion, capabilities }) => {
+    let dispatchCount = 0;
+    const client = await connectClient({
+      desktopSessionId: "desktop-session-1",
+      protocolVersion,
+      capabilities,
+      onDispatch: async () => { dispatchCount += 1; return { status: "ok" }; },
+    });
+    try {
+      const ws = created[0]!;
+      ws.triggerMessage(JSON.stringify({
+        type: "relay:dispatch",
+        correlationId: "read-output-call",
+        toolName: "read_shell_output",
+        args: { session_id: "execution-fixture" },
+        impact: "read-only",
+        approvalObtained: true,
+      }));
+      await tick();
+      expect(dispatchCount).toBe(0);
+      const result = ws.sent.map((raw) => JSON.parse(raw) as { type: string; correlationId?: string; status?: string; errorCode?: string })
+        .find((message) => message.type === "relay:result" && message.correlationId === "read-output-call");
+      expect(result).toMatchObject({ status: "error", errorCode: "LOCAL_TOOL_UNAVAILABLE" });
+    } finally {
+      await client.disconnect();
+    }
+  });
+
+  test("requires the typed Local Git marker at dispatch time", async () => {
+    for (const localGit of [undefined, { version: 1, extra: true }]) {
+      let dispatchCount = 0;
+      const client = await connectClient({
+        desktopSessionId: "desktop-session-1",
+        protocolVersion: 22,
+        capabilities: { profile: "desktop-agent", canUseLocalGit: true, localGit } as RelayCapabilities,
+        onDispatch: async () => { dispatchCount += 1; return { status: "ok" }; },
+      });
+      try {
+        const ws = created[created.length - 1]!;
+        ws.triggerMessage(JSON.stringify({
+          type: "relay:dispatch",
+          correlationId: "local-git-call",
+          toolName: "local_git",
+          args: { operation: "status" },
+          impact: "destructive",
+          approvalObtained: true,
+        }));
+        await tick();
+        expect(dispatchCount).toBe(0);
+        const result = ws.sent.map((raw) => JSON.parse(raw) as { type: string; correlationId?: string; status?: string; errorCode?: string })
+          .find((message) => message.type === "relay:result" && message.correlationId === "local-git-call");
+        expect(result).toMatchObject({ status: "error", errorCode: "LOCAL_TOOL_UNAVAILABLE" });
+      } finally {
+        await client.disconnect();
+      }
+    }
+
+    let validDispatchCount = 0;
+    const validClient = await connectClient({
+      desktopSessionId: "desktop-session-1",
+      protocolVersion: 22,
+      capabilities: { profile: "desktop-agent", canUseLocalGit: true, localGit: { version: 1 } },
+      onDispatch: async () => { validDispatchCount += 1; return { status: "ok" }; },
+    });
+    try {
+      const ws = created[created.length - 1]!;
+      ws.triggerMessage(JSON.stringify({
+        type: "relay:dispatch",
+        correlationId: "local-git-call",
+        toolName: "local_git",
+        args: { operation: "status" },
+        impact: "destructive",
+        approvalObtained: true,
+      }));
+      await tick();
+      expect(validDispatchCount).toBe(1);
+    } finally {
+      await validClient.disconnect();
+    }
+
+    let missingBooleanDispatchCount = 0;
+    const missingBooleanClient = await connectClient({
+      desktopSessionId: "desktop-session-1",
+      protocolVersion: 22,
+      capabilities: { profile: "desktop-agent", localGit: { version: 1 } },
+      onDispatch: async () => { missingBooleanDispatchCount += 1; return { status: "ok" }; },
+    });
+    try {
+      const ws = created[created.length - 1]!;
+      ws.triggerMessage(JSON.stringify({
+        type: "relay:dispatch",
+        correlationId: "local-git-missing-flag",
+        toolName: "local_git",
+        args: { operation: "status" },
+        impact: "destructive",
+        approvalObtained: true,
+      }));
+      await tick();
+      expect(missingBooleanDispatchCount).toBe(0);
+    } finally {
+      await missingBooleanClient.disconnect();
+    }
   });
 
   test("register carries desktopSessionId and the initial capability revision", async () => {
@@ -286,7 +451,7 @@ describe("createRelayClient updateCapabilities (D418 protocol v7)", () => {
       canReadWorkspace: true,
       canWriteWorkspace: true,
       canRunShell: true,
-      workspaceRoot: "/Users/test/Nautilo",
+      workspaceRoot: "/tmp/test/Nautilo",
     });
     await tick();
     const frame = updateFrames(ws)[0]!;
@@ -661,7 +826,7 @@ describe("createRelayClient updateCapabilities (D418 protocol v7)", () => {
   });
 });
 
-describe("createRelayClient register re-advertises CURRENT capabilities (D418 reconnect fix)", () => {
+describe("createRelayClient registration advertises current capabilities", () => {
   beforeEach(() => {
     created.length = 0;
   });
@@ -843,6 +1008,94 @@ describe("createRelayClient register re-advertises CURRENT capabilities (D418 re
     }
   });
 
+  test("reconnect re-advertises the current managed execution capability to a v20 peer", async () => {
+    const originalRandom = Math.random;
+    Math.random = () => 0;
+    const localExecution = {
+      version: 1 as const,
+      generation: "generation-fixture",
+      pipe: true as const,
+      pty: true,
+      capacity: 2,
+    };
+    let dynamicCaps: RelayCapabilities = {
+      profile: "desktop-agent",
+      canExecuteLocal: true,
+      canReadLocalExecutionHistory: true,
+      localExecution,
+    };
+    let client: ReturnType<typeof createRelayClient> | null = null;
+    try {
+      client = createRelayClient({
+        serverUrl: "http://127.0.0.1:9",
+        userId: "user-1",
+        relayId: "relay-1",
+        capabilities: { profile: "desktop-agent" },
+        desktopSessionId: "session-1",
+        reconnectDelayMs: 0,
+        getCapabilities: () => dynamicCaps,
+        onDispatch: async () => ({ status: "ok" }),
+      });
+      const connectPromise = client.connect();
+      const ws1 = created[created.length - 1]!;
+      ws1.triggerOpen();
+      await tick();
+      const register1 = JSON.parse(ws1.sent[0]!) as {
+        capabilitiesByProtocolVersion?: Record<string, RelayCapabilities>;
+      };
+      expect(register1.capabilitiesByProtocolVersion?.["20"]?.localExecution).toEqual(localExecution);
+      expect(register1.capabilitiesByProtocolVersion?.["20"]?.canExecuteLocal).toBe(true);
+      expect(register1.capabilitiesByProtocolVersion?.["20"]?.canReadLocalExecutionHistory).toBeUndefined();
+      expect(register1.capabilitiesByProtocolVersion?.["19"]?.localExecution).toBeUndefined();
+      expect(register1.capabilitiesByProtocolVersion?.["19"]?.canExecuteLocal).toBeUndefined();
+      expect(register1.capabilitiesByProtocolVersion?.["21"]?.canReadLocalExecutionHistory).toBe(true);
+      ws1.triggerMessage(JSON.stringify({
+        type: "relay:registered",
+        relayId: "relay-1",
+        protocolVersion: 20,
+        selectedProtocolVersion: 20,
+        relaySessionId: "relay-session-1",
+        pairingGenerationRef: "pairing-1",
+      }));
+      await connectPromise;
+
+      const reconnectedLocalExecution = { ...localExecution, generation: "generation-reconnected", capacity: 3 };
+      dynamicCaps = {
+        profile: "desktop-agent",
+        canExecuteLocal: true,
+        canReadLocalExecutionHistory: true,
+        localExecution: reconnectedLocalExecution,
+      };
+      ws1.close();
+      await tick();
+      const ws2 = created[created.length - 1]!;
+      expect(ws2).not.toBe(ws1);
+      ws2.triggerOpen();
+      await tick();
+      const register2 = JSON.parse(ws2.sent[0]!) as {
+        capabilitiesByProtocolVersion?: Record<string, RelayCapabilities>;
+      };
+      expect(register2.capabilitiesByProtocolVersion?.["20"]?.localExecution).toEqual(reconnectedLocalExecution);
+      expect(register2.capabilitiesByProtocolVersion?.["20"]?.canExecuteLocal).toBe(true);
+      expect(register2.capabilitiesByProtocolVersion?.["20"]?.canReadLocalExecutionHistory).toBeUndefined();
+      expect(register2.capabilitiesByProtocolVersion?.["19"]?.localExecution).toBeUndefined();
+      expect(register2.capabilitiesByProtocolVersion?.["19"]?.canExecuteLocal).toBeUndefined();
+      expect(register2.capabilitiesByProtocolVersion?.["21"]?.canReadLocalExecutionHistory).toBe(true);
+      ws2.triggerMessage(JSON.stringify({
+        type: "relay:registered",
+        relayId: "relay-1",
+        protocolVersion: 20,
+        selectedProtocolVersion: 20,
+        relaySessionId: "relay-session-2",
+        pairingGenerationRef: "pairing-1",
+      }));
+      await tick();
+    } finally {
+      await client?.disconnect();
+      Math.random = originalRandom;
+    }
+  });
+
   test("does not let a stale async capability builder register through its replacement socket", async () => {
     const originalRandom = Math.random;
     Math.random = () => 0;
@@ -890,4 +1143,119 @@ describe("createRelayClient register re-advertises CURRENT capabilities (D418 re
       Math.random = originalRandom;
     }
   });
+});
+
+for (const protocolVersion of [22, 23]) test(`Basic wire dispatch requires negotiated v23 (peer ${protocolVersion})`, async () => {
+  created.length = 0;
+  const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
+  const capabilities: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true,
+    localExecution: { version: 1, generation: "generation-basic", pipe: true, pty: true, capacity: 4 },
+    basicExecution: { version: 1, currentFolder: "/tmp/basic", serverBindingId: "server", protectedPolicyVersion: 1 } };
+  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, runShellOwnerInstanceId: "", capabilities,
+    onDispatch: async request => { dispatched.push(request); return { status: "ok" }; } });
+  try {
+    const ws = created[0]!;
+    const binding = { version: 2, generation: "generation-basic", executionId: "execution", invocationId: "call", operation: "start",
+      authority: { kind: "basic", roomId: "room-fixture", currentFolder: "/tmp/basic", capabilityRevision: 0, protectedPolicyVersion: 1 },
+      owner: { instanceId: "", humanUserId: "user-1", agentId: "agent", runId: "run", conversationId: "conversation", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1", serverBindingId: "server", profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: 1 } };
+    const send = (localExecutionBinding: unknown) => ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "basic-call", toolName: "exec_command", args: { cmd: "printf fixture" }, impact: "destructive", approvalObtained: true, localExecutionBinding }));
+    send(binding); await tick(); expect(dispatched).toHaveLength(protocolVersion === 23 ? 1 : 0);
+    send({ ...binding, authority: { ...binding.authority, currentFolder: "/tmp/foreign" } }); await tick();
+    expect(dispatched).toHaveLength(protocolVersion === 23 ? 1 : 0);
+    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, RelayCapabilities> };
+    expect(registration.capabilitiesByProtocolVersion["22"]?.canExecuteLocal).toBeUndefined();
+    expect(registration.capabilitiesByProtocolVersion["23"]?.basicExecution).toEqual(capabilities.basicExecution);
+  } finally { await client.disconnect(); }
+});
+
+for (const protocolVersion of [23, 24]) test(`Human Terminal incoming frame requires scoped v24 consent (peer ${protocolVersion})`, async () => {
+  created.length = 0;
+  const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
+  const owner = { humanUserId: "user-1", agentId: "agent", roomId: "room", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1", serverOrigin: "https://server.example", serverFingerprint: "fingerprint" };
+  const capabilities: RelayCapabilities = { profile: "desktop-agent", canUseHumanTerminal: true, humanTerminal: { version: 1, generation: "consent", owner } };
+  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, capabilities,
+    onDispatch: async request => { dispatched.push(request); return { status: "ok" }; } });
+  try {
+    const ws = created[0]!;
+    const binding = { version: 1, generation: "consent", invocationId: "call", owner: { ...owner, conversationId: "thread" } };
+    const send = (humanTerminalBinding: unknown, args: unknown = { action: "read" }) => ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "handoff", toolName: "human_terminal", args, impact: "read-only", approvalObtained: true, humanTerminalBinding }));
+    send(binding); await tick(); expect(dispatched).toHaveLength(protocolVersion === 24 ? 1 : 0);
+    send({ ...binding, generation: "old" }); send({ ...binding, owner: { ...binding.owner, agentId: "other" } }); send(binding, { action: "read", session_id: "arbitrary" });
+    await tick(); expect(dispatched).toHaveLength(protocolVersion === 24 ? 1 : 0);
+    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, RelayCapabilities> };
+    expect(registration.capabilitiesByProtocolVersion["23"]?.humanTerminal).toBeUndefined();
+    expect(registration.capabilitiesByProtocolVersion["24"]?.humanTerminal).toEqual(capabilities.humanTerminal);
+  } finally { await client.disconnect(); }
+});
+
+for (const protocolVersion of [24, 25]) test(`Full Mac frames require the one-shot v25 contract (peer ${protocolVersion})`, async () => {
+  created.length = 0;
+  const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
+  const capabilities: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true, canExecuteFullMacOneShot: true,
+    localExecution: { version: 1, generation: "host", pipe: true, pty: true, capacity: 4 } };
+  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, runShellOwnerInstanceId: "", capabilities,
+    onDispatch: async request => { dispatched.push(request); return { status: "ok" }; } });
+  try {
+    const ws = created[0]!;
+    const binding = { version: 3, generation: "host", executionId: "execution", invocationId: "call", operation: "start",
+      authority: { kind: "full_mac", activationId: "activation", roomId: "room" },
+      owner: { instanceId: "", humanUserId: "user-1", agentId: "agent", runId: "run", conversationId: "conversation", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1", serverBindingId: "server", profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: null } };
+    const send = (args: unknown) => ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "full-mac-call", toolName: "exec_command", args,
+      impact: "destructive", approvalObtained: true, executionClass: "real_workstation", uncontainedHostCommandsSession: true, localExecutionBinding: binding }));
+    send({ cmd: "printf fixture" }); await tick(); expect(dispatched).toHaveLength(protocolVersion === 25 ? 1 : 0);
+    send({ cmd: "printf fixture", tty: true }); await tick(); expect(dispatched).toHaveLength(protocolVersion === 25 ? 1 : 0);
+    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, RelayCapabilities> };
+    expect(registration.capabilitiesByProtocolVersion["24"]?.canExecuteFullMacOneShot).toBeUndefined();
+    expect(registration.capabilitiesByProtocolVersion["25"]?.canExecuteFullMacOneShot).toBeTrue();
+  } finally { await client.disconnect(); }
+});
+
+for (const protocolVersion of [25, 26]) test(`live and history search frames require negotiated v26 (peer ${protocolVersion})`, async () => {
+  created.length = 0;
+  const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
+  const capabilities: RelayCapabilities = { profile: "desktop-agent", canExecuteLocal: true, canReadLocalExecutionHistory: true, canSearchLocalExecutionOutput: true,
+    localExecution: { version: 1, generation: "host", pipe: true, pty: true, capacity: 4 } };
+  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, runShellOwnerInstanceId: "", capabilities,
+    onDispatch: async request => { dispatched.push(request); return { status: "ok" }; } });
+  try {
+    const ws = created[0]!;
+    const owner = { instanceId: "", humanUserId: "user-1", agentId: "agent", runId: "run", conversationId: "conversation", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1", serverBindingId: "server", profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: null };
+    const localExecutionBinding = { version: 1, generation: "host", executionId: "execution", invocationId: "call", operation: "read", owner };
+    const localExecutionHistoryBinding = { version: 1, generation: "old-host", executionId: "execution", invocationId: "history", sourceMessageId: 1,
+      reader: { instanceId: "", humanUserId: "user-1", agentId: "agent", conversationId: "conversation", roomId: "room", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1" } };
+    const send = (binding: object, args: object) => ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "search-call", toolName: "write_stdin", args, impact: "read-only", approvalObtained: true, ...binding }));
+    send({ localExecutionBinding }, { session_id: "execution", search: "needle" });
+    send({ localExecutionHistoryBinding }, { session_id: "execution", search: "needle" });
+    await tick(); expect(dispatched).toHaveLength(protocolVersion === 26 ? 2 : 0);
+    for (const extra of [{ chars: "" }, { cancel: false }, { yield_time_ms: 0 }]) {
+      send({ localExecutionBinding }, { session_id: "execution", search: "needle", ...extra });
+      send({ localExecutionHistoryBinding }, { session_id: "execution", search: "needle", ...extra });
+    }
+    await tick(); expect(dispatched).toHaveLength(protocolVersion === 26 ? 2 : 0);
+    send({ localExecutionBinding }, { session_id: "execution" });
+    await tick(); expect(dispatched).toHaveLength(protocolVersion === 26 ? 3 : 1);
+    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, RelayCapabilities> };
+    expect(registration.capabilitiesByProtocolVersion["25"]?.canSearchLocalExecutionOutput).toBeUndefined();
+    expect(registration.capabilitiesByProtocolVersion["26"]?.canSearchLocalExecutionOutput).toBeTrue();
+  } finally { await client.disconnect(); }
+});
+
+for (const protocolVersion of [26, 27]) test(`GitHub incoming frames require exact admitted v27 custody (peer ${protocolVersion})`, async () => {
+  created.length = 0;
+  const dispatched: import("../../src/protocol").RelayDispatchRequest[] = [];
+  const identity = { instanceId: "", humanUserId: "user-1", relayId: "relay-1", desktopSessionId: "desktop", pairingGeneration: "pairing-1", serverOrigin: "https://server.example", serverFingerprint: "fingerprint", profileId: "profile", profileRevision: 1, grantRevision: 1, protectedPolicyVersion: 1 };
+  const capabilities: RelayCapabilities = { profile: "desktop-agent", canUseGitHub: true, github: { version: 1, generation: "custody", identity } };
+  const client = await connectClient({ desktopSessionId: "desktop", protocolVersion, runShellOwnerInstanceId: "", capabilities,
+    onDispatch: async request => { dispatched.push(request); return { status: "ok" }; } });
+  try {
+    const ws = created[0]!;
+    const binding = { version: 1, generation: "custody", toolCallId: "call", stage: "read", owner: { ...identity, agentId: "agent", roomId: "room", conversationId: "thread", runId: "turn" } };
+    const send = (githubBinding: unknown) => ws.triggerMessage(JSON.stringify({ type: "relay:dispatch", correlationId: "github", toolName: "local_github", args: { operation: "issue_read", repository: "fixture/project", number: 12 }, impact: "read-only", approvalObtained: false, githubBinding }));
+    send(binding); await tick(); expect(dispatched).toHaveLength(protocolVersion === 27 ? 1 : 0);
+    send({ ...binding, generation: "old" }); send({ ...binding, owner: { ...binding.owner, humanUserId: "other" } });
+    await tick(); expect(dispatched).toHaveLength(protocolVersion === 27 ? 1 : 0);
+    const registration = JSON.parse(ws.sent[0]!) as { capabilitiesByProtocolVersion: Record<string, RelayCapabilities> };
+    expect(registration.capabilitiesByProtocolVersion["26"]?.github).toBeUndefined();
+    expect(registration.capabilitiesByProtocolVersion["27"]?.github).toEqual(capabilities.github);
+  } finally { await client.disconnect(); }
 });

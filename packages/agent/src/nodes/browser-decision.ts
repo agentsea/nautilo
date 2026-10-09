@@ -27,6 +27,10 @@ import {
   type BrowserDecisionState,
 } from "../graph/browser-decision";
 import type { BrowserVisualTargetBinding } from "../graph/browser-visual-observation";
+import {
+  prepareDecisionFunding,
+  runPreparedDecision,
+} from "../providers/decision-funding";
 
 interface BrowserDecisionDeps {
   fullEncryptionOnlyForState?: (state: NautiloState) => boolean;
@@ -114,7 +118,35 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
     let nextDecision = decision;
     let selectedVisualTarget: BrowserVisualTargetBinding | undefined;
     if (decision.phase === "decide") {
-      const maxChoices = model.decision.maxChoices;
+      let prepared: Awaited<ReturnType<typeof prepareDecisionFunding>>;
+      try {
+        // A fresh browser episode has no explicit model choice. Resolve the
+        // Human's effective preference once, then retain its exact id/binding.
+        prepared = await prepareDecisionFunding(
+          decision.fundingBinding ? decision.modelId : undefined,
+          decision.fundingBinding,
+        );
+      } catch {
+        return handoff(state, decision, "decision_funding_unavailable");
+      }
+      const fundedDecision: BrowserDecisionState = prepared
+        ? {
+            ...decision,
+            modelId: prepared.modelId,
+            preferenceRevision: prepared.preferenceRevision,
+            fundingBinding: prepared.binding,
+          }
+        : decision;
+      const decisionModel = prepared
+        ? resolveBrowserDecisionModel(
+            { turnId: state.turnId, fullEncryptionOnly: false },
+            prepared.modelId,
+          )
+        : model;
+      if (!decisionModel?.decision) {
+        return handoff(state, fundedDecision, "decision_model_unavailable");
+      }
+      const maxChoices = decisionModel.decision.maxChoices;
       const built = browserDecisionCandidates(decision.plan, observation, maxChoices, decision.sequence);
       if (built.reason !== null) return handoff(state, decision, built.reason);
       let planIndex = -1;
@@ -168,6 +200,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
       const additionalInstructions = browserDecisionAdditionalInstructions(observation);
       const started = performance.now();
       const fundingHumanUserId = causalHumanForExecution(state.causalHumanUserId);
+      nextDecision = fundedDecision;
       try {
         const result = continuation ? null : await runWithUsageContext({
           callType: (state.subagentDepth ?? 0) > 0 ? "subagent" : "chat",
@@ -176,7 +209,7 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           metadata: { ...(state.agentId ? { agentId: state.agentId } : {}),
             ...(state.turnId ? { turnId: state.turnId } : {}) },
         }, () => chooseBrowserAction(browserDecisionChoiceInput({
-          modelId: decision.modelId,
+          modelId: fundedDecision.modelId,
           tenantContext: { ownerId: state.userId },
           signal: runSignal,
           plan: decision.plan,
@@ -188,18 +221,20 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
           visualNoChange: decision.recovery?.visualNoChange,
           sequence: decision.sequence,
           ...(additionalInstructions === undefined ? {} : { additionalInstructions }),
-        }), maxChoices, deps.choose ?? ((input) => (deps.invokeChoice ?? invokeChoice)(input, {
-          fundingHumanUserId,
-        }))));
-        if (config.signal.aborted) return handoff(state, decision, "run_cancelled");
+        }), maxChoices, deps.choose ?? ((input) => {
+          const invoke = (funding: Parameters<typeof invokeChoice>[1] = {}) =>
+            (deps.invokeChoice ?? invokeChoice)(input, { fundingHumanUserId, ...funding });
+          return prepared ? runPreparedDecision(prepared, invoke) : invoke();
+        })));
+        if (config.signal.aborted) return handoff(state, fundedDecision, "run_cancelled");
         const selected = continuation ?? candidates.find(({ id }) => id === result?.selectedId);
-        if (!selected) return recover(state, decision, "invalid_choice");
-        if (!selected.call) return handoff(state, decision, selected.id === "defer_to_genie" ? "jev_requested_genie" : selected.id);
+        if (!selected) return recover(state, fundedDecision, "invalid_choice");
+        if (!selected.call) return handoff(state, fundedDecision, selected.id === "defer_to_genie" ? "jev_requested_genie" : selected.id);
         call = selected.call;
         selectedVisualTarget = selected.visualTarget;
         if (selected.id === "reobserve") {
           nextDecision = {
-            ...decision,
+            ...fundedDecision,
             recovery: { ...decision.recovery, assessNextObservation: true },
           };
         }
@@ -215,9 +250,9 @@ export function createBrowserDecisionNode(deps: BrowserDecisionDeps = {}) {
         if (error instanceof ChoiceRequestError
           && (error.code === "invalid_response" || error.code === "network_error"
             || (error.code === "provider_error" && error.retryable))) {
-          return recover(state, decision, `choice_${error.code}`);
+          return recover(state, fundedDecision, `choice_${error.code}`);
         }
-        return handoff(state, decision, error instanceof ChoiceRequestError
+        return handoff(state, fundedDecision, error instanceof ChoiceRequestError
           ? `choice_${error.code}${error.status === null ? "" : ` http_status=${error.status}`}` : "choice_unavailable");
       }
     }

@@ -619,3 +619,49 @@ describe("mobile protected-message compatibility boundary", () => {
     expect(applyStreamEvent(items, protectedEvent)).toBe(items);
   });
 });
+
+
+describe("image assistance attribution", () => {
+  const imageAssistance = {
+    status: "completed" as const,
+    modelId: "provider:image-reader", modelDisplayName: "Image reader",
+    attachmentIds: ["image-1", "image-2"],
+  };
+  test("restores completed attribution only on an assistant answer", () => {
+    const restored = fromHistoryMessages([
+      { id: "1", role: "user", content: "Compare these", createdAt: "2026-01-01", imageAssistance },
+      { id: "2", role: "assistant", content: "The images differ", createdAt: "2026-01-02", imageAssistance },
+    ]);
+    expect(restored[0]).not.toHaveProperty("imageAssistance");
+    expect(restored[1]).toHaveProperty("imageAssistance", imageAssistance);
+  });
+  test("reconciles live completion into the streamed answer and preserves it on history races", () => {
+    const streamed = apply([], { type: "message.tokens", laneKey: "room:test", turnId: "turn-1", chunkSequence: 0, content: "The images differ", done: false });
+    const completed = apply(streamed, { type: "message.new", laneKey: "room:test", messageId: "2", role: "ai", content: "The images differ", imageAssistance });
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toHaveProperty("imageAssistance", imageAssistance);
+    const raced = apply(completed, { type: "message.new", laneKey: "room:test", messageId: "2", role: "ai", content: "The images differ" });
+    expect(raced).toHaveLength(1);
+    expect(raced[0]).toHaveProperty("imageAssistance", imageAssistance);
+  });
+});
+
+
+test("image-reading failure is a deduplicated system notice and never claims completion", () => {
+  const event = { type: "job.status" as const, jobId: "job-1", status: "failed" as const, errorCode: "image_assistance_failed" as const, laneKey: "room:test" };
+  const failed = apply([], event);
+  expect(failed).toHaveLength(1);
+  expect(failed[0]).toMatchObject({ role: "system" });
+  expect(failed[0]).not.toHaveProperty("imageAssistance");
+  expect(apply(failed, event)).toBe(failed);
+  expect(apply([], { ...event, status: "cancelled" })).toEqual([]);
+  expect(apply([], { type: "job.status", jobId: "job-2", status: "failed", message: "image_assistance_failed" })).toEqual([]);
+});
+
+
+test("omits canonical image observation rows from chat without filtering user prose", () => {
+  expect(fromHistoryMessages([
+    { id: "1", role: "tool", toolName: "image_assistance", content: '{"observations":"private observation"}', createdAt: "2026-01-01" },
+    { id: "2", role: "user", content: "image_assistance is a word", createdAt: "2026-01-02" },
+  ])).toMatchObject([{ id: "2", role: "user", text: "image_assistance is a word" }]);
+});

@@ -1,3 +1,4 @@
+import { parseGitHubPublishApproval } from "@nautilo/types";
 import {
   isMediaGenerationApproval,
   type ServerEvent,
@@ -86,7 +87,7 @@ export function interruptValueToServerEvent(
   }
 
   if (type === "approval_ask") {
-    // D061 Phase 2 — graduated ask-verb approval.
+    // Graduated ask-verb approval.
     // post-model.ts emits `approval_ask` (underscore — internal payload
     // shape); we translate to `approval.ask` (dot — public WS event)
     // and attach execution context same as the prove_it path above.
@@ -118,6 +119,9 @@ export function interruptValueToServerEvent(
     const rawUid = value["userId"];
     const userId =
       typeof rawUid === "string" && rawUid.length > 0 ? rawUid : undefined;
+    const github = parseGitHubPublishApproval(value["github"]);
+    if ((value["github"] !== undefined || tools.some(tool => tool.name === "local_github"))
+      && (!github || github.approvalId !== approvalId)) return null;
     const localMcpInstall = isLocalMcpInstallApproval(value["localMcpInstall"])
       ? value["localMcpInstall"]
       : undefined;
@@ -142,8 +146,9 @@ export function interruptValueToServerEvent(
       ...(isNetworkContext(value["network"]) ? { network: value["network"] } : {}),
       // An SSH preparation is a one-use, exact-review capability.  Never
       // carry a broader verb list across this public interrupt boundary.
-      allowedVerbs: structuredSsh || mediaGeneration ? ["once", "deny"] : allowedVerbs,
+      allowedVerbs: github || structuredSsh || mediaGeneration ? ["once", "deny"] : allowedVerbs,
       ...(scopeInfo ? { scopeInfo } : {}),
+      ...(github ? { github, requiresExplicitReview: true } : {}),
       ...(localMcpInstall ? { localMcpInstall, requiresExplicitReview: true } : {}),
       ...(mediaGeneration ? { mediaGeneration, requiresExplicitReview: true } : {}),
       ...(structuredSsh ? { structuredSsh, requiresExplicitReview: true } : {}),
@@ -339,7 +344,7 @@ function isNetworkSuggestedRule(
 
 /**
  * Scan a graph's post-resume state for interrupts and translate each
- * to a ServerEvent. D084 — the resume paths (resume-approval-ask,
+ * to a ServerEvent. The resume paths (resume-approval-ask,
  * resume-approval) called this, so a chained interrupt raised on the
  * NEXT step of a multi-step task is surfaced rather than silently
  * held in the checkpointer.
@@ -654,4 +659,14 @@ export function requirePendingApprovalAskInterrupt(
     });
   }
   return matches[0]!;
+}
+
+/** Exact current checkpoint receipt, not a process-local pending registry. */
+export function requireGitHubApprovalEcho(pending: PendingGraphInterrupt, echo: { approvalId: string; digest: string; laneKey: string } | undefined,
+  laneKey: string | undefined, verb: string): void {
+  const review = parseGitHubPublishApproval(pending.value["github"]);
+  if (!review || !echo || (verb !== "once" && verb !== "deny") || pending.value["approvalId"] !== review.approvalId
+    || review.approvalId !== echo.approvalId || review.digest !== echo.digest || echo.laneKey !== laneKey) {
+    throw Object.assign(new Error("GitHub approval is stale"), { code: "approval_request_stale" });
+  }
 }

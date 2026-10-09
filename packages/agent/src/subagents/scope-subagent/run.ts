@@ -1,3 +1,4 @@
+import { runWithLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../../runtime/local-execution-delegation";
 import {
   HumanMessage,
   AIMessage,
@@ -560,6 +561,7 @@ export function formatSubagentTranscriptForParent(messages: BaseMessage[]): stri
 }
 
 export type RunScopeSubagentOpts = {
+  delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
   parentThreadId: string;
   parentTurnId: string;
   parentOwnerId: string;
@@ -785,7 +787,7 @@ export function runScopeSubagentUntilPause(
         })
       : null,
     () => runWithTaskCausalHuman(opts.causalHumanUserId ?? "", () =>
-      runWithInitiatingClientSurface("unknown", () => runScopeSubagentUntilPauseInternal(opts))),
+      runWithInitiatingClientSurface("unknown", () => runWithLocalExecutionDelegation(opts.delegatedLocalExecutionPort, () => runScopeSubagentUntilPauseInternal(opts)))),
   );
 }
 
@@ -879,6 +881,12 @@ async function runScopeSubagentUntilPauseInternal(
       policyResolver,
       {
         ...defaultPostModelDeps,
+        ...(opts.delegatedLocalExecutionPort
+          ? {
+            delegatedLocalExecutionPortForState:
+              () => opts.delegatedLocalExecutionPort,
+          }
+          : {}),
         ...(researchNoteDraft ? { researchNoteDraft } : {}),
         ...(opts.foregroundChatFundingSession === undefined
           ? {}

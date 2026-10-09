@@ -7,12 +7,16 @@ import type {ReflectionSemanticOperationRequest} from "../../src/server/reflecti
 
 const claim: DurableSleepClaim = {recordRef: "record-1", logicalObjectRef: "logical-1", generation: 4, changeReason: "created", stage: "search_projection", leaseToken: "lease-1"};
 const provenance = {provider: "openai", canonicalModel: "text-embedding-3-small", dimensions: 1536, contractVersion: 1} as const;
-function projected(): NonNullable<ProtectedReflectionSearchMetadata["currentProjection"]> {
+const ROOM_COMMITMENT = `h1.${"a".repeat(43)}`;
+function projected(
+  roomAnchorCommitment: string | null = ROOM_COMMITMENT,
+): NonNullable<ProtectedReflectionSearchMetadata["currentProjection"]> {
   return {recordRef: "record-1", recordProcessingGeneration: 2, projectionVersion: 1, projectionGeneration: 1,
-    embeddingProvider: provenance.provider, embeddingCanonicalModel: provenance.canonicalModel, embeddingDimensions: provenance.dimensions, embeddingContractVersion: 1};
+    embeddingProvider: provenance.provider, embeddingCanonicalModel: provenance.canonicalModel, embeddingDimensions: provenance.dimensions, embeddingContractVersion: 1,
+    roomAnchorCommitment};
 }
 function fixture() {
-  const metadata: ProtectedReflectionSearchMetadata = {recordRef: "record-1", processingGeneration: 2, representationGeneration: 1, producerPolicyVersion: "policy-1", lifecycle: "current",
+  const metadata: ProtectedReflectionSearchMetadata = {recordRef: "record-1", processingGeneration: 2, structuralHeight: 0, representationGeneration: 1, producerPolicyVersion: "policy-1", lifecycle: "current",
     inputBinding: {objectId: "object-1", namespaceId: "namespace-1", objectType: "nautilo.reflection.record.v1"}, expectedEmbeddingProvenance: provenance, currentProjection: null};
   let current = metadata;
   let bytes = encodeRecordPayloadV1({formatVersion: 1, posture: "derived", observedContentFingerprint: "fingerprint-1", sourceOwnedKind: null, observedLogicalObjectRef: null, observedRevision: null,
@@ -25,10 +29,16 @@ function fixture() {
   let embeddingOutcome: RecordEmbeddingResult = {status: "available", embedding: {provenance, vector: Object.freeze(new Array<number>(RECORD_SEARCH_POLICY_V1.embeddingDimensions).fill(0.25))}};
   const ports: ProtectedReflectionSearchProjectionPorts = {
     resolveMetadata: async () => {calls.push("metadata"); return structuredClone(current);},
+    resolveRoomAnchorCommitment: async (_metadata, payload) => {
+      calls.push("room");
+      expect(payload.anchors).toEqual([{kind: "room", anchorRef: "room-1", role: "origin"}]);
+      return ROOM_COMMITMENT;
+    },
     embedding: {embed: async request => {calls.push("embed"); expect(request.purpose).toBe("record.statement_embedding"); expect(request.plaintext).toBe("The launch is on Tuesday."); afterEmbedding?.(); return embeddingOutcome;}},
     nextRetryAt: () => 100_000,
     publish: async request => {
       calls.push("publish"); expect(request.expectedProjectionGeneration).toBeNull(); expect(request.claim).toEqual(claim); expect(request.metadata.inputBinding).toEqual(metadata.inputBinding);
+      expect(request.roomAnchorCommitment).toBe(ROOM_COMMITMENT);
       expect(request.held.product).toBeDefined(); (vectors as number[][]).push(request.projection.embedding.vector as number[]);
       await request.authorizeCommit(); stored = structuredClone(request.projection); current = {...current, currentProjection: projected()}; return "published";
     },
@@ -73,6 +83,20 @@ describe("protected Reflection search projection", () => {
     const f = fixture(); f.setCurrent({currentProjection: projected()});
     expect(await createProtectedReflectionSearchProjection(f.ports).ensureSearchProjection(claim)).toEqual({status: "ready"});
     expect(f.calls).toEqual(["metadata"]);
+  });
+  test("a legacy projection without a Room commitment reopens and replaces", async () => {
+    const f = fixture(); f.setCurrent({currentProjection: projected(null)});
+    expect(await createProtectedReflectionSearchProjection({
+      ...f.ports,
+      publish: async request => {
+        expect(request.expectedProjectionGeneration).toBe(1);
+        expect(request.roomAnchorCommitment).toBe(ROOM_COMMITMENT);
+        await request.authorizeCommit();
+        return "replaced";
+      },
+    }).ensureSearchProjection(claim)).toEqual({status: "ready"});
+    expect(f.calls).toContain("room");
+    expect(f.calls).toContain("embed");
   });
   test("malformed canonical payload and wrong producer policy never reach embedding", async () => {
     const f = fixture(); f.setBytes(new TextEncoder().encode('{"statement":"unauthenticated"}'));

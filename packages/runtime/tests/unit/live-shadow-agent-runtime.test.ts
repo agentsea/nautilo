@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import {
   createLiveShadowAgentTurnSession,
   type LiveShadowAgentPublishedMessage,
+  type LiveShadowAgentStreamReservation,
   type LiveShadowAgentSessionFailureReason,
   type LiveShadowAgentSessionFailureStage,
   type LiveShadowAgentTurnSession,
@@ -36,6 +37,7 @@ function createLiveShadowAgentRuntimeTurn(
     shadowBehavior: "fallback",
     revision: 0,
   }),
+  foregroundExecutionId?: string,
 ) {
   return createRuntimeTurn(session, policy, undefined, {
     resolve: () => Promise.resolve({
@@ -45,7 +47,7 @@ function createLiveShadowAgentRuntimeTurn(
     revalidate: (revision) => revision === policy.revision
       ? Promise.resolve()
       : Promise.reject(new Error("test policy changed")),
-  });
+  }, foregroundExecutionId);
 }
 
 function throwingSession(input: Readonly<{
@@ -213,6 +215,59 @@ function realStreamSessionFixture() {
 }
 
 describe("live Shadow Agent Runtime fallback boundary", () => {
+  test("forwards one execution identity through durable and final-stream publication", async () => {
+    const observed: Array<string | undefined> = [];
+    const runtime = {
+      representationMode: "shadow_encryption" as const,
+      sharedAgentPlanBytesBase64url: null,
+      toolBoundary: {} as never,
+      reserveAssistantStream: async () => ({
+        reservation: {
+          messageId: 42,
+          transcriptOrdinal: 2,
+          authorRole: "assistant" as const,
+        } as LiveShadowAgentStreamReservation["reservation"],
+        startBytes: new Uint8Array([1]),
+      }),
+      sealAssistantStreamChunk: async (input: { foregroundExecutionId?: string }) => {
+        observed.push(input.foregroundExecutionId);
+        return { frameBytes: new Uint8Array([2]), terminal: true };
+      },
+      publishMessages: async (_messages: readonly BaseMessage[], foregroundExecutionId?: string) => {
+        observed.push(foregroundExecutionId);
+        return { status: "protected" as const, protectedMessages: [] };
+      },
+    };
+    const message = new AIMessage({ content: "done" });
+    await protectLiveShadowAssistantToken({
+      runtime,
+      operationId: "turn-owned",
+      laneKey: "room:owned",
+      state: { ordinals: new Map() },
+      messagesToPersist: [message],
+      foregroundExecutionId: "turn-owned",
+      event: {
+        type: "message.tokens",
+        laneKey: "room:owned",
+        content: "done",
+        done: true,
+        assistantMessageKey: "assistant:owned",
+        chunkSequence: 1,
+      },
+    });
+    await publishLiveShadowRuntimeMessages({
+      runtime,
+      operationId: "turn-owned",
+      laneKey: "room:owned",
+      agentId: "agent-owned",
+      messages: [message],
+      foregroundExecutionId: "turn-owned",
+      persistOrdinary: async () => undefined,
+      warn: () => undefined,
+    });
+    expect(observed).toEqual(["turn-owned", "turn-owned"]);
+  });
+
   test("event publication delegates once and never ordinary-retries an ambiguous commit", async () => {
     let protectedCalls = 0;
     let ordinaryCalls = 0;
@@ -867,7 +922,7 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
     expect(publications).toBe(257);
   });
 
-  test("does not add execution-local status to the durable Tool payload", async () => {
+  test("binds execution identity before an early Tool boundary publication", async () => {
     let captured: Parameters<LiveShadowAgentTurnSession["publishMessage"]>[0]
       | undefined;
     const session: LiveShadowAgentTurnSession = Object.freeze({
@@ -899,18 +954,25 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
       fail: () => undefined,
       destroy: () => undefined,
     });
-    const runtime = createLiveShadowAgentRuntimeTurn(session);
+    const runtime = createLiveShadowAgentRuntimeTurn(
+      session,
+      undefined,
+      "turn-owned",
+    );
 
-    const result = await runtime.publishMessages([new ToolMessage({
+    const source = new ToolMessage({
       content: "17:34",
       tool_call_id: "call-live-shadow",
       name: "get_current_time",
       status: "success",
-    })]);
+    });
+    const opened = await runtime.toolBoundary.protectToolResult(source);
+    const result = await runtime.publishMessages([opened!], "turn-owned");
 
     expect(result.status).toBe("protected");
     expect(captured?.payload.sensitiveMetadata).toEqual({
       toolCallId: "call-live-shadow",
+      foregroundExecutionId: "turn-owned",
     });
   });
 

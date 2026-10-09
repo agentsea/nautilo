@@ -78,8 +78,9 @@ For translation work:
 ### README maintenance
 
 [`README.md`](README.md) is the English source. The other editions live beside
-it as `README.zh-CN.md` (Simplified Chinese), `README.ja.md`, `README.fr.md`,
-`README.es.md`, and `README.ko.md`. Each edition includes the same six-language
+it as `README.de.md` (German), `README.zh-CN.md` (Simplified Chinese),
+`README.ja.md`, `README.fr.md`, `README.es.md`, and `README.ko.md`.
+Each edition includes the same seven-language
 navigation, sections, commands, and destinations. Keep repository links
 relative, and use explicit anchors for navigation to translated headings.
 

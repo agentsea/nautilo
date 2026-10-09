@@ -17,6 +17,7 @@ import {
   resolveModelFunding,
   type ModelFundingDecision,
 } from "../lib/model-funding";
+import { resolveCallerImageInput } from "../lib/image-assistance";
 
 export interface ConfigRouteDeps {
   readonly getDefaultImageModel?: typeof getDefaultImageModel;
@@ -36,6 +37,8 @@ export interface CallerModelAvailability {
 
 export interface CallerModelAvailabilityDeps {
   readonly resolveFunding?: typeof resolveModelFunding;
+  readonly resolveImageInput?: typeof resolveCallerImageInput;
+  readonly imageAssistanceSelections?: Map<string, Promise<ModelFundingDecision | null>>;
 }
 
 const FUNDING_UNAVAILABLE_REASON: Readonly<Record<ModelFundingError["code"], string>> = {
@@ -55,6 +58,7 @@ function unavailableForCaller(model: EligibleModel, reason: string): EligibleMod
   return {
     ...model,
     enabled: false,
+    imageInput: "unavailable",
     availability: "missing-key",
     unavailableReason: reason,
   };
@@ -63,8 +67,8 @@ function unavailableForCaller(model: EligibleModel, reason: string): EligibleMod
 /**
  * Internal caller-scoped projection for foreground text chat. It composes the
  * signed catalog/capability/routing result with the server-owned funding
- * resolver. Personal projections deliberately suppress capabilities whose
- * paid execution paths are outside the supported personal text-chat slice.
+ * resolver and the same image-route owner used by execution. Native vision
+ * capability remains distinct from automatic image assistance.
  */
 export async function resolveCallerModelAvailability(
   humanUserId: string,
@@ -135,12 +139,17 @@ export async function resolveCallerModelAvailability(
       ...selectedBase,
       enabled: true,
       availability: "selectable",
+      imageInput: await (deps.resolveImageInput ?? resolveCallerImageInput)({
+        humanUserId, modelId, funding,
+      }, {
+        ...(deps.resolveFunding ? { resolveFunding: deps.resolveFunding } : {}),
+        ...(deps.imageAssistanceSelections ? { selectionCache: deps.imageAssistanceSelections } : {}),
+      }),
       ...(funding.kind === "personal"
         ? {
             capabilities: {
               ...selectedBase.capabilities,
               tools: catalogModel.features.tools === true,
-              vision: false,
               webSearch: false,
             },
           }
@@ -218,9 +227,9 @@ const retainedModelsBodySchema = z
   .strict();
 
 export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
-  /** Catalog + eligibility metadata only — no secrets. Same guest-access pattern as before D086 (preHandler sets guest context when no Bearer). */
+  /** Catalog + eligibility metadata only; the preHandler supplies guest context without a Bearer. */
   app.get("/api/config/models", async (request, reply) => {
-    // D429 Phase 7 — kick a non-blocking background refresh so newly published
+    // Kick a non-blocking background refresh so newly published
     // supported rows appear without a server restart. The response uses the
     // current atomic in-memory snapshot; no caller awaits a network request.
     kickRuntimeModelCatalogRefresh();
@@ -249,14 +258,23 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
       // The signed catalogue projection must not require a process-wide key.
       env: {},
     });
+    const imageAssistanceSelections = new Map<string, Promise<ModelFundingDecision | null>>();
     const resolved = await Promise.all(
-      candidates.map(async (candidate) =>
-        (await resolveAvailability(
+      candidates.map(async (candidate) => {
+        const availability = await resolveAvailability(
           humanUserId,
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
-        )).model,
-      ),
+          { imageAssistanceSelections },
+        );
+        return {
+          ...availability.model,
+          ...(availability.funding ? {
+            fundingSource: availability.funding.kind,
+            fundingProviderRoute: availability.funding.providerRoute,
+          } : {}),
+        };
+      }),
     );
     return reply.send(
       includeUnavailable
@@ -284,7 +302,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
   });
 
   /**
-   * D429 Phase 7 — non-secret catalog provenance diagnostics. Exposes only the
+   * Non-secret catalog provenance diagnostics. Exposes only the
    * source (remote-fresh / remote-stale / checked-in-fallback), staleness, and
    * catalogVersion. The raw pointer/manifest URL, host, headers, signing keys,
    * and provider credentials are never represented here.

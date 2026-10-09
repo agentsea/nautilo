@@ -1,3 +1,4 @@
+import { parseImageAssistanceSummary } from "@nautilo/types";
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ServerEvent } from "@nautilo/types";
 
@@ -21,6 +22,7 @@ export async function protectLiveShadowAssistantToken(input: Readonly<{
   state: LiveShadowStreamState;
   event: ServerEvent;
   messagesToPersist: readonly BaseMessage[];
+  foregroundExecutionId?: string;
 }>): Promise<Readonly<{
   events: readonly ServerEvent[];
   handled: boolean;
@@ -85,6 +87,9 @@ export async function protectLiveShadowAssistantToken(input: Readonly<{
     ordinaryChunk,
     done: event.done,
     ...(finalMessage === undefined ? {} : { finalMessage }),
+    ...(input.foregroundExecutionId === undefined
+      ? {}
+      : { foregroundExecutionId: input.foregroundExecutionId }),
   });
   ordinaryChunk.fill(0);
   if (frame === null) {
@@ -121,10 +126,15 @@ export async function publishLiveShadowRuntimeMessages(input: Readonly<{
   laneKey: string;
   agentId: string;
   messages: readonly BaseMessage[];
+  foregroundExecutionId?: string;
   persistOrdinary(messages: readonly BaseMessage[]): Promise<void>;
+  onCommittedMessageIds?: (ids: readonly number[]) => void;
   warn(message: string): void;
 }>): Promise<readonly ServerEvent[]> {
-  const batch = await input.runtime.publishMessages(input.messages);
+  const batch = await input.runtime.publishMessages(
+    input.messages,
+    input.foregroundExecutionId,
+  );
   const full = input.runtime.representationMode === "full_encryption";
   const events: ServerEvent[] = batch.protectedMessages.map((message) => {
     if ((message.representationMode ?? "shadow_encryption") !== input.runtime.representationMode) {
@@ -151,6 +161,7 @@ export async function publishLiveShadowRuntimeMessages(input: Readonly<{
         Buffer.from(message.ordinaryPayloadBytes).toString("base64url"),
     };
   });
+  input.onCommittedMessageIds?.(batch.protectedMessages.map((message) => message.reservation.messageId));
   if (batch.status !== "ordinary_fallback") return Object.freeze(events);
   if (full) throw new Error("Full encryption cannot publish ordinary fallback output");
   input.warn(
@@ -158,6 +169,7 @@ export async function publishLiveShadowRuntimeMessages(input: Readonly<{
       batch.failureStage ?? "durable_transcript"
     }: ${batch.failureReason ?? "protected_unavailable"}`,
   );
+  input.onCommittedMessageIds?.(batch.ordinaryPublications.map((publication) => publication.reservation.messageId));
   for (const publication of batch.ordinaryPublications) {
     if (publication.payload.role !== "assistant") continue;
     events.push({
@@ -167,6 +179,10 @@ export async function publishLiveShadowRuntimeMessages(input: Readonly<{
       ...(publication.createdAt ? { createdAt: publication.createdAt } : {}),
       role: "ai",
       content: publication.payload.content,
+      ...(() => {
+        const imageAssistance = parseImageAssistanceSummary(publication.payload.sensitiveMetadata?.["imageAssistance"]);
+        return imageAssistance ? { imageAssistance } : {};
+      })(),
       ...(input.agentId ? { authorAgentId: input.agentId } : {}),
       ...(publication.assistantMessageKey === null
         ? {}

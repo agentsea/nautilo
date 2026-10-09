@@ -2,6 +2,7 @@
   "schemaVersion": 1,
   "entryWorkspace": "@nautilo/server-bin",
   "rootOverrides": [
+    "@modelcontextprotocol/sdk",
     "@fastify/busboy",
     "@hono/node-server",
     "@langchain/langgraph-checkpoint",
@@ -9,12 +10,18 @@
     "body-parser",
     "hono",
     "jose",
+    "proxy-addr",
     "qs"
   ],
   "runtimeOnlyOverrides": {
     "brace-expansion": "5.0.11"
   },
   "reviewedExceptions": [
+    {
+      "kind": "root-override",
+      "name": "@modelcontextprotocol/sdk",
+      "reason": "Keep all shipped MCP transports on the supported patched 1.31.0 SDK release."
+    },
     {
       "kind": "root-override",
       "name": "@fastify/busboy",
@@ -59,6 +66,11 @@
       "kind": "root-override",
       "name": "qs",
       "reason": "Keep the shipped Express query parser on the audited patched release."
+    },
+    {
+      "kind": "root-override",
+      "name": "proxy-addr",
+      "reason": "Keep the shipped Express proxy address parser on the patched 2.0.8 release."
     }
   ]
 }

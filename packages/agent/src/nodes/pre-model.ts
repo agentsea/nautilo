@@ -1,3 +1,7 @@
+import { getCapabilityFundingSession } from "../runtime/capability-funding";
+import { personalToolReady } from "../runtime/personal-tool-readiness";
+import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
+import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
 import { assertResearchDesktopAvailable } from "../tools/invocation-service";
 import { projectSecurityResearchConsolidationTools } from "../tools/security/security-scan";
@@ -43,7 +47,7 @@ import { log } from "@nautilo/logger";
 import { validateMessageHistory, assertMessageInvariants } from "@nautilo/message-invariants";
 import { activeComputerUseModelGuidanceForBoundTools } from "../config/computer-use-catalogue/host-tool-admission";
 import { processHistory, estimateTokenCount, taskReadResponseByteBudget, pendingTaskReadPages, type HistoryConfig } from "../utils/history-manager";
-import { resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
+import { estimateBoundToolTokens, resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
 import { budgetResearchContext, isResearchPreEvictionConsolidating, prepareResearchContextOrigins, restoreResearchContextControlCycle } from "../tools/security/research-context-rollover";
 import { SECURITY_RESEARCH_WORKFLOW } from "../tools/security/research-protocol";
 import { buildResearchWorkContextMessage } from "../tools/security/research-work-context";
@@ -95,6 +99,12 @@ import {
   usesOpenAICompatibleChatTransport,
 } from "../providers/model-route";
 import { modelUsesAnthropicPromptCache } from "../utils/model-context-cache";
+import {
+  acceptedForegroundMessages,
+  foregroundContextNarrativeAllowanceCharacters,
+  foregroundContextProjectionFingerprint,
+  foregroundContextReservedMessageTokens,
+} from "../graph/foreground-context-refresh";
 import { projectSystemMessagesForProvider } from "../utils/provider-system-messages";
 import { COMPUTER_RESULT_DURABLE_SIDECAR_KEY } from "../tools/computer/model-result-projector";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
@@ -418,7 +428,11 @@ function tombstoneEjectedSkillBodies(
 
 function latestHumanMessageIndex(messages: BaseMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i] instanceof HumanMessage) return i;
+    const message = messages[i];
+    if (
+      message instanceof HumanMessage
+      && message.additional_kwargs["nautilo_transient_context"] !== true
+    ) return i;
   }
   return -1;
 }
@@ -604,7 +618,34 @@ export async function preModelNode(
         state.relayCapabilities,
         buildRuntimeCapabilityTokens(relayRegistry, state.userId, state.agentId),
       );
-  const relayCapabilities = capabilitiesAtModelStep;
+  const executionHuman = causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "";
+  const delegatedPort = getCurrentLocalExecutionDelegation();
+  let delegatedRelayId: string | undefined;
+  if (state.trustedExecutionEntrypoint === "background.task" && delegatedPort
+    && delegatedPort.taskId === state.currentTaskId && delegatedPort.taskRunId === state.currentTaskRunId) {
+    try { delegatedRelayId = await delegatedPort.withAdmission("read", ({ delegation }) => Promise.resolve(
+      delegation.humanUserId === executionHuman && delegation.agentId === state.agentId
+        && relayRegistry?.getPairingGeneration?.(delegation.target.relayId) === delegation.target.pairingGeneration
+        ? delegation.target.relayId : undefined)); } catch { /* Current source denial keeps local tools unavailable. */ }
+  }
+  const exactExecutionCapabilities = buildRuntimeCapabilityTokens(relayRegistry, executionHuman, state.agentId,
+    delegatedRelayId ?? (state.verifiedOrdinaryOrigin?.kind === "local_electron" && state.verifiedOrdinaryOrigin.userId === executionHuman
+      ? state.verifiedOrdinaryOrigin.relayId : undefined));
+  const delegatedReady = delegatedRelayId !== undefined && exactExecutionCapabilities?.["canDelegateLocalExecution"] === true;
+  const relayCapabilities: Readonly<Record<string, boolean>> = { ...capabilitiesAtModelStep, canExecuteLocal: exactExecutionCapabilities?.["canExecuteLocal"] === true
+      && (state.trustedExecutionEntrypoint !== "background.task" || delegatedReady),
+    canReplaceLegacyShellTools: exactExecutionCapabilities?.["canReplaceLegacyShellTools"] === true
+      && (delegatedReady || (state.verifiedOrdinaryOrigin?.kind === "local_electron"
+        && relayRegistry?.getDesktopSessionId?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.desktopSessionId
+        && relayRegistry?.getPairingGeneration?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.pairingGeneration)),
+    canUseGitHub: !delegatedRelayId && exactExecutionCapabilities?.["canUseGitHub"] === true,
+    canUseLocalGit: !delegatedRelayId && exactExecutionCapabilities?.["canUseLocalGit"] === true,
+    canUseHumanTerminal: exactExecutionCapabilities?.["canUseHumanTerminal"] === true
+      && relayRegistry?.getCapabilities(state.verifiedOrdinaryOrigin?.kind === "local_electron" ? state.verifiedOrdinaryOrigin.relayId : "")?.humanTerminal?.owner.roomId === state.roomId,
+    canReadShellOutput: !delegatedRelayId && exactExecutionCapabilities?.["canReadShellOutput"] === true,
+    canSearchLocalExecutionOutput: exactExecutionCapabilities?.["canSearchLocalExecutionOutput"] === true,
+    canReadLocalExecutionHistory: exactExecutionCapabilities?.["canReadLocalExecutionHistory"] === true,
+    canObserveLocalExecution: exactExecutionCapabilities?.["canObserveLocalExecution"] === true };
   // refresh from the connected-app runtime at every model step. The
   // checkpointed snapshot feeds every later resolver in this graph step; a
   // concurrent disconnect is still rejected by the execution-time profile
@@ -669,6 +710,7 @@ export async function preModelNode(
             readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
             context: {
               turnId: state.turnId,
+              relayCapabilities,
               fullEncryptionOnly,
               connectedAppProviderIds,
               deepResearchForegroundAvailable: deepResearchReturnContextForState(state) !== null,
@@ -744,8 +786,10 @@ export async function preModelNode(
   // Whenever its presence-only relay token is live, bind `terminal` on this
   // very model step even if the progressive intent pack was already applied.
   // Normal catalog eligibility still enforces actor policy + live PTY relay.
-  const activatedToolNames = personalFunding
+  const activatedToolNames = personalFunding && !getCapabilityFundingSession()
     ? personalTaskControls ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES] : []
+    : !isGuest && relayCapabilities?.["canUseHumanTerminal"] === true
+      ? mergeEligibleActivatedToolNames(ordinaryActivatedToolNames, ["human_terminal"], eligibleToolNameSet)
     : !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
       ? mergeEligibleActivatedToolNames(
           ordinaryActivatedToolNames,
@@ -804,7 +848,7 @@ export async function preModelNode(
           verifiedOrdinaryOrigin: state.verifiedOrdinaryOrigin,
           taskReportBackContinuation: state.taskReportBackContinuation,
           initiatingClientSurface,
-          personalTaskControls,
+          personalTaskControls: personalTaskControls && !getCapabilityFundingSession(),
           personalTaskRunnableModelIds,
           personalOnlyTaskModelIds,
           ...recallRecordsContext,
@@ -814,7 +858,7 @@ export async function preModelNode(
         relayCapabilities: relayCapabilities ?? undefined,
         readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
         activeModelCapabilities,
-        toolNameWhitelist: personalFunding && personalTaskControls
+        toolNameWhitelist: personalFunding && personalTaskControls && !getCapabilityFundingSession()
           ? PERSONAL_TASK_CONTROL_TOOL_NAMES
           : state.toolWhitelist,
         activatedToolNames: selectedActivatedToolNamesForActor(state.actorRole, activatedToolNames),
@@ -834,7 +878,7 @@ export async function preModelNode(
   // Post-model and tools-node fences remain the execution authority for stale
   // or directly injected calls.
   const availableTools = personalFunding
-    ? personalTaskControls ? filterPersonalTaskControlTools(rawTools) : []
+    ? getCapabilityFundingSession() ? rawTools.filter((tool) => personalToolReady(tool.name)) : personalTaskControls ? filterPersonalTaskControlTools(rawTools) : []
     : withholdSkipForExplicitSelection(rawTools, state.explicitlySelected);
   const tools = projectSecurityResearchConsolidationTools(availableTools, consolidating);
   const progressiveToolExposure = measureProgressiveToolExposure({
@@ -858,12 +902,25 @@ export async function preModelNode(
   // separately so we can cache it (see systemMessage construction below).
   // Everything appended after this point is per-turn-volatile to varying
   // degrees (time, memory, notifications) and stays OUT of the cached span.
+  const localExecutionGuidance = relayCapabilities["canExecuteLocal"] === true
+    ? "\n\nFor contained build, diagnostics, and dev-server commands, use exec_command and write_stdin; discover them when needed. "
+      + (delegatedReady
+        ? "This delegated work uses the original Human's saved Mac and project under its Basic or Development ceiling. It never inherits Full Mac or a Human terminal handoff. If that Mac or its source/project authority is unavailable, report the exact blocker; never substitute another computer. "
+        : "Commands use the exact initiating Desktop and its currently admitted access. ")
+      + "A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
+      + (relayCapabilities["canUseLocalGit"] === true ? "Use local_git for supported typed local Git. " : "")
+      + (relayCapabilities["canReadShellOutput"] === true ? "Use read_shell_output for earlier retained shell output. " : "")
+      + (relayCapabilities["canUseHumanTerminal"] === true ? "Use human_terminal for the exact Human terminal handoff. " : "")
+      + (tools.some(tool => tool.name === "terminal") ? "Use terminal for an existing terminal handoff only when offered. " : "")
+      + (relayCapabilities["canUseGitHub"] === true ? "" : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
+      + "Unavailable tools have no shell fallback."
+    : "";
   const stableSystemPrefix = buildSystemPrompt({
     assistantName: state.assistantName || "Genie",
     tools,
     isGuest,
     explicitlySelected: state.explicitlySelected,
-  }) + activeComputerUseModelGuidanceForBoundTools(tools);
+  }) + activeComputerUseModelGuidanceForBoundTools(tools) + localExecutionGuidance;
   let systemPrompt = stableSystemPrefix;
 
   if (
@@ -1282,7 +1339,7 @@ export async function preModelNode(
   if (researchContext && consolidating !== nextConsolidating) {
     finalTools = projectSecurityResearchConsolidationTools(availableTools, nextConsolidating === true);
     finalStableSystemPrefix = buildSystemPrompt({ assistantName: state.assistantName || "Genie", tools: finalTools, isGuest, explicitlySelected: state.explicitlySelected })
-      + activeComputerUseModelGuidanceForBoundTools(finalTools);
+      + activeComputerUseModelGuidanceForBoundTools(finalTools) + localExecutionGuidance;
     finalMessageTokens = await resolvePreparedMessageBudget(requestedModelId, finalTools);
     // Rebuild only the stable tool prefix without repeating preparation or
     // external reads. Resolved authority, protected volatile context (including
@@ -1304,6 +1361,72 @@ export async function preModelNode(
   }
   const finalPreparedMessages = finalResearchContext?.messages ?? preparedMessages;
   assertMessageInvariants(finalPreparedMessages, "pre_model.research_context");
+  let foregroundContextRefreshUpdate: Partial<NautiloState> = {};
+  if (state.foregroundContextRefreshEligible === true) {
+    const acceptedRefreshMessages = acceptedForegroundMessages(
+      state.foregroundContextRefreshSource?.acceptedMessages ?? [],
+      state.messages,
+    );
+    // Token accounting only: accepted Humans and the exact retained non-Human
+    // suffix are disjoint and this array is never used as message history.
+    // eslint-disable-next-line nautilo-msg/no-naked-message-concat
+    const requiredRefreshMessages = [
+      ...acceptedRefreshMessages,
+      ...(state.foregroundContextRefreshSource?.retainedMessages ?? []),
+    ];
+    const maximumContextCharacters = foregroundContextNarrativeAllowanceCharacters(
+      finalMessageTokens,
+      finalPreparedMessages,
+      requiredRefreshMessages,
+    );
+    const reservedMessageTokens = foregroundContextReservedMessageTokens(
+      finalPreparedMessages,
+      requiredRefreshMessages,
+    );
+    const projectionFingerprint = foregroundContextProjectionFingerprint(
+      finalPreparedMessages,
+      requestedModelId,
+      maximumContextCharacters,
+    );
+    const progressFingerprint = foregroundContextProjectionFingerprint(
+      state.messages,
+      requestedModelId,
+      maximumContextCharacters,
+    );
+    const browserDecisionPhase = currentBrowserDecision(state)?.phase;
+    const pressure =
+      state.foregroundContextRefresh == null
+      && state.foregroundContextRefreshLastProjection !== progressFingerprint
+      && estimateTokenCount(finalPreparedMessages) > finalMessageTokens
+      && state.noProgressPendingCorrection == null
+      && state.noProgressPendingStop == null
+      && state.approvalDenied !== true
+      && !(state.modelRejectedToolCallIds?.length)
+      && !(state.projectionRejectedToolCallIds?.length)
+      && !(state.ordinaryContentAccessRejectedToolCallIds?.length)
+      && state.researchContinuationRequired !== true
+      && browserDecisionPhase !== "waiting"
+      && browserDecisionPhase !== "observe"
+      && browserDecisionPhase !== "decide";
+    foregroundContextRefreshUpdate = {
+      foregroundContextPreparedModelId: requestedModelId,
+      foregroundContextMaximumCharacters: maximumContextCharacters,
+      foregroundContextBoundToolTokens: estimateBoundToolTokens(finalTools),
+      foregroundContextReservedMessageTokens: reservedMessageTokens,
+      ...(pressure
+        ? {
+            foregroundContextRefresh: {
+              kind: "foreground_context_refresh" as const,
+              reason: "context_pressure" as const,
+              status: "pending" as const,
+              modelId: requestedModelId,
+              maximumContextCharacters,
+              projectionFingerprint,
+            },
+          }
+        : {}),
+    };
+  }
 
   if (config.nautilo_log_tool_calls) {
     logProgressiveToolExposure(
@@ -1337,7 +1460,9 @@ export async function preModelNode(
     preparedStableSystemPrefixLength: finalStableSystemPrefix.length,
     promptTimeReference,
     toolNames: finalTools.map((t) => t.name),
+    relayCapabilities,
     connectedAppProviderIds: [...connectedAppProviderIds],
+    ...foregroundContextRefreshUpdate,
     // consume the pending correction flag so the corrective
     // instruction is injected exactly once. Cleared on this turn; a later
     // identical failure (count = limit + 1) is what maps to `no_progress`.

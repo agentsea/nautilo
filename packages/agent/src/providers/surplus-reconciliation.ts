@@ -37,11 +37,28 @@ export interface SurplusSettlementBinding {
   providerPin: string;
 }
 
+export type SurplusSettlementReadResult =
+  | { status: "settled"; costMicro: number }
+  | {
+      status: "retryable";
+      failureCode:
+        | "receipt_not_found"
+        | "receipt_not_confirmed"
+        | "receipt_rate_limited"
+        | "receipt_service_unavailable";
+    }
+  | {
+      status: "blocked_repair";
+      failureCode: "receipt_read_unauthorized" | "receipt_request_rejected";
+    };
+
 /** The observed accrued credit receipt is confirmed financial evidence, not answer success. */
 export function readConfirmedSurplusSettlement(value: unknown, binding: SurplusSettlementBinding): number | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  // The creating key and exact request ID bind this charge to its attempt.
+  // The authenticated account-scoped exact-request read and matching ID bind
+  // this charge to its original attempt, including an authorized replacement
+  // key. Never use list results or a caller-supplied request ID as evidence.
   // Surplus resolves provider aliases to a canonical model in request detail;
   // that spelling change must not discard a confirmed financial receipt.
   // Model/answer correctness is a separate execution concern.
@@ -60,20 +77,37 @@ export async function fetchSurplusSettlement(input: {
   apiKey: string;
   signal: AbortSignal;
   fetchImpl?: typeof fetch;
-}): Promise<number | null> {
-  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.binding.requestId)) return null;
+}): Promise<SurplusSettlementReadResult> {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.binding.requestId)) {
+    return { status: "blocked_repair", failureCode: "receipt_request_rejected" };
+  }
   const response = await (input.fetchImpl ?? fetch)(
     `https://api.surplusintelligence.ai/v1/requests/${encodeURIComponent(input.binding.requestId)}`,
     { method: "GET", redirect: "error", signal: input.signal, headers: { Authorization: `Bearer ${input.apiKey.trim()}` } },
   );
   if (!response.ok) {
     await response.body?.cancel();
-    return null;
+    if (response.status === 401 || response.status === 403) {
+      return { status: "blocked_repair", failureCode: "receipt_read_unauthorized" };
+    }
+    // The request-detail contract does not define 404 as permanent. Preserve
+    // the unknown charge and retry because a recent request log may not yet be
+    // visible to the read path.
+    if (response.status === 404) {
+      return { status: "retryable", failureCode: "receipt_not_found" };
+    }
+    if (response.status === 429) {
+      return { status: "retryable", failureCode: "receipt_rate_limited" };
+    }
+    if (response.status >= 500) {
+      return { status: "retryable", failureCode: "receipt_service_unavailable" };
+    }
+    return { status: "blocked_repair", failureCode: "receipt_request_rejected" };
   }
   // Request detail has no reason to carry captured request/response bodies.
   // Bound even a malformed server response before parsing it.
   const reader = response.body?.getReader();
-  if (!reader) return null;
+  if (!reader) return { status: "retryable", failureCode: "receipt_not_confirmed" };
   const parts: Uint8Array[] = [];
   let size = 0;
   try {
@@ -81,17 +115,29 @@ export async function fetchSurplusSettlement(input: {
       const chunk = await reader.read();
       if (chunk.done) break;
       const value: unknown = chunk.value;
-      if (!(value instanceof Uint8Array)) { await reader.cancel(); return null; }
+      if (!(value instanceof Uint8Array)) {
+        await reader.cancel();
+        return { status: "retryable", failureCode: "receipt_not_confirmed" };
+      }
       size += value.byteLength;
-      if (size > 65_536) { await reader.cancel(); return null; }
+      if (size > 65_536) {
+        await reader.cancel();
+        return { status: "retryable", failureCode: "receipt_not_confirmed" };
+      }
       parts.push(value);
     }
     const bytes = new Uint8Array(size);
     let offset = 0;
     for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
-    return readConfirmedSurplusSettlement(JSON.parse(new TextDecoder().decode(bytes)), input.binding);
+    const costMicro = readConfirmedSurplusSettlement(
+      JSON.parse(new TextDecoder().decode(bytes)),
+      input.binding,
+    );
+    return costMicro === null
+      ? { status: "retryable", failureCode: "receipt_not_confirmed" }
+      : { status: "settled", costMicro };
   } catch {
-    return null;
+    return { status: "retryable", failureCode: "receipt_not_confirmed" };
   } finally {
     reader.releaseLock();
   }

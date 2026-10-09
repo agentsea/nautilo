@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { getAllKeyDefinitions } from "@nautilo/config-guard";
+import { orderProviderKeys } from "@nautilo/types";
 import {
   createDirectDb,
   ensureDatabase,
   eq,
   getPersonalProviderCredential,
+  personalProviderCredentials,
   users,
   type DirectDatabase,
 } from "@nautilo/db";
@@ -19,6 +21,7 @@ let db: DirectDatabase;
 let app: FastifyInstance;
 let userA: string;
 let userB: string;
+let allowPersonalProviderKeys = true;
 
 function responseBody(response: { body: string }): Record<string, unknown> {
   return JSON.parse(response.body) as Record<string, unknown>;
@@ -49,13 +52,22 @@ beforeAll(async () => {
   });
   personalProviderCredentialRoutes(app, {
     getDb: () => db,
-    getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference: "personal_first" }),
+    getPolicy: async () => ({ allowPersonalProviderKeys, fundingPreference: "personal_first" }),
     getCapabilities: async () => ["use_personal_provider_credentials"],
     readCustody: async () => custody,
     validate: async () => ({ status: "accepted" }),
     auditEvent: () => undefined,
   });
   await app.ready();
+});
+
+afterEach(async () => {
+  allowPersonalProviderKeys = true;
+  if (!db) return;
+  for (const userId of [userA, userB]) {
+    if (userId) await db.delete(personalProviderCredentials)
+      .where(eq(personalProviderCredentials.userId, userId));
+  }
 });
 
 afterAll(async () => {
@@ -69,6 +81,77 @@ afterAll(async () => {
 });
 
 describe("personal credential API with migrated database", () => {
+  test("keeps policy-off cleanup owner-scoped and revision-fenced", async () => {
+    allowPersonalProviderKeys = false;
+    const empty = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(userA),
+    });
+    expect(empty.statusCode).toBe(200);
+    expect(responseBody(empty)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [],
+    });
+
+    allowPersonalProviderKeys = true;
+    for (const [userId, provider] of [[userA, "openai"], [userB, "anthropic"]] as const) {
+      const created = await app.inject({
+        method: "PUT", url: `/api/account/provider-credentials/${provider}`,
+        headers: auth(userId), payload: { apiKey: `${SENTINEL}-${provider}` },
+      });
+      expect(created.statusCode).toBe(200);
+    }
+
+    allowPersonalProviderKeys = false;
+    const listed = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials", headers: auth(userA),
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(responseBody(listed)).toMatchObject({
+      allowPersonalProviderKeys: false,
+      credentials: [{ provider: "openai", revision: 1, masked: null }],
+    });
+    expect(listed.body).not.toContain(SENTINEL);
+    expect(listed.body).not.toContain("ciphertextBase64");
+
+    const stale = await app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(userA), payload: { expectedRevision: 2 },
+    });
+    expect(stale.statusCode).toBe(409);
+
+    const foreign = await app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(userB), payload: { expectedRevision: 1 },
+    });
+    expect(foreign.statusCode).toBe(200);
+    expect(await getPersonalProviderCredential(db, userA, "openai")).not.toBeNull();
+
+    const deleted = await app.inject({
+      method: "DELETE", url: "/api/account/provider-credentials/openai",
+      headers: auth(userA), payload: { expectedRevision: 1 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(await getPersonalProviderCredential(db, userA, "openai")).toBeNull();
+    expect(await getPersonalProviderCredential(db, userB, "anthropic")).not.toBeNull();
+
+    for (const request of [
+      {
+        method: "PUT",
+        url: "/api/account/provider-credentials/openai",
+        payload: { apiKey: `${SENTINEL}-blocked` },
+      },
+      {
+        method: "POST",
+        url: "/api/account/provider-credentials/anthropic/validate",
+        payload: { expectedRevision: 1 },
+      },
+    ] as const) {
+      const response = await app.inject({ ...request, headers: auth(userB) });
+      expect(response.statusCode).toBe(404);
+      expect(responseBody(response)["error"]).toBe("personal_credentials_disabled");
+    }
+  });
+
   test("personal providers follow the server registry without its server-owned gateways", async () => {
     const registry = getAllKeyDefinitions().filter((provider) =>
       provider.id !== "gateway" && provider.id !== "nautilo-gateway");
@@ -93,10 +176,10 @@ describe("personal credential API with migrated database", () => {
     });
     const body = responseBody(listed);
     const providers = body["providers"] as Array<{ id: string; personalCapabilities: string[] }>;
-    expect(providers.map((provider) => provider.id)).toEqual(registry.map((provider) => provider.id));
+    expect(providers.map((provider) => provider.id)).toEqual(orderProviderKeys(registry).map((provider) => provider.id));
     expect(providers.filter((provider) => provider.personalCapabilities.includes("chat"))
       .map((provider) => provider.id).sort())
-      .toEqual(["anthropic", "fireworks", "google", "openai", "openrouter", "venice"]);
+      .toEqual(["anthropic", "fireworks", "google", "openai", "openrouter", "surplus", "together", "venice", "xai"]);
     expect((body["credentials"] as unknown[]).length).toBe(registry.length);
     expect(listed.body).not.toContain(SENTINEL);
     expect(listed.body).not.toContain("ciphertextBase64");
@@ -123,7 +206,8 @@ describe("personal credential API with migrated database", () => {
     const row = await getPersonalProviderCredential(db, userA, "openai");
     expect(row).not.toBeNull();
     expect(row!.envelope.ciphertextBase64).not.toContain(SENTINEL);
-    expect(row!.validationStatus).toBe("unverified");
+    expect(row!.validationStatus).toBe("accepted");
+    expect(row!.validatedAt).not.toBeNull();
 
     const listed = await app.inject({
       method: "GET", url: "/api/account/provider-credentials", headers: auth(userA),
@@ -148,10 +232,10 @@ describe("personal credential API with migrated database", () => {
       headers: auth(userA), payload: { apiKey: "replacement-integration-secret", expectedRevision: 1 },
     });
     expect(replaced.statusCode).toBe(200);
-    expect(replaced.body).toContain('"validationStatus":"unverified"');
+    expect(replaced.body).toContain('"validationStatus":"accepted"');
     expect(replaced.body).toContain('"revision":2');
     expect((responseBody(replaced)["credential"] as { masked: string }).masked).toBe("replacem...");
-    expect((await getPersonalProviderCredential(db, userA, "openai"))?.validatedAt).toBeNull();
+    expect((await getPersonalProviderCredential(db, userA, "openai"))?.validatedAt).not.toBeNull();
 
     const deleted = await app.inject({
       method: "DELETE", url: "/api/account/provider-credentials/openai",
@@ -187,6 +271,6 @@ describe("personal credential API with migrated database", () => {
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
     const current = await getPersonalProviderCredential(db, userB, "anthropic");
     expect(current?.revision).toBe(2);
-    expect(current?.validationStatus).toBe("unverified");
+    expect(current?.validationStatus).toBe("accepted");
   });
 });

@@ -13,7 +13,7 @@ describe("pre-model modality sanitization", () => {
     const current = new HumanMessage("continue in text");
     const messages = [historical, new AIMessage("noted"), current];
 
-    const result = sanitizeImagesForModel(messages, "fireworks:accounts/fireworks/models/minimax-m2p7");
+    const result = sanitizeImagesForModel(messages, "fireworks:accounts/fireworks/models/glm-5p3");
 
     expect(result.stripped).toBe(1);
     expect(messages[0]).toBe(historical);
@@ -36,6 +36,24 @@ describe("pre-model modality sanitization", () => {
     expect(() => sanitizeImagesForModel([current], "fireworks:accounts/fireworks/models/glm-5p3")).toThrow(
       /does not support image/,
     );
+  });
+
+  test("still treats an accepted image as current when refreshed Room context follows it", () => {
+    const current = new HumanMessage({
+      content: [
+        { type: "text", text: "Continue working from this image." },
+        { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+      ],
+    });
+    const refreshedContext = new HumanMessage({
+      content: "[Room context]\nThe active turn already made progress.",
+      additional_kwargs: { nautilo_transient_context: true },
+    });
+
+    expect(() => sanitizeImagesForModel(
+      [current, refreshedContext],
+      "fireworks:accounts/fireworks/models/glm-5p3",
+    )).toThrow(/does not support image/);
   });
 
   test("leaves images intact for vision-capable models", () => {

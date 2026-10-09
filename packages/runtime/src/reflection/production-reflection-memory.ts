@@ -58,6 +58,7 @@ import {
   PostgresSameRoomOrganizerNeighbors,
   PostgresSameRoomOrganizerStore,
   PostgresSemanticWorkStore,
+  PostgresGroundedDependencyRecordState,
   ProjectedAuthorityEligibility,
   ProtectedUnavailableCrossRoomOrganizerPartition,
   SameRoomDurableSemanticComposition,
@@ -101,6 +102,7 @@ import {
 } from "./canonical-room-sources";
 import {
   REFLECTION_SEMANTIC_PRESSURE_POLICY_V1,
+  REFLECTION_SEMANTIC_SETTLEMENT_RESERVE_MS,
   ReflectionSemanticWorker,
 } from "./semantic-sleep-worker";
 import { AuthoredMemorySemanticChangeAdapter } from "./authored-memory-semantic-change-adapter";
@@ -141,13 +143,15 @@ export const REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 = Object.freeze({
   modelInvocation: Object.freeze({
     // Reflection has a durable retry queue. One slow provider attempt must not
     // be mistaken for a failed batch on a populated instance. The independent
-    // two-minute worker watchdog still fences the whole poll and pauses any
-    // repair or later batch that would exceed its lease-safe wall-clock bound.
-    maximumElapsedMilliseconds: 60_000,
+    // worker watchdog fences the whole poll. Each invocation is also bounded
+    // by the remaining poll time, reserving time to settle valid results.
+    maximumElapsedMilliseconds: REFLECTION_SEMANTIC_PRESSURE_POLICY_V1.maxPollElapsedMs,
     modelFallbackMode: "none",
     sameModelRetryMode: "none",
   }),
   pressure: REFLECTION_SEMANTIC_PRESSURE_POLICY_V1,
+  leaseMilliseconds: REFLECTION_SEMANTIC_PRESSURE_POLICY_V1.maxPollElapsedMs
+    + REFLECTION_SEMANTIC_SETTLEMENT_RESERVE_MS,
   sourceRepairPageMaximum: 256,
   budget: Object.freeze({
     // Consume the executor-owned ceiling directly so production cannot drift
@@ -282,6 +286,7 @@ export async function createProductionReflectionMemoryRuntime(
   const semanticWork = new PostgresSemanticWorkStore({
     handle,
     commitments: semanticCommitments,
+    leaseMilliseconds: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.leaseMilliseconds,
   });
   const product = new PostgresRecordProductStore(handle, semanticWork);
   const repository = new DualModeRecordRepository({
@@ -329,6 +334,7 @@ export async function createProductionReflectionMemoryRuntime(
   const searchProjections = new PostgresRecordSearchProjectionStore(handle);
   const exactSearch = new PostgresAuthorityFilteredRecordSearchStore(handle);
   const organizerNeighbors = new PostgresSameRoomOrganizerNeighbors({
+    commitments: searchCommitments,
     selection: input.selection,
     projections: searchProjections,
     store: new PostgresSameRoomOrganizerStore(handle),
@@ -640,6 +646,7 @@ export async function createProductionReflectionMemoryRuntime(
     }),
     repository,
     readiness: new DurableRecordSemanticReadiness({
+      commitments: searchCommitments,
       repository,
       bindings: bindings.semantic,
       eligibility,
@@ -671,6 +678,7 @@ export async function createProductionReflectionMemoryRuntime(
     dependencyLoss: {
       async resolve(lossInput) {
         return new ExactGroundedDependencyLossResolver({
+          recordState: new PostgresGroundedDependencyRecordState(handle),
           repository,
           recordBindings: publicationBindings,
           eligibility,
@@ -679,7 +687,6 @@ export async function createProductionReflectionMemoryRuntime(
           statements: {
             async rewrite(rewriteInput) {
               const result = await runDependencyLossRewrite({
-                previousStatement: rewriteInput.previousStatement,
                 remainingSupportStatements: rewriteInput.remainingSupportStatements,
                 invoke: async (prompt, signal) => {
                   await lossInput.assertCurrent?.();
@@ -716,10 +723,8 @@ export async function createProductionReflectionMemoryRuntime(
     sourceInvalidation: invalidation,
     invokePreparedOrganizerBatch,
   }) ?? { work: semanticWork, semantic };
-  // Scan the obsolete-planner quarantine once per process. Durable HMAC
-  // receipts keep the actual recovery exact across restarts.
-  let candidatePolicyRecoveryContinuation: string | undefined;
-  let candidatePolicyRecoveryComplete = false;
+  // Persisted admissions and current projection metadata make this scan restart-safe.
+  let roomProjectionContinuation: string | undefined;
   const worker = new ReflectionSemanticWorker({
     maintenanceGate: input.maintenanceGate,
     ...(input.resolveStageAdmission === undefined
@@ -740,37 +745,30 @@ export async function createProductionReflectionMemoryRuntime(
         if (pageInput.stageAdmission.maximumStage !== "organization") {
           return semanticWork.bootstrapPage(bootstrapInput);
         }
-        if (!candidatePolicyRecoveryComplete) {
-          const recovery = await semanticWork.recoverCandidatePolicyQuarantinesPage({
-            limit: pageInput.limit,
-            policyVersion: "authority-aware-parent-normalization-v1",
-            ...(candidatePolicyRecoveryContinuation === undefined
-              ? {}
-              : { continuation: candidatePolicyRecoveryContinuation }),
-          });
-          candidatePolicyRecoveryContinuation = recovery.continuation;
-          candidatePolicyRecoveryComplete = recovery.continuation === undefined;
-          if (recovery.admitted > 0 || !candidatePolicyRecoveryComplete) {
-            return { admitted: recovery.admitted };
-          }
-        }
+        const projectionRepair = await semanticWork.admitMissingRoomProjectionPage({
+          limit: pageInput.limit,
+          policyVersion: "semantic-room-projection-v1",
+          ...(roomProjectionContinuation === undefined ? {} : {continuation: roomProjectionContinuation}),
+        });
+        roomProjectionContinuation = projectionRepair.continuation;
         const parentConflicts = await semanticWork.admitParentConflictsPage({
           limit: pageInput.limit,
         });
-        if (parentConflicts.admitted > 0) return parentConflicts;
+        if (parentConflicts.admitted > 0) return {...parentConflicts, admitted: parentConflicts.admitted + projectionRepair.admitted};
         const repair = await semanticWork.repairSourceDependentsPage({
           limit: pageInput.limit,
         });
         if (repair.consumed > 0) {
-          return { admitted: repair.admitted };
+          return { admitted: repair.admitted + projectionRepair.admitted };
         }
         const recordRepair = await semanticWork.repairRecordDependentsPage({
           limit: pageInput.limit,
         });
         if (recordRepair.consumed > 0) {
-          return { admitted: recordRepair.admitted };
+          return { admitted: recordRepair.admitted + projectionRepair.admitted };
         }
-        return semanticWork.bootstrapPage(bootstrapInput);
+        const bootstrap = await semanticWork.bootstrapPage(bootstrapInput);
+        return {...bootstrap, admitted: bootstrap.admitted + projectionRepair.admitted};
       },
     },
     readPressure: async () => {

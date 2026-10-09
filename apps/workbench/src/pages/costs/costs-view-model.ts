@@ -1,4 +1,10 @@
-import type { CostsByModelRow, CostsRangeKey } from "../../lib/costs-api";
+import type { PersonalCostsSummary } from "@nautilo/api-client/browser";
+import type {
+  CostsByModelRow,
+  CostsRangeKey,
+  CostsSummary,
+} from "../../lib/costs-api";
+import type { NormalizedCostsDashboard } from "./costs-dashboard";
 
 /** Per-model bar row input — same shape as the costs API `byModel` entry. */
 export type CostsModelBarInput = CostsByModelRow;
@@ -40,12 +46,16 @@ export function modelRowBadges(
 }
 
 /** Tooltip/title text keeps the raw model id alongside the display name. */
-export function modelRowTitle(row: Pick<CostsModelBarInput, "model" | "displayName">): string {
+export function modelRowTitle(
+  row: Pick<CostsModelBarInput, "model" | "displayName">,
+): string {
   return `${row.displayName} (${row.model})`;
 }
 
 /** Maps every API model row — no silent truncation. */
-export function buildModelBarRows(byModel: CostsModelBarInput[]): ModelCostBarRow[] {
+export function buildModelBarRows(
+  byModel: CostsModelBarInput[],
+): ModelCostBarRow[] {
   return byModel.map((m) => ({
     key: m.model,
     label: m.displayName,
@@ -99,6 +109,8 @@ export function formatPercent(part: number, whole: number): string {
 
 const CALL_TYPE_LABELS: Record<string, string> = {
   chat: "Chat",
+  decision: "Decision",
+  deep_research: "Deep research",
   subagent: "Subagents",
   conductor: "Conductor",
   room_stenographer: "Room stenographer",
@@ -124,5 +136,71 @@ export function callTypeLabel(callType: string): string {
 export function formatDayShort(day: string): string {
   const d = new Date(`${day}T00:00:00Z`);
   if (Number.isNaN(d.getTime())) return day;
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+  return d.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+export function normalizeAdminCosts(
+  data: CostsSummary,
+): NormalizedCostsDashboard {
+  return {
+    totals: {
+      ...data.totals,
+      // Admin's stored estimate is historical and can remain on rows that later
+      // received an actual charge. The headline needs the mutually exclusive
+      // current estimate so actual + estimate reconciles to known spend.
+      estimatedCostUsd: Math.max(
+        0,
+        data.totals.totalCostUsd - data.totals.actualCostUsd,
+      ),
+      unresolvedModelAttempts:
+        data.totals.pendingModelAttempts + data.totals.unknownModelAttempts,
+    },
+    byModel: buildModelBarRows(data.byModel),
+    byCallType: data.byCallType,
+    byProvider: normalizeProviderCosts(data.byProvider),
+    timeSeries: data.timeSeries,
+  };
+}
+
+export function normalizePersonalCosts(
+  data: PersonalCostsSummary,
+): NormalizedCostsDashboard {
+  const totals = data.totals as PersonalCostsSummary["totals"] & {
+    unknownProviderOperations?: number;
+  };
+  return {
+    totals: {
+      ...totals,
+      unknownProviderOperations: totals.unknownProviderOperations ?? 0,
+      unresolvedModelAttempts:
+        data.recovery.pendingAttempts + data.recovery.unknownAttempts,
+    },
+    byModel: buildModelBarRows(data.byModel),
+    byCallType: data.byCallType,
+    byProvider: normalizeProviderCosts(data.byProvider),
+    timeSeries: data.timeSeries,
+  };
+}
+
+function normalizeProviderCosts(
+  rows: Array<{
+    provider: string;
+    operation: string;
+    operations: number;
+    unknownOperations?: number;
+    estimatedCostUsd?: number;
+    actualCostUsd?: number;
+    totalCostUsd: number;
+  }>,
+): NormalizedCostsDashboard["byProvider"] {
+  return rows.map((row) => ({
+    ...row,
+    unknownOperations: row.unknownOperations ?? 0,
+    estimatedCostUsd: row.estimatedCostUsd ?? 0,
+    actualCostUsd: row.actualCostUsd ?? 0,
+  }));
 }

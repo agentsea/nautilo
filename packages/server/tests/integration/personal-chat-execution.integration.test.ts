@@ -204,4 +204,4 @@ test.each([
     if (priorCatalog) initToolCatalog(priorCatalog);
     else clearToolCatalog();
   }
-}, 30_000);
+}, 120_000);

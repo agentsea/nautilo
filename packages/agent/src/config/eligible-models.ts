@@ -154,6 +154,13 @@ function toEligibleModel(
  * enforces that).
  */
 export function getEligibleModels(opts: GetEligibleModelsOptions = {}): EligibleModel[] {
+  return projectEligibleModels(getActiveModelCatalogSync().catalog.entries, opts);
+}
+
+function projectEligibleModels(
+  entries: readonly ModelCatalogEntry[],
+  opts: GetEligibleModelsOptions,
+): EligibleModel[] {
   const {
     includeUnavailable = false,
     allowChinaUpstream = resolveChinaUpstreamConsent(undefined, opts.env),
@@ -162,10 +169,9 @@ export function getEligibleModels(opts: GetEligibleModelsOptions = {}): Eligible
   } = opts;
   void _reservedTier; // Inference-tier filtering when posture UX is wired .
 
-  const { catalog } = getActiveModelCatalogSync();
   const out: EligibleModel[] = [];
 
-  for (const entry of catalog.entries) {
+  for (const entry of entries) {
     // Release disablement is absolute for every provider, including Venice.
     // Credentials and routing consent may narrow a released row but never
     // enable one whose signed metadata says `defaultEnabled: false`.
@@ -245,7 +251,9 @@ export function resolveRetainedModels(
   if (normalized.length > MAX_RETAINED_MODEL_IDS) {
     throw new RangeError(`at most ${MAX_RETAINED_MODEL_IDS} retained model ids may be resolved`);
   }
-  const all = getEligibleModels({ ...opts, includeUnavailable: true });
+  const requestedIds = new Set(normalized);
+  const entries = getActiveModelCatalogSync().catalog.entries.filter((entry) => requestedIds.has(entry.id));
+  const all = projectEligibleModels(entries, { ...opts, includeUnavailable: true });
   const byId = new Map(all.map((row) => [row.id, row]));
   return normalized.map((id) => {
     const found = byId.get(id);

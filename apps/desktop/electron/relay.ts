@@ -1,3 +1,16 @@
+import { createLocalExecutionDelegationAuthority, type LocalExecutionDelegationAuthorityOptions, type LocalExecutionDelegationConnection } from "./local-execution-delegation";
+import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture, type RelayLocalExecutionBindingV4 } from "@nautilo/relay";
+import { createFullMacExecutionEnvironment } from "./local-execution-environment";
+import { dispatchAdmittedGitHub, type DesktopGitHubRuntime } from "./relay-dispatch/github";
+import { projectRelayCapabilitiesForProtocol } from "@nautilo/relay";
+import { parseRelayHumanTerminalBinding } from "@nautilo/relay";
+import { dispatchHumanTerminal } from "./relay-dispatch/human-terminal";
+import type { HumanTerminalOwner, HumanTerminalConsent } from "../../../packages/types/src/human-terminal";
+import type { RelayBasicExecutionCapability, RelayLocalExecutionBindingV2 } from "@nautilo/relay";
+import { dispatchReadShellOutput } from "./relay-dispatch/read-shell-output";
+import { readFromCurrentLocalExecutionOwner } from "./local-execution-preview";
+import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
+import { LocalExecutionDispatch, localExecutionOwnerKey, type LocalExecutionViewRequest } from "./relay-dispatch/local-execution";
 /**
  * Desktop Relay broker — supervises the standalone Relay Host child.
  *
@@ -132,6 +145,9 @@ import { rebindLegacyLocalFileHistoryRelay } from "./local-file-history/relay-re
 import type { ToolRuntimeName } from "./tool-runtime-config";
 import {
   spawnSession,
+  isHumanTerminalScoped,
+  peekHumanTerminalConsent,
+  revokeHumanTerminalConsent,
   writeSession,
   readTerminalSince,
   getSessionControl,
@@ -260,6 +276,24 @@ const BROWSER_CAPTURE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
 const BROWSER_VISION_PNG_MAX_BYTES = 4 * 1024 * 1024;
 const GOOGLE_WORKSPACE_EXEC_TIMEOUT_MS = 45_000;
 let activeRelaySession: DesktopRelaySession | null = null;
+const localExecutionObservers = new Set<(generation: string | null) => void>();
+let localExecutionNotificationQueued = false;
+
+/** Private content-free observation; the authenticated read remains authoritative. */
+export function subscribeLocalExecutionChanges(listener: (generation: string | null) => void): () => void {
+  localExecutionObservers.add(listener);
+  return () => { localExecutionObservers.delete(listener); };
+}
+function notifyLocalExecutionChanges(): void {
+  if (localExecutionNotificationQueued) return;
+  localExecutionNotificationQueued = true;
+  queueMicrotask(() => {
+    localExecutionNotificationQueued = false;
+    const generation = getActiveLocalExecutionGeneration();
+    for (const listener of localExecutionObservers) listener(generation);
+  });
+}
+
 
 function activeToolRuntimeContext(): {
   context: DesktopRelayGoogleOAuthContext | null;
@@ -306,6 +340,21 @@ let pendingRelayCandidate: {
 let relayLifecycleGeneration = 0;
 /** Non-rejecting drain barrier for exact handles detached by overlapping stops. */
 let relayRetirementBarrier: Promise<void> = Promise.resolve();
+// A detached session may still own writable resources while cleanup drains.
+// Failed cleanup is uncertainty, not evidence that a writer disappeared.
+let custodyRetirements = 0;
+
+export function getLocalExecutionCustodyScope(): { readonly roots: readonly string[]; readonly grantIds: readonly string[]; readonly isCurrent: () => boolean } | null {
+  if (pendingRelayCandidate || custodyRetirements !== 0 || listSessions().some(session => session.sandboxed)) return null;
+  const session = activeRelaySession;
+  const generation = relayLifecycleGeneration;
+  const roots = session?.localExecution.retainedContainedRoots() ?? [];
+  const grantIds = session?.localExecution.retainedContainedGrantIds() ?? [];
+  const identity = JSON.stringify([roots, grantIds]);
+  return { roots, grantIds, isCurrent: () => !pendingRelayCandidate && custodyRetirements === 0 && !listSessions().some(terminal => terminal.sandboxed)
+    && relayLifecycleGeneration === generation && activeRelaySession === session
+    && JSON.stringify([session?.localExecution.retainedContainedRoots() ?? [], session?.localExecution.retainedContainedGrantIds() ?? []]) === identity };
+}
 
 function assertRelayCandidateMayBegin(): void {
   if (activeRelaySession !== null) {
@@ -847,7 +896,7 @@ export function createDesktopFilesystemGrantAuthorityResolver(
 // returned path is always the exact canonical folder, never a broad parent root.
 
 export type LocalShellWorkspaceAuthorityResolution =
-  | { readonly ok: true; readonly workspace: string }
+  | { readonly ok: true; readonly workspace: string; readonly authorityExpiresAt?: number; readonly access?: readonly import("@nautilo/desktop-filesystem-grants").DesktopFilesystemAccessOperation[] }
   | {
       readonly ok: false;
       readonly code:
@@ -970,6 +1019,8 @@ export function createLocalShellWorkspaceAuthorityResolver(
     // grants remain profile roots rather than duplicate project grants.
     const containingDurable = listed.data.grants.filter((item) =>
       item.grant.lifetime === "durable" &&
+      // Task-only consent cannot grant or revoke ordinary foreground access.
+      !item.grant.subject.agentScope.startsWith("task:") &&
       isPathWithinDesktopFilesystemGrantRoot(item.grant.canonicalRoot, workspace),
     );
     const longestRootLength = containingDurable.reduce(
@@ -1023,7 +1074,8 @@ export function createLocalShellWorkspaceAuthorityResolver(
           return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED" };
         }
       }
-      return { ok: true, workspace };
+      const expiry = Math.min(...active.map(({ grant }) => grant.expiresAt === undefined ? Infinity : Date.parse(grant.expiresAt)));
+      return { ok: true, workspace, access: (["read", "create_modify", "delete", "execute"] as const).filter(right => active.every(({ grant }) => grant.access.includes(right))), ...(Number.isFinite(expiry) ? { authorityExpiresAt: expiry } : {}) };
     }
 
     // No explicit durable project grant contains this folder. Capture the
@@ -1044,7 +1096,7 @@ export function createLocalShellWorkspaceAuthorityResolver(
       if (workspace !== currentFolderBaseline.canonicalRoot) {
         return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH" };
       }
-      return { ok: true, workspace };
+      return { ok: true, workspace, access: ["read", "create_modify", "delete", "execute"] };
     }
     if (currentFolderBaseline !== undefined && workspace === currentFolderBaseline.canonicalRoot) {
       const identity = await revalidateIdentity(currentFolderBaseline.filesystemIdentity);
@@ -1055,7 +1107,7 @@ export function createLocalShellWorkspaceAuthorityResolver(
       ) {
         return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH" };
       }
-      return { ok: true, workspace };
+      return { ok: true, workspace, access: ["read", "create_modify", "delete", "execute"] };
     }
     const captured = await captureDesktopFilesystemGrantRootIdentity(candidate);
     if (!captured.ok || captured.canonicalRoot !== workspace) {
@@ -1073,7 +1125,7 @@ export function createLocalShellWorkspaceAuthorityResolver(
       filesystemIdentity: captured.filesystemIdentity,
       ...pinned,
     };
-    return { ok: true, workspace };
+    return { ok: true, workspace, access: ["read", "create_modify", "delete", "execute"] };
   };
 }
 
@@ -1148,10 +1200,13 @@ export type WorkstationShellBindingResolution =
       readonly writableRoots: readonly string[];
       readonly grantIds: readonly string[];
       readonly networkPolicy: RelayNetworkPolicy;
+      readonly authorityExpiresAt?: number;
     }
   | { readonly ok: false; readonly code: WorkstationShellBindingRevalidationFailureCode };
 
 export interface WorkstationShellBindingAuthorityResolverInput {
+  /** Local-only: caller has already matched an Electron-retained execution owner. */
+  readonly retainedExecution?: true;
   readonly binding: RelayWorkstationShellBinding;
   /** Concrete operation derived from the dispatch (`"execute"` for run_shell). */
   readonly concreteOperation: DesktopFilesystemAccessOperation | null;
@@ -1389,11 +1444,14 @@ export function createWorkstationShellBindingAuthorityResolver(
   const revalidateIdentity =
     options.revalidateIdentity ?? revalidateDesktopFilesystemGrantRootIdentity;
   return async function resolve(input) {
+    if (input.retainedExecution === true && options.getCapabilityRevision() < 0) {
+      return { ok: false, code: "CAPABILITY_REVISION_MISMATCH" };
+    }
     const liveCurrentFolder = options.getCurrentFolder?.();
-    if (
+    if (input.retainedExecution !== true && (
       liveCurrentFolder === undefined ||
       liveCurrentFolder !== input.binding.currentFolder
-    ) {
+    )) {
       return { ok: false, code: "CURRENT_FOLDER_MISMATCH" };
     }
     let profile: RelayWorkstationProfileSnapshot | undefined;
@@ -1429,11 +1487,11 @@ export function createWorkstationShellBindingAuthorityResolver(
       concreteOperation: input.concreteOperation,
       expectedRelayId: options.expectedRelayId,
       expectedDesktopSessionId: options.expectedDesktopSessionId,
-      expectedCapabilityRevision: options.getCapabilityRevision(),
+      expectedCapabilityRevision: input.retainedExecution === true ? input.binding.capabilityRevision : options.getCapabilityRevision(),
       liveProfile,
-      ...(listed.data.revision !== undefined
-        ? { liveGrantRevision: listed.data.revision }
-        : {}),
+      ...(input.retainedExecution === true
+        ? { liveGrantRevision: input.binding.grantRevision }
+        : listed.data.revision !== undefined ? { liveGrantRevision: listed.data.revision } : {}),
       expectedSubject: options.expectedSubject,
       grants: listed.data.grants,
       ...(options.now !== undefined ? { now: options.now } : {}),
@@ -1478,6 +1536,13 @@ export function createWorkstationShellBindingAuthorityResolver(
       writableRoots: result.writableRoots,
       grantIds: result.grantIds,
       networkPolicy: converted.relay,
+      ...(() => {
+        const expiry = Math.min(...result.grantIds.map((id) => {
+          const value = byId.get(id)?.expiresAt;
+          return value === undefined ? Infinity : Date.parse(value);
+        }));
+        return Number.isFinite(expiry) ? { authorityExpiresAt: expiry } : {};
+      })(),
     };
   };
 }
@@ -1948,6 +2013,16 @@ export async function resolveWorkstationRelativeCwd(input: {
 }
 
 export interface DispatchHandlerOptions {
+  readonly captureLocalExecutionDelegation?: ((capture: RelayLocalExecutionDelegationCapture) => Promise<import("@nautilo/types").LocalExecutionDelegation>) | undefined;
+  readonly resolveLocalExecutionDelegation?: ((binding: RelayLocalExecutionBindingV4) => Promise<{
+    root: string; grantIds: readonly string[]; access: readonly import("@nautilo/desktop-filesystem-grants").DesktopFilesystemAccessOperation[];
+    dataDir: string; readOnlyRoots: readonly string[]; writableRoots: readonly string[];
+    networkPolicy: RelayNetworkPolicy; authorityExpiresAt?: number; isCurrent(): boolean;
+  }>) | undefined;
+  readonly githubRuntime?: (() => DesktopGitHubRuntime | null) | undefined;
+  readonly localExecution?: LocalExecutionDispatch;
+  readonly verifyHumanTerminal?: ((owner: HumanTerminalOwner) => Promise<boolean>) | undefined;
+  readonly localExecutionHistoryReader?: StartRelayOptions["localExecutionHistoryReader"];
   readonly isProduction?: boolean;
   readonly createSandbox?: RelayDispatchSandboxFactory;
   /** Test seam for the fixed-schema OpenHue handler. */
@@ -2058,6 +2133,7 @@ export interface DispatchHandlerOptions {
   readonly workstationProfileStateProvider?: RelayWorkstationProfileSnapshotProvider | undefined;
   /** Electron-owned home used only for the narrow contained identity projection. */
   readonly workstationIdentityHomePath?: string | undefined;
+  readonly basicExecutionAuthority?: (() => { capability: RelayBasicExecutionCapability; capabilityRevision: number; dataDir: string } | null) | undefined;
   /** Test seam for the fixed-argument GitHub credential read. */
   readonly readWorkstationGitHubToken?:
     | ((signal?: AbortSignal) => Promise<string | null>)
@@ -2102,6 +2178,7 @@ export interface DispatchHandlerOptions {
     readonly userId: string;
     readonly relayId: string;
     readonly desktopSessionId: string | null;
+    readonly activationId?: string;
   }) => Promise<boolean>) | undefined;
   /** private, bounded Desktop-local continuation authority. */
   readonly runShellOutputArtifactStore?: RunShellOutputArtifactStore | undefined;
@@ -2225,8 +2302,10 @@ export function makeDispatchHandler(
     }),
     createGuardedScratch: options.createGuardedShellScratch ?? createGuardedShellScratch,
   });
+  const managedExecution = options.localExecution ?? standaloneSession?.localExecution;
   const terminal = createTerminalDispatchHandler({
     spawnSession,
+    isHumanTerminalScoped,
     writeSession,
     readTerminalSince,
     getSessionControl,
@@ -2325,6 +2404,36 @@ export function makeDispatchHandler(
     req: RelayDispatchRequest,
     signal?: AbortSignal,
   ): Promise<RelayDispatchResult> {
+    if (req.toolName === "local_github" || req.githubBinding !== undefined) {
+      if (isSessionClosed() || req.hostedBy !== undefined || req.humanTerminalBinding !== undefined
+        || req.localExecutionBinding !== undefined || req.localExecutionHistoryBinding !== undefined || req.workstationShellBinding !== undefined
+        || req.uncontainedHostCommandsSession === true || (req.githubBinding?.stage === "publish" && req.approvalObtained !== true) || req.executionClass === "real_workstation")
+        return { status: "error", errorCode: "GITHUB_UNAVAILABLE", error: "The exact GitHub account owner is unavailable." };
+      return { status: "ok", result: await dispatchAdmittedGitHub(options.githubRuntime?.() ?? null, req.toolName, req.args, req.githubBinding, signal) };
+    }
+    if (req.toolName === "human_terminal" || req.humanTerminalBinding !== undefined) {
+      const binding = parseRelayHumanTerminalBinding(req.humanTerminalBinding);
+      if (!binding || req.toolName !== "human_terminal" || !options.verifyHumanTerminal
+        || req.localExecutionBinding !== undefined || req.localExecutionHistoryBinding !== undefined || req.hostedBy !== undefined)
+        return { status: "error", errorCode: "HUMAN_TERMINAL_UNAVAILABLE", error: "The exact Human terminal handoff is unavailable." };
+      const result = await dispatchHumanTerminal(req.toolName, req.args, binding.owner,
+        async () => !isSessionClosed() && !signal?.aborted && await options.verifyHumanTerminal!(binding.owner) && !isSessionClosed() && !signal?.aborted,
+        signal, binding);
+      return { status: "ok", result };
+    }
+    if (req.localExecutionHistoryBinding !== undefined) {
+      const { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead } = await import("@nautilo/relay");
+      const binding = parseRelayLocalExecutionHistoryBinding(req.localExecutionHistoryBinding);
+      try {
+        if (!binding || req.localExecutionBinding !== undefined || !isRelayLocalExecutionHistoryRead(req.toolName, req.args, binding)
+          || isSessionClosed() || signal?.aborted || !options.localExecutionHistoryReader) throw new Error("Unavailable");
+        const result = await options.localExecutionHistoryReader(binding, req.args, signal);
+        if (isSessionClosed() || signal?.aborted) throw new Error("Unavailable");
+        return { status: "ok", result };
+      } catch {
+        return { status: "error", errorCode: "LOCAL_EXECUTION_HISTORY_UNAVAILABLE", error: "Saved execution history is unavailable for the current authority." };
+      }
+    }
     // Security research has no server-provided root, sandbox, or shell
     // authority. A parsed security_scan envelope is dispatched before every
     // generic lane; malformed envelopes fail closed here as well.
@@ -2377,6 +2486,7 @@ export function makeDispatchHandler(
     let lowerDispatchPreparationPromise: Promise<LowerDispatchPreparation> | undefined;
     let localDispatchPolicyPreparationPromise: Promise<LocalDispatchPolicyPreparation> | undefined;
     let sandbox: Sandbox | null = null;
+    let executionOwnsPreparation = false;
 
     const prepareLowerDispatch = async (): Promise<LowerDispatchPreparation> => {
       // resolve validated local authority ONCE for every request that
@@ -2470,7 +2580,7 @@ export function makeDispatchHandler(
         requestHasShellBinding: req.workstationShellBinding !== undefined,
         checkUnboundRunShell: async () => {
           if (
-            req.toolName !== "run_shell" ||
+            (req.toolName !== "run_shell" && req.toolName !== "exec_command" && req.toolName !== "local_git") ||
             req.workstationShellBinding !== undefined ||
             options.workstationProfileStateProvider === undefined
           ) return undefined;
@@ -2617,7 +2727,7 @@ export function makeDispatchHandler(
           return undefined;
         },
         resolveLocalAuthority: (locallyAuthorizedWorkspace) =>
-          req.toolName === "run_shell" &&
+          (req.toolName === "run_shell" || req.toolName === "exec_command" || req.toolName === "local_git") &&
           lower.revalidatedShellBinding !== undefined &&
           locallyAuthorizedWorkspace !== undefined &&
           path.normalize(locallyAuthorizedWorkspace) ===
@@ -2695,11 +2805,17 @@ export function makeDispatchHandler(
           outputArtifactStore: options.runShellOutputArtifactStore,
         }),
 
-      runShellOutput: async ({ request }) =>
-        await dispatchRunShellOutput({
-          request,
-          outputArtifactStore: options.runShellOutputArtifactStore,
-        }),
+      runShellOutput: async ({ request }) => {
+        if (request.toolName === "read_shell_output") {
+          const result = dispatchReadShellOutput(request.args, request.runShellOwnerBinding, options.runShellOutputArtifactStore);
+          return { handled: true, result: result.ok ? { status: "ok", result: result.result } : {
+            status: "error", errorCode: result.reason === "invalid" ? "RUN_SHELL_OUTPUT_ARTIFACT_REQUEST_INVALID"
+              : result.reason === "unavailable" ? "RUN_SHELL_OUTPUT_ARTIFACT_UNAVAILABLE" : "RUN_SHELL_OUTPUT_ARTIFACT_NOT_FOUND",
+            error: "Retained output is invalid, unavailable, expired, or belongs to another Desktop session. Do not rerun the command to recover it.",
+          } };
+        }
+        return await dispatchRunShellOutput({ request, outputArtifactStore: options.runShellOutputArtifactStore });
+      },
 
       currentFolder: async ({ request }) =>
         await dispatchCurrentFolderFamily({
@@ -2779,7 +2895,7 @@ export function makeDispatchHandler(
         signal: requestSignal,
         guard: requestGuard,
       }) => {
-        if (request.toolName !== "run_shell") {
+        if (request.toolName !== "run_shell" && request.toolName !== "local_git") {
           return FIXED_DESKTOP_DISPATCH_NOT_HANDLED;
         }
         const preparation = await getLocalDispatchPolicy();
@@ -2787,6 +2903,17 @@ export function makeDispatchHandler(
           return { handled: true, result: preparation.result };
         }
         const policy = preparation.policy;
+        if (request.toolName === "local_git") {
+          try {
+            return await workstation.dispatchLocalGit({ request, policy: {
+              desktopFilesystemAuthority: policy.desktopFilesystemAuthority,
+              revalidatedShellBinding: policy.revalidatedShellBinding,
+              sandboxEnvelopeWorkspace: policy.sandboxEnvelope?.workspace,
+              locallyAuthorizedWorkspace: policy.locallyAuthorizedWorkspace,
+              shellNetworkPolicy: policy.shellNetworkPolicy,
+            } });
+          } finally { if (sandbox !== null) { await sandbox.close(); sandbox = null; } }
+        }
         const decision = await workstation.dispatchSandboxedRunShell({
           request,
           signal: requestSignal,
@@ -2854,9 +2981,239 @@ export function makeDispatchHandler(
     );
 
     try {
+      if (req.toolName === "__local_execution_delegate" || req.localExecutionDelegationCapture !== undefined) {
+        const capture = parseRelayLocalExecutionDelegationCapture(req.localExecutionDelegationCapture);
+        const owner = req.runShellOwnerBinding;
+        if (!capture || !owner || !options.captureLocalExecutionDelegation || req.toolName !== "__local_execution_delegate"
+          || Object.keys(req.args).length !== 0 || owner.userId !== capture.source.humanUserId
+          || owner.instanceId !== capture.source.target.instanceId || owner.relayId !== capture.source.target.relayId
+          || owner.desktopSessionId !== capture.desktopSessionId || isSessionClosed()) {
+          return { status: "error", errorCode: "LOCAL_EXECUTION_DELEGATION_UNAVAILABLE", error: "Task project capture is unavailable" };
+        }
+        const result = await options.captureLocalExecutionDelegation(capture);
+        if (isSessionClosed() || signal?.aborted) return { status: "error", errorCode: "LOCAL_EXECUTION_DELEGATION_UNAVAILABLE", error: "Task capture authority changed" };
+        return { status: "ok", result };
+      }
+      if (req.toolName === "exec_command" || req.toolName === "write_stdin") {
+        if (managedExecution === undefined) return {
+          status: "error", errorCode: "LOCAL_EXECUTION_UNAVAILABLE", error: "Local execution is unavailable",
+        };
+        executionOwnsPreparation = true;
+        const validateBasic = async (binding: RelayLocalExecutionBindingV2, retained: boolean) => {
+          if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+          const current = options.basicExecutionAuthority?.();
+          if (!current || options.protectedPathPolicy === undefined
+            || current.capability.protectedPolicyVersion !== options.protectedPathPolicy.schemaVersion
+            || current.capabilityRevision < 0 || binding.owner.serverBindingId !== current.capability.serverBindingId
+            || binding.authority.protectedPolicyVersion !== current.capability.protectedPolicyVersion
+            || (!retained && (binding.authority.currentFolder !== current.capability.currentFolder
+              || binding.authority.capabilityRevision !== current.capabilityRevision))) throw new Error("LOCAL_EXECUTION_AUTHORITY_MISMATCH");
+          if (!retained && await options.workstationProfileStateProvider?.getProfileSnapshot() !== undefined) {
+            throw new Error("LOCAL_EXECUTION_AUTHORITY_MISMATCH");
+          }
+          const folder = await options.localShellWorkspaceAuthority?.(binding.authority.currentFolder);
+          if (!folder?.ok) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED");
+          if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+          const fresh = options.basicExecutionAuthority?.();
+          if (!fresh || fresh.capabilityRevision < 0 || fresh.capability.serverBindingId !== binding.owner.serverBindingId
+            || fresh.capability.protectedPolicyVersion !== binding.authority.protectedPolicyVersion
+            || (!retained && (fresh.capabilityRevision !== binding.authority.capabilityRevision
+              || fresh.capability.currentFolder !== folder.workspace))) throw new Error("LOCAL_EXECUTION_AUTHORITY_MISMATCH");
+          return { ...fresh, folder };
+        };
+        return await managedExecution.dispatch({
+          request: req, signal,
+          revalidate: async (binding, retained) => {
+            if ("authority" in binding && binding.version === 3) {
+              if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+              if (!retained && !await options.verifyUncontainedHostCommands?.({ instanceId: binding.owner.instanceId,
+                userId: binding.owner.humanUserId, relayId: binding.owner.relayId, desktopSessionId: binding.owner.desktopSessionId,
+                activationId: binding.authority.activationId })) throw new Error("LOCAL_EXECUTION_FULL_MAC_ACTIVATION_ENDED");
+              if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+              return;
+            }
+            if (binding.version === 4) {
+              if (isSessionClosed() || !options.resolveLocalExecutionDelegation) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+              const current = await options.resolveLocalExecutionDelegation(binding);
+              if (isSessionClosed() || !current.isCurrent()) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+              return;
+            }
+            if ("authority" in binding) { await validateBasic(binding, retained); return; }
+            if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+            const resolver = options.workstationShellBindingAuthority;
+            if (resolver === undefined) throw new Error("WORKSTATION_SHELL_BINDING_UNCONFIGURED");
+            const result = await resolver({ binding, concreteOperation: "execute", ...(retained ? { retainedExecution: true } : {}) });
+            if (!result.ok) throw new Error(result.code);
+            if (retained) {
+              const workspace = await options.localShellWorkspaceAuthority?.(binding.currentFolder);
+              if (workspace === undefined || !workspace.ok) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE");
+            }
+          },
+          prepare: async (preparationSignal) => {
+            if (req.localExecutionBinding?.version === 3) {
+              const binding = req.localExecutionBinding;
+              const verify = async () => {
+                preparationSignal.throwIfAborted();
+                if (isSessionClosed() || !await options.verifyUncontainedHostCommands?.({ instanceId: binding.owner.instanceId,
+                  userId: binding.owner.humanUserId, relayId: binding.owner.relayId, desktopSessionId: binding.owner.desktopSessionId,
+                  activationId: binding.authority.activationId })) throw new Error("LOCAL_EXECUTION_FULL_MAC_ACTIVATION_ENDED");
+                preparationSignal.throwIfAborted();
+                if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+              };
+              await verify();
+              const selected = options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath;
+              if (!selected) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE");
+              const workspace = fsSync.realpathSync(selected);
+              const workdir = req.args["workdir"];
+              if (typeof workdir === "string" && (path.isAbsolute(workdir) || path.win32.isAbsolute(workdir))) throw new Error("LOCAL_EXECUTION_WORKDIR_MUST_BE_RELATIVE");
+              const cwd = await resolveWorkstationRelativeCwd({ workspacePath: workspace, requestedCwd: workdir === "." ? undefined : workdir });
+              if (!cwd.ok) throw new Error(cwd.errorCode);
+              await verify();
+              if (fsSync.realpathSync(options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath ?? "") !== workspace) {
+                throw new Error("WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH");
+              }
+              // Full Mac grants account filesystem access, but never injects
+              // application or account tokens from Electron's environment.
+              return { program: "/bin/sh", args: ["-c", req.args["cmd"] as string], cwd: cwd.cwd,
+                env: createFullMacExecutionEnvironment(), dispose: () => undefined };
+            }
+            let owned: Sandbox | null = null;
+            let pinnedDirectory: number | null = null;
+            let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+            let transferred = false;
+            let basicScratch: string | undefined;
+            try {
+              preparationSignal.throwIfAborted();
+              const basic = req.localExecutionBinding?.version === 2 ? req.localExecutionBinding : undefined;
+              const delegated = req.localExecutionBinding?.version === 4 ? req.localExecutionBinding : undefined;
+              const delegation = delegated && await options.resolveLocalExecutionDelegation?.(delegated);
+              if (delegated && !delegation) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+              const preparation = basic === undefined && delegation === undefined ? await getLocalDispatchPolicy() : await (async () => {
+                const local = delegation ? { dataDir: delegation.dataDir, folder: { workspace: delegation.root } } : await validateBasic(basic!, false);
+                preparationSignal.throwIfAborted();
+                const scratch = (options.createGuardedShellScratch ?? createGuardedShellScratch)();
+                basicScratch = scratch.workspace;
+                const managedHome = fsSync.realpathSync(scratch.workspace);
+                const envelope = buildShellBindingSandboxEnvelope({
+                  workspace: local.folder.workspace, dataDir: local.dataDir, toolsBin: options.trustedToolsBin ?? resolveToolsBin(),
+                  mode: "desktop-locked", securityLevel: "paranoid", failIfNoBackend: true,
+                  config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: [] },
+                }, { readOnlyRoots: delegation?.readOnlyRoots ?? [], writableRoots: delegation?.writableRoots ?? [] }, options.protectedPathPolicy,
+                options.trustedToolsBin ?? resolveToolsBin(), scratch, delegation?.networkPolicy ?? { mode: "isolated" }, local.folder.workspace);
+                const result = await prepareLocalDispatchPolicy({
+                  toolName: req.toolName, isProduction: true, desktopFilesystemAuthority: undefined,
+                  revalidatedShellBinding: undefined, shellNetworkPolicy: delegation?.networkPolicy ?? { mode: "isolated" }, requestHasShellBinding: false,
+                  checkUnboundRunShell: () => Promise.resolve(undefined),
+                  augmentEnvelope: () => Promise.resolve({ ok: true, sandboxEnvelope: envelope, locallyAuthorizedWorkspace: local.folder.workspace }),
+                  revalidateWorkspaceBeforeOperation: async () => {
+                    if (delegated) {
+                      const fresh = await options.resolveLocalExecutionDelegation?.(delegated);
+                      if (!fresh?.isCurrent() || fresh.root !== local.folder.workspace) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+                    } else await validateBasic(basic!, false);
+                    return undefined;
+                  },
+                  resolveLocalAuthority: () => ({ managedHome }),
+                  ...(options.createSandbox === undefined ? {} : { createSandbox: options.createSandbox }),
+                });
+                if (result.ok) sandbox = result.policy.sandbox;
+                return result;
+              })();
+              owned = sandbox;
+              sandbox = null;
+              preparationSignal.throwIfAborted();
+              if (!preparation.ok) throw new Error(preparation.result.errorCode ?? "LOCAL_EXECUTION_PREPARATION_FAILED");
+              if (owned === null || !owned.containmentActive() || !owned.protectedFileMaskSupported()) {
+                throw new Error("LOCAL_EXECUTION_REQUIRES_CONTAINMENT");
+              }
+              const workspace = preparation.policy.locallyAuthorizedWorkspace ?? preparation.policy.sandboxEnvelope?.workspace;
+              if (workspace === undefined) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE");
+              // workdir is a contained relative directory; absolute paths never select another host root.
+              const workdir = req.args["workdir"];
+              if (typeof workdir === "string" && (path.isAbsolute(workdir) || path.win32.isAbsolute(workdir))) {
+                throw new Error("LOCAL_EXECUTION_WORKDIR_MUST_BE_RELATIVE");
+              }
+              const cwd = await resolveWorkstationRelativeCwd({
+                workspacePath: workspace, requestedCwd: workdir === "." ? undefined : workdir,
+                ...(options.protectedPathPolicy ? { protectedPathPolicy: options.protectedPathPolicy } : {}),
+              });
+              if (!cwd.ok) throw new Error(cwd.errorCode);
+              if (isSessionClosed()) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
+              const binding = req.workstationShellBinding;
+              const resolver = options.workstationShellBindingAuthority;
+              const current = delegated !== undefined
+                ? { ok: true as const, authorityExpiresAt: delegation?.authorityExpiresAt }
+                : basic !== undefined
+                ? { ok: true as const, authorityExpiresAt: (await validateBasic(basic, false)).folder.authorityExpiresAt }
+                : binding !== undefined && resolver !== undefined ? await resolver({ binding, concreteOperation: "execute" }) : undefined;
+              if (current === undefined) throw new Error("WORKSTATION_SHELL_BINDING_REQUIRED");
+              if (!current.ok) throw new Error(current.code);
+              const liveWorkspace = delegated !== undefined ? workspace : basic !== undefined ? options.basicExecutionAuthority?.()?.capability.currentFolder : options.getLocalWorkspacePath?.();
+              if (liveWorkspace !== undefined && path.resolve(liveWorkspace) !== path.resolve(workspace)) {
+                throw new Error("WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH");
+              }
+              preparationSignal.throwIfAborted();
+              const rootIdentity = await captureDesktopFilesystemGrantRootIdentity(workspace);
+              if (!rootIdentity.ok || rootIdentity.canonicalRoot !== workspace) throw new Error("WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH");
+              pinnedDirectory = fsSync.openSync(workspace, fsSync.constants.O_RDONLY);
+              const originalStat = fsSync.fstatSync(pinnedDirectory);
+              const validateContinuation = async () => {
+                const identity = await revalidateDesktopFilesystemGrantRootIdentity(rootIdentity.filesystemIdentity);
+                const live = fsSync.statSync(workspace);
+                if (!identity.ok || identity.canonicalRoot !== workspace || !live.isDirectory() ||
+                    live.dev !== originalStat.dev || live.ino !== originalStat.ino) {
+                  throw new Error("WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH");
+                }
+              };
+              await validateContinuation();
+              const delegatedAuthority = delegated && await options.resolveLocalExecutionDelegation?.(delegated);
+              const folderAuthority = delegated
+                ? delegatedAuthority?.isCurrent() && delegatedAuthority.root === workspace ? { ok: true, authorityExpiresAt: delegatedAuthority.authorityExpiresAt } : undefined
+                : await options.localShellWorkspaceAuthority?.(workspace);
+              if (folderAuthority === undefined || !folderAuthority.ok) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAUTHORIZED");
+              preparationSignal.throwIfAborted();
+              const expiry = Math.min(current.authorityExpiresAt ?? Infinity, folderAuthority.authorityExpiresAt ?? Infinity);
+              if (expiry <= Date.now()) throw new Error("GRANT_EXPIRED");
+              const armExpiry = () => {
+                const remaining = expiry - Date.now();
+                if (remaining <= 0) {
+                  managedExecution.host.reserveCancellation({ executionId: req.localExecutionBinding!.executionId,
+                    ownerKey: localExecutionOwnerKey(req.localExecutionBinding!.owner), hostGeneration: managedExecution.host.hostGeneration });
+                } else {
+                  // Node's timer width is technical, not a replacement policy deadline.
+                  expiryTimer = setTimeout(armExpiry, Math.min(remaining, 2 ** 31 - 1));
+                  expiryTimer.unref();
+                }
+              };
+              if (Number.isFinite(expiry)) armExpiry();
+              const wrapped = owned.wrap("/bin/sh", ["-c", req.args["cmd"] as string], cwd.cwd, {});
+              if (wrapped.env === null) throw new Error("LOCAL_EXECUTION_ENV_REQUIRED");
+              const resource = owned;
+              owned = null;
+              transferred = true;
+              return { ...wrapped, env: wrapped.env, containedRoot: workspace, ...(delegation ? { containedGrantIds: delegation.grantIds } : {}), validateContinuation, dispose: async () => {
+                clearTimeout(expiryTimer);
+                try {
+                  if (pinnedDirectory !== null) { fsSync.closeSync(pinnedDirectory); pinnedDirectory = null; }
+                } finally {
+                  try { await resource.close(); }
+                  finally { if (basicScratch !== undefined) await fsp.rm(basicScratch, { recursive: true, force: true }); }
+                }
+              } };
+            } finally {
+              if (!transferred) {
+                clearTimeout(expiryTimer);
+                if (pinnedDirectory !== null) fsSync.closeSync(pinnedDirectory);
+              }
+              try { await owned?.close(); await sandbox?.close(); }
+              finally { if (!transferred && basicScratch !== undefined) await fsp.rm(basicScratch, { recursive: true, force: true }); }
+              sandbox = null;
+            }
+          },
+        });
+      }
       return await routeDispatch({ request: req, signal, guard });
     } finally {
-      await (sandbox as Sandbox | null)?.close();
+      if (!executionOwnsPreparation) await (sandbox as Sandbox | null)?.close();
     }
   };
 }
@@ -2907,6 +3264,17 @@ export function deriveComputerUseServerBindingId(serverUrl: string): string | nu
 }
 
 export interface StartRelayOptions {
+  localExecutionDelegation?: {
+    readonly grants: LocalExecutionDelegationAuthorityOptions["grants"];
+    readConnection(): LocalExecutionDelegationConnection | null;
+  } | undefined;
+  /** Absent until the admitted account custody cutover is complete. */
+  githubRuntime?: DesktopGitHubRuntime | undefined;
+  humanTerminalConsent?: (() => HumanTerminalConsent | null) | undefined;
+  verifyHumanTerminal?: ((owner: HumanTerminalOwner) => Promise<boolean>) | undefined;
+  localExecutionHistoryWriter?: ((owner: import("@nautilo/relay").RelayLocalExecutionOwnerV1, view: import("./relay-dispatch/local-execution").LocalExecutionView) => Promise<void>) | undefined;
+  localExecutionHistoryReader?: ((binding: import("@nautilo/relay").RelayLocalExecutionHistoryBindingV1,
+    args: Readonly<Record<string, unknown>>, signal?: AbortSignal) => Promise<import("./relay-dispatch/local-execution").LocalExecutionView & { historical: true }>) | undefined;
   serverUrl: string;
   userId: string;
   /** Stable relay-id file owned by this Desktop `(instance, profile)` tuple. */
@@ -2942,6 +3310,8 @@ export interface StartRelayOptions {
    * health probe.
    */
   computerUseSnapshotProvider?: (() => Promise<DesktopAutomationCapabilitySnapshot | undefined>) | undefined;
+  /** Content-free notification after current capability acknowledgement. */
+  onCapabilitiesAcknowledged?: (() => void) | undefined;
   /**
    * Reconcile a just-acknowledged topology before advertising a local receipt.
    * The supplied refresh continuation is bound to that exact relay session;
@@ -3035,9 +3405,12 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ? {}
       : { onStatusChange: options.onStatusChange }),
   });
+  if (options.githubRuntime) candidateSession.attachGitHubRuntime(options.githubRuntime);
+  if (options.localExecutionHistoryWriter) candidateSession.localExecution.attachHistoryWriter(options.localExecutionHistoryWriter);
   let sessionClient: RelayClient | null = null;
   let candidatePublisher: RelayCapabilityPublisher | null = null;
   let candidateGeneration = -1;
+  let revokeCandidateHumanConsent = () => {};
   try {
   candidateGeneration = beginPendingRelayCandidate(candidateSession);
   await relayRetirementBarrier;
@@ -3067,7 +3440,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   }
   const currentFolderPathProvider = options.currentFolderPathProvider;
   const initialCurrentFolder = currentFolderPathProvider?.();
-  const guard = createWorkspaceGuard({
+  let guard = createWorkspaceGuard({
     workspaceRoot,
     ...(initialCurrentFolder !== undefined ? { allowedRoots: [initialCurrentFolder] } : {}),
   });
@@ -3210,6 +3583,13 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // outside startRelay (idempotent helper) so reconnects reuse the same id and
   // the server can bind capability updates to this exact session.
   const desktopSessionId = mintDesktopSessionId();
+  revokeCandidateHumanConsent = () => {
+    if (activeRelaySession !== candidateSession && pendingRelayCandidate?.session !== candidateSession) return;
+    const consent = peekHumanTerminalConsent();
+    if (consent?.owner.desktopSessionId === desktopSessionId && consent.owner.relayId === relayId) {
+      revokeHumanTerminalConsent(consent.generation);
+    }
+  };
   // These local callbacks are captured by the session's security-sensitive
   // resolvers. A missing or disconnected client produces -1, which cannot
   // equal a protocol-valid non-negative capability revision, so every stale
@@ -3397,6 +3777,90 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
           protectedPathPolicy,
         })
       : undefined;
+  const basicServerBindingId = `basic-server-binding-${createHash("sha256").update(new URL(options.serverUrl).origin).digest("base64url")}`;
+  const basicExecutionAuthority = () => localShellWorkspaceAuthority === undefined || process.platform === "win32" ? null : ({
+    capability: { version: 1 as const, currentFolder: currentFolderPathProvider?.() ?? workspaceRoot,
+      serverBindingId: basicServerBindingId, protectedPolicyVersion: protectedPathPolicy.schemaVersion },
+    capabilityRevision: getSessionAcknowledgedCapabilityRevision(), dataDir,
+  });
+  const delegationOwner = (source: import("@nautilo/types").LocalExecutionDelegation,
+    transport: { desktopSessionId: string; pairingGeneration: string }) => {
+    const supplied = options.localExecutionDelegation;
+    if (!supplied || !localShellWorkspaceAuthority) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+    const readIdentity = () => {
+      const current = supplied.readConnection();
+      if (!current || candidateSession.closed || current.humanUserId !== source.humanUserId
+        || current.instanceId !== source.target.instanceId || current.relayId !== relayId
+        || current.relayId !== source.target.relayId || current.desktopSessionId !== transport.desktopSessionId
+        || current.pairingGeneration !== transport.pairingGeneration
+        || current.serverOrigin !== source.target.serverOrigin || current.serverFingerprint !== source.target.serverFingerprint) return null;
+      return { humanUserId: current.humanUserId, target: source.target, profile: current.profile, epoch: current.epoch };
+    };
+    let captured: { root: string; access: readonly import("@nautilo/desktop-filesystem-grants").DesktopFilesystemAccessOperation[]; authorityExpiresAt?: number } | undefined;
+    return createLocalExecutionDelegationAuthority({ grants: supplied.grants, readIdentity,
+      assertCaptureSource: async () => {
+        if (!readIdentity()) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+        if (captured) {
+          const current = await localShellWorkspaceAuthority(captured.root);
+          if (!current.ok || current.workspace !== captured.root || JSON.stringify(current.access) !== JSON.stringify(captured.access)
+            || current.authorityExpiresAt !== captured.authorityExpiresAt) {
+            throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+          }
+        }
+      },
+      resolveSelectedProject: async () => {
+        const selected = currentFolderPathProvider?.() ?? workspaceRoot;
+        const result = await localShellWorkspaceAuthority(selected);
+        if (!result.ok || !result.access) return null;
+        const identity = await captureDesktopFilesystemGrantRootIdentity(result.workspace);
+        if (!identity.ok) return null;
+        captured = { root: result.workspace, access: result.access, ...(result.authorityExpiresAt === undefined ? {} : { authorityExpiresAt: result.authorityExpiresAt }) };
+        return { canonicalRoot: identity.canonicalRoot, filesystemIdentity: identity.filesystemIdentity, access: [...result.access],
+          ...(result.authorityExpiresAt === undefined ? {} : { authorityExpiresAt: result.authorityExpiresAt }),
+          isCurrent: () => readIdentity() !== null && (currentFolderPathProvider?.() ?? workspaceRoot) === selected };
+      },
+    });
+  };
+  const captureLocalExecutionDelegation = options.localExecutionDelegation === undefined ? undefined
+    : async (capture: RelayLocalExecutionDelegationCapture) => {
+      const connection = options.localExecutionDelegation?.readConnection();
+      if (!connection) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+      const source = { ...capture.source, target: { ...capture.source.target,
+        serverOrigin: connection.serverOrigin, serverFingerprint: connection.serverFingerprint } };
+      return delegationOwner({ ...source, projectGrantId: "pending" }, capture).capture(source);
+    };
+  const resolveLocalExecutionDelegation = options.localExecutionDelegation === undefined ? undefined
+    : async (binding: RelayLocalExecutionBindingV4) => {
+      const resolved = await delegationOwner(binding.authority.delegation, binding.owner).resolve(binding.authority.delegation);
+      if (!resolved.access.includes("delete")) throw new Error("LOCAL_EXECUTION_DELEGATION_DELETE_RESTRICTION_UNSUPPORTED");
+      if (binding.owner.protectedPolicyVersion !== protectedPathPolicy.schemaVersion) throw new Error("PROTECTED_POLICY_VERSION_MISMATCH");
+      let readOnlyRoots: readonly string[] = [];
+      let writableRoots: readonly string[] = [];
+      let networkPolicy: RelayNetworkPolicy = { mode: "isolated" };
+      let grantIds: readonly string[] = [resolved.delegation.projectGrantId];
+      let authorityExpiresAt = resolved.authorityExpiresAt ?? Infinity;
+      if (resolved.delegation.ceiling === "development") {
+        const profile = await workstationProfileProvider?.getProfileSnapshot();
+        if (!profile || !workstationShellBindingAuthority || profile.profileId !== resolved.delegation.profile?.id
+          || profile.profileRevision !== resolved.delegation.profile.revision) throw new Error("PROFILE_BINDING_MISMATCH");
+        const result = await workstationShellBindingAuthority({ retainedExecution: true, concreteOperation: "execute", binding: {
+          version: 2, toolCallId: binding.invocationId, relayId, desktopSessionId,
+          serverBindingId: binding.owner.serverBindingId, pairingGeneration: binding.authority.delegation.target.pairingGeneration,
+          profileId: profile.profileId, profileRevision: profile.profileRevision, grantIds: profile.grantIds,
+          capabilityRevision: getSessionAcknowledgedCapabilityRevision(), currentFolder: resolved.canonicalRoot,
+          grantRevision: resolved.grantRevision, protectedPolicyVersion: protectedPathPolicy.schemaVersion,
+          subject: { userId: options.userId, instanceId: desktopFilesystemGrantInstanceId, relayId, agentScope: DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE },
+          operation: "execute", executionClass: "profile_bound_sandbox",
+        } });
+        if (!result.ok) throw new Error(result.code);
+        readOnlyRoots = result.readOnlyRoots; writableRoots = result.writableRoots; networkPolicy = result.networkPolicy;
+        grantIds = [...grantIds, ...profile.grantIds];
+        authorityExpiresAt = Math.min(authorityExpiresAt, result.authorityExpiresAt ?? Infinity);
+      }
+      if (!resolved.isCurrent()) throw new Error("LOCAL_EXECUTION_DELEGATION_UNAVAILABLE");
+      return { root: resolved.canonicalRoot, grantIds, access: resolved.access, dataDir, readOnlyRoots, writableRoots, networkPolicy,
+        ...(Number.isFinite(authorityExpiresAt) ? { authorityExpiresAt } : {}), isCurrent: resolved.isCurrent };
+    };
   // This builder belongs to this relay session. The publisher and reconnect
   // callback retain this exact closure, so a later stop/start cannot redirect
   // a refresh or reconnect toward another session's local authorities.
@@ -3443,7 +3907,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       // Directory-only paired-phone selection is a separate capability from
       // generic workspace reads; it exposes no root paths or file reads.
       canBrowsePairedFilesystem: true,
-      // M206 — typed local-file execution for current/absolute unified file tool.
+      // typed local-file execution for current/absolute unified file tool.
       localFileExecution: true,
       ...applyPatchExecutionCapability(
         applyPatchRuntime,
@@ -3452,9 +3916,26 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ),
       ...officeCaps,
       canRunShell: true,
+      canUseLocalGit: profileSnapshot !== undefined && process.platform !== "win32",
+      localGit: { version: 1 as const },
+      canReadShellOutput: true,
+      canSearchLocalExecutionOutput: process.platform !== "win32",
+      canReadLocalExecutionHistory: options.localExecutionHistoryReader !== undefined,
+      canExecuteFullMacOneShot: options.verifyUncontainedHostCommands !== undefined && process.platform !== "win32",
+      ...(basicExecutionAuthority() === null ? {} : { basicExecution: basicExecutionAuthority()!.capability }),
+      ...((profileSnapshot === undefined && basicExecutionAuthority() === null) || process.platform === "win32" ? {} : {
+        canExecuteLocal: true,
+        canDelegateLocalExecution: options.localExecutionDelegation !== undefined,
+        localExecution: { version: 1 as const, generation: candidateSession.localExecution.host.hostGeneration,
+          pipe: true as const, pty: true, capacity: LOCAL_EXECUTION_MAX_IDENTITIES },
+      }),
       // this Electron relay hosts the PTY pool (terminal-host.ts),
       // so it advertises terminal capability; the standalone relay does not.
       canUseTerminal: true,
+      canUseGitHub: candidateSession.githubRuntime?.isCurrent() === true,
+      ...(candidateSession.githubRuntime?.isCurrent() ? { github: candidateSession.githubRuntime.capability } : {}),
+      canUseHumanTerminal: options.humanTerminalConsent?.() != null,
+      ...(options.humanTerminalConsent?.() ? { humanTerminal: { version: 1 as const, ...options.humanTerminalConsent()! } } : {}),
       ...(peekAgentHandoffSession() !== null
         ? { hasPendingTerminalHandoff: true }
         : {}),
@@ -3550,24 +4031,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       "relay-host",
     ),
   });
-  const candidateClient = createDesktopRelaySidecarClient({
-    ...relayHostLaunch,
-    expectedHostVersion: relayHostLaunch.hostVersion,
-    serverUrl: options.serverUrl,
-    relayId,
-    userId: options.userId,
-    runShellOwnerInstanceId: desktopFilesystemGrantInstanceId,
-    browserPageOwnerInstanceId: desktopFilesystemGrantInstanceId,
-    capabilities: initialCapabilities,
-    desktopSessionId,
-    initialCapabilityRevision: 0,
-    getCapabilities: capabilitiesBuilder,
-    onDesktopTopologyChange: reconcileCandidateComputerUseTopology,
-    ...(options.token ? { token: options.token } : {}),
-    ...(structuredSshRuntime !== null
-      ? { onSshPrepare: (request: RelaySshPrepareRequestV1) => prepareMovedStructuredSsh(request, structuredSshRuntime) }
-      : {}),
-    onDispatch: makeDispatchHandler(guard, {
+  const dispatchOptions: DispatchHandlerOptions = {
       isProduction,
       relayId,
       ...(options.computerUseDispatch !== undefined
@@ -3599,6 +4063,9 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       protectedPathPolicy,
       ...(securityScanCoordinator !== undefined ? { securityScanCoordinator } : {}),
       trustedToolsBin: toolsBin,
+      basicExecutionAuthority,
+      ...(captureLocalExecutionDelegation ? { captureLocalExecutionDelegation } : {}),
+      ...(resolveLocalExecutionDelegation ? { resolveLocalExecutionDelegation } : {}),
       // apply_patch and profile-bound shells are explicitly Current-Folder
       // operations. Returning undefined preserves their fail-closed contract
       // instead of silently mutating/running in Genie Workspace.
@@ -3627,6 +4094,10 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ...(options.verifyUncontainedHostCommands !== undefined
         ? { verifyUncontainedHostCommands: options.verifyUncontainedHostCommands }
         : {}),
+      localExecution: candidateSession.localExecution,
+      localExecutionHistoryReader: options.localExecutionHistoryReader,
+      githubRuntime: () => candidateSession.githubRuntime,
+      verifyHumanTerminal: options.verifyHumanTerminal,
       runShellOutputArtifactStore: candidateSession.runShellOutputArtifactStore,
       browserPageSnapshotStore: candidateSession.browserPageSnapshotStore,
       mediaSessions: candidateSession.mediaSessions,
@@ -3654,9 +4125,48 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ...(browserResearchConsentRecovery !== undefined ? { browserResearchConsentRecovery } : {}),
       ...(browserResearchSearch !== undefined ? { browserResearchSearch } : {}),
       ...(options.onFsChange ? { onFsChange: options.onFsChange } : {}),
-    }),
+    };
+  let currentDispatch = makeDispatchHandler(guard, dispatchOptions);
+  candidateSession.attachLocalExecutionObserver(() => {
+    if (activeRelaySession === candidateSession && !candidateSession.closed) notifyLocalExecutionChanges();
+  });
+  candidateSession.attachCurrentFolderRefresh(() => {
+    const currentFolder = currentFolderPathProvider?.();
+    guard = createWorkspaceGuard({ workspaceRoot,
+      ...(currentFolder === undefined ? {} : { allowedRoots: [currentFolder] }),
+    });
+    // In-flight requests retain their admitted closure/resources. New requests
+    // use fresh roots; executions and authenticated transport retain identity.
+    currentDispatch = makeDispatchHandler(guard, dispatchOptions);
+  });
+  const candidateClient = createDesktopRelaySidecarClient({
+    ...relayHostLaunch,
+    expectedHostVersion: relayHostLaunch.hostVersion,
+    serverUrl: options.serverUrl,
+    relayId,
+    userId: options.userId,
+    runShellOwnerInstanceId: desktopFilesystemGrantInstanceId,
+    browserPageOwnerInstanceId: desktopFilesystemGrantInstanceId,
+    capabilities: initialCapabilities,
+    desktopSessionId,
+    initialCapabilityRevision: 0,
+    getCapabilities: capabilitiesBuilder,
+    onDesktopTopologyChange: reconcileCandidateComputerUseTopology,
+    ...(options.token ? { token: options.token } : {}),
+    ...(structuredSshRuntime !== null
+      ? { onSshPrepare: (request: RelaySshPrepareRequestV1) => prepareMovedStructuredSsh(request, structuredSshRuntime) }
+      : {}),
+    onDispatch: (request, signal) => currentDispatch(request, signal),
     onStatusChange: (status: RelayStatus) => {
+      if (status === "disconnected" || status === "error") {
+        candidatePublisher?.invalidateAcknowledgement();
+        candidateSession.localExecution.fenceFullMac();
+        candidateSession.localExecution.fenceDelegated();
+        candidateSession.retireGitHubRuntime();
+        revokeCandidateHumanConsent();
+      }
       candidateSession.statusCallback?.(status);
+      if (status === "connected") void candidatePublisher?.refresh("Confirm reconnected execution availability");
     },
     ...hostedRelay.clientPorts(candidateMcpHost),
   });
@@ -3665,6 +4175,9 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   candidatePublisher = createRelayCapabilityPublisher({
     client: candidateClient,
     capabilityBuilder: capabilitiesBuilder,
+    onAcknowledged: () => {
+      if (activeRelaySession === candidateSession && !candidateSession.closed) options.onCapabilitiesAcknowledged?.();
+    },
   });
   candidateSession.attachTransport(candidateClient, candidatePublisher);
   const activated = await connectAndActivateRelayCandidate({
@@ -3673,10 +4186,12 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     connect: () => candidateClient.connect(),
     activate: () => {
       activeRelaySession = candidateSession;
+      notifyLocalExecutionChanges();
       capabilityPublisher = candidatePublisher;
     },
   });
   if (!activated) throw new Error("Desktop relay start was superseded.");
+  void candidatePublisher.refresh("Confirm managed execution availability");
   // The client only publishes topology after a server acknowledgement.  Keep
   // the setup route unavailable if an older relay protocol omitted it.
   const topology = candidateClient.getDesktopTopology();
@@ -3688,14 +4203,16 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
   }
   } catch (error) {
+    revokeCandidateHumanConsent();
     sessionClient = null;
     if (pendingRelayCandidate?.session === candidateSession) {
       pendingRelayCandidate = null;
       relayLifecycleGeneration += 1;
     }
-    if (activeRelaySession === candidateSession) activeRelaySession = null;
+    if (activeRelaySession === candidateSession) { activeRelaySession = null; notifyLocalExecutionChanges(); }
     if (capabilityPublisher === candidatePublisher) capabilityPublisher = null;
     activeComputerUseRuntime = null;
+    custodyRetirements += 1;
     const retired = candidateSession.retire();
     try {
       await retired.client?.disconnect();
@@ -3708,16 +4225,20 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       // A failed relay start must preserve the original start error.
     }
     await candidateSession.finishRetirement();
+    if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
     throw error;
   }
 }
 
 export async function stopRelay(): Promise<void> {
+  const humanConsent = peekHumanTerminalConsent();
+  if (humanConsent) revokeHumanTerminalConsent(humanConsent.generation);
   relayLifecycleGeneration += 1;
   const pendingSessionToRetire = pendingRelayCandidate?.session ?? null;
   pendingRelayCandidate = null;
   const activeSessionToRetire = activeRelaySession;
   activeRelaySession = null;
+  notifyLocalExecutionChanges();
   capabilityPublisher = null;
   activeComputerUseRuntime = null;
   const sessionsToRetire = pendingSessionToRetire === null
@@ -3725,6 +4246,7 @@ export async function stopRelay(): Promise<void> {
     : activeSessionToRetire === null || activeSessionToRetire === pendingSessionToRetire
       ? [pendingSessionToRetire]
       : [pendingSessionToRetire, activeSessionToRetire];
+  custodyRetirements += sessionsToRetire.length;
   const retiredSessions = sessionsToRetire.map((session) => ({
     session,
     retired: session.retire(),
@@ -3752,6 +4274,7 @@ export async function stopRelay(): Promise<void> {
         firstError ??= error;
       } finally {
         await session.finishRetirement();
+        if (session.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
       }
     }
     if (firstError !== undefined) {
@@ -3786,12 +4309,47 @@ export function getRelayStatus(): RelayStatus {
  * register) or no active publisher is available. Never throws — publication
  * anomalies are logged by the publisher.
  */
+/** Local authority revocation works even while the transport is offline. */
+export function fenceDevelopmentLocalExecutions(): void {
+  activeRelaySession?.localExecution.fenceDevelopment();
+}
+
+/** Read-only last confirmed discovery, never an admission authority. */
+export function getAcknowledgedLocalExecutionCapabilities(): RelayCapabilities | null {
+  const session = activeRelaySession;
+  const topology = session?.client?.getDesktopTopology();
+  const capabilities = session?.publisher?.getAcknowledgedCapabilities();
+  return !session || session.closed || !topology || !capabilities ? null
+    : projectRelayCapabilitiesForProtocol(capabilities, topology.selectedProtocolVersion);
+}
+
+export function fenceActiveLocalExecutions(grantId?: string, revokedRoot?: string): void {
+  activeRelaySession?.localExecution.fenceAll(grantId, revokedRoot);
+}
+
+/** Refresh only folder discovery/routing without retiring running work. */
+export async function refreshDesktopRelayCurrentFolder(): Promise<boolean> {
+  const session = activeRelaySession;
+  if (session === null || !session.refreshCurrentFolder()) return false;
+  await session.publisher?.refresh("Current Folder changed");
+  return true;
+}
+
+export function getActiveLocalExecutionGeneration(): string | null {
+  return activeRelaySession === null || activeRelaySession.closed
+    ? null : activeRelaySession.localExecution.host.hostGeneration;
+}
+
+export async function readActiveLocalExecution(request: LocalExecutionViewRequest, cancel = false) {
+  return await readFromCurrentLocalExecutionOwner(() => activeRelaySession, request, cancel);
+}
+
 export async function refreshDesktopRelayCapabilities(reason?: string): Promise<boolean> {
   return activeRelaySession?.publisher?.refresh(reason) ?? false;
 }
 
 /**
- * M161 Phase 2 — active-only relay handoff (stop-before-start).
+ * active-only relay handoff (stop-before-start).
  *
  * Relay ownership moves to the active session: exactly one relay client
  * is live at a time. `setActiveRelay` awaits `stopRelay()` for the
@@ -3844,7 +4402,7 @@ export async function setActiveRelay(
 }
 
 /**
- * M161 Phase 2 — test-only seam for `setActiveRelay`. Injects mock
+ * test-only seam for `setActiveRelay`. Injects mock
  * start/stop hooks so the handoff ordering (stop awaited before start,
  * one client maximum) can be asserted without a live relay connection
  * or a real Electron runtime. Pass `null` to restore the real

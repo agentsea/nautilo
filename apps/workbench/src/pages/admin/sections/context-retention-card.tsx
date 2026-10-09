@@ -177,7 +177,7 @@ export function ContextRetentionCard() {
               htmlFor="minimum-full-turns"
               className="block text-xs font-semibold uppercase tracking-wide text-foreground-muted"
             >
-              Minimum full turns
+              Preferred full turns
             </label>
             <input
               id="minimum-full-turns"
@@ -199,7 +199,7 @@ export function ContextRetentionCard() {
               className="mt-1 w-28 rounded-md border border-border bg-background-element px-3 py-2 text-sm text-foreground disabled:opacity-60"
             />
             <p className="mt-1 text-xs text-foreground-muted">
-              {MIN_FULL_TURNS}–{MAX_FULL_TURNS}; default 1.
+              {MIN_FULL_TURNS}–{MAX_FULL_TURNS}; default 1. Long turns may be partially included to fit the context budget.
             </p>
           </div>
           <div>

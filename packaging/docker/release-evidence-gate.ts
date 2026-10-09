@@ -36,7 +36,7 @@ export interface ReleaseArchitectureGateReceiptV1 {
   readonly capturedAt: string;
 }
 
-function fail(message: string): never { throw new Error(`D490 release evidence gate failed: ${message}`); }
+function fail(message: string): never { throw new Error(`Release evidence gate failed: ${message}`); }
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) fail(`${label} must be an object`);
   return value as Record<string, unknown>;
@@ -136,7 +136,7 @@ export function evaluateReleaseArchitectureEvidence(evidenceDirectory: string, n
       return screenshot.format;
     }).sort()
     : fail("OfficeCLI probe has no screenshots");
-  if (probe.platform !== manifest.architecture || sharp.version !== "0.35.4" || typeof sharp.sha256 !== "string" || argon2.verified !== true || argon2.rejectedWrongValue !== true || officecli.browserExecutable !== "/usr/bin/chromium" || JSON.stringify(officeFormats) !== JSON.stringify(["docx", "pptx", "xlsx"])) {
+  if (probe.platform !== manifest.architecture || sharp.version !== "0.35.5" || typeof sharp.sha256 !== "string" || argon2.verified !== true || argon2.rejectedWrongValue !== true || officecli.browserExecutable !== "/usr/bin/chromium" || JSON.stringify(officeFormats) !== JSON.stringify(["docx", "pptx", "xlsx"])) {
     fail("native Sharp/argon2 and OfficeCLI behavior is incomplete");
   }
 
@@ -153,7 +153,7 @@ export function evaluateReleaseArchitectureEvidence(evidenceDirectory: string, n
 
 function summary(receipt: ReleaseArchitectureGateReceiptV1): string {
   return [
-    `# D490 ${receipt.architecture} release gate`, "", "Status: PASS", "",
+    `# ${receipt.architecture} release gate`, "", "Status: PASS", "",
     `- Source: \`${receipt.sourceSha}\``,
     `- Image: \`${receipt.image.reference}\``,
     `- Reports: ${receipt.reportCount}`,
@@ -174,5 +174,5 @@ if (import.meta.main) {
   const result = evaluateReleaseArchitectureEvidence(evidence, nativeProbe);
   writeFileSync(resolve(receipt), `${JSON.stringify(result, null, 2)}\n`, { flag: "wx", mode: 0o644 });
   writeFileSync(resolve(humanSummary), summary(result), { flag: "wx", mode: 0o644 });
-  process.stdout.write(`[d490:release-evidence-gate] PASS ${result.architecture} ${result.image.digest}\n`);
+  process.stdout.write(`[release-evidence-gate] PASS ${result.architecture} ${result.image.digest}\n`);
 }
