@@ -6,6 +6,7 @@ import type {
   VerifiedProcessorBackgroundAuthorizationDeviceResponse,
 } from "@nautilo/lattice-bridge";
 import {
+  BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
   advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
   cancelBackgroundAuthorizationRequest,
@@ -13,6 +14,7 @@ import {
   createBackgroundAuthorizationRequest,
   createBackgroundAuthorizationRequestV2,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
+  failBackgroundAuthorizationRequest,
   markBackgroundAuthorizationGrantReady,
   markBackgroundAuthorizationRunning,
   markBackgroundAuthorizationPublicationReconciliation,
@@ -37,6 +39,8 @@ import {
   BACKGROUND_AUTHORIZATION_TERMINAL_RETENTION_MS,
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
+  buildDeferredUnstartedTaskRuntimeRequest,
+  buildUnclaimedTaskRuntimeAuthorityReplacement,
   buildAcceptedBackgroundAuthorizationResponse,
   assertBackgroundAuthorizationCasSuccessor,
   parseBackgroundAuthorizationRecord,
@@ -73,7 +77,7 @@ function taskRuntimeRecordV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   return {
     snapshot: snapshot as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
     workIdentityHash: new Uint8Array(32).fill(0x75),
-    idempotencyKey: "task_runtime_idempotency_v3",
+    idempotencyKey: `task-runtime-stable-v1:${initial.workId}:${"a".repeat(43)}`,
     workKind: "task.execute",
     purpose: "task.execute",
     domainId: "task_runtime_domain_a",
@@ -100,6 +104,43 @@ function taskRuntimeRecordV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
         expectedAuthorizationRevision: 7,
       }],
     },
+  };
+}
+
+function taskRuntimeAwaitingRecipientV3():
+  BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const record = taskRuntimeRecordV3();
+  return {
+    ...record,
+    snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+      requestId: record.snapshot.requestId,
+      workId: record.snapshot.workId,
+      namespaceId: record.snapshot.namespaceId,
+      now: START,
+    }),
+    descriptorBytes: null,
+  };
+}
+
+function relabelTaskRuntimeRecord(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  ordinal: number,
+  updatedAt: number,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const workId = `10000000-0000-4000-8000-${ordinal.toString().padStart(12, "0")}`;
+  const terminal = ["completed", "cancelled", "terminal_failure"]
+    .includes(record.snapshot.state);
+  return {
+    ...record,
+    snapshot: {
+      ...record.snapshot,
+      requestId: `task_runtime_cancellation_${ordinal}`,
+      workId,
+      updatedAt,
+    },
+    workIdentityHash: new Uint8Array(32).fill(ordinal),
+    idempotencyKey: `task-runtime-stable-v1:${workId}:${String.fromCharCode(96 + ordinal).repeat(43)}`,
+    finishedAt: terminal ? updatedAt : null,
   };
 }
 
@@ -564,6 +605,194 @@ describe("background authorization repository contract", () => {
       },
       START + 2,
     )).toThrow("does not match current durable authorization");
+  });
+
+  test("gives exactly one winner to Task inventory replacement versus claim", async () => {
+    const waiting = taskRuntimeRecordV3();
+    const response = verifiedTaskRuntimeResponseV3(waiting);
+    const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...waiting,
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId: waiting.snapshot.requestId,
+        workId: waiting.snapshot.workId,
+        namespaceId: waiting.snapshot.namespaceId,
+        now: START + 3,
+      }),
+      workIdentityHash: new Uint8Array(32).fill(0x76),
+      descriptorBytes: null,
+      acceptedMaterial: null,
+      authoritySet: {
+        ...waiting.authoritySet,
+        namespaceRequirements: [
+          ...waiting.authoritySet.namespaceRequirements,
+          {
+            ordinal: 1,
+            namespaceId: "z_scope_inventory_namespace",
+            domainId: waiting.domainId,
+            operations: ["decrypt"],
+            expectedAccessRevision: 8,
+            expectedPolicyRevision: waiting.expectedPolicyRevision,
+          },
+        ],
+      },
+    };
+    const readyRepository = async () => {
+      const repository = new InMemoryBackgroundAuthorizationRepository();
+      await repository.create(waiting);
+      const accepted = await repository.acceptVerifiedResponse({
+        response,
+        acceptedAt: START + 2,
+      });
+      if (accepted.status !== "accepted") throw new Error("grant not ready");
+      return {
+        repository,
+        ready: accepted.record as BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    };
+
+    const claimFirst = await readyRepository();
+    const claimed = {
+      ...claimFirst.ready,
+      snapshot: claimBackgroundAuthorizationRequest(
+        claimFirst.ready.snapshot,
+        "inventory-race-claim",
+        START + 3,
+        START + 30_000,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    expect((await claimFirst.repository.compareAndSwap({
+      expectedRequestRevision: claimFirst.ready.snapshot.requestRevision,
+      next: claimed,
+    })).status).toBe("updated");
+    const lostReplacement = await claimFirst.repository
+      .replaceUnclaimedTaskRuntimeAuthority({
+        expected: claimFirst.ready,
+        replacement,
+        now: START + 3,
+      });
+    expect(lostReplacement).toMatchObject({
+      status: "stale",
+      current: { snapshot: { state: "claimed" } },
+    });
+
+    const replacementFirst = await readyRepository();
+    const wonReplacement = await replacementFirst.repository
+      .replaceUnclaimedTaskRuntimeAuthority({
+        expected: replacementFirst.ready,
+        replacement,
+        now: START + 3,
+      });
+    expect(wonReplacement).toMatchObject({
+      status: "replaced",
+      record: {
+        snapshot: {
+          state: "awaiting_recipient",
+          recipientGeneration: 1,
+          requestRevision: replacementFirst.ready.snapshot.requestRevision + 1,
+        },
+        descriptorBytes: null,
+        acceptedMaterial: null,
+      },
+    });
+    expect((await replacementFirst.repository.compareAndSwap({
+      expectedRequestRevision: replacementFirst.ready.snapshot.requestRevision,
+      next: {
+        ...replacementFirst.ready,
+        snapshot: claimBackgroundAuthorizationRequest(
+          replacementFirst.ready.snapshot,
+          "inventory-race-losing-claim",
+          START + 3,
+          START + 30_000,
+        ),
+      },
+    })).status).toBe("stale");
+  });
+
+  test("defers an exact unstarted Task request once without spending its retry budget", async () => {
+    const waiting = taskRuntimeRecordV3();
+    const accepted = buildAcceptedBackgroundAuthorizationResponse(
+      waiting,
+      verifiedTaskRuntimeResponseV3(waiting),
+      START + 2,
+    ).next as BackgroundAuthorizationTaskRuntimeRecordV3;
+    const claimed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...accepted,
+      snapshot: {
+        ...claimBackgroundAuthorizationRequest(
+          accepted.snapshot,
+          "task-runtime-deferral-claim",
+          START + 3,
+          START + 30_000,
+        ),
+        retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+        lastRetryReason: "provider_transient_failure",
+      } as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const running: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...claimed,
+      snapshot: markBackgroundAuthorizationRunning(
+        claimed.snapshot,
+        START + 4,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const next = buildDeferredUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 5,
+    });
+    expect(next).toMatchObject({
+      snapshot: {
+        state: "awaiting_recipient",
+        recipientGeneration: running.snapshot.recipientGeneration + 1,
+        requestRevision: running.snapshot.requestRevision + 1,
+        descriptorDigest: null,
+        recipient: null,
+        acceptedResponse: null,
+        claimId: null,
+        claimExpiresAt: null,
+        retryCount: BACKGROUND_AUTHORIZATION_MAX_RETRY_COUNT,
+        lastRetryReason: "stale_authority",
+        nextAttemptAt: START + 5,
+      },
+      descriptorBytes: null,
+      acceptedMaterial: null,
+    });
+
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    expect((await repository.create(running)).status).toBe("created");
+    expect(await repository.deferUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 5,
+    })).toEqual({ status: "deferred", record: next });
+    expect(await repository.deferUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 5,
+    })).toEqual({ status: "exact_replay", record: next });
+    expect(await repository.deferUnstartedTaskRuntimeRequest({
+      expected: running,
+      now: START + 6,
+    })).toEqual({ status: "stale", current: next });
+  });
+
+  test("refuses an unversioned Task identity at the replacement boundary", () => {
+    const expected = {
+      ...taskRuntimeRecordV3(),
+      idempotencyKey: "legacy-task-runtime-request",
+    };
+    const replacement = {
+      ...expected,
+      snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
+        requestId: expected.snapshot.requestId,
+        workId: expected.snapshot.workId,
+        namespaceId: expected.snapshot.namespaceId,
+        now: START + 3,
+      }),
+      descriptorBytes: null,
+    };
+    expect(() => buildUnclaimedTaskRuntimeAuthorityReplacement({
+      expected,
+      replacement,
+      now: START + 3,
+    })).toThrow("changed stable work identity");
   });
 
   test("accepts only the exact semantic Reflection V2 work-purpose pairs", () => {
@@ -1360,6 +1589,139 @@ describe("background authorization repository contract", () => {
       after: { updatedAt: START + 1, requestId: "request_a" },
       limit: 1,
     })).rejects.toThrow("cursor exceeds watermark");
+  });
+
+  test("Task Runtime cancellation discovery includes active and explicitly cancelled records only", async () => {
+    const awaitingRecipient = taskRuntimeAwaitingRecipientV3();
+    const awaitingDevice = taskRuntimeRecordV3();
+    const grantReady = buildAcceptedBackgroundAuthorizationResponse(
+      awaitingDevice,
+      verifiedTaskRuntimeResponseV3(awaitingDevice),
+      START + 2,
+    ).next as BackgroundAuthorizationTaskRuntimeRecordV3;
+    const claimed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...grantReady,
+      snapshot: claimBackgroundAuthorizationRequest(
+        grantReady.snapshot,
+        "task_runtime_cancellation_claim",
+        START + 3,
+        START + 60_000,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const running: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...claimed,
+      snapshot: markBackgroundAuthorizationRunning(
+        claimed.snapshot,
+        START + 4,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const publication: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: markBackgroundAuthorizationPublicationReconciliation(
+        running.snapshot,
+        START + 5,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    };
+    const completed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: completeBackgroundAuthorizationRequest(
+        running.snapshot,
+        START + 5,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 5,
+    };
+    const cancelled: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        running.snapshot,
+        "cancelled",
+        START + 5,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 5,
+    };
+    const superseded: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...awaitingDevice,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        awaitingDevice.snapshot,
+        "superseded",
+        START + 5,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 5,
+    };
+    const failed: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...running,
+      snapshot: failBackgroundAuthorizationRequest(
+        running.snapshot,
+        "integrity_failure",
+        START + 5,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 5,
+    };
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const included = [
+      awaitingRecipient,
+      awaitingDevice,
+      grantReady,
+      claimed,
+      running,
+      publication,
+      cancelled,
+    ].map((record, index) =>
+      relabelTaskRuntimeRecord(record, index + 1, START + index + 1)
+    );
+    const excluded = [completed, failed, superseded]
+      .map((record, index) =>
+        relabelTaskRuntimeRecord(record, index + 10, START + index + 10)
+      );
+    for (const record of [...included, ...excluded]) {
+      await repository.create(record);
+    }
+    await repository.create(initialRecord("other_kind", 40));
+
+    const first = await repository.listTaskRuntimeCancellationPage({
+      throughUpdatedAt: START + 20,
+      limit: 3,
+    });
+    expect(first.candidates.map((candidate) => candidate.requestId)).toEqual([
+      "task_runtime_cancellation_1",
+      "task_runtime_cancellation_2",
+      "task_runtime_cancellation_3",
+    ]);
+    expect(first.continuation).toEqual({
+      updatedAt: START + 3,
+      requestId: "task_runtime_cancellation_3",
+    });
+    const second = await repository.listTaskRuntimeCancellationPage({
+      throughUpdatedAt: START + 20,
+      after: first.continuation!,
+      limit: 4,
+    });
+    expect(second.candidates.map((candidate) => candidate.requestId)).toEqual([
+      "task_runtime_cancellation_4",
+      "task_runtime_cancellation_5",
+      "task_runtime_cancellation_6",
+      "task_runtime_cancellation_7",
+    ]);
+    expect(second.continuation).toEqual({
+      updatedAt: START + 7,
+      requestId: "task_runtime_cancellation_7",
+    });
+    expect(await repository.listTaskRuntimeCancellationPage({
+      throughUpdatedAt: START + 6,
+      after: { updatedAt: START + 6, requestId: "task_runtime_cancellation_6" },
+      limit: 1,
+    })).toEqual({ candidates: [], continuation: null });
+
+    const invalidLimit = repository.listTaskRuntimeCancellationPage({
+      throughUpdatedAt: START,
+      limit: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH + 1,
+    });
+    const failure = await invalidLimit.then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as Error).message).toContain("page limit");
   });
 
   test("terminal pruning honors the 30-day boundary and 256-row cap", async () => {

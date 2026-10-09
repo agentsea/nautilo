@@ -51,6 +51,7 @@ export function createProtectedTaskTranscriptPort(input: Readonly<{
   signal: AbortSignal;
   publish: ProtectedTaskTranscriptMessagePublisher;
 }>): Readonly<{
+  quiesce(): Promise<Readonly<{ failedPublicationCount: number }>>;
   publishBatch(batch: Readonly<ProtectedTaskTranscriptIdentity & {
     messages: readonly BaseMessage[];
   }>): Promise<void>;
@@ -61,26 +62,50 @@ export function createProtectedTaskTranscriptPort(input: Readonly<{
   ) || !(input.signal instanceof AbortSignal)) {
     throw new TypeError("Protected Task transcript identity is invalid");
   }
+  const active = new Set<Promise<void>>();
+  let failedPublicationCount = 0;
+  let closing: Promise<Readonly<{ failedPublicationCount: number }>> | null = null;
   return Object.freeze({
+    quiesce() {
+      closing ??= (async () => {
+        await Promise.allSettled([...active]);
+        return Object.freeze({ failedPublicationCount });
+      })();
+      return closing;
+    },
     async publishBatch(batch) {
-      input.signal.throwIfAborted();
-      if (!sameIdentity(identity, batch)) {
-        throw new TypeError("Protected Task transcript identity changed");
+      if (closing !== null) {
+        throw new Error("Protected Task transcript is closing");
       }
-      for (const message of batch.messages) {
+      // Register before calling the publisher, including reentrant callbacks.
+      const messages = [...batch.messages];
+      const batchIdentity = { ...batch, messages: undefined };
+      const work = Promise.resolve().then(async () => {
         input.signal.throwIfAborted();
-        if (isTransientContext(message)) continue;
-        const fingerprint = computeMessageFingerprint(message);
-        const payload = protectedAgentMessagePayload(message);
-        await input.publish({
-          identity,
-          idempotencyKey: `task-transcript:${identity.taskRunId}:${fingerprint}`,
-          fingerprint,
-          payload,
-          signal: input.signal,
-        });
-        input.signal.throwIfAborted();
-      }
+        if (!sameIdentity(identity, batchIdentity)) {
+          throw new TypeError("Protected Task transcript identity changed");
+        }
+        for (const message of messages) {
+          input.signal.throwIfAborted();
+          if (isTransientContext(message)) continue;
+          const fingerprint = computeMessageFingerprint(message);
+          const payload = protectedAgentMessagePayload(message);
+          await input.publish({
+            identity,
+            idempotencyKey: `task-transcript:${identity.taskRunId}:${fingerprint}`,
+            fingerprint,
+            payload,
+            signal: input.signal,
+          });
+          input.signal.throwIfAborted();
+        }
+      });
+      active.add(work);
+      void work.then(
+        () => active.delete(work),
+        () => { active.delete(work); failedPublicationCount += 1; },
+      );
+      return work;
     },
   });
 }

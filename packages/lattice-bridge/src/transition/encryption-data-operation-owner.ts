@@ -69,6 +69,22 @@ export type DataOperationReadInput<Ordinary, Protected, Value> = Readonly<{
   classifyFailure?: FailureClassifier;
 }>;
 
+export type DataOperationScopedRead = <Ordinary, Protected, Value>(
+  input: DataOperationReadInput<Ordinary, Protected, Value>,
+) => Promise<DataOperationReadResult<Value>>;
+
+export type DataOperationReadMetadataContext = DataOperationPublicationContext &
+  Readonly<{
+    /** Reuse the selected policy generation for body loading and consumption. */
+    read: DataOperationScopedRead;
+  }>;
+
+export type DataOperationReadMetadataInput<Result> = Readonly<{
+  ordinary?: (context: DataOperationReadMetadataContext) => Promise<Result>;
+  fallback?: (context: DataOperationReadMetadataContext) => Promise<Result>;
+  protected?: (context: DataOperationReadMetadataContext) => Promise<Result>;
+}>;
+
 export type DataOperationMutationInput<Plan, Result> = Readonly<{
   ordinary?: () => Promise<Plan>;
   protected?: () => Promise<Plan>;
@@ -91,6 +107,10 @@ export interface EncryptionDataOperationOwner {
   read<Ordinary, Protected, Value>(
     input: DataOperationReadInput<Ordinary, Protected, Value>,
   ): Promise<DataOperationReadResult<Value>>;
+  /** Select content-free read metadata without exposing the current policy. */
+  selectReadMetadata<Result>(
+    input: DataOperationReadMetadataInput<Result>,
+  ): Promise<Result>;
   mutate<Plan, Result>(
     input: DataOperationMutationInput<Plan, Result>,
   ): Promise<Result>;
@@ -128,99 +148,133 @@ export function bindEncryptionDataOperationOwner(
     policy: DataOperationPolicyBinding;
   }>,
 ): EncryptionDataOperationOwner {
+  async function readWithSnapshot<Ordinary, Protected, Value>(
+    snapshot: DataOperationPolicySnapshot,
+    operation: DataOperationReadInput<Ordinary, Protected, Value>,
+  ): Promise<DataOperationReadResult<Value>> {
+    const representation = selectLiveEncryptionRepresentationPolicy(
+      snapshot.policy,
+    );
+    await input.policy.revalidate(snapshot.revalidationToken);
+    if (representation.read === "ordinary_only") {
+      const ordinary = await requiredPort(operation.ordinary)();
+      await input.policy.revalidate(snapshot.revalidationToken);
+      const value = await operation.consumeOrdinary(ordinary);
+      await input.policy.revalidate(snapshot.revalidationToken);
+      return Object.freeze({
+        representation: "ordinary" as const,
+        value,
+        revalidationToken: snapshot.revalidationToken,
+      });
+    }
+
+    const loadProtected = requiredPort(operation.protected);
+    const classify = operation.classifyFailure ?? classifyDataOperationFailure;
+    const runReverseRepair = async (value: Protected): Promise<void> => {
+      if (
+        !representation.allowReverseRepair ||
+        operation.repair?.reverse === undefined
+      ) return;
+      try {
+        await input.policy.revalidate(snapshot.revalidationToken);
+        await operation.repair.reverse(value);
+      } catch (error) {
+        if (
+          !representation.allowOrdinaryFallback ||
+          !fallbackEligible(classify(error))
+        ) throw error;
+      }
+    };
+    let protectedValue: Protected;
+    try {
+      protectedValue = await loadProtected();
+    } catch (initialError) {
+      const initialFailure = classify(initialError);
+      if (!fallbackEligible(initialFailure)) throw initialError;
+      if (
+        representation.allowForwardRepair &&
+        operation.repair?.forward !== undefined
+      ) {
+        let repaired: Protected | undefined;
+        let repairSucceeded = false;
+        let repairFailure: unknown;
+        try {
+          await input.policy.revalidate(snapshot.revalidationToken);
+          repaired = await operation.repair.forward();
+          repairSucceeded = true;
+        } catch (repairError) {
+          if (!fallbackEligible(classify(repairError))) throw repairError;
+          repairFailure = repairError;
+        }
+        if (repairSucceeded) {
+          await runReverseRepair(repaired as Protected);
+          await input.policy.revalidate(snapshot.revalidationToken);
+          const value = await operation.consumeProtected(
+            repaired as Protected,
+          );
+          await input.policy.revalidate(snapshot.revalidationToken);
+          return Object.freeze({
+            representation: "protected" as const,
+            value,
+            revalidationToken: snapshot.revalidationToken,
+          });
+        }
+        if (!representation.allowOrdinaryFallback) throw repairFailure;
+      }
+      if (!representation.allowOrdinaryFallback) throw initialError;
+      await input.policy.revalidate(snapshot.revalidationToken);
+      const ordinary = await requiredPort(operation.ordinary)();
+      await input.policy.revalidate(snapshot.revalidationToken);
+      const value = await operation.consumeOrdinary(ordinary);
+      await input.policy.revalidate(snapshot.revalidationToken);
+      return Object.freeze({
+        representation: "ordinary" as const,
+        value,
+        revalidationToken: snapshot.revalidationToken,
+      });
+    }
+
+    await runReverseRepair(protectedValue);
+    await input.policy.revalidate(snapshot.revalidationToken);
+    const value = await operation.consumeProtected(protectedValue);
+    await input.policy.revalidate(snapshot.revalidationToken);
+    return Object.freeze({
+      representation: "protected" as const,
+      value,
+      revalidationToken: snapshot.revalidationToken,
+    });
+  }
+
   return Object.freeze({
     async read<Ordinary, Protected, Value>(
       operation: DataOperationReadInput<Ordinary, Protected, Value>,
     ): Promise<DataOperationReadResult<Value>> {
       const snapshot = await input.policy.resolve();
+      return readWithSnapshot(snapshot, operation);
+    },
+
+    async selectReadMetadata<Result>(
+      operation: DataOperationReadMetadataInput<Result>,
+    ): Promise<Result> {
+      const snapshot = await input.policy.resolve();
       const representation = selectLiveEncryptionRepresentationPolicy(
         snapshot.policy,
       );
-      await input.policy.revalidate(snapshot.revalidationToken);
-      if (representation.read === "ordinary_only") {
-        const ordinary = await requiredPort(operation.ordinary)();
-        await input.policy.revalidate(snapshot.revalidationToken);
-        const value = await operation.consumeOrdinary(ordinary);
-        await input.policy.revalidate(snapshot.revalidationToken);
-        return Object.freeze({
-          representation: "ordinary" as const,
-          value,
-          revalidationToken: snapshot.revalidationToken,
-        });
-      }
-
-      const loadProtected = requiredPort(operation.protected);
-      const classify =
-        operation.classifyFailure ?? classifyDataOperationFailure;
-      const runReverseRepair = async (value: Protected): Promise<void> => {
-        if (!representation.allowReverseRepair || operation.repair?.reverse === undefined) return;
-        try {
-          await input.policy.revalidate(snapshot.revalidationToken);
-          await operation.repair.reverse(value);
-        } catch (error) {
-          if (!representation.allowOrdinaryFallback || !fallbackEligible(classify(error))) {
-            throw error;
-          }
-        }
-      };
-      let protectedValue: Protected;
-      try {
-        protectedValue = await loadProtected();
-      } catch (initialError) {
-        const initialFailure = classify(initialError);
-        if (!fallbackEligible(initialFailure)) throw initialError;
-        if (
-          representation.allowForwardRepair &&
-          operation.repair?.forward !== undefined
-        ) {
-          let repaired: Protected | undefined;
-          let repairSucceeded = false;
-          let repairFailure: unknown;
-          try {
-            await input.policy.revalidate(snapshot.revalidationToken);
-            repaired = await operation.repair.forward();
-            repairSucceeded = true;
-          } catch (repairError) {
-            if (!fallbackEligible(classify(repairError))) throw repairError;
-            repairFailure = repairError;
-          }
-          if (repairSucceeded) {
-            await runReverseRepair(repaired as Protected);
-            await input.policy.revalidate(snapshot.revalidationToken);
-            const value = await operation.consumeProtected(
-              repaired as Protected,
-            );
-            await input.policy.revalidate(snapshot.revalidationToken);
-            return Object.freeze({
-              representation: "protected" as const,
-              value,
-              revalidationToken: snapshot.revalidationToken,
-            });
-          }
-          if (!representation.allowOrdinaryFallback) throw repairFailure;
-        }
-        if (!representation.allowOrdinaryFallback) throw initialError;
-        await input.policy.revalidate(snapshot.revalidationToken);
-        const ordinary = await requiredPort(operation.ordinary)();
-        await input.policy.revalidate(snapshot.revalidationToken);
-        const value = await operation.consumeOrdinary(ordinary);
-        await input.policy.revalidate(snapshot.revalidationToken);
-        return Object.freeze({
-          representation: "ordinary" as const,
-          value,
-          revalidationToken: snapshot.revalidationToken,
-        });
-      }
-
-      await runReverseRepair(protectedValue);
-      await input.policy.revalidate(snapshot.revalidationToken);
-      const value = await operation.consumeProtected(protectedValue);
-      await input.policy.revalidate(snapshot.revalidationToken);
-      return Object.freeze({
-        representation: "protected" as const,
-        value,
+      const selected = representation.read === "ordinary_only"
+        ? requiredPort(operation.ordinary)
+        : representation.allowOrdinaryFallback
+          ? requiredPort(operation.fallback)
+          : requiredPort(operation.protected);
+      const context: DataOperationReadMetadataContext = Object.freeze({
         revalidationToken: snapshot.revalidationToken,
+        read: <Ordinary, Protected, Value>(
+          readOperation: DataOperationReadInput<Ordinary, Protected, Value>,
+        ) => readWithSnapshot(snapshot, readOperation),
       });
+      await input.policy.revalidate(snapshot.revalidationToken);
+      const result = await selected(context);
+      await input.policy.revalidate(snapshot.revalidationToken);
+      return result;
     },
 
     async mutate<Plan, Result>(

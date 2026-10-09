@@ -18,16 +18,33 @@ import type {
 } from "@nautilo/lattice-bridge/server";
 import {
   withCurrentAcceptedTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeClaimAuthority,
 } from "@nautilo/lattice-bridge/server";
 import type {
+  BackgroundAuthorizationCasResult,
   BackgroundAuthorizationTaskRuntimeRecordV3,
+  BackgroundAuthorizationTaskRuntimeReplacementRepository,
   ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 
 import {
+  createCurrentProtectedTaskRuntimeClaimAuthorityPort,
   createCurrentProtectedTaskRuntimeAuthorityPort,
+  loadCurrentProtectedTaskRuntimeLifecycleFacts,
+  loadCurrentProtectedTaskRuntimeRequesterRoomFacts,
   type CurrentProtectedTaskRuntimeFacts,
 } from "../../src/routes/task-runtime-current-authority";
+
+function factLoaders(facts: CurrentProtectedTaskRuntimeFacts) {
+  const { requesterPrivateRoom, ...lifecycle } = facts;
+  return {
+    loadCurrentLifecycleFacts: async () => lifecycle,
+    loadCurrentRequesterPrivateRoomFacts: async () => ({
+      requesterPrivateRoom,
+    }),
+  };
+}
 
 async function fixture() {
   const crypto = new LatticeCrypto();
@@ -134,6 +151,7 @@ async function fixture() {
       roomId: request.sourceRoomId,
       namespaceId: occurrence.task.contentNamespaceId,
     },
+    nativeExecutionSupported: true,
   };
   const record = {
     snapshot: {
@@ -179,6 +197,14 @@ async function fixture() {
       authorizationExpiresAt: plan.deadlineAt,
     },
   } as unknown as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const runningOccurrence: ProtectedTaskRunningOccurrence = {
+    task: occurrence.task,
+    run: {
+      ...occurrence.run,
+      jobId: "job:task",
+      status: "running",
+    },
+  };
   const authority: CurrentTaskRuntimeAuthority = {
     device: {
       userId: occurrence.task.requestorId,
@@ -198,24 +224,26 @@ async function fixture() {
     policyRevision: plan.policyRevision,
   };
   recipient.privateKey.fill(0);
-  return {crypto, signing, now, occurrence, facts, record, request, authority};
+  return {crypto, signing, now, occurrence, runningOccurrence, facts, record,
+    request, authority};
 }
 
 describe("current protected Task Runtime authority adapter", () => {
   test("rechecks an accepted awaiting run before claim", async () => {
     const f = await fixture();
+    const awaitingFacts: CurrentProtectedTaskRuntimeFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, status: "pending" },
+      run: { ...f.facts.run, status: "awaiting", jobId: null },
+    };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => ({
-        ...f.facts,
-        task: { ...f.facts.task, status: "pending" },
-        run: { ...f.facts.run, status: "awaiting", jobId: null },
-      }),
+      ...factLoaders(awaitingFacts),
       withAcceptedAuthority: (async (input: Parameters<
-        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
-        f.authority,
-        {} as never,
-        {} as never,
-      )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+        const product = {} as never;
+        if (!await input.validateCurrentProduct(product)) return null;
+        return input.use(f.authority, product, {} as never);
+      }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
     const result = await port({
       runner: {} as never,
@@ -236,27 +264,175 @@ describe("current protected Task Runtime authority adapter", () => {
     f.signing.privateKey.fill(0);
   });
 
+  test("lends claim CAS only inside the accepted owner after lifecycle locks", async () => {
+    const f = await fixture();
+    const events: string[] = [];
+    let insideAuthority = false;
+    let clock = f.now + 1;
+    const retainedRepository: {current: Pick<
+      BackgroundAuthorizationTaskRuntimeReplacementRepository,
+      "compareAndSwap"
+    > | null} = { current: null };
+    const restricted = {} as never;
+    const grantReady = {
+      ...f.record,
+      snapshot: { ...f.record.snapshot, state: "grant_ready" as const },
+    };
+    const awaitingFacts: CurrentProtectedTaskRuntimeFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, status: "pending" },
+      run: { ...f.facts.run, status: "awaiting", jobId: null },
+    };
+    const port = createCurrentProtectedTaskRuntimeClaimAuthorityPort({
+      loadCurrentLifecycleFacts: async () => {
+        events.push("lifecycle");
+        const { requesterPrivateRoom: _, ...lifecycle } = awaitingFacts;
+        return lifecycle;
+      },
+      loadCurrentRequesterPrivateRoomFacts: async () => {
+        events.push("room");
+        return {
+          requesterPrivateRoom: awaitingFacts.requesterPrivateRoom,
+        };
+      },
+      withAcceptedClaimAuthority: (async (input: Parameters<
+        typeof withCurrentAcceptedTaskRuntimeClaimAuthority>[0]) => {
+        insideAuthority = true;
+        try {
+          const product = {} as never;
+          if (!await input.validateCurrentProduct(product)) return null;
+          events.push("namespace");
+          const value = await input.use(f.authority, product, restricted);
+          await input.validateBeforeCommit();
+          return value;
+        } finally {
+          insideAuthority = false;
+        }
+      }) as typeof withCurrentAcceptedTaskRuntimeClaimAuthority,
+      repository: async connection => {
+        expect(connection).toBe(restricted);
+        clock = f.now + 2;
+        return {
+          compareAndSwap: async input => {
+            if (!insideAuthority) {
+              throw new TypeError("claim repository is not active");
+            }
+            events.push("cas");
+            return {
+              status: "updated",
+              record: input.next,
+            } as BackgroundAuthorizationCasResult;
+          },
+        };
+      },
+    });
+    const result = await port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: f.occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId },
+      occurrence: f.occurrence,
+      record: grantReady,
+      request: f.request,
+      now: () => clock,
+      use: async (current, repository, claimedAt, claimExpiresAt) => {
+        expect(insideAuthority).toBe(true);
+        expect(current.foreground.authorizationId).toBe(f.request.requestId);
+        expect(claimedAt).toBe(f.now + 2);
+        expect(claimExpiresAt).toBe(f.request.deadlineAt);
+        retainedRepository.current = repository;
+        return repository.compareAndSwap({
+          expectedRequestRevision: grantReady.snapshot.requestRevision,
+          next: grantReady,
+        });
+      },
+    });
+    expect(result?.status).toBe("updated");
+    expect(insideAuthority).toBe(false);
+    expect(events).toEqual(["lifecycle", "namespace", "room", "cas"]);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(retainedRepository.current?.compareAndSwap({
+      expectedRequestRevision: grantReady.snapshot.requestRevision,
+      next: grantReady,
+    })).rejects.toThrow("claim repository is not active");
+
+    let malformedUseCalled = false;
+    expect(await port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: f.occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId },
+      occurrence: {
+        ...f.occurrence,
+        run: { ...f.occurrence.run, jobId: "job:prior" },
+      },
+      record: grantReady,
+      request: f.request,
+      now: () => clock,
+      use: () => { malformedUseCalled = true; },
+    })).toBeNull();
+    expect(malformedUseCalled).toBe(false);
+
+    clock = f.now + 1;
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(port({
+      runner: {} as never,
+      restricted: {} as never,
+      crypto: f.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: f.occurrence.task.requestorId,
+        humanActorId: f.authority.plan.subjectHumanId,
+        deviceId: f.authority.plan.committerDeviceId },
+      occurrence: f.occurrence,
+      record: grantReady,
+      request: f.request,
+      now: () => clock,
+      use: () => {
+        clock = f.request.deadlineAt;
+        return "late";
+      },
+    })).rejects.toThrow("claim authority expired before commit");
+    f.signing.privateKey.fill(0);
+  });
+
   test("rechecks closed current facts under accepted authority and releases locks before use", async () => {
     const f = await fixture();
-    const occurrence: ProtectedTaskOccurrence = {
-      ...f.occurrence,
-      task: { ...f.occurrence.task, callingRoomId: "room:open" },
+    const occurrence: ProtectedTaskRunningOccurrence = {
+      ...f.runningOccurrence,
+      task: { ...f.runningOccurrence.task, callingRoomId: "room:open" },
     };
     let insideAuthority = false;
     let loaded = 0;
+    const order: string[] = [];
+    const currentFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, callingRoomId: "room:open" },
+    };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => {
+      loadCurrentLifecycleFacts: async () => {
         loaded++;
-        return {
-          ...f.facts,
-          task: { ...f.facts.task, callingRoomId: "room:open" },
-        };
+        order.push("lifecycle");
+        const { requesterPrivateRoom: _, ...lifecycle } = currentFacts;
+        return lifecycle;
+      },
+      loadCurrentRequesterPrivateRoomFacts: async () => {
+        order.push("room");
+        return { requesterPrivateRoom: currentFacts.requesterPrivateRoom };
       },
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         insideAuthority = true;
         try {
-          return await input.use(f.authority, {} as never, {} as never);
+          const product = {} as never;
+          if (!await input.validateCurrentProduct(product)) return null;
+          order.push("namespace");
+          return await input.use(f.authority, product, {} as never);
         } finally {insideAuthority = false;}
       }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
@@ -273,37 +449,40 @@ describe("current protected Task Runtime authority adapter", () => {
       request: f.request,
       now: () => f.now,
       use: current => {
+        order.push("execution");
         expect(insideAuthority).toBe(false);
         expect(current.foreground.authorizationId).toBe(f.request.requestId);
         expect(current.foreground.roomId).toBe(f.request.sourceRoomId);
         expect(current.namespaceRequirements).toEqual(
           f.record.authoritySet.namespaceRequirements,
         );
+        expect(current.nativeExecutionSupported).toBe(true);
         return "current";
       },
     });
     expect(result).toBe("current");
     expect(loaded).toBe(1);
+    expect(order).toEqual(["lifecycle", "namespace", "room", "execution"]);
     f.signing.privateKey.fill(0);
   });
 
   test("accepts current running cron authority with a pending parent Task", async () => {
     const f = await fixture();
-    const occurrence: ProtectedTaskOccurrence = {
-      ...f.occurrence,
-      task: { ...f.occurrence.task, scheduleKind: "cron" },
+    const occurrence: ProtectedTaskRunningOccurrence = {
+      ...f.runningOccurrence,
+      task: { ...f.runningOccurrence.task, scheduleKind: "cron" },
     };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-      loadCurrentFacts: async () => ({
+      ...factLoaders({
         ...f.facts,
         task: { ...f.facts.task, scheduleKind: "cron", status: "pending" },
       }),
       withAcceptedAuthority: (async (input: Parameters<
-        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
-        f.authority,
-        {} as never,
-        {} as never,
-      )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+        const product = {} as never;
+        if (!await input.validateCurrentProduct(product)) return null;
+        return input.use(f.authority, product, {} as never);
+      }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
     const result = await port({
       runner: {} as never,
@@ -333,13 +512,13 @@ describe("current protected Task Runtime authority adapter", () => {
           : f.facts;
       let used = false;
       const port = createCurrentProtectedTaskRuntimeAuthorityPort({
-        loadCurrentFacts: async () => facts,
+        ...factLoaders(facts),
         withAcceptedAuthority: (async (input: Parameters<
-          typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => input.use(
-          f.authority,
-          {} as never,
-          {} as never,
-        )) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+          typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+          const product = {} as never;
+          if (!await input.validateCurrentProduct(product)) return null;
+          return input.use(f.authority, product, {} as never);
+        }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
       });
       const request = change === "request"
         ? {...f.request, sourceRoomId: "room:substituted"}
@@ -352,7 +531,7 @@ describe("current protected Task Runtime authority adapter", () => {
         subject: {userId: f.occurrence.task.requestorId,
           humanActorId: f.authority.plan.subjectHumanId,
           deviceId: f.authority.plan.committerDeviceId},
-        occurrence: f.occurrence,
+        occurrence: f.runningOccurrence,
         record: f.record,
         request,
         now: () => f.now,
@@ -362,5 +541,101 @@ describe("current protected Task Runtime authority adapter", () => {
       expect(used).toBe(false);
       f.signing.privateKey.fill(0);
     }
+  });
+
+  test("projects only content-free native route admission from the locked Task", async () => {
+    const f = await fixture();
+    const load = async (nativeExecutionSupported: boolean) => {
+      const statements: Readonly<{sql: string; params: readonly unknown[]}>[] = [];
+      const rows: unknown[][] = [
+        [{
+          id: f.facts.task.id,
+          owner_id: f.facts.task.ownerId,
+          requestor_id: f.facts.task.requestorId,
+          agent_id: f.facts.task.agentId,
+          calling_room_id: f.facts.task.callingRoomId,
+          status: f.facts.task.status,
+          schedule_kind: f.facts.task.scheduleKind,
+          content_representation: f.facts.task.contentRepresentation,
+          content_namespace_id: f.facts.task.contentNamespaceId,
+          content_revision: f.facts.task.contentRevision,
+          crypto_object_id: f.facts.task.cryptoObjectId,
+          crypto_access_revision: f.facts.task.cryptoAccessRevision,
+          crypto_required_namespace_fingerprint:
+            f.facts.task.cryptoRequiredNamespaceFingerprint,
+          crypto_mapping_state: f.facts.task.cryptoMappingState,
+          native_execution_supported: nativeExecutionSupported,
+        }],
+        [{
+          id: f.facts.run.id,
+          task_id: f.facts.run.taskId,
+          job_id: f.facts.run.jobId,
+          graph_thread_id: f.facts.run.graphThreadId,
+          status: f.facts.run.status,
+          result_representation: f.facts.run.resultRepresentation,
+          result_content_namespace_id: f.facts.run.resultContentNamespaceId,
+          result_revision: f.facts.run.resultRevision,
+          result_crypto_object_id: f.facts.run.resultCryptoObjectId,
+          result_crypto_access_revision: f.facts.run.resultCryptoAccessRevision,
+          result_crypto_required_namespace_fingerprint:
+            f.facts.run.resultCryptoRequiredNamespaceFingerprint,
+          result_crypto_mapping_state: f.facts.run.resultCryptoMappingState,
+        }],
+        [{ id: f.authority.plan.subjectHumanId }],
+        [{
+          id: f.request.sourceRoomId,
+          namespace_id: f.occurrence.task.contentNamespaceId,
+          human_actor_ids: [f.authority.plan.subjectHumanId],
+        }],
+        [
+          { id: f.authority.plan.subjectHumanId, kind: "user", agent_id: null },
+          { id: "actor:agent", kind: "agent", agent_id: f.occurrence.task.agentId },
+        ],
+      ];
+      const product = {
+        query: async (sql: string, params: readonly unknown[]) => {
+          statements.push({sql, params});
+          return rows.shift() ?? [];
+        },
+      } as never;
+      const lifecycle = await loadCurrentProtectedTaskRuntimeLifecycleFacts({
+        product,
+        occurrence: f.runningOccurrence,
+      });
+      const room = lifecycle === null ? null
+        : await loadCurrentProtectedTaskRuntimeRequesterRoomFacts({
+          product,
+          task: lifecycle.task,
+        });
+      const facts = lifecycle === null || room === null
+        ? null : { ...lifecycle, ...room };
+      return {facts, statement: statements[0]!};
+    };
+
+    const admitted = await load(true);
+    expect(admitted.facts?.nativeExecutionSupported).toBe(true);
+    expect(Object.hasOwn(admitted.facts?.task ?? {}, "metadata")).toBe(false);
+    expect(Object.hasOwn(admitted.facts?.task ?? {}, "preset")).toBe(false);
+    expect(admitted.statement.sql).toContain(
+      `case\n      when jsonb_typeof("metadata") = 'object' then coalesce(`,
+    );
+    expect(admitted.statement.sql).toContain(
+      `"metadata" - 'preparation' - 'lastInterruption'`,
+    );
+    expect(admitted.statement.sql).toContain(
+      `as "native_execution_supported"`,
+    );
+    expect(admitted.statement.sql).not.toContain(`, "preset",`);
+    expect(admitted.statement.sql).not.toContain(`, "metadata",`);
+    expect(admitted.statement.params.slice(0, 5)).toEqual([
+      "task",
+      "in_scope",
+      "in_private_namespace",
+      "in_background",
+      "schedule",
+    ]);
+
+    expect((await load(false)).facts?.nativeExecutionSupported).toBe(false);
+    f.signing.privateKey.fill(0);
   });
 });

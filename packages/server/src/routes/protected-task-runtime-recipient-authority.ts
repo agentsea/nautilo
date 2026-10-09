@@ -13,20 +13,33 @@ import {
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+} from "@nautilo/lattice-crypto/background";
+import {
+  copyTaskScopeMemoryBinding,
   conversationProductTypedDb,
   executeTypedConversationProductQuery,
+  verifyCryptoPostgresHandle,
   withInitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
+  type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import {
   isCurrentProtectedTaskRunForGrant,
+  PostgresBackgroundAuthorizationRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
-import { findActorByOwnerId, findAgentOwnerPrivateRoom } from "@nautilo/trust";
+import { findActorByOwnerId } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 type CurrentTask = Pick<
   Task,
@@ -78,6 +91,9 @@ export type ProtectedTaskRuntimeRecipientCurrentAuthority = Readonly<{
   namespaceRequirements: InitialTaskRuntimeRecipientAuthority["namespaceRequirements"];
   policyRevision: number;
   sourceRoomId: string;
+  /** Borrowed only while the native recipient-authority owner is open. */
+  restricted: PostgresJsBridgeConnection;
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
 export type ProtectedTaskRuntimeRecipientAuthorityPort = <Value>(
@@ -85,9 +101,22 @@ export type ProtectedTaskRuntimeRecipientAuthorityPort = <Value>(
     occurrence: ProtectedTaskOccurrence;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     binding: ProtectedTaskRuntimeRecipientDeviceBinding;
+    targetRoomId: string;
+    scopeMemory?: TaskScopeMemoryBinding;
+    phase?: "awaiting_recipient" | "bound";
+    /** Existing background-device transaction to hold through `use`. */
+    restricted?: PostgresJsBridgeConnection;
     use(
       current: ProtectedTaskRuntimeRecipientCurrentAuthority,
+      repository: Pick<
+        BackgroundAuthorizationTaskRuntimeReplacementRepository,
+        "get" | "compareAndSwap"
+      >,
     ): Value | Promise<Value>;
+    /** Bound-response admission check after scoped repository work drains. */
+    validateBeforeCommit?(
+      current: ProtectedTaskRuntimeRecipientCurrentAuthority,
+    ): boolean | Promise<boolean>;
   }>,
 ) => Promise<Value | null>;
 
@@ -99,13 +128,7 @@ export type ProtectedTaskRuntimeRecipientAuthorityDependencies = Readonly<{
   resolveRequesterHuman(userId: string): Promise<Readonly<{
     id: string;
   }> | null>;
-  resolveRequesterPrivateRoom(
-    userId: string,
-    agentId: string,
-  ): Promise<Readonly<{
-    roomId: string;
-    namespaceId: string;
-  }> | null>;
+  resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
   createProductContext(
     userId: string,
     database: DirectDatabase,
@@ -118,6 +141,11 @@ export type ProtectedTaskRuntimeRecipientAuthorityDependencies = Readonly<{
     }>,
   ): Promise<boolean>;
   withAuthority: typeof withInitialTaskRuntimeRecipientAuthority;
+  repository(restricted: PostgresJsBridgeConnection): Promise<Pick<
+    BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap"
+  >>;
+  now(): number;
 }>;
 
 function sameNamespaceRequirements(
@@ -147,7 +175,20 @@ function sameNamespaceRequirements(
   );
 }
 
-function exactAwaitingRecord(
+function sameTaskScopeMemoryBinding(
+  left: TaskScopeMemoryBinding,
+  right: TaskScopeMemoryBinding,
+): boolean {
+  return left.scopeId === right.scopeId
+    && left.memoryRoomId === right.memoryRoomId
+    && left.originWritableNamespaceId === right.originWritableNamespaceId
+    && left.readableNamespaceIds.length === right.readableNamespaceIds.length
+    && left.readableNamespaceIds.every(
+      (id, index) => id === right.readableNamespaceIds[index],
+    );
+}
+
+function exactAuthorityRecord(
   occurrence: ProtectedTaskOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
@@ -168,11 +209,6 @@ function exactAwaitingRecord(
     record.snapshot.credentialSubject.runtimeVersion === 1 &&
     record.snapshot.workId === occurrence.run.id &&
     record.snapshot.namespaceId === occurrence.task.contentNamespaceId &&
-    record.snapshot.state === "awaiting_recipient" &&
-    record.snapshot.recipient === null &&
-    record.snapshot.descriptorDigest === null &&
-    record.descriptorBytes === null &&
-    record.acceptedMaterial === null &&
     record.workKind === "task.execute" &&
     record.purpose === "task.execute" &&
     record.processorAuthorizationRevision === null &&
@@ -243,6 +279,59 @@ function exactAwaitingRecord(
   );
 }
 
+function exactAwaitingRecord(
+  occurrence: ProtectedTaskOccurrence,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  return exactAuthorityRecord(occurrence, record)
+    && record.snapshot.state === "awaiting_recipient"
+    && record.snapshot.recipient === null
+    && record.snapshot.descriptorDigest === null
+    && record.descriptorBytes === null
+    && record.acceptedMaterial === null;
+}
+
+function exactBoundRecord(
+  occurrence: ProtectedTaskOccurrence,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  crypto: LatticeCrypto,
+  now: number,
+): boolean {
+  const recipient = record.snapshot.recipient;
+  const descriptor = record.descriptorBytes;
+  if (!exactAuthorityRecord(occurrence, record)
+    || !["awaiting_device", "grant_ready"].includes(record.snapshot.state)
+    || recipient === null
+    || descriptor === null
+    || record.snapshot.descriptorDigest === null
+    || now >= recipient.expiresAt
+    || (record.snapshot.state === "awaiting_device"
+      ? record.snapshot.acceptedResponse !== null
+        || record.acceptedMaterial !== null
+      : record.snapshot.acceptedResponse === null
+        || record.acceptedMaterial === null)) return false;
+  const digest = crypto.hash(descriptor);
+  const exactDigest = Buffer.from(digest).toString("hex")
+    === record.snapshot.descriptorDigest;
+  digest.fill(0);
+  if (!exactDigest) return false;
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(descriptor);
+  if (request === null) return false;
+  try {
+    return request.requestId === record.snapshot.requestId
+      && request.workId === occurrence.run.id
+      && request.workKind === record.workKind
+      && request.workPurpose === record.purpose
+      && request.recipientGeneration === record.snapshot.recipientGeneration
+      && request.recipientKeyId === recipient.recipientKeyId
+      && Buffer.from(request.recipientPublicKey).toString("base64url")
+        === recipient.recipientPublicKey
+      && request.deadlineAt === recipient.expiresAt;
+  } finally {
+    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  }
+}
+
 function exactBorrowedAuthority(
   authority: InitialTaskRuntimeRecipientAuthority,
   input: Readonly<{
@@ -250,11 +339,16 @@ function exactBorrowedAuthority(
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     sourceRoomId: string;
     contentNamespaceId: string;
+    scopeMemory?: TaskScopeMemoryBinding;
   }>,
 ): boolean {
   return (
     authority.sourceRoomId === input.sourceRoomId &&
     authority.sourceNamespaceId === input.contentNamespaceId &&
+    (input.scopeMemory === undefined
+      ? authority.scopeMemory === undefined
+      : authority.scopeMemory !== undefined
+        && sameTaskScopeMemoryBinding(input.scopeMemory, authority.scopeMemory)) &&
     authority.policyRevision === input.record.expectedPolicyRevision &&
     authority.device.userId === input.binding.userId &&
     authority.device.humanActorId === input.binding.humanActorId &&
@@ -404,20 +498,34 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
   const resolveRequesterHuman =
     overrides.resolveRequesterHuman ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom =
-    overrides.resolveRequesterPrivateRoom ?? findAgentOwnerPrivateRoom;
+    overrides.resolveRequesterPrivateRoom
+      ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext =
     overrides.createProductContext ?? createHumanProductTransactionContext;
   const validateCurrentTaskRun =
     overrides.validateCurrentTaskRun ?? validateLockedCurrentTaskRun;
   const withAuthority =
     overrides.withAuthority ?? withInitialTaskRuntimeRecipientAuthority;
+  const repository = overrides.repository ?? (async connection =>
+    new PostgresBackgroundAuthorizationRepository(
+      await verifyCryptoPostgresHandle(connection),
+    ));
+  const now = overrides.now ?? Date.now;
 
   return async (input) => {
+    const targetRoomId = input.targetRoomId;
+    const scopeMemory = input.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(input.scopeMemory);
+    const phase = input.phase ?? "awaiting_recipient";
     if (
       input.binding.userId !== input.occurrence.task.requestorId ||
       input.binding.humanActorId.length === 0 ||
       input.binding.deviceId.length === 0 ||
-      !exactAwaitingRecord(input.occurrence, input.record)
+      (phase === "bound" && input.validateBeforeCommit === undefined) ||
+      (phase === "awaiting_recipient"
+        ? !exactAwaitingRecord(input.occurrence, input.record)
+        : !exactBoundRecord(input.occurrence, input.record, crypto, now()))
     )
       return null;
 
@@ -426,6 +534,7 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
       resolveRequesterPrivateRoom(
         input.binding.userId,
         input.occurrence.task.agentId,
+        input.occurrence.task.contentNamespaceId,
       ),
     ]);
     if (
@@ -440,9 +549,11 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
     const namespaceRequirements =
       input.record.authoritySet.namespaceRequirements;
     const domainRequirements = input.record.authoritySet.domainRequirements;
+    const heldRestricted = input.restricted ?? restricted();
+    let finalAuthority: ProtectedTaskRuntimeRecipientCurrentAuthority | null = null;
     return withAuthority({
       runner: product.canonicalRunner,
-      restricted: restricted(),
+      restricted: heldRestricted,
       crypto,
       serverScope,
       taskId: input.occurrence.task.id,
@@ -451,9 +562,11 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
       agentId: input.occurrence.task.agentId,
       contentNamespaceId: input.occurrence.task.contentNamespaceId,
       sourceRoomId: room.roomId,
+      targetRoomId,
       namespaceIds: Object.freeze(
         namespaceRequirements.map((requirement) => requirement.namespaceId),
       ),
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
       expectedPolicyRevision: input.record.expectedPolicyRevision,
       deviceId: input.binding.deviceId,
       namespaceRequirements,
@@ -464,25 +577,47 @@ export function createProtectedTaskRuntimeRecipientAuthorityPort(
           occurrence: input.occurrence,
           requesterPrivateRoom: room,
         }),
-      use: (authority) => {
+      validateBeforeCommit: async () => {
+        if (phase !== "bound") return;
+        const recipient = input.record.snapshot.recipient;
+        if (finalAuthority === null
+          || recipient === null
+          || now() >= recipient.expiresAt
+          || !await input.validateBeforeCommit!(finalAuthority)) {
+          throw new Error(
+            "Task Runtime recipient authority expired before commit",
+          );
+        }
+      },
+      use: async (authority, scopedRestricted) => {
         if (
           !exactBorrowedAuthority(authority, {
             binding: input.binding,
             record: input.record,
             sourceRoomId: room.roomId,
             contentNamespaceId: input.occurrence.task.contentNamespaceId,
+            ...(scopeMemory === undefined ? {} : { scopeMemory }),
           })
         )
           return null;
-        return input.use(
-          Object.freeze({
+        const scopedRepository = await repository(scopedRestricted);
+        const current = Object.freeze({
             device: authority.device,
             domains: authority.domains,
             namespaceRequirements: authority.namespaceRequirements,
             policyRevision: authority.policyRevision,
             sourceRoomId: authority.sourceRoomId,
-          }),
+            restricted: scopedRestricted,
+            ...(authority.scopeMemory === undefined
+              ? {}
+              : { scopeMemory: authority.scopeMemory }),
+          });
+        finalAuthority = current;
+        const value = await input.use(
+          current,
+          scopedRepository,
         );
+        return value;
       },
     });
   };

@@ -211,6 +211,9 @@ import {
   REVIEWED_MAIN_2026_09_09_PLATFORM_COVERAGE_ENTRIES,
   REVIEWED_MAIN_2026_09_09_PLATFORM_DEBT_LINKS,
 } from "./reviewed-main-2026-09-09-platform-coverage";
+import {
+  REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
+} from "./reviewed-task-execution-evidence-coverage";
 
 type BaselineManifestEntry = readonly [
   id: string,
@@ -1836,6 +1839,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...REVIEWED_MAIN_2026_09_12_WIRE_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_2026_09_17_COVERAGE,
     ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_COVERAGE,
+    ...REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
   ].filter((entry) =>
     !RETIRED_MAIN_2026_08_20_DATABASE_WRITER_LOCATORS.has(entry.locator)
     && !RETIRED_MAIN_2026_08_21_RAW_DATABASE_WRITER_LOCATORS.has(entry.locator)

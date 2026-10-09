@@ -2725,6 +2725,42 @@ test.each(["fallback", "failed", "completed"])("terminal shared execution fences
   expect(setup.canonical.events).toEqual(["select", "select", "select"]);
 });
 
+test.each([false, true])("mapping replay repairs provenance atomically; rejected=%s", async (rejectReceipt) => {
+  const lifecycle = lifecycleRow({
+    completion: "complete", disposition: "mapped", parity_status: "server_verified",
+    next_attempt_at: null, append_idempotency_key: "task-publication",
+  });
+  const cryptoObjectId = String(lifecycle["crypto_object_id"]);
+  const calls: unknown[] = [];
+  const receiptError = new Error("receipt conflict");
+  const setup = await storeWithResults([], "nautilo_agent", [
+    { operation: "select", result: [{ message_id: 11, session_id: SESSION_ID, edit_revision: 0, crypto_object_id: cryptoObjectId }] },
+    { operation: "select", result: [lifecycle] },
+    { operation: "select", result: [{ namespace_id: NAMESPACE_ID }] },
+    { operation: "update", result: [lifecycle] },
+  ], "shadow_encryption", {
+    async assertPublicationAllowed() {},
+    async recordMappedPublication(_transaction, input) {
+      // The callback runs before the canonical transaction returns, including
+      // exact replay after a prior publisher mapped the Message.
+      expect(setup.canonical.events.at(-1)).toBe("update");
+      calls.push(input);
+      if (rejectReceipt) throw receiptError;
+    },
+  });
+  const publication = setup.store.compareAndSwapCryptoMapping({
+    sessionId: SESSION_ID, messageId: 11, revision: 0,
+    expectedNamespaceId: NAMESPACE_ID, cryptoObjectId, leaseToken: null,
+  });
+  const outcome: unknown = await publication.catch((error: unknown) => error);
+  expect(outcome).toBe(rejectReceipt ? receiptError : "duplicate");
+  expect(calls).toEqual([{
+    sessionId: SESSION_ID, messageId: 11, revision: 0,
+    idempotencyKey: "task-publication",
+  }]);
+  setup.canonical.assertExhausted();
+});
+
 test("already mapped shared output remains replayable after its execution completes", async () => {
   const lifecycle = lifecycleRow({
     object_id_scheme: "live_shadow_v1",

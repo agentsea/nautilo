@@ -177,6 +177,81 @@ ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
   GRANT ALL ON TABLES TO ${NAUTILO_APP_ROLE};
 ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA public
   GRANT ALL ON SEQUENCES TO ${NAUTILO_APP_ROLE};
+
+-- Task execution evidence remains immutable after broad legacy grant repair.
+-- DELETE and the segment FK-lock column are restored only after the corrective
+-- migration installed both enabled guards. Older startup states stay closed.
+DO $task_evidence$
+BEGIN
+  IF to_regclass('public.task_run_message_associations') IS NOT NULL THEN
+    REVOKE ALL PRIVILEGES ON TABLE public.task_run_message_associations FROM ${NAUTILO_APP_ROLE};
+    IF to_regprocedure('public.guard_task_execution_evidence()') IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.task_run_message_associations'::regclass
+          AND tgname = 'task_run_message_associations_immutable_row'
+          AND tgfoid = to_regprocedure('public.guard_task_execution_evidence()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')
+      ) AND EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.task_run_message_associations'::regclass
+          AND tgname = 'task_run_message_associations_immutable_table'
+          AND tgfoid = to_regprocedure('public.guard_task_execution_evidence()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')
+      )
+    THEN
+      GRANT SELECT, INSERT, DELETE ON TABLE public.task_run_message_associations TO ${NAUTILO_APP_ROLE};
+    ELSE
+      GRANT SELECT, INSERT ON TABLE public.task_run_message_associations TO ${NAUTILO_APP_ROLE};
+    END IF;
+  END IF;
+  IF to_regclass('public.protected_task_execution_segment_receipts') IS NOT NULL THEN
+    REVOKE ALL PRIVILEGES ON TABLE public.protected_task_execution_segment_receipts FROM ${NAUTILO_APP_ROLE};
+    REVOKE UPDATE (task_run_id) ON TABLE public.protected_task_execution_segment_receipts FROM ${NAUTILO_APP_ROLE};
+    IF to_regprocedure('public.guard_task_execution_evidence()') IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.protected_task_execution_segment_receipts'::regclass
+          AND tgname = 'protected_task_execution_segment_receipts_immutable_row'
+          AND tgfoid = to_regprocedure('public.guard_task_execution_evidence()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')
+      ) AND EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.protected_task_execution_segment_receipts'::regclass
+          AND tgname = 'protected_task_execution_segment_receipts_immutable_table'
+          AND tgfoid = to_regprocedure('public.guard_task_execution_evidence()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')
+      )
+    THEN
+      GRANT SELECT, INSERT, DELETE ON TABLE public.protected_task_execution_segment_receipts TO ${NAUTILO_APP_ROLE};
+      GRANT UPDATE (task_run_id) ON TABLE public.protected_task_execution_segment_receipts TO ${NAUTILO_APP_ROLE};
+    ELSE
+      GRANT SELECT, INSERT ON TABLE public.protected_task_execution_segment_receipts TO ${NAUTILO_APP_ROLE};
+    END IF;
+  END IF;
+  IF to_regclass('public.protected_task_continuation_receipts') IS NOT NULL THEN
+    REVOKE ALL PRIVILEGES ON TABLE public.protected_task_continuation_receipts FROM ${NAUTILO_APP_ROLE};
+    IF to_regprocedure('public.guard_task_execution_evidence()') IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.protected_task_continuation_receipts'::regclass
+          AND tgname = 'protected_task_continuation_receipts_immutable_row'
+          AND tgfoid = to_regprocedure('public.guard_task_execution_evidence()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')
+      ) AND EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.protected_task_continuation_receipts'::regclass
+          AND tgname = 'protected_task_continuation_receipts_immutable_table'
+          AND tgfoid = to_regprocedure('public.guard_task_execution_evidence()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')
+      )
+    THEN
+      GRANT SELECT, INSERT, DELETE ON TABLE public.protected_task_continuation_receipts TO ${NAUTILO_APP_ROLE};
+    ELSE
+      GRANT SELECT, INSERT ON TABLE public.protected_task_continuation_receipts TO ${NAUTILO_APP_ROLE};
+    END IF;
+  END IF;
+END $task_evidence$;
 `.trim();
 }
 

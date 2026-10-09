@@ -24,6 +24,7 @@ const ids = {
 const inputObjectId = `task-definition:v1:${"a".repeat(64)}`;
 const resultObjectId = `task-run-result:v1:${"b".repeat(64)}`;
 const graphThreadId = `subagent:${ids.task}:${ids.run}`;
+const continuationFingerprint = "A".repeat(43);
 
 function authority(
   overrides: Partial<ProtectedTaskMessageProductAuthority> = {},
@@ -65,6 +66,15 @@ function reference(expected: ProtectedTaskMessageProductAuthority) {
     authorizationRequestId: expected.authorizationRequestId,
     policyRevision: expected.policyRevision,
     executionSegment: expected.executionSegment,
+    ...(Object.hasOwn(expected, "resumeAcceptanceId")
+      ? { resumeAcceptanceId: expected.resumeAcceptanceId }
+      : {}),
+    ...(Object.hasOwn(expected, "resumeContinuationFingerprint")
+      ? {
+          resumeContinuationFingerprint:
+            expected.resumeContinuationFingerprint,
+        }
+      : {}),
   };
 }
 
@@ -103,6 +113,8 @@ function transaction(data: unknown[]): CanonicalTranscriptTx {
         where: () => chain,
         limit: () => chain,
         for: () => Promise.resolve(value === undefined ? [] : [value]),
+        then: (resolve: (rows: unknown[]) => unknown) =>
+          Promise.resolve(value === undefined ? [] : [value]).then(resolve),
       };
       return chain;
     },
@@ -136,6 +148,74 @@ describe("protected Task Message product guard", () => {
     await guard.assertPublicationAllowed(transaction(rows(expected)), append);
   });
 
+  test("accepts either exact resume binding on a later execution segment", async () => {
+    const human = authority({
+      executionSegment: 2,
+      resumeAcceptanceId: "await-reply-acceptance:1",
+    });
+    await createProtectedTaskMessageProductGuard(human, () => 1000)
+      .assertPublicationAllowed(transaction(rows(human)), append);
+
+    const continuation = authority({
+      executionSegment: 2,
+      resumeContinuationFingerprint: continuationFingerprint,
+    });
+    await createProtectedTaskMessageProductGuard(continuation, () => 1000)
+      .assertPublicationAllowed(transaction(rows(continuation)), append);
+  });
+
+  test("rejects a substituted continuation fingerprint", async () => {
+    const expected = authority({
+      executionSegment: 2,
+      resumeContinuationFingerprint: continuationFingerprint,
+    });
+    const changed: unknown[] = rows(expected);
+    changed[2] = {
+      ...(changed[2] as Record<string, unknown>),
+      input: {
+        ...reference(expected),
+        resumeContinuationFingerprint: `${"A".repeat(42)}E`,
+      },
+    };
+    const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
+    expect(await rejected(guard.assertPublicationAllowed(
+      transaction(changed), append,
+    ))).toContain("authority changed");
+  });
+
+  test("rejects malformed resume bindings before product access", () => {
+    const malformed: readonly ProtectedTaskMessageProductAuthority[] = [
+      authority({ executionSegment: 2 }),
+      authority({ resumeAcceptanceId: "await-reply-acceptance:1" }),
+      authority({ resumeContinuationFingerprint: continuationFingerprint }),
+      authority({
+        executionSegment: 2,
+        resumeAcceptanceId: "await-reply-acceptance:1",
+        resumeContinuationFingerprint: continuationFingerprint,
+      }),
+      {
+        ...authority({ executionSegment: 2 }),
+        resumeAcceptanceId: undefined,
+      } as unknown as ProtectedTaskMessageProductAuthority,
+      {
+        ...authority({ executionSegment: 2 }),
+        resumeContinuationFingerprint: undefined,
+      } as unknown as ProtectedTaskMessageProductAuthority,
+      authority({
+        executionSegment: 2,
+        resumeContinuationFingerprint: "A".repeat(42),
+      }),
+      authority({
+        executionSegment: 2,
+        resumeContinuationFingerprint: `${"A".repeat(42)}B`,
+      }),
+    ];
+    for (const invalid of malformed) {
+      expect(() => createProtectedTaskMessageProductGuard(invalid))
+        .toThrow("Protected Task Message guard identity is invalid");
+    }
+  });
+
   test("allows the accepted peer Session owner to differ from Task owner", async () => {
     const expected = authority({ sessionOwnerId: ids.peer });
     const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
@@ -149,6 +229,15 @@ describe("protected Task Message product guard", () => {
     expect(await rejected(guard.assertPublicationAllowed(
       transaction([]), invalid,
     ))).toContain("authority changed");
+  });
+
+  test("rejects unrelated mapping provenance before product access", async () => {
+    const guard = createProtectedTaskMessageProductGuard(authority(), () => 1000);
+    expect(guard.recordMappedPublication).toBeDefined();
+    expect(await rejected(guard.recordMappedPublication!(transaction([]), {
+      sessionId: ids.session, messageId: 41, revision: 0,
+      idempotencyKey: "other-message",
+    }))).toContain("authority changed");
   });
 
   test("rejects a moved Room and expired grant", async () => {

@@ -348,7 +348,6 @@ export function createProtectedTaskNativeMessagePublication(
         if (marked !== "applied" && marked !== "duplicate") {
           reject("Protected Task Message replay completion is not exact");
         }
-        if (allocation.lifecycle.disposition === "mapped") return;
         if (!await input.hasCurrentGrant()) {
           reject("Protected Task Message grant is stale before replay mapping");
         }

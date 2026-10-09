@@ -91,6 +91,7 @@ describe("M241 generated migration authority finalizer", () => {
       "bun scripts/finalize-event-feed.ts",
       "bun scripts/finalize-content-access-operations.ts",
       "bun scripts/finalize-moderation.ts",
+      "bun scripts/finalize-task-execution-evidence.ts",
     ]);
   });
 });

@@ -1,4 +1,5 @@
 import type { JobExecutor } from "../job";
+import type { PersistJobPayload } from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import type { ProtectedTaskJobReferenceV1 } from "./protected-task-job-reference";
 
@@ -16,12 +17,36 @@ export type ProtectedTaskExecutionStartResult =
   | Readonly<{ status: "started" }>
   | Readonly<{ status: "stale" }>;
 
+/** The candidate released its custody without calling the execution callback. */
+export class ProtectedTaskExecutionDidNotBeginError extends Error {
+  constructor() {
+    super("Protected Task execution did not begin");
+    this.name = "ProtectedTaskExecutionDidNotBeginError";
+  }
+}
+
+/**
+ * One durable outcome for a protected Task execution segment. A terminal
+ * result and a clean checkpoint park are mutually exclusive. `park` supplies
+ * the product owner with the single timestamp later used to close the Runtime
+ * grant, so product custody always settles first.
+ */
+export type ProtectedTaskExecutionSettlement = Readonly<{
+  publish(payload: TaskRunResultPayloadV1): Promise<void>;
+  park(settle: (parkedAt: number) => Promise<boolean>): Promise<void>;
+  awaitSettled(): Promise<boolean>;
+}>;
+
 /**
  * One process-local accepted authority. Implementations open the protected
  * Task definition inside `run`, release all plaintext and capability material
  * before it returns, and cannot be reconstructed from the durable reference.
  */
 export interface ProtectedTaskExecutionCandidate {
+  /** Parked-only queued Job persistence under the held product authority. */
+  persistJob?(payload: PersistJobPayload): Promise<string>;
+  /** Reconcile an uncertain parked persistence response before releasing custody. */
+  recoverBeforeExecution?(): Promise<boolean>;
   /**
    * Attach the already-persisted content-free Job to the exact TaskRun before
    * protected input can be opened. This transition is one-shot.
@@ -31,12 +56,11 @@ export interface ProtectedTaskExecutionCandidate {
     work: (
       transientInput: Record<string, unknown>,
       authorizationSignal: AbortSignal,
-      publication: Readonly<{
-        publish(payload: TaskRunResultPayloadV1): Promise<void>;
-        awaitPublished(): Promise<boolean>;
-      }>,
+      settlement: ProtectedTaskExecutionSettlement,
     ) => Promise<T>,
   ): Promise<T>;
+  /** Reconcile only after the exact durable Job is proved cancelled and unstarted. */
+  deferBeforeExecution?(jobId: string): Promise<boolean>;
   onIneligible(): void;
 }
 

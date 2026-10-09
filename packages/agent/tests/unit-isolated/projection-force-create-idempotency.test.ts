@@ -61,6 +61,8 @@ function mockRuntime(execute: (query: unknown) => Promise<{ rows: unknown[] }>):
   });
   mock.module("@nautilo/db", () => ({
     agentDb: handle,
+    agentScopes: {},
+    memoryScopes: {},
     db: handle,
     memories,
     memoryNamespaces,
