@@ -3,12 +3,30 @@ import { AIMessage, AIMessageChunk, ToolMessage } from "@langchain/core/messages
 import { load } from "@langchain/core/load";
 import { convertMessagesToCompletionsMessageParams, convertMessagesToResponsesInput } from "@langchain/openai";
 import { mergeMessagesPreservingInvariants, validateMessageHistory, assignStableToolMessageId } from "@nautilo/message-invariants";
-import { normalizeModelToolCallIdentity } from "../../src/nodes/model-tool-call-identity";
+import {
+  ModelToolCallIdentityError,
+  normalizeModelToolCallIdentity,
+} from "../../src/nodes/model-tool-call-identity";
 import { computeMessageFingerprint } from "../../src/store/fingerprint";
 import { modelOutputPreflightNode } from "../../src/nodes/model-output-preflight";
 import type { NautiloState } from "../../src/agent/state";
 
 const call = (id?: string, args = {}) => ({ ...(id === undefined ? {} : { id }), name: "fixture_read", args, type: "tool_call" as const });
+const nativeComputerCall = (
+  providerId: string | undefined,
+  itemId: string | undefined,
+  overrides: Record<string, unknown> = {},
+) => ({
+  ...(providerId === undefined ? {} : { id: providerId }),
+  ...(itemId === undefined ? {} : { call_id: itemId }),
+  name: "computer_use",
+  args: { action: { type: "screenshot" } },
+  type: "tool_call" as const,
+  isComputerTool: true,
+  status: "completed",
+  pending_safety_checks: [{ id: "opaque-check" }],
+  ...overrides,
+});
 function admit(id = "fixture_read:0"): AIMessage {
   return normalizeModelToolCallIdentity(new AIMessage({ content: "Checking", tool_calls: [call(id)] }));
 }
@@ -151,6 +169,204 @@ describe("model tool invocation admission", () => {
     const lossy = new AIMessage({ content: "", tool_calls: [call("same"), call("same")],
       additional_kwargs: { __gemini_function_call_thought_signatures__: { same: "opaque-signature" } } });
     expect(() => normalizeModelToolCallIdentity(lossy)).toThrow("Ambiguous model tool-call correlation");
+  });
+
+  test("rejects native computer calls without exact required provider metadata", () => {
+    const malformed = [
+      nativeComputerCall(undefined, "computer-item"),
+      nativeComputerCall("provider-call", undefined),
+      nativeComputerCall("provider-call", "computer-item", { status: undefined }),
+      nativeComputerCall("provider-call", "computer-item", { pending_safety_checks: undefined }),
+      nativeComputerCall("provider-call", "computer-item", { pending_safety_checks: [{ id: "" }] }),
+      nativeComputerCall("provider-call", "computer-item", {
+        pending_safety_checks: [{ id: "opaque-check", code: 7 }],
+      }),
+    ];
+    for (const toolCall of malformed) {
+      expect(() => normalizeModelToolCallIdentity(new AIMessage({
+        content: "",
+        tool_calls: [toolCall],
+      }))).toThrow(ModelToolCallIdentityError);
+    }
+  });
+
+  test("validates raw native metadata against its parsed binding and accepts the pinned stream shape", () => {
+    const rawCall = {
+      type: "computer_call",
+      id: "computer-item",
+      call_id: "provider-call",
+      action: { type: "screenshot" },
+      status: "completed",
+      pending_safety_checks: [{
+        id: "opaque-check",
+        code: "opaque-code",
+        message: null,
+        provider_extension: { preserved: true },
+      }],
+    };
+    const streamShape = new AIMessage({
+      content: "",
+      tool_calls: [{
+        id: "provider-call",
+        name: "computer_use",
+        args: { action: { type: "screenshot" } },
+        type: "tool_call",
+      }],
+      additional_kwargs: { tool_outputs: [rawCall] },
+    });
+    const admitted = normalizeModelToolCallIdentity(streamShape);
+    const canonicalId = admitted.tool_calls?.[0]?.id;
+    expect(canonicalId).toBeString();
+    expect(admitted.additional_kwargs["tool_outputs"]).toEqual([{
+      ...rawCall,
+      call_id: canonicalId,
+    }]);
+
+    const malformedStreamShape = new AIMessage({
+      content: "",
+      tool_calls: streamShape.tool_calls ?? [],
+      additional_kwargs: {
+        tool_outputs: [{ ...rawCall, pending_safety_checks: [{ code: "missing-id" }] }],
+      },
+    });
+    expect(() => normalizeModelToolCallIdentity(malformedStreamShape))
+      .toThrow("missing required provider metadata");
+
+    const contradictory = new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("provider-call", "computer-item")],
+      response_metadata: { output: [{ ...rawCall, id: "different-item" }] },
+    });
+    expect(() => normalizeModelToolCallIdentity(contradictory))
+      .toThrow("Contradictory OpenAI computer call metadata");
+  });
+
+  test("rejects native provider IDs reused by siblings or exact provider history", () => {
+    const first = normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("provider-reused", "computer-item-one")],
+    }));
+    expect(normalizeModelToolCallIdentity(first, [first])).toBe(first);
+
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [
+        nativeComputerCall("provider-identical", "computer-item-identical"),
+        nativeComputerCall("provider-identical", "computer-item-identical"),
+      ],
+    }))).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [
+        nativeComputerCall("provider-reused", "computer-item-two"),
+        nativeComputerCall("provider-reused", "computer-item-three"),
+      ],
+    }))).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("provider-reused", "computer-item-two")],
+    }), [first])).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    const rawLegacyHistory = new AIMessage({
+      content: "",
+      response_metadata: { output: [{
+        type: "computer_call",
+        id: "legacy-computer-item",
+        call_id: "legacy-provider-call",
+        action: { type: "screenshot" },
+        pending_safety_checks: [],
+        status: "completed",
+      }] },
+    });
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("legacy-provider-call", "new-computer-item")],
+    }), [rawLegacyHistory])).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    const distinct = normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("provider-distinct", "computer-item-two")],
+    }), [first]);
+    expect(distinct.tool_calls?.[0]?.id).not.toBe("provider-distinct");
+    expect((distinct.tool_calls?.[0] as Record<string, unknown>)["call_id"])
+      .toBe("computer-item-two");
+    expect((distinct.tool_calls?.[0] as Record<string, unknown>)["pending_safety_checks"])
+      .toEqual([{ id: "opaque-check" }]);
+  });
+
+  test("rejects native IDs that collide with actual ordinary Responses history wire IDs", () => {
+    const ordinary = normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [call("ordinary-provider-alias")],
+    }));
+    const ordinaryCanonicalId = ordinary.tool_calls?.[0]?.id;
+    if (!ordinaryCanonicalId) throw new Error("expected canonical ordinary call ID");
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall(ordinaryCanonicalId, "computer-item")],
+    }), [ordinary])).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    const legacyRaw = new AIMessage({
+      content: "",
+      response_metadata: { output: [{
+        type: "function_call",
+        id: "legacy-function-item",
+        call_id: "legacy-function-call",
+        name: "fixture_read",
+        arguments: "{}",
+      }] },
+    });
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("legacy-function-call", "computer-item")],
+    }), [legacyRaw])).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    const partialRawFallback = normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [call("partial-raw-provider-alias")],
+      response_metadata: { output: [{ malformed: true }] },
+    }));
+    const fallbackCanonicalId = partialRawFallback.tool_calls?.[0]?.id;
+    if (!fallbackCanonicalId) throw new Error("expected fallback canonical call ID");
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall(fallbackCanonicalId, "computer-item")],
+    }), [partialRawFallback])).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    const legacyAdditionalRaw = new AIMessage({
+      content: "",
+      additional_kwargs: { tool_calls: [{
+        id: "legacy-additional-function-call",
+        type: "function",
+        function: { name: "fixture_read", arguments: "{}" },
+      }] },
+    });
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("legacy-additional-function-call", "computer-item")],
+    }), [legacyAdditionalRaw])).toThrow("Ambiguous admitted OpenAI computer call provider ID");
+
+    const ignoredContentAlias = new AIMessage({
+      content: [{
+        type: "function_call",
+        call_id: "ignored-content-alias",
+        name: "fixture_read",
+        arguments: "{}",
+      }],
+    });
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("ignored-content-alias", "computer-item")],
+    }), [ignoredContentAlias])).not.toThrow();
+
+    // The ordinary provider alias is replaced by its canonical ID on outgoing
+    // Responses wire and therefore is not itself a collision.
+    expect(() => normalizeModelToolCallIdentity(new AIMessage({
+      content: "",
+      tool_calls: [nativeComputerCall("ordinary-provider-alias", "computer-item")],
+    }), [ordinary])).not.toThrow();
   });
 });
 

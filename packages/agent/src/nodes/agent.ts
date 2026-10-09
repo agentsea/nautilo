@@ -423,7 +423,7 @@ export async function agentNode(
       ),
   );
 
-  const response = normalizeModelToolCallIdentity(providerResponse);
+  const response = normalizeModelToolCallIdentity(providerResponse, actualPreparedMessages);
   if (config.nautilo_log_tool_calls) {
     logProgressiveToolExposure(
       "agent",

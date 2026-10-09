@@ -27,6 +27,153 @@ function messageIdOf(message: ThreadMessageLike): string {
   return String(message.id);
 }
 
+const CANONICAL_MODEL_TOOL_CALL_ID = /^nc_[0-9a-f]{32}_[0-9]+$/;
+
+function toolCallPartOf(message: ThreadMessageLike): Record<string, unknown> | null {
+  const content: unknown = message.content;
+  if (!Array.isArray(content) || content.length !== 1) return null;
+  const part: unknown = content[0];
+  if (part === null || typeof part !== "object") return null;
+  const record = part as Record<string, unknown>;
+  return record["type"] === "tool-call" ? record : null;
+}
+
+function toolCallIdOf(message: ThreadMessageLike): string | null {
+  const part = toolCallPartOf(message);
+  return typeof part?.["toolCallId"] === "string" ? part["toolCallId"] : null;
+}
+
+function toolNameOf(message: ThreadMessageLike): string | null {
+  const part = toolCallPartOf(message);
+  return typeof part?.["toolName"] === "string" ? part["toolName"] : null;
+}
+
+function customString(message: ThreadMessageLike, key: string): string | undefined {
+  const value = message.metadata?.custom?.[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function matchesToolOwner(
+  message: ThreadMessageLike,
+  coordinate: Readonly<{ toolName?: string; laneKey?: string; authorAgentId?: string }>,
+): boolean {
+  const laneKey = customString(message, "laneKey");
+  const authorAgentId = customString(message, "authorAgentId");
+  const toolName = toolNameOf(message);
+  return !((toolName !== null && coordinate.toolName !== undefined && toolName !== coordinate.toolName)
+    || (laneKey !== undefined && coordinate.laneKey !== undefined && laneKey !== coordinate.laneKey)
+    || (authorAgentId !== undefined && coordinate.authorAgentId !== undefined
+      && authorAgentId !== coordinate.authorAgentId));
+}
+
+/** Resolve one mounted card for a lifecycle event. Legacy/provider IDs may use
+ * only their exact synthetic presentation ID. A canonical ID can also resolve
+ * one durable row after history adoption or cold load. Conflicting provenance
+ * and ambiguous canonical rows fail closed. */
+export function findMountedCanonicalToolCardIndex(
+  messages: readonly ThreadMessageLike[],
+  coordinate: Readonly<{
+    toolCallId: string;
+    toolName?: string;
+    laneKey?: string;
+    authorAgentId?: string;
+  }>,
+): number {
+  const syntheticId = `tool-${coordinate.toolCallId}`;
+  const exact = messages.flatMap((message, index) =>
+    messageIdOf(message) === syntheticId
+      && toolCallIdOf(message) === coordinate.toolCallId
+      && matchesToolOwner(message, coordinate) ? [index] : []);
+  if (exact.length === 1) return exact[0];
+  if (exact.length > 1) return -1;
+  if (!CANONICAL_MODEL_TOOL_CALL_ID.test(coordinate.toolCallId)) return -1;
+  const candidates = messages.flatMap((message, index) => {
+    if (toolCallIdOf(message) !== coordinate.toolCallId
+      || !matchesToolOwner(message, coordinate)) return [];
+    return [index];
+  });
+  return candidates.length === 1 ? candidates[0] : -1;
+}
+
+function mergePersistedToolRowWithLiveCard(
+  persisted: ThreadMessageLike,
+  live: ThreadMessageLike,
+): ThreadMessageLike {
+  const persistedCustom = persisted.metadata?.custom;
+  const liveCustom = live.metadata?.custom;
+  const persistedPart = toolCallPartOf(persisted);
+  const livePart = toolCallPartOf(live);
+  return {
+    ...persisted,
+    ...live,
+    id: persisted.id,
+    ...(persistedPart !== null && livePart !== null
+      ? { content: [{ ...persistedPart, ...livePart }] as unknown as ThreadMessageLike["content"] }
+      : {}),
+    ...(persisted.metadata !== undefined || live.metadata !== undefined
+      ? {
+          metadata: {
+            ...persisted.metadata,
+            ...live.metadata,
+            ...(persistedCustom !== undefined || liveCustom !== undefined
+              ? { custom: { ...persistedCustom, ...liveCustom } }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/**
+ * A current model invocation has a reserved canonical ID and its hot card uses
+ * the exact `tool-${id}` presentation ID. When one durable row later arrives,
+ * adopt that row ID while retaining the newer mounted projection. Historical
+ * provider IDs and ambiguous duplicates remain separate because neither shape
+ * establishes that they represent one execution.
+ */
+function reconcilePersistedToolRows(
+  existing: readonly ThreadMessageLike[],
+  restoredAround: readonly ThreadMessageLike[],
+): readonly ThreadMessageLike[] {
+  const persistedByCallId = new Map<string, ThreadMessageLike[]>();
+  for (const message of restoredAround) {
+    const toolCallId = toolCallIdOf(message);
+    if (toolCallId === null || !CANONICAL_MODEL_TOOL_CALL_ID.test(toolCallId)) continue;
+    const matches = persistedByCallId.get(toolCallId);
+    if (matches === undefined) persistedByCallId.set(toolCallId, [message]);
+    else matches.push(message);
+  }
+
+  const liveByCallId = new Map<string, ThreadMessageLike[]>();
+  for (const message of existing) {
+    const toolCallId = toolCallIdOf(message);
+    if (toolCallId === null
+      || !CANONICAL_MODEL_TOOL_CALL_ID.test(toolCallId)
+      || messageIdOf(message) !== `tool-${toolCallId}`) continue;
+    const matches = liveByCallId.get(toolCallId);
+    if (matches === undefined) liveByCallId.set(toolCallId, [message]);
+    else matches.push(message);
+  }
+
+  return existing.map((message) => {
+    const toolCallId = toolCallIdOf(message);
+    if (toolCallId === null) return message;
+    const persisted = persistedByCallId.get(toolCallId);
+    const live = liveByCallId.get(toolCallId);
+    const persistedRow = persisted?.length === 1 ? persisted[0] : undefined;
+    const conflictingOwner = persistedRow !== undefined
+      && ((customString(persistedRow, "authorAgentId") !== undefined
+        && customString(message, "authorAgentId") !== undefined
+        && customString(persistedRow, "authorAgentId") !== customString(message, "authorAgentId"))
+        || (toolNameOf(persistedRow) !== null && toolNameOf(message) !== null
+          && toolNameOf(persistedRow) !== toolNameOf(message)));
+    return persistedRow !== undefined && live?.length === 1 && live[0] === message
+      && !conflictingOwner
+      ? mergePersistedToolRowWithLiveCard(persistedRow, message)
+      : message;
+  });
+}
+
 function isUnavailableHistoryMessage(message: ThreadMessageLike): boolean {
   return message.metadata?.custom?.historyUnavailable === true;
 }
@@ -157,27 +304,28 @@ export function mergeRoomMessagesAround(
   existing: readonly ThreadMessageLike[],
   restoredAround: readonly ThreadMessageLike[],
 ): ThreadMessageLike[] {
-  const existingById = new Map(existing.map((message) => [messageIdOf(message), message]));
+  const reconciledExisting = reconcilePersistedToolRows(existing, restoredAround);
+  const existingById = new Map(reconciledExisting.map((message) => [messageIdOf(message), message]));
   const aroundIds = new Set(restoredAround.map(messageIdOf));
   const anchored = restoredAround.map((message) => existingById.get(messageIdOf(message)) ?? message);
-  const firstOverlap = existing.findIndex((message) => aroundIds.has(messageIdOf(message)));
-  if (firstOverlap < 0) return [...anchored, ...existing];
+  const firstOverlap = reconciledExisting.findIndex((message) => aroundIds.has(messageIdOf(message)));
+  if (firstOverlap < 0) return [...anchored, ...reconciledExisting];
 
   let lastOverlap = firstOverlap;
-  for (let index = existing.length - 1; index >= firstOverlap; index -= 1) {
-    if (aroundIds.has(messageIdOf(existing[index]))) {
+  for (let index = reconciledExisting.length - 1; index >= firstOverlap; index -= 1) {
+    if (aroundIds.has(messageIdOf(reconciledExisting[index]))) {
       lastOverlap = index;
       break;
     }
   }
-  const retainedMiddle = existing
+  const retainedMiddle = reconciledExisting
     .slice(firstOverlap, lastOverlap + 1)
     .filter((message) => !aroundIds.has(messageIdOf(message)));
   return [
-    ...existing.slice(0, firstOverlap),
+    ...reconciledExisting.slice(0, firstOverlap),
     ...anchored,
     ...retainedMiddle,
-    ...existing.slice(lastOverlap + 1),
+    ...reconciledExisting.slice(lastOverlap + 1),
   ];
 }
 

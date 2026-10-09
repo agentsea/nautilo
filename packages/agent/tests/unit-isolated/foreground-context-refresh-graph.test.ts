@@ -156,6 +156,31 @@ function providerStepResponse(
   });
 }
 
+function nativeProviderStepResponse(
+  assistantId: string,
+  providerCallId: string | undefined,
+  itemId: string | undefined,
+  sequence: number,
+  overrides: Record<string, unknown> = {},
+): AIMessage {
+  const toolCall = {
+    ...(providerCallId === undefined ? {} : { id: providerCallId }),
+    ...(itemId === undefined ? {} : { call_id: itemId }),
+    name: "fixture_step",
+    args: { sequence },
+    type: "tool_call",
+    isComputerTool: true,
+    status: "completed",
+    pending_safety_checks: [{ id: `opaque-check-${sequence}` }],
+    ...overrides,
+  } as unknown as NonNullable<AIMessage["tool_calls"]>[number];
+  return new AIMessage({
+    id: assistantId,
+    content: "",
+    tool_calls: [toolCall],
+  });
+}
+
 function assertCallRepresentationsMatch(message: AIMessage): string[] {
   const structuredCalls = message.tool_calls ?? [];
   const structuredIds = structuredCalls.flatMap((call) =>
@@ -588,6 +613,154 @@ test("same-response duplicate provider ids execute as separate canonical invocat
     expect(messages.filter((message) =>
       ToolMessage.isInstance(message) && message.tool_call_id === canonicalId)).toHaveLength(1);
   }
+});
+
+test("compiled graph rejects malformed native provider metadata before an actionable tool runs", async () => {
+  let executions = 0;
+  installStepTool(() => {
+    executions += 1;
+    return "unexpected";
+  });
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => nativeProviderStepResponse(
+      "assistant-native-malformed",
+      "native-provider-call",
+      "native-item",
+      1,
+      { pending_safety_checks: undefined },
+    ),
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+
+  const error = await drainGraph(
+    graph,
+    graphInput(new HumanMessage({ id: "accepted-native-malformed", content: "Run it." })),
+    { configurable: { thread_id: "native-malformed-before-effect" }, recursionLimit: 200, version: "v2" },
+  ).catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("missing required provider metadata");
+  expect(executions).toBe(0);
+});
+
+test("compiled graph rejects sibling native provider ID reuse before actionable tools run", async () => {
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return "unexpected";
+  });
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      const first = nativeProviderStepResponse(
+        "assistant-native-siblings",
+        "native-provider-reused",
+        "native-item-one",
+        1,
+      ).tool_calls![0]!;
+      const second = nativeProviderStepResponse(
+        "assistant-native-siblings",
+        "native-provider-reused",
+        "native-item-two",
+        2,
+      ).tool_calls![0]!;
+      return new AIMessage({ id: "assistant-native-siblings", content: "", tool_calls: [first, second] });
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+
+  const error = await drainGraph(
+    graph,
+    graphInput(new HumanMessage({ id: "accepted-native-siblings", content: "Run both." })),
+    { configurable: { thread_id: "native-siblings-before-effect" }, recursionLimit: 200, version: "v2" },
+  ).catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("Ambiguous admitted OpenAI computer call provider ID");
+  expect(executions).toEqual([]);
+});
+
+test("compiled graph rejects native provider ID reuse from exact model history before the second effect", async () => {
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return `completed:${sequence}`;
+  });
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async () => {
+      modelCalls += 1;
+      return nativeProviderStepResponse(
+        `assistant-native-history-${modelCalls}`,
+        "native-provider-reused",
+        `native-item-${modelCalls}`,
+        modelCalls,
+      );
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+
+  const error = await drainGraph(
+    graph,
+    graphInput(new HumanMessage({ id: "accepted-native-history", content: "Run twice." })),
+    { configurable: { thread_id: "native-history-before-second-effect" }, recursionLimit: 200, version: "v2" },
+  ).catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("Ambiguous admitted OpenAI computer call provider ID");
+  expect(modelCalls).toBe(2);
+  expect(executions).toEqual([1]);
+});
+
+test("compiled graph rejects a native ID colliding with ordinary model history before its effect", async () => {
+  const executions: number[] = [];
+  installStepTool((sequence) => {
+    executions.push(sequence);
+    return `completed:${sequence}`;
+  });
+  let modelCalls = 0;
+  const model: ChatModel = {
+    bindTools: () => model,
+    invoke: async (messages) => {
+      modelCalls += 1;
+      if (modelCalls === 1) {
+        return new AIMessage({
+          id: "assistant-ordinary-history",
+          content: "",
+          tool_calls: [{
+            id: "ordinary-provider-id",
+            name: "fixture_step",
+            args: { sequence: 1 },
+            type: "tool_call",
+          }],
+        });
+      }
+      const priorCallId = messages.flatMap((message) =>
+        AIMessage.isInstance(message) ? message.tool_calls ?? [] : [])
+        .find((call) => call.name === "fixture_step")?.id;
+      if (!priorCallId) throw new Error("expected prepared ordinary call history");
+      return nativeProviderStepResponse(
+        "assistant-native-cross-kind",
+        priorCallId,
+        "native-cross-kind-item",
+        2,
+      );
+    },
+  };
+  setStubModel(model);
+  const graph = createNautiloGraph(new MemorySaver(), policy);
+
+  const error = await drainGraph(
+    graph,
+    graphInput(new HumanMessage({ id: "accepted-native-cross-kind", content: "Run twice." })),
+    { configurable: { thread_id: "native-cross-kind-before-effect" }, recursionLimit: 200, version: "v2" },
+  ).catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain("Ambiguous admitted OpenAI computer call provider ID");
+  expect(modelCalls).toBe(2);
+  expect(executions).toEqual([1]);
 });
 
 test("approval checkpoint resume preserves the admitted canonical call id and executes once", async () => {

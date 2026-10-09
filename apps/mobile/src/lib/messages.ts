@@ -138,6 +138,13 @@ export type MessageAttachmentPreview =
 /** server-authorized artifact pointer carried on history messages. */
 export type HistoryArtifactOpenRef = MessageArtifactOpenRef;
 
+const CANONICAL_TOOL_INVOCATION_ID = /^nc_[0-9a-f]{32}_[0-9]+$/;
+
+/** Only post-cutover invocation IDs are safe to correlate across live/history views. */
+export function isCanonicalToolInvocationId(id: string): boolean {
+  return CANONICAL_TOOL_INVOCATION_ID.test(id);
+}
+
 /** Row shape returned by `getLatestSession` / `getOlderRoomMessages`. */
 export type HistoryMessageDto = {
   id: string;
@@ -384,13 +391,19 @@ export function applyThreadSummaryEvent(
 
 /** Model id / dedup key for a ChatItem. */
 export function chatItemKey(item: ChatItem): string {
-  return item.kind === "tool" ? `tool:${item.presentationKey ?? item.toolCallId}` : `msg:${item.id}`;
+  return item.kind === "tool"
+    ? item.presentationKey === undefined
+      ? `tool:live:${item.toolCallId}`
+      : `tool:row:${item.presentationKey}`
+    : `msg:${item.id}`;
 }
 
 /** Stable FlatList key while a streaming message receives its server id. */
 export function chatItemPresentationKey(item: ChatItem): string {
   return item.kind === "tool"
-    ? `tool:${item.presentationKey ?? item.toolCallId}`
+    ? item.presentationKey === undefined
+      ? `tool:live:${item.toolCallId}`
+      : `tool:row:${item.presentationKey}`
     : `msg:${item.presentationKey ?? item.id}`;
 }
 
@@ -407,12 +420,31 @@ export function reconcileLatestHistoryItems(
 ): ChatItem[] {
   const next = [...current];
   const indexByKey = new Map(next.map((item, index) => [chatItemKey(item), index]));
+  const incomingPersistedToolCounts = new Map<string, number>();
+  for (const item of latest) {
+    if (item.kind !== "tool" || item.presentationKey === undefined) continue;
+    incomingPersistedToolCounts.set(
+      item.toolCallId,
+      (incomingPersistedToolCounts.get(item.toolCallId) ?? 0) + 1,
+    );
+  }
+  const currentLiveToolCounts = new Map<string, number>();
+  for (const item of current) {
+    if (item.kind !== "tool" || item.presentationKey !== undefined) continue;
+    currentLiveToolCounts.set(
+      item.toolCallId,
+      (currentLiveToolCounts.get(item.toolCallId) ?? 0) + 1,
+    );
+  }
 
   for (const canonical of latest) {
     const key = chatItemKey(canonical);
     // A live card has no persisted row yet. Match that single card by its
     // invocation ID; persisted legacy rows retain their separate row keys.
     const index = indexByKey.get(key) ?? (canonical.kind === "tool"
+      && isCanonicalToolInvocationId(canonical.toolCallId)
+      && incomingPersistedToolCounts.get(canonical.toolCallId) === 1
+      && currentLiveToolCounts.get(canonical.toolCallId) === 1
       ? next.findIndex((item) => item.kind === "tool"
         && item.presentationKey === undefined
         && item.toolCallId === canonical.toolCallId)
@@ -1045,10 +1077,17 @@ export function applyStreamEvent(
     }
 
     case "tool.start": {
-      const exists = items.some(
-        (it) => it.kind === "tool" && it.toolCallId === event.toolCallId,
+      const hasLiveCard = items.some(
+        (it) => it.kind === "tool"
+          && it.presentationKey === undefined
+          && it.toolCallId === event.toolCallId,
       );
-      if (exists) return items;
+      if (hasLiveCard) return items;
+      const hasPersistedCanonicalCard = isCanonicalToolInvocationId(event.toolCallId)
+        && items.some((it) => it.kind === "tool"
+          && it.presentationKey !== undefined
+          && it.toolCallId === event.toolCallId);
+      if (hasPersistedCanonicalCard) return items;
       const now = new Date().toISOString();
       const card: ToolItem = {
         kind: "tool",
@@ -1062,12 +1101,24 @@ export function applyStreamEvent(
     }
 
     case "tool.end": {
-      // Old persisted provider IDs can be ambiguous. Keep each readable row
-      // rather than rebinding a late event to whichever row happens to be first.
-      if (items.filter((it) => it.kind === "tool" && it.toolCallId === event.toolCallId).length > 1) return items;
-      const idx = items.findIndex(
-        (it) => it.kind === "tool" && it.toolCallId === event.toolCallId,
+      const liveMatches = items.flatMap((item, index) =>
+        item.kind === "tool"
+          && item.presentationKey === undefined
+          && item.toolCallId === event.toolCallId ? [index] : []
       );
+      if (liveMatches.length > 1) return items;
+      const persistedMatches = items.flatMap((item, index) =>
+        item.kind === "tool"
+          && item.presentationKey !== undefined
+          && item.toolCallId === event.toolCallId ? [index] : []
+      );
+      if (liveMatches.length === 0
+        && isCanonicalToolInvocationId(event.toolCallId)
+        && persistedMatches.length > 1) return items;
+      const idx = liveMatches[0]
+        ?? (isCanonicalToolInvocationId(event.toolCallId)
+          ? persistedMatches[0] ?? -1
+          : -1);
       if (idx === -1) {
         // tool.end with no matching tool.start (race / late-arriving start):
         // insert a settled card so the user sees the outcome.

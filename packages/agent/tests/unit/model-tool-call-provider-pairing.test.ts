@@ -563,7 +563,7 @@ describe("canonical tool-call provider pairing", () => {
         .toBe("Admitted OpenAI computer call is missing required provider metadata");
     }
 
-    const ambiguous = normalizeModelToolCallIdentity(convertResponsesMessageToAIMessage(response({
+    const distinct = normalizeModelToolCallIdentity(convertResponsesMessageToAIMessage(response({
       id: "response-id",
       object: "response",
       created_at: 1,
@@ -573,7 +573,7 @@ describe("canonical tool-call provider pairing", () => {
         {
           type: "computer_call",
           id: "computer-item-one",
-          call_id: "shared-provider-call",
+          call_id: "provider-call-one",
           action: { type: "screenshot" },
           pending_safety_checks: [],
           status: "completed",
@@ -581,13 +581,33 @@ describe("canonical tool-call provider pairing", () => {
         {
           type: "computer_call",
           id: "computer-item-two",
-          call_id: "shared-provider-call",
+          call_id: "provider-call-two",
           action: { type: "wait" },
           pending_safety_checks: [],
           status: "completed",
         },
       ],
     })));
+    const distinctIdentity = distinct.additional_kwargs["nautilo_tool_invocations"] as {
+      version: number;
+      responseId: string;
+      calls: Array<{ id: string; providerId: string | null }>;
+    };
+    const ambiguous = new AIMessage({
+      content: distinct.content,
+      ...(distinct.tool_calls === undefined ? {} : { tool_calls: distinct.tool_calls }),
+      additional_kwargs: {
+        ...distinct.additional_kwargs,
+        nautilo_tool_invocations: {
+          ...distinctIdentity,
+          calls: distinctIdentity.calls.map((call) => ({
+            ...call,
+            providerId: "shared-provider-call",
+          })),
+        },
+      },
+      response_metadata: distinct.response_metadata,
+    });
     const ambiguousError = await captureOpenAIResponsesProjectionError([ambiguous]);
     expect(ambiguousError.message).toBe("Ambiguous admitted OpenAI computer call provider ID");
   });
@@ -766,6 +786,69 @@ describe("canonical tool-call provider pairing", () => {
       { type: "computer_call_output", call_id: "legacy-computer-call" },
     ]);
     expect(legacyComputer.additional_kwargs).not.toHaveProperty("nautilo_tool_invocations");
+  });
+
+  test("OpenAI Responses admits the pinned native stream shape and restores its exact wire pair", async () => {
+    const rawCall = {
+      type: "computer_call" as const,
+      id: "stream-computer-item",
+      call_id: "stream-provider-call",
+      action: { type: "screenshot" as const },
+      pending_safety_checks: [{
+        id: "stream-safety-check",
+        code: "opaque-policy",
+        message: "Opaque provider detail",
+      }],
+      status: "completed" as const,
+    };
+    const done = convertResponsesDeltaToChatGenerationChunk(responseEvent({
+      type: "response.output_item.done",
+      sequence_number: 1,
+      output_index: 0,
+      item: rawCall,
+    }));
+    const completed = convertResponsesDeltaToChatGenerationChunk(responseEvent({
+      type: "response.completed",
+      sequence_number: 2,
+      response: {
+        id: "stream-response-id",
+        object: "response",
+        created_at: 1,
+        status: "completed",
+        model: "gpt-test",
+        output: [rawCall],
+      },
+    }));
+    expect(done).not.toBeNull();
+    expect(completed).not.toBeNull();
+    if (!done || !completed) throw new Error("expected native response stream chunks");
+
+    const aggregated = done.message.concat(completed.message);
+    if (!AIMessage.isInstance(aggregated)) throw new Error("expected an aggregated AI message");
+    expect((aggregated.tool_calls?.[0] as Record<string, unknown>)["isComputerTool"])
+      .toBeUndefined();
+    const message = normalizeModelToolCallIdentity(aggregated);
+    const canonicalId = requiredToolCallId(message, 0);
+    expect((message.response_metadata["output"] as Array<Record<string, unknown>>)[0])
+      .toMatchObject({ id: "stream-computer-item", call_id: canonicalId });
+    expect((aggregated.response_metadata["output"] as Array<Record<string, unknown>>)[0])
+      .toEqual(rawCall);
+    const result = new ToolMessage({
+      content: "data:image/png;base64,AA==",
+      name: "computer_use",
+      tool_call_id: canonicalId,
+      additional_kwargs: { type: "computer_call_output" },
+    });
+
+    for (const streaming of [false, true]) {
+      const request = await captureOpenAIResponsesRequest([message, result], streaming);
+      const wire = request["input"] as Array<Record<string, unknown>>;
+      expect(wire.filter((item) => item["type"] === "computer_call")).toEqual([rawCall]);
+      expect(wire.filter((item) => item["type"] === "computer_call_output"))
+        .toMatchObject([{ call_id: "stream-provider-call" }]);
+      expect(wire.filter((item) => item["type"] === "function_call")).toEqual([]);
+    }
+    expect(result.tool_call_id).toBe(canonicalId);
   });
 
   test("OpenAI Responses admits an aggregated stream only after its call is complete", async () => {
