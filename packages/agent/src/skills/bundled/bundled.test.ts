@@ -269,7 +269,7 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("developer-workstation metadata + body", () => {
     const skill = getBundledSkill("developer-workstation")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(11);
+    expect(skill.version).toBe(12);
     expect(skill.id).toBe("official:developer-workstation");
     expect(skill.requiresTools).toEqual(["exec_command", "write_stdin", "apply_patch"]);
 
@@ -300,6 +300,9 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("Own setup instead of bouncing the Human to a terminal");
     expect(skill.body).toContain("Settings → Workstation");
     expect(skill.body).toContain("When `local_github` is offered");
+    expect(skill.body).toContain("`account_status` operation");
+    expect(skill.body).toContain("instead of running `gh auth status`");
+    expect(skill.body).toContain("cannot\nread the protected GitHub CLI configuration");
     expect(skill.body).toContain("Publishing retains its separate Human review");
     expect(skill.body).toContain("Never copy credentials");
     expect(skill.body).not.toContain("gh auth setup-git");

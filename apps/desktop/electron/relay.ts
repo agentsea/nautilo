@@ -76,6 +76,7 @@ import {
   type DesktopFilesystemAccessOperation,
   type DesktopFilesystemGrant,
   type DesktopFilesystemGrantFilesystemIdentity,
+  type DesktopFilesystemGrantSubject,
 } from "@nautilo/desktop-filesystem-grants";
 import {
   type ProfileNetworkPolicy,
@@ -631,7 +632,11 @@ export function getPersistedDesktopRelayId(): string | null {
 
 /** Minimal live-grant store surface the resolver depends on (see `DesktopFilesystemGrantStore.list`). */
 export interface DesktopFilesystemGrantAuthorityStore {
-  list(input: { userId: string; includeHistory?: boolean }): Promise<
+  list(input: {
+    userId: string;
+    includeHistory?: boolean;
+    revisionSubject?: DesktopFilesystemGrantSubject;
+  }): Promise<
     | {
         ok: true;
         data: {
@@ -1485,6 +1490,7 @@ export function createWorkstationShellBindingAuthorityResolver(
       listed = await options.store.list({
         userId: options.expectedSubject.userId,
         includeHistory: true,
+        revisionSubject: options.expectedSubject,
       });
     } catch {
       return { ok: false, code: "WORKSTATION_SHELL_BINDING_INVALID" };
@@ -1624,7 +1630,11 @@ export function createStartRelayDesktopFilesystemGrantAuthority(
  * so the snapshot can advertise a monotonic generation.
  */
 export interface DesktopFilesystemGrantSnapshotStore {
-  list(input: { userId: string; includeHistory?: boolean }): Promise<
+  list(input: {
+    userId: string;
+    includeHistory?: boolean;
+    revisionSubject?: DesktopFilesystemGrantSubject;
+  }): Promise<
     | {
         ok: true;
         data: {
@@ -1668,7 +1678,16 @@ export async function buildDesktopFilesystemGrantSnapshot(
 ): Promise<RelayDesktopFilesystemGrantSnapshot | undefined> {
   let listed: Awaited<ReturnType<DesktopFilesystemGrantSnapshotStore["list"]>>;
   try {
-    listed = await options.store.list({ userId: options.userId, includeHistory: true });
+    listed = await options.store.list({
+      userId: options.userId,
+      includeHistory: true,
+      revisionSubject: {
+        userId: options.userId,
+        instanceId: options.instanceId,
+        relayId: options.relayId,
+        agentScope: DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE,
+      },
+    });
   } catch {
     return undefined;
   }

@@ -872,7 +872,9 @@ export async function preModelNode(
       + (relayCapabilities["canUseLocalGit"] === true ? "Use local_git for supported typed local Git. " : "")
       + (relayCapabilities["canReadShellOutput"] === true ? "Use read_shell_output for earlier retained shell output. " : "")
       + (relayCapabilities["canUseHumanTerminal"] === true ? "Use human_terminal for the exact Human terminal handoff. " : "")
-      + (relayCapabilities["canUseGitHub"] === true ? "" : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
+      + (relayCapabilities["canUseGitHub"] === true
+        ? "Use local_github account_status to check the admitted GitHub account, then use its supported typed operations. A successful status confirms the account broker path; exact repository access is checked per operation. Do not test GitHub authentication with gh through exec_command; contained commands cannot read the protected account configuration. "
+        : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
       + "Unavailable tools have no shell fallback."
     : "";
   const stableSystemPrefix = buildSystemPrompt({

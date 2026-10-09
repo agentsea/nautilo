@@ -52,6 +52,17 @@ test("read dispatch requires exact source and queued custody without relying on 
   expect(f.sent).toHaveLength(1);
   f.revokeSource(); await f.tools(state); expect(f.sent).toHaveLength(1);
 });
+test("account status uses the existing read-only GitHub invocation binding", async () => {
+  const f = await fixture(); const call = { id: "call", name: "local_github", args: { operation: "account_status" } };
+  const binding = bind(f.state, "call", "read")!;
+  const state = { ...f.state, requiredHostRelays: { call: "relay" }, messages: [new AIMessage({ content: "", tool_calls: [call] })],
+    approvedToolCalls: [call], githubInvocationBindings: { call: binding } };
+  const result = await f.tools(state);
+  expect(f.sent).toHaveLength(1);
+  expect(f.sent[0]?.githubBinding?.stage).toBe("read");
+  expect(f.sent[0]?.args).toEqual({ operation: "account_status" });
+  expect(JSON.stringify(result.messages)).toContain("private account result");
+});
 test("post-dispatch source loss suppresses private read bytes", async () => {
   const f = await fixture(); const call = { id: "call", name: "local_github", args: { operation: "issue_read", repository: "fixture/project", number: 12 } };
   const binding = bind(f.state, "call", "read")!; f.revokeAfter();

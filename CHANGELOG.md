@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Creating a background Task no longer invalidates unrelated foreground command
+  grants. Tasks that can start managed commands also retain their output and
+  cancellation tool, including existing command-only task whitelists.
+- GitHub account status can be checked through the admitted account tool.
+  Connections and Genie guidance now describe the supported GitHub operations
+  and the limits of credentialed shell commands consistently.
+
 - Development commands use the same controlled real-HOME environment in foreground
   and delegated pipes or contained terminals. The revised profile narrows shared
   toolchain writes and requires consent for its new revision.

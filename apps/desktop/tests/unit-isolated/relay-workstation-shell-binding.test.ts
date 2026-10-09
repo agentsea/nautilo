@@ -22,6 +22,9 @@ import type {
   DesktopFilesystemGrantAuthorityStore,
   RelayWorkstationProfileSnapshotProvider,
 } from "../../electron/relay";
+import { createLocalExecutionDelegationAuthority } from "../../electron/local-execution-delegation";
+import { DesktopFilesystemGrantAuthority } from "../../electron/desktop-filesystem-grants/authority";
+import { DesktopFilesystemGrantStore } from "../../electron/desktop-filesystem-grants/store";
 
 // `../../electron/relay` transitively imports `./paths`, which imports the
 // Electron `app`. Under `bun test` (no Electron runtime) that module throws at
@@ -32,11 +35,13 @@ mock.module("electron", () => ({
 
 let revalidateWorkstationShellBinding: typeof import("../../electron/relay").revalidateWorkstationShellBinding;
 let createWorkstationShellBindingAuthorityResolver: typeof import("../../electron/relay").createWorkstationShellBindingAuthorityResolver;
+let buildDesktopFilesystemGrantSnapshot: typeof import("../../electron/relay").buildDesktopFilesystemGrantSnapshot;
 
 beforeAll(async () => {
   ({
     revalidateWorkstationShellBinding,
     createWorkstationShellBindingAuthorityResolver,
+    buildDesktopFilesystemGrantSnapshot,
   } = await import("../../electron/relay"));
 });
 
@@ -146,6 +151,19 @@ const ISOLATED_NETWORK_POLICY: import("@nautilo/workstation-profiles").ProfileNe
   mode: "isolated",
   allow: [],
 };
+
+function realGrantAuthority(): DesktopFilesystemGrantAuthority {
+  let bytes: string | null = null;
+  const store = new DesktopFilesystemGrantStore({
+    instanceId: INSTANCE,
+    filePath: "/unused/in-memory",
+    storage: {
+      read: async () => bytes,
+      writeAtomic: async (value) => { bytes = value; },
+    },
+  });
+  return new DesktopFilesystemGrantAuthority({ instanceId: INSTANCE, store });
+}
 
 describe("D418 task 3.1.3b — revalidateWorkstationShellBinding (pure)", () => {
   test("success returns the profile-bound roots (most specific first)", () => {
@@ -450,5 +468,95 @@ describe("D418 task 3.1.3b — revalidateWorkstationShellBinding (pure)", () => 
       ]);
       expect(r.writableRoots).toEqual(["/Users/test/output", "/Users/test/trash"]);
     }
+  });
+
+  test("Task grant capture does not stale a foreground binding, while foreground revocation still denies", async () => {
+    const grants = realGrantAuthority();
+    const foregroundGrant = grant("grant-1").grant;
+    expect(await grants.addEphemeral({ grant: foregroundGrant })).toMatchObject({ ok: true });
+
+    const admitted = await buildDesktopFilesystemGrantSnapshot({
+      store: grants,
+      userId: USER,
+      instanceId: INSTANCE,
+      relayId: RELAY,
+    });
+    expect(admitted).toMatchObject({ revision: 0, grants: [{ id: "grant-1" }] });
+
+    const delegationRequest = {
+      version: 1 as const,
+      humanUserId: USER,
+      agentId: "agent-a",
+      sourceRoomId: "room-a",
+      sourceConversationId: "conversation-a",
+      rootTaskId: "background-work",
+      ceiling: "development" as const,
+      profile: { id: PROFILE, revision: 2 },
+      target: {
+        instanceId: INSTANCE,
+        relayId: RELAY,
+        pairingGeneration: "pairing-gen-1",
+        serverOrigin: "https://server.example",
+        serverFingerprint: "server-fingerprint",
+      },
+    };
+    const delegation = createLocalExecutionDelegationAuthority({
+      grants,
+      readIdentity: () => ({
+        humanUserId: USER,
+        target: delegationRequest.target,
+        profile: delegationRequest.profile,
+        epoch: "connection-a",
+      }),
+      assertCaptureSource: async () => {},
+      resolveSelectedProject: async () => ({
+        canonicalRoot: foregroundGrant.canonicalRoot,
+        filesystemIdentity: {
+          realRoot: foregroundGrant.canonicalRoot,
+          device: 1,
+          inode: 2,
+        },
+        access: ["read", "create_modify", "delete", "execute"],
+        isCurrent: () => true,
+      }),
+      revalidateRoot: async (filesystemIdentity) => ({
+        ok: true,
+        canonicalRoot: filesystemIdentity.realRoot,
+        filesystemIdentity,
+      }),
+    });
+    await delegation.capture(delegationRequest);
+
+    const afterCapture = await buildDesktopFilesystemGrantSnapshot({
+      store: grants,
+      userId: USER,
+      instanceId: INSTANCE,
+      relayId: RELAY,
+    });
+    expect(grants.getRevision()).toBe(2);
+    expect(afterCapture).toEqual(admitted);
+
+    const resolver = createWorkstationShellBindingAuthorityResolver({
+      store: grants,
+      expectedRelayId: RELAY,
+      expectedDesktopSessionId: DESKTOP,
+      getCapabilityRevision: () => 5,
+      getCurrentFolder: () => "/tmp",
+      profileProvider: makeProfileProvider(profileSnapshot()),
+      networkPolicyProvider: makeNetworkPolicyProvider(ISOLATED_NETWORK_POLICY),
+      expectedSubject: foregroundGrant.subject,
+      now: () => NOW,
+    });
+    const admittedBinding = binding({ grantRevision: admitted!.revision });
+    expect(await resolver({
+      binding: admittedBinding,
+      concreteOperation: "execute",
+    })).toMatchObject({ ok: true, grantIds: ["grant-1"] });
+
+    await grants.revoke({ userId: USER, grantId: foregroundGrant.id });
+    expect(await resolver({
+      binding: admittedBinding,
+      concreteOperation: "execute",
+    })).toEqual({ ok: false, code: "GRANT_REVOKED" });
   });
 });

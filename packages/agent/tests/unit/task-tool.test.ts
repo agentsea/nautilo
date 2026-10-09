@@ -1217,6 +1217,35 @@ describe("task tool dispatcher", () => {
     });
   });
 
+  test("create persists the complete managed execution lifecycle", async () => {
+    stubRuntime();
+    await dispatchTaskCommand({ command: "create", prompt: "run it", tools: ["exec_command"] }, CTX);
+    expect(capturedCreate?.toolsMode).toBe("whitelist");
+    expect(capturedCreate?.toolsWhitelist).toEqual(["exec_command", "write_stdin"]);
+  });
+
+  test("update persists the complete managed execution lifecycle", async () => {
+    stubRuntime();
+    const getSp = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "task-1", ownerId: OWNER_ID, agentId: AGENT_ID, status: "pending",
+      contentRepresentation: "ordinary", prompt: "old", scheduleKind: "now",
+      targetChat: "orphan", resultDelivery: "wake", requestedModelId: null,
+      selectionProfile: "balanced", selectionSpec: null, toolsMode: "none",
+      toolsWhitelist: [],
+    } as never);
+    let patched: Record<string, unknown> | null = null;
+    const updateSp = spyOn(db, "updateTaskIfCurrent").mockImplementation(async (_db, _id, patch) => {
+      patched = patch as Record<string, unknown>;
+      return { id: "task-1", ownerId: OWNER_ID, status: "pending" } as never;
+    });
+    restores.push(() => { getSp.mockRestore(); updateSp.mockRestore(); });
+
+    await dispatchTaskCommand({ command: "update", taskId: "task-1", tools: ["exec_command"] }, CTX);
+    expect(patched).not.toBeNull();
+    expect(patched!["toolsMode"]).toBe("whitelist");
+    expect(patched!["toolsWhitelist"]).toEqual(["exec_command", "write_stdin"]);
+  });
+
   test("advanced task accepts explicit raw_and_wake delivery", async () => {
     stubRuntime();
     await dispatchTaskCommand(

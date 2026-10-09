@@ -5284,7 +5284,7 @@ async function createAdmittedGitHubRuntime(
     || profile.subject.userId !== ready.humanId || profile.subject.instanceId !== desktopInstance.instanceId
     || profile.subject.relayId !== topology.relayId) return null;
   const installation = await getGitHubInstallation();
-  const grantRevision = desktopFilesystemGrantStore.getRevision();
+  const grantRevision = desktopFilesystemGrantStore.getRevisionForSubject(profile.subject);
   const generation = randomUUID();
   let retired = false;
   const identity = {
@@ -5303,7 +5303,7 @@ async function createAdmittedGitHubRuntime(
       && currentProfile.network.mode === "host"
       && currentProfile.profileId === identity.profileId && currentProfile.profileRevision === identity.profileRevision
       && currentProfile.protectedPolicyVersion === identity.protectedPolicyVersion
-      && desktopFilesystemGrantStore.getRevision() === identity.grantRevision
+      && desktopFilesystemGrantStore.getRevisionForSubject(profile.subject) === identity.grantRevision
       && currentFolderPath === folder && currentFolderRevision === folderRevision && genieWorkspaceRoot === workspace;
   };
   if (!baseCurrent()) return null;

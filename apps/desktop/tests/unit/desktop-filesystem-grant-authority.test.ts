@@ -431,6 +431,59 @@ describe("DesktopFilesystemGrantAuthority — revision + sharing shape", () => {
       expect(merged).toMatchObject({ ok: true, data: { revision: expect.any(Number) as unknown } });
     });
   });
+
+  test("subject generations isolate Task grants from foreground authority", async () => {
+    await withAuthority(async ({ authority }) => {
+      const foregroundSubject = grant("foreground").subject;
+      const taskSubject = { ...foregroundSubject, agentScope: "task:background-work" };
+      expect(authority.getRevisionForSubject(foregroundSubject)).toBe(0);
+
+      await authority.create({
+        userId: USER_A,
+        grant: grant("task-project", { subject: taskSubject }),
+      });
+
+      expect(authority.getRevision()).toBe(1);
+      expect(authority.getRevisionForSubject(foregroundSubject)).toBe(0);
+      const foregroundAfterTask = await authority.list({
+        userId: USER_A,
+        revisionSubject: foregroundSubject,
+      });
+      expect(foregroundAfterTask).toMatchObject({ ok: true, data: { revision: 0 } });
+
+      await authority.addEphemeral({
+        grant: grant("foreground-session", {
+          origin: "policy_pack",
+          lifetime: "session",
+        }),
+      });
+      expect(authority.getRevision()).toBe(2);
+      expect(authority.getRevisionForSubject(foregroundSubject)).toBe(1);
+
+      const beforeTouch = authority.getRevision();
+      await authority.touchLastUsed({ userId: USER_A, grantId: "foreground-session" });
+      expect(authority.getRevision()).toBeGreaterThan(beforeTouch);
+      expect(authority.getRevisionForSubject(foregroundSubject)).toBe(1);
+
+      await authority.revoke({ userId: USER_A, grantId: "foreground-session" });
+      expect(authority.getRevisionForSubject(foregroundSubject)).toBe(2);
+      expect(authority.getRevisionForSubject(taskSubject)).toBe(0);
+    });
+  });
+
+  test("scoped revision reads reject a foreign user or local instance", async () => {
+    await withAuthority(async ({ authority }) => {
+      const subject = grant("foreground").subject;
+      expect(await authority.list({
+        userId: USER_A,
+        revisionSubject: { ...subject, userId: USER_B },
+      })).toMatchObject({ ok: false, code: "invalid_grant" });
+      expect(await authority.list({
+        userId: USER_A,
+        revisionSubject: { ...subject, instanceId: "another-desktop" },
+      })).toMatchObject({ ok: false, code: "invalid_grant" });
+    });
+  });
 });
 
 
