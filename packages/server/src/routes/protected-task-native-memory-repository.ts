@@ -1,12 +1,20 @@
 import type { DomainForegroundSecretEntry } from "@nautilo/lattice-crypto";
-import type { ProtectedTaskMemoryProjectionHandoff } from "@nautilo/agent";
+import type {
+  ProtectedTaskMemoryAccessHandoff,
+  ProtectedTaskMemoryProjectionHandoff,
+} from "@nautilo/agent";
 import type {
   ResolveHistoricalAgentRuntimeSignerPublicationManager,
 } from "@nautilo/lattice-crypto";
 import {
   deriveMemoryCryptoObjectIdV1,
+  commitMemoryMutationV1,
+  createProtectedTaskMemoryAccessContinuationCapsule,
+  fingerprintRequiredMemoryNamespaces,
+  MEMORY_OBJECT_TYPE,
   selectLiveEncryptionRepresentationPolicy,
   type EncryptionDataOperationOwner,
+  type ForegroundAgentMemoryNativeExactAccessPlan,
   type ProtectedAgentMemoryEmbeddingPort,
   type ProtectedAgentMemoryRepository,
   type ProtectedMemoryAuthority,
@@ -15,9 +23,11 @@ import {
 import {
   copyTaskScopeMemoryBinding,
   PostgresAgentMemoryProductPort,
+  PostgresAgentMemoryExactAccessProduct,
   PostgresDomainKeyAuthorityRepository,
   PostgresHumanDeviceSignerHistory,
   readVerifiedDeviceWrappedAgentObject,
+  persistForegroundAgentMemoryNativeExactAccess,
   withNativeTaskMemoryEntityCrypto,
   type ForegroundMemoryRepairSource,
   type ConversationProductCanonicalTransactionRunner,
@@ -25,7 +35,12 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   createTaskRuntimeDomainMemoryCryptoSession,
+  createForegroundDomainMemoryExactAccess,
 } from "@nautilo/runtime";
+import {
+  findActorByHandle,
+  findActorById,
+} from "@nautilo/trust";
 
 import {
   adoptProtectedTaskScopeMemoryOrigin,
@@ -33,9 +48,13 @@ import {
   reserveProtectedTaskScopeMemoryRepair,
   attachProtectedTaskNamespaceMemoryRepair,
   attachProtectedTaskScopeMemoryRepair,
+  assertHeldProtectedTaskContentAccessNamespace,
   requireHeldProtectedTaskMemoryWriterAuthority,
+  findProtectedTaskContentAccessNamespace,
+  resolveProtectedTaskContentAccessNamespace,
   withCurrentProtectedTaskMemoryAuthority,
   type CurrentProtectedTaskMemoryPolicy,
+  type HeldProtectedTaskMemoryAuthority,
   type ProtectedTaskMemoryAuthorityInput,
 } from "./current-protected-task-memory-authority";
 import {
@@ -57,6 +76,11 @@ import { createProtectedTaskMemoryOrdinaryFallback } from "./protected-task-memo
 import {
   createProtectedTaskMemoryProjection,
 } from "./protected-task-memory-projection";
+import {
+  createProtectedTaskMemoryExactAccess,
+  type ProtectedTaskMemoryAccessDestination,
+  type ProtectedTaskMemoryAccessSource,
+} from "./protected-task-memory-exact-access";
 
 type ProductContext = Readonly<{
   handle: ConversationProductPostgresHandle;
@@ -78,6 +102,7 @@ export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
   execute(
     repository: ProtectedAgentMemoryRepository,
     projection: ProtectedTaskMemoryProjectionHandoff,
+    access: ProtectedTaskMemoryAccessHandoff,
   ): Promise<Value>;
 }>;
 
@@ -94,12 +119,25 @@ type Dependencies = Readonly<{
   createBoundaries: typeof createProtectedTaskMemoryBoundaries;
   createRepository: typeof createProtectedTaskMemoryRepository;
   createProjection: typeof createProtectedTaskMemoryProjection;
+  createAccess: typeof createProtectedTaskMemoryExactAccess;
+  createAccessCapsule: typeof createProtectedTaskMemoryAccessContinuationCapsule;
+  createExactCrypto: typeof createForegroundDomainMemoryExactAccess;
+  persistExact: typeof persistForegroundAgentMemoryNativeExactAccess;
+  resolveAccessNamespace: typeof resolveProtectedTaskContentAccessNamespace;
+  findAccessNamespace: typeof findProtectedTaskContentAccessNamespace;
+  assertHeldAccessNamespace:
+    typeof assertHeldProtectedTaskContentAccessNamespace;
+  findActorByHandle: typeof findActorByHandle;
+  findActorById: typeof findActorById;
   persistObject: typeof persistProtectedTaskMemoryObject;
   requireHeldWriterAuthority:
     typeof requireHeldProtectedTaskMemoryWriterAuthority;
   createProduct(input: ConstructorParameters<
     typeof PostgresAgentMemoryProductPort
   >[0]): PostgresAgentMemoryProductPort;
+  createExactProduct(input: ConstructorParameters<
+    typeof PostgresAgentMemoryExactAccessProduct
+  >[0]): PostgresAgentMemoryExactAccessProduct;
   readObject: typeof readVerifiedDeviceWrappedAgentObject;
   createDomainKeys(
     ...input: ConstructorParameters<typeof PostgresDomainKeyAuthorityRepository>
@@ -123,10 +161,21 @@ const productionDependencies: Dependencies = Object.freeze({
   createBoundaries: createProtectedTaskMemoryBoundaries,
   createRepository: createProtectedTaskMemoryRepository,
   createProjection: createProtectedTaskMemoryProjection,
+  createAccess: createProtectedTaskMemoryExactAccess,
+  createAccessCapsule: createProtectedTaskMemoryAccessContinuationCapsule,
+  createExactCrypto: createForegroundDomainMemoryExactAccess,
+  persistExact: persistForegroundAgentMemoryNativeExactAccess,
+  resolveAccessNamespace: resolveProtectedTaskContentAccessNamespace,
+  findAccessNamespace: findProtectedTaskContentAccessNamespace,
+  assertHeldAccessNamespace:
+    assertHeldProtectedTaskContentAccessNamespace,
+  findActorByHandle,
+  findActorById,
   persistObject: persistProtectedTaskMemoryObject,
   requireHeldWriterAuthority:
     requireHeldProtectedTaskMemoryWriterAuthority,
   createProduct: input => new PostgresAgentMemoryProductPort(input),
+  createExactProduct: input => new PostgresAgentMemoryExactAccessProduct(input),
   readObject: readVerifiedDeviceWrappedAgentObject,
   createDomainKeys: (...input) =>
     new PostgresDomainKeyAuthorityRepository(...input),
@@ -164,6 +213,107 @@ function sameAuthority(
     && actual.mutableNamespaceIds.length === expected.mutableNamespaceIds.length
     && actual.mutableNamespaceIds.every((id, index) =>
       id === expected.mutableNamespaceIds[index]);
+}
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((id, index) => id === right[index]);
+}
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length
+    && left.every((byte, index) => byte === right[index]);
+}
+
+function exactAccessAuthority(
+  authority: Extract<ProtectedMemoryAuthority, { mode: "namespace" }>,
+  source: Pick<ProtectedTaskMemoryAccessSource, "requiredNamespaceIds">,
+  destination: ProtectedTaskMemoryAccessDestination,
+): Extract<ProtectedMemoryAuthority, { mode: "namespace" }> {
+  const readableNamespaceIds = Object.freeze([...new Set([
+    ...source.requiredNamespaceIds,
+    destination.namespaceId,
+  ])].sort());
+  return Object.freeze({
+    mode: "namespace" as const,
+    subjectUserId: authority.subjectUserId,
+    agentId: authority.agentId,
+    readableNamespaceIds,
+    mutableNamespaceIds: Object.freeze([destination.namespaceId]),
+    writableNamespaceId: destination.namespaceId,
+  });
+}
+
+function recoveredExactAccessPlan(input: Readonly<{
+  operationId: string;
+  source: Omit<ProtectedTaskMemoryAccessSource, "type" | "content">;
+  destination: ProtectedTaskMemoryAccessDestination;
+}>): ForegroundAgentMemoryNativeExactAccessPlan | null {
+  const currentNamespaceIds = Object.freeze([
+    ...input.source.requiredNamespaceIds,
+  ].sort());
+  if (currentNamespaceIds.length === 0
+    || new Set(currentNamespaceIds).size !== currentNamespaceIds.length
+    || currentNamespaceIds.includes(input.destination.namespaceId)) return null;
+  const targetNamespaceIds = Object.freeze([
+    ...currentNamespaceIds,
+    input.destination.namespaceId,
+  ].sort());
+  return Object.freeze({
+    operationId: input.operationId,
+    memoryId: input.source.memoryId,
+    cryptoObjectId: input.source.cryptoObjectId,
+    expectedContentRevision: input.source.contentRevision,
+    expectedCryptoAccessRevision: input.source.cryptoAccessRevision,
+    nextCryptoAccessRevision: input.source.cryptoAccessRevision + 1,
+    anchorNamespaceId: currentNamespaceIds[0]!,
+    currentNamespaceIds,
+    targetNamespaceIds,
+    addedNamespaceIds: Object.freeze([input.destination.namespaceId]),
+    removedNamespaceIds: Object.freeze([]),
+    currentRequiredNamespaceFingerprint:
+      fingerprintRequiredMemoryNamespaces(currentNamespaceIds),
+    targetRequiredNamespaceFingerprint:
+      fingerprintRequiredMemoryNamespaces(targetNamespaceIds),
+    productMutation: Object.freeze({
+      kind: "grant_namespace" as const,
+      namespaceId: input.destination.namespaceId,
+    }),
+  });
+}
+
+function exactAccessPlan(
+  plan: ForegroundAgentMemoryNativeExactAccessPlan,
+  source: Omit<ProtectedTaskMemoryAccessSource, "type" | "content">,
+  destination: ProtectedTaskMemoryAccessDestination,
+): boolean {
+  const currentNamespaceIds = [...source.requiredNamespaceIds].sort();
+  const targetNamespaceIds = [...new Set([
+    ...currentNamespaceIds,
+    destination.namespaceId,
+  ])].sort();
+  const addedNamespaceIds = currentNamespaceIds.includes(
+    destination.namespaceId,
+  ) ? [] : [destination.namespaceId];
+  return currentNamespaceIds.length > 0
+    && new Set(currentNamespaceIds).size === currentNamespaceIds.length
+    && plan.memoryId === source.memoryId
+    && plan.cryptoObjectId === source.cryptoObjectId
+    && plan.expectedContentRevision === source.contentRevision
+    && plan.expectedCryptoAccessRevision
+      === source.cryptoAccessRevision
+    && plan.nextCryptoAccessRevision === source.cryptoAccessRevision + 1
+    && plan.anchorNamespaceId === currentNamespaceIds[0]
+    && sameIds(plan.currentNamespaceIds, currentNamespaceIds)
+    && sameIds(plan.targetNamespaceIds, targetNamespaceIds)
+    && sameIds(plan.addedNamespaceIds, addedNamespaceIds)
+    && plan.removedNamespaceIds.length === 0
+    && sameBytes(plan.currentRequiredNamespaceFingerprint,
+      fingerprintRequiredMemoryNamespaces(currentNamespaceIds))
+    && sameBytes(plan.targetRequiredNamespaceFingerprint,
+      fingerprintRequiredMemoryNamespaces(targetNamespaceIds))
+    && plan.productMutation.kind === "grant_namespace"
+    && plan.productMutation.namespaceId === destination.namespaceId;
 }
 
 /**
@@ -275,6 +425,41 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         ...current,
         signal: entities.signal,
       });
+      const readNativeObject = async (request: Readonly<{
+        objectId: string;
+        expectedObjectType: string;
+        expectedAccessRevision?: number;
+        expectedNamespaceIds: readonly string[];
+      }>) => {
+        const result = await dependencies.withCurrentAuthority(
+          scopedCurrent,
+          async held => {
+            const binding = dependencies.requireHeldWriterAuthority(held);
+            await binding.assertCurrent();
+            const domainKeys = dependencies.createDomainKeys(
+              binding.restricted,
+              binding.crypto,
+              current.serverScope,
+            );
+            const history = dependencies.createSignerHistory({
+              handle: binding.restrictedHandle,
+              crypto: binding.crypto,
+            });
+            const value = await dependencies.readObject({
+              handle: binding.restrictedHandle,
+              crypto: binding.crypto,
+              ...request,
+              resolveHistoricalAgentSignerAuthority:
+                history.resolveAgentRuntimeSignerManager,
+              resolveNativeNamespaceEntries: coordinates =>
+                dependencies.resolveNativeEntries(domainKeys, coordinates),
+            });
+            await binding.assertCurrent();
+            return value;
+          },
+        );
+        return result;
+      };
       const session = dependencies.createSession({
         ...(scope === undefined ? {} : { scopeBinding: {
           scopeId: scope.scopeId,
@@ -299,36 +484,7 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
           }
           return dependencies.persistObject(scopedCurrent, write);
         },
-        read: async request => {
-          const result = await dependencies.withCurrentAuthority(
-            scopedCurrent,
-            async held => {
-              const binding = dependencies.requireHeldWriterAuthority(held);
-              await binding.assertCurrent();
-              const domainKeys = dependencies.createDomainKeys(
-                binding.restricted,
-                binding.crypto,
-                current.serverScope,
-              );
-              const history = dependencies.createSignerHistory({
-                handle: binding.restrictedHandle,
-                crypto: binding.crypto,
-              });
-              const value = await dependencies.readObject({
-                handle: binding.restrictedHandle,
-                crypto: binding.crypto,
-                ...request,
-                resolveHistoricalAgentSignerAuthority:
-                  history.resolveAgentRuntimeSignerManager,
-                resolveNativeNamespaceEntries: coordinates =>
-                  dependencies.resolveNativeEntries(domainKeys, coordinates),
-              });
-              await binding.assertCurrent();
-              return value;
-            },
-          );
-          return result;
-        },
+        read: readNativeObject,
       });
       const boundaries = dependencies.createBoundaries({
         authority,
@@ -479,7 +635,374 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         product: agentProductContext,
         embedding,
       });
-      return execute(repository, projection);
+      const capsule = dependencies.createAccessCapsule({
+        crypto: current.crypto,
+        entities,
+        namespaceId: current.occurrence.task.contentNamespaceId,
+        identity: Object.freeze({
+          kind: "protected_task_access_v1" as const,
+          taskId: current.occurrence.task.id,
+          taskRunId: current.occurrence.run.id,
+          graphThreadId: current.occurrence.run.graphThreadId,
+          subjectUserId: current.subject.userId,
+          humanActorId: current.subject.humanActorId,
+          agentId: current.occurrence.task.agentId,
+          contentNamespaceId: current.occurrence.task.contentNamespaceId,
+          policyRevision: policy.revision,
+          agentAuthorizationRevision: signer.agentAuthorizationRevision,
+        }),
+      });
+      const exactCrypto = dependencies.createExactCrypto({
+        crypto: current.crypto,
+        entities,
+        runtime: signer.runtime,
+        signerKeyId: signer.signerPublication.signerKeyId,
+        agentAuthorizationRevision: signer.agentAuthorizationRevision,
+        read: async request => {
+          const value = await readNativeObject({
+            ...request,
+            expectedObjectType: MEMORY_OBJECT_TYPE,
+          });
+          return value?.nativeEntries === undefined
+            ? null
+            : Object.freeze({ ...value,
+                nativeEntries: value.nativeEntries });
+        },
+      });
+      const openAccessSource = async (request: Readonly<{
+        authority: ProtectedMemoryAuthority;
+        memoryId: string;
+      }>): Promise<ProtectedTaskMemoryAccessSource | null> => {
+        const selected = await mutationProduct.loadExactProjectionSources({
+          authority: request.authority,
+          memoryIds: [request.memoryId],
+          signal: entities.signal,
+        });
+        if (selected.status === "unavailable"
+          || selected.value.length !== 1
+          || selected.value[0]?.memoryId !== request.memoryId) return null;
+        const opened = await session.session.openMany({
+          entrypointId: "subagent.scope",
+          agentId: authority.agentId,
+          authority: request.authority,
+          candidates: selected.value,
+        });
+        const candidate = selected.value[0];
+        const value = opened.status === "success" ? opened.value[0] : undefined;
+        const requiredNamespaceIds = Object.freeze([
+          ...candidate.requiredNamespaceIds,
+        ].sort());
+        if (opened.status !== "success" || opened.value.length !== 1
+          || value === undefined
+          || value.memoryId !== candidate.memoryId
+          || value.contentRevision !== candidate.contentRevision
+          || requiredNamespaceIds.length === 0
+          || new Set(requiredNamespaceIds).size
+            !== requiredNamespaceIds.length) return null;
+        return Object.freeze({
+          memoryId: candidate.memoryId,
+          contentRevision: candidate.contentRevision,
+          cryptoAccessRevision: candidate.cryptoAccessRevision,
+          cryptoObjectId: candidate.cryptoObjectId,
+          requiredNamespaceIds,
+          payloadDigest: Buffer.from(commitMemoryMutationV1({
+            kind: "save",
+            payload: { formatVersion: 1, type: value.type,
+              content: value.content },
+          })).toString("hex"),
+          type: value.type,
+          content: value.content,
+        });
+      };
+      const productFor = (
+        source: Omit<ProtectedTaskMemoryAccessSource, "type" | "content">,
+        destination: ProtectedTaskMemoryAccessDestination,
+        handle: string,
+        assertCurrentAuthority?: () => Promise<void>,
+      ) => {
+        if (boundaries.authority.mode !== "namespace") return null;
+        const operationAuthority = exactAccessAuthority(
+          boundaries.authority,
+          source,
+          destination,
+        );
+        const product = dependencies.createExactProduct({
+          handle: agentProductContext.handle,
+          readableNamespaceIds: operationAuthority.readableNamespaceIds,
+          resolveGrantUserNamespace: ({ authority: candidate,
+            userHandle }) => Promise.resolve(
+              sameAuthority(candidate, operationAuthority)
+                && userHandle === handle ? destination.namespaceId : null,
+            ),
+          ...(assertCurrentAuthority === undefined
+            ? {} : { assertCurrentAuthority }),
+        });
+        return Object.freeze({ authority: operationAuthority, product });
+      };
+      const persistExactUnderHeld = async (
+        held: HeldProtectedTaskMemoryAuthority,
+        publication: Parameters<Dependencies["persistExact"]>[0]["publication"],
+      ) => {
+        const binding = dependencies.requireHeldWriterAuthority(held);
+        await binding.assertCurrent();
+        const history = dependencies.createSignerHistory({
+          handle: binding.restrictedHandle,
+          crypto: binding.crypto,
+        });
+        const persisted = await dependencies.persistExact({
+          handle: binding.restrictedHandle,
+          crypto: binding.crypto,
+          publication,
+          resolveHistoricalAgentSignerAuthority:
+            history.resolveAgentRuntimeSignerManager,
+          resolveLiveShadowAgentSigner: () => null,
+          resolveCurrentAgentSigner: principal =>
+            principal.agentId === signer.runtime.agentId
+              && principal.runtimeGeneration === signer.runtime.generation
+              && principal.signerKeyId
+                === signer.signerPublication.signerKeyId
+              ? signer.signerPublication.signerPublicKey.slice()
+              : null,
+        });
+        await binding.assertCurrent();
+        return persisted;
+      };
+      const withCurrentAccessCommit = async <Value>(
+        destination: ProtectedTaskMemoryAccessDestination,
+        commit: (held: HeldProtectedTaskMemoryAuthority) => Promise<Value>,
+      ): Promise<Value | null> => dependencies.withCurrentAuthority(
+        scopedCurrent,
+        async held => {
+          await held.assertCurrent();
+          if (!await dependencies.assertHeldAccessNamespace(
+            held,
+            {
+              requesterUserId: scopedCurrent.subject.userId,
+              requesterActorId: scopedCurrent.subject.humanActorId,
+              humanActorIds: destination.humanActorIds,
+            },
+            destination,
+          )) return null;
+          const result = await commit(held);
+          await held.assertCurrent();
+          return result;
+        },
+      );
+      const unavailableAccessCommit = () => Object.freeze({
+        status: "unavailable" as const,
+        reason: "authorization_required" as const,
+      });
+      const access = dependencies.createAccess({
+        authority: boundaries.authority,
+        current: scopedCurrent,
+        capsule,
+        openSource: openAccessSource,
+        resolveTarget: async request => {
+          const normalizedHandle = request.normalizedHandle.trim()
+            .replace(/^@/u, "").toLowerCase();
+          if (normalizedHandle.length === 0) return null;
+          const target = await dependencies.findActorByHandle(normalizedHandle);
+          if (target === null || target.kind !== "user"
+            || target.actorId === request.requesterActorId) return null;
+          const actor = await dependencies.findActorById(target.actorId);
+          return actor?.ownerId === undefined ? null : Object.freeze({
+            userId: actor.ownerId,
+            actorId: target.actorId,
+            normalizedHandle,
+          });
+        },
+        reserveDestination: async request => {
+          const resolved = await dependencies.resolveAccessNamespace(
+            scopedCurrent,
+            {
+              requesterUserId: request.requesterUserId,
+              requesterActorId: request.requesterActorId,
+              humanActorIds: Object.freeze([
+                request.requesterActorId,
+                request.target.actorId,
+              ].sort()),
+            },
+          );
+          return resolved === null ? null : Object.freeze({
+            roomId: resolved.roomId,
+            namespaceId: resolved.namespaceId,
+            humanActorIds: Object.freeze([
+              request.requesterActorId,
+              request.target.actorId,
+            ].sort()),
+          });
+        },
+        findDestination: async request => {
+          const humanActorIds = Object.freeze([
+            request.requesterActorId,
+            request.target.actorId,
+          ].sort());
+          const resolved = await dependencies.findAccessNamespace(
+            scopedCurrent,
+            {
+              requesterUserId: request.requesterUserId,
+              requesterActorId: request.requesterActorId,
+              humanActorIds,
+            },
+          );
+          return resolved === null ? null : Object.freeze({
+            roomId: resolved.roomId,
+            namespaceId: resolved.namespaceId,
+            humanActorIds,
+          });
+        },
+        planProduct: async request => {
+          const selected = productFor(request.source, request.destination,
+            request.request.action.userHandle);
+          if (selected === null) return Object.freeze({
+            status: "unavailable" as const,
+            reason: "authorization_required" as const,
+          });
+          const planned = await selected.product.planNativeChange({
+            operationId: request.request.operationId,
+            authority: selected.authority,
+            memoryId: request.source.memoryId,
+            action: request.request.action,
+          });
+          if (planned.status === "unavailable") return planned;
+          if (!exactAccessPlan(planned.value.plan, request.source,
+            request.destination)) return Object.freeze({
+            status: "unavailable" as const,
+            reason: "integrity_failure" as const,
+          });
+          return Object.freeze({ status: "success" as const,
+            value: Object.freeze({ status: planned.value.status,
+              plan: planned.value.plan }) });
+        },
+        inspectRecovery: async request => {
+          const plan = recoveredExactAccessPlan({
+            operationId: request.request.operationId,
+            source: request.source,
+            destination: request.destination,
+          });
+          if (plan === null) return null;
+          const selected = productFor(request.source, request.destination,
+            request.request.action.userHandle);
+          if (selected === null) return Object.freeze({
+            status: "unavailable" as const,
+            reason: "authorization_required" as const,
+          });
+          const prepared = await exactCrypto.prepare({
+            objectId: plan.cryptoObjectId,
+            expectedAccessRevision: plan.nextCryptoAccessRevision,
+            currentNamespaceIds: plan.targetNamespaceIds,
+            targetNamespaceIds: plan.targetNamespaceIds,
+          });
+          if (prepared === null) return null;
+          const inspected = await exactCrypto.authorizeCurrentHead({
+            prepared,
+            commit: head => selected.product.inspectNativeCommitted({
+              authority: selected.authority,
+              plan,
+              head,
+            }),
+          });
+          if (inspected.status === "unavailable") return inspected;
+          const payload = exactCrypto.readPreparedPayload(prepared);
+          const payloadDigest = Buffer.from(commitMemoryMutationV1({
+            kind: "save",
+            payload,
+          })).toString("hex");
+          if (payloadDigest !== request.source.payloadDigest) {
+            return Object.freeze({ status: "unavailable" as const,
+              reason: "integrity_failure" as const });
+          }
+          return Object.freeze({ status: "success" as const,
+            value: Object.freeze({ status: inspected.value.status,
+              plan,
+              source: Object.freeze({ ...request.source,
+                type: payload.type, content: payload.content }) }) });
+        },
+        commit: async request => {
+          const selected = productFor(request.source, request.destination,
+            request.request.action.userHandle);
+          if (selected === null
+            || !exactAccessPlan(request.plan, request.source,
+              request.destination)) return Object.freeze({
+            status: "unavailable" as const,
+            reason: "authorization_required" as const,
+          });
+          const prepared = await exactCrypto.prepare({
+            objectId: request.plan.cryptoObjectId,
+            expectedAccessRevision: request.plan.expectedCryptoAccessRevision,
+            currentNamespaceIds: request.plan.currentNamespaceIds,
+            targetNamespaceIds: request.plan.targetNamespaceIds,
+          });
+          if (prepared === null) {
+            const current = await exactCrypto.prepare({
+              objectId: request.plan.cryptoObjectId,
+              expectedAccessRevision:
+                request.plan.nextCryptoAccessRevision,
+              currentNamespaceIds: request.plan.targetNamespaceIds,
+              targetNamespaceIds: request.plan.targetNamespaceIds,
+            });
+            if (current === null) return Object.freeze({
+              status: "unavailable" as const,
+              reason: "stale_revision" as const,
+            });
+            return exactCrypto.authorizeCurrentHead({
+              prepared: current,
+              commit: async head => (await withCurrentAccessCommit(
+                request.destination,
+                held => {
+                  const guarded = productFor(
+                    request.source,
+                    request.destination,
+                    request.request.action.userHandle,
+                    () => held.assertCurrent(),
+                  );
+                  return guarded === null
+                    ? Promise.resolve(unavailableAccessCommit())
+                    : guarded.product.recoverNativeCommitted({
+                        authority: guarded.authority,
+                        plan: request.plan,
+                        head,
+                      });
+                },
+              )) ?? unavailableAccessCommit(),
+            });
+          }
+          if (sameIds(request.plan.currentNamespaceIds,
+            request.plan.targetNamespaceIds)) {
+            return exactCrypto.authorizeCurrentHead({
+              prepared,
+              commit: () => Promise.resolve(Object.freeze({
+                status: "success" as const,
+                value: Object.freeze({ status: "unchanged" as const,
+                  memoryId: request.source.memoryId }),
+              })),
+            });
+          }
+          return exactCrypto.authorizeCommit({
+            prepared,
+            commit: async publication => (await withCurrentAccessCommit(
+              request.destination,
+              held => {
+                const guarded = productFor(
+                  request.source,
+                  request.destination,
+                  request.request.action.userHandle,
+                  () => held.assertCurrent(),
+                );
+                return guarded === null
+                  ? Promise.resolve(unavailableAccessCommit())
+                  : guarded.product.commitNativePrepared({
+                      authority: guarded.authority,
+                      plan: request.plan,
+                      publication,
+                      persist: () => persistExactUnderHeld(held, publication),
+                    });
+              },
+            )) ?? unavailableAccessCommit(),
+          });
+        },
+      });
+      return execute(repository, projection, access);
     },
   });
 }

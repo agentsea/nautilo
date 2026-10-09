@@ -47,7 +47,12 @@ function memoryHandoff(): NonNullable<
       replace: unavailable,
       setTier: unavailable,
     }),
-    access: Object.freeze({ change: unavailable }),
+    access: Object.freeze({
+      prepareApproval: unavailable,
+      restoreApproval: unavailable,
+      planChange: unavailable,
+      changeAuthorized: unavailable,
+    }),
     projection: Object.freeze({
       prepare: unavailable,
       restore: unavailable,

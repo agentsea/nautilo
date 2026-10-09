@@ -20,7 +20,9 @@ const OBJECT =
 
 class ProductConnection implements ConversationProductPostgresConnection {
   namespaceIds = [ALICE];
+  contentRevision = 4;
   accessRevision = 2;
+  objectId = OBJECT;
   fingerprint = fingerprintRequiredMemoryNamespaces(this.namespaceIds);
   scopeOriginCount = 0;
   operation: Readonly<{
@@ -49,7 +51,29 @@ class ProductConnection implements ConversationProductPostgresConnection {
   transaction<Result>(
     callback: (connection: this) => Promise<Result>,
   ): Promise<Result> {
-    return callback(this);
+    const snapshot = {
+      namespaceIds: [...this.namespaceIds],
+      contentRevision: this.contentRevision,
+      accessRevision: this.accessRevision,
+      objectId: this.objectId,
+      fingerprint: this.fingerprint.slice(),
+      scopeOriginCount: this.scopeOriginCount,
+      operation: this.operation === null ? null : Object.freeze({
+        ...this.operation,
+        requestDigest: this.operation.requestDigest.slice(),
+        targetFingerprint: this.operation.targetFingerprint.slice(),
+      }),
+    };
+    return callback(this).catch(error => {
+      this.namespaceIds = snapshot.namespaceIds;
+      this.contentRevision = snapshot.contentRevision;
+      this.accessRevision = snapshot.accessRevision;
+      this.objectId = snapshot.objectId;
+      this.fingerprint = snapshot.fingerprint;
+      this.scopeOriginCount = snapshot.scopeOriginCount;
+      this.operation = snapshot.operation;
+      throw error;
+    });
   }
 
   run<Row extends ConversationProductDatabaseRow = ConversationProductDatabaseRow>(
@@ -89,9 +113,9 @@ class ProductConnection implements ConversationProductPostgresConnection {
     if (statement.includes("agent-memory:exact-access:lock-product")) {
       return Promise.resolve([{
         memory_id: MEMORY,
-        content_revision: 4,
+        content_revision: this.contentRevision,
         crypto_access_revision: this.accessRevision,
-        crypto_object_id: OBJECT,
+        crypto_object_id: this.objectId,
         crypto_required_namespace_fingerprint: this.fingerprint,
         scope_origin_namespace_id: this.scopeOriginCount === 0
           ? null
@@ -174,6 +198,7 @@ async function fixture(
       }>
   > = () => Promise.resolve({ status: "absent" as const }),
   legacyAuthority = true,
+  assertCurrentAuthority?: () => Promise<void>,
 ) {
   const connection = new ProductConnection();
   const handle = await verifyConversationProductPostgresHandle({
@@ -194,6 +219,8 @@ async function fixture(
         },
       },
       resolveGrantUserNamespace: () => Promise.resolve(BOB),
+      ...(assertCurrentAuthority === undefined
+        ? {} : { assertCurrentAuthority }),
       ...(legacyAuthority ? { resolveCryptoAuthority: async ({ currentNamespaceIds,
         targetNamespaceIds }: { currentNamespaceIds: readonly string[];
           targetNamespaceIds: readonly string[] }) => ({
@@ -226,6 +253,132 @@ const authority = Object.freeze({
 });
 
 describe("Postgres Agent Memory exact access product", () => {
+  test("recovers and replays only the exact sealed native access receipt", async () => {
+    const { product, connection } = await fixture(undefined, false);
+    const planned = await product.planNativeChange({
+      operationId: "protected-task-approved-request",
+      authority,
+      memoryId: MEMORY,
+      action: { kind: "grant_user", userHandle: "bob" },
+    });
+    if (planned.status !== "success"
+      || planned.value.status !== "prepared") {
+      throw new Error("plan unavailable");
+    }
+    connection.operation = Object.freeze({
+      operationId: planned.value.plan.operationId,
+      requestDigest: new Uint8Array(32).fill(7),
+      targetFingerprint:
+        planned.value.plan.targetRequiredNamespaceFingerprint,
+      expectedAccessRevision: 2,
+      resultAccessRevision: 3,
+      completion: "pending" as const,
+      disposition: "active" as const,
+    });
+    const head = Object.freeze({
+      objectId: OBJECT,
+      accessRevision: 3,
+      manifestHash: new Uint8Array(32).fill(1),
+      namespaceIds: Object.freeze([ALICE, BOB]),
+    });
+    expect(await product.inspectNativeCommitted({
+      authority,
+      plan: planned.value.plan,
+      head,
+    })).toEqual({ status: "success", value: {
+      status: "pending", memoryId: MEMORY,
+    } });
+    expect(connection.namespaceIds).toEqual([ALICE]);
+    expect(connection.operation).toMatchObject({
+      completion: "pending", disposition: "active",
+    });
+    expect(await product.recoverNativeCommitted({
+      authority,
+      plan: planned.value.plan,
+      head,
+    })).toEqual({ status: "success", value: {
+      status: "updated", memoryId: MEMORY,
+    } });
+    expect(connection.namespaceIds).toEqual([ALICE, BOB]);
+    expect(connection.operation).toMatchObject({
+      operationId: "protected-task-approved-request",
+      completion: "complete",
+      disposition: "complete",
+    });
+    expect(await product.inspectNativeCommitted({
+      authority,
+      plan: planned.value.plan,
+      head,
+    })).toEqual({ status: "success", value: {
+      status: "complete", memoryId: MEMORY,
+    } });
+    expect(await product.recoverNativeCommitted({
+      authority,
+      plan: planned.value.plan,
+      head,
+    })).toEqual({ status: "success", value: {
+      status: "replayed", memoryId: MEMORY,
+    } });
+  });
+
+  test("does not recover a mismatched native head or receipt", async () => {
+    const { product, connection } = await fixture(undefined, false);
+    const planned = await product.planNativeChange({
+      operationId: "protected-task-approved-request",
+      authority,
+      memoryId: MEMORY,
+      action: { kind: "grant_user", userHandle: "bob" },
+    });
+    if (planned.status !== "success"
+      || planned.value.status !== "prepared") {
+      throw new Error("plan unavailable");
+    }
+    const head = Object.freeze({ objectId: OBJECT, accessRevision: 2,
+      manifestHash: new Uint8Array(32),
+      namespaceIds: Object.freeze([ALICE, BOB]) });
+    expect(await product.recoverNativeCommitted({
+      authority, plan: planned.value.plan, head,
+    })).toEqual({ status: "unavailable", reason: "authorization_required" });
+    expect(connection.operation).toBeNull();
+    expect(connection.namespaceIds).toEqual([ALICE]);
+  });
+
+  test("rejects completed replay after the Memory source was replaced", async () => {
+    const { product, connection } = await fixture(undefined, false);
+    const planned = await product.planNativeChange({
+      operationId: "protected-task-approved-request",
+      authority,
+      memoryId: MEMORY,
+      action: { kind: "grant_user", userHandle: "bob" },
+    });
+    if (planned.status !== "success"
+      || planned.value.status !== "prepared") {
+      throw new Error("plan unavailable");
+    }
+    connection.namespaceIds = [ALICE, BOB];
+    connection.accessRevision = 3;
+    connection.fingerprint =
+      planned.value.plan.targetRequiredNamespaceFingerprint;
+    connection.contentRevision = 5;
+    connection.operation = Object.freeze({
+      operationId: planned.value.plan.operationId,
+      requestDigest: new Uint8Array(32).fill(7),
+      targetFingerprint:
+        planned.value.plan.targetRequiredNamespaceFingerprint,
+      expectedAccessRevision: 2,
+      resultAccessRevision: 3,
+      completion: "complete" as const,
+      disposition: "complete" as const,
+    });
+    expect(await product.recoverNativeCommitted({
+      authority,
+      plan: planned.value.plan,
+      head: Object.freeze({ objectId: OBJECT, accessRevision: 3,
+        manifestHash: new Uint8Array(32),
+        namespaceIds: Object.freeze([ALICE, BOB]) }),
+    })).toEqual({ status: "unavailable", reason: "stale_revision" });
+  });
+
   test("finishes only the original pending native receipt after its target head is authenticated", async () => {
     const { product, connection } = await fixture(undefined, false);
     const planned = await product.planNativeChange({ operationId: "fresh-request",
@@ -306,6 +459,62 @@ describe("Postgres Agent Memory exact access product", () => {
       value: { status: "updated", memoryId: MEMORY } });
     expect(persisted).toBe(1);
     expect(connection.namespaceIds).toEqual([ALICE, BOB]);
+  });
+
+  test("rolls back the final product edge when held authority expires at commit", async () => {
+    let assertions = 0;
+    const { product, connection } = await fixture(undefined, false, () => {
+      assertions += 1;
+      if (assertions === 6) {
+        return Promise.reject(new Error("held Task authority expired"));
+      }
+      return Promise.resolve();
+    });
+    const planned = await product.planNativeChange({
+      operationId: "memory.share.native-expiry",
+      authority, memoryId: MEMORY,
+      action: { kind: "grant_user", userHandle: "bob" },
+    });
+    if (planned.status !== "success" || planned.value.status !== "prepared") {
+      throw new Error("native plan unavailable");
+    }
+    // The plan transaction consumed assertions 1-2. Reservation consumes 3-4;
+    // the final product transaction fails its post-mutation assertion 6.
+    const digest = new Uint8Array(32).fill(1);
+    let failure: unknown;
+    try {
+      await product.commitNativePrepared({
+        authority,
+        plan: planned.value.plan,
+        publication: {
+          objectId: OBJECT, expectedAccessRevision: 2, nextAccessRevision: 3,
+          payloadHash: digest.slice(), currentManifestHash: digest.slice(),
+          nextManifestHash: digest.slice(), nextManifestBytes: digest.slice(),
+          targetEnvelopeBytes: [digest.slice(), digest.slice()],
+          currentEntries: [{ namespaceId: namespaceId(ALICE), keyGeneration: 0,
+            namespaceAccessRevision: 1, headDigest: digest.slice(),
+            publicationDigest: digest.slice(), publicationSetDigest: digest.slice(),
+            audienceFingerprint: digest.slice(), envelopeHash: digest.slice() }],
+          targetEntries: [ALICE, BOB].map((namespace) => ({
+            namespaceId: namespaceId(namespace), keyGeneration: 0,
+            namespaceAccessRevision: 1, headDigest: digest.slice(),
+            publicationDigest: digest.slice(), publicationSetDigest: digest.slice(),
+            audienceFingerprint: digest.slice(), envelopeHash: digest.slice(),
+          })),
+        },
+        persist: () => Promise.resolve("created"),
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("held Task authority expired");
+    expect(connection.namespaceIds).toEqual([ALICE]);
+    expect(connection.accessRevision).toBe(2);
+    expect(connection.operation).toMatchObject({
+      completion: "pending",
+      disposition: "active",
+    });
   });
 
   test("plans one exact grant_user addition without touching crypto", async () => {

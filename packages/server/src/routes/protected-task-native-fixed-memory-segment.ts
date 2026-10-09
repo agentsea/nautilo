@@ -956,7 +956,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                           agentProduct: input.agentProduct,
                           owner: input.owner,
                           embedding: input.embedding,
-                          execute: (repository, projection) => dependencies.withCheckpointSaver({
+                          execute: (repository, projection, access) => dependencies.withCheckpointSaver({
                             restricted: input.restricted,
                             crypto: input.crypto,
                             serverScope: input.serverScope,
@@ -984,6 +984,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                 search: repository,
                                 repository,
                                 projection,
+                                access,
                                 fullEncryptionOnly:
                                   policy.mode === "encrypted_only",
                               });

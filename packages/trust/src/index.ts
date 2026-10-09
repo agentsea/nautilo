@@ -29,6 +29,11 @@ export {
   envelopeWritableNamespaces,
 } from "./types";
 export {
+  findContentAccessNamespaceInTx,
+  resolveContentAccessNamespaceInTx,
+  type ImmutableContentAccessAudience,
+} from "./content-access-namespace";
+export {
   blockHuman,
   unblockHuman,
   listBlockedHumanUserIds,

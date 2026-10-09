@@ -131,6 +131,12 @@ export {
   type ProtectedTaskAdditionalAuthorityResumeBindingV1,
 } from "./graph/protected-task-additional-authority-resume";
 export {
+  createProtectedTaskMemoryAccessPort,
+  type ProtectedTaskMemoryAccessAuthorization,
+  type ProtectedTaskMemoryAccessAuthorityPlan,
+  type ProtectedTaskMemoryAccessHandoff,
+} from "./tools/memory/protected-task-access-authority";
+export {
   createProtectedTaskMemoryProjectionPort,
   type ProtectedTaskMemoryProjectionHandoff,
   type ProtectedTaskProjectionAuthorityPlan,

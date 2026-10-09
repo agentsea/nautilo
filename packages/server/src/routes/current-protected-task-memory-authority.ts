@@ -50,7 +50,11 @@ import {
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
 } from "@nautilo/lattice-bridge/server";
-import type { CanonicalTranscriptTx } from "@nautilo/trust";
+import {
+  findContentAccessNamespaceInTx,
+  resolveContentAccessNamespaceInTx,
+  type CanonicalTranscriptTx,
+} from "@nautilo/trust";
 import {
   assertProtectedTaskJobReferenceV1,
   isCurrentProtectedTaskRunForGrant,
@@ -686,6 +690,106 @@ export function withCurrentProtectedTaskMemoryAuthority<Value>(
     use,
     "read committed",
   );
+}
+
+/**
+ * Resolve or reserve one immutable Human access Namespace only after the
+ * protected Task has obtained consent. The reservation remains inside the
+ * accepted Task/policy transaction and deliberately creates no Memory edge.
+ */
+export async function resolveProtectedTaskContentAccessNamespace(
+  input: ProtectedTaskMemoryAuthorityInput,
+  audience: Readonly<{
+    requesterUserId: string;
+    requesterActorId: string;
+    humanActorIds: readonly string[];
+  }>,
+): Promise<Readonly<{
+  roomId: string;
+  namespaceId: string;
+  minted: boolean;
+}> | null> {
+  if (input.scopeMemory !== undefined
+    || audience.requesterUserId !== input.subject.userId
+    || audience.requesterActorId !== input.subject.humanActorId) return null;
+  return withCurrentProtectedTaskMemoryAuthority(input, async held => {
+    const state = stateFor(held);
+    await held.assertCurrent();
+    const resolved = await resolveContentAccessNamespaceInTx(
+      state.transaction,
+      {
+        requesterUserId: audience.requesterUserId,
+        requesterActorId: audience.requesterActorId,
+        humanActorIds: Object.freeze([...audience.humanActorIds]),
+      },
+    );
+    await held.assertCurrent();
+    return Object.freeze({ ...resolved });
+  });
+}
+
+/** Reopen an already-reserved exact Human access Namespace without minting. */
+export async function findProtectedTaskContentAccessNamespace(
+  input: ProtectedTaskMemoryAuthorityInput,
+  audience: Readonly<{
+    requesterUserId: string;
+    requesterActorId: string;
+    humanActorIds: readonly string[];
+  }>,
+): Promise<Readonly<{
+  roomId: string;
+  namespaceId: string;
+}> | null> {
+  if (input.scopeMemory !== undefined
+    || audience.requesterUserId !== input.subject.userId
+    || audience.requesterActorId !== input.subject.humanActorId) return null;
+  return withCurrentProtectedTaskMemoryAuthority(input, async held => {
+    const state = stateFor(held);
+    await held.assertCurrent();
+    const found = await findContentAccessNamespaceInTx(
+      state.transaction,
+      {
+        requesterUserId: audience.requesterUserId,
+        requesterActorId: audience.requesterActorId,
+        humanActorIds: Object.freeze([...audience.humanActorIds]),
+      },
+    );
+    await held.assertCurrent();
+    return found === null ? null : Object.freeze({ ...found });
+  });
+}
+
+/** Revalidate the exact immutable access audience while the final Task/policy
+ * transaction remains held. Identity SHARE locks prevent a concurrent disable
+ * from winning before the protected publication and product edge settle. */
+export async function assertHeldProtectedTaskContentAccessNamespace(
+  held: HeldProtectedTaskMemoryAuthority,
+  audience: Readonly<{
+    requesterUserId: string;
+    requesterActorId: string;
+    humanActorIds: readonly string[];
+  }>,
+  expected: Readonly<{ roomId: string; namespaceId: string }>,
+): Promise<boolean> {
+  const state = stateFor(held);
+  if (state.input.scopeMemory !== undefined
+    || audience.requesterUserId !== state.input.subject.userId
+    || audience.requesterActorId !== state.input.subject.humanActorId) {
+    return false;
+  }
+  await held.assertCurrent();
+  const current = await findContentAccessNamespaceInTx(
+    state.transaction,
+    {
+      requesterUserId: audience.requesterUserId,
+      requesterActorId: audience.requesterActorId,
+      humanActorIds: Object.freeze([...audience.humanActorIds]),
+    },
+  );
+  await held.assertCurrent();
+  return current !== null
+    && current.roomId === expected.roomId
+    && current.namespaceId === expected.namespaceId;
 }
 
 /** Resolve legacy provenance for the exact repair candidate under the live Task

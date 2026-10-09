@@ -80,6 +80,10 @@ import {
   projectionSnapshotExpiresAt,
   projectionSnapshotRoomKind,
 } from "../tools/memory/projection-sharing";
+import {
+  findProtectedMemoryAccessSnapshot,
+  protectedMemoryAccessApprovalPreview,
+} from "../tools/memory/protected-task-access-sharing";
 import { computeShareArtifactApprovalPreview } from "../tools/file/share-artifact";
 import { parseOrdinaryContentAccessIntent } from "../tools/content-access-intent";
 import {
@@ -2188,6 +2192,24 @@ export async function interruptToolEntry(
       // Invalid projection-like input is rejected by preflight in a normal
       // graph run. Keep its provenance out of any defensive approval payload.
       return { ...base, args: { mode: "project" } };
+    }
+    const accessSnapshot = findProtectedMemoryAccessSnapshot(state, tc);
+    if (accessSnapshot !== null) {
+      const preview = protectedMemoryAccessPort === undefined
+        ? null
+        : protectedMemoryAccessApprovalPreview(
+            accessSnapshot,
+            protectedMemoryAccessPort,
+          );
+      if (preview === null) {
+        throw new ProtectedMemoryToolUnavailableError("authorization_required");
+      }
+      return { ...base, shareMemoryPreview: preview };
+    }
+    if (state.protectedMemoryAccessSnapshots?.some(
+      snapshot => snapshot.toolCallId === tc.id,
+    )) {
+      throw new ProtectedMemoryToolUnavailableError("stale_revision");
     }
     try {
       const preview = await computeShareMemoryApprovalPreview(tc, {

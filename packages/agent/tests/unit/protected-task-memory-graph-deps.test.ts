@@ -41,7 +41,21 @@ function handoff(
       replace: unavailable,
       setTier: unavailable,
     }),
-    access: Object.freeze({ change: unavailable }),
+    access: Object.freeze({
+      prepareApproval: unavailable,
+      restoreApproval: unavailable,
+      planChange: async () => ({
+        status: "success" as const,
+        value: Object.freeze({
+          planVersion: 1 as const,
+          kind: "current_v1" as const,
+          operationId: "access-operation",
+          requestDigest: new Uint8Array(32).fill(2),
+          semanticAuthorityRequirements: PROJECTION_REQUIREMENTS,
+        }),
+      }),
+      changeAuthorized: unavailable,
+    }),
     projection: Object.freeze({
       prepare: unavailable,
       restore: unavailable,
@@ -171,8 +185,11 @@ describe("protected Task Memory graph handoff", () => {
         .toBe(expectedHandoff.search);
       expect(deps.protectedMemoryRepositoryForState?.(current))
         .toBe(expectedHandoff.repository);
-      expect(deps.protectedMemoryAccessPortForState?.(current))
-        .toBe(expectedHandoff.access);
+      const access = deps.protectedMemoryAccessPortForState?.(current);
+      expect(access).toBeDefined();
+      expect(access).not.toBe(expectedHandoff.access);
+      expect(typeof access?.change).toBe("function");
+      expect(typeof access?.restoreApproval).toBe("function");
       const projection = deps.protectedMemoryProjectionPortForState?.(current);
       expect(projection).toBeDefined();
       expect(projection).not.toBe(expectedHandoff.projection);
@@ -221,7 +238,8 @@ describe("protected Task Memory graph handoff", () => {
         : deps.protectedMemoryProjectionPortForState;
       const resolved = resolver?.(current);
       if (field === "access") {
-        expect(resolved).toBe(expectedPort);
+        expect(resolved).not.toBe(expectedPort);
+        expect("change" in (resolved ?? {})).toBe(true);
       } else {
         expect(resolved).not.toBe(expectedPort);
         expect("publish" in (resolved ?? {})).toBe(true);
@@ -245,8 +263,10 @@ describe("protected Task Memory graph handoff", () => {
     expect(deps.protectedMemorySearchForState?.(current)).toBe(original.search);
     expect(deps.protectedMemoryRepositoryForState?.(current))
       .toBe(original.repository);
-    expect(deps.protectedMemoryAccessPortForState?.(current))
-      .toBe(original.access);
+    const access = deps.protectedMemoryAccessPortForState?.(current);
+    expect(access).toBeDefined();
+    expect(access).not.toBe(original.access);
+    expect(access).not.toBe(replacement.access);
     const projection = deps.protectedMemoryProjectionPortForState?.(current);
     expect(projection).toBeDefined();
     expect(projection).not.toBe(original.projection);

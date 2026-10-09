@@ -166,6 +166,9 @@ import {
   isProjectionLikeShareCall,
   projectionApprovalArgs,
 } from "./memory/projection-sharing";
+import {
+  findProtectedMemoryAccessSnapshot,
+} from "./memory/protected-task-access-sharing";
 import { getLocalMcpToolRuntime } from "./mcp/local-mcp-runtime";
 import {
   createUnboundMediaGenerationFailure,
@@ -1273,6 +1276,8 @@ export function createNautiloToolInvocationSession(
     { relayRegistry: _relayRegistry },
   );
   const resolveToolMap = (toolCallId: string, invocationCall: NautiloState["approvedToolCalls"][number]) => {
+    const protectedMemoryAccessSnapshot =
+      findProtectedMemoryAccessSnapshot(state, invocationCall);
     const tools = resolveToolsForExposure(
       catalog,
       runtimeConfig.nautilo_tool_exposure_mode,
@@ -1379,6 +1384,12 @@ export function createNautiloToolInvocationSession(
           ...(protectedMemoryAccessPort === undefined
             ? {}
             : { protectedMemoryAccessPort }),
+          ...(protectedMemoryAccessSnapshot === null
+            ? {}
+            : {
+              protectedMemoryAccessApprovalReference:
+                protectedMemoryAccessSnapshot.reference,
+            }),
           ...(protectedMemoryProjectionPort === undefined
             ? {}
             : { protectedMemoryProjectionPort }),

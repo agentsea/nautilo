@@ -6,7 +6,13 @@ import {
   preflightProjectionShareCalls,
   preflightProtectedProjectionShareCalls,
 } from "../tools/memory/projection-sharing";
-import type { ProtectedAgentMemoryProjectionPort } from "../tools/memory/protected-memory-ports";
+import type {
+  ProtectedAgentMemoryAccessPort,
+  ProtectedAgentMemoryProjectionPort,
+} from "../tools/memory/protected-memory-ports";
+import {
+  preflightProtectedMemoryAccessShareCalls,
+} from "../tools/memory/protected-task-access-sharing";
 import {
   __assertProtectedMemoryToolsNodeTestAuthorityForTesting,
   type ProtectedMemoryToolsNodeTestAuthority,
@@ -29,7 +35,12 @@ function boundedActiveRoomChoices(
  */
 export function createProjectionPreflightNode(
   preflight: typeof preflightProjectionShareCalls = preflightProjectionShareCalls,
-  options: Readonly<{ sanitizeProjectionToolArgs?: boolean }> = {},
+  options: Readonly<{
+    sanitizeProjectionToolArgs?: boolean;
+    protectedMemoryAccessPortForState?: (
+      state: NautiloState,
+    ) => ProtectedAgentMemoryAccessPort | undefined;
+  }> = {},
 ) {
   return async function projectionPreflightNode(
     state: NautiloState,
@@ -40,12 +51,29 @@ export function createProjectionPreflightNode(
   if (!last || !AIMessage.isInstance(last) || !last.tool_calls?.length) {
     return {
       projectionSnapshots: [],
+      protectedMemoryAccessSnapshots: [],
       projectionRejectedToolCallIds: [],
       projectionRoomChoices: boundedActiveRoomChoices(state.projectionRoomChoices ?? []),
     };
   }
   const rejectedModelIds = new Set(state.modelRejectedToolCallIds ?? []);
-  const result = await preflight(state, last.tool_calls.filter((call) => !rejectedModelIds.has(call.id ?? "")));
+  const candidateCalls = last.tool_calls.filter(
+    call => !rejectedModelIds.has(call.id ?? ""),
+  );
+  const result = await preflight(state, candidateCalls);
+  const accessPort = options.protectedMemoryAccessPortForState?.(state);
+  const access = accessPort === undefined
+    ? { snapshots: [], rejectedToolCallIds: [], messages: [] }
+    : await preflightProtectedMemoryAccessShareCalls(
+        state,
+        candidateCalls,
+        accessPort,
+      );
+  const rejectedToolCallIds = [
+    ...result.rejectedToolCallIds,
+    ...access.rejectedToolCallIds,
+  ];
+  const preflightMessages = [...result.messages, ...access.messages];
   const roomChoices = boundedActiveRoomChoices([
     ...(state.projectionRoomChoices ?? []),
     ...result.choiceMappings,
@@ -75,16 +103,16 @@ export function createProjectionPreflightNode(
       return sanitized;
     })
     : state.messages;
-  const messages = result.messages.length > 0
+  const messages = preflightMessages.length > 0
     ? mergeMessagesPreservingInvariants(
         checkpointMessages,
-        result.messages.map((message) => new ToolMessage({
-          content: result.rejectedToolCallIds.includes(message.toolCallId)
+        preflightMessages.map((message) => new ToolMessage({
+          content: rejectedToolCallIds.includes(message.toolCallId)
             ? JSON.stringify({ error: message.content })
             : message.content,
           tool_call_id: message.toolCallId,
           name: "share_memory",
-          ...(result.rejectedToolCallIds.includes(message.toolCallId)
+          ...(rejectedToolCallIds.includes(message.toolCallId)
             ? { status: "error" as const, additional_kwargs: { nautilo_tool_status: "error" } }
             : {}),
         })),
@@ -93,8 +121,9 @@ export function createProjectionPreflightNode(
   return {
     messages,
     projectionSnapshots: [...result.snapshots],
+    protectedMemoryAccessSnapshots: [...access.snapshots],
     projectionRoomChoices: roomChoices,
-    projectionRejectedToolCallIds: [...result.rejectedToolCallIds],
+    projectionRejectedToolCallIds: rejectedToolCallIds,
   };
   };
 }

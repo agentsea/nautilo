@@ -25,6 +25,7 @@ import {
 import type { ActivatedToolLease } from "../tools/meta/activated-tools-handle";
 import type { ModelFallbackMode } from "../utils/chat-model-invocation";
 import type { ProjectionRoomChoice, ProjectionSnapshot } from "../tools/memory/projection-sharing";
+import type { ProtectedMemoryAccessSnapshot } from "../tools/memory/protected-task-access-sharing";
 import type { OrdinaryContentAccessBinding } from "../runtime/ordinary-content-access";
 import {
   parseComputerUseInvocationBindings,
@@ -298,6 +299,12 @@ export const NautiloStateAnnotation = Annotation.Root({
   /** private, short-lived server snapshot that binds a project-mode
    * share to its exact content, readable evidence and resolved audience. */
   projectionSnapshots: Annotation<ProjectionSnapshot[]>({
+    reducer: (_, update) => update,
+    default: () => [],
+  }),
+
+  /** Authenticated ciphertext reference for a protected Task attach approval. */
+  protectedMemoryAccessSnapshots: Annotation<ProtectedMemoryAccessSnapshot[]>({
     reducer: (_, update) => update,
     default: () => [],
   }),
@@ -995,7 +1002,7 @@ export type NautiloState = Omit<
   | "activationIntentAppliedForTurnId"
   | "browserDecision"
   | "noProgressStreaks" | "noProgressPendingCorrection" | "noProgressPendingStop"
-  | "projectionSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
+  | "projectionSnapshots" | "protectedMemoryAccessSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
   | "identityEnrollmentToolCallIds"
   | "foregroundFundingSnapshot"
   | "approvalLaneKey"
@@ -1108,6 +1115,7 @@ export type NautiloState = Omit<
   noProgressPendingStop?: import("../graph/no-progress").NoProgressKey | null;
   /** optional for pre-feature checkpoint fixtures; graph channels default these safely. */
   projectionSnapshots?: ProjectionSnapshot[];
+  protectedMemoryAccessSnapshots?: ProtectedMemoryAccessSnapshot[];
   projectionRoomChoices?: ProjectionRoomChoice[];
   projectionRejectedToolCallIds?: string[];
   modelRejectedToolCallIds?: string[];

@@ -69,6 +69,165 @@ import {
   createProtectedTaskHumanResumeCommandV1,
   type ProtectedTaskHumanResumeBindingV1,
 } from "../../graph/protected-task-human-resume";
+import type { ProtectedAgentMemoryAccessPort } from "@nautilo/lattice-bridge";
+import {
+  beginProtectedMemoryAccessPreviewBatch,
+  bindDeniedProtectedMemoryAccessSnapshot,
+  restoreProtectedMemoryAccessSnapshot,
+  type ProtectedMemoryAccessSnapshot,
+} from "../../tools/memory/protected-task-access-sharing";
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function exactPendingInterruptValue(
+  checkpoint: Readonly<{ tasks?: readonly unknown[] }> | undefined,
+  interruptId: string,
+): Record<string, unknown> {
+  const matches: Record<string, unknown>[] = [];
+  for (const candidateTask of checkpoint?.tasks ?? []) {
+    const interrupts = objectRecord(candidateTask)?.["interrupts"];
+    if (!Array.isArray(interrupts)) continue;
+    for (const candidate of interrupts) {
+      const interrupt = objectRecord(candidate);
+      if (interrupt?.["id"] !== interruptId) continue;
+      const value = objectRecord(interrupt["value"]);
+      if (value !== undefined) matches.push(value);
+    }
+  }
+  if (matches.length !== 1) {
+    throw new TypeError(
+      "Protected Task Memory resume requires one exact pending interrupt",
+    );
+  }
+  return matches[0]!;
+}
+
+type ProtectedAccessResumeObligation = Readonly<{
+  toolCallId: string;
+  deniedPreview?: unknown;
+}>;
+
+function protectedAccessResumeObligations(
+  checkpoint: Readonly<{ tasks?: readonly unknown[] }> | undefined,
+  binding: ProtectedTaskHumanResumeBindingV1,
+): readonly ProtectedAccessResumeObligation[] {
+  if (binding.kind === "await_reply") return [];
+  const value = exactPendingInterruptValue(checkpoint, binding.interruptId);
+  const obligations: ProtectedAccessResumeObligation[] = [];
+  if (binding.kind === "identity") {
+    const tools = value["protectedMemoryTools"];
+    if (tools === undefined) return [];
+    if (!Array.isArray(tools)) {
+      throw new TypeError("Protected Task Memory identity checkpoint is invalid");
+    }
+    for (const candidate of tools) {
+      const tool = objectRecord(candidate);
+      if (tool?.["mode"] !== "attach"
+        || typeof tool["toolCallId"] !== "string"
+        || tool["toolCallId"].length === 0) continue;
+      obligations.push({ toolCallId: tool["toolCallId"] });
+    }
+  } else {
+    const tools = value["tools"];
+    if (!Array.isArray(tools)) {
+      throw new TypeError("Protected Task Memory approval checkpoint is invalid");
+    }
+    for (const candidate of tools) {
+      const tool = objectRecord(candidate);
+      const preview = objectRecord(tool?.["shareMemoryPreview"]);
+      if (tool?.["name"] !== "share_memory"
+        || typeof tool["id"] !== "string"
+        || tool["id"].length === 0
+        || typeof preview?.["protectedApprovalDigest"] !== "string"
+        || preview["protectedApprovalDigest"].length === 0) continue;
+      obligations.push({
+        toolCallId: tool["id"],
+        ...(binding.kind === "approval" && binding.verb === "deny"
+          || binding.kind === "prove_it" && binding.approved === false
+          ? { deniedPreview: preview }
+          : {}),
+      });
+    }
+  }
+  const ids = obligations.map(obligation => obligation.toolCallId);
+  if (new Set(ids).size !== ids.length) {
+    throw new TypeError("Protected Task Memory resume checkpoint is ambiguous");
+  }
+  return obligations;
+}
+
+async function restoreProtectedTaskAccessForHumanResume(
+  checkpoint: Readonly<{
+    values?: unknown;
+    tasks?: readonly unknown[];
+  }> | undefined,
+  binding: ProtectedTaskHumanResumeBindingV1,
+  currentState: NautiloState,
+  accessPortForState: ((state: NautiloState) =>
+    ProtectedAgentMemoryAccessPort | undefined) | undefined,
+): Promise<void> {
+  const obligations = protectedAccessResumeObligations(checkpoint, binding);
+  if (obligations.length === 0) return;
+  const messages = objectRecord(checkpoint?.values)?.["messages"];
+  const currentMessage = Array.isArray(messages)
+    ? [...(messages as unknown[])].reverse().map(objectRecord).find(message =>
+        Array.isArray(message?.["tool_calls"])
+      )
+    : undefined;
+  const calls = Array.isArray(currentMessage?.["tool_calls"])
+    ? currentMessage["tool_calls"] as unknown[]
+    : [];
+  const snapshots = objectRecord(checkpoint?.values)?.[
+    "protectedMemoryAccessSnapshots"
+  ];
+  if (!Array.isArray(snapshots)) {
+    throw new TypeError("Protected Task Memory access checkpoint is unavailable");
+  }
+  const port = accessPortForState?.(currentState);
+  if (port === undefined
+    || (obligations.some(obligation => obligation.deniedPreview === undefined)
+      && port.restoreApproval === undefined)) {
+    throw new TypeError(
+      "Protected Task Memory access resume requires fresh authorized custody",
+    );
+  }
+  beginProtectedMemoryAccessPreviewBatch(port);
+  for (const obligation of obligations) {
+    const matchingCalls = calls.filter(candidate =>
+      objectRecord(candidate)?.["id"] === obligation.toolCallId
+    );
+    const matchingSnapshots = snapshots.filter(candidate =>
+      objectRecord(candidate)?.["toolCallId"] === obligation.toolCallId
+    );
+    if (matchingCalls.length !== 1 || matchingSnapshots.length !== 1) {
+      throw new TypeError("Protected Task Memory access checkpoint is incomplete");
+    }
+    const call = matchingCalls[0] as Parameters<
+      typeof restoreProtectedMemoryAccessSnapshot
+    >[1];
+    const snapshot = matchingSnapshots[0] as ProtectedMemoryAccessSnapshot;
+    if (obligation.deniedPreview !== undefined) {
+      bindDeniedProtectedMemoryAccessSnapshot(
+        currentState,
+        call,
+        snapshot,
+        obligation.deniedPreview,
+        port,
+      );
+    } else {
+      await restoreProtectedMemoryAccessSnapshot(
+        currentState,
+        call,
+        snapshot,
+        port,
+      );
+    }
+  }
+}
 
 function extractPersistedMessagesFromChainEnd(ev: unknown): BaseMessage[] {
   if (!ev || typeof ev !== "object") return [];
@@ -927,6 +1086,20 @@ async function runScopeSubagentUntilPauseInternal(
     : createProtectedTaskNodeSettlementScope(opts.signal);
 
   try {
+    const protectedTaskMemoryGraphDeps = createProtectedTaskMemoryGraphDeps({
+      taskId: opts.currentTaskId ?? "",
+      taskRunId: opts.currentTaskRunId ?? "",
+      graphThreadId: opts.subagentThreadId ?? "",
+      ownerId: opts.parentOwnerId,
+      causalHumanUserId: opts.causalHumanUserId ?? "",
+      agentId: opts.subEnvelope.agentId,
+      roomId: opts.roomId,
+      callingRoomId: opts.callingRoomId ?? "",
+      turnId: opts.parentTurnId,
+      approvalLaneKey: opts.approvalLaneKey ?? opts.subagentThreadId ?? "",
+      actorRole: opts.actorRole,
+      envelope: opts.subEnvelope,
+    }, opts.protectedTaskMemoryHandoff);
     const graph = createNautiloGraph(
       checkpointSaver,
       policyResolver,
@@ -942,20 +1115,7 @@ async function runScopeSubagentUntilPauseInternal(
         ...(opts.foregroundChatFundingSession === undefined
           ? {}
           : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
-        ...createProtectedTaskMemoryGraphDeps({
-          taskId: opts.currentTaskId ?? "",
-          taskRunId: opts.currentTaskRunId ?? "",
-          graphThreadId: opts.subagentThreadId ?? "",
-          ownerId: opts.parentOwnerId,
-          causalHumanUserId: opts.causalHumanUserId ?? "",
-          agentId: opts.subEnvelope.agentId,
-          roomId: opts.roomId,
-          callingRoomId: opts.callingRoomId ?? "",
-          turnId: opts.parentTurnId,
-          approvalLaneKey: opts.approvalLaneKey ?? opts.subagentThreadId ?? "",
-          actorRole: opts.actorRole,
-          envelope: opts.subEnvelope,
-        }, opts.protectedTaskMemoryHandoff),
+        ...protectedTaskMemoryGraphDeps,
         ...(nodeSettlement === undefined
           ? {}
           : { protectedTaskNodeSettlementScope: nodeSettlement }),
@@ -1140,13 +1300,24 @@ async function runScopeSubagentUntilPauseInternal(
         relayCapabilities: opts.relayCapabilities,
       },
     );
+    if (!protectedResumeCommand.update
+      || Array.isArray(protectedResumeCommand.update)) {
+      throw new TypeError(
+        "Protected Task Human resume requires a state-object authority update",
+      );
+    }
+    await restoreProtectedTaskAccessForHumanResume(
+      saved,
+      opts.protectedTaskHumanResume,
+      {
+        ...(saved?.values as NautiloState),
+        ...protectedResumeCommand.update,
+      },
+      "protectedMemoryAccessPortForState" in protectedTaskMemoryGraphDeps
+        ? protectedTaskMemoryGraphDeps.protectedMemoryAccessPortForState
+        : undefined,
+    );
     if (lifecycleUpdate) {
-      if (!protectedResumeCommand.update
-        || Array.isArray(protectedResumeCommand.update)) {
-        throw new TypeError(
-          "Protected Task Human resume requires a state-object authority update",
-        );
-      }
       streamInput = new Command({
         resume: protectedResumeCommand.resume,
         update: { ...protectedResumeCommand.update, ...lifecycleUpdate },

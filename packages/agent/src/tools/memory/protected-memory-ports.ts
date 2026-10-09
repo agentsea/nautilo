@@ -5,6 +5,7 @@ import {
   type ProtectedMemoryAuthority,
   type ProtectedMemoryResult,
   type ProtectedAgentMemoryAccessAction,
+  type ProtectedAgentMemoryAccessApprovalReference,
   type ProtectedAgentMemoryAccessPort,
   type ProtectedAgentMemoryProjectionApprovalPreview,
   type ProtectedAgentMemoryProjectionPort,
@@ -24,6 +25,7 @@ export class ProtectedMemoryToolUnavailableError extends Error {
 
 export type {
   ProtectedAgentMemoryAccessAction,
+  ProtectedAgentMemoryAccessApprovalReference,
   ProtectedAgentMemoryAccessPort,
   ProtectedAgentMemoryProjectionApprovalPreview,
   ProtectedAgentMemoryProjectionPort,

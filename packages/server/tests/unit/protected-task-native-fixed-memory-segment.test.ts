@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 
-import type { ProtectedTaskMemoryProjectionHandoff } from "@nautilo/agent";
+import type {
+  ProtectedTaskMemoryAccessHandoff,
+  ProtectedTaskMemoryProjectionHandoff,
+} from "@nautilo/agent";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import { bindEncryptionDataOperationOwner, type TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import {
@@ -428,6 +431,16 @@ function overrides(
     planPublication: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
     publishAuthorized: async () => ({ status: "unavailable" as const, reason: "authorization_required" as const }),
   });
+  const access = Object.freeze({
+    prepareApproval: async () => ({ status: "unavailable" as const,
+      reason: "authorization_required" as const }),
+    restoreApproval: async () => ({ status: "unavailable" as const,
+      reason: "authorization_required" as const }),
+    planChange: async () => ({ status: "unavailable" as const,
+      reason: "authorization_required" as const }),
+    changeAuthorized: async () => ({ status: "unavailable" as const,
+      reason: "authorization_required" as const }),
+  }) as ProtectedTaskMemoryAccessHandoff;
   return {
     decodeRequest: decodeTaskRuntimeBackgroundAuthorizationRequestV1,
     destroyRequest: () => { calls.push("request-destroy"); },
@@ -496,12 +509,14 @@ function overrides(
       assertCurrent: async () => undefined,
     }),
     withMemoryRepository: async (input: {
-      execute(value: typeof repository, projection: ProtectedTaskMemoryProjectionHandoff): Promise<unknown>;
+      execute(value: typeof repository,
+        projection: ProtectedTaskMemoryProjectionHandoff,
+        access: ProtectedTaskMemoryAccessHandoff): Promise<unknown>;
       current: { jobId: string };
       authority: { mode: string };
     }) => {
       calls.push(`repository-open:${input.current.jobId}:${input.authority.mode}`);
-      try { return await input.execute(repository, projection); }
+      try { return await input.execute(repository, projection, access); }
       finally { calls.push("repository-close"); }
     },
     withCheckpointSaver: async (input: {
@@ -536,11 +551,13 @@ function overrides(
     }) => {
       calls.push("runner");
       expect(Object.keys(input.memoryHandoff).sort()).toEqual([
+        "access",
         "fullEncryptionOnly",
         "projection",
         "repository",
         "search",
       ]);
+      expect(input.memoryHandoff["access"]).toBe(access);
       expect(input.memoryHandoff["projection"]).toBe(projection);
       if (outcome === "throw") throw new Error("runner failed");
       if (outcome === "interrupt" || outcome === "prove_it"

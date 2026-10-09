@@ -208,6 +208,7 @@ export function foregroundContextRefreshInput(
     requiredHostRelays: {},
     identityEnrollmentToolCallIds: [],
     projectionSnapshots: [],
+    protectedMemoryAccessSnapshots: [],
     projectionRoomChoices: [],
     projectionRejectedToolCallIds: [],
     modelRejectedToolCallIds: [],

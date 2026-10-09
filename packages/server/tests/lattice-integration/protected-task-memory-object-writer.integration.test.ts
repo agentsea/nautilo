@@ -2,7 +2,9 @@ import { assertFixtureDbMutationAllowed } from "@nautilo/db/testing";
 import { createHash, randomUUID } from "node:crypto";
 
 import { describe, expect, test } from "bun:test";
-import { resolveModelRole, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1 } from "@nautilo/agent";
+import { resolveModelRole, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+  type ProtectedTaskMemoryAccessHandoff,
+} from "@nautilo/agent";
 import {
   actors,
   agentCryptoRuntimeChallenges,
@@ -210,9 +212,12 @@ import {
 } from "../../src/routes/protected-task-native-memory-repository.ts";
 import {
   adoptProtectedTaskScopeMemoryOrigin,
+  assertHeldProtectedTaskContentAccessNamespace,
   attachProtectedTaskScopeMemoryRepair,
   requireHeldProtectedTaskMemoryWriterAuthority,
   reserveProtectedTaskScopeMemoryRepair,
+  findProtectedTaskContentAccessNamespace,
+  resolveProtectedTaskContentAccessNamespace,
   withCurrentProtectedTaskMemoryAuthority,
   type HeldProtectedTaskMemoryAuthority,
 } from "../../src/routes/current-protected-task-memory-authority.ts";
@@ -2379,6 +2384,180 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
+  test("reserves an empty exact access destination under current Task authority", async () => {
+    const base = await createBaseFixture();
+    const recipientUserId = randomUUID();
+    const recipientActorId = randomUUID();
+    const recipientHandle = `task-access-${recipientUserId}`;
+    const createdDestinations: Array<{ roomId: string; namespaceId: string }> = [];
+    try {
+      await base.admin.insert(users).values({
+        id: recipientUserId, name: "Task sharing recipient", handle: recipientHandle,
+      });
+      await base.admin.insert(actors).values({
+        id: recipientActorId, ownerId: recipientUserId, kind: "user",
+        trustState: "verified", displayName: "Task sharing recipient",
+      });
+      const scenario = await createScenario(base);
+      const authority: ProtectedMemoryAuthority = Object.freeze({
+        mode: "namespace", subjectUserId: base.userId, agentId: base.productAgentId,
+        readableNamespaceIds: [base.namespaceValue],
+        mutableNamespaceIds: [base.namespaceValue],
+        writableNamespaceId: base.namespaceValue,
+      });
+      const withRepository = <Value>(execute: (
+        repository: ProtectedAgentMemoryRepository,
+        access: ProtectedTaskMemoryAccessHandoff,
+      ) => Promise<Value>) => scenario.withAuthority(() => NOW + 5,
+        ({ writer }) => withProtectedTaskNativeMemoryRepository({
+          authority,
+          policy: { mode: "encrypted_only", shadowBehavior: "strict",
+            revision: base.policyRevision },
+          current: writer,
+          domains: [scenario.domainSecret],
+          signer: { agentAuthorizationRevision: 7, runtime: base.runtime.runtime,
+            signerPublication: base.runtime.signerPublication },
+          resolveHistoricalSignerPublicationManager: () => base.currentDevice.signingPublicKey,
+          product: base.product,
+          agentProduct: base.agentProduct,
+          owner: bindEncryptionDataOperationOwner({ policy: {
+            resolve: async () => ({ policy: { mode: "encrypted_only" as const,
+              shadowBehavior: "strict" as const }, revalidationToken: base.policyRevision }),
+            revalidate: async token => {
+              if (token !== base.policyRevision) throw new Error("Task policy changed");
+            },
+          } }),
+          embedding: { embed: async () => ({ status: "success" as const, value: {
+            vector: new Array<number>(1536).fill(0.25), provider: "openai" as const,
+            canonicalModel: "text-embedding-3-small", dimensions: 1536 as const,
+            contractVersion: 1,
+          } }) },
+          execute: (repository, _projection, access) => execute(repository, access),
+        }));
+      const sourceContent = `Task access private content ${randomUUID()}`;
+      const saved = await withRepository(repository => repository.save({
+        operationId: `task-access-source:${randomUUID()}`, authority,
+        type: "fact", content: sourceContent, importance: 0.8,
+      }));
+      if (saved.status !== "success") throw new Error("Task access source save failed");
+      base.memoryIds.add(saved.value.id);
+      base.objectIds.add(deriveMemoryCryptoObjectIdV1({
+        memoryId: saved.value.id, contentRevision: 1,
+      }));
+      const request = { operationId: `task-access-share:${randomUUID()}`,
+        toolCallId: `share:${randomUUID()}`, authority, memoryId: saved.value.id,
+        action: { kind: "grant_user" as const, userHandle: recipientHandle } };
+      const prepared = await withRepository((_repository, access) => access.prepareApproval(request));
+      if (prepared.status !== "success") {
+        throw new Error(`Task access approval failed: ${prepared.reason}`);
+      }
+      expect(prepared.value.preview).toEqual({ type: "fact", content: sourceContent });
+      expect(prepared.value.reference.taskContinuation?.sealedPreparation)
+        .not.toContain(sourceContent);
+      const reference = JSON.parse(JSON.stringify(prepared.value.reference)) as
+        typeof prepared.value.reference;
+      const restored = await withRepository((_repository, access) => access.restoreApproval({
+        authority, reference, memoryId: request.memoryId, action: request.action,
+      }));
+      expect(restored).toEqual({ status: "success", value: prepared.value.preview });
+      expect((await withRepository((_repository, access) => access.restoreApproval({
+        authority, reference, memoryId: request.memoryId,
+        action: { kind: "grant_user", userHandle: "substituted-recipient" },
+      }))).status).toBe("unavailable");
+      const audience = Object.freeze({
+        requesterUserId: base.userId,
+        requesterActorId: base.humanActorId,
+        humanActorIds: Object.freeze([base.humanActorId, recipientActorId]),
+      });
+      const reserve = (now: number, requested = audience) => scenario.withAuthority(
+        () => now,
+        ({ writer }) => resolveProtectedTaskContentAccessNamespace(writer, requested),
+      );
+      const find = () => scenario.withAuthority(() => NOW + 5,
+        ({ writer }) => findProtectedTaskContentAccessNamespace(writer, audience));
+      expect(await find()).toBeNull();
+      expect(await reserve(NOW + 5, {
+        ...audience, requesterUserId: recipientUserId,
+      })).toBeNull();
+      const expired = await reserve(EXPIRES_AT).then(
+        value => value === null,
+        () => true,
+      );
+      expect(expired).toBe(true);
+      const destination = await reserve(NOW + 5);
+      if (destination === null) throw new Error("Current Task access reservation failed");
+      createdDestinations.push(destination);
+      expect(destination.minted).toBe(true);
+      expect(await reserve(NOW + 5)).toEqual({ ...destination, minted: false });
+      expect(await find()).toEqual({
+        roomId: destination.roomId, namespaceId: destination.namespaceId,
+      });
+      const planned = await withRepository((_repository, access) => access.planChange({
+        ...request, approvalReference: reference,
+      }));
+      expect(planned.status).toBe("success");
+      if (planned.status === "success") {
+        expect(planned.value.kind).toBe("additional_authority_v1");
+        expect(planned.value.semanticAuthorityRequirements).toContainEqual({
+          namespaceId: destination.namespaceId, operations: ["encrypt"],
+        });
+      }
+      const [room] = await base.admin.select({
+        kind: rooms.kind, humanActorIds: rooms.humanActorIds,
+      }).from(rooms).where(eq(rooms.id, destination.roomId));
+      expect(room).toEqual({
+        kind: "access", humanActorIds: [...audience.humanActorIds].sort(),
+      });
+      const members = await base.admin.select({ actorId: roomMembers.actorId })
+        .from(roomMembers).where(eq(roomMembers.roomId, destination.roomId));
+      expect(members.map(member => member.actorId).sort())
+        .toEqual([...audience.humanActorIds].sort());
+      expect(await base.admin.select({ id: memoryNamespaces.memoryId })
+        .from(memoryNamespaces).where(eq(memoryNamespaces.namespaceId,
+          destination.namespaceId))).toEqual([]);
+      expect(await base.admin.select({ id: objectCryptoNamespaceEnvelopes.objectId })
+        .from(objectCryptoNamespaceEnvelopes).where(eq(
+          objectCryptoNamespaceEnvelopes.namespaceId, destination.namespaceId,
+        ))).toEqual([]);
+      const heldAudience = await scenario.withAuthority(() => NOW + 5,
+        ({ writer }) => withCurrentProtectedTaskMemoryAuthority(writer, async held => {
+          expect(await assertHeldProtectedTaskContentAccessNamespace(
+            held, audience, destination,
+          )).toBe(true);
+          const lockError = await base.admin.select({ id: users.id }).from(users)
+            .where(eq(users.id, recipientUserId)).for("update", { noWait: true })
+            .then(() => null, (error: unknown) => {
+              const cause = error instanceof Error && error.cause !== undefined
+                ? error.cause : error;
+              return typeof cause === "object" && cause !== null && "code" in cause
+                ? cause.code : null;
+            });
+          expect(lockError).toBe("55P03");
+          return true;
+        }));
+      expect(heldAudience).toBe(true);
+      await base.admin.update(users).set({ disabledAt: new Date(NOW) })
+        .where(eq(users.id, recipientUserId));
+      const disabled = await reserve(NOW + 5).then(
+        value => value === null,
+        () => true,
+      );
+      expect(disabled).toBe(true);
+    } finally {
+      try {
+        for (const destination of createdDestinations) {
+          await base.admin.delete(roomMembers).where(eq(roomMembers.roomId, destination.roomId));
+          await base.admin.delete(rooms).where(eq(rooms.id, destination.roomId));
+          await base.admin.delete(namespaces).where(eq(namespaces.id, destination.namespaceId));
+        }
+        await base.admin.delete(actors).where(eq(actors.id, recipientActorId));
+        await base.admin.delete(users).where(eq(users.id, recipientUserId));
+      } finally {
+        await base.cleanup();
+      }
+    }
+  });
+
   test("serializes protected Job terminal writers and start against cancellation", async () => {
     const base = await createBaseFixture({ connectedExecution: true });
     try {

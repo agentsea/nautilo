@@ -307,7 +307,17 @@ export function createNautiloGraph(
         ? preflightProjectionShareCalls(state, calls)
         : preflightProtectedProjectionShareCalls(state, calls, projection);
     },
-    { sanitizeProjectionToolArgs: true },
+    {
+      sanitizeProjectionToolArgs: true,
+      ...(deps?.protectedMemoryAccessPortForState === undefined
+        ? {}
+        : {
+          protectedMemoryAccessPortForState: state => {
+            const port = deps.protectedMemoryAccessPortForState?.(state);
+            return port?.restoreApproval === undefined ? undefined : port;
+          },
+        }),
+    },
   );
   const recallRecordsPortForState = deps?.recallRecordsPortForState;
   const draftNodes = researchNoteDraftNodes({

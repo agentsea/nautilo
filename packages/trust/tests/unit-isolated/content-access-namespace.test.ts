@@ -3,7 +3,10 @@ import type { InviteSeedTx } from "@nautilo/db";
 
 const mint = mock(async () => ({ namespaceId: "new-namespace" }));
 mock.module("../../src/queries", () => ({ insertPrivateRoomBundleTx: mint }));
-const { resolveContentAccessNamespaceInTx } = await import("../../src/content-access-namespace");
+const {
+  findContentAccessNamespaceInTx,
+  resolveContentAccessNamespaceInTx,
+} = await import("../../src/content-access-namespace");
 afterAll(() => mock.restore());
 
 const input = { requesterUserId: "user-a", requesterActorId: "a", humanActorIds: ["b", "a", "b"] };
@@ -64,6 +67,13 @@ describe("immutable content access persistence", () => {
     expect(await resolveContentAccessNamespaceInTx(tx, input)).toEqual({
       roomId: "existing", namespaceId: "existing-ns", minted: false,
     });
+    expect(mint).not.toHaveBeenCalled();
+  });
+
+  test("finds no absent exact audience without minting", async () => {
+    mint.mockClear();
+    const { tx } = transaction([humans, []]);
+    expect(await findContentAccessNamespaceInTx(tx, input)).toBeNull();
     expect(mint).not.toHaveBeenCalled();
   });
 

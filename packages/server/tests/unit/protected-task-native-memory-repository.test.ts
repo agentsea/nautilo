@@ -1,10 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import type { ProtectedTaskMemoryProjectionHandoff } from "@nautilo/agent";
+import type {
+  ProtectedTaskMemoryAccessHandoff,
+  ProtectedTaskMemoryProjectionHandoff,
+} from "@nautilo/agent";
 import type {
   ProtectedAgentMemoryRepository,
   ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
-import { deriveMemoryCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import {
+  deriveMemoryCryptoObjectIdV1,
+  fingerprintRequiredMemoryNamespaces,
+} from "@nautilo/lattice-bridge";
 import type {
   ForegroundMemoryRepairSource,
   TaskNamespaceMemoryRepairSource,
@@ -18,6 +24,9 @@ import {
 import {
   createProtectedTaskMemoryRepository,
 } from "../../src/routes/protected-task-memory-composition";
+import type {
+  ProtectedTaskMemoryExactAccessInput,
+} from "../../src/routes/protected-task-memory-exact-access";
 import type {
   HeldProtectedTaskMemoryAuthority,
   ProtectedTaskMemoryAuthorityInput,
@@ -52,8 +61,19 @@ function fixture(
     restricted: Object.freeze({}),
     crypto: Object.freeze({}),
     serverScope: "https://nautilo.example",
-    subject: Object.freeze({ userId: USER }),
-    occurrence: Object.freeze({ task: Object.freeze({ agentId: AGENT }) }),
+    subject: Object.freeze({ userId: USER,
+      humanActorId: "99999999-9999-4999-8999-999999999999" }),
+    occurrence: Object.freeze({
+      task: Object.freeze({
+        id: "88888888-8888-4888-8888-888888888888",
+        agentId: AGENT,
+        contentNamespaceId: NAMESPACE,
+      }),
+      run: Object.freeze({
+        id: "99999999-9999-4999-8999-999999999998",
+        graphThreadId: "thread-1",
+      }),
+    }),
     evidence,
     signal: new AbortController().signal,
   } as unknown as ProtectedTaskMemoryAuthorityInput;
@@ -68,8 +88,9 @@ function fixture(
     domains: Object.freeze([]),
     signer: Object.freeze({
       agentAuthorizationRevision: 3,
-      runtime: Object.freeze({ agentId: AGENT }),
-      signerPublication: Object.freeze({ agentId: AGENT }),
+      runtime: Object.freeze({ agentId: AGENT, generation: 1 }),
+      signerPublication: Object.freeze({ agentId: AGENT,
+        signerKeyId: "signer-1", signerPublicKey: new Uint8Array(32) }),
     }) as ProtectedTaskNativeMemoryRepositoryInput<string>["signer"],
     resolveHistoricalSignerPublicationManager: async () => null,
     product: Object.freeze({
@@ -90,6 +111,8 @@ type Overrides = NonNullable<Parameters<
   typeof withProtectedTaskNativeMemoryRepository
 >[1]>;
 type Dependency<Key extends keyof Overrides> = NonNullable<Overrides[Key]>;
+type ExactCrypto = ReturnType<Dependency<"createExactCrypto">>;
+type ExactProduct = ReturnType<Dependency<"createExactProduct">>;
 
 function held(
   input: ProtectedTaskNativeMemoryRepositoryInput<unknown>,
@@ -174,6 +197,7 @@ function assemblyOverrides(
       expect(projectionInput.sourceProduct).toBeDefined();
       return projection;
     },
+    assertHeldAccessNamespace: () => Promise.resolve(true),
   } as Overrides;
 }
 
@@ -371,10 +395,12 @@ describe("protected native Task Memory repository", () => {
         execute: async (
           repository: ProtectedAgentMemoryRepository,
           projection: ProtectedTaskMemoryProjectionHandoff,
+          access: ProtectedTaskMemoryAccessHandoff,
         ) => {
           events.push("execute");
           expect(repository).toBeDefined();
           expect(projection).toBeDefined();
+          expect(access).toBeDefined();
           return "assembled";
         },
       };
@@ -1020,4 +1046,218 @@ describe("protected native Task Memory repository", () => {
     });
     expect(embeddingUses).toBe(0);
   });
+
+  for (const recovery of [false, true]) {
+    test(`holds current Task authority through exact access ${recovery
+      ? "recovery" : "crypto and product commit"}`, async () => {
+      const base = fixture();
+      const events: string[] = [];
+      let captured: ProtectedTaskMemoryExactAccessInput | null = null;
+      let committing = false;
+      let taskLocked = false;
+      let entityAuthorized = false;
+      let cancelled = false;
+      const source = Object.freeze({
+        memoryId: MEMORY,
+        contentRevision: 2,
+        cryptoAccessRevision: 4,
+        cryptoObjectId: deriveMemoryCryptoObjectIdV1({
+          memoryId: MEMORY,
+          contentRevision: 2,
+        }),
+        requiredNamespaceIds: Object.freeze([NAMESPACE]),
+        payloadDigest: "payload-digest",
+      });
+      const destination = Object.freeze({
+        roomId: MEMORY_ROOM,
+        namespaceId: OTHER_NAMESPACE,
+        humanActorIds: Object.freeze([
+          "99999999-9999-4999-8999-999999999999",
+          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ]),
+      });
+      const targetNamespaceIds = Object.freeze([
+        NAMESPACE,
+        OTHER_NAMESPACE,
+      ].sort());
+      const plan = Object.freeze({
+        operationId: "grant-user-stable-operation",
+        memoryId: MEMORY,
+        cryptoObjectId: source.cryptoObjectId,
+        expectedContentRevision: source.contentRevision,
+        expectedCryptoAccessRevision: source.cryptoAccessRevision,
+        nextCryptoAccessRevision: source.cryptoAccessRevision + 1,
+        anchorNamespaceId: NAMESPACE,
+        currentNamespaceIds: source.requiredNamespaceIds,
+        targetNamespaceIds,
+        addedNamespaceIds: Object.freeze([OTHER_NAMESPACE]),
+        removedNamespaceIds: Object.freeze([]),
+        currentRequiredNamespaceFingerprint:
+          fingerprintRequiredMemoryNamespaces(source.requiredNamespaceIds),
+        targetRequiredNamespaceFingerprint:
+          fingerprintRequiredMemoryNamespaces(targetNamespaceIds),
+        productMutation: Object.freeze({
+          kind: "grant_namespace" as const,
+          namespaceId: OTHER_NAMESPACE,
+        }),
+      });
+      const input = {
+        ...base,
+        execute: async () => {
+          const access = captured;
+          if (access === null) throw new Error("access was not assembled");
+          committing = true;
+          const result = await access.commit({
+            request: {
+              operationId: plan.operationId,
+              authority,
+              memoryId: MEMORY,
+              action: { kind: "grant_user", userHandle: "target" },
+            },
+            source,
+            destination,
+            plan,
+          });
+          committing = false;
+          expect(result).toEqual({ status: "success", value: {
+            status: recovery ? "replayed" : "updated",
+            memoryId: MEMORY,
+          } });
+          expect(cancelled).toBe(true);
+          return "assembled";
+        },
+      } satisfies ProtectedTaskNativeMemoryRepositoryInput<string>;
+      const overrides = assemblyOverrides(input, events);
+      const currentHeld = held(input);
+      expect(await withProtectedTaskNativeMemoryRepository(input, {
+        ...overrides,
+        withCurrentAuthority: (async (_, use) => {
+          if (!committing) return use(currentHeld);
+          expect(entityAuthorized).toBe(true);
+          expect(taskLocked).toBe(false);
+          events.push("task-lock");
+          taskLocked = true;
+          try {
+            return await use(currentHeld);
+          } finally {
+            taskLocked = false;
+            cancelled = true;
+            events.push("task-unlock");
+          }
+        }) as Dependency<"withCurrentAuthority">,
+        requireHeldWriterAuthority: current => {
+          expect(current).toBe(currentHeld);
+          return Object.freeze({
+            crypto: Object.freeze({}),
+            evidence: input.current.evidence,
+            restricted: Object.freeze({}),
+            restrictedHandle: Object.freeze({}),
+            assertCurrent: () => {
+              expect(taskLocked).toBe(true);
+              expect(cancelled).toBe(false);
+              return Promise.resolve();
+            },
+          }) as never;
+        },
+        assertHeldAccessNamespace: async (current, audience, expected) => {
+          expect(current).toBe(currentHeld);
+          expect(taskLocked).toBe(true);
+          expect(cancelled).toBe(false);
+          expect(audience).toEqual({
+            requesterUserId: USER,
+            requesterActorId: "99999999-9999-4999-8999-999999999999",
+            humanActorIds: destination.humanActorIds,
+          });
+          expect(expected).toBe(destination);
+          events.push("recipient-fence");
+          return true;
+        },
+        createAccessCapsule: () => Object.freeze({}) as never,
+        createAccess: accessInput => {
+          captured = accessInput;
+          return Object.freeze({}) as ProtectedTaskMemoryAccessHandoff;
+        },
+        createExactCrypto: () => Object.freeze({
+          prepare: async (request: Parameters<ExactCrypto["prepare"]>[0]) => recovery
+            && request.expectedAccessRevision === source.cryptoAccessRevision
+            ? null
+            : Object.freeze({}) as never,
+          authorizeCommit: async (
+            request: Parameters<ExactCrypto["authorizeCommit"]>[0],
+          ) => {
+            expect(taskLocked).toBe(false);
+            entityAuthorized = true;
+            events.push("entity-authorize");
+            try {
+              return await request.commit(Object.freeze({}) as never);
+            } finally {
+              entityAuthorized = false;
+            }
+          },
+          authorizeCurrentHead: async (
+            request: Parameters<ExactCrypto["authorizeCurrentHead"]>[0],
+          ) => {
+            expect(taskLocked).toBe(false);
+            entityAuthorized = true;
+            events.push("entity-authorize");
+            try {
+              return await request.commit(Object.freeze({
+                objectId: plan.cryptoObjectId,
+                accessRevision: plan.nextCryptoAccessRevision,
+                namespaceIds: plan.targetNamespaceIds,
+                manifestHash: new Uint8Array(32),
+              }));
+            } finally {
+              entityAuthorized = false;
+            }
+          },
+        }) as never,
+        createExactProduct: productInput => Object.freeze({
+          commitNativePrepared: async (
+            request: Parameters<ExactProduct["commitNativePrepared"]>[0],
+          ) => {
+            await productInput.assertCurrentAuthority?.();
+            expect(entityAuthorized).toBe(true);
+            expect(taskLocked).toBe(true);
+            expect(cancelled).toBe(false);
+            events.push("product-reserve");
+            expect(await request.persist()).toBe("created");
+            expect(taskLocked).toBe(true);
+            expect(cancelled).toBe(false);
+            events.push("product-commit");
+            await productInput.assertCurrentAuthority?.();
+            return Object.freeze({ status: "success" as const,
+              value: Object.freeze({ status: "updated" as const,
+                memoryId: MEMORY }) });
+          },
+          recoverNativeCommitted: async () => {
+            await productInput.assertCurrentAuthority?.();
+            expect(entityAuthorized).toBe(true);
+            expect(taskLocked).toBe(true);
+            expect(cancelled).toBe(false);
+            events.push("product-recover");
+            await productInput.assertCurrentAuthority?.();
+            return Object.freeze({ status: "success" as const,
+              value: Object.freeze({ status: "replayed" as const,
+                memoryId: MEMORY }) });
+          },
+        }) as never,
+        persistExact: async () => {
+          expect(entityAuthorized).toBe(true);
+          expect(taskLocked).toBe(true);
+          expect(cancelled).toBe(false);
+          events.push("crypto-persist");
+          return "created";
+        },
+        createSignerHistory: () => Object.freeze({
+          resolveAgentRuntimeSignerManager: async () => null,
+        }) as never,
+      })).toBe("assembled");
+      expect(events.slice(-5)).toEqual(recovery
+        ? ["entity-authorize", "task-lock", "recipient-fence",
+            "product-recover", "task-unlock"]
+        : ["recipient-fence", "product-reserve", "crypto-persist",
+            "product-commit", "task-unlock"]);
+    });
+  }
 });
