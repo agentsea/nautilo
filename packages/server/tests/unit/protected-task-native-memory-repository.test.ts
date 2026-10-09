@@ -8,11 +8,13 @@ import type {
   ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
 import {
+  bindEncryptionDataOperationOwner,
   deriveMemoryCryptoObjectIdV1,
   fingerprintRequiredMemoryNamespaces,
 } from "@nautilo/lattice-bridge";
 import type {
   ForegroundMemoryRepairSource,
+  ProtectedTaskMemoryReadPort,
   TaskNamespaceMemoryRepairSource,
   TaskScopeMemoryRepairSource,
 } from "@nautilo/lattice-bridge/server";
@@ -39,6 +41,8 @@ const OTHER_NAMESPACE = "44444444-4444-4444-8444-444444444444";
 const SCOPE = "55555555-5555-4555-8555-555555555555";
 const MEMORY_ROOM = "66666666-6666-4666-8666-666666666666";
 const MEMORY = "77777777-7777-4777-8777-777777777777";
+const TARGET_USER = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const TARGET_ACTOR = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 const authority = Object.freeze({
   mode: "namespace" as const,
@@ -54,6 +58,15 @@ function fixture(
 ): ProtectedTaskNativeMemoryRepositoryInput<string> {
   const runner = Object.freeze({ role: "nautilo" });
   const evidence = Object.freeze({
+    policyRevision: 7,
+    namespaceRequirements: Object.freeze([Object.freeze({
+      ordinal: 0,
+      namespaceId: NAMESPACE,
+      domainId: "domain-1",
+      expectedAccessRevision: 1,
+      expectedPolicyRevision: 7,
+      operations: Object.freeze(["decrypt" as const, "encrypt" as const]),
+    })]),
     result: Object.freeze({ signerAgentId: AGENT }),
   });
   const current = {
@@ -140,6 +153,23 @@ function assemblyOverrides(
   });
   const entitySignal = suppliedEntitySignal ?? new AbortController().signal;
   const projection = Object.freeze({}) as ProtectedTaskMemoryProjectionHandoff;
+  const readPort: ProtectedTaskMemoryReadPort = Object.freeze({
+    searchProtectedCandidates: async () => Object.freeze({
+      status: "success" as const, value: Object.freeze([]),
+    }),
+    searchCandidates: async () => Object.freeze({
+      status: "success" as const, value: Object.freeze([]),
+    }),
+    loadExactCandidates: async () => Object.freeze({
+      status: "success" as const, value: Object.freeze([]),
+    }),
+    loadExactProtectedSources: async () => Object.freeze({
+      status: "success" as const, value: Object.freeze([]),
+    }),
+    loadExactOrdinary: async () => Object.freeze({
+      status: "success" as const, value: Object.freeze([]),
+    }),
+  });
   return {
     withCurrentAuthority: (async (_, use) => {
       events.push("authority");
@@ -189,9 +219,11 @@ function assemblyOverrides(
       events.push("repository");
       expect(repositoryInput.crypto).toBe(session);
       expect(repositoryInput.read.handle).toBe(input.product.handle);
+      expect(repositoryInput.reader).toBe(readPort);
       expect(repositoryInput.signal).toBe(entitySignal);
       return repository;
     },
+    createReader: () => readPort,
     createProjection: projectionInput => {
       expect(projectionInput.current.signal).toBe(entitySignal);
       expect(projectionInput.sourceProduct).toBeDefined();
@@ -317,6 +349,49 @@ function reservedRepairSource(): Readonly<{
     }),
     plaintextBytes,
     requestCommitment,
+  });
+}
+
+function accessOwner(
+  policy: ProtectedTaskNativeMemoryRepositoryInput<unknown>["policy"],
+) {
+  return bindEncryptionDataOperationOwner({
+    policy: {
+      resolve: async () => Object.freeze({
+        policy: Object.freeze({ mode: policy.mode,
+          shadowBehavior: policy.shadowBehavior }),
+        revalidationToken: policy.revision,
+      }),
+      revalidate: async () => undefined,
+    },
+  });
+}
+
+function ordinaryAccessCandidate(contentRevision = 0) {
+  return Object.freeze({
+    memoryId: MEMORY,
+    contentRevision,
+    cryptoAccessRevision: 0,
+    cryptoObjectId: null,
+    readNamespaceId: NAMESPACE,
+    requiredNamespaceIds: Object.freeze([NAMESPACE]),
+    importance: 0.8,
+    tier: 1,
+    score: 0.95,
+    createdAt: new Date(1_700_000_000_000),
+    representation: "ordinary_only" as const,
+  });
+}
+
+function protectedAccessCandidate(contentRevision = 2) {
+  return Object.freeze({
+    ...ordinaryAccessCandidate(contentRevision),
+    cryptoAccessRevision: 1,
+    cryptoObjectId: deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY,
+      contentRevision,
+    }),
+    representation: "protected_only" as const,
   });
 }
 
@@ -494,6 +569,282 @@ describe("protected native Task Memory repository", () => {
           current: fixture(mode).current,
         }, overrides),
       ).rejects.toThrow("Scope binding is unavailable"));
+    });
+  }
+
+  for (const shadowBehavior of ["strict", "fallback"] as const) {
+    test(`repairs and verifies an ordinary-only ${shadowBehavior} Shadow source before sealing access`, async () => {
+      const base = fixture("shadow_encryption");
+      const policy = Object.freeze({ ...base.policy, shadowBehavior });
+      const reserved = reservedNamespaceRepairSource();
+      let repaired = false;
+      let loads = 0;
+      let repairs = 0;
+      let opens = 0;
+      let seals = 0;
+      const operationIds: string[] = [];
+      const prepareResults: unknown[] = [];
+      const readPort: ProtectedTaskMemoryReadPort = Object.freeze({
+        searchProtectedCandidates: async () => Object.freeze({
+          status: "success" as const, value: Object.freeze([]),
+        }),
+        searchCandidates: async () => Object.freeze({
+          status: "success" as const, value: Object.freeze([]),
+        }),
+        loadExactCandidates: async () => {
+          loads += 1;
+          return Object.freeze({ status: "success" as const,
+            value: Object.freeze([repaired
+              ? protectedAccessCandidate()
+              : ordinaryAccessCandidate()]) });
+        },
+        loadExactProtectedSources: async () => Object.freeze({
+          status: "success" as const, value: Object.freeze([]),
+        }),
+        loadExactOrdinary: async () => Object.freeze({
+          status: "success" as const, value: Object.freeze([]),
+        }),
+      });
+      const input = {
+        ...base,
+        policy,
+        owner: accessOwner(policy),
+        execute: async (_repository: ProtectedAgentMemoryRepository,
+          _projection: ProtectedTaskMemoryProjectionHandoff,
+          access: ProtectedTaskMemoryAccessHandoff) => {
+          for (const operationId of ["grant-first", "grant-replay"]) {
+            prepareResults.push(await access.prepareApproval({
+              operationId,
+              toolCallId: `tool-${operationId}`,
+              authority,
+              memoryId: MEMORY,
+              action: { kind: "grant_user", userHandle: "bob" },
+            }));
+          }
+          return "assembled";
+        },
+      } satisfies ProtectedTaskNativeMemoryRepositoryInput<string>;
+      const overrides = assemblyOverrides(input, []);
+      const createSession = overrides.createSession!;
+      await withProtectedTaskNativeMemoryRepository(input, {
+        ...overrides,
+        createReader: () => readPort,
+        createRepository: () => Object.freeze({}) as ProtectedAgentMemoryRepository,
+        createAccessCapsule: () => Object.freeze({
+          seal: async () => {
+            seals += 1;
+            return "sealed-access";
+          },
+          open: async () => null,
+        }) as never,
+        findActorByHandle: async handle => handle === "bob"
+          ? Object.freeze({ actorId: TARGET_ACTOR, kind: "user" as const,
+              displayName: "Bob" })
+          : null,
+        findActorById: async actorId => actorId === TARGET_ACTOR
+          ? Object.freeze({ id: TARGET_ACTOR, ownerId: TARGET_USER,
+              kind: "user" as const, displayName: "Bob" }) as never
+          : null,
+        reserveNamespaceRepair: async () => reserved.source,
+        attachNamespaceRepair: async () => {
+          repaired = true;
+          return "attached";
+        },
+        createSession: request => {
+          const created = createSession(request);
+          return Object.freeze({
+            ...created,
+            session: Object.freeze({
+              openMany: async ({ candidates }: Readonly<{
+                candidates: readonly ReturnType<
+                  typeof protectedAccessCandidate
+                >[];
+              }>) => {
+                opens += 1;
+                expect(candidates).toEqual([protectedAccessCandidate()]);
+                return Object.freeze({ status: "success" as const,
+                  value: Object.freeze([Object.freeze({ memoryId: MEMORY,
+                    contentRevision: 2, type: "fact",
+                    content: "a retained ordinary body" })]) });
+              },
+            }) as never,
+            protectExactRepair: async repair => {
+              repairs += 1;
+              operationIds.push(repair.operationId);
+              return Object.freeze({ status: "verified" as const,
+                objectId: protectedAccessCandidate().cryptoObjectId,
+                provenance: "repaired" as const,
+                verification: "authenticated" as const,
+                value: Object.freeze({ formatVersion: 1 as const,
+                  type: "fact", content: "a retained ordinary body" }) });
+            },
+          });
+        },
+      });
+      expect(prepareResults).toHaveLength(2);
+      expect(prepareResults[0]).toMatchObject({ status: "success" });
+      expect(prepareResults[1]).toMatchObject({ status: "success" });
+      expect(operationIds).toEqual([
+        `task-memory-access-repair:${input.current.occurrence.run.id}:${
+          MEMORY}:0`,
+      ]);
+      expect({ repairs, opens, seals }).toEqual({ repairs: 1, opens: 2,
+        seals: 2 });
+      expect(loads).toBe(4);
+      expect(reserved.plaintextBytes).toEqual(new Uint8Array(4));
+      expect(reserved.requestCommitment).toEqual(new Uint8Array(32));
+    });
+  }
+
+  test("refuses an ordinary-only Full access source before repair or protected opening", async () => {
+    const base = fixture("encrypted_only");
+    let reserves = 0;
+    let protects = 0;
+    let opens = 0;
+    let seals = 0;
+    let result: unknown;
+    const input = {
+      ...base,
+      owner: accessOwner(base.policy),
+      execute: async (_repository: ProtectedAgentMemoryRepository,
+        _projection: ProtectedTaskMemoryProjectionHandoff,
+        access: ProtectedTaskMemoryAccessHandoff) => {
+        result = await access.prepareApproval({ operationId: "grant-full",
+          toolCallId: "tool-full", authority, memoryId: MEMORY,
+          action: { kind: "grant_user", userHandle: "bob" } });
+        return "assembled";
+      },
+    } satisfies ProtectedTaskNativeMemoryRepositoryInput<string>;
+    const overrides = assemblyOverrides(input, []);
+    const createSession = overrides.createSession!;
+    await withProtectedTaskNativeMemoryRepository(input, {
+      ...overrides,
+      createReader: () => Object.freeze({
+        searchProtectedCandidates: async () => ({ status: "success" as const,
+          value: [] }),
+        searchCandidates: async () => ({ status: "success" as const,
+          value: [] }),
+        loadExactCandidates: async () => ({ status: "success" as const,
+          value: [ordinaryAccessCandidate()] }),
+        loadExactProtectedSources: async () => ({ status: "success" as const,
+          value: [] }),
+        loadExactOrdinary: async () => ({ status: "success" as const,
+          value: [] }),
+      }),
+      createRepository: () => Object.freeze({}) as ProtectedAgentMemoryRepository,
+      reserveNamespaceRepair: async () => {
+        reserves += 1;
+        return reservedNamespaceRepairSource().source;
+      },
+      createSession: request => ({
+        ...createSession(request),
+        session: Object.freeze({ openMany: async () => {
+          opens += 1;
+          return Object.freeze({ status: "success" as const, value: [] });
+        } }) as never,
+        protectExactRepair: async () => {
+          protects += 1;
+          return Object.freeze({ status: "failed" as const,
+            reason: "must not protect" });
+        },
+      }),
+      createAccessCapsule: () => Object.freeze({
+        seal: async () => {
+          seals += 1;
+          return "must-not-seal";
+        },
+        open: async () => null,
+      }) as never,
+      findActorByHandle: async () => Object.freeze({ actorId: TARGET_ACTOR,
+        kind: "user" as const, displayName: "Bob" }),
+      findActorById: async () => Object.freeze({ ownerId: TARGET_USER }) as never,
+    });
+    expect(result).toEqual({ status: "unavailable",
+      reason: "authorization_required" });
+    expect({ reserves, protects, opens, seals }).toEqual({ reserves: 0,
+      protects: 0, opens: 0, seals: 0 });
+  });
+
+  for (const failure of ["conflict", "aborted"] as const) {
+    test(`does not seal ${failure} Shadow repair and wipes reserved bytes`, async () => {
+      const base = fixture("shadow_encryption");
+      const controller = new AbortController();
+      const reserved = reservedNamespaceRepairSource();
+      let attaches = 0;
+      let opens = 0;
+      let seals = 0;
+      let result: unknown;
+      const input = {
+        ...base,
+        owner: accessOwner(base.policy),
+        execute: async (_repository: ProtectedAgentMemoryRepository,
+          _projection: ProtectedTaskMemoryProjectionHandoff,
+          access: ProtectedTaskMemoryAccessHandoff) => {
+          result = await access.prepareApproval({ operationId: "grant-fail",
+            toolCallId: "tool-fail", authority, memoryId: MEMORY,
+            action: { kind: "grant_user", userHandle: "bob" } });
+          return "assembled";
+        },
+      } satisfies ProtectedTaskNativeMemoryRepositoryInput<string>;
+      const overrides = assemblyOverrides(input, [], controller.signal);
+      const createSession = overrides.createSession!;
+      await withProtectedTaskNativeMemoryRepository(input, {
+        ...overrides,
+        createReader: () => Object.freeze({
+          searchProtectedCandidates: async () => ({ status: "success" as const,
+            value: [] }),
+          searchCandidates: async () => ({ status: "success" as const,
+            value: [] }),
+          loadExactCandidates: async () => ({ status: "success" as const,
+            value: [ordinaryAccessCandidate()] }),
+          loadExactProtectedSources: async () => ({ status: "success" as const,
+            value: [] }),
+          loadExactOrdinary: async () => ({ status: "success" as const,
+            value: [] }),
+        }),
+        createRepository: () => Object.freeze({}) as ProtectedAgentMemoryRepository,
+        reserveNamespaceRepair: async () => reserved.source,
+        attachNamespaceRepair: async () => {
+          attaches += 1;
+          return "conflict";
+        },
+        createSession: request => ({
+          ...createSession(request),
+          session: Object.freeze({ openMany: async () => {
+            opens += 1;
+            return Object.freeze({ status: "success" as const, value: [] });
+          } }) as never,
+          protectExactRepair: async () => {
+            if (failure === "aborted") {
+              controller.abort();
+              return Object.freeze({ status: "failed" as const,
+                reason: "aborted" });
+            }
+            return Object.freeze({ status: "verified" as const,
+              objectId: protectedAccessCandidate().cryptoObjectId,
+              provenance: "repaired" as const,
+              verification: "authenticated" as const,
+              value: Object.freeze({ formatVersion: 1 as const,
+                type: "fact", content: "a retained ordinary body" }) });
+          },
+        }),
+        createAccessCapsule: () => Object.freeze({
+          seal: async () => {
+            seals += 1;
+            return "must-not-seal";
+          },
+          open: async () => null,
+        }) as never,
+        findActorByHandle: async () => Object.freeze({ actorId: TARGET_ACTOR,
+          kind: "user" as const, displayName: "Bob" }),
+        findActorById: async () => Object.freeze({ ownerId: TARGET_USER }) as never,
+      });
+      expect(result).toEqual({ status: "unavailable",
+        reason: "authorization_required" });
+      expect({ attaches, opens, seals }).toEqual({ attaches:
+        failure === "conflict" ? 1 : 0, opens: 0, seals: 0 });
+      expect(reserved.plaintextBytes).toEqual(new Uint8Array(4));
+      expect(reserved.requestCommitment).toEqual(new Uint8Array(32));
     });
   }
 
@@ -1018,6 +1369,10 @@ describe("protected native Task Memory repository", () => {
               value: Object.freeze([]),
             }),
             searchCandidates: async () => Object.freeze({
+              status: "success" as const,
+              value: Object.freeze([]),
+            }),
+            loadExactCandidates: async () => Object.freeze({
               status: "success" as const,
               value: Object.freeze([]),
             }),

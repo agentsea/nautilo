@@ -8,6 +8,7 @@ import type {
 } from "@nautilo/lattice-crypto";
 import {
   deriveMemoryCryptoObjectIdV1,
+  ClassifiedDataOperationError,
   commitMemoryMutationV1,
   createProtectedTaskMemoryAccessContinuationCapsule,
   fingerprintRequiredMemoryNamespaces,
@@ -18,6 +19,7 @@ import {
   type ProtectedAgentMemoryEmbeddingPort,
   type ProtectedAgentMemoryRepository,
   type ProtectedMemoryAuthority,
+  type ProtectedMemoryResult,
   type ProtectedTaskResultSignerAuthority,
 } from "@nautilo/lattice-bridge";
 import {
@@ -63,6 +65,7 @@ import {
 } from "./protected-task-memory-boundaries";
 import {
   createProtectedTaskMemoryRepository,
+  createProtectedTaskMemoryReader,
   type ProtectedTaskMemoryRepositoryCompositionInput,
 } from "./protected-task-memory-composition";
 import {
@@ -86,6 +89,20 @@ type ProductContext = Readonly<{
   handle: ConversationProductPostgresHandle;
   canonicalRunner: ConversationProductCanonicalTransactionRunner;
 }>;
+
+type ExactMemoryCandidate = Extract<Awaited<ReturnType<
+  import("@nautilo/lattice-bridge/server")
+    .ProtectedTaskMemoryReadPort["loadExactCandidates"]
+>>, { status: "success" }>["value"][number];
+type ExactProtectedMemoryCandidate = Exclude<
+  ExactMemoryCandidate,
+  { representation: "ordinary_only" }
+>;
+
+type MemoryUnavailableReason = Extract<
+  ProtectedMemoryResult<never>,
+  { status: "unavailable" }
+>["reason"];
 
 export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
   authority: ProtectedMemoryAuthority;
@@ -118,6 +135,7 @@ type Dependencies = Readonly<{
   createSession: typeof createTaskRuntimeDomainMemoryCryptoSession;
   createBoundaries: typeof createProtectedTaskMemoryBoundaries;
   createRepository: typeof createProtectedTaskMemoryRepository;
+  createReader: typeof createProtectedTaskMemoryReader;
   createProjection: typeof createProtectedTaskMemoryProjection;
   createAccess: typeof createProtectedTaskMemoryExactAccess;
   createAccessCapsule: typeof createProtectedTaskMemoryAccessContinuationCapsule;
@@ -160,6 +178,7 @@ const productionDependencies: Dependencies = Object.freeze({
   createSession: createTaskRuntimeDomainMemoryCryptoSession,
   createBoundaries: createProtectedTaskMemoryBoundaries,
   createRepository: createProtectedTaskMemoryRepository,
+  createReader: createProtectedTaskMemoryReader,
   createProjection: createProtectedTaskMemoryProjection,
   createAccess: createProtectedTaskMemoryExactAccess,
   createAccessCapsule: createProtectedTaskMemoryAccessContinuationCapsule,
@@ -501,116 +520,124 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         cryptoCompletion: session.completion,
         publication: boundaries.publication,
       });
-      const protectAndAttachRepair = async (
+      const repairExactCandidate = async (
         request: Parameters<NonNullable<
           ProtectedTaskMemoryRepositoryCompositionInput["repairExactCandidate"]
         >>[0],
-        source: ForegroundMemoryRepairSource,
-        attach: (objectId: string) => Promise<
-          "attached" | "replayed" | "conflict" | null
-        >,
       ): ReturnType<NonNullable<
         ProtectedTaskMemoryRepositoryCompositionInput["repairExactCandidate"]
       >> => {
-        try {
-          const protectedResult = await session.protectExactRepair({
-            operationId: request.operationId,
-            authority: request.authority,
-            source,
-            ...(request.signal === undefined ? {} : { signal: request.signal }),
-          });
-          if (protectedResult.status !== "verified") {
-            return Object.freeze({ status: "unavailable" as const,
-              reason: protectedResult.status === "waiting_for_authority"
-                ? "authorization_required" as const
-                : "integrity_failure" as const });
-          }
-          const attached = await attach(deriveMemoryCryptoObjectIdV1({
-            memoryId: source.memory.id,
-            contentRevision: source.targetContentRevision,
-          }));
-          if (attached === null || attached === "conflict") {
-            return Object.freeze({ status: "unavailable" as const,
-              reason: attached === null ? "authorization_required" as const
-                : "stale_revision" as const });
-          }
-          return Object.freeze({ status: "success" as const, value: {
-            memoryId: source.memory.id,
-            contentRevision: source.targetContentRevision,
-          } });
-        } finally {
-          source.plaintextBytes?.fill(0);
-          source.requestCommitment.fill(0);
+        if (!representation.allowForwardRepair) {
+          return Object.freeze({ status: "unavailable" as const,
+            reason: "encryption_pending" as const });
         }
-      };
-      const repository = dependencies.createRepository({
-        subjectUserId: boundaries.authority.subjectUserId,
-        agentId: boundaries.authority.agentId,
-        entrypointId: "subagent.scope",
-        read: {
-          handle: productContext.handle,
-          canonicalRunner: productContext.canonicalRunner,
-          binding: boundaries.authority.mode === "namespace"
-            ? { mode: "namespace", authority: boundaries.authority }
-            : { mode: "scope", authority: boundaries.authority,
-                readableNamespaceIds,
-                coordinates: {
-                  taskId: current.occurrence.task.id,
-                  requesterUserId: current.subject.userId,
-                  agentId: authority.agentId,
-                  scopeId: scope!.scopeId,
-                  memoryRoomId: scope!.memoryRoomId,
-                  originWritableNamespaceId: scope!.originWritableNamespaceId,
-                },
-              },
-          boundary: boundaries.read,
-        },
-        mutationProduct,
-        crypto: session.session,
-        owner,
-        embedding,
-        repairExactCandidate: async request => {
-          if (!representation.allowForwardRepair) {
-            return Object.freeze({ status: "unavailable" as const,
-              reason: "encryption_pending" as const });
-          }
-          if (!sameAuthority(request.authority, authority)
-            || request.signal?.aborted === true) {
-            return Object.freeze({ status: "unavailable" as const,
-              reason: "authorization_required" as const });
-          }
-          if (authority.mode === "namespace") {
-            const source = await dependencies.reserveNamespaceRepair(
-              scopedCurrent, authority, request.selection,
-            );
-            if (source === null) {
+        if (!sameAuthority(request.authority, authority)
+          || request.signal?.aborted === true) {
+          return Object.freeze({ status: "unavailable" as const,
+            reason: "authorization_required" as const });
+        }
+        const protectAndAttach = async (
+          source: ForegroundMemoryRepairSource,
+          attach: (objectId: string) => Promise<
+            "attached" | "replayed" | "conflict" | null
+          >,
+        ): ReturnType<NonNullable<
+          ProtectedTaskMemoryRepositoryCompositionInput["repairExactCandidate"]
+        >> => {
+          try {
+            const protectedResult = await session.protectExactRepair({
+              operationId: request.operationId,
+              authority: request.authority,
+              source,
+              ...(request.signal === undefined
+                ? {} : { signal: request.signal }),
+            });
+            if (protectedResult.status !== "verified") {
               return Object.freeze({ status: "unavailable" as const,
-                reason: "authorization_required" as const });
+                reason: protectedResult.status === "waiting_for_authority"
+                  ? "authorization_required" as const
+                  : "integrity_failure" as const });
             }
-            return protectAndAttachRepair(request, source, objectId =>
-              dependencies.attachNamespaceRepair(
-                scopedCurrent, authority, source, objectId,
-              ));
+            const attached = await attach(deriveMemoryCryptoObjectIdV1({
+              memoryId: source.memory.id,
+              contentRevision: source.targetContentRevision,
+            }));
+            if (attached === null || attached === "conflict") {
+              return Object.freeze({ status: "unavailable" as const,
+                reason: attached === null ? "authorization_required" as const
+                  : "stale_revision" as const });
+            }
+            return Object.freeze({ status: "success" as const, value: {
+              memoryId: source.memory.id,
+              contentRevision: source.targetContentRevision,
+            } });
+          } finally {
+            source.plaintextBytes?.fill(0);
+            source.requestCommitment.fill(0);
           }
-          const adopted = await dependencies.adoptScopeOrigin(
-            scopedCurrent, request.selection.memoryId,
-          );
-          if (adopted === "stale") {
-            return Object.freeze({ status: "unavailable" as const,
-              reason: "authorization_required" as const });
-          }
-          const source = await dependencies.reserveScopeRepair(
-            scopedCurrent, request.selection,
+        };
+        if (authority.mode === "namespace") {
+          const source = await dependencies.reserveNamespaceRepair(
+            scopedCurrent, authority, request.selection,
           );
           if (source === null) {
             return Object.freeze({ status: "unavailable" as const,
               reason: "authorization_required" as const });
           }
-          return protectAndAttachRepair(request, source.source, objectId =>
-            dependencies.attachScopeRepair(
-              scopedCurrent, source, objectId,
+          return protectAndAttach(source, objectId =>
+            dependencies.attachNamespaceRepair(
+              scopedCurrent, authority, source, objectId,
             ));
-        },
+        }
+        const adopted = await dependencies.adoptScopeOrigin(
+          scopedCurrent, request.selection.memoryId,
+        );
+        if (adopted === "stale") {
+          return Object.freeze({ status: "unavailable" as const,
+            reason: "authorization_required" as const });
+        }
+        const source = await dependencies.reserveScopeRepair(
+          scopedCurrent, request.selection,
+        );
+        if (source === null) {
+            return Object.freeze({ status: "unavailable" as const,
+              reason: "authorization_required" as const });
+        }
+        return protectAndAttach(source.source, objectId =>
+          dependencies.attachScopeRepair(
+            scopedCurrent, source, objectId,
+          ));
+      };
+      const read = Object.freeze({
+        handle: productContext.handle,
+        canonicalRunner: productContext.canonicalRunner,
+        binding: boundaries.authority.mode === "namespace"
+          ? { mode: "namespace" as const, authority: boundaries.authority }
+          : { mode: "scope" as const, authority: boundaries.authority,
+              readableNamespaceIds,
+              coordinates: {
+                taskId: current.occurrence.task.id,
+                requesterUserId: current.subject.userId,
+                agentId: authority.agentId,
+                scopeId: scope!.scopeId,
+                memoryRoomId: scope!.memoryRoomId,
+                originWritableNamespaceId: scope!.originWritableNamespaceId,
+              },
+            },
+        boundary: boundaries.read,
+      }) satisfies ProtectedTaskMemoryRepositoryCompositionInput["read"];
+      const reader = dependencies.createReader(read);
+      const repository = dependencies.createRepository({
+        subjectUserId: boundaries.authority.subjectUserId,
+        agentId: boundaries.authority.agentId,
+        entrypointId: "subagent.scope",
+        read,
+        reader,
+        mutationProduct,
+        crypto: session.session,
+        owner,
+        embedding,
+        repairExactCandidate,
         fallbackOrdinary: boundaries.policy.mode === "shadow_encryption"
           && boundaries.policy.shadowBehavior === "fallback"
           ? dependencies.createFallback({
@@ -673,46 +700,140 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         authority: ProtectedMemoryAuthority;
         memoryId: string;
       }>): Promise<ProtectedTaskMemoryAccessSource | null> => {
-        const selected = await mutationProduct.loadExactProjectionSources({
-          authority: request.authority,
-          memoryIds: [request.memoryId],
-          signal: entities.signal,
-        });
-        if (selected.status === "unavailable"
-          || selected.value.length !== 1
-          || selected.value[0]?.memoryId !== request.memoryId) return null;
-        const opened = await session.session.openMany({
-          entrypointId: "subagent.scope",
-          agentId: authority.agentId,
-          authority: request.authority,
-          candidates: selected.value,
-        });
-        const candidate = selected.value[0];
-        const value = opened.status === "success" ? opened.value[0] : undefined;
-        const requiredNamespaceIds = Object.freeze([
-          ...candidate.requiredNamespaceIds,
-        ].sort());
-        if (opened.status !== "success" || opened.value.length !== 1
-          || value === undefined
-          || value.memoryId !== candidate.memoryId
-          || value.contentRevision !== candidate.contentRevision
-          || requiredNamespaceIds.length === 0
-          || new Set(requiredNamespaceIds).size
-            !== requiredNamespaceIds.length) return null;
-        return Object.freeze({
-          memoryId: candidate.memoryId,
-          contentRevision: candidate.contentRevision,
-          cryptoAccessRevision: candidate.cryptoAccessRevision,
-          cryptoObjectId: candidate.cryptoObjectId,
-          requiredNamespaceIds,
-          payloadDigest: Buffer.from(commitMemoryMutationV1({
-            kind: "save",
-            payload: { formatVersion: 1, type: value.type,
-              content: value.content },
-          })).toString("hex"),
-          type: value.type,
-          content: value.content,
-        });
+        const fail = (
+          reason: MemoryUnavailableReason,
+        ): never => {
+          throw new ClassifiedDataOperationError(
+            reason === "encryption_pending"
+              || reason === "target_encryption_not_ready"
+              ? "recoverable_availability"
+              : reason === "authorization_required" ? "authority"
+                : reason === "stale_revision" || reason === "deleted"
+                  ? "stale" : "integrity",
+            reason,
+          );
+        };
+        const loadCandidate = async (): Promise<ExactMemoryCandidate> => {
+          const selected = await reader.loadExactCandidates({
+            authority: request.authority,
+            memoryIds: [request.memoryId],
+            signal: entities.signal,
+          });
+          if (selected.status === "unavailable") {
+            return fail(selected.reason);
+          }
+          const candidate = selected.value[0];
+          if (selected.value.length !== 1
+            || candidate?.memoryId !== request.memoryId) {
+            return fail("integrity_failure");
+          }
+          return candidate;
+        };
+        const openProtected = async (
+          candidate: ExactMemoryCandidate,
+        ): Promise<ProtectedTaskMemoryAccessSource> => {
+          if (candidate.representation === "ordinary_only") {
+            return fail("encryption_pending");
+          }
+          const protectedCandidate: ExactProtectedMemoryCandidate = candidate;
+          const opened = await session.session.openMany({
+            entrypointId: "subagent.scope",
+            agentId: authority.agentId,
+            authority: request.authority,
+            candidates: [protectedCandidate],
+          });
+          if (opened.status === "unavailable") {
+            return fail(opened.reason);
+          }
+          const value = opened.value[0];
+          const requiredNamespaceIds = Object.freeze([
+            ...candidate.requiredNamespaceIds,
+          ].sort());
+          if (opened.value.length !== 1
+            || value === undefined
+            || value.memoryId !== candidate.memoryId
+            || value.contentRevision !== candidate.contentRevision
+            || requiredNamespaceIds.length === 0
+            || new Set(requiredNamespaceIds).size
+              !== requiredNamespaceIds.length) {
+            return fail("integrity_failure");
+          }
+          return Object.freeze({
+            memoryId: protectedCandidate.memoryId,
+            contentRevision: protectedCandidate.contentRevision,
+            cryptoAccessRevision: protectedCandidate.cryptoAccessRevision,
+            cryptoObjectId: protectedCandidate.cryptoObjectId,
+            requiredNamespaceIds,
+            payloadDigest: Buffer.from(commitMemoryMutationV1({
+              kind: "save",
+              payload: { formatVersion: 1, type: value.type,
+                content: value.content },
+            })).toString("hex"),
+            type: value.type,
+            content: value.content,
+          });
+        };
+        try {
+          const selected = await owner.read<never,
+            ProtectedTaskMemoryAccessSource,
+            ProtectedTaskMemoryAccessSource>({
+              ordinary: () => Promise.reject(new ClassifiedDataOperationError(
+                "recoverable_availability",
+                "encryption_pending",
+              )),
+              protected: async () => openProtected(await loadCandidate()),
+              repair: {
+                forward: async () => {
+                  const candidate = await loadCandidate();
+                  if (candidate.representation !== "ordinary_only") {
+                    return openProtected(candidate);
+                  }
+                  const repaired = await repairExactCandidate({
+                    operationId: `task-memory-access-repair:${
+                      current.occurrence.run.id}:${candidate.memoryId}:${
+                      candidate.contentRevision}`,
+                    authority: request.authority,
+                    selection: Object.freeze({
+                      memoryId: candidate.memoryId,
+                      contentRevision: candidate.contentRevision,
+                      score: candidate.score,
+                      repairRequired: true,
+                      repair: Object.freeze({
+                        id: candidate.memoryId,
+                        type: null,
+                        importance: candidate.importance,
+                        tier: candidate.tier,
+                        createdAt: new Date(candidate.createdAt),
+                        score: candidate.score,
+                        representation: "structural" as const,
+                      }),
+                    }),
+                    signal: entities.signal,
+                  });
+                  if (repaired.status === "unavailable") {
+                    return fail(repaired.reason);
+                  }
+                  if (repaired.value === undefined
+                    || repaired.value.memoryId !== request.memoryId) {
+                    fail("integrity_failure");
+                  }
+                  const currentCandidate = await loadCandidate();
+                  if (currentCandidate.representation === "ordinary_only"
+                    || currentCandidate.contentRevision
+                      !== repaired.value.contentRevision) {
+                    fail("stale_revision");
+                  }
+                  return openProtected(currentCandidate);
+                },
+              },
+              consumeOrdinary: () => fail("integrity_failure"),
+              consumeProtected: value => value,
+            });
+          return selected.value;
+        } catch (error) {
+          if (error instanceof ClassifiedDataOperationError) return null;
+          throw error;
+        }
       };
       const productFor = (
         source: Omit<ProtectedTaskMemoryAccessSource, "type" | "content">,

@@ -2384,7 +2384,12 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
-  test("reserves an empty exact access destination under current Task authority", async () => {
+  test.each([
+    { label: "Full mapped source", mode: "encrypted_only", shadowBehavior: "strict", ordinary: false },
+    { label: "Full ordinary source rejected", mode: "encrypted_only", shadowBehavior: "strict", ordinary: true },
+    { label: "Strict Shadow repaired source", mode: "shadow_encryption", shadowBehavior: "strict", ordinary: true },
+    { label: "Fallback Shadow repaired source", mode: "shadow_encryption", shadowBehavior: "fallback", ordinary: true },
+  ] as const)("reserves an empty exact access destination under current Task authority: $label", async policyCase => {
     const base = await createBaseFixture();
     const recipientUserId = randomUUID();
     const recipientActorId = randomUUID();
@@ -2398,7 +2403,16 @@ describePostgres("sealed protected Task Memory object writer", () => {
         id: recipientActorId, ownerId: recipientUserId, kind: "user",
         trustState: "verified", displayName: "Task sharing recipient",
       });
-      const scenario = await createScenario(base);
+      const policy = { mode: policyCase.mode, shadowBehavior: policyCase.shadowBehavior };
+      if (policy.mode === "shadow_encryption") {
+        await base.admin.update(encryptionTransitionPolicy).set({
+          ...policy, revision: base.policyRevision,
+          shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW + 1),
+        }).where(eq(encryptionTransitionPolicy.id, "server"));
+      }
+      const scenario = await createScenario(base, {
+        contentRepresentation: policy.mode === "shadow_encryption" ? "dual" : "protected",
+      });
       const authority: ProtectedMemoryAuthority = Object.freeze({
         mode: "namespace", subjectUserId: base.userId, agentId: base.productAgentId,
         readableNamespaceIds: [base.namespaceValue],
@@ -2411,8 +2425,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
       ) => Promise<Value>) => scenario.withAuthority(() => NOW + 5,
         ({ writer }) => withProtectedTaskNativeMemoryRepository({
           authority,
-          policy: { mode: "encrypted_only", shadowBehavior: "strict",
-            revision: base.policyRevision },
+          policy: { ...policy, revision: base.policyRevision },
           current: writer,
           domains: [scenario.domainSecret],
           signer: { agentAuthorizationRevision: 7, runtime: base.runtime.runtime,
@@ -2421,8 +2434,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           product: base.product,
           agentProduct: base.agentProduct,
           owner: bindEncryptionDataOperationOwner({ policy: {
-            resolve: async () => ({ policy: { mode: "encrypted_only" as const,
-              shadowBehavior: "strict" as const }, revalidationToken: base.policyRevision }),
+            resolve: async () => ({ policy, revalidationToken: base.policyRevision }),
             revalidate: async token => {
               if (token !== base.policyRevision) throw new Error("Task policy changed");
             },
@@ -2435,10 +2447,26 @@ describePostgres("sealed protected Task Memory object writer", () => {
           execute: (repository, _projection, access) => execute(repository, access),
         }));
       const sourceContent = `Task access private content ${randomUUID()}`;
-      const saved = await withRepository(repository => repository.save({
-        operationId: `task-access-source:${randomUUID()}`, authority,
-        type: "fact", content: sourceContent, importance: 0.8,
-      }));
+      const ordinaryMemoryId = randomUUID();
+      if (policyCase.ordinary) {
+        base.memoryIds.add(ordinaryMemoryId);
+        await base.admin.insert(memories).values({
+          id: ordinaryMemoryId, type: "fact", content: sourceContent,
+          importance: 0.8, tier: 1, embedding: new Array<number>(1536).fill(0.25),
+          embeddingRevision: 0, embeddingProvider: "openai",
+          embeddingModel: "text-embedding-3-small", embeddingDimensions: 1536,
+          embeddingContractVersion: 1,
+        });
+        await base.admin.insert(memoryNamespaces).values({
+          memoryId: ordinaryMemoryId, namespaceId: base.namespaceValue,
+        });
+      }
+      const saved = policyCase.ordinary
+        ? { status: "success" as const, value: { id: ordinaryMemoryId } }
+        : await withRepository(repository => repository.save({
+            operationId: `task-access-source:${randomUUID()}`, authority,
+            type: "fact", content: sourceContent, importance: 0.8,
+          }));
       if (saved.status !== "success") throw new Error("Task access source save failed");
       base.memoryIds.add(saved.value.id);
       base.objectIds.add(deriveMemoryCryptoObjectIdV1({
@@ -2448,6 +2476,19 @@ describePostgres("sealed protected Task Memory object writer", () => {
         toolCallId: `share:${randomUUID()}`, authority, memoryId: saved.value.id,
         action: { kind: "grant_user" as const, userHandle: recipientHandle } };
       const prepared = await withRepository((_repository, access) => access.prepareApproval(request));
+      const [sourceMapping] = await base.admin.select({
+        revision: memories.contentRevision, mapping: memories.cryptoMappingState,
+        objectId: memories.cryptoObjectId, content: memories.content,
+      }).from(memories).where(eq(memories.id, saved.value.id));
+      if (policyCase.ordinary && policy.mode === "encrypted_only") {
+        expect(prepared.status).toBe("unavailable");
+        expect(sourceMapping).toEqual({ revision: 0, mapping: "unmapped",
+          objectId: null, content: sourceContent });
+        return;
+      }
+      expect(sourceMapping).toMatchObject({ revision: 1, mapping: "verified",
+        objectId: deriveMemoryCryptoObjectIdV1({ memoryId: saved.value.id, contentRevision: 1 }) });
+      if (policyCase.ordinary) expect(sourceMapping?.content).toBe(sourceContent);
       if (prepared.status !== "success") {
         throw new Error(`Task access approval failed: ${prepared.reason}`);
       }
