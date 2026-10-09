@@ -1,3 +1,5 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
+
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
@@ -13,13 +15,126 @@ import {
 } from "./one-run-processor-transform-v1.ts";
 import {
   withTaskRuntimeExecutionEvidenceV1,
+  type TaskRuntimeExecutionDomainAuthorityV1,
   type TaskRuntimeExecutionEvidenceInputV1,
   type TaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionNamespaceAuthorityV1,
 } from "./task-runtime-execution-evidence-v1.ts";
 
+declare const taskRuntimeCancellationResultEvidenceBrand: unique symbol;
+
+const TASK_RUN_RESULT_OBJECT_ID_DOMAIN =
+  "nautilo/task-run-result-crypto-object/v1";
+const encoder = new TextEncoder();
+
+export type TaskRuntimeCancellationResultEvidenceV1 = Readonly<{
+  readonly purpose: "task.runtime.cancellation_result";
+  readonly requestId: string;
+  readonly workId: string;
+  readonly claimId: string;
+  readonly claimExpiresAt: number;
+  readonly recipientExpiresAt: number;
+  readonly expiresAt: number;
+  readonly recipientGeneration: number;
+  readonly recipientKeyId: string;
+  readonly authorizationDigest: Uint8Array;
+  readonly policyRevision: number;
+  readonly episodeId: string;
+  readonly sourceRoomId: string;
+  readonly hostAuthorizationRevision: number;
+  readonly recipientAuthorizationRevision: number;
+  readonly operations: readonly ["encrypt"];
+  readonly result: Readonly<{
+    readonly taskId: string;
+    readonly taskRunId: string;
+    readonly contentRevision: 2;
+    readonly objectId: string;
+    readonly signerAgentId: string;
+    readonly namespace: Readonly<{
+      readonly namespaceId: string;
+      readonly domainId: string;
+      readonly operations: readonly ["encrypt"];
+      readonly expectedAccessRevision: number;
+      readonly expectedPolicyRevision: number;
+    }>;
+  }>;
+  readonly domainRequirements: readonly [TaskRuntimeExecutionDomainAuthorityV1];
+  readonly namespaceRequirements: readonly [Readonly<{
+    readonly ordinal: 0;
+    readonly namespaceId: string;
+    readonly domainId: string;
+    readonly operations: readonly ["encrypt"];
+    readonly expectedAccessRevision: number;
+    readonly expectedPolicyRevision: number;
+  }>];
+  readonly [taskRuntimeCancellationResultEvidenceBrand]: true;
+}>;
+
+export type TaskRuntimeCancellationResultProofV1 =
+  TaskRuntimeCancellationResultEvidenceV1["result"];
+
+type CancellationEvidenceState = {
+  active: boolean;
+  readonly fingerprint: string;
+  readonly signal: AbortSignal;
+  readonly now: () => number;
+};
+
+const cancellationEvidenceStates = new WeakMap<object, CancellationEvidenceState>();
+
 type TaskRuntimeCurrentNamespaceAuthorityV1 =
   TaskRuntimeExecutionNamespaceAuthorityV1;
+
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function cancellationResultObjectId(
+  crypto: LatticeCrypto,
+  result: Pick<TaskRuntimeCancellationResultProofV1, "taskId" | "taskRunId">,
+): string {
+  if (!UUID.test(result.taskId) || !UUID.test(result.taskRunId)) {
+    throw new TypeError("Task Runtime cancellation result coordinate is invalid");
+  }
+  const digest = crypto.hash(encoder.encode(
+    `${TASK_RUN_RESULT_OBJECT_ID_DOMAIN}\n${result.taskId}\n${result.taskRunId}\n2`,
+  ));
+  try {
+    return `task-run-result:v1:${bytesToHex(digest)}`;
+  } finally {
+    digest.fill(0);
+  }
+}
+
+function cancellationResultAuthorityIsCurrent(input: Readonly<{
+  readonly crypto: LatticeCrypto;
+  readonly workId: string;
+  readonly result: TaskRuntimeCancellationResultProofV1;
+  readonly namespaces: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+  readonly current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+}>): boolean {
+  const resultNamespace = input.result.namespace;
+  const namespace = input.namespaces[0];
+  const domain = input.current.domains[0];
+  return input.result.taskRunId === input.workId
+    && input.result.contentRevision === 2
+    && input.result.objectId === cancellationResultObjectId(input.crypto, input.result)
+    && resultNamespace.operations.length === 1
+    && resultNamespace.operations[0] === "encrypt"
+    && resultNamespace.expectedPolicyRevision === input.current.policyRevision
+    && input.namespaces.length === 1
+    && namespace !== undefined
+    && namespace.ordinal === 0
+    && namespace.namespaceId === resultNamespace.namespaceId
+    && namespace.domainId === resultNamespace.domainId
+    && namespace.operations.length === 1
+    && namespace.operations[0] === "encrypt"
+    && namespace.expectedAccessRevision === resultNamespace.expectedAccessRevision
+    && namespace.expectedPolicyRevision === resultNamespace.expectedPolicyRevision
+    && input.current.domains.length === 1
+    && domain !== undefined
+    && domain.domainId === resultNamespace.domainId
+    && domain.sourceNamespaceId === resultNamespace.namespaceId;
+}
 
 function resultAuthorityIsCurrent(input: Readonly<{
   readonly workId: string;
@@ -51,6 +166,198 @@ function resultAuthorityIsCurrent(input: Readonly<{
     && currentNamespace.expectedPolicyRevision
       === resultNamespace.expectedPolicyRevision
     && matchingDomains.length === 1;
+}
+
+function cloneCancellationEvidence(
+  value: Omit<TaskRuntimeCancellationResultEvidenceV1,
+    typeof taskRuntimeCancellationResultEvidenceBrand>,
+): TaskRuntimeCancellationResultEvidenceV1 {
+  const result = value.result;
+  const namespace = result.namespace;
+  const requirement = value.namespaceRequirements[0];
+  const domain = value.domainRequirements[0];
+  assertPortableId("Task Runtime cancellation request ID", value.requestId);
+  assertPortableId("Task Runtime cancellation work ID", value.workId);
+  assertPortableId("Task Runtime cancellation claim ID", value.claimId);
+  assertPortableId("Task Runtime cancellation recipient key ID", value.recipientKeyId);
+  assertPortableId("Task Runtime cancellation episode ID", value.episodeId);
+  assertPortableId("Task Runtime cancellation source Room ID", value.sourceRoomId);
+  assertPortableId("Task Runtime cancellation result object ID", result.objectId);
+  assertPortableId("Task Runtime cancellation signer Agent ID", result.signerAgentId);
+  assertPortableId("Task Runtime cancellation result Namespace ID", namespace.namespaceId);
+  assertPortableId("Task Runtime cancellation result Domain ID", namespace.domainId);
+  for (const [label, counter] of [
+    ["claim expiry", value.claimExpiresAt],
+    ["recipient expiry", value.recipientExpiresAt],
+    ["expiry", value.expiresAt],
+    ["recipient generation", value.recipientGeneration],
+    ["policy revision", value.policyRevision],
+    ["host authorization revision", value.hostAuthorizationRevision],
+    ["recipient authorization revision", value.recipientAuthorizationRevision],
+    ["result access revision", namespace.expectedAccessRevision],
+    ["result policy revision", namespace.expectedPolicyRevision],
+    ["Domain participant count", domain.participantCount],
+    ["Domain key generation", domain.domainKeyGeneration],
+    ["Domain authorization revision", domain.authorizationRevision],
+    ["Domain active Namespace binding count", domain.activeNamespaceBindingCount],
+  ] as const) assertU64Counter(`Task Runtime cancellation ${label}`, counter);
+  if (value.expiresAt !== Math.min(value.claimExpiresAt, value.recipientExpiresAt)
+    || value.operations.length !== 1
+    || value.operations[0] !== "encrypt"
+    || result.contentRevision !== 2
+    || result.taskRunId !== value.workId
+    || namespace.operations.length !== 1
+    || namespace.operations[0] !== "encrypt"
+    || namespace.expectedPolicyRevision !== value.policyRevision
+    || requirement.ordinal !== 0
+    || requirement.namespaceId !== namespace.namespaceId
+    || requirement.domainId !== namespace.domainId
+    || requirement.operations.length !== 1
+    || requirement.operations[0] !== "encrypt"
+    || requirement.expectedAccessRevision !== namespace.expectedAccessRevision
+    || requirement.expectedPolicyRevision !== namespace.expectedPolicyRevision
+    || value.domainRequirements.length !== 1
+    || value.namespaceRequirements.length !== 1
+    || domain.keyClass !== "ai"
+    || domain.domainId !== namespace.domainId
+    || domain.sourceNamespaceId !== namespace.namespaceId) {
+    throw new TypeError("Task Runtime cancellation evidence is invalid");
+  }
+  if (value.authorizationDigest.length !== 32
+    || domain.participantDigest.length !== 32
+    || domain.headDigest.length !== 32
+    || domain.activeNamespaceBindingSetDigest.length !== 32) {
+    throw new RangeError("Task Runtime cancellation evidence digest is invalid");
+  }
+  return Object.freeze({
+    purpose: "task.runtime.cancellation_result",
+    requestId: value.requestId,
+    workId: value.workId,
+    claimId: value.claimId,
+    claimExpiresAt: value.claimExpiresAt,
+    recipientExpiresAt: value.recipientExpiresAt,
+    expiresAt: value.expiresAt,
+    recipientGeneration: value.recipientGeneration,
+    recipientKeyId: value.recipientKeyId,
+    authorizationDigest: value.authorizationDigest.slice(),
+    policyRevision: value.policyRevision,
+    episodeId: value.episodeId,
+    sourceRoomId: value.sourceRoomId,
+    hostAuthorizationRevision: value.hostAuthorizationRevision,
+    recipientAuthorizationRevision: value.recipientAuthorizationRevision,
+    operations: Object.freeze(["encrypt"] as const),
+    result: Object.freeze({
+      taskId: result.taskId,
+      taskRunId: result.taskRunId,
+      contentRevision: 2 as const,
+      objectId: result.objectId,
+      signerAgentId: result.signerAgentId,
+      namespace: Object.freeze({
+        namespaceId: namespace.namespaceId,
+        domainId: namespace.domainId,
+        operations: Object.freeze(["encrypt"] as const),
+        expectedAccessRevision: namespace.expectedAccessRevision,
+        expectedPolicyRevision: namespace.expectedPolicyRevision,
+      }),
+    }),
+    domainRequirements: Object.freeze([Object.freeze({
+      domainId: domain.domainId,
+      sourceNamespaceId: domain.sourceNamespaceId,
+      participantDigest: domain.participantDigest.slice(),
+      participantCount: domain.participantCount,
+      keyClass: "ai",
+      domainKeyGeneration: domain.domainKeyGeneration,
+      authorizationRevision: domain.authorizationRevision,
+      headDigest: domain.headDigest.slice(),
+      activeNamespaceBindingSetDigest:
+        domain.activeNamespaceBindingSetDigest.slice(),
+      activeNamespaceBindingCount: domain.activeNamespaceBindingCount,
+    })] as const),
+    namespaceRequirements: Object.freeze([Object.freeze({
+      ordinal: 0 as const,
+      namespaceId: requirement.namespaceId,
+      domainId: requirement.domainId,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: requirement.expectedAccessRevision,
+      expectedPolicyRevision: requirement.expectedPolicyRevision,
+    })] as const),
+  }) as TaskRuntimeCancellationResultEvidenceV1;
+}
+
+function cancellationEvidenceFingerprint(
+  value: TaskRuntimeCancellationResultEvidenceV1,
+): string {
+  return JSON.stringify({
+    purpose: value.purpose,
+    requestId: value.requestId,
+    workId: value.workId,
+    claimId: value.claimId,
+    claimExpiresAt: value.claimExpiresAt,
+    recipientExpiresAt: value.recipientExpiresAt,
+    expiresAt: value.expiresAt,
+    recipientGeneration: value.recipientGeneration,
+    recipientKeyId: value.recipientKeyId,
+    authorizationDigest: bytesToHex(value.authorizationDigest),
+    policyRevision: value.policyRevision,
+    episodeId: value.episodeId,
+    sourceRoomId: value.sourceRoomId,
+    hostAuthorizationRevision: value.hostAuthorizationRevision,
+    recipientAuthorizationRevision: value.recipientAuthorizationRevision,
+    operations: value.operations,
+    result: value.result,
+    domainRequirements: value.domainRequirements.map((entry) => ({
+      ...entry,
+      participantDigest: bytesToHex(entry.participantDigest),
+      headDigest: bytesToHex(entry.headDigest),
+      activeNamespaceBindingSetDigest: bytesToHex(
+        entry.activeNamespaceBindingSetDigest,
+      ),
+    })),
+    namespaceRequirements: value.namespaceRequirements,
+  });
+}
+
+export function assertAuthenticTaskRuntimeCancellationResultEvidenceV1(
+  evidence: TaskRuntimeCancellationResultEvidenceV1,
+): void {
+  const state = cancellationEvidenceStates.get(evidence as object);
+  const currentTime = state?.now();
+  if (state === undefined
+    || !state.active
+    || state.signal.aborted
+    || currentTime === undefined
+    || !Number.isSafeInteger(currentTime)
+    || currentTime >= evidence.expiresAt
+    || state.fingerprint !== cancellationEvidenceFingerprint(evidence)) {
+    if (state !== undefined) state.active = false;
+    throw new TypeError("Task Runtime cancellation result evidence is not active");
+  }
+}
+
+async function withCancellationResultEvidence<Value>(input: Readonly<{
+  readonly evidence: Omit<TaskRuntimeCancellationResultEvidenceV1,
+    typeof taskRuntimeCancellationResultEvidenceBrand>;
+  readonly signal: AbortSignal;
+  readonly now: () => number;
+  execute(
+    evidence: TaskRuntimeCancellationResultEvidenceV1,
+  ): Value | PromiseLike<Value>;
+}>): Promise<Value> {
+  const evidence = cloneCancellationEvidence(input.evidence);
+  const state: CancellationEvidenceState = {
+    active: true,
+    fingerprint: cancellationEvidenceFingerprint(evidence),
+    signal: input.signal,
+    now: input.now,
+  };
+  cancellationEvidenceStates.set(evidence, state);
+  try {
+    assertAuthenticTaskRuntimeCancellationResultEvidenceV1(evidence);
+    return await input.execute(evidence);
+  } finally {
+    state.active = false;
+    cancellationEvidenceStates.delete(evidence);
+  }
 }
 
 export type TaskRuntimeRecipientAttemptV1 = Readonly<{
@@ -110,6 +417,23 @@ function publicAttempt(entry: RecipientEntry): TaskRuntimeRecipientAttemptV1 {
   return Object.freeze({
     ...entry.attempt,
     recipientPublicKey: entry.attempt.recipientPublicKey.slice(),
+  });
+}
+
+function copyPublicCurrentAuthority(
+  value: DomainForegroundAuthorizationPublicCurrentAuthorityV2,
+): DomainForegroundAuthorizationPublicCurrentAuthorityV2 {
+  return Object.freeze({
+    ...value,
+    committerDeviceSigningPublicKey:
+      value.committerDeviceSigningPublicKey.slice(),
+    domains: Object.freeze(value.domains.map((domain) => Object.freeze({
+      ...domain,
+      participantDigest: domain.participantDigest.slice(),
+      headDigest: domain.headDigest.slice(),
+      activeNamespaceBindingSetDigest:
+        domain.activeNamespaceBindingSetDigest.slice(),
+    }))),
   });
 }
 
@@ -300,6 +624,165 @@ export class TaskRuntimeRecipientRegistryV1 {
       evidence: TaskRuntimeExecutionEvidenceV1,
     ): Value | PromiseLike<Value>;
   }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
+    return this.#withOpenedAuthorization({
+      ...input,
+      expectedOperations: ["decrypt", "encrypt"],
+      authorityIsCurrent: () => resultAuthorityIsCurrent({
+        workId: input.workId,
+        result: input.result,
+        namespaces: input.currentNamespaceRequirements,
+        current: input.current,
+      }),
+      operation: async (domains, signal, entry, deadline) => {
+        const authorizationDigest = this.crypto.hash(input.authorizationBytes);
+        try {
+          return await withTaskRuntimeExecutionEvidenceV1({
+            evidence: {
+              requestId: input.requestId,
+              workId: input.workId,
+              claimId: input.claimId,
+              claimExpiresAt: input.claimExpiresAt,
+              recipientExpiresAt: entry.attempt.expiresAt,
+              expiresAt: deadline,
+              recipientGeneration: input.recipientGeneration,
+              recipientKeyId: input.recipientKeyId,
+              authorizationDigest,
+              policyRevision: input.current.policyRevision,
+              episodeId: input.current.sessionId,
+              sourceRoomId: input.current.roomId,
+              hostAuthorizationRevision: input.current.hostAuthorizationRevision,
+              recipientAuthorizationRevision:
+                input.current.recipientAuthorizationRevision,
+              result: input.result,
+              domainRequirements: input.current.domains,
+              namespaceRequirements: input.currentNamespaceRequirements,
+            },
+            signal,
+            now: this.#now,
+            execute: (evidence) => input.operation(domains, signal, evidence),
+          });
+        } finally {
+          authorizationDigest.fill(0);
+        }
+      },
+    });
+  }
+
+  async withOpenedCancellationResultGrant<Value>(input: Readonly<{
+    requestId: string;
+    workId: string;
+    recipientGeneration: number;
+    recipientKeyId: string;
+    claimId: string;
+    claimExpiresAt: number;
+    authorizationBytes: Uint8Array;
+    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    currentNamespaceRequirements:
+      readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+    result: TaskRuntimeCancellationResultProofV1;
+    signal?: AbortSignal;
+    operation(
+      domains: readonly DomainForegroundSecretEntryV2[],
+      signal: AbortSignal,
+      evidence: TaskRuntimeCancellationResultEvidenceV1,
+    ): Value | PromiseLike<Value>;
+  }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
+    const authorizationBytes = input.authorizationBytes.slice();
+    const current = copyPublicCurrentAuthority(input.current);
+    const currentNamespaceRequirements = Object.freeze(
+      input.currentNamespaceRequirements.map((requirement) => Object.freeze({
+        ...requirement,
+        operations: Object.freeze([...requirement.operations]),
+      })),
+    );
+    const result = Object.freeze({
+      ...input.result,
+      namespace: Object.freeze({
+        ...input.result.namespace,
+        operations: Object.freeze([...input.result.namespace.operations]),
+      }),
+    }) as TaskRuntimeCancellationResultProofV1;
+    try {
+      return await this.#withOpenedAuthorization({
+        ...input,
+        authorizationBytes,
+        current,
+        expectedOperations: ["encrypt"],
+        authorityIsCurrent: () => cancellationResultAuthorityIsCurrent({
+          crypto: this.crypto,
+          workId: input.workId,
+          result,
+          namespaces: currentNamespaceRequirements,
+          current,
+        }),
+        operation: async (domains, signal, entry, deadline) => {
+          const domainRequirement = current.domains[0];
+          const namespaceRequirement = currentNamespaceRequirements[0];
+          if (domainRequirement === undefined || namespaceRequirement === undefined) {
+            throw new TypeError("Task Runtime cancellation authority is incomplete");
+          }
+          const authorizationDigest = this.crypto.hash(authorizationBytes);
+          try {
+            return await withCancellationResultEvidence({
+              evidence: {
+                purpose: "task.runtime.cancellation_result",
+                requestId: input.requestId,
+                workId: input.workId,
+                claimId: input.claimId,
+                claimExpiresAt: input.claimExpiresAt,
+                recipientExpiresAt: entry.attempt.expiresAt,
+                expiresAt: deadline,
+                recipientGeneration: input.recipientGeneration,
+                recipientKeyId: input.recipientKeyId,
+                authorizationDigest,
+                policyRevision: current.policyRevision,
+                episodeId: current.sessionId,
+                sourceRoomId: current.roomId,
+                hostAuthorizationRevision: current.hostAuthorizationRevision,
+                recipientAuthorizationRevision:
+                  current.recipientAuthorizationRevision,
+                operations: ["encrypt"],
+                result,
+                domainRequirements: [domainRequirement],
+                namespaceRequirements: [{
+                  ...namespaceRequirement,
+                  ordinal: 0,
+                  operations: ["encrypt"],
+                }],
+              },
+              signal,
+              now: this.#now,
+              execute: (evidence) => input.operation(domains, signal, evidence),
+            });
+          } finally {
+            authorizationDigest.fill(0);
+          }
+        },
+      });
+    } finally {
+      authorizationBytes.fill(0);
+    }
+  }
+
+  async #withOpenedAuthorization<Value>(input: Readonly<{
+    requestId: string;
+    workId: string;
+    recipientGeneration: number;
+    recipientKeyId: string;
+    claimId: string;
+    claimExpiresAt: number;
+    authorizationBytes: Uint8Array;
+    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    signal?: AbortSignal;
+    expectedOperations: readonly ["encrypt"] | readonly ["decrypt", "encrypt"];
+    authorityIsCurrent(): boolean;
+    operation(
+      domains: readonly DomainForegroundSecretEntryV2[],
+      signal: AbortSignal,
+      entry: RecipientEntry,
+      deadline: number,
+    ): Value | PromiseLike<Value>;
+  }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
     assertPortableId("Task Runtime recipient request id", input.requestId);
     assertPortableId("Task Runtime recipient work id", input.workId);
     assertPortableId("Task Runtime recipient key id", input.recipientKeyId);
@@ -315,18 +798,13 @@ export class TaskRuntimeRecipientRegistryV1 {
     if (entry === undefined || entry.attempt.workId !== input.workId) {
       return unavailable("recipient_unavailable");
     }
-    if (
-      entry.attempt.recipientKeyId !== input.recipientKeyId
+    if (entry.attempt.recipientKeyId !== input.recipientKeyId
       || input.current.authorizationId !== input.requestId
       || input.current.recipientRuntimeGeneration !== input.recipientGeneration
-      || input.current.recipientKeyId !== input.recipientKeyId
-    ) return unavailable("recipient_key_mismatch");
-    if (!resultAuthorityIsCurrent({
-      workId: input.workId,
-      result: input.result,
-      namespaces: input.currentNamespaceRequirements,
-      current: input.current,
-    })) return unavailable("authority_stale");
+      || input.current.recipientKeyId !== input.recipientKeyId) {
+      return unavailable("recipient_key_mismatch");
+    }
+    if (!input.authorityIsCurrent()) return unavailable("authority_stale");
     const now = this.#now();
     const deadline = Math.min(entry.attempt.expiresAt, input.claimExpiresAt);
     if (deadline <= now) {
@@ -352,38 +830,15 @@ export class TaskRuntimeRecipientRegistryV1 {
           ...input.current,
           recipientEncryptionPrivateKey: entry.privateKey,
         },
+        expectedOperations: input.expectedOperations,
         operation: async (domains) => {
           controller.signal.throwIfAborted();
-          const authorizationDigest = this.crypto.hash(input.authorizationBytes);
-          const value = await withTaskRuntimeExecutionEvidenceV1({
-            evidence: {
-              requestId: input.requestId,
-              workId: input.workId,
-              claimId: input.claimId,
-              claimExpiresAt: input.claimExpiresAt,
-              recipientExpiresAt: entry.attempt.expiresAt,
-              expiresAt: deadline,
-              recipientGeneration: input.recipientGeneration,
-              recipientKeyId: input.recipientKeyId,
-              authorizationDigest,
-              policyRevision: input.current.policyRevision,
-              episodeId: input.current.sessionId,
-              sourceRoomId: input.current.roomId,
-              hostAuthorizationRevision: input.current.hostAuthorizationRevision,
-              recipientAuthorizationRevision:
-                input.current.recipientAuthorizationRevision,
-              result: input.result,
-              domainRequirements: input.current.domains,
-              namespaceRequirements: input.currentNamespaceRequirements,
-            },
-            signal: controller.signal,
-            now: this.#now,
-            execute: (evidence) => input.operation(
-              domains,
-              controller.signal,
-              evidence,
-            ),
-          }).finally(() => authorizationDigest.fill(0));
+          const value = await input.operation(
+            domains,
+            controller.signal,
+            entry,
+            deadline,
+          );
           controller.signal.throwIfAborted();
           return value;
         },

@@ -18,7 +18,7 @@ export type TaskRunResultReadBytesV1 = Readonly<{
   taskId: string;
   taskRunId: string;
   objectId: string;
-  resultRevision: 1;
+  resultRevision: 1 | 2;
   cryptoAccessRevision: 0;
   namespaceId: string;
   encryptedPayloadBytes: Uint8Array;
@@ -84,21 +84,25 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
       taskRunId: string;
       agentId: string;
     }>): Promise<HumanTaskRunResultReadV1> {
-      const expectedObjectId = deriveTaskContentCryptoObjectIdV1({
-        kind: "run_result",
-        taskId: request.taskId,
-        taskRunId: request.taskRunId,
-        contentRevision: 1,
-      });
       const response = await input.api.getProtectedTaskRunResultEnvelopeV1(
         request.taskId,
         request.taskRunId,
       );
+      if (response.resultRevision !== 1 && response.resultRevision !== 2) {
+        throw new ClassifiedDataOperationError(
+          "integrity", "Protected Task result identity was substituted",
+        );
+      }
+      const expectedObjectId = deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: request.taskId,
+        taskRunId: request.taskRunId,
+        contentRevision: response.resultRevision,
+      });
       if (response.readVersion !== 1
         || response.taskId !== request.taskId
         || response.taskRunId !== request.taskRunId
-        || response.objectId !== expectedObjectId
-        || response.resultRevision !== 1) {
+        || response.objectId !== expectedObjectId) {
         throw new ClassifiedDataOperationError(
           "integrity", "Protected Task result identity was substituted",
         );
@@ -128,7 +132,7 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
           taskId: response.taskId,
           taskRunId: response.taskRunId,
           objectId: response.objectId,
-          resultRevision: 1,
+          resultRevision: response.resultRevision,
           cryptoAccessRevision: 0,
           namespaceId: response.namespaceId,
           encryptedPayloadBytes: decode(response.encryptedPayloadBytesBase64url),

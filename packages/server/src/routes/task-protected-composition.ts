@@ -1065,29 +1065,6 @@ export function createProductionProtectedTaskComposition(
     },
 
     async readRunResult(input) {
-      const reference = Object.freeze({
-        readVersion: 1 as const,
-        taskId: input.taskId,
-        taskRunId: input.taskRunId,
-        objectId: deriveTaskContentCryptoObjectIdV1({
-          kind: "run_result",
-          taskId: input.taskId,
-          taskRunId: input.taskRunId,
-          contentRevision: 1,
-        }),
-        resultRevision: 1 as const,
-        cryptoAccessRevision: 0 as const,
-      });
-      const unavailable = (
-        reason: Extract<
-          ProtectedTaskRunResultReadEnvelopeV1,
-          { status: "unavailable" }
-        >["reason"],
-      ): ProtectedTaskRunResultReadEnvelopeV1 => Object.freeze({
-        ...reference,
-        status: "unavailable" as const,
-        reason,
-      });
       const taskRows = await dependencies.db.select({
         ownerId: tasks.ownerId,
         requestorId: tasks.requestorId,
@@ -1126,6 +1103,35 @@ export function createProductionProtectedTaskComposition(
       if (runRows.length !== 1 || run === undefined) {
         throw new ProtectedTaskRouteError(404, "task_run_not_found", "Task run not found");
       }
+      const terminalResultRevision = run.status === "cancelled"
+        ? 2 as const
+        : run.status === "completed" || run.status === "errored"
+        ? 1 as const
+        : null;
+      const resultRevision = terminalResultRevision ?? 1;
+      const reference = Object.freeze({
+        readVersion: 1 as const,
+        taskId: input.taskId,
+        taskRunId: input.taskRunId,
+        objectId: deriveTaskContentCryptoObjectIdV1({
+          kind: "run_result",
+          taskId: input.taskId,
+          taskRunId: input.taskRunId,
+          contentRevision: resultRevision,
+        }),
+        resultRevision,
+        cryptoAccessRevision: 0 as const,
+      });
+      const unavailable = (
+        reason: Extract<
+          ProtectedTaskRunResultReadEnvelopeV1,
+          { status: "unavailable" }
+        >["reason"],
+      ): ProtectedTaskRunResultReadEnvelopeV1 => Object.freeze({
+        ...reference,
+        status: "unavailable" as const,
+        reason,
+      });
       if (
         (task.contentRepresentation !== "protected"
           && task.contentRepresentation !== "dual")
@@ -1149,7 +1155,7 @@ export function createProductionProtectedTaskComposition(
       }).from(taskRunResultCryptoRevisions).where(and(
         eq(taskRunResultCryptoRevisions.taskId, input.taskId),
         eq(taskRunResultCryptoRevisions.taskRunId, input.taskRunId),
-        eq(taskRunResultCryptoRevisions.resultRevision, 1),
+        eq(taskRunResultCryptoRevisions.resultRevision, resultRevision),
       )).limit(2);
       const ledger = ledgerRows[0];
       if (ledgerRows.length > 1) return unavailable("integrity_failure");
@@ -1203,7 +1209,8 @@ export function createProductionProtectedTaskComposition(
         });
       }
       if (
-        (run.resultRepresentation !== "protected"
+        terminalResultRevision === null
+        || (run.resultRepresentation !== "protected"
           && run.resultRepresentation !== "dual")
         || run.resultRevision !== reference.resultRevision
         || run.resultContentNamespaceId !== task.contentNamespaceId

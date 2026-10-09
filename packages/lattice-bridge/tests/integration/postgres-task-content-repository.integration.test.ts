@@ -47,6 +47,10 @@ import {
 import {
   classifyProtectedTaskMetadataV1,
 } from "@nautilo/types";
+import {
+  createDirectDb,
+  prepareProtectedTaskCancellationOutput,
+} from "@nautilo/db";
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 
 type SqlClient = postgres.Sql;
@@ -215,6 +219,9 @@ describe.serial("Postgres protected Task content repository", () => {
     const domainId = randomUUID();
     const taskId = randomUUID();
     const runId = randomUUID();
+    const cancelledRunId = randomUUID();
+    const preparedCancellationRunId = randomUUID();
+    const preparedCancellationJobId = randomUUID();
     const crypto = new LatticeCrypto(seededRng(71), { now: () => NOW });
     const signer = crypto.generateSigningKeyPair();
     const authority = Object.freeze({
@@ -237,6 +244,7 @@ describe.serial("Postgres protected Task content repository", () => {
     }
     const app = client(appUrl);
     const cryptoDatabase = client(cryptoUrl);
+    const directDb = createDirectDb(1);
     const objectIds: string[] = [];
     const [originalPolicy] = await admin.unsafe<{
       mode: string;
@@ -421,16 +429,359 @@ describe.serial("Postgres protected Task content repository", () => {
         prepared: preparedResult,
       })).toMatchObject({ status: "replayed" });
 
+      await app.unsafe(
+        `INSERT INTO task_runs (id, task_id, graph_thread_id, status)
+         VALUES ($1, $2, 'task-integration-cancelled-thread', 'running')`,
+        [cancelledRunId, taskId],
+      );
+      const abandonedResult = Object.freeze({
+        kind: "run_result" as const,
+        taskId,
+        taskRunId: cancelledRunId,
+        contentRevision: 1,
+      });
+      const preparedAbandonedResult = prepareRevision({
+        crypto,
+        signer,
+        authority,
+        coordinate: abandonedResult,
+        canonicalBytes: encodeTaskRunResultPayloadV1({
+          formatVersion: 1,
+          resultText: "must never attach",
+          lastError: null,
+        }),
+        marker: 0x34,
+      });
+      objectIds.push(preparedAbandonedResult.objectId);
+      expect(await repository.reserveRevision({
+        operationId: `task-run-result:${cancelledRunId}`,
+        requestDigest: crypto.hash(new TextEncoder().encode(
+          "abandoned-result-1",
+        )),
+        representation: "protected",
+        authority,
+        prepared: preparedAbandonedResult,
+        operationalMetadata: null,
+      })).toMatchObject({ status: "reserved" });
+
+      const cancelledResult = Object.freeze({
+        kind: "run_result" as const,
+        taskId,
+        taskRunId: cancelledRunId,
+        contentRevision: 2,
+      });
+      const preparedCancelledResult = prepareRevision({
+        crypto,
+        signer,
+        authority,
+        coordinate: cancelledResult,
+        canonicalBytes: encodeTaskRunResultPayloadV1({
+          formatVersion: 1,
+          resultText: "Task cancelled",
+          lastError: null,
+        }),
+        marker: 0x35,
+      });
+      objectIds.push(preparedCancelledResult.objectId);
+      const cancellationOperationId =
+        `task-run-cancelled-result:${cancelledRunId}`;
+      const cancellationDigest = crypto.hash(new TextEncoder().encode(
+        "cancelled-result-2",
+      ));
+      const cancellationReservation = {
+        operationId: cancellationOperationId,
+        requestDigest: cancellationDigest,
+        representation: "protected" as const,
+        authority,
+        prepared: preparedCancelledResult,
+        operationalMetadata: null,
+      };
+      const stoppedAt = new Date(NOW);
+      await app.unsafe(
+        `UPDATE tasks
+         SET status = 'cancelled', cancelled_at = $2
+         WHERE id = $1`,
+        [taskId, stoppedAt],
+      );
+      await app.unsafe(
+        `UPDATE task_runs
+         SET status = 'cancelled', completed_at = $2
+         WHERE id = $1`,
+        [cancelledRunId, stoppedAt],
+      );
+
+      expect(await repository.reserveRevision(cancellationReservation))
+        .toEqual({ status: "stale" });
+      await app.unsafe(
+        `INSERT INTO protected_task_run_output_bindings (
+           task_run_id, binding_id, delivery_mode,
+           result_revision, result_operation_id, result_object_id,
+           accepted_policy_revision, accepted_at, result_terminal_at
+         ) VALUES ($1, $2, 'none', 2, $3, $4, 1, $5, $6)`,
+        [cancelledRunId, `task-run-output:${cancelledRunId}`,
+          cancellationOperationId, preparedCancelledResult.objectId,
+          stoppedAt, new Date(NOW + 1)],
+      );
+      expect(await repository.reserveRevision(cancellationReservation))
+        .toEqual({ status: "stale" });
+      await app.unsafe(
+        `UPDATE protected_task_run_output_bindings
+         SET result_terminal_at = $2
+         WHERE task_run_id = $1`,
+        [cancelledRunId, stoppedAt],
+      );
+      await app.unsafe(
+        `UPDATE protected_task_run_output_bindings
+         SET accepted_policy_revision = 2
+         WHERE task_run_id = $1`,
+        [cancelledRunId],
+      );
+      expect(await repository.reserveRevision(cancellationReservation))
+        .toEqual({ status: "stale" });
+      await app.unsafe(
+        `UPDATE protected_task_run_output_bindings
+         SET accepted_policy_revision = 1
+         WHERE task_run_id = $1`,
+        [cancelledRunId],
+      );
+      expect(await repository.reserveRevision(cancellationReservation))
+        .toMatchObject({ status: "reserved", coordinate: cancelledResult });
+      expect(await repository.reserveRevision(cancellationReservation))
+        .toMatchObject({ status: "replayed", coordinate: cancelledResult });
+      expect(await repository.completeRevision({
+        coordinate: cancelledResult,
+        prepared: preparedCancelledResult,
+      })).toMatchObject({ status: "mapped", coordinate: cancelledResult });
+      expect(await repository.completeRevision({
+        coordinate: cancelledResult,
+        prepared: preparedCancelledResult,
+      })).toMatchObject({ status: "replayed", coordinate: cancelledResult });
+      expect(await repository.completeRevision({
+        coordinate: abandonedResult,
+        prepared: preparedAbandonedResult,
+      })).toMatchObject({
+        status: "orphaned",
+        reason: "stale_mapping",
+        coordinate: abandonedResult,
+      });
+
+      const [cancelledRun] = await admin.unsafe<{
+        status: string;
+        completed_at: Date | null;
+        result_representation: string;
+        result_revision: number;
+        result_text: string | null;
+        last_error: string | null;
+        result_crypto_object_id: string | null;
+      }[]>(
+        `SELECT status, completed_at, result_representation, result_revision,
+                result_text, last_error, result_crypto_object_id
+         FROM task_runs WHERE id = $1`,
+        [cancelledRunId],
+      );
+      expect(cancelledRun).toEqual({
+        status: "cancelled",
+        completed_at: stoppedAt,
+        result_representation: "protected",
+        result_revision: 2,
+        result_text: null,
+        last_error: null,
+        result_crypto_object_id: preparedCancelledResult.objectId,
+      });
+      const cancelledLedgers = await admin.unsafe<{
+        result_revision: number;
+        operation_id: string;
+        crypto_object_id: string;
+        completion: string;
+        disposition: string;
+      }[]>(
+        `SELECT result_revision, operation_id, crypto_object_id,
+                completion, disposition
+         FROM task_run_result_crypto_revisions
+         WHERE task_run_id = $1
+         ORDER BY result_revision`,
+        [cancelledRunId],
+      );
+      expect([...cancelledLedgers]).toEqual([
+        {
+          result_revision: 1,
+          operation_id: `task-run-result:${cancelledRunId}`,
+          crypto_object_id: preparedAbandonedResult.objectId,
+          completion: "complete",
+          disposition: "stale_mapping",
+        },
+        {
+          result_revision: 2,
+          operation_id: cancellationOperationId,
+          crypto_object_id: preparedCancelledResult.objectId,
+          completion: "complete",
+          disposition: "mapped",
+        },
+      ]);
+      cancellationDigest.fill(0);
+
+      const preparedCancellationJobInput = Object.freeze({
+        kind: "protected_task_run_v1",
+        taskId,
+        taskRunId: preparedCancellationRunId,
+        inputObjectId: prepared2.objectId,
+        resultObjectId: deriveTaskContentCryptoObjectIdV1({
+          kind: "run_result",
+          taskId,
+          taskRunId: preparedCancellationRunId,
+          contentRevision: 1,
+        }),
+        authorizationRequestId: `task-runtime-stable:${preparedCancellationRunId}`,
+        policyRevision: 1,
+        executionSegment: 1,
+      });
+      await admin.unsafe(
+        `INSERT INTO jobs (
+           id, owner_id, requestor_id, lane_key, type, status, input,
+           completed_at
+         ) VALUES ($1, $2, $2, $3, 'foreground', 'cancelled', $4::jsonb, $5)`,
+        [
+          preparedCancellationJobId,
+          ownerId,
+          `task:${taskId}`,
+          preparedCancellationJobInput,
+          stoppedAt,
+        ],
+      );
+      await admin.unsafe(
+        `INSERT INTO task_runs (
+           id, task_id, job_id, graph_thread_id, status, completed_at
+         ) VALUES ($1, $2, $3, 'task-integration-prepared-cancel-thread',
+                   'cancelled', $4)`,
+        [preparedCancellationRunId, taskId, preparedCancellationJobId, stoppedAt],
+      );
+      for (const malformedInput of [
+        { ...preparedCancellationJobInput, executionSegment: 2,
+          resumeAcceptanceId: null },
+        { ...preparedCancellationJobInput, unexpected: true },
+        { ...preparedCancellationJobInput, policyRevision: "1" },
+        { ...preparedCancellationJobInput, executionSegment: 2,
+          resumeAcceptanceId: "acceptance:1",
+          resumeContinuationFingerprint:
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      ]) {
+        await admin.unsafe(
+          "UPDATE jobs SET input = $2::jsonb WHERE id = $1",
+          [preparedCancellationJobId, malformedInput],
+        );
+        expect(await prepareProtectedTaskCancellationOutput(
+          directDb,
+          {
+            taskId,
+            taskRunId: preparedCancellationRunId,
+            requiredPolicyRevision: 1,
+          },
+          () => Promise.resolve(false),
+        )).toEqual({ status: "rejected", reason: "conflict" });
+      }
+      await admin.unsafe(
+        "UPDATE jobs SET input = $2::jsonb WHERE id = $1",
+        [preparedCancellationJobId, preparedCancellationJobInput],
+      );
+      const preparedCancellation = await prepareProtectedTaskCancellationOutput(
+        directDb,
+        {
+          taskId,
+          taskRunId: preparedCancellationRunId,
+          requiredPolicyRevision: 1,
+        },
+        (previous) => Promise.resolve(
+          previous.taskId === taskId
+          && previous.taskRunId === preparedCancellationRunId
+          && previous.contentNamespaceId === namespaceValue
+          && previous.jobAuthorizationRequestId
+            === `task-runtime-stable:${preparedCancellationRunId}`,
+        ),
+      );
+      expect(preparedCancellation).toMatchObject({
+        status: "prepared",
+        binding: {
+          taskRunId: preparedCancellationRunId,
+          resultRevision: 2,
+          acceptedPolicyRevision: 1,
+          resultTerminalAt: stoppedAt,
+        },
+      });
+      if (!("intent" in preparedCancellation)) {
+        throw new Error("Expected prepared cancellation output intent");
+      }
+      const stalePolicyResult = Object.freeze({
+        kind: "run_result" as const,
+        taskId,
+        taskRunId: preparedCancellationRunId,
+        contentRevision: 2,
+      });
+      const preparedStalePolicyResult = prepareRevision({
+        crypto,
+        signer,
+        authority,
+        coordinate: stalePolicyResult,
+        canonicalBytes: encodeTaskRunResultPayloadV1({
+          formatVersion: 1,
+          resultText: "Task cancelled",
+          lastError: null,
+        }),
+        marker: 0x36,
+      });
+      objectIds.push(preparedStalePolicyResult.objectId);
+      expect(await repository.reserveRevision({
+        operationId: preparedCancellation.intent.resultOperationId,
+        requestDigest: crypto.hash(new TextEncoder().encode(
+          "stale-policy-cancelled-result-2",
+        )),
+        representation: "protected",
+        authority,
+        prepared: preparedStalePolicyResult,
+        operationalMetadata: null,
+      })).toMatchObject({ status: "reserved", coordinate: stalePolicyResult });
+      expect(await completion.complete(preparedStalePolicyResult)).toBe("created");
+      await app.unsafe(
+        `UPDATE protected_task_run_output_bindings
+         SET accepted_policy_revision = 2
+         WHERE task_run_id = $1`,
+        [preparedCancellationRunId],
+      );
+      expect(await repository.completeRevision({
+        coordinate: stalePolicyResult,
+        prepared: preparedStalePolicyResult,
+      })).toMatchObject({
+        status: "orphaned",
+        reason: "stale_mapping",
+        coordinate: stalePolicyResult,
+      });
+      const [stalePolicyRun] = await admin.unsafe<{
+        result_revision: number;
+        result_crypto_object_id: string | null;
+      }[]>(
+        `SELECT result_revision, result_crypto_object_id
+         FROM task_runs WHERE id = $1`,
+        [preparedCancellationRunId],
+      );
+      expect(stalePolicyRun).toEqual({
+        result_revision: 0,
+        result_crypto_object_id: null,
+      });
+
       const [task] = await admin.unsafe<{
+        status: string;
+        cancelled_at: Date | null;
         content_representation: string;
         content_revision: number;
         prompt: string;
       }[]>(
-        `SELECT content_representation, content_revision, prompt
+        `SELECT status, cancelled_at, content_representation,
+                content_revision, prompt
          FROM tasks WHERE id = $1`,
         [taskId],
       );
       expect(task).toEqual({
+        status: "cancelled",
+        cancelled_at: stoppedAt,
         content_representation: "protected",
         content_revision: 2,
         prompt: "",
@@ -451,6 +802,7 @@ describe.serial("Postgres protected Task content repository", () => {
       });
     } finally {
       await admin.unsafe("DELETE FROM tasks WHERE id = $1", [taskId]);
+      await admin.unsafe("DELETE FROM jobs WHERE id = $1", [preparedCancellationJobId]);
       await admin.unsafe(
         "DELETE FROM task_run_result_crypto_revisions WHERE task_id = $1",
         [taskId],
@@ -490,7 +842,7 @@ describe.serial("Postgres protected Task content repository", () => {
           originalPolicy.shadow_encryption_started_at],
       );
       signer.privateKey.fill(0);
-      await Promise.all([app.end(), cryptoDatabase.end()]);
+      await Promise.all([app.end(), cryptoDatabase.end(), directDb.end()]);
     }
   });
 });

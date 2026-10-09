@@ -537,7 +537,7 @@ const protectedTaskRunResultReadReferenceV1Fields = {
   taskId: canonicalLowerUuid,
   taskRunId: canonicalLowerUuid,
   objectId: portableId,
-  resultRevision: z.literal(1),
+  resultRevision: z.union([z.literal(1), z.literal(2)]),
   cryptoAccessRevision: counter,
 };
 

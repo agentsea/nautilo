@@ -1,5 +1,6 @@
 import {
   and,
+  PROTECTED_TASK_CANCELLED_RESULT,
   actors,
   encryptionTransitionPolicy,
   eq,
@@ -12,6 +13,7 @@ import {
   taskDefinitionCryptoRevisions,
   taskRunResultCryptoRevisions,
   taskRuns,
+  protectedTaskRunOutputBindings,
   tasks,
   taskLocalExecutionDefinitionInvalidationPatch,
   TASK_LOCAL_EXECUTION_RECREATE_TEXT,
@@ -401,7 +403,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         input.requesterHumanId,
       );
       if (requesterOwnerId === null
-        || !await this.#predecessorIsCurrent(transaction, input, requesterOwnerId)) {
+        || !await this.#predecessorIsCurrent(transaction, input, requesterOwnerId, authority.expectedPolicyRevision)) {
         return { status: "stale" };
       }
       const inserted = await this.#insertLifecycle(transaction, input);
@@ -810,6 +812,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     transaction: ConversationProductPostgresTransaction,
     input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0],
     requesterOwnerId: string,
+    expectedPolicyRevision: number,
   ): Promise<boolean> {
     if (input.coordinate.kind === "definition") {
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
@@ -860,10 +863,14 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     if (row === null || text(row, "task_id") !== input.coordinate.taskId
       || text(row, "owner_id") !== requesterOwnerId
       || text(row, "requestor_id") !== requesterOwnerId
-      || nullableText(row, "parent_namespace_id") !== input.namespaceId
-      || text(row, "task_status") === "cancelled"
-      || text(row, "run_status") === "cancelled") return false;
+      || nullableText(row, "parent_namespace_id") !== input.namespaceId) return false;
     const previous = integer(row, "result_revision");
+    if (text(row, "task_status") === "cancelled" || text(row, "run_status") === "cancelled") {
+      return text(row, "task_status") === "cancelled" && text(row, "run_status") === "cancelled"
+        && previous === 0 && text(row, "result_representation") === "ordinary"
+        && nullableText(row, "result_content_namespace_id") === null
+        && await this.#exactCancellationIntent(transaction, input.coordinate, input.operationId, input.cryptoObjectId, input.representation, expectedPolicyRevision);
+    }
     return previous === input.coordinate.contentRevision - 1
       && (previous === 0
         ? nullableText(row, "result_content_namespace_id") === null
@@ -994,23 +1001,63 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       && text(row, "crypto_mapping_state") === "verified"
       && sameBytes(nullableBytes(row, "crypto_required_namespace_fingerprint") ?? new Uint8Array(), lifecycle.requiredNamespaceFingerprint)) return "duplicate";
     if (!exactCurrentAuthority) return "wrong_authority";
-    if (text(parent, "task_status") === "cancelled"
-      || text(row, "run_status") === "cancelled") return "stale";
+    const cancelled = text(parent, "task_status") === "cancelled"
+      || text(row, "run_status") === "cancelled";
+    if (cancelled && (text(parent, "task_status") !== "cancelled"
+      || text(row, "run_status") !== "cancelled"
+      || integer(row, "result_revision") !== 0
+      || !await this.#exactCancellationIntent(transaction, coordinate, lifecycle.operationId, lifecycle.cryptoObjectId, lifecycle.representation, expectedPolicyRevision))) return "stale";
     if (!this.#publicationPolicyMatches(
       lockedPublicationPolicy,
       expectedPolicyRevision,
       lifecycle.representation,
     )) return "wrong_authority";
-    const expected = coordinate.contentRevision - 1;
+    const expected = cancelled ? 0 : coordinate.contentRevision - 1;
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(taskRuns).set({
       resultRepresentation: lifecycle.representation, resultContentNamespaceId: lifecycle.namespaceId,
       resultRevision: coordinate.contentRevision, resultCryptoObjectId: lifecycle.cryptoObjectId,
       resultCryptoAccessRevision: 0, resultCryptoRequiredNamespaceFingerprint: lifecycle.requiredNamespaceFingerprint,
-      resultCryptoMappingState: "verified", ...(lifecycle.representation === "protected" ? { resultText: null, lastError: null } : {}),
-    }).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId), ne(taskRuns.status, "cancelled"), eq(taskRuns.resultRevision, expected), expected === 0
+      resultCryptoMappingState: "verified", ...(lifecycle.representation === "protected"
+        ? { resultText: null, lastError: null } : {}),
+    }).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId),
+      cancelled ? eq(taskRuns.status, "cancelled") : ne(taskRuns.status, "cancelled"), eq(taskRuns.resultRevision, expected), expected === 0
       ? and(isNull(taskRuns.resultContentNamespaceId), eq(taskRuns.resultRepresentation, "ordinary"))
       : and(eq(taskRuns.resultContentNamespaceId, lifecycle.namespaceId), inArray(taskRuns.resultRepresentation, ["protected", "dual"]), eq(taskRuns.resultCryptoMappingState, "verified")))).returning({ task_run_id: taskRuns.id }));
     return oneOrNone(updated, "Task result mapping CAS") === null ? "stale" : "applied";
+  }
+
+  /** Only the dedicated, stopped-result intent admits the deliberate 0 -> 2 mapping. */
+  async #exactCancellationIntent(
+    transaction: ConversationProductPostgresTransaction,
+    coordinate: TaskRunResultContentCoordinateV1,
+    operationId: string,
+    cryptoObjectId: string,
+    representation: "protected" | "dual",
+    expectedPolicyRevision: number,
+  ): Promise<boolean> {
+    if (coordinate.contentRevision !== 2
+      || operationId !== `task-run-cancelled-result:${coordinate.taskRunId}`
+      || cryptoObjectId !== deriveTaskContentCryptoObjectIdV1(coordinate)) return false;
+    const binding = protectedTaskRunOutputBindings;
+    const rows = await executeTypedConversationProductQuery(transaction,
+      conversationProductTypedDb.select({ task_run_id: binding.taskRunId })
+        .from(binding).innerJoin(taskRuns, eq(taskRuns.id, binding.taskRunId))
+        .innerJoin(tasks, eq(tasks.id, taskRuns.taskId)).where(and(
+          eq(tasks.id, coordinate.taskId), eq(tasks.status, "cancelled"),
+          eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.status, "cancelled"),
+          eq(taskRuns.completedAt, tasks.cancelledAt),
+          eq(binding.resultTerminalAt, taskRuns.completedAt),
+          eq(binding.bindingId, `task-run-output:${coordinate.taskRunId}`),
+          eq(binding.resultRevision, 2), eq(binding.resultOperationId, operationId),
+          eq(binding.acceptedPolicyRevision, expectedPolicyRevision),
+          eq(binding.resultObjectId, cryptoObjectId),
+          isNull(binding.resultAttachedAt), isNull(binding.messageId),
+          isNull(binding.wakeJobId), isNull(binding.completedAt),
+          or(isNull(taskRuns.resultText), representation === "dual"
+            ? eq(taskRuns.resultText, PROTECTED_TASK_CANCELLED_RESULT) : undefined),
+          isNull(taskRuns.lastError),
+        )).for("share", { of: binding }).limit(2));
+    return oneOrNone(rows, "Cancelled Task result intent") !== null;
   }
 
   async #lockResultProduct(

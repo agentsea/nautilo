@@ -1197,11 +1197,30 @@ export async function transitionTaskLifecycleTerminal(
 
     await cancelExpectedProtectedJob();
 
+    const stoppedAt = protectedStop
+      ? input.taskPatch?.cancelledAt ?? new Date()
+      : null;
     let nextRun = run;
+    // A protected Task stopped before dispatch still needs a durable history
+    // occurrence for its eventual encrypted cancellation result. This is a
+    // terminal receipt, never an executable occurrence or a model invocation.
+    if (protectedStop && !run) {
+      const [cancelledRun] = await tx.insert(taskRuns).values({
+        taskId: task.id,
+        graphThreadId: `task-cancelled:${task.id}`,
+        status: "cancelled",
+        startedAt: stoppedAt!,
+        completedAt: stoppedAt!,
+      }).returning();
+      if (!cancelledRun) throw new Error("Protected Task Stop lost its history receipt");
+      nextRun = cancelledRun;
+    }
     if (run && input.runStatus && run.status !== input.runStatus) {
       const [updatedRun] = await tx
         .update(taskRuns)
-        .set({ status: input.runStatus, ...input.runPatch })
+        .set({ status: input.runStatus, ...input.runPatch,
+          ...(protectedStop ? { completedAt: stoppedAt! } : {}),
+        })
         .where(eq(taskRuns.id, run.id))
         .returning();
       nextRun = updatedRun ?? run;
@@ -1212,6 +1231,7 @@ export async function transitionTaskLifecycleTerminal(
       const [updatedTask] = await tx
         .update(tasks)
         .set({ ...input.taskPatch,
+          ...(protectedStop ? { cancelledAt: stoppedAt! } : {}),
           ...(input.returnRecurringTaskToPending
             ? { status: "pending" as const, fireLockId: null, fireLockedAt: null }
             : { status: input.taskStatus! }), updatedAt: new Date() })

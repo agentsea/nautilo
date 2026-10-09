@@ -1,9 +1,11 @@
 import {
-  and, domainKeyHeads, eq, humanCryptoDevices, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
+  PROTECTED_TASK_CANCELLED_RESULT, and, domainKeyHeads, eq, humanCryptoDevices, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
   accessRevision, assertAuthenticTaskRuntimeExecutionEvidence, authorizationRevision,
+  assertAuthenticTaskRuntimeCancellationResultEvidence, prepareNativeTaskRuntimeCancellationResultObject,
+  type TaskRuntimeCancellationResultEvidence,
   cryptoDomainId, namespaceGeneration, namespaceId, prepareNativeTaskRuntimeResultObject,
   type DomainForegroundSecretEntry,
 } from "@nautilo/lattice-crypto";
@@ -70,14 +72,38 @@ export type NativeTaskNamespaceSourceInput = Readonly<{
   assertCurrentTaskAuthority(): Promise<void>;
 }>;
 
+type ResultEvidence = PrepareNativeTaskRuntimeRunResultInput["evidence"]
+  | TaskRuntimeCancellationResultEvidence;
+
+function assertResultEvidence(evidence: ResultEvidence): void {
+  if (evidence.purpose === "task.runtime.cancellation_result") {
+    assertAuthenticTaskRuntimeCancellationResultEvidence(evidence);
+  } else {
+    assertAuthenticTaskRuntimeExecutionEvidence(evidence);
+  }
+}
+
 /** Hold one exact live Task Namespace bundle only for the supplied callback. */
 export async function withNativeTaskNamespaceSource<Value>(
   input: NativeTaskNamespaceSourceInput,
   use: (source: NativeTaskNamespaceSource) => Promise<Value>,
 ): Promise<Value> {
+  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  return withNativeResultNamespaceSource(input, use);
+}
+
+async function withNativeResultNamespaceSource<Value>(
+  input: Omit<NativeTaskNamespaceSourceInput, "evidence"> & Readonly<{ evidence: ResultEvidence }>,
+  use: (source: NativeTaskNamespaceSource) => Promise<Value>,
+): Promise<Value> {
+  if (input.evidence.purpose === "task.runtime.cancellation_result"
+    && (input.requiredOperations.length !== 1 || input.requiredOperations[0] !== "encrypt"
+      || input.namespaceId !== input.evidence.result.namespace.namespaceId)) {
+    throw new TypeError("Cancellation custody can only publish its result Namespace");
+  }
   const assertActive = (): void => {
     input.signal.throwIfAborted();
-    assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+    assertResultEvidence(input.evidence);
   };
   assertActive();
   const requirements = input.evidence.namespaceRequirements.filter(entry =>
@@ -251,9 +277,31 @@ export async function withNativeTaskNamespaceSource<Value>(
 export async function prepareNativeTaskRuntimeRunResult(
   input: PrepareNativeTaskRuntimeRunResultInput,
 ): Promise<PreparedTaskContentCryptoRevisionV1> {
+  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  return prepareNativeResult(input);
+}
+
+export type PrepareNativeTaskRuntimeCancelledRunResultInput =
+  Omit<PrepareNativeTaskRuntimeRunResultInput, "evidence" | "payload"> & Readonly<{
+    evidence: TaskRuntimeCancellationResultEvidence;
+  }>;
+
+/** Prepare the fixed cancellation receipt without opening the Task definition. */
+export async function prepareNativeTaskRuntimeCancelledRunResult(
+  input: PrepareNativeTaskRuntimeCancelledRunResultInput,
+): Promise<PreparedTaskContentCryptoRevisionV1> {
+  assertAuthenticTaskRuntimeCancellationResultEvidence(input.evidence);
+  return prepareNativeResult({ ...input,
+    payload: { formatVersion: 1, resultText: PROTECTED_TASK_CANCELLED_RESULT, lastError: null },
+  });
+}
+
+async function prepareNativeResult(
+  input: Omit<PrepareNativeTaskRuntimeRunResultInput, "evidence"> & Readonly<{ evidence: ResultEvidence }>,
+): Promise<PreparedTaskContentCryptoRevisionV1> {
   const assertActive = (): void => {
     input.signal.throwIfAborted();
-    assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+    assertResultEvidence(input.evidence);
   };
   assertActive();
   const evidence = input.evidence;
@@ -285,7 +333,7 @@ export async function prepareNativeTaskRuntimeRunResult(
   // Canonicalize and own the output before the first asynchronous boundary.
   const plaintext = encodeTaskRunResultPayloadV1(input.payload);
   try {
-    return await withNativeTaskNamespaceSource({
+    return await withNativeResultNamespaceSource({
       restricted: input.restricted,
       crypto: input.crypto,
       serverScope: input.serverScope,
@@ -297,10 +345,7 @@ export async function prepareNativeTaskRuntimeRunResult(
       assertCurrentTaskAuthority: input.assertCurrentTaskAuthority,
     }, async namespace => {
       assertActive();
-      const prepared = await prepareNativeTaskRuntimeResultObject(
-        input.crypto,
-        {
-          evidence,
+      const common = {
           plaintext,
           objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1,
           createdAt: input.createdAt,
@@ -310,8 +355,10 @@ export async function prepareNativeTaskRuntimeRunResult(
           resolveHistoricalSignerPublicationManager:
             input.resolveHistoricalSignerPublicationManager,
           namespace,
-        },
-      );
+      };
+      const prepared = evidence.purpose === "task.runtime.cancellation_result"
+        ? await prepareNativeTaskRuntimeCancellationResultObject(input.crypto, { ...common, evidence })
+        : await prepareNativeTaskRuntimeResultObject(input.crypto, { ...common, evidence });
       return createPreparedTaskRuntimeResultContentCryptoRevisionV1({
         coordinate,
         authority,

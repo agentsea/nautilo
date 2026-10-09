@@ -11,6 +11,12 @@ export function protectedTaskRunResultOperationId(taskRunId: string): string {
   return `task-run-result:${taskRunId}`;
 }
 
+export function protectedTaskRunCancelledResultOperationId(
+  taskRunId: string,
+): string {
+  return `task-run-cancelled-result:${taskRunId}`;
+}
+
 export function protectedTaskRunMessageOperationId(taskRunId: string): string {
   return `task-run-delivery-message:${taskRunId}`;
 }
@@ -24,8 +30,23 @@ export function protectedTaskRunResultObjectId(
   taskId: string,
   taskRunId: string,
 ): string {
+  return protectedTaskRunResultObjectIdAtRevision(taskId, taskRunId, 1);
+}
+
+export function protectedTaskRunCancelledResultObjectId(
+  taskId: string,
+  taskRunId: string,
+): string {
+  return protectedTaskRunResultObjectIdAtRevision(taskId, taskRunId, 2);
+}
+
+function protectedTaskRunResultObjectIdAtRevision(
+  taskId: string,
+  taskRunId: string,
+  resultRevision: 1 | 2,
+): string {
   const digest = createHash("sha256").update(
-    `${TASK_RUN_RESULT_OBJECT_ID_DOMAIN}\n${taskId}\n${taskRunId}\n1`,
+    `${TASK_RUN_RESULT_OBJECT_ID_DOMAIN}\n${taskId}\n${taskRunId}\n${resultRevision}`,
     "utf8",
   ).digest("hex");
   return `task-run-result:v1:${digest}`;

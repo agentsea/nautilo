@@ -249,6 +249,7 @@ function outputBinding(
     deliveryMode: "none",
     destinationRoomId: null,
     destinationNamespaceId: null,
+    resultRevision: 1,
     resultOperationId: `task-run-result:${ids.run}`,
     resultObjectId,
     messageOperationId: null,

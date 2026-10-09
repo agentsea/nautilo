@@ -26,7 +26,10 @@ import {
   decodeNamespaceObjectEnvelopeV2,
   encodeAgentRuntimeSignerPublicationV1,
 } from "@nautilo/lattice-crypto/wire";
-import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import type {
+  NautiloApiClient,
+  ProtectedTaskRunResultReadEnvelopeV1,
+} from "@nautilo/api-client/browser";
 
 import {
   encodeClientDeviceProfileV2,
@@ -486,7 +489,7 @@ describe("Task Runtime result preparation", () => {
         ).toString("base64url"),
       }],
     };
-    let response = resultEnvelope;
+    let response: ProtectedTaskRunResultReadEnvelopeV1 = resultEnvelope;
     const api = {
       getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
     } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">;
@@ -551,6 +554,25 @@ describe("Task Runtime result preparation", () => {
       );
       response = resultEnvelope;
     }
+    response = {
+      ...resultEnvelope,
+      objectId: deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: TASK_ID,
+        taskRunId: RUN_ID,
+        contentRevision: 2,
+      }),
+      resultRevision: 2,
+    };
+    await reader.read(request).then(
+      () => { throw new Error("revision-substituted ciphertext was accepted"); },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+        if (!(error instanceof ClassifiedDataOperationError)) return;
+        expect(error.failureClass).toBe("integrity");
+      },
+    );
+    response = resultEnvelope;
     const wrongSubject = createAuthorizedHumanTaskRunResultReaderV1({
       api,
       device: createVaultHumanTaskRunResultReaderV1({

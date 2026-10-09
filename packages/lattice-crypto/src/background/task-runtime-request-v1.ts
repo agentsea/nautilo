@@ -26,7 +26,8 @@ export type TaskRuntimeBackgroundAuthorizationWorkV1 =
   | "task.dispatch"
   | "task.execute"
   | "task.await_reply_resume"
-  | "task.approval_resume";
+  | "task.approval_resume"
+  | "task.cancel_result";
 
 const REQUEST_DOMAIN =
   "nautilo/lattice-crypto/task-runtime-background-authorization-request/v1";
@@ -110,6 +111,7 @@ function taskWork(
     && value !== "task.execute"
     && value !== "task.await_reply_resume"
     && value !== "task.approval_resume"
+    && value !== "task.cancel_result"
   ) {
     throw new TypeError(`${label} is unsupported`);
   }
@@ -120,6 +122,9 @@ function assertPlanBindings(
   value: TaskRuntimeBackgroundAuthorizationRequestV1,
   plan: DomainForegroundAuthorizationPlanV2,
 ): void {
+  const expectedOperations = value.workKind === "task.cancel_result"
+    ? ["encrypt"] as const
+    : ["decrypt", "encrypt"] as const;
   if (
     plan.authorizationId !== value.requestId
     || plan.sessionId !== value.episodeId
@@ -130,6 +135,9 @@ function assertPlanBindings(
     || plan.recipientKeyId !== value.recipientKeyId
     || plan.issuedAt !== value.issuedAt
     || plan.deadlineAt !== value.deadlineAt
+    || plan.operations.length !== expectedOperations.length
+    || plan.operations.some((operation, index) =>
+      operation !== expectedOperations[index])
   ) {
     throw new TypeError("Task Runtime request disagrees with its authorization plan");
   }

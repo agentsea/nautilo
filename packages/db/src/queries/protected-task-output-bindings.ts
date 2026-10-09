@@ -29,6 +29,8 @@ import { taskRunResultCryptoRevisions } from
 import { tasks } from "../schema/tasks";
 import { PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY } from "./tasks";
 import {
+  protectedTaskRunCancelledResultObjectId,
+  protectedTaskRunCancelledResultOperationId,
   protectedTaskRunMessageOperationId,
   protectedTaskRunOutputBindingId,
   protectedTaskRunResultObjectId,
@@ -36,6 +38,8 @@ import {
   protectedTaskRunWakeJobId,
   protectedTaskRunWakeOperationId,
 } from "./protected-task-output-binding-identities";
+import { PROTECTED_TASK_CANCELLED_RESULT } from
+  "./protected-task-cancellation-output";
 
 const CANONICAL_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -140,6 +144,7 @@ function exactBinding(
     && binding.deliveryMode === deliveryMode
     && binding.destinationRoomId === (input.destination?.roomId ?? null)
     && binding.destinationNamespaceId === (input.destination?.namespaceId ?? null)
+    && binding.resultRevision === 1
     && binding.resultOperationId
       === protectedTaskRunResultOperationId(input.taskRunId)
     && binding.resultObjectId
@@ -252,6 +257,7 @@ export async function acceptProtectedTaskRunOutputBinding(
       deliveryMode,
       destinationRoomId: input.destination?.roomId ?? null,
       destinationNamespaceId: input.destination?.namespaceId ?? null,
+      resultRevision: 1,
       resultOperationId: protectedTaskRunResultOperationId(run.id),
       resultObjectId: protectedTaskRunResultObjectId(task.id, run.id),
       messageOperationId: deliveryMode === "raw"
@@ -294,15 +300,34 @@ function exactTerminalResult(
     : task.callingRoomId === binding.destinationRoomId
       && task.resultDelivery === binding.deliveryMode
       && binding.destinationNamespaceId !== null;
+  const exactNormalResult =
+    (run.status === "completed" || run.status === "errored")
+    && run.resultRevision === 1
+    && binding.resultRevision === 1
+    && binding.resultOperationId === protectedTaskRunResultOperationId(run.id)
+    && run.resultCryptoObjectId === binding.resultObjectId;
+  const exactCancellationResult = task.status === "cancelled"
+    && task.cancelledAt !== null
+    && run.status === "cancelled"
+    && run.completedAt?.getTime() === task.cancelledAt.getTime()
+    && run.resultRevision === 2
+    && binding.resultRevision === 2
+    && binding.resultOperationId
+      === protectedTaskRunCancelledResultOperationId(run.id)
+    && binding.resultObjectId
+      === protectedTaskRunCancelledResultObjectId(task.id, run.id)
+    && run.resultCryptoObjectId === binding.resultObjectId
+    && run.lastError === null
+    && (run.resultRepresentation === "protected"
+      ? run.resultText === null
+      : run.resultText === PROTECTED_TASK_CANCELLED_RESULT);
   return (task.contentRepresentation === "protected"
       || task.contentRepresentation === "dual")
     && run.resultRepresentation === task.contentRepresentation
     && exactDestination
-    && (run.status === "completed" || run.status === "errored")
     && run.completedAt !== null
-    && run.resultRevision === 1
-    && run.resultCryptoObjectId === binding.resultObjectId
-    && run.resultCryptoMappingState === "verified";
+    && run.resultCryptoMappingState === "verified"
+    && (exactNormalResult || exactCancellationResult);
 }
 
 /**

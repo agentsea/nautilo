@@ -106,14 +106,14 @@ function job(overrides: Partial<Job> = {}): Job {
 
 type HarnessOptions = Readonly<{
   task?: Task;
-  run?: TaskRun;
+  run?: TaskRun | null;
   job?: Job;
   newerRun?: TaskRun;
 }>;
 
 function harness(options: HarnessOptions = {}) {
   let taskRow = options.task ?? task();
-  let runRow = options.run ?? run();
+  let runRow = options.run === null ? null : options.run ?? run();
   let jobRow = options.job ?? job();
   const transactions: string[] = [];
   const locks: unknown[] = [];
@@ -142,7 +142,7 @@ function harness(options: HarnessOptions = {}) {
             locks.push({ table, kind, predicate, projection });
             if (table === tasks) return [taskRow];
             if (table === taskRuns) {
-              return projection === undefined
+              return runRow === null ? [] : projection === undefined
                 ? [runRow]
                 : [{ id: runRow.id, jobId: runRow.jobId }];
             }
@@ -166,6 +166,16 @@ function harness(options: HarnessOptions = {}) {
         };
         return query;
       },
+    }),
+    insert: (table: unknown) => ({
+      values: (values: Record<string, unknown>) => ({
+        returning: async () => {
+          if (table !== taskRuns || runRow !== null) throw new Error("unexpected insert");
+          writes.push({ table, patch: values });
+          runRow = run({ ...values, jobId: null } as Partial<TaskRun>);
+          return [runRow];
+        },
+      }),
     }),
     update: (table: unknown) => ({
       set: (patch: Record<string, unknown>) => ({
@@ -272,7 +282,7 @@ describe("exact Task invocation terminal transition", () => {
     });
     expect(fixture.writes[1]).toEqual({
       table: taskRuns,
-      patch: { status: "cancelled" },
+      patch: { status: "cancelled", completedAt: terminalInput.taskPatch.cancelledAt },
     });
     expect(fixture.writes[2]?.table).toBe(tasks);
     expect(fixture.writes[2]?.patch["status"]).toBe("cancelled");
@@ -563,5 +573,42 @@ describe("exact Task invocation terminal transition", () => {
     expect(rejection).toBeInstanceOf(TypeError);
     expect(fixture.transactions).toEqual([]);
     expect(fixture.writes).toEqual([]);
+  });
+});
+
+
+describe("protected cancellation history", () => {
+  test("pre-dispatch Stop creates one terminal history receipt without a Job", async () => {
+    const fixture = harness({ task: task({ status: "pending" }), run: null });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.transitioned).toBe(true);
+    expect(result.run).toMatchObject({ status: "cancelled", jobId: null,
+      completedAt: broadTerminalInput.taskPatch.cancelledAt,
+      startedAt: broadTerminalInput.taskPatch.cancelledAt,
+      resultText: null, lastError: null, resultRevision: 0 });
+    expect(fixture.writes.some(write => write.table === jobs)).toBe(false);
+    await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(fixture.writes.filter(write => write.table === taskRuns)).toHaveLength(1);
+  });
+
+  test("Plain pre-dispatch Stop retains its existing no-occurrence behavior", async () => {
+    const fixture = harness({ task: task({ status: "pending", contentRepresentation: "ordinary" }), run: null });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.run).toBeUndefined();
+    expect(fixture.writes.map(write => write.table)).toEqual([tasks]);
+  });
+
+  test("completed Task cannot acquire a cancellation history receipt", async () => {
+    const fixture = harness({ task: task({ status: "completed" }), run: null });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.transitioned).toBe(false);
+    expect(fixture.writes).toHaveLength(0);
+  });
+
+  test.each(["running", "awaiting", "paused"] as const)("%s occurrence retains its identity and records the Stop timestamp", async status => {
+    const fixture = harness({ task: task({ status }), run: run({ status, jobId: null }) });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.run).toMatchObject({ id: ids.run, status: "cancelled", completedAt: broadTerminalInput.taskPatch.cancelledAt });
+    expect(fixture.writes.filter(write => write.table === taskRuns)).toHaveLength(1);
   });
 });

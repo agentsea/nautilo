@@ -395,9 +395,15 @@ export {
     as ProcessorTransformRecipientRegistry,
 } from "./background/one-run-processor-transform-v1.ts";
 export {
+  assertAuthenticTaskRuntimeCancellationResultEvidenceV1
+    as assertAuthenticTaskRuntimeCancellationResultEvidence,
   TaskRuntimeRecipientRegistryV1 as TaskRuntimeRecipientRegistry,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
+  TaskRuntimeCancellationResultEvidenceV1
+    as TaskRuntimeCancellationResultEvidence,
+  TaskRuntimeCancellationResultProofV1
+    as TaskRuntimeCancellationResultProof,
   TaskRuntimeRecipientAttemptV1 as TaskRuntimeRecipientAttempt,
   TaskRuntimeRecipientCreationResultV1 as TaskRuntimeRecipientCreationResult,
   TaskRuntimeRecipientDeadlineHandleV1 as TaskRuntimeRecipientDeadlineHandle,
@@ -1100,12 +1106,16 @@ export {
   assertAuthenticPreparedTaskRuntimeResultObjectV1
     as assertAuthenticPreparedTaskRuntimeResultObject,
   prepareTaskRuntimeResultObjectV1 as prepareTaskRuntimeResultObject,
+  prepareNativeTaskRuntimeCancellationResultObjectV1
+    as prepareNativeTaskRuntimeCancellationResultObject,
   prepareNativeTaskRuntimeResultObjectV1 as prepareNativeTaskRuntimeResultObject,
 } from "./object/task-runtime-result-preparation-v1.ts";
 export type {
   PreparedTaskRuntimeResultObjectV1 as PreparedTaskRuntimeResultObject,
   PrepareTaskRuntimeResultObjectV1Input as PrepareTaskRuntimeResultObjectInput,
   PrepareNativeTaskRuntimeResultObjectV1Input as PrepareNativeTaskRuntimeResultObjectInput,
+  PrepareNativeTaskRuntimeCancellationResultObjectV1Input
+    as PrepareNativeTaskRuntimeCancellationResultObjectInput,
   TaskRuntimeResultNamespaceSourceV1 as TaskRuntimeResultNamespaceSource,
   TaskRuntimeResultObjectAuthorityV1 as TaskRuntimeResultObjectAuthority,
 } from "./object/task-runtime-result-preparation-v1.ts";

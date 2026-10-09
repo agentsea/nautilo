@@ -15,6 +15,7 @@ export * from "./queries/personal-provider-credentials";
 export * from "./queries/personal-capability-preferences";
 export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
+export * from "./queries/protected-task-cancellation-output";
 export * from "./queries/video-generation-links";
 export {
   createDatabase,

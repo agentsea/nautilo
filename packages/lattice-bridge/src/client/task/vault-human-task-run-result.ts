@@ -80,18 +80,22 @@ export function createVaultHumanTaskRunResultReaderV1(
   return Object.freeze({
     async openExact(input: Parameters<HumanTaskRunResultDevicePortV1["openExact"]>[0]) {
       const envelope = input.envelope;
+      if (envelope.resultRevision !== 1 && envelope.resultRevision !== 2) {
+        throw new ClassifiedDataOperationError(
+          "integrity", "Protected Task result access is invalid",
+        );
+      }
       const expectedObjectId = deriveTaskContentCryptoObjectIdV1({
         kind: "run_result",
         taskId: input.taskId,
         taskRunId: input.taskRunId,
-        contentRevision: 1,
+        contentRevision: envelope.resultRevision,
       });
       if (dependencies.subjectHumanId
           !== dependencies.coordinates.humanActorId
         || envelope.taskId !== input.taskId
         || envelope.taskRunId !== input.taskRunId
         || envelope.objectId !== expectedObjectId
-        || envelope.resultRevision !== 1
         || envelope.cryptoAccessRevision !== 0
         || envelope.accessManifestProofBytes.length !== 0
         || envelope.signerEvidence.length !== 1

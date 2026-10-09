@@ -147,6 +147,13 @@ describe("protected Task prepared publication schema", () => {
       }],
     };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(ready)).toEqual(ready);
+    const cancelled = { ...ready, resultRevision: 2 as const };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(cancelled))
+      .toEqual(cancelled);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      resultRevision: 3,
+    })).toThrow();
     expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
       ...ready,
       resultText: "plaintext must not cross",

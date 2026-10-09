@@ -12,6 +12,10 @@ import {
   type TaskRuntimeExecutionDomainAuthorityV1,
   type TaskRuntimeExecutionEvidenceV1,
 } from "../background/task-runtime-execution-evidence-v1.ts";
+import {
+  assertAuthenticTaskRuntimeCancellationResultEvidenceV1,
+  type TaskRuntimeCancellationResultEvidenceV1,
+} from "../background/task-runtime-recipient-registry-v1.ts";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
   createAgentObjectAccessManifestV5,
@@ -52,6 +56,18 @@ import { wrapObjectDekForNamespaceV2 } from "./namespace-envelope.ts";
 
 const HASH_BYTES = 32;
 
+type ResultEvidence = TaskRuntimeExecutionEvidenceV1
+  | TaskRuntimeCancellationResultEvidenceV1;
+
+function assertResultEvidence(evidence: ResultEvidence): void {
+  if (evidence.purpose === "task.runtime.cancellation_result") {
+    assertAuthenticTaskRuntimeCancellationResultEvidenceV1(evidence);
+  } else {
+    assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+  }
+}
+
+
 export type TaskRuntimeResultNamespaceSourceV1 = Readonly<{
   trustedHead: VerifiedNamespaceBindingHeadV2;
   aiKeyringEnvelope: NamespaceKeyringEnvelopeV2;
@@ -82,6 +98,7 @@ export type TaskRuntimeResultObjectAuthorityV1 = Readonly<{
   payloadHash: Uint8Array;
   taskId: string;
   taskRunId: string;
+  contentRevision: 1 | 2;
   namespace: Readonly<{
     namespaceId: string;
     domainId: string;
@@ -198,7 +215,7 @@ function authorityFingerprint(value: TaskRuntimeResultObjectAuthorityV1): string
 }
 
 function matchingDomain(
-  evidence: TaskRuntimeExecutionEvidenceV1,
+  evidence: ResultEvidence,
 ): TaskRuntimeExecutionDomainAuthorityV1 {
   const matches = evidence.domainRequirements.filter((entry) =>
     entry.domainId === evidence.result.namespace.domainId
@@ -304,7 +321,8 @@ export function prepareTaskRuntimeResultObjectV1(
 
 function sealTaskRuntimeResultWithNamespaceKey(
   crypto: LatticeCrypto,
-  input: Omit<PrepareTaskRuntimeResultObjectV1Input, "namespace">,
+  input: Omit<PrepareTaskRuntimeResultObjectV1Input, "namespace" | "evidence">
+    & Readonly<{ evidence: ResultEvidence }>,
   namespace: Readonly<{ key: Uint8Array; keyGeneration: number; bindingHash: Uint8Array }>,
 ): PreparedTaskRuntimeResultObjectV1 {
   const evidence = input.evidence;
@@ -370,7 +388,7 @@ function sealTaskRuntimeResultWithNamespaceKey(
         input.agentAuthorizationRevision,
       ),
     }, input.runtime);
-    assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+    assertResultEvidence(evidence);
     const authority = cloneAuthority({
       purpose: "persist-task-runtime-result-genesis",
       requestId: evidence.requestId,
@@ -381,6 +399,7 @@ function sealTaskRuntimeResultWithNamespaceKey(
       payloadHash,
       taskId: evidence.result.taskId,
       taskRunId: evidence.result.taskRunId,
+      contentRevision: evidence.result.contentRevision,
       namespace: {
         namespaceId: resultNamespace.namespaceId,
         domainId: resultNamespace.domainId,
@@ -438,6 +457,29 @@ export async function prepareNativeTaskRuntimeResultObjectV1(
   input: PrepareNativeTaskRuntimeResultObjectV1Input,
 ): Promise<PreparedTaskRuntimeResultObjectV1> {
   assertAuthenticTaskRuntimeExecutionEvidenceV1(input.evidence);
+  return prepareNativeResultObject(crypto, input);
+}
+
+export type PrepareNativeTaskRuntimeCancellationResultObjectV1Input =
+  Omit<PrepareNativeTaskRuntimeResultObjectV1Input, "evidence"> & Readonly<{
+    evidence: TaskRuntimeCancellationResultEvidenceV1;
+  }>;
+
+/** Fresh publication-only custody never becomes Task execution evidence. */
+export async function prepareNativeTaskRuntimeCancellationResultObjectV1(
+  crypto: LatticeCrypto,
+  input: PrepareNativeTaskRuntimeCancellationResultObjectV1Input,
+): Promise<PreparedTaskRuntimeResultObjectV1> {
+  assertAuthenticTaskRuntimeCancellationResultEvidenceV1(input.evidence);
+  return prepareNativeResultObject(crypto, input);
+}
+
+async function prepareNativeResultObject(
+  crypto: LatticeCrypto,
+  input: Omit<PrepareNativeTaskRuntimeResultObjectV1Input, "evidence">
+    & Readonly<{ evidence: ResultEvidence }>,
+): Promise<PreparedTaskRuntimeResultObjectV1> {
+  assertResultEvidence(input.evidence);
   if (!(input.plaintext instanceof Uint8Array)) throw new TypeError("Task result plaintext must be Uint8Array");
   const evidence = input.evidence;
   const target = evidence.result.namespace;
@@ -475,7 +517,7 @@ export async function prepareNativeTaskRuntimeResultObjectV1(
     const opened = await withOpenedDomainNamespaceBundleV2(crypto, {
       ...input.namespace,
       operation: (retained) => {
-        assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+        assertResultEvidence(evidence);
         const generation = retained.find((entry) => entry.generation === current.namespaceCurrentGeneration
           && entry.accessRevision === current.namespaceAccessRevision);
         if (generation === undefined) throw new TypeError("Native Task result current Namespace generation is unavailable");
@@ -487,7 +529,7 @@ export async function prepareNativeTaskRuntimeResultObjectV1(
       },
     });
     if (opened.status !== "opened") throw new TypeError("Native Task result Namespace bundle is unavailable");
-    assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+    assertResultEvidence(evidence);
     return opened.value;
   } finally { plaintext.fill(0); }
 }

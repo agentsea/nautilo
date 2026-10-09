@@ -181,6 +181,7 @@ export {
   type PrepareTaskRuntimeRunResultInput,
 } from "./task/task-run-result-preparation.ts";
 export {
+  withProtectedTaskCancellationResultSigner,
   withProtectedTaskResultSigner,
   type ProtectedTaskResultSignerAuthority,
   type ProtectedTaskResultSignerResult,

@@ -207,6 +207,7 @@ function outputPorts(namespaceId: string = CONTENT) {
         destinationRoomId: ROOM,
         destinationNamespaceId: namespaceId,
         resultOperationId: `task-run-result:${input.taskRunId}`,
+        resultRevision: 1,
         resultObjectId: deriveTaskContentCryptoObjectIdV1({
           kind: "run_result", taskId: input.taskId,
           taskRunId: input.taskRunId, contentRevision: 1,

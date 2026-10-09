@@ -78,10 +78,11 @@ describe("M241 background authorization durable schema", () => {
 
     expect(workKindSql).toContain("'task.await_reply_resume'");
     expect(workKindSql).toContain("'task.approval_resume'");
+    expect(workKindSql).toContain("'task.cancel_result'");
     expect(purposeSql).toContain("'task.await_reply_resume'");
     expect(purposeSql).toContain("'task.approval_resume'");
     expect(workSubjectSql).toContain(
-      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\', \'task.approval_resume\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
+      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\', \'task.approval_resume\', \'task.cancel_result\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
     );
   });
 

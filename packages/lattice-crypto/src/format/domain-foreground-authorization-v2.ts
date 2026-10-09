@@ -225,10 +225,13 @@ function operations(
   const result = [...new Set(values)].sort(compareUnsignedUtf8);
   if (
     result.length !== values.length
-    || result[0] !== "decrypt"
-    || (result.length === 2 && result[1] !== "encrypt")
+    || (result.length === 1
+      ? result[0] !== "decrypt" && result[0] !== "encrypt"
+      : result[0] !== "decrypt" || result[1] !== "encrypt")
     || result.some((value, index) => value !== values[index])
-  ) throw new TypeError("Foreground operations must be decrypt or decrypt, encrypt");
+  ) throw new TypeError(
+    "Foreground operations must be decrypt, encrypt, or decrypt and encrypt",
+  );
   return Object.freeze(result);
 }
 
@@ -1003,7 +1006,10 @@ export function verifyDomainForegroundAuthorizationV2(
     authorizationBytes: Uint8Array;
     now: number;
     current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
-    expectedOperations?: readonly ["decrypt"] | readonly ["decrypt", "encrypt"];
+    expectedOperations?:
+      | readonly ["decrypt"]
+      | readonly ["encrypt"]
+      | readonly ["decrypt", "encrypt"];
   }>,
 ): VerifyDomainForegroundAuthorizationResultV2 {
   const authorization = parseDomainForegroundAuthorizationV2(
@@ -1074,9 +1080,12 @@ export async function withOpenedDomainForegroundAuthorizationV2<Value>(
     authorizationBytes: Uint8Array;
     now: number;
     current: DomainForegroundAuthorizationCurrentAuthorityV2;
-    /** Existing execution callers require both operations. Read-only consumers
-     * must opt in explicitly and retain their decrypt-only callback boundary. */
-    expectedOperations?: readonly ["decrypt"] | readonly ["decrypt", "encrypt"];
+    /** Existing execution callers require both operations. Single-operation
+     * consumers must opt in explicitly and retain their narrower callback. */
+    expectedOperations?:
+      | readonly ["decrypt"]
+      | readonly ["encrypt"]
+      | readonly ["decrypt", "encrypt"];
     operation(domains: readonly DomainForegroundSecretEntryV2[]):
       Value | PromiseLike<Value>;
   }>,

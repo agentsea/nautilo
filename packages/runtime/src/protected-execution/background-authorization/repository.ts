@@ -53,6 +53,7 @@ export const BACKGROUND_AUTHORIZATION_WORK_KINDS = Object.freeze([
   "task.execute",
   "task.await_reply_resume",
   "task.approval_resume",
+  "task.cancel_result",
 ] as const);
 
 export const TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX =
@@ -89,6 +90,7 @@ export const BACKGROUND_AUTHORIZATION_PURPOSES = Object.freeze([
   "task.execute",
   "task.await_reply_resume",
   "task.approval_resume",
+  "task.cancel_result",
 ] as const);
 
 export type BackgroundAuthorizationPurpose =
@@ -966,6 +968,10 @@ export function parseBackgroundAuthorizationRecord(
   ) {
     throw new TypeError("Invalid background work kind/purpose");
   }
+  if (value.workKind === "task.cancel_result"
+    && (snapshot.formatVersion !== 3 || snapshot.credentialSubject.kind !== "runtime")) {
+    throw new TypeError("Cancellation result authorization requires Task Runtime custody");
+  }
   if (
     snapshot.credentialSubject.kind === "runtime"
     && (
@@ -974,6 +980,7 @@ export function parseBackgroundAuthorizationRecord(
         && value.workKind !== "task.execute"
         && value.workKind !== "task.await_reply_resume"
         && value.workKind !== "task.approval_resume"
+        && value.workKind !== "task.cancel_result"
       )
       || value.purpose !== value.workKind
     )
@@ -1163,6 +1170,13 @@ export function parseBackgroundAuthorizationRecord(
       expectedPolicyRevision: value.expectedPolicyRevision,
     }, protectedSubject.kind),
   });
+  if (value.workKind === "task.cancel_result") {
+    const namespaces = parsed.authoritySet.namespaceRequirements;
+    if (namespaces.length !== 1 || parsed.authoritySet.domainRequirements.length !== 1
+      || namespaces[0]!.operations.length !== 1 || namespaces[0]!.operations[0] !== "encrypt") {
+      throw new TypeError("Cancellation result custody requires one write-only Namespace");
+    }
+  }
   return parsed as BackgroundAuthorizationRecord;
 }
 

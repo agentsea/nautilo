@@ -1408,7 +1408,8 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         'task.dispatch',
         'task.execute',
         'task.await_reply_resume',
-        'task.approval_resume'
+        'task.approval_resume',
+        'task.cancel_result'
       )`,
     ),
     check(
@@ -1429,7 +1430,8 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         'task.dispatch',
         'task.execute',
         'task.await_reply_resume',
-        'task.approval_resume'
+        'task.approval_resume',
+        'task.cancel_result'
       )`,
     ),
     check(
@@ -1534,6 +1536,7 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
       ) or (
         ${table.workKind} not like 'stenographer.%'
         and ${table.workKind} not like 'reflection.%'
+        and ${table.workKind} <> 'task.cancel_result'
         and (${table.workKind} not like 'task.%'
           or ${table.formatVersion} in (1, 2))
         and ${table.credentialSubjectKind} = 'agent'
@@ -1542,7 +1545,8 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
           'task.dispatch',
           'task.execute',
           'task.await_reply_resume',
-          'task.approval_resume'
+          'task.approval_resume',
+        'task.cancel_result'
         )
         and ${table.purpose} = ${table.workKind}
         and ${table.formatVersion} = 3

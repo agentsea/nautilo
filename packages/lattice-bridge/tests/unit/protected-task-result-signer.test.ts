@@ -5,15 +5,21 @@ import {
   agentId,
   agentRuntimeGeneration,
   authorizationRevision,
+  createDomainForegroundAuthorizationPlan,
   cryptoDeviceId,
   cryptoDomainId,
   domainEpoch,
   humanId,
+  mintDomainForegroundAuthorization,
   persistAgentRuntimeInitialization,
   prepareAgentRuntimeInitialization,
+  TaskRuntimeRecipientRegistry,
   type DomainForegroundSecretEntry,
   type Rng,
+  type TaskRuntimeCancellationResultEvidence,
 } from "@nautilo/lattice-crypto";
+import { serializeDomainForegroundAuthorizationV2 } from
+  "@nautilo/lattice-crypto/wire";
 import {
   withTaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionEvidenceInputV1,
@@ -22,8 +28,11 @@ import {
 import { createFakeLatticeStorage } from
   "../../src/testing/fake-lattice-storage.ts";
 import {
+  withProtectedTaskCancellationResultSigner,
   withProtectedTaskResultSigner,
 } from "../../src/task/protected-task-result-signer.ts";
+import { deriveTaskContentCryptoObjectIdV1 } from
+  "../../src/task/task-content-repository.ts";
 
 const NOW = 1_830_000_000_000;
 const TASK_ID = "10000000-0000-4000-8000-000000000001";
@@ -199,6 +208,146 @@ function evidenceFor(
   });
 }
 
+async function withCancellationEvidence<Value>(
+  state: Awaited<ReturnType<typeof fixture>>,
+  operation: (input: Readonly<{
+    evidence: TaskRuntimeCancellationResultEvidence;
+    domain: DomainForegroundSecretEntry;
+    expire(): void;
+  }>) => Value | PromiseLike<Value>,
+) {
+  let currentTime = NOW;
+  const recipients = new TaskRuntimeRecipientRegistry(state.crypto, {
+    now: () => currentTime,
+  });
+  const requestId = "task-cancellation-result-signer-request";
+  const recipientKeyId = "task-cancellation-result-signer-recipient";
+  const attempt = await recipients.createAttempt({
+    requestId,
+    workId: RUN_ID,
+    recipientGeneration: 1,
+    recipientKeyId,
+    expiresAt: NOW + 60_000,
+  });
+  if (attempt.status !== "created") {
+    throw new Error("cancellation result recipient unavailable");
+  }
+  const domainRequirement = Object.freeze({
+    domainId: state.domain.domainId,
+    sourceNamespaceId: state.domain.sourceNamespaceId,
+    participantDigest: state.domain.participantDigest,
+    participantCount: state.domain.participantCount,
+    keyClass: "ai" as const,
+    domainKeyGeneration: state.domain.domainKeyGeneration,
+    authorizationRevision: state.domain.authorizationRevision,
+    headDigest: state.domain.headDigest,
+    activeNamespaceBindingSetDigest: bytes(0x53),
+    activeNamespaceBindingCount: 1,
+  });
+  const plan = createDomainForegroundAuthorizationPlan(state.crypto, {
+    authorizationId: requestId,
+    policyRevision: 5,
+    sessionId: "task-cancellation-result-signer-session",
+    roomId: "task-cancellation-result-signer-room",
+    subjectHumanId: humanId("task-cancellation-result-signer-human"),
+    committerDeviceId: cryptoDeviceId("task-result-committer"),
+    committerDeviceSigningGeneration: 1,
+    hostAuthorizationRevision: authorizationRevision(2),
+    recipientKind: "runtime",
+    recipientPrincipalId: "nautilo_task_runtime",
+    recipientAuthorizationRevision: authorizationRevision(0),
+    recipientRuntimeGeneration: 1,
+    recipientKeyId,
+    operations: ["encrypt"],
+    issuedAt: NOW,
+    deadlineAt: NOW + 60_000,
+    maximumSecretBytes: 4_096,
+    domains: [domainRequirement],
+  });
+  const authorization = await mintDomainForegroundAuthorization(state.crypto, {
+    plan,
+    domains: [state.domain],
+    committerDeviceSigningPrivateKey: state.committer.privateKey,
+    recipientEncryptionPublicKey: attempt.attempt.recipientPublicKey,
+  });
+  const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+    authorization,
+  );
+  const result = Object.freeze({
+    taskId: TASK_ID,
+    taskRunId: RUN_ID,
+    contentRevision: 2 as const,
+    objectId: deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result",
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      contentRevision: 2,
+    }),
+    signerAgentId: AGENT_ID,
+    namespace: Object.freeze({
+      namespaceId: NAMESPACE_ID,
+      domainId: DOMAIN_ID,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: 0,
+      expectedPolicyRevision: 5,
+    }),
+  });
+  try {
+    return await recipients.withOpenedCancellationResultGrant({
+      requestId,
+      workId: RUN_ID,
+      recipientGeneration: 1,
+      recipientKeyId,
+      claimId: "task-cancellation-result-signer-claim",
+      claimExpiresAt: NOW + 60_000,
+      authorizationBytes,
+      current: {
+        authorizationId: plan.authorizationId,
+        policyRevision: plan.policyRevision,
+        sessionId: plan.sessionId,
+        roomId: plan.roomId,
+        subjectHumanId: plan.subjectHumanId,
+        committerDeviceId: plan.committerDeviceId,
+        committerDeviceSigningGeneration:
+          plan.committerDeviceSigningGeneration,
+        committerDeviceSigningPublicKey: state.committer.publicKey,
+        committerDeviceActive: true,
+        hostAuthorizationRevision: plan.hostAuthorizationRevision,
+        recipientKind: plan.recipientKind,
+        recipientPrincipalId: plan.recipientPrincipalId,
+        recipientAuthorizationRevision: plan.recipientAuthorizationRevision,
+        recipientRuntimeGeneration: plan.recipientRuntimeGeneration,
+        recipientKeyId: plan.recipientKeyId,
+        recipientAuthorized: true,
+        domains: plan.domains,
+      },
+      currentNamespaceRequirements: [{
+        ordinal: 0,
+        namespaceId: NAMESPACE_ID,
+        domainId: DOMAIN_ID,
+        operations: ["encrypt"],
+        expectedAccessRevision: 0,
+        expectedPolicyRevision: 5,
+      }],
+      result,
+      operation: (domains, _signal, evidence) => {
+        const domain = domains[0];
+        if (domain === undefined) throw new Error("missing cancellation Domain");
+        return operation({
+          evidence,
+          domain,
+          expire: () => {
+            currentTime = NOW + 60_000;
+          },
+        });
+      },
+    });
+  } finally {
+    authorizationBytes.fill(0);
+    recipients.close();
+  }
+}
+
 describe("protected Task result signer", () => {
   test("lends the current durable signer and wipes its Runtime key", async () => {
     const state = await fixture();
@@ -372,6 +521,169 @@ describe("protected Task result signer", () => {
     }).then(() => null, (error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
     expect((failure as Error).message).toBe("synthetic preparation failure");
+    expect(capture.borrowedKey).toEqual(new Uint8Array(32));
+  });
+
+  test("lends the signer under a real encrypt-only cancellation grant", async () => {
+    const state = await fixture();
+    const capture: { borrowedKey: Uint8Array | null } = { borrowedKey: null };
+    const opened = await withCancellationEvidence(state, ({
+      evidence,
+      domain,
+    }) => withProtectedTaskCancellationResultSigner({
+      crypto: state.crypto,
+      storage: state.storage,
+      evidence,
+      domain,
+      expectedAgentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+      resolveHistoricalRuntimeCommitter: () => state.committer.publicKey,
+      resolveHistoricalSignerPublicationManager: () => state.manager.publicKey,
+      execute: (authority) => {
+        capture.borrowedKey = authority.runtime.key;
+        expect(String(authority.runtime.agentId)).toBe(AGENT_ID);
+        expect(authority.runtime.key).not.toEqual(new Uint8Array(32));
+        return "cancelled-result-prepared";
+      },
+    }));
+    expect(opened).toEqual({
+      status: "opened",
+      value: { status: "executed", value: "cancelled-result-prepared" },
+    });
+    expect(capture.borrowedKey).toEqual(new Uint8Array(32));
+  });
+
+  test("rejects execution and cancellation evidence across brands", async () => {
+    const state = await fixture();
+    const executionFailure = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: evidenceFor(state.domain),
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) => withProtectedTaskCancellationResultSigner({
+        crypto: state.crypto,
+        storage: state.storage,
+        evidence: evidence as unknown as TaskRuntimeCancellationResultEvidence,
+        domain: state.domain,
+        expectedAgentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+        resolveHistoricalRuntimeCommitter: () => state.committer.publicKey,
+        resolveHistoricalSignerPublicationManager: () =>
+          state.manager.publicKey,
+        execute: () => "must-not-run",
+      }),
+    }).then(() => null, (error: unknown) => error);
+    expect(executionFailure).toBeInstanceOf(TypeError);
+
+    const cancellation = await withCancellationEvidence(state, ({
+      evidence,
+      domain,
+    }) => withProtectedTaskResultSigner({
+      crypto: state.crypto,
+      storage: state.storage,
+      evidence: evidence as unknown as Parameters<
+        typeof withProtectedTaskResultSigner
+      >[0]["evidence"],
+      domain,
+      expectedAgentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+      resolveHistoricalRuntimeCommitter: () => state.committer.publicKey,
+      resolveHistoricalSignerPublicationManager: () => state.manager.publicKey,
+      execute: () => "must-not-run",
+    }).then(() => null, (error: unknown) => error));
+    expect(cancellation.status).toBe("opened");
+    if (cancellation.status !== "opened") {
+      throw new Error("cancellation result grant did not open");
+    }
+    expect(cancellation.value).toBeInstanceOf(TypeError);
+  });
+
+  test("rejects a substituted cancellation Domain before signer custody", async () => {
+    const state = await fixture();
+    let runtimeRead = false;
+    let executed = false;
+    const opened = await withCancellationEvidence(state, ({
+      evidence,
+      domain,
+    }) => withProtectedTaskCancellationResultSigner({
+      crypto: state.crypto,
+      storage: {
+        getAgentRuntimeAtomicState: async (...parameters) => {
+          runtimeRead = true;
+          return state.storage.getAgentRuntimeAtomicState(...parameters);
+        },
+        getAgentRuntimeSignerPublication:
+          state.storage.getAgentRuntimeSignerPublication.bind(state.storage),
+      },
+      evidence,
+      domain: Object.freeze({
+        ...domain,
+        sourceNamespaceId: "substituted-result-namespace",
+      }),
+      expectedAgentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+      resolveHistoricalRuntimeCommitter: () => state.committer.publicKey,
+      resolveHistoricalSignerPublicationManager: () => state.manager.publicKey,
+      execute: () => {
+        executed = true;
+      },
+    }));
+    expect(opened).toEqual({
+      status: "opened",
+      value: { status: "unavailable", reason: "authority_unavailable" },
+    });
+    expect(runtimeRead).toBe(false);
+    expect(executed).toBe(false);
+  });
+
+  test("rechecks cancellation expiry after awaited custody and callback", async () => {
+    const state = await fixture();
+    let executedAfterCustodyExpiry = false;
+    const custodyFailure = await withCancellationEvidence(state, ({
+      evidence,
+      domain,
+      expire,
+    }) => withProtectedTaskCancellationResultSigner({
+      crypto: state.crypto,
+      storage: {
+        getAgentRuntimeAtomicState:
+          state.storage.getAgentRuntimeAtomicState.bind(state.storage),
+        getAgentRuntimeSignerPublication: async (agent, generation) => {
+          const publication = await state.storage
+            .getAgentRuntimeSignerPublication(agent, generation);
+          expire();
+          return publication;
+        },
+      },
+      evidence,
+      domain,
+      expectedAgentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+      resolveHistoricalRuntimeCommitter: () => state.committer.publicKey,
+      resolveHistoricalSignerPublicationManager: () => state.manager.publicKey,
+      execute: () => {
+        executedAfterCustodyExpiry = true;
+      },
+    })).then(() => null, (error: unknown) => error);
+    expect(custodyFailure).toBeInstanceOf(TypeError);
+    expect(executedAfterCustodyExpiry).toBe(false);
+
+    const callbackState = await fixture();
+    const capture: { borrowedKey: Uint8Array | null } = { borrowedKey: null };
+    const callbackFailure = await withCancellationEvidence(callbackState, ({
+      evidence,
+      domain,
+      expire,
+    }) => withProtectedTaskCancellationResultSigner({
+      crypto: callbackState.crypto,
+      storage: callbackState.storage,
+      evidence,
+      domain,
+      expectedAgentAuthorizationRevision: AGENT_AUTHORIZATION_REVISION,
+      resolveHistoricalRuntimeCommitter: () => callbackState.committer.publicKey,
+      resolveHistoricalSignerPublicationManager: () =>
+        callbackState.manager.publicKey,
+      execute: (authority) => {
+        capture.borrowedKey = authority.runtime.key;
+        expire();
+        return "must-not-escape";
+      },
+    })).then(() => null, (error: unknown) => error);
+    expect(callbackFailure).toBeInstanceOf(TypeError);
     expect(capture.borrowedKey).toEqual(new Uint8Array(32));
   });
 });

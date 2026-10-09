@@ -1018,6 +1018,8 @@ export {
 
 export {
   prepareNativeTaskRuntimeRunResult,
+  prepareNativeTaskRuntimeCancelledRunResult,
+  type PrepareNativeTaskRuntimeCancelledRunResultInput,
   withNativeTaskNamespaceSource,
   type NativeTaskNamespaceSourceInput,
   type PrepareNativeTaskRuntimeRunResultInput,

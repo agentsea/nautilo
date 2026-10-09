@@ -19,6 +19,12 @@ import {
   recordProtectedTaskRunWakeScheduled,
   type ProtectedTaskRunWakeReferenceV1,
 } from "../../src/queries/protected-task-output-bindings";
+import {
+  protectedTaskRunCancelledResultObjectId,
+  protectedTaskRunCancelledResultOperationId,
+} from "../../src/queries/protected-task-output-binding-identities";
+import { PROTECTED_TASK_CANCELLED_RESULT } from
+  "../../src/queries/protected-task-cancellation-output";
 import { jobs, type Job } from "../../src/schema/jobs";
 import {
   protectedTaskRunOutputBindings,
@@ -95,6 +101,7 @@ function binding(
     deliveryMode: "none",
     destinationRoomId: null,
     destinationNamespaceId: null,
+    resultRevision: 1,
     resultOperationId: protectedTaskRunResultOperationId(ids.run),
     resultObjectId,
     messageOperationId: null,
@@ -331,6 +338,63 @@ describe("protected TaskRun output receipts", () => {
       taskRunId: ids.run,
     })).toEqual({ status: "rejected", reason: "not_ready" });
     expect(stale.writes).toEqual([]);
+  });
+
+  test("attaches only the exact mapped cancellation result at its Stop timestamp", async () => {
+    const cancelledObjectId = protectedTaskRunCancelledResultObjectId(
+      ids.task,
+      ids.run,
+    );
+    const fixture = harness({
+      task: task({ status: "cancelled", cancelledAt: terminalAt }),
+      run: run({
+        status: "cancelled",
+        completedAt: terminalAt,
+        resultText: null,
+        lastError: null,
+        resultRepresentation: "protected",
+        resultRevision: 2,
+        resultCryptoObjectId: cancelledObjectId,
+      }),
+      binding: binding({
+        resultRevision: 2,
+        resultOperationId: protectedTaskRunCancelledResultOperationId(ids.run),
+        resultObjectId: cancelledObjectId,
+      }),
+    });
+    expect(await recordProtectedTaskRunResultAttached(fixture.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+    })).toMatchObject({ status: "recorded" });
+    expect(fixture.writes).toEqual([{ resultAttachedAt: terminalAt }]);
+
+    const wrongShadow = harness({
+      task: task({
+        status: "cancelled",
+        cancelledAt: terminalAt,
+        contentRepresentation: "dual",
+      }),
+      run: run({
+        status: "cancelled",
+        completedAt: terminalAt,
+        resultText: "different",
+        lastError: null,
+        resultRepresentation: "dual",
+        resultRevision: 2,
+        resultCryptoObjectId: cancelledObjectId,
+      }),
+      binding: binding({
+        resultRevision: 2,
+        resultOperationId: protectedTaskRunCancelledResultOperationId(ids.run),
+        resultObjectId: cancelledObjectId,
+      }),
+    });
+    expect(await recordProtectedTaskRunResultAttached(wrongShadow.db, {
+      taskId: ids.task,
+      taskRunId: ids.run,
+    })).toEqual({ status: "rejected", reason: "not_ready" });
+    expect(wrongShadow.writes).toEqual([]);
+    expect(PROTECTED_TASK_CANCELLED_RESULT).toBe("Task cancelled");
   });
 
   test("accepts a peer-owned destination Message independently of the requester", async () => {

@@ -47,7 +47,8 @@ async function fixture(
     | "task.dispatch"
     | "task.execute"
     | "task.await_reply_resume"
-    | "task.approval_resume" = "task.execute",
+    | "task.approval_resume"
+    | "task.cancel_result" = "task.execute",
 ) {
   const crypto = new LatticeCrypto(seededRng(807_503), { now: () => NOW });
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x51));
@@ -65,7 +66,9 @@ async function fixture(
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: GENERATION,
     recipientKeyId: "recipient:key1",
-    operations: ["decrypt", "encrypt"],
+    operations: work === "task.cancel_result"
+      ? ["encrypt"]
+      : ["decrypt", "encrypt"],
     issuedAt: NOW,
     deadlineAt: NOW + 5 * 60_000,
     maximumSecretBytes: 1024,
@@ -107,6 +110,7 @@ describe("Task Runtime background authorization request v1", () => {
     "task.execute",
     "task.await_reply_resume",
     "task.approval_resume",
+    "task.cancel_result",
   ] as const)(
     "round-trips canonical %s requests",
     async (work) => {
@@ -173,6 +177,7 @@ describe("Task Runtime background authorization request v1", () => {
         "task.execute",
         "task.await_reply_resume",
         "task.approval_resume",
+        "task.cancel_result",
       ] as const;
       for (const workKind of workTypes) {
         for (const workPurpose of workTypes) {
@@ -201,6 +206,44 @@ describe("Task Runtime background authorization request v1", () => {
         ...value.request,
         recipientPublicKey: value.request.recipientPublicKey.slice(1),
       })).toThrow("must be exactly 65 bytes");
+    } finally {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
+      destroyDomainForegroundAuthorizationPlanV2(value.plan);
+    }
+  });
+
+  test.each([
+    "task.dispatch",
+    "task.execute",
+    "task.await_reply_resume",
+    "task.approval_resume",
+  ] as const)("keeps %s requests bound to decrypt and encrypt", async (work) => {
+    const value = await fixture(work);
+    const encryptOnly = createDomainForegroundAuthorizationPlanV2(
+      new LatticeCrypto(seededRng(807_504), { now: () => NOW }),
+      { ...value.plan, operations: ["encrypt"] },
+    );
+    try {
+      expect(() => createTaskRuntimeBackgroundAuthorizationRequestV1({
+        ...value.request,
+        authorizationPlan: encryptOnly,
+      })).toThrow("authorization plan");
+    } finally {
+      destroyDomainForegroundAuthorizationPlanV2(encryptOnly);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
+      destroyDomainForegroundAuthorizationPlanV2(value.plan);
+    }
+  });
+
+  test("rejects decrypt authority for cancellation-result publication", async () => {
+    const value = await fixture();
+    try {
+      expect(() => createTaskRuntimeBackgroundAuthorizationRequestV1({
+        ...value.request,
+        workKind: "task.cancel_result",
+        workPurpose: "task.cancel_result",
+        authorizationPlan: value.plan,
+      })).toThrow("authorization plan");
     } finally {
       destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
       destroyDomainForegroundAuthorizationPlanV2(value.plan);

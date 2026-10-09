@@ -377,7 +377,7 @@ export function createPreparedTaskRuntimeResultContentCryptoRevisionV1(
   if (
     input.coordinate.taskId !== preparedAuthority.taskId
     || input.coordinate.taskRunId !== preparedAuthority.taskRunId
-    || input.coordinate.contentRevision !== 1
+    || input.coordinate.contentRevision !== preparedAuthority.contentRevision
     || common.objectId !== preparedAuthority.objectId
     || common.manifest.signer.kind !== "agent_runtime"
     || common.manifest.signer.agentId !== preparedAuthority.agentId

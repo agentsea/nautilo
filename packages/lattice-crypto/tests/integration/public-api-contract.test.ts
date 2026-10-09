@@ -123,7 +123,15 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: "TaskRuntimeRecipientRegistry",
     typeOnly: false,
   },
+  {
+    source: "./background/task-runtime-recipient-registry-v1.ts",
+    imported: "assertAuthenticTaskRuntimeCancellationResultEvidenceV1",
+    exported: "assertAuthenticTaskRuntimeCancellationResultEvidence",
+    typeOnly: false,
+  },
   ...([
+    "TaskRuntimeCancellationResultEvidence",
+    "TaskRuntimeCancellationResultProof",
     "TaskRuntimeRecipientAttempt",
     "TaskRuntimeRecipientCreationResult",
     "TaskRuntimeRecipientDeadlineHandle",
@@ -176,6 +184,10 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
       "prepareTaskRuntimeResultObject",
     ],
     [
+      "prepareNativeTaskRuntimeCancellationResultObjectV1",
+      "prepareNativeTaskRuntimeCancellationResultObject",
+    ],
+    [
       "prepareNativeTaskRuntimeResultObjectV1",
       "prepareNativeTaskRuntimeResultObject",
     ],
@@ -195,6 +207,12 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "PrepareNativeTaskRuntimeCancellationResultObjectV1Input",
+    exported: "PrepareNativeTaskRuntimeCancellationResultObjectInput",
+    typeOnly: true,
+  },
   {
     source: "./object/task-runtime-result-preparation-v1.ts",
     imported: "PrepareTaskRuntimeResultObjectV1Input",

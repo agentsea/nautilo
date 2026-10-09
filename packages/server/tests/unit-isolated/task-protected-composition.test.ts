@@ -375,4 +375,144 @@ describe("production protected Task composition", () => {
     expect(selections.flat()).not.toContain("lastError");
     expect(cryptoActivity.queries).toBe(0);
   });
+
+  test("selects the revision-2 cancellation reservation without reading plaintext", async () => {
+    const taskId = "10000000-0000-4000-8000-000000000004";
+    const taskRunId = "10000000-0000-4000-8000-000000000006";
+    const namespaceId = "10000000-0000-4000-8000-000000000005";
+    const objectId = deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result", taskId, taskRunId, contentRevision: 2,
+    });
+    const selections: string[][] = [];
+    const cryptoActivity = { queries: 0 };
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([
+        [{
+          ownerId: ROUTE_AUTHORITY.userId,
+          requestorId: ROUTE_AUTHORITY.userId,
+          agentId: ROUTE_AUTHORITY.agentId,
+          contentRepresentation: "protected",
+          contentNamespaceId: namespaceId,
+          cryptoMappingState: "verified",
+        }],
+        [{
+          taskId, status: "cancelled", resultRepresentation: "ordinary",
+          resultContentNamespaceId: null, resultRevision: 0,
+          resultCryptoObjectId: null, resultCryptoAccessRevision: 0,
+          resultCryptoMappingState: "unmapped",
+        }],
+        [{
+          taskId, taskRunId, requesterHumanId: ROUTE_AUTHORITY.subjectHumanId,
+          contentNamespaceId: namespaceId, anchorNamespaceId: namespaceId,
+          resultRevision: 2, cryptoObjectId: objectId,
+          representation: "protected", cryptoAccessRevision: 0,
+          completion: "complete", disposition: "active", failureCode: null,
+        }],
+      ], selections),
+      restricted: observedRestrictedConnection(cryptoActivity),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+            revalidationToken: 1,
+          }),
+          revalidate: () => Promise.resolve(),
+        },
+      }),
+      observer: { kick() {} },
+    });
+
+    expect(await composition.ports.readRunResult({
+      authority: ROUTE_AUTHORITY,
+      taskId,
+      taskRunId,
+    })).toEqual({
+      readVersion: 1, status: "waiting", taskId, taskRunId, objectId,
+      resultRevision: 2, cryptoAccessRevision: 0,
+      reason: "result_not_mapped",
+    });
+    expect(selections).toHaveLength(3);
+    expect(selections.flat()).not.toContain("resultText");
+    expect(selections.flat()).not.toContain("lastError");
+    expect(cryptoActivity.queries).toBe(0);
+  });
+
+  test("rejects mapped result revisions that disagree with terminal status", async () => {
+    const taskId = "10000000-0000-4000-8000-000000000004";
+    const taskRunId = "10000000-0000-4000-8000-000000000006";
+    const namespaceId = "10000000-0000-4000-8000-000000000005";
+    for (const mismatch of [
+      { status: "cancelled", storedRevision: 1, expectedRevision: 2 },
+      { status: "completed", storedRevision: 2, expectedRevision: 1 },
+    ] as const) {
+      const storedObjectId = deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result", taskId, taskRunId,
+        contentRevision: mismatch.storedRevision,
+      });
+      const expectedObjectId = deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result", taskId, taskRunId,
+        contentRevision: mismatch.expectedRevision,
+      });
+      const cryptoActivity = { queries: 0 };
+      const composition = createProductionProtectedTaskComposition({
+        db: productDatabaseWithReadRows([
+          [{
+            ownerId: ROUTE_AUTHORITY.userId,
+            requestorId: ROUTE_AUTHORITY.userId,
+            agentId: ROUTE_AUTHORITY.agentId,
+            contentRepresentation: "protected",
+            contentNamespaceId: namespaceId,
+            cryptoMappingState: "verified",
+          }],
+          [{
+            taskId, status: mismatch.status,
+            resultRepresentation: "protected",
+            resultContentNamespaceId: namespaceId,
+            resultRevision: mismatch.storedRevision,
+            resultCryptoObjectId: storedObjectId,
+            resultCryptoAccessRevision: 0,
+            resultCryptoMappingState: "verified",
+          }],
+          [{
+            taskId, taskRunId,
+            requesterHumanId: ROUTE_AUTHORITY.subjectHumanId,
+            contentNamespaceId: namespaceId,
+            anchorNamespaceId: namespaceId,
+            resultRevision: mismatch.expectedRevision,
+            cryptoObjectId: expectedObjectId,
+            representation: "protected", cryptoAccessRevision: 0,
+            completion: "complete", disposition: "mapped", failureCode: null,
+          }],
+        ], []),
+        restricted: observedRestrictedConnection(cryptoActivity),
+        crypto: new LatticeCrypto(),
+        serverScope: "https://nautilo.test",
+        owner: bindEncryptionDataOperationOwner({
+          policy: {
+            resolve: () => Promise.resolve({
+              policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+              revalidationToken: 1,
+            }),
+            revalidate: () => Promise.resolve(),
+          },
+        }),
+        observer: { kick() {} },
+      });
+
+      expect(await composition.ports.readRunResult({
+        authority: ROUTE_AUTHORITY,
+        taskId,
+        taskRunId,
+      })).toEqual({
+        readVersion: 1, status: "unavailable", taskId, taskRunId,
+        objectId: expectedObjectId,
+        resultRevision: mismatch.expectedRevision,
+        cryptoAccessRevision: 0,
+        reason: "integrity_failure",
+      });
+      expect(cryptoActivity.queries).toBe(0);
+    }
+  });
 });

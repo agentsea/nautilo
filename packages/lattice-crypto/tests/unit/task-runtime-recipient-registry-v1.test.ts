@@ -1,4 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { LatticeCrypto, seededRng } from "../../src/crypto/index.ts";
 import {
@@ -10,7 +12,11 @@ import {
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
   type DomainForegroundSecretEntryV2,
 } from "../../src/format/domain-foreground-authorization-v2.ts";
-import { TaskRuntimeRecipientRegistryV1 } from
+import {
+  assertAuthenticTaskRuntimeCancellationResultEvidenceV1,
+  TaskRuntimeRecipientRegistryV1,
+  type TaskRuntimeCancellationResultEvidenceV1,
+} from
   "../../src/background/task-runtime-recipient-registry-v1.ts";
 import type { TaskRuntimeRecipientDeadlineSchedulerV1 } from
   "../../src/background/task-runtime-recipient-registry-v1.ts";
@@ -47,6 +53,19 @@ const RESULT = Object.freeze({
     expectedPolicyRevision: 7,
   }),
 });
+const CANCEL_RESULT = Object.freeze({
+  taskId: RESULT.taskId,
+  taskRunId: WORK,
+  contentRevision: 2 as const,
+  objectId: `task-run-result:v1:${bytesToHex(sha256(new TextEncoder().encode(
+    `nautilo/task-run-result-crypto-object/v1\n${RESULT.taskId}\n${WORK}\n2`,
+  )))}`,
+  signerAgentId: RESULT.signerAgentId,
+  namespace: Object.freeze({
+    ...RESULT.namespace,
+    operations: Object.freeze(["encrypt"] as const),
+  }),
+});
 const CURRENT_NAMESPACES = Object.freeze([Object.freeze({
   ordinal: 0,
   namespaceId: RESULT.namespace.namespaceId,
@@ -54,6 +73,10 @@ const CURRENT_NAMESPACES = Object.freeze([Object.freeze({
   operations: Object.freeze(["decrypt", "encrypt"] as const),
   expectedAccessRevision: RESULT.namespace.expectedAccessRevision,
   expectedPolicyRevision: RESULT.namespace.expectedPolicyRevision,
+})]);
+const CANCELLATION_NAMESPACES = Object.freeze([Object.freeze({
+  ...CURRENT_NAMESPACES[0]!,
+  operations: Object.freeze(["encrypt"] as const),
 })]);
 
 const resultAuthority = () => ({
@@ -67,6 +90,7 @@ function bytes(fill: number): Uint8Array {
 
 async function fixture(
   scheduler?: TaskRuntimeRecipientDeadlineSchedulerV1,
+  cancellation = false,
 ) {
   let now = NOW;
   const crypto = new LatticeCrypto(seededRng(401_001), { now: () => now });
@@ -128,7 +152,9 @@ async function fixture(
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: 0,
     recipientKeyId: KEY,
-    operations: ["decrypt", "encrypt"],
+    operations: cancellation
+      ? ["encrypt"]
+      : ["decrypt", "encrypt"],
     issuedAt: NOW,
     deadlineAt: NOW + 60_000,
     maximumSecretBytes: 4_096,
@@ -179,6 +205,217 @@ async function fixture(
 }
 
 describe("Task Runtime recipient registry", () => {
+  test("opens one exact encrypt-only cancellation result grant with scoped evidence", async () => {
+    const value = await fixture(undefined, true);
+    let retained: TaskRuntimeCancellationResultEvidenceV1 | null = null;
+    let openedDomainKey: Uint8Array | null = null;
+    const opened = await value.registry.withOpenedCancellationResultGrant({
+      requestId: REQUEST,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "task-runtime-cancellation-claim",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: value.authorizationBytes,
+      current: value.current,
+      currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+      result: CANCEL_RESULT,
+      operation: (domains, _signal, evidence) => {
+        expect(() => assertAuthenticTaskRuntimeCancellationResultEvidenceV1(
+          evidence,
+        )).not.toThrow();
+        expect(evidence).toMatchObject({
+          purpose: "task.runtime.cancellation_result",
+          requestId: REQUEST,
+          workId: WORK,
+          claimId: "task-runtime-cancellation-claim",
+          operations: ["encrypt"],
+          result: CANCEL_RESULT,
+          namespaceRequirements: CANCELLATION_NAMESPACES,
+        });
+        expect(evidence.domainRequirements).toHaveLength(1);
+        expect(evidence.domainRequirements[0]?.domainId)
+          .toBe(CANCEL_RESULT.namespace.domainId);
+        openedDomainKey = domains[0]!.domainKey;
+        retained = evidence;
+        return "cancelled-result";
+      },
+    });
+    expect(opened).toEqual({ status: "opened", value: "cancelled-result" });
+    expect(value.registry.size).toBe(0);
+    expect(value.generatedRecipientPrivateKey.every((byte) => byte === 0))
+      .toBe(true);
+    expect(openedDomainKey).not.toBeNull();
+    expect(openedDomainKey!.every((byte) => byte === 0)).toBe(true);
+    if (retained === null) throw new Error("cancellation evidence was absent");
+    expect(() => assertAuthenticTaskRuntimeCancellationResultEvidenceV1(
+      retained!,
+    )).toThrow("not active");
+  });
+
+  test("keeps execution and cancellation grant operations disjoint", async () => {
+    const cancellation = await fixture(undefined, true);
+    expect(await cancellation.registry.withOpenedGrant({
+      requestId: REQUEST,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "task-runtime-claim",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: cancellation.authorizationBytes,
+      current: cancellation.current,
+      ...resultAuthority(),
+      operation: () => {
+        throw new Error("encrypt-only grant reached execution");
+      },
+    })).toEqual({ status: "unavailable", reason: "authority_stale" });
+    cancellation.registry.close();
+
+    const execution = await fixture();
+    expect(await execution.registry.withOpenedCancellationResultGrant({
+      requestId: REQUEST,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "task-runtime-cancellation-claim",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: execution.authorizationBytes,
+      current: execution.current,
+      currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+      result: CANCEL_RESULT,
+      operation: () => {
+        throw new Error("execution grant reached cancellation publication");
+      },
+    })).toEqual({ status: "unavailable", reason: "authority_stale" });
+    execution.registry.close();
+  });
+
+  test("rejects substituted cancellation result coordinates and authority", async () => {
+    type Result = Parameters<
+      TaskRuntimeRecipientRegistryV1["withOpenedCancellationResultGrant"]
+    >[0]["result"];
+    type Namespaces = Parameters<
+      TaskRuntimeRecipientRegistryV1["withOpenedCancellationResultGrant"]
+    >[0]["currentNamespaceRequirements"];
+    const requirement = CANCELLATION_NAMESPACES[0]!;
+    const cases: readonly Readonly<{
+      name: string;
+      result?: Result;
+      namespaces?: Namespaces;
+      current?(value: Awaited<ReturnType<typeof fixture>>):
+        DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    }>[] = [
+      {
+        name: "Task",
+        result: {
+          ...CANCEL_RESULT,
+          taskId: "20000000-0000-4000-8000-000000000002",
+        },
+      },
+      {
+        name: "Task Run",
+        result: {
+          ...CANCEL_RESULT,
+          taskRunId: "20000000-0000-4000-8000-000000000001",
+        },
+      },
+      {
+        name: "revision",
+        result: {
+          ...CANCEL_RESULT,
+          contentRevision: 1,
+        } as unknown as Result,
+      },
+      {
+        name: "object",
+        result: { ...CANCEL_RESULT, objectId: `task-run-result:v1:${"b".repeat(64)}` },
+      },
+      { name: "missing Namespace", namespaces: [] },
+      { name: "duplicate Namespace", namespaces: [requirement, requirement] },
+      {
+        name: "Namespace operations",
+        namespaces: [{ ...requirement, operations: ["decrypt", "encrypt"] }],
+      },
+      {
+        name: "Namespace access revision",
+        namespaces: [{ ...requirement, expectedAccessRevision: 5 }],
+      },
+      {
+        name: "policy revision",
+        current: (value) => ({ ...value.current, policyRevision: 8 }),
+      },
+      {
+        name: "extra Domain",
+        current: (value) => ({
+          ...value.current,
+          domains: [value.current.domains[0]!, value.current.domains[0]!],
+        }),
+      },
+      {
+        name: "Domain source Namespace",
+        current: (value) => ({
+          ...value.current,
+          domains: [{
+            ...value.current.domains[0]!,
+            sourceNamespaceId: "other-task-runtime-namespace",
+          }],
+        }),
+      },
+    ];
+    for (const item of cases) {
+      const value = await fixture(undefined, true);
+      let invoked = false;
+      const opened = await value.registry.withOpenedCancellationResultGrant({
+        requestId: REQUEST,
+        workId: WORK,
+        recipientGeneration: 0,
+        recipientKeyId: KEY,
+        claimId: "task-runtime-cancellation-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current: item.current?.(value) ?? value.current,
+        currentNamespaceRequirements:
+          item.namespaces ?? CANCELLATION_NAMESPACES,
+        result: item.result ?? CANCEL_RESULT,
+        operation: () => {
+          invoked = true;
+        },
+      });
+      expect(opened).toEqual({ status: "unavailable", reason: "authority_stale" });
+      expect(invoked).toBe(false);
+      value.registry.close();
+    }
+  });
+
+  test("permanently rejects mutated cancellation result evidence", async () => {
+    const value = await fixture(undefined, true);
+    const opened = await value.registry.withOpenedCancellationResultGrant({
+      requestId: REQUEST,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "task-runtime-cancellation-claim",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: value.authorizationBytes,
+      current: value.current,
+      currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+      result: CANCEL_RESULT,
+      operation: (_domains, _signal, evidence) => {
+        const original = evidence.authorizationDigest[0]!;
+        evidence.authorizationDigest[0] = original ^ 1;
+        expect(() => assertAuthenticTaskRuntimeCancellationResultEvidenceV1(
+          evidence,
+        )).toThrow("not active");
+        evidence.authorizationDigest[0] = original;
+        expect(() => assertAuthenticTaskRuntimeCancellationResultEvidenceV1(
+          evidence,
+        )).toThrow("not active");
+        return "mutated";
+      },
+    });
+    expect(opened).toEqual({ status: "opened", value: "mutated" });
+  });
+
   test("mints exact execution evidence only for the opened callback", async () => {
     const value = await fixture();
     const expectedAuthorizationDigest = new LatticeCrypto(

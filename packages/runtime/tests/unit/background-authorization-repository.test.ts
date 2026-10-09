@@ -44,6 +44,7 @@ import {
   buildAcceptedBackgroundAuthorizationResponse,
   assertBackgroundAuthorizationCasSuccessor,
   parseBackgroundAuthorizationRecord,
+  isTaskExecutionWorkKind,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -555,6 +556,21 @@ describe("background authorization repository contract", () => {
       workKind: "task.approval_resume",
       purpose: "task.approval_resume",
     });
+    const cancellation = {
+      ...record, workKind: "task.cancel_result" as const, purpose: "task.cancel_result" as const,
+      authoritySet: { ...record.authoritySet, namespaceRequirements:
+        record.authoritySet.namespaceRequirements.map(value => ({ ...value, operations: ["encrypt"] as const })) },
+    };
+    expect(parseBackgroundAuthorizationRecord(cancellation)).toMatchObject({
+      workKind: "task.cancel_result", purpose: "task.cancel_result",
+    });
+    expect(isTaskExecutionWorkKind("task.cancel_result")).toBe(false);
+    expect(() => parseBackgroundAuthorizationRecord({ ...cancellation,
+      authoritySet: record.authoritySet,
+    })).toThrow("write-only");
+    expect(() => parseBackgroundAuthorizationRecord({ ...cancellation,
+      purpose: "task.execute",
+    })).toThrow();
     const repository = new InMemoryBackgroundAuthorizationRepository();
     expect((await repository.create(record)).status).toBe("created");
 

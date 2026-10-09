@@ -91,6 +91,7 @@ function output(
     destinationRoomId,
     destinationNamespaceId,
     resultOperationId: `task-run-result:${RUN}`,
+    resultRevision: 1,
     resultObjectId: "task-run-result:v1:fixture",
     messageOperationId: null,
     wakeOperationId: destinationRoomId === null
