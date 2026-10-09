@@ -33,6 +33,7 @@ const mockSession = {
 const signOutMock = bunMock(async () => {});
 const signInMock = bunMock(async () => {});
 const openPickerMock = bunMock(async () => {});
+const getPublicJoinAvailabilityMock = bunMock(async () => ({ available: false }));
 const consumeNoticeMock = bunMock(async () => null as null | {
   kind: "env-pinned-auth-cleared";
   expected: { instanceId: string; serverUrl: string; logtoEndpoint: string; workbenchAppId: string };
@@ -129,6 +130,7 @@ beforeAll(async () => {
         status: "ok",
         serverUrl: "https://upgrade.example.test",
       }),
+      getPublicJoinAvailability: getPublicJoinAvailabilityMock,
     },
   }));
 
@@ -210,7 +212,14 @@ beforeAll(async () => {
   ({ SignInDialog } = await import("../../src/components/sign-in-dialog"));
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  if (clientRoot) {
+    await act(async () => {
+      clientRoot!.unmount();
+    });
+    clientRoot = null;
+  }
+  happyWindow.history.replaceState(null, "", "/");
   mockSession.state = "signed-out";
   mockSession.issue = undefined;
   desktopSwitchAvailable = false;
@@ -218,6 +227,8 @@ beforeEach(() => {
   signOutMock.mockClear();
   signInMock.mockClear();
   openPickerMock.mockClear();
+  getPublicJoinAvailabilityMock.mockReset();
+  getPublicJoinAvailabilityMock.mockImplementation(async () => ({ available: false }));
   consumeNoticeMock.mockReset();
   consumeNoticeMock.mockImplementation(async () => null);
 });
@@ -252,6 +263,12 @@ function renderDialogStatic(): string {
 }
 
 async function renderDialogClient(initialEntry = "/"): Promise<HTMLElement> {
+  if (clientRoot) {
+    await act(async () => {
+      clientRoot!.unmount();
+    });
+    clientRoot = null;
+  }
   const container = happyWindow.document.createElement("div");
   happyWindow.document.body.replaceChildren(container);
   clientRoot = createRoot(container);
@@ -291,6 +308,90 @@ describe("SignInDialog", () => {
     expect(html).toContain("Redirecting");
     const disabledButtonCount = (html.match(/<button[^>]*\bdisabled(?:=|\s|>)/g) ?? []).length;
     expect(disabledButtonCount).toBeGreaterThanOrEqual(3);
+  });
+
+  test("keeps Join hidden while public joining availability is loading", async () => {
+    let resolveAvailability!: (value: { available: boolean }) => void;
+    getPublicJoinAvailabilityMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAvailability = resolve;
+        }),
+    );
+
+    const container = await renderDialogClient();
+    expect(container.querySelector('[data-testid="sign-in-join"]')).toBeNull();
+
+    await act(async () => {
+      resolveAvailability({ available: true });
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[data-testid="sign-in-join"]')).not.toBeNull();
+  });
+
+  test("shows Join only when public joining is available", async () => {
+    getPublicJoinAvailabilityMock.mockImplementation(async () => ({ available: true }));
+    const availableContainer = await renderDialogClient();
+    expect(availableContainer.querySelector('[data-testid="sign-in-join"]')).not.toBeNull();
+
+    getPublicJoinAvailabilityMock.mockImplementation(async () => ({ available: false }));
+    const unavailableContainer = await renderDialogClient();
+    expect(unavailableContainer.querySelector('[data-testid="sign-in-join"]')).toBeNull();
+  });
+
+  test("keeps Join hidden when the availability request fails", async () => {
+    getPublicJoinAvailabilityMock.mockImplementation(async () => {
+      throw new Error("public join endpoint unavailable");
+    });
+    const container = await renderDialogClient();
+    expect(container.querySelector('[data-testid="sign-in-join"]')).toBeNull();
+  });
+
+  test("Join performs a full-page navigation to this server's /join route", async () => {
+    getPublicJoinAvailabilityMock.mockImplementation(async () => ({ available: true }));
+    const container = await renderDialogClient();
+    const joinButton = container.querySelector<HTMLButtonElement>('[data-testid="sign-in-join"]');
+    if (!joinButton) throw new Error("join action did not render");
+    const initialOrigin = happyWindow.location.origin;
+
+    joinButton.click();
+
+    expect(happyWindow.location.origin).toBe(initialOrigin);
+    expect(happyWindow.location.pathname).toBe("/join");
+  });
+
+  test("disables Join while sign-in is redirecting", async () => {
+    mockSession.state = "signing-in";
+    getPublicJoinAvailabilityMock.mockImplementation(async () => ({ available: true }));
+    const container = await renderDialogClient();
+    const joinButton = container.querySelector<HTMLButtonElement>('[data-testid="sign-in-join"]');
+    if (!joinButton) throw new Error("join action did not render");
+
+    expect(joinButton.disabled).toBe(true);
+    joinButton.click();
+    expect(happyWindow.location.pathname).toBe("/");
+  });
+
+  test("ignores a public joining response after unmount", async () => {
+    let resolveAvailability!: (value: { available: boolean }) => void;
+    getPublicJoinAvailabilityMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAvailability = resolve;
+        }),
+    );
+    const container = await renderDialogClient();
+
+    await act(async () => {
+      clientRoot!.unmount();
+    });
+    clientRoot = null;
+    await act(async () => {
+      resolveAvailability({ available: true });
+      await Promise.resolve();
+    });
+
+    expect(container.childElementCount).toBe(0);
   });
 
   test("password-updated banner not present on first render", () => {

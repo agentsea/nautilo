@@ -38,6 +38,7 @@ export function SignInDialog() {
   const [switchServerBusy, setSwitchServerBusy] = useState(false);
   const [switchServerError, setSwitchServerError] = useState<string | null>(null);
   const [serverSwitcherOpen, setServerSwitcherOpen] = useState(false);
+  const [publicJoinAvailable, setPublicJoinAvailable] = useState(false);
 
   const staleAuthIssue =
     !staleAuthCleared && auth.session.issue?.kind === "scope-mismatch"
@@ -60,6 +61,21 @@ export function SignInDialog() {
       })
       .catch(() => {
         // Keep window origin fallback.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiClient
+      .getPublicJoinAvailability()
+      .then(({ available }) => {
+        if (!cancelled) setPublicJoinAvailable(available === true);
+      })
+      .catch(() => {
+        if (!cancelled) setPublicJoinAvailable(false);
       });
     return () => {
       cancelled = true;
@@ -226,6 +242,20 @@ export function SignInDialog() {
           >
             {deviceBusy ? "Redirecting…" : "Sign in"}
           </button>
+          {publicJoinAvailable ? (
+            <button
+              type="button"
+              className="w-full rounded-md border border-border-strong px-7 py-3 text-sm font-semibold text-foreground hover:bg-background-subtle disabled:cursor-not-allowed disabled:opacity-40"
+              disabled={deviceBusy}
+              onClick={() => {
+                if (deviceBusy) return;
+                window.location.assign("/join");
+              }}
+              data-testid="sign-in-join"
+            >
+              Join
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={deviceBusy}

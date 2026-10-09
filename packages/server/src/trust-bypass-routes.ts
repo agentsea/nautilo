@@ -17,6 +17,7 @@ const TRUST_BYPASS_ROUTE_TEMPLATES = [
   "/api/profile/status",
   "/api/onboarding/*",
   "/join",
+  "/api/public-join",
   "/api/account/password/recover-with-code",
   "/api/account/password/recovery-relay/:sessionId",
   "/api/internal/logto/email-webhook",
