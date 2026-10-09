@@ -3,6 +3,11 @@ import { Job, ExternalRoomExecutionBusyError, type ExternalRoomClaimHooks, type 
 import { eventBus } from "../../src/event-bus";
 import type { ServerEvent } from "@nautilo/types";
 import type { JobStatus } from "@nautilo/types";
+import { hasContentPrivateModelDiagnostics } from "@nautilo/agent";
+import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import { installForegroundChatFundingPort, openForegroundChatFundingSessionForInvocation, uninstallForegroundChatFundingPort } from "../../src/foreground-chat-funding-port";
+import { processStreamEvent } from "../../src/executors/langgraph-executor";
+import { TokenBatcher, ToolCallTracker } from "../../src/utils/token-batcher";
 
 function makeJob(executor: JobExecutor, transition: (status: JobStatus) => Promise<JobStatus>) {
   return new Job({ ownerId: "sponsor", requestorId: "sponsor", laneKey: "room:test", type: "foreground",
@@ -160,4 +165,91 @@ test("a transient claim-release failure retains the exact quiescent token for re
   expect(acquisitions).toBe(1);
   expect(calls).toBe(1);
   expect(job.status).toBe("completed");
+});
+
+for (const markedRoom of [true, false]) test(`local Human diagnostic privacy follows ${markedRoom ? "canonical external admission" : "ordinary Room policy"} without changing funding`, async () => {
+  const previousDebug = process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"];
+  const previousPersistDebug = process.env["NAUTILO_DEBUG_PERSIST"];
+  process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] = "1";
+  process.env["NAUTILO_DEBUG_PERSIST"] = "1";
+  const logs: unknown[][] = [];
+  const spies = (["log", "warn", "error", "debug"] as const).map(method =>
+    spyOn(console, method).mockImplementation((...args: unknown[]) => { logs.push(args); }));
+  const claim = { roomId: "room", jobId: "local-job", token: "synthetic-private-claim" };
+  const starts: unknown[] = [];
+  const fundingInputs: unknown[] = [];
+  let released = false;
+  installForegroundChatFundingPort({ async openSession(input) { fundingInputs.push(input); return null; } });
+  try {
+    const job = new Job({ ownerId: "human", requestorId: "human", laneKey: "room:room", type: "foreground",
+      // Serialized assertions cannot enable or disable the canonical restriction.
+      input: { roomId: "room", requestorId: "human", contentPrivateDiagnostics: !markedRoom },
+      persist: async () => "local-job",
+      updateStatus: async (_id, status, _fields, _policy, executionClaim) => { if (status === "running") starts.push(executionClaim); },
+      externalRoomClaims: { async acquire() { return markedRoom ? { kind: "claimed", ...claim } : { kind: "ordinary" }; },
+        async release() { released = true; return true; } },
+      executor: async function* (input) { yield* [];
+        expect(hasContentPrivateModelDiagnostics()).toBe(markedRoom);
+        const session = await openForegroundChatFundingSessionForInvocation({
+          authority: createAcceptedInvocationAuthority("human"), jobInput: input, causalHumanUserId: "human",
+          entrypoint: "foreground.main", modelId: "model", roomId: "room", agentId: "agent",
+        });
+        expect(session).toBeNull();
+        expect(hasContentPrivateModelDiagnostics()).toBe(markedRoom);
+        processStreamEvent({ event: "on_chat_model_stream", name: "ChatModel",
+          data: { chunk: { content: "", reasoning_content: "SYNTHETIC_PRIVATE_STREAM" } } },
+        new TokenBatcher({ laneKey: "room:room" }), new ToolCallTracker("room:room"));
+        processStreamEvent({ event: "on_chain_end", name: "synthetic-node",
+          data: { output: { SYNTHETIC_PRIVATE_STATE_KEY: true } } },
+        new TokenBatcher({ laneKey: "room:room" }), new ToolCallTracker("room:room"));
+        throw new Error("SYNTHETIC_PRIVATE_FAILURE");
+      },
+    });
+    await job.persist();
+    await job.execute();
+    expect(job.status).toBe("failed");
+    expect(starts).toEqual([markedRoom ? { kind: "claimed", ...claim } : undefined]);
+    expect(released).toBe(markedRoom);
+    expect(fundingInputs).toEqual([{ humanUserId: "human", modelId: "model", roomId: "room", agentId: "agent",
+      entrypoint: "foreground.main", hasImages: false }]);
+    expect(JSON.stringify(logs).includes("SYNTHETIC_PRIVATE_STREAM")).toBe(!markedRoom);
+    expect(JSON.stringify(logs).includes("SYNTHETIC_PRIVATE_FAILURE")).toBe(!markedRoom);
+    expect(JSON.stringify(logs).includes("SYNTHETIC_PRIVATE_STATE_KEY")).toBe(!markedRoom);
+    expect(hasContentPrivateModelDiagnostics()).toBe(false);
+  } finally {
+    uninstallForegroundChatFundingPort();
+    for (const spy of spies) spy.mockRestore();
+    if (previousDebug === undefined) delete process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"];
+    else process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] = previousDebug;
+    if (previousPersistDebug === undefined) delete process.env["NAUTILO_DEBUG_PERSIST"];
+    else process.env["NAUTILO_DEBUG_PERSIST"] = previousPersistDebug;
+  }
+});
+
+for (const admission of ["claim_failure", "start_failure"] as const) test(`private diagnostic safety survives ${admission} before model execution`, async () => {
+  const logs: unknown[][] = [];
+  const stderr = spyOn(console, "error").mockImplementation((...args: unknown[]) => { logs.push(args); });
+  let modelCalls = 0;
+  let releases = 0;
+  try {
+    const job = new Job({ ownerId: "human", requestorId: "human", laneKey: "room:room", type: "foreground", input: {},
+      persist: async () => "local-job",
+      updateStatus: async (_id, status) => { if (status === "running") throw new Error("SYNTHETIC_PRIVATE_START_FAILURE"); },
+      externalRoomClaims: {
+        async acquire() { if (admission === "claim_failure") throw new Error("SYNTHETIC_PRIVATE_ADMISSION_FAILURE");
+          return { kind: "claimed", roomId: "room", jobId: "local-job", token: "synthetic-private-claim" }; },
+        async release() { releases++; return true; },
+      },
+      executor: async function* () { yield* []; modelCalls++; },
+    });
+    await job.persist();
+    const error = await job.execute().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    await job.fail(error);
+    expect(modelCalls).toBe(0);
+    expect(releases).toBe(admission === "start_failure" ? 1 : 0);
+    expect(job.status).toBe("failed");
+    expect(JSON.stringify(logs)).not.toContain("SYNTHETIC_PRIVATE_");
+    expect(JSON.stringify(logs)).not.toContain("synthetic-private-claim");
+  } finally { stderr.mockRestore(); }
 });

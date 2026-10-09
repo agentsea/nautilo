@@ -12,6 +12,7 @@ import { runWithTurn, log } from "@nautilo/logger";
 import { StrictShadowEnforcementError } from "@nautilo/lattice-bridge";
 import {
   toFriendlyError,
+  runWithContentPrivateModelDiagnostics,
   ImageAssistanceError,
   friendlyMessageWithCode,
   toGraphBudgetOutcome,
@@ -273,6 +274,8 @@ export class Job {
   }
 
   private externalRoomClaim: ExternalRoomExecutionClaim | undefined;
+  // Retain diagnostic privacy after claim release and before terminal observers.
+  private contentPrivateDiagnostics = false;
   private externalRoomClaimQuiescent = false;
   private externalRoomClaimReleaseAttempt: Promise<boolean> | undefined;
 
@@ -334,7 +337,11 @@ export class Job {
         catch { throw new Error("Conversation execution admission is unavailable."); }
         if (claim.kind === "busy") throw new ExternalRoomExecutionBusyError();
         if (claim.kind === "unavailable") throw new Error("Conversation execution authority is unavailable.");
-        if (claim.kind === "claimed") { this.externalRoomClaim = claim; this.externalRoomClaimQuiescent = false; }
+        if (claim.kind === "claimed") {
+          this.externalRoomClaim = claim;
+          this.externalRoomClaimQuiescent = false;
+          this.contentPrivateDiagnostics = true;
+        }
         if (this.abortController.signal.aborted || this.isTerminal()) return;
       }
       if (this.config.durableInputReference?.kind === "protected_task_run_v1") {
@@ -365,14 +372,11 @@ export class Job {
       const turnId =
         typeof turnIdRaw === "string" && turnIdRaw ? turnIdRaw : undefined;
 
-      if (turnId) {
-        await runWithTurn(turnId, () => this.runExecutor(
-          executorInput,
-          settlementBarrier,
-        ));
-      } else {
-        await this.runExecutor(executorInput, settlementBarrier);
-      }
+      const execute = () => this.contentPrivateDiagnostics
+        ? runWithContentPrivateModelDiagnostics(() => this.runExecutor(executorInput, settlementBarrier))
+        : this.runExecutor(executorInput, settlementBarrier);
+      if (turnId) await runWithTurn(turnId, execute);
+      else await execute();
     } finally {
       this.abortController.signal.removeEventListener("abort", failProtectedCancellation);
       authorizationSignal?.removeEventListener(
@@ -577,7 +581,7 @@ export class Job {
       // tools→pre_model seam; this is the single runtime catch site that
       // maps it.
     const noProgressOutcome = toNoProgressOutcomeFromError(err);
-    const logFailure = (): void => log(this.hasFullSinkDisposition() || this.config.transitionExternalRoomStatus !== undefined
+    const logFailure = (): void => log(this.contentPrivateDiagnostics || this.hasFullSinkDisposition() || this.config.transitionExternalRoomStatus !== undefined
       ? `[nautilo/job] ${this.id} failed (code=${friendly.code} category=${friendly.category})`
       : `[nautilo/job] ${this.id} failed ` +
         `(code=${friendly.code} category=${friendly.category}` +

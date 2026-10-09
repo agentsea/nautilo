@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { BOLTER_PLAINTEXT_COVERAGE } from "../../baseline/reviewed-bolter-plaintext-carriers";
 
 import {
   formatCoverageReport,
@@ -420,7 +421,7 @@ describe("coverage report", () => {
 
     expect(verifyCoverageReport(generated.replace(
       "packages/runtime",
-      "/Users/alice/private/runtime",
+      "/path/to/project/packages/runtime",
     ), input)).toEqual({
       ok: false,
       errors: [
@@ -428,5 +429,19 @@ describe("coverage report", () => {
         "generated encryption coverage report is stale",
       ],
     });
+  });
+  test("counts authorized plaintext separately and exposes its blocking contract", () => {
+    const registry = { ...input.registry, entries: [...input.registry.entries, ...BOLTER_PLAINTEXT_COVERAGE] };
+    const report = formatCoverageReport({ ...input, registry,
+      observed: [...input.observed, ...BOLTER_PLAINTEXT_COVERAGE.map(({ id, surface, locator }) => ({ id, surface, locator }))] });
+    expect(report).toContain("| authorized_plaintext | 5 |");
+    expect(report).toContain("block the whole-product encryption claim");
+    expect(report).toContain("| protected | 0 |");
+    for (const entry of BOLTER_PLAINTEXT_COVERAGE) {
+      expect(report).toContain(entry.locator);
+      expect(report).toContain(entry.modeGate);
+      expect(report).toContain(entry.cleanupContract);
+      expect(report).toContain(entry.releaseImpact);
+    }
   });
 });

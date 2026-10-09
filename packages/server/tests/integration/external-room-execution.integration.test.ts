@@ -20,8 +20,9 @@ import { eventBus, jobManager, TaskObserver } from "@nautilo/runtime";
 import type { ServerEvent } from "@nautilo/types";
 import { createStubProvider } from "../../../runtime/tests/integration/helpers/stub-provider";
 import { seatPeerUser, setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
+import { createDatabaseBolterPublicationService } from "../../src/messaging/bolter-publication";
 
-test("real service and LangGraph produce source-bound pending replies for one shared Genie in isolated rooms", async () => {
+test("real service and LangGraph publish source-bound replies through a fixed test transport in isolated rooms", async () => {
   if (bootstrapTestDbInstance() !== "test-cruft") throw new Error("External-room acceptance requires the disposable test instance");
   process.env["NAUTILO_TEST_DB_AUTOHEAL"] = "0";
   const saved = new Map(["NAUTILO_TEST_MODE", "NAUTILO_MODEL", "OPENAI_API_KEY", "DB_CRYPTO_CONNECTION_STRING"].map(key => [key, process.env[key]]));
@@ -76,6 +77,17 @@ test("real service and LangGraph produce source-bound pending replies for one sh
     const receiver = { userId: sponsor.userId, connectionId: connection.id, connectionGeneration: connection.generation,
       relayId: connection.relayId, desktopSessionId: connection.desktopSessionId, pairingGenerationRef: connection.pairingGenerationRef };
     const bindings: BolterBindingContext[] = [];
+    const publications: { chatId: string; content: string }[] = [];
+    const publisher = createDatabaseBolterPublicationService(agentDb, {
+      isCurrent: current => current.connectionId === connection.id && current.desktopSessionId === connection.desktopSessionId,
+      async send(request) {
+        const authorized = await request.authorize();
+        if (!authorized) return { status: "unavailable" };
+        publications.push({ chatId: authorized.chatId, content: authorized.content });
+        return { status: "sent", receipt: { messageId: `synthetic-reply-${publications.length}`,
+          chatId: authorized.chatId, threadRootId: authorized.threadRootId } };
+      },
+    });
     for (const chatId of ["synthetic-chat-a", "synthetic-chat-b"]) {
       const roomId = randomUUID();
       roomIds.push(roomId);
@@ -134,12 +146,17 @@ test("real service and LangGraph produce source-bound pending replies for one sh
       const [final] = await fixture.db.select().from(sessionMessages).where(eq(sessionMessages.id, outbox[0]!.sessionMessageId));
       expect(final?.replyToMessageId).toBe(receipt.sessionMessageId);
       expect(final?.role).toBe("assistant");
+      expect(await publisher.publish(binding, outbox[0]!.id)).toEqual({ status: "published", providerMessageId: `synthetic-reply-${index + 1}` });
+      expect(await publisher.publish(binding, outbox[0]!.id)).toEqual({ status: "unavailable" });
+      expect((await listBolterOutboxWith(agentDb, { userId: sponsor.userId }, binding.bindingId))[0]?.state).toBe("published");
       const duplicate = await fixture.app.externalRoomExecution.accept({ receiver: binding,
         invocationAuthority: createAcceptedInvocationAuthority(sponsor.userId, { originRoomId: roomId }) }, { ...raw, redelivered: true });
       expect(duplicate.ok && duplicate.acceptance.status).toBe("duplicate");
     }
     expect(observedMessages).toBe(4);
     expect(model.invocations).toHaveLength(2);
+    expect(publications).toEqual([{ chatId: "synthetic-chat-a", content: "Final reply A" },
+      { chatId: "synthetic-chat-b", content: "Final reply B" }]);
     expect(JSON.stringify(model.invocations[0]?.messages)).toContain("ROOM_A_CANARY");
     expect(JSON.stringify(model.invocations[1]?.messages)).not.toContain("ROOM_A_CANARY");
     for (const invocation of model.invocations) {

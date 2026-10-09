@@ -107,6 +107,7 @@ const CLASSIFICATIONS: readonly EncryptionClassification[] = [
   "public",
   "operator_secret",
   "device_local",
+  "authorized_plaintext",
 ];
 
 function escapeCell(value: unknown): string {
@@ -291,6 +292,17 @@ export function formatCoverageReport(input: CoverageReportInput): string {
       lines.push(
         `| \`${escapeCell(entry.id)}\` | ${entry.surface} | \`${escapeCell(entry.locator)}\` | ${entry.classification} | ${escapeCell(entry.owner)} | ${entry.migrationState} | ${entry.testEvidence.map((item) => `\`${escapeCell(item)}\``).join("<br>")} |`,
       );
+    }
+  }
+
+  const plaintextEntries = entries.filter(entry => entry.classification === "authorized_plaintext");
+  if (plaintextEntries.length > 0) {
+    lines.push("", "## Authorized transient plaintext", "",
+      "These exact carriers are eligible only for plaintext_only bridging and block the whole-product encryption claim. Local authentication and transient processing do not encrypt content or prove production activation; canonical storage and any durable spool require separate coverage.", "",
+      "| Locator | Mode gate | Recipient authority | Disposal | Release impact | No-retention evidence |",
+      "|---|---|---|---|---|---|");
+    for (const entry of plaintextEntries) {
+      lines.push(`| \`${escapeCell(entry.locator)}\` | ${escapeCell(entry.modeGate)} | ${escapeCell(entry.recipientAuthority)} | ${escapeCell(entry.cleanupContract)} | ${entry.releaseImpact} | ${entry.noRetentionTestEvidence.map(path => `\`${escapeCell(path)}\``).join("<br>")} |`);
     }
   }
 

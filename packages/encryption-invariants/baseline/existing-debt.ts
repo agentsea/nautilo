@@ -1,3 +1,4 @@
+import { BOLTER_PLAINTEXT_COVERAGE } from "./reviewed-bolter-plaintext-carriers";
 import { REVIEWED_REFLECTION_REPLAY_COVERAGE } from "./reviewed-main-2026-09-12-reflection";
 import {
   REVIEWED_MAIN_2026_09_17_COVERAGE,
@@ -1826,8 +1827,11 @@ const BOLTER_EXECUTION_METADATA_COVERAGE: readonly EncryptionCoverageEntry[] = [
   ...([
     { table: "jobs", fields: ["status", "completed_at", "message"] },
     { table: "work_acceptances", fields: ["status", "cancelled_at", "cancellation_reason"] },
-  ] as const).flatMap(({ table, fields }) => ["settleFencedJobs", "cancelBolterExecutionsForDeletedAgentsInTransaction"].map((writer): EncryptionCoverageEntry => ({
-    id: `db.bolter.fenced-${table}-${writer}`,
+  ] as const).flatMap(({ table, fields }) => [
+    { writer: "settleFencedJobs", id: "settle-fenced-jobs" },
+    { writer: "cancelBolterExecutionsForDeletedAgentsInTransaction", id: "cancel-deleted-agent-executions" },
+  ].map(({ writer, id }): EncryptionCoverageEntry => ({
+    id: `db.bolter.fenced-${table}-${id}`,
     surface: "db", locator: `packages/db/src/queries/bolter-bridge.ts#${writer}:raw_sql:update:public.${table}:1`, owner: "packages/db",
     readers: ["packages/db/src/queries/bolter-bridge.ts"], writers: ["packages/db/src/queries/bolter-bridge.ts"],
     migrationState: "not_applicable", retention: "Retained terminal lifecycle evidence follows the owning Job or work acceptance.",
@@ -1854,6 +1858,7 @@ const BOLTER_INBOX_DEVICE_COVERAGE: EncryptionCoverageEntry = {
 
 export const BASELINE_REGISTRY: CoverageRegistry = {
   entries: [
+    ...BOLTER_PLAINTEXT_COVERAGE,
     ...BOLTER_METADATA_COVERAGE,
     ...BOLTER_EXECUTION_METADATA_COVERAGE,
     BOLTER_AUDIENCE_COVERAGE,

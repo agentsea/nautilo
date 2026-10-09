@@ -63,6 +63,7 @@ import {
 import {
   PersonalDirectFundingUnavailableError,
   PersonalModelFundingUnavailableError,
+  hasContentPrivateModelDiagnostics,
   type ForegroundChatFundingAttempt,
   type ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
@@ -836,7 +837,8 @@ export async function invokeChatModelWithFallback(
   const strictNoChain = isStrictNoChain(invokeOptions?.modelFallbackMode);
   const fundingSession = invokeOptions?.fundingSession;
   const personalFunding = fundingSession?.kind === "personal";
-  const contentPrivateDiagnostics = fundingSession?.contentPrivateDiagnostics === true;
+  const contentPrivateDiagnostics = hasContentPrivateModelDiagnostics()
+    || fundingSession?.contentPrivateDiagnostics === true;
   if (personalFunding && messagesContainImageInputs(messages)) {
     throw new ModelUnavailableError(initialModelId, "unsupported-capability", "personal funding supports foreground text chat only");
   }

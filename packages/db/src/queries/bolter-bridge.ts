@@ -621,6 +621,72 @@ export function getBolterPublicationClaimWith(db: BolterBridgeDatabase, ctx: Bol
     return (await tx.select().from(bolterOutbox).where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, ctx.bindingId), eq(bolterOutbox.id, input.outboxId), eq(bolterOutbox.claimToken, input.claimToken), eq(bolterOutbox.state, "publishing"), eq(bolterOutbox.bindingRevision, ctx.bindingRevision), eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration))).limit(1))[0] ?? null;
   });
 }
+
+/** Only canonical, completed reply text and its exact provider destination. */
+export interface BolterPublicationContent {
+  readonly origin: string;
+  readonly providerAgentId: string;
+  readonly chatId: string;
+  readonly threadRootId: string | null;
+  readonly content: string;
+}
+
+/**
+ * Revalidate content, causality and current audience before handing a claimed
+ * reply to Desktop. No caller-provided text, destination or share ID is used.
+ * This read does not prove provider delivery or authorize a later retry.
+ */
+export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: BolterBindingContext,
+  input: { outboxId: string; claimToken: string }): Promise<BolterPublicationContent | null> {
+  return scoped(db, ctx, async tx => {
+    await externalPlaintextFence(tx);
+    const binding = await lockBinding(tx, ctx);
+    if (!binding || !binding.modelSponsorshipAcceptedAt || binding.origin !== "https://bolter.chat") return null;
+    const predicate = and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, ctx.bindingId),
+      eq(bolterOutbox.id, input.outboxId), eq(bolterOutbox.claimToken, input.claimToken),
+      eq(bolterOutbox.state, "publishing"), eq(bolterOutbox.bindingRevision, ctx.bindingRevision),
+      eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration));
+    const [candidate] = await tx.select().from(bolterOutbox).where(predicate).limit(1);
+    if (!candidate?.sourceInboxId || candidate.explicitShareId !== null) return null;
+    const [work] = await tx.select({ jobId: jobs.id, input: jobs.input }).from(bolterInboxReceipts)
+      .innerJoin(jobs, eq(jobs.id, bolterInboxReceipts.jobId)).where(and(
+        eq(bolterInboxReceipts.id, candidate.sourceInboxId), eq(bolterInboxReceipts.userId, ctx.userId),
+        eq(bolterInboxReceipts.bindingId, ctx.bindingId), eq(jobs.ownerId, ctx.userId), eq(jobs.requestorId, ctx.userId))).limit(1);
+    const reference = parseExternalRoomJobReference(work?.input);
+    if (!work || !reference || reference.receiptId !== candidate.sourceInboxId
+      || reference.bindingId !== ctx.bindingId || reference.bindingRevision !== ctx.bindingRevision
+      || reference.connectionGeneration !== ctx.connectionGeneration) return null;
+    // Preserve the execution lock order: connection, binding, receipt,
+    // acceptance, Job, then outbox. No network operation runs in this transaction.
+    const execution = await lockBolterExecution(tx, ctx, { jobId: work.jobId, reference }, true);
+    if (!execution || execution.job.status !== "completed" || execution.job.startedAt === null
+      || execution.job.completedAt === null || execution.acceptance.status !== "dispatched"
+      || execution.acceptance.jobId !== work.jobId || execution.acceptance.dispatchedAt === null
+      || execution.acceptance.cancelledAt !== null) return null;
+    const hydrated = await hydrateBolterExecution(tx, ctx, execution);
+    if (!hydrated || execution.connection.origin !== binding.origin
+      || execution.connection.providerAgentId !== binding.providerAgentId) return null;
+    const [claim] = await tx.select().from(bolterOutbox).where(predicate).for("update");
+    if (!claim || claim.sourceInboxId !== reference.receiptId || claim.explicitShareId !== null) return null;
+    const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })
+      .from(sessionMessages).where(and(eq(sessionMessages.id, claim.sessionMessageId),
+        eq(sessionMessages.sessionId, hydrated.session.id), eq(sessionMessages.role, "assistant"),
+        eq(sessionMessages.transcriptOrigin, "main"), isNull(sessionMessages.humanTurnId),
+        isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),
+        eq(sessionMessages.replyToMessageId, execution.receipt.sessionMessageId!),
+        sql`${sessionMessages.metadata}->'externalFinalReply' = ${JSON.stringify({
+          kind: "bolter_final_reply_v1", receiptId: reference.receiptId, jobId: work.jobId,
+          turnId: reference.turnId, acceptanceId: reference.acceptanceId,
+        })}::jsonb`)).limit(1);
+    if (!message || typeof message.content !== "string" || !message.content.trim()) return null;
+    const digest = createHash("sha256").update(JSON.stringify([
+      "external-room-final-v1", reference.receiptId, work.jobId, message.content,
+    ]), "utf8").digest("hex");
+    if (digest !== claim.fingerprint || digest !== message.fingerprint) return null;
+    return Object.freeze({ origin: binding.origin, providerAgentId: binding.providerAgentId,
+      chatId: binding.chatId, threadRootId: binding.threadId || null, content: message.content });
+  });
+}
 export function settleBolterOutboxWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, input: { outboxId: string; claimToken: string } & ({ state: "published"; providerMessageId: string } | { state: "uncertain" | "cancelled" })) {
   if (input.state === "published") opaque(input.providerMessageId);
   return scoped(db, ctx, async tx => {

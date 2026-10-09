@@ -2,14 +2,22 @@ import type { SourceAlarmReview } from "../src/node/source-alarm-review";
 
 const MANAGER = "packages/runtime/src/job-manager.ts#log_emitter:";
 const JOB = "packages/runtime/src/job.ts#log_emitter:";
+const EXECUTOR = "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:";
 // Preserve the existing diagnostic classifications as callsite ordinals move.
 const RELOCATIONS = new Map<string, string>([
   ...[[4, 6], [5, 8], [6, 9], [7, 10], [8, 11], [9, 12], [10, 13]].map(([from, to]) =>
     [`${MANAGER}7ef703451e44cded:${from}`, `${MANAGER}7ef703451e44cded:${to}`] as const),
   ...[12, 13, 14, 15, 16, 17, 18, 19].map(from =>
     [`${MANAGER}0ae25e725db4e950:${from}`, `${MANAGER}0ae25e725db4e950:${from - 1}`] as const),
-  [`${JOB}d7b5f728bf9d919d:1`, `${JOB}5638279d6b05613a:1`],
+  [`${JOB}d7b5f728bf9d919d:1`, `${JOB}39fb4595dfcb9716:1`],
+  [`${EXECUTOR}7ef703451e44cded:6`, `${EXECUTOR}8e51dce7d908cc09:1`],
+  [`${EXECUTOR}7ef703451e44cded:7`, `${EXECUTOR}7ef703451e44cded:6`],
 ]);
+
+/** Exact reviewed producer moves; unrelated locators retain their identity. */
+export function externalRoomSourceAlarmLocator(locator: string): string {
+  return RELOCATIONS.get(locator) ?? locator;
+}
 const REPLACED_DISPATCH = `${MANAGER}0ae25e725db4e950:11`;
 const FIXED_DIAGNOSTICS = [
   ...[4, 5, 7, 14].map(ordinal => `${MANAGER}7ef703451e44cded:${ordinal}`),
@@ -27,9 +35,20 @@ export function reviewedExternalRoomSourceAlarms(reviews: readonly SourceAlarmRe
     }
   }
   return [
-    ...reviews.filter(review => review.locator !== REPLACED_DISPATCH).map(review => ({
-      ...review, locator: RELOCATIONS.get(review.locator) ?? review.locator,
-    })),
+    ...reviews.filter(review => review.locator !== REPLACED_DISPATCH).map((review): SourceAlarmReview => {
+      const locator = externalRoomSourceAlarmLocator(review.locator);
+      if (review.locator === `${EXECUTOR}7ef703451e44cded:6`
+        || review.locator === `${EXECUTOR}7ef703451e44cded:7`) {
+        return {
+          locator, owner: review.owner, closure: "declaration",
+          declarationId: review.locator.endsWith(":6")
+            ? "source.external-room.executor-interrupt-diagnostic"
+            : "source.external-room.executor-token-usage",
+          reason: "This exact executor call remains on the existing plaintext logger boundary. Canonically admitted external-Room execution suppresses provider error text in the interrupt branch, while the ordinary branch still emits an exception message; the other moved call emits token usage counts. This review preserves generic plaintext log debt and makes no encrypted or globally content-free claim. The original alarm-debt snapshot remains unchanged.",
+        };
+      }
+      return { ...review, locator };
+    }),
     ...FIXED_DIAGNOSTICS.map((locator, index): SourceAlarmReview => ({
       locator, owner: "packages/runtime", closure: "reviewed_exclusion",
       exclusionId: `exclusion.external-room.execution-observation-${index + 1}`,
@@ -39,7 +58,7 @@ export function reviewedExternalRoomSourceAlarms(reviews: readonly SourceAlarmRe
       locator: "packages/agent/src/utils/chat-model-invocation.ts#log_emitter:7ef703451e44cded:13",
       owner: "packages/agent", closure: "reviewed_exclusion",
       exclusionId: "exclusion.external-room.provider-failure-category",
-      reason: "The trusted funding session selects content-private diagnostics for external turns regardless of payer kind. This exact call emits only the model coordinate, closed failure category and retryable boolean, never the provider exception message or payload. The shared model cooldown also receives the category only; the separate ordinary-provider raw-error branch retains its existing classification.",
+      reason: "Canonical external-Room execution carries diagnostic privacy through asynchronous execution independently of funding, including local Human turns. The trusted funding session also preserves the restriction for external inputs. This exact call emits only the model coordinate, closed failure category and retryable boolean, never the provider exception message or payload. The shared model cooldown also receives the category only; the separate ordinary-provider raw-error branch retains its existing classification.",
     },
   ];
 }

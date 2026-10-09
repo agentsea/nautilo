@@ -1,3 +1,4 @@
+import { BOLTER_PLAINTEXT_SOURCE_ALARMS } from "../../baseline/reviewed-bolter-plaintext-carriers";
 import { reviewedExternalRoomSourceAlarms } from "../../baseline/reviewed-external-room-source-alarms";
 import {
   REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS,
@@ -326,6 +327,7 @@ const PRE_MAIN_2026_09_03_SOURCE_ALARM_REVIEWS:
 ];
 
 export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = reviewedExternalRoomSourceAlarms([
+  ...BOLTER_PLAINTEXT_SOURCE_ALARMS,
   ...PRE_MAIN_2026_09_03_SOURCE_ALARM_REVIEWS.filter((review) =>
     !SUPERSEDED_MAIN_2026_09_03_SOURCE_ALARM_LOCATORS.has(review.locator)
   ),

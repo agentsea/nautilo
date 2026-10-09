@@ -1,3 +1,6 @@
+import { reviewedExternalMessageAttributionDtoReplacements } from "../../baseline/reviewed-external-message-attribution-dto";
+import { reviewedImageAssistanceDtoReplacements } from "../../baseline/reviewed-image-assistance-dto";
+
 import { describe, expect, test } from "bun:test";
 import { SUPERSEDED_LANDING_SOURCE_LOCATORS } from "../../baseline/reviewed-main-2026-09-05-landing-source-alarms";
 
@@ -93,7 +96,9 @@ function expectLatestTaskResearchReplacement(
   );
   expect(september12).toBeDefined();
   if (!september12) throw new Error(`Missing September 12 predecessor for ${predecessor.locator}`);
-  expect(september12).toEqual({
+  expect([...reviewedExternalMessageAttributionDtoReplacements(
+    reviewedImageAssistanceDtoReplacements([september12]),
+  )][0]).toEqual({
     ...currentDeclaration,
     structuralSignatures: currentDeclaration.structuralSignatures.map((signature) =>
       signature.replace(REFERENCE_AUDIO_SIGNATURE_FRAGMENT, "")
@@ -241,27 +246,37 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
       }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_M322_REPAIR_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual([...reviewedM322RepairDtoReplacements([declaration])]);
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            reviewedM322RepairDtoReplacements([declaration]),
+          ))]);
         continue;
       }
       if (SUPERSEDED_M322_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_M322_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_M322_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_M318_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_M318_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator),
+          ))]);
         continue;
       }
       if (isRetiredM306AuthorityLocator(declaration.locator)) {
@@ -322,28 +337,38 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
       }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual(REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_M322_REPAIR_DTO_LOCATORS.has(locator)) {
         const predecessor = REVIEWED_MAIN_2026_08_29_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator);
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual([...reviewedM322RepairDtoReplacements(predecessor)]);
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            reviewedM322RepairDtoReplacements(predecessor),
+          ))]);
         continue;
       }
       if (SUPERSEDED_M322_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual(REVIEWED_M322_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_M322_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual(REVIEWED_M318_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_M318_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_RELAY_BINDING_DTO_LOCATORS.has(locator)) {

@@ -91,3 +91,13 @@ export function runWithForegroundFundingSession<T>(session: ForegroundChatFundin
 export function getForegroundFundingSession(): ForegroundChatFundingSession | undefined {
   return resumeFunding.getStore();
 }
+
+// This restriction carries no funding, invocation, or tool authority. Runtime
+// enables it after canonical external-Room admission, including local Human turns.
+const contentPrivateModelDiagnostics = new AsyncLocalStorage<true>();
+export function runWithContentPrivateModelDiagnostics<T>(run: () => T): T {
+  return contentPrivateModelDiagnostics.run(true, run);
+}
+export function hasContentPrivateModelDiagnostics(): boolean {
+  return contentPrivateModelDiagnostics.getStore() === true;
+}

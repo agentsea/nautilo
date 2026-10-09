@@ -4,7 +4,7 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { getBolterReceiptMessageIdsWith, getBolterOutboxMessageIdsWith, parseExternalRoomJobReference,
   loadBolterExecutionWith, startBolterExecutionWith, settleBolterExecutionWith, completeBolterExecutionWith,
-  linkBolterExecutionAcceptanceWith, type BolterBridgeDatabase, type BolterExecutionInput,
+  linkBolterExecutionAcceptanceWith, loadBolterPublicationContentWith, type BolterBridgeDatabase, type BolterExecutionInput,
 } from "../../src/queries/bolter-bridge";
 import { finalizeBolterExecutionMigration, BOLTER_EXECUTION_MARKER } from "../../scripts/finalize-bolter-execution";
 
@@ -16,6 +16,7 @@ const input: BolterExecutionInput = { jobId, reference: { kind: "external_room_t
 const binding = { id: bindingId, userId: owner, roomId, agentId, namespaceId: uuid(9), connectionId,
   origin: "https://bolter.chat", providerAgentId: "fixture-agent", chatId: "fixture-chat", threadId: "", state: "active", revision: 0, modelSponsorshipAcceptedAt: now };
 const connection = { id: connectionId, userId: owner, enabled: true, revokedAt: null, generation: 1,
+  origin: binding.origin, providerAgentId: binding.providerAgentId,
   relayId: "fixture-relay", desktopSessionId: "fixture-desktop", pairingGenerationRef: "fixture-pair" };
 const origin = { kind: "external_message", version: 1, provider: "bolter", origin: "https://bolter.chat",
   connectionId, bindingId, providerAgentId: binding.providerAgentId, chatId: binding.chatId,
@@ -28,7 +29,7 @@ const receipt = { id: receiptId, userId: owner, bindingId, bindingRevision: 0, c
   sessionMessageId: 17, turnId: input.reference.turnId, jobId, state: "accepted", fingerprint,
   providerMessageId: origin.messageId, externalSenderId: origin.senderId };
 const job = { id: jobId, ownerId: owner, requestorId: owner, input: input.reference, status: "queued", startedAt: null, completedAt: null };
-const acceptance = { id: acceptanceId, kind: "foreground", status: "dispatched", jobId };
+const acceptance = { id: acceptanceId, kind: "foreground", status: "dispatched", jobId, dispatchedAt: now, cancelledAt: null };
 type Step = { table: string; rows: unknown[]; op?: "select" | "update" | "insert" };
 function db(steps: Step[], mode = "plaintext_only") {
   const calls: { table: string; op: string; values?: unknown; predicate?: SQL | undefined }[] = [];
@@ -62,7 +63,68 @@ const hydrate = (body = content): Step[] => [{ table: "session_messages", rows: 
   { table: "bolter_inbox_receipts", rows: [{ receipt, binding, ownerId: owner, roomId, agentId, role: "user", humanTurnId: input.reference.turnId,
     metadata: { externalOrigin: origin, externalReceiptId: receiptId } }] }];
 
+const publicationContext = { userId: owner, connectionId, connectionGeneration: 1,
+  relayId: connection.relayId, desktopSessionId: connection.desktopSessionId,
+  pairingGenerationRef: connection.pairingGenerationRef, bindingId, bindingRevision: 0 };
+const publicationClaim = { outboxId: uuid(11), claimToken: uuid(12) };
+const finalContent = "Synthetic final response";
+const finalFingerprint = createHash("sha256").update(JSON.stringify(["external-room-final-v1", receiptId, jobId, finalContent])).digest("hex");
+const outbox = { id: publicationClaim.outboxId, sourceInboxId: receiptId, explicitShareId: null, sessionMessageId: 18, fingerprint: finalFingerprint };
+const publicationSteps = (): Step[] => [
+  { table: "bolter_connections", rows: [connection] }, { table: "bolter_room_bindings", rows: [binding] },
+  { table: "bolter_outbox", rows: [outbox] }, { table: "bolter_inbox_receipts", rows: [{ jobId, input: input.reference }] },
+  ...lock("completed"), ...hydrate(), { table: "bolter_outbox", rows: [outbox] },
+  { table: "session_messages", rows: [{ content: finalContent, fingerprint: finalFingerprint }] },
+];
+
 describe("Bolter exact durable execution", () => {
+  test("publication reads only a completed canonical reply at its exact destination", async () => {
+    const f = db(publicationSteps());
+    expect(await loadBolterPublicationContentWith(f.database, publicationContext, publicationClaim)).toEqual({
+      origin: binding.origin, providerAgentId: binding.providerAgentId, chatId: binding.chatId, threadRootId: null, content: finalContent,
+    });
+    expect(f.remaining()).toBe(0);
+    const claimQuery = new PgDialect().sqlToQuery(f.calls[2]!.predicate!);
+    for (const value of [owner, bindingId, publicationClaim.outboxId, publicationClaim.claimToken, "publishing", 0, 1]) expect(claimQuery.params).toContain(value);
+    const finalQuery = new PgDialect().sqlToQuery(f.calls.at(-1)!.predicate!);
+    for (const field of ["session_id", "role", "transcript_origin", "human_turn_id", "tool_calls", "tool_name", "reply_to_message_id", "metadata"]) expect(finalQuery.sql).toContain(field);
+    expect(finalQuery.params).toContain(JSON.stringify({ kind: "bolter_final_reply_v1", receiptId, jobId, turnId: input.reference.turnId, acceptanceId }));
+    expect(finalQuery.params).toContain(uuid(10));
+    expect(finalQuery.params).toContain(17); expect(finalQuery.params).toContain(18);
+  });
+  test("publication never reads final text for wrong mode, owner, generation, sponsorship or claim", async () => {
+    const encrypted = db([], "full_encryption");
+    await Promise.resolve(expect(loadBolterPublicationContentWith(encrypted.database, publicationContext, publicationClaim)).rejects.toThrow());
+    expect(encrypted.calls).toHaveLength(0);
+    for (const patch of [{ userId: uuid(99) }, { connectionGeneration: 2 }, { desktopSessionId: "other" }]) {
+      const f = db(publicationSteps());
+      expect(await loadBolterPublicationContentWith(f.database, { ...publicationContext, ...patch }, publicationClaim)).toBeNull();
+      expect(f.calls).toHaveLength(1);
+    }
+    for (const missing of ["consent", "claim", "explicit-share"]) {
+      const steps = publicationSteps();
+      if (missing === "consent") steps[1]!.rows = [{ ...binding, modelSponsorshipAcceptedAt: null }];
+      if (missing === "claim") steps[2]!.rows = [];
+      if (missing === "explicit-share") steps[2]!.rows = [{ ...outbox, explicitShareId: uuid(99) }];
+      const f = db(steps);
+      expect(await loadBolterPublicationContentWith(f.database, publicationContext, publicationClaim)).toBeNull();
+      expect(f.calls.some(call => call.table === "session_messages")).toBe(false);
+    }
+  });
+  test("unfinished work, altered source and altered final bytes cannot be published", async () => {
+    for (const change of ["job", "acceptance", "source", "body", "fingerprint", "withdrawn-claim"]) {
+      const steps = publicationSteps();
+      if (change === "job") steps[9]!.rows = [{ ...job, status: "running", startedAt: now, completedAt: null }];
+      if (change === "acceptance") steps[8]!.rows = [{ ...acceptance, cancelledAt: now }];
+      if (change === "source") steps[10]!.rows = [{ sourceMessage: { id: 17, content: "Altered source", externalAuthorship: true }, session: { id: uuid(10) } }];
+      if (change === "body") steps[13]!.rows = [{ content: "Altered final", fingerprint: finalFingerprint }];
+      if (change === "fingerprint") steps[13]!.rows = [{ content: finalContent, fingerprint: "0".repeat(64) }];
+      if (change === "withdrawn-claim") steps[12]!.rows = [];
+      const f = db(steps);
+      expect(await loadBolterPublicationContentWith(f.database, publicationContext, publicationClaim)).toBeNull();
+      if (["job", "acceptance"].includes(change)) expect(f.calls.some(call => call.table === "session_messages")).toBe(false);
+    }
+  });
   test("reference rejects prompt payload and unknown coordinates while accepting UUIDv7", () => {
     expect(parseExternalRoomJobReference(input.reference)).toEqual(input.reference);
     for (const bad of [{ ...input.reference, message: "Duplicate prompt" }, { ...input.reference, connectionGeneration: 0 },

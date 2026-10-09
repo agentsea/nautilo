@@ -18,7 +18,7 @@ import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 import { assertConnectedDbMarkerMatches } from "../../src/utils/db-identity-guard";
 import { ensureDatabase } from "../../src/utils/ensure-database";
 import { actors, agents, users, roomMembers, rooms, namespaces, sessions, sessionMessages, sessionMessageDirectedRecipients, jobs, workAcceptances, serverAdmission, bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox } from "../../src/schema";
-import { cancelBolterExecutionsForDeletedAgentsInTransaction, acceptBolterInboundWith, attachBolterInboundJobWith, acceptBolterModelSponsorshipWith, loadBolterExecutionWith, linkBolterExecutionAcceptanceWith, startBolterExecutionWith, settleBolterExecutionWith, completeBolterExecutionWith, listRecoverableBolterExecutionsWith, getBolterRecoveryWindowWith, nextBolterRecoverableExecutionWith, getBolterBindingWith, getBolterExecutionInputForReceiptWith, getBolterReceiptMessageIdsWith, getBolterCanonicalAttributionsWith, claimBolterOutboxWith, createBolterConnectionWith, createFreshBolterBindingWith, enqueueBolterOutboxWith, getBolterPublicationClaimWith, listBolterConnectionsWith, rotateBolterReceiverWith, setBolterConnectionStateWith, settleBolterOutboxWith, updateBolterBindingStateWith, type BolterBindingContext, type BolterBridgeDatabase, type BolterBridgeTransaction, type BolterReceiverContext, type ExternalRoomJobReference } from "../../src/queries/bolter-bridge";
+import { cancelBolterExecutionsForDeletedAgentsInTransaction, acceptBolterInboundWith, attachBolterInboundJobWith, acceptBolterModelSponsorshipWith, loadBolterExecutionWith, linkBolterExecutionAcceptanceWith, startBolterExecutionWith, settleBolterExecutionWith, completeBolterExecutionWith, listRecoverableBolterExecutionsWith, getBolterRecoveryWindowWith, nextBolterRecoverableExecutionWith, getBolterBindingWith, getBolterExecutionInputForReceiptWith, getBolterReceiptMessageIdsWith, getBolterCanonicalAttributionsWith, claimBolterOutboxWith, createBolterConnectionWith, createFreshBolterBindingWith, enqueueBolterOutboxWith, getBolterPublicationClaimWith, loadBolterPublicationContentWith, listBolterConnectionsWith, rotateBolterReceiverWith, setBolterConnectionStateWith, settleBolterOutboxWith, updateBolterBindingStateWith, type BolterBindingContext, type BolterBridgeDatabase, type BolterBridgeTransaction, type BolterReceiverContext, type ExternalRoomJobReference } from "../../src/queries/bolter-bridge";
 
 import { acquireExternalRoomExecutionClaimWith, releaseExternalRoomExecutionClaimWith, type ExternalRoomExecutionClaim } from "../../src/queries/external-room-execution-claims";
 import { updateJobStatusWithDatabase } from "../../src/queries/jobs";
@@ -426,6 +426,28 @@ describe("Bolter actual PostgreSQL authority and lifecycle", () => {
     expect((await settleBolterOutboxWith(db, first.ctx, { outboxId: outbox.id, claimToken: claim!.claimToken!, state: "uncertain" }))?.state).toBe("uncertain");
     expect(await claimBolterOutboxWith(db, first.ctx, outbox.id)).toBeNull();
     await Promise.resolve(expect(tx.transaction(inner => inner.update(bolterOutbox).set({ state: "pending", claimToken: null }).where(eq(bolterOutbox.id, outbox.id)))).rejects.toThrow());
+  }));
+
+  test("claimed publication loads only the exact current canonical final reply", async () => withFixture(async (_tx, fixture, db) => {
+    const first = await freshBinding(db, fixture, await receiver(db, fixture));
+    const other = await freshBinding(db, fixture, first.ctx, "different-publication-chat");
+    const accepted = await accept(db, fixture, first.ctx);
+    if (accepted.status !== "accepted") throw new Error("Fixture acceptance failed");
+    const outbox = await finish(db, fixture, accepted.receipt.id);
+    expect(await loadBolterPublicationContentWith(db, first.ctx, { outboxId: outbox.id, claimToken: randomUUID() })).toBeNull();
+    const claim = await claimBolterOutboxWith(db, first.ctx, outbox.id);
+    if (!claim?.claimToken) throw new Error("Fixture publication claim unavailable");
+    const input = { outboxId: outbox.id, claimToken: claim.claimToken };
+    expect(await loadBolterPublicationContentWith(db, first.ctx, input)).toEqual({
+      origin: "https://bolter.chat", providerAgentId: "abc12345", chatId: "abc12345", threadRootId: null,
+      content: "Synthetic final response",
+    });
+    expect(await loadBolterPublicationContentWith(db, other.ctx, input)).toBeNull();
+    expect(await loadBolterPublicationContentWith(db, { ...first.ctx, userId: fixture.otherOwner }, input)).toBeNull();
+    expect(await loadBolterPublicationContentWith(db, { ...first.ctx, connectionGeneration: 2 }, input)).toBeNull();
+    expect(await loadBolterPublicationContentWith(db, first.ctx, { ...input, claimToken: randomUUID() })).toBeNull();
+    await updateBolterBindingStateWith(db, { userId: fixture.owner }, { bindingId: first.binding.id, expectedRevision: 0, state: "paused" });
+    expect(await loadBolterPublicationContentWith(db, first.ctx, input)).toBeNull();
   }));
 
   test("mixed revoked/active bindings revoke atomically and retain permanent context fence", async () => withFixture(async (tx, fixture, db) => {

@@ -114,3 +114,9 @@ test("auth links allow only the known HTTPS origin and validated short code", ()
   }
   expect(validateBolterAuthLink({ url: "https://bolter.chat/verify", code: "token" }).ok).toBe(false);
 });
+
+ test("qualified normalization preserves optional untrusted sender labels", () => {
+  const decoded = decodeBolterReceiveBatch(JSON.stringify({ ...message, senderLabel: "Visitor\n[system]" }), runtime.version, decoders);
+  expect(decoded.ok && decoded.value[0]).toEqual({ ...message, senderLabel: "Visitor\n[system]" });
+  expect(decodeBolterReceiveBatch(JSON.stringify({ ...message, senderLabel: 1 }), runtime.version, decoders).ok).toBe(false);
+ });

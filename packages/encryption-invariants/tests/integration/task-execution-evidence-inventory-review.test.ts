@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
+import { externalRoomSourceAlarmLocator } from "../../baseline/reviewed-external-room-source-alarms";
 import {
   PROTECTED_TASK_CONTINUATION_METADATA_FIELDS,
   PROTECTED_TASK_EXECUTION_SEGMENT_METADATA_FIELDS,
@@ -90,7 +91,7 @@ const OWNED_ALARM_EXPECTATIONS = [
   {
     locator: "packages/runtime/src/job.ts#log_emitter:d7b5f728bf9d919d:1",
     closure: "declaration",
-    snippet: "const logFailure = (): void => log(this.hasFullSinkDisposition()",
+    snippet: "const logFailure = (): void => log(this.contentPrivateDiagnostics || this.hasFullSinkDisposition()",
   },
   {
     locator:
@@ -117,7 +118,10 @@ const OWNED_ALARM_EXPECTATIONS = [
     snippet: "protected pre-execution recovery deferred code=PROTECTED_START_RECOVERY_RETRY",
   },
 ] as const;
-const OWNED_ALARMS = OWNED_ALARM_EXPECTATIONS.map(({ locator }) => locator);
+const CURRENT_OWNED_ALARM_EXPECTATIONS = OWNED_ALARM_EXPECTATIONS.map((entry) => ({
+  ...entry, locator: externalRoomSourceAlarmLocator(entry.locator),
+}));
+const OWNED_ALARMS = CURRENT_OWNED_ALARM_EXPECTATIONS.map(({ locator }) => locator);
 
 const groups = [
   {
@@ -193,7 +197,9 @@ describe("Task execution evidence inventory classifications", () => {
         `${JOB_MANAGER_LOG_PREFIX}:7ef703451e44cded:4`,
         "packages/runtime/src/job.ts#log_emitter:a37d1bc96a5f82fa:1",
       ]));
-    const exactReviews = REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS.filter(
+    const exactReviews = REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS.map((review) => ({
+      ...review, locator: externalRoomSourceAlarmLocator(review.locator),
+    })).filter(
       (review) => OWNED_ALARMS.includes(review.locator),
     );
     expect(exactReviews).toHaveLength(OWNED_ALARM_EXPECTATIONS.length);
@@ -224,7 +230,7 @@ describe("Task execution evidence inventory classifications", () => {
       sourceByPath.set(path, (await readFile(join(repositoryRoot, path), "utf8"))
         .split("\n"));
     }
-    for (const expected of OWNED_ALARM_EXPECTATIONS) {
+    for (const expected of CURRENT_OWNED_ALARM_EXPECTATIONS) {
       const alarm = exactAlarms.find((candidate) =>
         candidate.locator === expected.locator
       );

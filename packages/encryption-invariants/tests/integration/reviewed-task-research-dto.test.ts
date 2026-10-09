@@ -1,3 +1,6 @@
+import { reviewedExternalMessageAttributionDtoReplacements } from "../../baseline/reviewed-external-message-attribution-dto";
+import { reviewedImageAssistanceDtoReplacements } from "../../baseline/reviewed-image-assistance-dto";
+
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -41,7 +44,9 @@ test("Task research continuity Task DTO snapshots match current producers and pr
           ),
         ),
       };
-      expect(declaration).toEqual(expectedSeptember17);
+      expect(declaration).toEqual([...reviewedExternalMessageAttributionDtoReplacements(
+        reviewedImageAssistanceDtoReplacements([expectedSeptember17]),
+      )][0]!);
       expect(declaration.structuralSignatures).not.toContain(TASK_RESEARCH_RESPONSE_SIGNATURES[declaration.locator]);
     } else {
       expect(declaration.structuralSignatures).toContain(TASK_RESEARCH_RESPONSE_SIGNATURES[declaration.locator]);

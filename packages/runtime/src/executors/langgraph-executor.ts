@@ -13,6 +13,7 @@ import {
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import {
   buildForegroundUserHumanMessage,
+  hasContentPrivateModelDiagnostics,
   createNautiloGraph,
   streamForegroundGraph,
   defaultPostModelDeps,
@@ -1508,7 +1509,9 @@ export async function* langgraphExecutor(
       }
     } catch (e) {
       if (externalTurn) throw e;
-      log(`[nautilo/executor] Error checking interrupt state: ${e instanceof Error ? e.message : String(e)}`);
+      log(hasContentPrivateModelDiagnostics()
+        ? "[nautilo/executor] Error checking interrupt state"
+        : `[nautilo/executor] Error checking interrupt state: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     if (!memoryReviewRecorded) {
@@ -1842,7 +1845,8 @@ export function processStreamEvent(
     // needs auto-emit, reintroduce here with a guard against
     // double-firing.
   } else if (event === "on_chain_end" && data) {
-    if (process.env["NAUTILO_DEBUG_PERSIST"] === "1") {
+    if (!hasContentPrivateModelDiagnostics() && !getCurrentExternalRoomExecution()
+      && process.env["NAUTILO_DEBUG_PERSIST"] === "1") {
       const output = data["output"] as Record<string, unknown> | undefined;
       const outputKeys = output && typeof output === "object"
         ? Object.keys(output).join(",")
@@ -2088,7 +2092,7 @@ function handleTokenStream(
     }
   }
 
-  const debugStream = !getCurrentExternalRoomExecution()
+  const debugStream = !hasContentPrivateModelDiagnostics() && !getCurrentExternalRoomExecution()
     && process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] === "1";
   if (debugStream && streamMetadataLooksFireworksOrDeepSeek(streamMetadata)) {
     debug(

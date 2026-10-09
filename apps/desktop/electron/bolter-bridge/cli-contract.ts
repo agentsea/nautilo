@@ -42,6 +42,7 @@ export interface BolterCliMessage extends BolterCliBinding {
   messageId: string;
   senderId: string;
   senderType: "user" | "anima" | "system";
+  senderLabel?: string;
   content: string;
   createdAt: string;
   addressed: boolean;
@@ -186,6 +187,7 @@ function validateReceiveItem(raw: unknown): BolterContractResult<BolterCliReceiv
   if (raw["type"] !== "message" || !id(raw["messageId"]) || !id(raw["chatId"]) || !id(raw["senderId"]) ||
       (raw["threadRootId"] !== null && !id(raw["threadRootId"])) ||
       (raw["senderType"] !== "user" && raw["senderType"] !== "anima" && raw["senderType"] !== "system") ||
+      (raw["senderLabel"] !== undefined && (typeof raw["senderLabel"] !== "string" || raw["senderLabel"].length === 0)) ||
       typeof raw["content"] !== "string" || typeof raw["createdAt"] !== "string" ||
       !/^\d{4}-\d{2}-\d{2}T/.test(raw["createdAt"]) || !Number.isFinite(Date.parse(raw["createdAt"])) ||
       typeof raw["addressed"] !== "boolean" || typeof raw["truncated"] !== "boolean" ||
@@ -193,6 +195,7 @@ function validateReceiveItem(raw: unknown): BolterContractResult<BolterCliReceiv
   return success({ type: "message", messageId: raw["messageId"], chatId: raw["chatId"],
     threadRootId: raw["threadRootId"], senderId: raw["senderId"],
     senderType: raw["senderType"], content: raw["content"],
+    ...(typeof raw["senderLabel"] === "string" ? { senderLabel: raw["senderLabel"] } : {}),
     createdAt: raw["createdAt"], addressed: raw["addressed"], truncated: raw["truncated"], redelivered: raw["redelivered"] });
 }
 
