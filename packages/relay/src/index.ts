@@ -206,8 +206,7 @@ export {
 } from "./codex-protocol";
 export {
   RELAY_PROTOCOL_VERSION,
-  RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION,
-  isRelayLocalGitCapability,
+  RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION,
   RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION,
   RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION,
   RELAY_RUN_SHELL_PROGRESS_MAX_TEXT_BYTES,
@@ -380,9 +379,6 @@ export {
   type RelaySshApprovedCopyUploadRequestV1,
   type RelaySshApprovedCopyDownloadRequestV1,
   type RelaySshApprovedRequestValidationResult,
-  parseRelayRunShellGitOperation,
-  type RelayRunShellGitOperation,
-  type RelayRunShellGitOperationValidationResult,
 } from "./protocol";
 export {
   LEGACY_RELAY_USER_FALLBACK,
@@ -669,9 +665,6 @@ export { parseRelayHumanTerminalCapability, type RelayHumanTerminalCapability } 
 export { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV3 } from "./protocol";
 
 export { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION, isRelayLocalExecutionSearchAllowed } from "./protocol";
-
-export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch, parseRelayGitHubInvocationBinding, matchesGitHubWorkstationBinding,
-  type RelayGitHubInvocationBinding } from "./protocol";
 
 export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV4 } from "./protocol";
 

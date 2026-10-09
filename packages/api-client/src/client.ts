@@ -5870,7 +5870,6 @@ export class NautiloApiClient {
       readonly revision: number;
     },
     cryptoBinding?: ForegroundResumeCryptoBinding,
-    githubDigest?: string,
   ): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>({
       method: "POST",
@@ -5889,7 +5888,6 @@ export class NautiloApiClient {
             }
           : {}),
         ...cryptoBinding,
-        ...(githubDigest === undefined ? {} : { githubDigest }),
       },
       defaultErrorPrefix: "POST /api/auth/approval-reply",
     });

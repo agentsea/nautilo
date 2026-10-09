@@ -1,7 +1,4 @@
-import { matchesGitHubWorkstationBinding } from "./protocol";
 import { parseRelayLocalExecutionDelegationCapture } from "./protocol";
-import { isRelayGitHubDispatch } from "./protocol";
-import { parseRelayGitHubInvocationBinding } from "./protocol";
 import { isRelayLocalExecutionSearchAllowed } from "./protocol";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
@@ -10,7 +7,7 @@ import { parseRelayHumanTerminalCapability } from "./types";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION,
   RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayBasicExecutionCapability } from "./types";
-import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "./protocol";
+import { RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayLocalExecutionCapability } from "./types";
 import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION } from "./protocol";
 import { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES } from "./protocol";
@@ -1331,29 +1328,16 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       canContinueBrowserPageRead &&
       negotiatedProtocolVersion >= RELAY_BROWSER_PAGE_SNAPSHOT_REFERENCE_PROTOCOL_VERSION &&
       registeredCapabilities.canInspectBrowserPageSnapshot === true;
-    if (msg.toolName === "local_git" || msg.toolName === "read_shell_output") {
-      const supported = negotiatedProtocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
+    if (msg.toolName === "local_git" || msg.toolName === "local_github" || "githubBinding" in msg) {
+      send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_TOOL_UNAVAILABLE", error: "This retired local broker is unavailable." });
+      return;
+    }
+    if (msg.toolName === "read_shell_output") {
+      const supported = negotiatedProtocolVersion >= RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION
         && registeredCapabilities.profile === "desktop-agent"
-        && (msg.toolName === "local_git"
-          ? registeredCapabilities.canUseLocalGit === true && isRelayLocalGitCapability(registeredCapabilities.localGit)
-          : registeredCapabilities.canReadShellOutput === true);
+        && registeredCapabilities.canReadShellOutput === true;
       if (!supported || msg.hostedBy !== undefined) {
         send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_TOOL_UNAVAILABLE", error: "This local tool is unavailable on this Desktop version." });
-        return;
-      }
-    }
-    if (msg.toolName === "local_github" || msg.githubBinding !== undefined) {
-      const binding = parseRelayGitHubInvocationBinding(msg.githubBinding, msg.args);
-      const authenticatedGit = msg.toolName === "local_git";
-      if (!binding || !isRelayGitHubDispatch(msg.toolName, msg.args, binding, registeredCapabilities, negotiatedProtocolVersion)
-        || binding.owner.humanUserId !== options.userId || binding.owner.relayId !== relayId
-        || binding.owner.desktopSessionId !== desktopSessionId || !desktopTopology || binding.owner.pairingGeneration !== desktopTopology.pairingGeneration || binding.owner.instanceId !== options.runShellOwnerInstanceId
-        || msg.hostedBy !== undefined || msg.humanTerminalBinding !== undefined || msg.localExecutionBinding !== undefined
-        || msg.localExecutionHistoryBinding !== undefined
-        || (authenticatedGit ? !matchesGitHubWorkstationBinding(binding, msg.workstationShellBinding) : msg.workstationShellBinding !== undefined)
-        || msg.uncontainedHostCommandsSession === true
-        || (binding.stage === "publish" && msg.approvalObtained !== true) || msg.executionClass === "real_workstation") {
-        send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "GITHUB_UNAVAILABLE", error: "GitHub custody is unavailable." });
         return;
       }
     }
@@ -1454,7 +1438,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         ? { desktopAutomationBinding: parsedDesktopAutomationBinding.binding }
         : {}),
       ...(parsedComputerUseRequest !== undefined ? { computerUseRequest: parsedComputerUseRequest } : {}),
-      ...(msg.toolName === "read_shell_output" && negotiatedProtocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION ? {
+      ...(msg.toolName === "read_shell_output" && negotiatedProtocolVersion >= RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION ? {
         runShellOwnerBinding: { instanceId: options.runShellOwnerInstanceId ?? "", userId: options.userId,
           relayId, desktopSessionId: desktopSessionId ?? null },
       } : {}),
@@ -1462,7 +1446,6 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       localExecutionDelegationCapture: msg.localExecutionDelegationCapture,
       localExecutionBinding: msg.localExecutionBinding,
       localExecutionHistoryBinding: msg.localExecutionHistoryBinding,
-      githubBinding: msg.githubBinding,
       humanTerminalBinding: msg.humanTerminalBinding,
       uncontainedHostCommandsSession: msg.uncontainedHostCommandsSession,
       sandboxProfile: msg.sandboxProfile,

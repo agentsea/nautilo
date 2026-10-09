@@ -269,7 +269,7 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("developer-workstation metadata + body", () => {
     const skill = getBundledSkill("developer-workstation")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(12);
+    expect(skill.version).toBe(13);
     expect(skill.id).toBe("official:developer-workstation");
     expect(skill.requiresTools).toEqual(["exec_command", "write_stdin", "apply_patch"]);
 
@@ -299,17 +299,13 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("Never promise atomicity");
     expect(skill.body).toContain("Own setup instead of bouncing the Human to a terminal");
     expect(skill.body).toContain("Settings → Workstation");
-    expect(skill.body).toContain("When `local_github` is offered");
-    expect(skill.body).toContain("`account_status` operation");
-    expect(skill.body).toContain("instead of running `gh auth status`");
-    expect(skill.body).toContain("cannot\nread the protected GitHub CLI configuration");
-    expect(skill.body).toContain("Publishing retains its separate Human review");
-    expect(skill.body).toContain("Never copy credentials");
+    expect(skill.body).toContain("Use `gh auth status`");
+    expect(skill.body).toContain("real HOME");
+    expect(skill.body).toContain("native credential helpers");
     expect(skill.body).not.toContain("gh auth setup-git");
     expect(skill.body).toContain("`curl | sh`");
     expect(skill.body).toContain("Use ordinary Development execution");
-    expect(skill.body).toContain("When `local_git` is actually available");
-    expect(skill.body).toContain("safe broker-created `worktree-remove`");
+    expect(skill.body).toContain("Use ordinary `git` and `gh` commands");
     expect(skill.body).toContain("<<'EOF'");
     expect(skill.body).toContain("/bin/bash <<'BASH'");
     expect(skill.body).toContain("Do not wrap a multiline payload in `/bin/bash -lc '…'`");
@@ -326,7 +322,7 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("shell-execution metadata + body", () => {
     const skill = getBundledSkill("shell-execution")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(8);
+    expect(skill.version).toBe(9);
     expect(skill.id).toBe("official:shell-execution");
     expect(skill.requiresTools).toEqual(["exec_command", "write_stdin"]);
 
@@ -349,7 +345,7 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("nextSearchCursor");
     expect(skill.body).toContain("saved final");
     expect(skill.body).toContain("optional `read_shell_output`");
-    expect(skill.body).toContain("Use `local_git`");
+    expect(skill.body).toContain("Use ordinary `git`, `gh`");
     expect(skill.body).toContain("Use `human_terminal` only after");
     expect(skill.body).toContain("terminal-sessions skill");
   });
@@ -516,11 +512,9 @@ const PER_SKILL_CROSS_REFERENCES: Record<string, Set<string>> = {
   // names optional core/discovery routes so Genie can recover when a schema is
   // masked and use the multi-file primitive when present.
   "developer-workstation": new Set([
-    "local_github",
     // Natural-language references to the Human's terminal are not references
     // to the retired `terminal` tool tombstone.
     "terminal",
-    "local_git",
     "read_shell_output",
     "human_terminal",
     "apply_patch",
@@ -528,7 +522,7 @@ const PER_SKILL_CROSS_REFERENCES: Record<string, Set<string>> = {
     "activate_tools",
   ]),
   // Managed execution names optional typed/history/handoff routes.
-  "shell-execution": new Set(["terminal", "local_git", "read_shell_output", "human_terminal"]),
+  "shell-execution": new Set(["terminal", "read_shell_output", "human_terminal"]),
   // Managed terminal guidance also explains the optional Human handoff.
   "terminal-sessions": new Set(["terminal", "human_terminal"]),
   // office-control (requiresTools: [edit_doc, office]) — the interactive

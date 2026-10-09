@@ -319,6 +319,47 @@ describe("ActiveWorkstationProfileController — activate", () => {
     expect(changes).toEqual(["workstation profile activate"]);
   });
 
+  test("carries explicit user-environment authority and declared package prefixes locally", async () => {
+    const { controller, profileStore } = createFixture();
+    const base = profileRecord("profile-a");
+    const toolchainCapabilities = (base["toolchainCapabilities"] as Record<string, unknown>[])
+      .map((capability) => ({
+        ...capability,
+        id: "cap-homebrew",
+        operations: ["run", "install"],
+      }));
+    await profileStore.create({
+      profile: validProfile("profile-a", {
+        capabilities: ["background_processes", "mcp_hosts", "user_environment"],
+        toolchainCapabilities,
+      }),
+    });
+
+    const result = await controller.activate({
+      profileId: "profile-a",
+      facts: validFacts({
+        roots: [
+          { path: PARENT_ROOT, access: ["read"], sourceProvider: "homebrew" },
+          { path: BUN_ROOT, access: ["read"], sourceProvider: "homebrew" },
+        ],
+        capabilities: (factsRecord()["capabilities"] as Record<string, unknown>[])
+          .map((capability) => ({
+            ...capability,
+            id: "cap-homebrew",
+            operations: ["run", "install"],
+          })),
+      }),
+      subject: subject(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(controller.getExecutionEnvironment()).toMatchObject({
+      userEnvironment: true,
+      userEnvironmentWritablePaths: [PARENT_ROOT, BUN_ROOT],
+    });
+    expect(Object.isFrozen(controller.getExecutionEnvironment()?.userEnvironmentWritablePaths)).toBe(true);
+  });
+
   test("rejects a subject bound to a different instance without mutating state", async () => {
     const { controller, profileStore, authority, changes } = createFixture();
     await profileStore.create({ profile: validProfile("profile-a") });

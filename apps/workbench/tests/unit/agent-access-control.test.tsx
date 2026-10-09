@@ -11,7 +11,7 @@ import { ReadyToWorkSegment } from "../../src/components/footer/ready-to-work-se
 
 const reviewed = {
   seed: { id: "development", revision: 3, name: "Development tools", protectedPolicyVersion: 1, networkMode: "host" as const,
-    discoveryProviders: [], environmentKeys: ["PATH"], capabilities: [{ id: "developer_tools", backend: "local_process" as const }] },
+    discoveryProviders: [], environmentKeys: ["PATH"], capabilities: [{ id: "developer_tools", backend: "local_process" as const }], userEnvironment: true },
   review: { generatedAt: "2026-01-01T00:00:00.000Z", platform: "darwin", home: "/path/to", networkMode: "host" as const, rows: [], hostNetworkImplication: "Host network", hardBoundaries: [], summary: { found: 0, optional: 0, missing: 0 } },
   scope: { currentProject: "/path/to/project", roots: [{ path: "/path/to/tools", access: ["read", "create_modify"] }], network: { mode: "host" as const, allow: [] }, environmentKeys: ["PATH"] },
 };
@@ -191,8 +191,19 @@ test("profile repair reviews actual scope and submits exact selectors with one P
   expect(view.getByText(/Current Folder: \/path\/to\/project/)).toBeTruthy();
   expect(view.getByText("/path/to/tools · read, create and modify files")).toBeTruthy();
   expect(view.getByText("Network: Destinations available to this Mac, including the internet.")).toBeTruthy();
+  expect(view.getByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeTruthy();
   expect(f.choices).toHaveLength(0); await verifyPin(view);
   expect(f.choices).toEqual([{ choice: "development", pin: "123456", profileId: "development", profileRevision: 3 }]);
+});
+
+test("legacy and custom profiles without user-environment authority make no native credential promise", async () => {
+  const f = fixture();
+  const legacy = { ...profiles, prepareActivation: async () => ({ ok: true as const,
+    data: { ...reviewed, seed: { ...reviewed.seed, userEnvironment: undefined } } }) };
+  const view = render(<AccessControl readyToWork={f.api} workstationProfiles={legacy} />);
+  await view.findByText("Commands ready."); fireEvent.click(view.getByRole("radio", { name: "Development" }));
+  await view.findByRole("heading", { name: "Choose Development" });
+  expect(view.queryByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeNull();
 });
 
 test("a profile changed between materialization and review cannot reach PIN or activation", async () => {

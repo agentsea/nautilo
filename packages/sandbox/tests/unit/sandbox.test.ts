@@ -50,7 +50,7 @@ function makeSandbox(overrides: {
     workspace: join(tmp, "workspace"),
     dataDir: join(tmp, "data"),
     toolsBin: join(tmp, "tools-bin"),
-    backend: overrides.backend ?? { kind: "bubblewrap", procSupported: true },
+    backend: overrides.backend ?? { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true },
     networkProxy: overrides.networkProxy,
     networkDeniedDestinations: overrides.networkDeniedDestinations,
   });
@@ -180,7 +180,7 @@ describe("Sandbox — config accessors", () => {
 
 describe("Sandbox — containmentActive", () => {
   test("true when mode=enabled + backend=bubblewrap", () => {
-    const sb = makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } });
+    const sb = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } });
     expect(sb.containmentActive()).toBe(true);
   });
 
@@ -197,7 +197,7 @@ describe("Sandbox — containmentActive", () => {
   test("false when mode=disabled regardless of backend", () => {
     const sb = makeSandbox({
       config: { mode: "disabled" },
-      backend: { kind: "bubblewrap", procSupported: true },
+      backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true },
     });
     expect(sb.containmentActive()).toBe(false);
   });
@@ -206,10 +206,10 @@ describe("Sandbox — containmentActive", () => {
 describe("Sandbox — describeBackend", () => {
   test("bubblewrap includes procSupported bit", () => {
     expect(
-      makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } }).describeBackend(),
+      makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } }).describeBackend(),
     ).toBe("bubblewrap(procSupported=true)");
     expect(
-      makeSandbox({ backend: { kind: "bubblewrap", procSupported: false } }).describeBackend(),
+      makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: false } }).describeBackend(),
     ).toBe("bubblewrap(procSupported=false)");
   });
   test("sandbox-exec / none are plain labels", () => {
@@ -232,7 +232,7 @@ describe("Sandbox — isPathAllowed", () => {
       workspace: ws,
       dataDir: join(ws, "..", "data"),
       toolsBin: join(ws, "..", "tools"),
-      backend: { kind: "bubblewrap", procSupported: true },
+      backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true },
     });
   }
 
@@ -274,7 +274,7 @@ describe("Sandbox — prompt allowlists", () => {
   });
 
   test("bubblewrap backend — read list includes Linux system paths (if they exist on host) + workspace + tools-bin", () => {
-    const sb = makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } });
+    const sb = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } });
     const reads = sb.promptReadAllowlist();
     // Only paths that actually exist on the test host are included;
     // assert a reasonable subset rather than the full list so the
@@ -286,7 +286,7 @@ describe("Sandbox — prompt allowlists", () => {
   });
 
   test("write list includes workspace + /tmp", () => {
-    const sb = makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } });
+    const sb = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } });
     const writes = sb.promptWriteAllowlist();
     expect(writes.length).toBeGreaterThanOrEqual(2);
     // /tmp always present
@@ -296,7 +296,7 @@ describe("Sandbox — prompt allowlists", () => {
   });
 
   test("refreshProjectPaths extends the prompt allowlist", () => {
-    const sb = makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } });
+    const sb = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } });
     const before = sb.promptWriteAllowlist().length;
     const proj = mkTmp("nautilo-proj-");
     sb.refreshProjectPaths([proj]);
@@ -399,7 +399,7 @@ describe("Sandbox.create — fail-loud policy (D060 Phase 1 task 1.7)", () => {
       dataDir: `${tmp}/data`,
       toolsBin: `${tmp}/tools`,
       failIfNoBackend: true,
-      detectBackendOverride: () => Promise.resolve({ kind: "bubblewrap", procSupported: true }),
+      detectBackendOverride: () => Promise.resolve({ kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true }),
     });
     expect(sb.containmentActive()).toBe(true);
   });
@@ -427,7 +427,7 @@ describe("Sandbox — wrap dispatcher", () => {
   test("mode=disabled → passthrough (env set, program echoes)", () => {
     const sb = makeSandbox({
       config: { mode: "disabled" },
-      backend: { kind: "bubblewrap", procSupported: true },
+      backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true },
     });
     const r = sb.wrap("ls", ["-la"], "/tmp", {});
     // Passthrough returns the original program, not "bwrap".
@@ -445,9 +445,9 @@ describe("Sandbox — wrap dispatcher", () => {
   });
 
   test("backend=bubblewrap → bwrap builder (program=bwrap, minimal env)", () => {
-    const sb = makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } });
+    const sb = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } });
     const r = sb.wrap("ls", ["/"], "/tmp", {});
-    expect(r.program).toBe("bwrap");
+    expect(r.program).toBe("/usr/bin/bwrap");
     expect(Object.keys(r.env ?? {})).toEqual(["PATH"]);
     // Inner program appears after the `--` sentinel.
     const idx = r.args.lastIndexOf("--");
@@ -514,7 +514,7 @@ describe("Sandbox — wrap dispatcher", () => {
   });
 
   test("bubblewrap dispatch honors procSupported=false (no --proc in args)", () => {
-    const sb = makeSandbox({ backend: { kind: "bubblewrap", procSupported: false } });
+    const sb = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: false } });
     const r = sb.wrap("true", [], "/tmp", {});
     const procIdx = r.args.findIndex(
       (a, i) => a === "--proc" && r.args[i + 1] === "/proc",
@@ -523,7 +523,7 @@ describe("Sandbox — wrap dispatcher", () => {
   });
 
   test("DANGEROUS commandEnv dropped in both bwrap and passthrough paths", () => {
-    const sbBwrap = makeSandbox({ backend: { kind: "bubblewrap", procSupported: true } });
+    const sbBwrap = makeSandbox({ backend: { kind: "bubblewrap", executable: "/usr/bin/bwrap", procSupported: true } });
     const bwrap = sbBwrap.wrap("true", [], "/tmp", { LD_PRELOAD: "/tmp/evil.so" });
     expect(bwrap.args.indexOf("LD_PRELOAD")).toBe(-1);
 

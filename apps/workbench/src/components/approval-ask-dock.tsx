@@ -1,5 +1,3 @@
-import { parseGitHubPublishApproval } from "@nautilo/types";
-import { GitHubPublishApprovalDetail } from "./github-publish-approval-detail";
 /**
  * ApprovalAskDock — inline approval dock for approval replies.
  *
@@ -440,21 +438,18 @@ export function ApprovalAskDock() {
     () => isMediaGenerationApproval(state.mediaGeneration) ? state.mediaGeneration : null,
     [state.mediaGeneration],
   );
-  const parsedGitHub = parseGitHubPublishApproval(state.github);
-  const github = parsedGitHub?.approvalId === state.approvalId ? parsedGitHub : null;
-  const requiresGitHubReview = state.github != null || state.tools.some(tool => tool.name === "local_github");
-  const missingExactReview = requiresGitHubReview ? !github
-    : state.requiresExplicitReview && !state.localMcpInstall && !mediaGeneration && !state.structuredSsh;
+  const missingExactReview = state.requiresExplicitReview && !state.localMcpInstall && !mediaGeneration && !state.structuredSsh;
   const malformedMediaGeneration = state.mediaGeneration != null && mediaGeneration === null;
+  const retiredBrokerReview = state.tools.some(tool => tool.name === "local_github" || tool.name === "local_git");
   const allowedVerbs = useMemo<ApprovalReplyVerb[]>(
     () => hasExpiredProjection
       ? state.allowedVerbs.includes("deny") ? ["deny"] : []
       : malformedMediaGeneration || missingExactReview
-      ? state.allowedVerbs.includes("deny") ? ["deny"] : []
-      : mediaGeneration || github
+      ? retiredBrokerReview || state.allowedVerbs.includes("deny") ? ["deny"] : []
+      : mediaGeneration
         ? state.allowedVerbs.filter((verb) => verb === "once" || verb === "deny")
         : state.allowedVerbs,
-    [hasExpiredProjection, malformedMediaGeneration, missingExactReview, mediaGeneration, github, state.allowedVerbs],
+    [hasExpiredProjection, malformedMediaGeneration, missingExactReview, retiredBrokerReview, mediaGeneration, state.allowedVerbs],
   );
 
   // Prefer "once" if offered, else the first allowed verb. The
@@ -581,7 +576,6 @@ export function ApprovalAskDock() {
             </div>
           ) : null}
 
-          {github ? <GitHubPublishApprovalDetail approval={github} /> : null}
           {state.localMcpInstall ? (
             <LocalMcpInstallApprovalDetail approval={state.localMcpInstall} />
           ) : null}

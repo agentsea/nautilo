@@ -84,10 +84,10 @@ describe("streamForegroundGraph", () => {
       computerUseInvocationBindings: {},
       fullMacInvocationBindings: {},
       delegatedLocalExecutionBindings: {},
-      githubInvocationBindings: {},
       humanTerminalInvocationBindings: {},
       foregroundContextRefresh: null,
     });
+    expect(inputs[1]).not.toHaveProperty("githubInvocationBindings");
     expect((inputs[1] as Partial<NautiloState>).foregroundContextRefreshLastProjection)
       .toBe(foregroundContextProjectionFingerprint(
         [new HumanMessage("bounded replacement")],

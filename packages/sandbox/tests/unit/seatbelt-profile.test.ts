@@ -1775,3 +1775,17 @@ describe("buildSbplProfile — LIVE sandbox-exec regression (Darwin only)", () =
     expect(wsWrite.status).toBe(0);
   });
 });
+
+test("locally admitted credential helpers retain Keychain service access under isolated networking", () => {
+  const root = mkTmp("trusted-keychain-rule-");
+  try {
+    const config = { ...baseConfig(), networkPolicy: { mode: "isolated" as const } };
+    const options = { workspace: root.real, dataDir: join(root.real, "state"), toolsBin: "/usr/bin", config };
+    const ordinary = buildSbplProfile(options);
+    const trusted = buildSbplProfile({ ...options, allowUserCredentialFiles: true });
+    expect(ordinary).not.toContain('(global-name "com.apple.SecurityServer")');
+    expect(trusted).toContain('(global-name "com.apple.SecurityServer")');
+    expect(trusted).not.toContain("(allow network-outbound)");
+    expect(trusted).not.toContain("(allow network-bind)");
+  } finally { rmSync(root.real, { recursive: true, force: true }); }
+});

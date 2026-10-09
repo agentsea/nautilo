@@ -1,14 +1,11 @@
 import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
 import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
-import { bindGitHubInvocation, prepareGitHubInvocation } from "../tools/invocation-service";
-import { githubApprovalId, githubPublishing, parseGitHubGitOperation, parseGitHubOperation } from "@nautilo/types";
-import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayGitHubInvocationBinding } from "@nautilo/relay";
+import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseHumanTerminalOperation } from "../../../types/src/human-terminal";
 import { createHash } from "node:crypto";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { VerifiedOrdinaryOrigin } from "@nautilo/types";
 import { isLocalExecutionTool, localExecutionOperation, writeStdinSchema } from "../tools/local-execution/local-execution";
-import { localGitSchema } from "../tools/local-git/local-git";
 import { deepResearchReturnContextForState } from "../runtime/deep-research-return-context";
 import { actors, and, eq, getTaskById, roomMembers, taskRuns } from "@nautilo/db";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
@@ -417,9 +414,6 @@ export interface ApprovalAskInterruptPayload {
  *  `verb` is present for ask-interrupts; absent for legacy prove_it
  *  interrupts (which just returns `{ approved }` directly). */
 interface ResumeDecision {
-  githubApprovalId?: string;
-  githubDigest?: string;
-  githubLaneKey?: string;
   approved?: boolean;
   verb?: ApprovalReplyVerb;
   /** Exact approval receipt; mandatory with the digest for local MCPs. */
@@ -733,9 +727,6 @@ export function createPostModelNode(
           continue;
         }
       }
-      if (tc.name === "local_github" && githubPublishing(tc.args) && decision.type === "read_only") {
-        forbidden.push({ tc, reason: "This actor has read-only GitHub access. Publishing is not permitted." }); continue;
-      }
       switch (decision.type) {
         case "allow":
         case "read_only":
@@ -1001,56 +992,6 @@ export function createPostModelNode(
       return true;
     });
     approved = bindHumanTerminalCalls(approved); pending = bindHumanTerminalCalls(pending);
-    // The checkpointed task keeps the original account/target/body and custody
-    // generation through interrupt replay. Publishing never consults AutoApprove
-    // or standing command rules and cannot silently prepare a replacement.
-    const githubInvocationBindings: Record<string, RelayGitHubInvocationBinding> = {};
-    const isGitHubCall = (tc: ToolCall) => tc.name === "local_github" || (tc.name === "local_git" && parseGitHubGitOperation(tc.args) !== null);
-    const githubCalls = [...approved, ...pending].filter(isGitHubCall);
-    approved = approved.filter(tc => !isGitHubCall(tc));
-    pending = pending.filter(tc => !isGitHubCall(tc));
-    for (const tc of githubCalls) {
-      const port = deps?.humanTerminalAdmissionPortForState?.(state);
-      const git = parseGitHubGitOperation(tc.args);
-      const request = parseGitHubOperation(tc.args) ?? git;
-      if (!tc.id || !port || !request) {
-        forbidden.push({ tc, reason: "GitHub requires an exact source-admitted account operation." }); continue;
-      }
-      const publishing = githubPublishing(request);
-      const captured = await task("prepare_exact_github_operation", async () => {
-        try {
-          if (publishing) return await prepareGitHubInvocation(state, tc, port);
-          return await port.withAdmission(() => {
-            const binding = bindGitHubInvocation(state, tc.id!, "read", state.githubInvocationBindings?.[tc.id!], git !== null);
-            return Promise.resolve(binding ? { binding, prepared: null } : null);
-          });
-        } catch { return null; }
-      })();
-      if (!captured || (captured.prepared && JSON.stringify(parseGitHubOperation(captured.prepared.request) ?? parseGitHubGitOperation(captured.prepared.request)) !== JSON.stringify(request))
-        || !bindGitHubInvocation(state, tc.id, publishing ? "prepare" : "read", captured.binding, git !== null)) {
-        forbidden.push({ tc, reason: "The original GitHub account/profile/source binding is no longer available. Nothing was republished." }); continue;
-      }
-      try { await port.withAdmission(() => {
-        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", captured.binding, git !== null)) return Promise.reject(new Error("GITHUB_AUTHORITY_CHANGED"));
-        return Promise.resolve();
-      }); } catch { forbidden.push({ tc, reason: "GitHub source admission changed. No account content was released." }); continue; }
-      if (!publishing) { githubInvocationBindings[tc.id] = captured.binding; approved.push(tc); continue; }
-      if (!captured.prepared) { forbidden.push({ tc, reason: "GitHub publishing preparation is unavailable." }); continue; }
-      const approvalId = githubApprovalId(captured.prepared), githubLaneKey = resolveLaneKey(state);
-      const decision: ResumeDecision | undefined = interrupt({ type: "approval_ask", approvalId,
-        tools: [{ name: tc.name, id: tc.id, args: {} }], userId: captured.binding.owner.humanUserId,
-        reason: "Publish this exact GitHub change using the displayed account?", reasonCode: "destructive-tool",
-        allowedVerbs: ["once", "deny"], requiresExplicitReview: true,
-        github: { version: 1, approvalId, digest: captured.prepared.digest, prepared: captured.prepared } });
-      if (decision?.approved !== true || decision.verb !== "once" || decision.githubApprovalId !== approvalId
-        || decision.githubDigest !== captured.prepared.digest || decision.githubLaneKey !== githubLaneKey
-        || !bindGitHubInvocation(state, tc.id, "prepare", captured.binding, git !== null)) {
-        forbidden.push({ tc, reason: "GitHub publishing was denied or its exact review is stale. No publication was retried." }); continue;
-      }
-      githubInvocationBindings[tc.id] = { ...captured.binding, stage: "publish", prepared: captured.prepared,
-        approval: { verb: "once", approvalId, digest: captured.prepared.digest } };
-      approved.push(tc);
-    }
     const computerAdmissionResolver = deps?.resolveComputerUseAdmission;
     const computerUseInvocationBindings = new Map<string, ComputerUseInvocationBinding>();
     const computerUseNeedsUser: Array<{
@@ -1260,7 +1201,7 @@ export function createPostModelNode(
         let overrideDecision: WorkstationAdmissionDecision | null = null;
         try {
           overrideDecision = await overrideResolver({
-            userId: (isLocalExecutionTool(tc.name) || tc.name === "local_git") ? (causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "") : state.userId,
+            userId: isLocalExecutionTool(tc.name) ? (causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "") : state.userId,
             toolCall: tc,
             actorId,
             roomId: state.roomId ?? "",
@@ -1769,7 +1710,7 @@ export function createPostModelNode(
           approvedToolCalls: approved,
           delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
-          humanTerminalInvocationBindings, githubInvocationBindings,
+          humanTerminalInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
           requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1819,7 +1760,7 @@ export function createPostModelNode(
           approvedToolCalls: approved,
           delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
-          humanTerminalInvocationBindings, githubInvocationBindings,
+          humanTerminalInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
           requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1853,7 +1794,7 @@ export function createPostModelNode(
           approvedToolCalls: approved,
           delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
-          humanTerminalInvocationBindings, githubInvocationBindings,
+          humanTerminalInvocationBindings,
           computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
           requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
@@ -1890,7 +1831,7 @@ export function createPostModelNode(
           approvedToolCalls: approved,
           delegatedLocalExecutionBindings,
           fullMacInvocationBindings,
-          humanTerminalInvocationBindings, githubInvocationBindings, requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
+          humanTerminalInvocationBindings, requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
           pendingApproval: [],
           approvalDenied: true,
           identityEnrollmentToolCallIds: [],
@@ -1969,7 +1910,7 @@ export function createPostModelNode(
         approvedToolCalls: approved,
         delegatedLocalExecutionBindings,
         fullMacInvocationBindings,
-        humanTerminalInvocationBindings, githubInvocationBindings,
+        humanTerminalInvocationBindings,
         computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
         requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
         pendingApproval: [],
@@ -1982,7 +1923,7 @@ export function createPostModelNode(
       approvedToolCalls: approved,
       delegatedLocalExecutionBindings,
       fullMacInvocationBindings,
-      humanTerminalInvocationBindings, githubInvocationBindings,
+      humanTerminalInvocationBindings,
       computerUseInvocationBindings: Object.fromEntries(computerUseInvocationBindings),
       requiredHostRelays: Object.fromEntries(requiredHostByToolCall),
       pendingApproval: [],
@@ -2553,11 +2494,6 @@ function resolveImpactApprovalForToolCall(
     if (operation?.action === "read") return resolveApproval({ toolImpact: "read-only", toolName: tc.name }, level);
     const command = operation?.action === "run" ? operation.command : operation?.action === "write" ? operation.data : "";
     return resolveApproval({ toolImpact: baseImpact, toolName: tc.name, commandScan: scanCommand(command, level) }, level);
-  }
-  if (tc.name === "local_git") {
-    const parsed = localGitSchema.safeParse(tc.args);
-    const readOnly = parsed.success && (parsed.data.operation === "status" || parsed.data.operation === "diff");
-    return resolveApproval({ toolImpact: readOnly ? "read-only" : "destructive", toolName: tc.name }, level);
   }
   if (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "write_stdin") {
     const raw = (tc.args as Record<string, unknown>)?.[tc.name === "exec_command" ? "cmd" : "chars"];

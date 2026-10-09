@@ -1,5 +1,5 @@
 import "./instance-argv-bootstrap.ts";
-import { LOCAL_EXECUTION_MAX_IDENTITIES, RELAY_GITHUB_PROTOCOL_VERSION } from "@nautilo/relay";
+import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
 import { parseReadyToWorkComponentSelection, type AgentAccessStatus } from "./ready-to-work-contract";
 
@@ -70,7 +70,6 @@ import {
   getAcknowledgedLocalExecutionCapabilities,
   readActiveLocalExecution,
   getActiveLocalExecutionGeneration,
-  getLocalExecutionCustodyScope,
   subscribeLocalExecutionChanges,
   setActiveRelay,
   DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE,
@@ -220,13 +219,7 @@ import {
   type WorkstationShellSubject,
 } from "./workstation-shell-consent-store";
 import { createAdmittedGitHubCliConnection } from "./github-cli-connection";
-import { createGitHubInstallation, type GitHubInstallation } from "./github-broker/installation";
-import { createGitHubCredentialProvider } from "./github-broker/credentials";
-import { GitHubBroker } from "./github-broker/broker";
-import { GitHubPreparations } from "./github-broker/preparations";
-import { createGitHubGitTransport } from "./github-broker/git-transport";
-import { createGitHubGitRuntime } from "./github-git-runtime";
-import { MAX_WORKTREE_BLOB_BYTES, MAX_WORKTREE_FILE_COUNT, MAX_WORKTREE_TOTAL_BYTES } from "../../../packages/sandbox/src/git-broker/materialize";
+import { createGitHubCliInstallation, type GitHubCliInstallation } from "./github-cli-installation";
 import { probeDesktopGitHubRuntime } from "./github-cli-runtime";
 import {
   createGoogleWorkspaceAuth,
@@ -508,7 +501,7 @@ import { BrowserControlManager } from "./browser-control-manager";
 import { browserControlStateSessionSource } from "./browser-control-state";
 import { BrowserResearchTargetManager } from "./browser-research-target-manager";
 import { resolveDownloadTarget } from "./download-target";
-import { augmentProcessPath } from "./augment-path";
+import { augmentProcessPath, loginShellSpawnEnvBase } from "./augment-path";
 import {
   parseDesktopFilesystemGrant,
   DESKTOP_FILESYSTEM_ACCESS_OPERATIONS,
@@ -3176,7 +3169,6 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
   const relayOpts: StartRelayOptions = {
     serverUrl,
     userId,
-    createGitHubRuntime: async (topology) => await createAdmittedGitHubRuntime(topology),
     localExecutionHistoryWriter: localExecutionHistoryWriter(serverUrl, userId),
     localExecutionHistoryReader: localExecutionHistoryReader(serverUrl, userId),
     humanTerminalConsent: () => {
@@ -3380,6 +3372,10 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     // relay advertises the controller's redacted profile snapshot from the
     // SAME store the main process owns (no duplicate profile stores).
     workstationProfileController: activeWorkstationProfileController,
+    getDevelopmentGitHubExecutable: async () => {
+      try { return (await (await getGitHubInstallation()).verify()).executable; }
+      catch { return undefined; } // Ordinary installed tools remain usable without the bundled fallback.
+    },
     // native apply_patch is private-staging only. The process-scoped
     // Desktop mutation runtime is the sole live-file writer and shares the
     // editor's coordinator, V2 journal, locks, recovery and durable outbox.
@@ -3656,7 +3652,6 @@ function broadcastAuthState(state: "signed-in" | "signed-out"): void {
 
 function invalidateMiniAppRecoveryAuthentication(): void {
   githubCliConnection.cancel();
-  updateGitHubAccountReadiness(false);
   githubAccountCustody.retire();
   clearHumanTerminalHandoff();
   readyToWorkGeneration += 1;
@@ -5190,24 +5185,8 @@ const activeWorkstationProfileController =
     },
   });
 
-// Composition for the admitted connection and private broker provider. The
-// account credential remains inside the verified installation invocation.
-// The deadline bounds credential processes, the readiness probe and Git phases;
-// REST calls inherit their invocation cancellation signal. Response/output caps
-// bound retained bytes, and the preparation count bounds reviewed publications
-// retained for replay/unknown-outcome safety.
-const GITHUB_BROKER_OPERATION_TIMEOUT_MS = 30_000;
-const GITHUB_BROKER_CREDENTIAL_OUTPUT_BYTES = 16 * 1024;
-const GITHUB_BROKER_RESPONSE_BYTES = 4 * 1024 * 1024;
-const GITHUB_BROKER_PREPARATION_CAPACITY = 64;
-let githubAccountReadiness = { authenticated: false, epoch: 0 };
-function updateGitHubAccountReadiness(authenticated: boolean): number {
-  if (githubAccountReadiness.authenticated !== authenticated) {
-    githubAccountReadiness = { authenticated, epoch: githubAccountReadiness.epoch + 1 };
-  }
-  return githubAccountReadiness.epoch;
-}
-let githubInstallationOwner: { key: string; pending: Promise<GitHubInstallation> } | null = null;
+// Native GitHub CLI installation for the existing Connections flow.
+let githubInstallationOwner: { key: string; pending: Promise<GitHubCliInstallation> } | null = null;
 const githubAccountCustody = {
   getInstallation: getGitHubInstallation,
   retire(): void {
@@ -5215,7 +5194,7 @@ const githubAccountCustody = {
     githubInstallationOwner = null;
   },
 };
-async function getGitHubInstallation(): Promise<GitHubInstallation> {
+async function getGitHubInstallation(): Promise<GitHubCliInstallation> {
   const session = serverSessions.active;
   if (!session?.signedIn) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
   const authGeneration = miniAppRecoveryAuthGeneration;
@@ -5234,28 +5213,8 @@ async function getGitHubInstallation(): Promise<GitHubInstallation> {
   const pending = Promise.resolve().then(() => {
     const runtime = probeDesktopGitHubRuntime({ isPackaged: app.isPackaged });
     if (!runtime.ok || !isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-    return createGitHubInstallation({ executable: runtime.binaryPath, executableSha256: runtime.executableSha256,
-      homeDir: app.getPath("home"), authority: async () => {
-        if (!isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-        const folder = currentFolderPath;
-        const folderRevision = currentFolderRevision;
-        const workspace = genieWorkspaceRoot;
-        if (!workspace) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-        // Retained grant IDs cover processes still draining after reduction;
-        // released historical grants no longer count as writable authority.
-        const listed = await desktopFilesystemGrantStore.list({ userId: binding.humanId, includeHistory: true });
-        const custody = getLocalExecutionCustodyScope();
-        if (!listed.ok || custody === null || !isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-        const revision = listed.data.revision;
-        return {
-          writableRoots: [...new Set([workspace, ...(folder ? [folder] : []), ...custody.roots,
-            ...listed.data.grants.filter(item => (item.status === "active" || custody.grantIds.includes(item.grant.id))
-              && (item.grant.access.includes("create_modify") || item.grant.access.includes("delete")))
-              .map(item => item.grant.canonicalRoot)])],
-          isCurrent: () => isOwnerCurrent() && desktopFilesystemGrantStore.getRevision() === revision
-            && currentFolderRevision === folderRevision && currentFolderPath === folder && genieWorkspaceRoot === workspace && custody.isCurrent(),
-        };
-      } });
+    return createGitHubCliInstallation({ executable: runtime.binaryPath, executableSha256: runtime.executableSha256,
+      environment: { ...loginShellSpawnEnvBase(), HOME: app.getPath("home") }, isCurrent: isOwnerCurrent });
   });
   const owner = { key, pending };
   githubInstallationOwner = owner;
@@ -5268,132 +5227,14 @@ async function getGitHubInstallation(): Promise<GitHubInstallation> {
   }
 }
 
-async function createAdmittedGitHubRuntime(
-  topology: Parameters<NonNullable<StartRelayOptions["createGitHubRuntime"]>>[0],
-): Promise<import("./relay-dispatch/github").DesktopGitHubRuntime | null> {
-  const session = serverSessions.active;
-  const ready = currentReadyBinding();
-  const profile = activeWorkstationProfileController.getActiveSession();
-  const folder = currentFolderPath;
-  const folderRevision = currentFolderRevision;
-  const workspace = genieWorkspaceRoot;
-  if (!session?.signedIn || !ready || !profile || !folder || !workspace
-    || profile.network.mode !== "host"
-    || topology.selectedProtocolVersion < RELAY_GITHUB_PROTOCOL_VERSION
-    || topology.relayId !== getPersistedDesktopRelayId() || topology.desktopSessionId !== getDesktopSessionId()
-    || profile.subject.userId !== ready.humanId || profile.subject.instanceId !== desktopInstance.instanceId
-    || profile.subject.relayId !== topology.relayId) return null;
-  const installation = await getGitHubInstallation();
-  const grantRevision = desktopFilesystemGrantStore.getRevisionForSubject(profile.subject);
-  const generation = randomUUID();
-  let retired = false;
-  const identity = {
-    instanceId: desktopInstance.instanceId, humanUserId: ready.humanId, relayId: topology.relayId,
-    desktopSessionId: topology.desktopSessionId, pairingGeneration: topology.pairingGeneration,
-    serverOrigin: ready.authority.scope, serverFingerprint: ready.authority.serverFingerprint,
-    profileId: profile.profileId, profileRevision: profile.profileRevision, grantRevision,
-    protectedPolicyVersion: profile.protectedPolicyVersion,
-  };
-  const baseCurrent = () => {
-    const currentReady = currentReadyBinding();
-    const currentProfile = activeWorkstationProfileController.getActiveSession();
-    return !retired && serverSessions.active === session && session.signedIn
-      && currentReady !== null && JSON.stringify(currentReady) === JSON.stringify(ready)
-      && currentProfile !== null && JSON.stringify(currentProfile.subject) === JSON.stringify(profile.subject)
-      && currentProfile.network.mode === "host"
-      && currentProfile.profileId === identity.profileId && currentProfile.profileRevision === identity.profileRevision
-      && currentProfile.protectedPolicyVersion === identity.protectedPolicyVersion
-      && desktopFilesystemGrantStore.getRevisionForSubject(profile.subject) === identity.grantRevision
-      && currentFolderPath === folder && currentFolderRevision === folderRevision && genieWorkspaceRoot === workspace;
-  };
-  if (!baseCurrent()) return null;
-  const credentials = createGitHubCredentialProvider({ installation, timeoutMs: GITHUB_BROKER_OPERATION_TIMEOUT_MS,
-    maxCredentialOutputBytes: GITHUB_BROKER_CREDENTIAL_OUTPUT_BYTES, maxResponseBytes: GITHUB_BROKER_RESPONSE_BYTES });
-  try {
-    const account = await credentials.withClient(AbortSignal.timeout(GITHUB_BROKER_OPERATION_TIMEOUT_MS),
-      async client => await client.request("GET", "/user"));
-    const value = account.data;
-    if (account.status !== 200 || typeof value !== "object" || value === null || Array.isArray(value)
-      || !Number.isSafeInteger((value as Record<string, unknown>)["id"])
-      || ((value as Record<string, unknown>)["id"] as number) < 1
-      || typeof (value as Record<string, unknown>)["login"] !== "string"
-      || !/^[A-Za-z0-9-]+$/.test((value as Record<string, unknown>)["login"] as string)
-      || !baseCurrent()) return null;
-  } catch { return null; }
-  const readinessEpoch = updateGitHubAccountReadiness(true);
-  const isCurrent = () => baseCurrent() && githubAccountReadiness.authenticated
-    && githubAccountReadiness.epoch === readinessEpoch;
-  const preparations = new GitHubPreparations({ generation, capacity: GITHUB_BROKER_PREPARATION_CAPACITY });
-  const broker = new GitHubBroker({ credentials, preparations, isCurrent: owner => Promise.resolve(isCurrent()
-      && owner.relayId === identity.relayId && owner.desktopSessionId === identity.desktopSessionId
-      && owner.pairingGeneration === identity.pairingGeneration && owner.humanUserId === identity.humanUserId),
-    isCurrentNow: owner => isCurrent() && owner.relayId === identity.relayId
-      && owner.desktopSessionId === identity.desktopSessionId && owner.pairingGeneration === identity.pairingGeneration
-      && owner.humanUserId === identity.humanUserId,
-    isPublishingApproved: (_owner, prepared, approval) => Promise.resolve(isCurrent()
-      && approval.verb === "once" && approval.digest === prepared.digest
-      && approval.approvalId === `github-publish:${prepared.preparationId}:${prepared.digest}`) });
-  const gitRuntime = createGitHubGitRuntime({ timeoutMs: GITHUB_BROKER_OPERATION_TIMEOUT_MS, maxOutputBytes: GITHUB_BROKER_RESPONSE_BYTES,
-    authority: async () => {
-      if (!isCurrent()) throw new Error("GITHUB_GIT_RUNTIME_UNAVAILABLE");
-      const folder = currentFolderPath, workspace = genieWorkspaceRoot;
-      const custody = getLocalExecutionCustodyScope();
-      const listed = await desktopFilesystemGrantStore.list({ userId: identity.humanUserId, includeHistory: true });
-      if (!workspace || !custody || !listed.ok || !isCurrent()) throw new Error("GITHUB_GIT_RUNTIME_UNAVAILABLE");
-      return { writableRoots: [...new Set([workspace, ...(folder ? [folder] : []), ...custody.roots,
-        ...listed.data.grants.filter(item => item.status === "active"
-          && (item.grant.access.includes("create_modify") || item.grant.access.includes("delete")))
-          .map(item => item.grant.canonicalRoot)])], isCurrent: () => isCurrent() && custody.isCurrent() };
-    } });
-  const storageRoot = path.join(app.getPath("userData"), "github-broker");
-  const transport = createGitHubGitTransport({ runtime: gitRuntime, credentials, timeoutMs: GITHUB_BROKER_OPERATION_TIMEOUT_MS,
-    maxOutputBytes: GITHUB_BROKER_RESPONSE_BYTES, storage: { async admit(signal) {
-      signal?.throwIfAborted();
-      await fsp.mkdir(storageRoot, { recursive: true, mode: 0o700 });
-      await fsp.chmod(storageRoot, 0o700);
-      const directory = await fsp.realpath(storageRoot);
-      if (!isCurrent() || signal?.aborted) throw new Error("GITHUB_GIT_UNAVAILABLE");
-      return { directory, isCurrent: () => isCurrent() && !signal?.aborted };
-    } } });
-  return { capability: { version: 1, generation, identity, authenticatedGit: { version: 1 } }, broker,
-    authenticatedGit: { transport, worktreeLimits: { fileCount: MAX_WORKTREE_FILE_COUNT,
-      blobBytes: MAX_WORKTREE_BLOB_BYTES, totalBytes: MAX_WORKTREE_TOTAL_BYTES } },
-    isCurrent, retire: () => { if (retired) return; retired = true; preparations.dispose(); gitRuntime.retire(); } };
-}
-
 ipcMain.handle("githubCli:status", async (e) => {
   assertMainWindowSender(e);
-  const status = await githubCliConnection.status();
-  const priorEpoch = githubAccountReadiness.epoch;
-  // A negative account observation fences an overlapping readiness probe even
-  // when readiness was already false, so a stale token check cannot publish a
-  // capability after logout or first-run repair.
-  if (!status.authenticated) githubAccountCustody.retire();
-  updateGitHubAccountReadiness(status.authenticated);
-  const changed = githubAccountReadiness.epoch !== priorEpoch;
-  if (changed) {
-    publishAgentAccessChanged();
-  }
-  // An authenticated status check is also the explicit repair path for a
-  // transient API-readiness failure: a fresh capability update acknowledgement
-  // asks the Relay lifecycle to run the factory again even when no flag changed.
-  if (changed || status.authenticated) {
-    void refreshDesktopRelayCapabilities("GitHub account readiness observed");
-  }
-  return status;
+  return await githubCliConnection.status();
 });
 
 ipcMain.handle("githubCli:connect", async (e) => {
   assertMainWindowSender(e);
-  const priorEpoch = githubAccountReadiness.epoch;
-  // Account selection is a custody boundary. Retire any in-flight probe even
-  // when no ready runtime has been advertised yet.
   githubAccountCustody.retire();
-  updateGitHubAccountReadiness(false);
-  if (githubAccountReadiness.epoch !== priorEpoch) {
-    void refreshDesktopRelayCapabilities("GitHub account sign-in started");
-    publishAgentAccessChanged();
-  }
   return await githubCliConnection.connect();
 });
 
@@ -5842,7 +5683,7 @@ async function restoreReadyWorkstation(desired: ReadyToWorkDesiredState): Promis
     return readyOwnerResult("workstation_settings", false, reason);
   }
   const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: protectedReceipt.profileId });
-  if (!stored.ok || resolveDeveloperWorkstationSeed(stored.data.profile).kind === "shipped_v1_upgrade") {
+  if (!stored.ok || resolveDeveloperWorkstationSeed(stored.data.profile).kind === "shipped_upgrade") {
     return readyOwnerResult("workstation_settings", false, "workstation_profile_update_needed");
   }
   const local = activeWorkstationProfileController.getActiveSession();
@@ -5889,7 +5730,7 @@ async function observeReadyWorkstation(desired: ReadyToWorkDesiredState): Promis
     return readyOwnerResult("workstation_settings", false, reason);
   }
   const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: protectedReceipt.profileId });
-  if (!stored.ok || resolveDeveloperWorkstationSeed(stored.data.profile).kind === "shipped_v1_upgrade") {
+  if (!stored.ok || resolveDeveloperWorkstationSeed(stored.data.profile).kind === "shipped_upgrade") {
     return readyOwnerResult("workstation_settings", false, "workstation_profile_update_needed");
   }
   const local = activeWorkstationProfileController.getActiveSession();
@@ -7181,6 +7022,7 @@ interface WorkstationProfileSeedDescriptor {
   readonly discoveryProviders: readonly import("@nautilo/workstation-profiles").ProfileDiscoveryProvider[];
   readonly environmentKeys: readonly string[];
   readonly capabilities: readonly WorkstationProfileCapabilityEntry[];
+  readonly userEnvironment?: boolean;
 }
 
 interface WorkstationProfileSummary {
@@ -7230,6 +7072,7 @@ function buildSeedDescriptor(
     discoveryProviders: [...profile.discoveryProviders],
     environmentKeys: [...profile.environmentKeys],
     capabilities: redactProfileCapabilities(profile),
+    ...(profile.capabilities.includes("user_environment") ? { userEnvironment: true } : {}),
   };
 }
 
@@ -8067,14 +7910,15 @@ async function readyToWorkProfileSelectors(
     };
   }
   const resolution = resolveDeveloperWorkstationSeed(stored.data.profile);
-  if (resolution.kind === "shipped_v1_upgrade") {
+  if (resolution.kind === "shipped_upgrade") {
     if (!verifyUpgrade || reviewedProfile?.profileId !== resolution.reviewProfile.id
       || reviewedProfile.profileRevision !== resolution.reviewProfile.revision) {
       return { ok: false, code: "stale_revision", message: "Review the updated Development profile and confirm with your PIN." };
     }
     await verifyUpgrade();
-    const updated = await store.update({ profileId: stored.data.profile.id,
-      expectedRevision: resolution.expectedRevision, profile: resolution.reviewProfile });
+    const updated = await store.replaceReviewedRevision({ profileId: stored.data.profile.id,
+      expectedRevision: resolution.previousRevision, expectedProfile: stored.data.profile,
+      profile: resolution.reviewProfile });
     if (!updated.ok) return { ok: false, code: "stale_revision", message: "Development profile changed. Review it again before confirming." };
     return { ok: true, profileId: updated.data.profile.id, profileRevision: updated.data.profile.revision };
   }
@@ -8148,7 +7992,7 @@ async function activateStoredWorkstationProfile(
       );
     }
     const profile = stored.data.profile;
-    if (resolveDeveloperWorkstationSeed(profile).kind === "shipped_v1_upgrade") {
+    if (resolveDeveloperWorkstationSeed(profile).kind === "shipped_upgrade") {
       return profileIpcFailure("stale_revision", "Review the updated Development profile and confirm with your PIN; the previous startup approval cannot activate it.");
     }
 

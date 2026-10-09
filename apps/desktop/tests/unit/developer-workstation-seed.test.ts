@@ -51,7 +51,7 @@ const HOME = nodePath.join(nodePath.sep, "Users", "dev");
 const NOW = new Date("2026-07-13T12:00:00.000Z");
 
 function historicalRevisionOneSeed(platform: "darwin" | "linux"): WorkstationProfile {
-  const current = developerWorkstationSeedProfile({ home: HOME, platform, now: NOW });
+  const revisionTwo = historicalRevisionTwoSeed(platform);
   const homebrewRoots = platform === "darwin"
     ? [
         { path: "/opt/homebrew", access: ["read", "create_modify", "delete", "execute"] },
@@ -70,10 +70,10 @@ function historicalRevisionOneSeed(platform: "darwin" | "linux"): WorkstationPro
         { path: nodePath.join(HOME, ".cache", "Homebrew"), access: ["read", "create_modify"] },
       ];
   const record = {
-    ...current,
+    ...revisionTwo,
     revision: 1,
     roots: homebrewRoots,
-    toolchainCapabilities: current.toolchainCapabilities
+    toolchainCapabilities: revisionTwo.toolchainCapabilities
       .filter((capability) =>
         capability.id !== CAP_NODE && capability.id !== CAP_PYTHON && capability.id !== CAP_GIT
       )
@@ -82,6 +82,25 @@ function historicalRevisionOneSeed(platform: "darwin" | "linux"): WorkstationPro
           ? { ...capability, operations: ["install", "upgrade", "list"] }
           : capability
       ),
+  };
+  const parsed = parseWorkstationProfile(record, { now: NOW });
+  if (!parsed.ok) {
+    throw new Error(`invalid historical seed fixture: ${parsed.error.message}`);
+  }
+  return parsed.profile;
+}
+
+function historicalRevisionTwoSeed(platform: "darwin" | "linux"): WorkstationProfile {
+  const current = developerWorkstationSeedProfile({ home: HOME, platform, now: NOW });
+  const record = {
+    ...current,
+    revision: 2,
+    capabilities: current.capabilities.filter((capability) => capability !== "user_environment"),
+    toolchainCapabilities: current.toolchainCapabilities.map((capability) =>
+      capability.id === CAP_HOMEBREW
+        ? { ...capability, operations: ["list"] }
+        : capability
+    ),
   };
   const parsed = parseWorkstationProfile(record, { now: NOW });
   if (!parsed.ok) {
@@ -138,12 +157,13 @@ describe("Developer Workstation seed — posture", () => {
     expect(profile.network.allow).toEqual([]);
   });
 
-  test("carries a bounded environment key allowlist with no PATH or arbitrary env", () => {
+  test("carries the existing bounded discovery allowlist separately from user environment authority", () => {
     const profile = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
     expect(profile.environmentKeys).toEqual([...DEVELOPER_WORKSTATION_ENV_ALLOWLIST]);
     expect(profile.environmentKeys).not.toContain("PATH");
     expect(profile.environmentKeys).not.toContain("HOME");
     expect(profile.environmentKeys).not.toContain("USER");
+    expect(profile.capabilities).toContain("user_environment");
     // Every key is unique.
     expect(new Set(profile.environmentKeys).size).toBe(profile.environmentKeys.length);
   });
@@ -263,13 +283,13 @@ describe("Developer Workstation seed — toolchain capabilities", () => {
     expect(homebrew.roots).toEqual([]);
   });
 
-  test("Homebrew is discovery/list-only and shared prefixes are not writable by default", () => {
+  test("Homebrew admits command installation while shared prefixes remain read-only", () => {
     const profile = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
     const homebrew = profile.toolchainCapabilities.find((entry) => entry.id === CAP_HOMEBREW)!;
-    expect(homebrew.operations).toEqual(["list"]);
+    expect(homebrew.operations).toEqual(["install", "upgrade", "list"]);
     expect(profile.roots.filter((root) => root.path.includes("homebrew") || root.path.includes("Homebrew"))
       .every((root) => !root.access.includes("create_modify") && !root.access.includes("delete"))).toBe(true);
-    expect(profile.revision).toBe(2);
+    expect(profile.revision).toBe(3);
   });
 
   test("toolchain capability ids are unique", () => {
@@ -409,7 +429,7 @@ describe("Developer Workstation seed — revision migration recognition", () => 
       now: NOW,
     });
     expect(resolved.kind).toBe("absent");
-    expect(resolved.reviewProfile.revision).toBe(2);
+    expect(resolved.reviewProfile.revision).toBe(3);
   });
 
   for (const platform of ["darwin", "linux"] as const) {
@@ -426,11 +446,11 @@ describe("Developer Workstation seed — revision migration recognition", () => 
         now: NOW,
       });
 
-      expect(resolved.kind).toBe("shipped_v1_upgrade");
-      if (resolved.kind !== "shipped_v1_upgrade") return;
-      expect(resolved.expectedRevision).toBe(1);
+      expect(resolved.kind).toBe("shipped_upgrade");
+      if (resolved.kind !== "shipped_upgrade") return;
+      expect(resolved.previousRevision).toBe(1);
       expect(resolved.storedProfile).toBe(stored);
-      expect(resolved.reviewProfile.revision).toBe(2);
+      expect(resolved.reviewProfile.revision).toBe(3);
       expect(resolved.reviewProfile.createdAt).toBe(stored.createdAt);
       expect(resolved.reviewProfile.updatedAt).toBe(NOW.toISOString());
       expect(resolved.reviewProfile.toolchainCapabilities.map((entry) => entry.id)).toContain(CAP_NODE);
@@ -440,6 +460,27 @@ describe("Developer Workstation seed — revision migration recognition", () => 
         ),
       ).toBe(true);
       expect(JSON.stringify(stored)).toBe(before);
+    });
+  }
+
+  for (const platform of ["darwin", "linux"] as const) {
+    test(`recognizes the exact shipped revision 2 shape on ${platform}`, () => {
+      const stored = historicalRevisionTwoSeed(platform);
+      const resolved = resolveDeveloperWorkstationSeed(stored, {
+        home: HOME,
+        platform,
+        now: NOW,
+      });
+
+      expect(resolved.kind).toBe("shipped_upgrade");
+      if (resolved.kind !== "shipped_upgrade") return;
+      expect(resolved.previousRevision).toBe(2);
+      expect(resolved.reviewProfile.revision).toBe(3);
+      expect(resolved.reviewProfile.capabilities).toContain("user_environment");
+      expect(
+        resolved.reviewProfile.toolchainCapabilities.find((entry) => entry.id === CAP_HOMEBREW)
+          ?.operations,
+      ).toEqual(["install", "upgrade", "list"]);
     });
   }
 
@@ -460,7 +501,7 @@ describe("Developer Workstation seed — revision migration recognition", () => 
     const legacy = historicalRevisionOneSeed("darwin");
     const cases: Array<readonly [string, (profile: WorkstationProfile) => void]> = [
       ["id", (profile) => { profile.id = "custom-developer-workstation"; }],
-      ["revision", (profile) => { profile.revision = 2; }],
+      ["revision", (profile) => { profile.revision = 3; }],
       ["name", (profile) => { profile.name = "My Developer Workstation"; }],
       ["roots", (profile) => { profile.roots = profile.roots.slice(1); }],
       ["discovery providers", (profile) => {
@@ -489,5 +530,17 @@ describe("Developer Workstation seed — revision migration recognition", () => 
       expect(resolved.kind, label).toBe("custom");
       expect(resolved.reviewProfile, label).toBe(customized);
     }
+  });
+
+  test("preserves customized revision 2 profiles", () => {
+    const customized = cloneProfile(historicalRevisionTwoSeed("darwin"));
+    customized.network = { mode: "isolated", allow: [] };
+    const resolved = resolveDeveloperWorkstationSeed(customized, {
+      home: HOME,
+      platform: "darwin",
+      now: NOW,
+    });
+    expect(resolved.kind).toBe("custom");
+    expect(resolved.reviewProfile).toBe(customized);
   });
 });

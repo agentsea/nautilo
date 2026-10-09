@@ -8,7 +8,7 @@ import {
 } from "../../electron/github-cli-connection";
 
 const getInstallation = async () => ({
-  verify: async () => ({ executable: "/trusted/runtime/gh", cwd: "/trusted/runtime",
+  verify: async () => ({ executable: "/trusted/runtime/gh", executableDirectory: "/trusted/runtime", cwd: "/trusted/runtime",
     env: { HOME: "/trusted/home", GH_CONFIG_DIR: "/trusted/home/.config/gh" }, isCurrent: () => true }),
   retire() {},
 });

@@ -10,9 +10,6 @@ export function classifyWorkstationExecutionClass(
   toolName: string,
   args?: Readonly<Record<string, unknown>>,
 ): WorkstationExecutionClass {
-  if (toolName === "local_git" || (toolName === "run_shell" && args?.["git"] !== undefined)) {
-    return "typed_broker";
-  }
   if (toolName === "run_shell" && args?.["execution"] === "workstation") {
     return "real_workstation";
   }
@@ -33,7 +30,7 @@ export function requiresNormalWorkstationCommandApproval(input: {
     const args = input.args as Readonly<Record<string, unknown>> | null | undefined;
     return typeof args?.["chars"] === "string" && args["chars"].length > 0;
   }
-  if ((input.toolName !== "run_shell" && input.toolName !== "exec_command") || input.executionClass === "typed_broker") {
+  if (input.toolName !== "run_shell" && input.toolName !== "exec_command") {
     return false;
   }
   const raw =

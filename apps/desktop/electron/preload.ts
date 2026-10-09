@@ -759,6 +759,7 @@ type WorkstationProfileSeedDescriptor = {
   discoveryProviders: readonly ProfileDiscoveryProvider[];
   environmentKeys: readonly string[];
   capabilities: readonly WorkstationProfileCapabilityEntry[];
+  userEnvironment?: boolean;
 };
 
 type WorkstationProfileSummary = {

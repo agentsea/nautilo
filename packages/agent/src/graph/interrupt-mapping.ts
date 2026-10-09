@@ -1,4 +1,3 @@
-import { parseGitHubPublishApproval } from "@nautilo/types";
 import {
   isMediaGenerationApproval,
   type ServerEvent,
@@ -119,9 +118,10 @@ export function interruptValueToServerEvent(
     const rawUid = value["userId"];
     const userId =
       typeof rawUid === "string" && rawUid.length > 0 ? rawUid : undefined;
-    const github = parseGitHubPublishApproval(value["github"]);
-    if ((value["github"] !== undefined || tools.some(tool => tool.name === "local_github"))
-      && (!github || github.approvalId !== approvalId)) return null;
+    // Broker approvals from historical checkpoints are stale after broker
+    // retirement. Preserve the atomic batch only so the Human can deny it;
+    // never convert any member into a generic command approval.
+    const retiredBrokerApproval = isRetiredBrokerApprovalInterrupt(value);
     const localMcpInstall = isLocalMcpInstallApproval(value["localMcpInstall"])
       ? value["localMcpInstall"]
       : undefined;
@@ -141,17 +141,21 @@ export function interruptValueToServerEvent(
       threadId,
       laneKey,
       tools,
-      reason,
+      reason: retiredBrokerApproval
+        ? "This pending approval contains an unavailable legacy local action. Deny the whole batch to dismiss it and continue."
+        : reason,
       reasonCode,
       ...(isNetworkContext(value["network"]) ? { network: value["network"] } : {}),
       // An SSH preparation is a one-use, exact-review capability.  Never
       // carry a broader verb list across this public interrupt boundary.
-      allowedVerbs: github || structuredSsh || mediaGeneration ? ["once", "deny"] : allowedVerbs,
+      allowedVerbs: retiredBrokerApproval
+        ? ["deny"]
+        : structuredSsh || mediaGeneration ? ["once", "deny"] : allowedVerbs,
       ...(scopeInfo ? { scopeInfo } : {}),
-      ...(github ? { github, requiresExplicitReview: true } : {}),
       ...(localMcpInstall ? { localMcpInstall, requiresExplicitReview: true } : {}),
       ...(mediaGeneration ? { mediaGeneration, requiresExplicitReview: true } : {}),
       ...(structuredSsh ? { structuredSsh, requiresExplicitReview: true } : {}),
+      ...(retiredBrokerApproval ? { requiresExplicitReview: true } : {}),
       ...(userId ? { userId } : {}),
     };
   }
@@ -216,6 +220,17 @@ export function interruptValueToServerEvent(
   }
 
   return null;
+}
+
+/** Historical broker approvals are no longer executable and must never be
+ * projected or resumed as generic command approvals. */
+export function isRetiredBrokerApprovalInterrupt(value: Record<string, unknown>): boolean {
+  const tools = Array.isArray(value["tools"])
+    ? value["tools"].filter((tool): tool is Record<string, unknown> =>
+      typeof tool === "object" && tool !== null && !Array.isArray(tool))
+    : [];
+  return value["github"] !== undefined
+    || tools.some(tool => tool["name"] === "local_github" || tool["name"] === "local_git");
 }
 
 function connectedWebAuthenticationIntervention(value: unknown): Extract<ServerEvent, { type: "connected_web.action_attention" }>['intervention'] | null {
@@ -629,6 +644,16 @@ function pendingGraphInterrupts(
   return pending;
 }
 
+/** Detect retired broker state only in exact pending approval interrupts. */
+export function hasPendingRetiredBrokerApprovalInterrupt(
+  graphState: { tasks?: Array<Record<string, unknown>> } | undefined,
+): boolean {
+  return pendingGraphInterrupts(graphState).some((interrupt) =>
+    interrupt.value["type"] === "approval_ask" &&
+    isRetiredBrokerApprovalInterrupt(interrupt.value)
+  );
+}
+
 /** Resolve the exact pending prove-it interrupt named by its public challenge id. */
 export function requirePendingProveItInterrupt(
   graphState: { tasks?: Array<Record<string, unknown>> } | undefined,
@@ -659,14 +684,4 @@ export function requirePendingApprovalAskInterrupt(
     });
   }
   return matches[0]!;
-}
-
-/** Exact current checkpoint receipt, not a process-local pending registry. */
-export function requireGitHubApprovalEcho(pending: PendingGraphInterrupt, echo: { approvalId: string; digest: string; laneKey: string } | undefined,
-  laneKey: string | undefined, verb: string): void {
-  const review = parseGitHubPublishApproval(pending.value["github"]);
-  if (!review || !echo || (verb !== "once" && verb !== "deny") || pending.value["approvalId"] !== review.approvalId
-    || review.approvalId !== echo.approvalId || review.digest !== echo.digest || echo.laneKey !== laneKey) {
-    throw Object.assign(new Error("GitHub approval is stale"), { code: "approval_request_stale" });
-  }
 }

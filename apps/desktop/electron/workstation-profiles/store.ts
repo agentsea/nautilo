@@ -24,6 +24,7 @@ import {
   parseWorkstationProfile,
   type WorkstationProfile,
 } from "@nautilo/workstation-profiles";
+import { isDeepStrictEqual } from "node:util";
 import {
   createWorkstationProfileStorage,
   type WorkstationProfileStorage,
@@ -336,6 +337,90 @@ export class WorkstationProfileStore {
           `profile revision is ${stored.revision}, not the expected ${input.expectedRevision}`,
         );
       }
+      const next: WorkstationProfileStoreEnvelope = {
+        version: STORE_VERSION,
+        instanceId: this.instanceId,
+        revision: current.data.revision + 1,
+        profiles: current.data.profiles.map((candidate) =>
+          candidate.id === parsed.profile.id ? parsed.profile : candidate,
+        ),
+        updatedAt: now.toISOString(),
+      };
+      const written = await this.persist(next);
+      return written.ok
+        ? { ok: true, data: { profile: parsed.profile, revision: written.data.revision } }
+        : written;
+    });
+  }
+
+  /**
+   * Atomically replace a stored profile with an explicitly reviewed later
+   * revision. This is the narrow migration seam for a shipped profile that
+   * skipped an intermediate revision; ordinary edits continue to use
+   * {@link update} and its exact +1 rule.
+   */
+  async replaceReviewedRevision(input: {
+    profileId: string;
+    expectedRevision: number;
+    expectedProfile: WorkstationProfile;
+    profile: WorkstationProfile;
+  }): Promise<
+    WorkstationProfileStoreResult<{ profile: WorkstationProfile; revision: number }>
+  > {
+    return this.serialized(async () => {
+      const now = this.clock();
+      const parsed = parseWorkstationProfile(input.profile, { now });
+      if (!parsed.ok) {
+        return resultError("invalid_profile", `profile rejected: ${parsed.error.code}`);
+      }
+      const parsedExpected = parseWorkstationProfile(input.expectedProfile, { now });
+      if (!parsedExpected.ok) {
+        return resultError(
+          "invalid_profile",
+          `expected profile rejected: ${parsedExpected.error.code}`,
+        );
+      }
+      if (parsed.profile.id !== input.profileId) {
+        return resultError(
+          "profile_id_mismatch",
+          "replacement payload id must match the targeted profile id",
+        );
+      }
+      if (
+        typeof input.expectedRevision !== "number" ||
+        !Number.isSafeInteger(input.expectedRevision) ||
+        input.expectedRevision < 1 ||
+        parsedExpected.profile.id !== input.profileId ||
+        parsedExpected.profile.revision !== input.expectedRevision ||
+        parsed.profile.revision <= input.expectedRevision
+      ) {
+        return resultError(
+          "invalid_profile",
+          "reviewed replacement must advance a positive expected revision",
+        );
+      }
+
+      const current = await this.readEnvelope();
+      if (!current.ok) return current;
+      const stored = current.data.profiles.find(
+        (candidate) => candidate.id === input.profileId,
+      );
+      if (stored === undefined) {
+        return resultError("profile_not_found", "profile not found in this instance store");
+      }
+      if (stored.revision !== input.expectedRevision) {
+        return resultError(
+          "profile_revision_conflict",
+          `profile revision is ${stored.revision}, not the expected ${input.expectedRevision}`,
+        );
+      }
+      if (!isDeepStrictEqual(stored, parsedExpected.profile)) {
+        return resultError(
+          "profile_revision_conflict",
+          "stored profile no longer matches the reviewed profile",
+        );
+      }
+
       const next: WorkstationProfileStoreEnvelope = {
         version: STORE_VERSION,
         instanceId: this.instanceId,
