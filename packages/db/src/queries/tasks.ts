@@ -2082,6 +2082,7 @@ export async function listAwaitingTaskRunsForOwner(
           ? or(and(isNull(tasks.localExecutionDelegation), eq(tasks.ownerId, ownerId)),
             and(isNotNull(tasks.localExecutionDelegation), eq(tasks.requestorId, ownerId)))
           : eq(tasks.ownerId, ownerId),
+        eq(tasks.contentRepresentation, "ordinary"),
         eq(tasks.status, "awaiting"),
         eq(taskRuns.status, "awaiting"),
         excludesWriterReviewAwaitingPredicate(),
@@ -3389,6 +3390,49 @@ export type ParkedProtectedTaskHumanContinuation = Readonly<{
   acceptance: ProtectedTaskHumanContinuationAcceptance;
   authorizationRequestId: string;
   nextExecutionSegment: number;
+}>;
+
+export type ProtectedTaskPendingAttentionViewer = Readonly<{
+  userId: string;
+  humanActorId: string;
+}>;
+
+export type ProtectedTaskPendingAttentionCursor = Readonly<{
+  startedAt: Date;
+  taskRunId: string;
+}>;
+
+export type ProtectedTaskPendingAttentionInterrupt = Readonly<{
+  id: string;
+  kind: "approval" | "prove_it" | "identity";
+  requestId?: string;
+}>;
+
+/** Content-free durable identity of one Human-actionable protected park. */
+export type ProtectedTaskPendingAttentionCandidate = Readonly<{
+  occurrence: Readonly<{
+    task: ParkedProtectedTaskAdditionalAuthority["occurrence"]["task"] &
+      Readonly<{
+        targetRoomId: string | null;
+        cryptoMappingState: "verified";
+      }>;
+    run: ParkedProtectedTaskAdditionalAuthority["occurrence"]["run"];
+  }>;
+  priorJob: ParkedProtectedTaskAdditionalAuthority["priorJob"];
+  stableRoutingDigest: Uint8Array;
+  /** Only Human dialog kinds; await-reply is deliberately absent. */
+  pendingAttentionInterrupts: readonly ProtectedTaskPendingAttentionInterrupt[];
+  checkpointManifest: ProtectedTaskCheckpointManifestReceipt & Readonly<{
+    contract: "encrypted_langgraph_v1";
+    checkpointOrderedDigest: Uint8Array;
+    blobOrderedDigest: Uint8Array;
+    pendingWriteOrderedDigest: Uint8Array;
+  }>;
+}>;
+
+export type ProtectedTaskPendingAttentionPage = Readonly<{
+  candidates: readonly ProtectedTaskPendingAttentionCandidate[];
+  nextCursor: ProtectedTaskPendingAttentionCursor | null;
 }>;
 
 export type StartParkedProtectedTaskHumanRunSegmentInput = Readonly<{
@@ -5375,6 +5419,19 @@ const parkedTaskHumanContinuationJobProjection = Object.freeze({
     sql<unknown>`${jobs.metadata} -> ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY}`,
 });
 
+const protectedTaskPendingAttentionProjection = Object.freeze({
+  task: parkedTaskHumanContinuationTaskProjection,
+  run: parkedTaskAdditionalAuthorityRunProjection,
+  job: parkedTaskHumanContinuationJobProjection,
+  segment: getTableColumns(protectedTaskExecutionSegmentReceipts),
+  human: Object.freeze({
+    humanActorId: actors.id,
+    userId: actors.ownerId,
+    kind: actors.kind,
+    disabledAt: users.disabledAt,
+  }),
+});
+
 export type LockedParkedProtectedTaskAdditionalAuthorityTaskRow =
   ParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{
     preset: string;
@@ -5616,6 +5673,349 @@ async function readCurrentEnabledHumanActor(
     && rows[0]!.userId === acceptedBy.userId
     && rows[0]!.kind === "user"
     && rows[0]!.disabledAt === null;
+}
+
+type ProtectedTaskPendingAttentionRow = Readonly<{
+  task: ParkedProtectedTaskHumanContinuationTaskRow;
+  run: ParkedProtectedTaskAdditionalAuthorityRunRow;
+  job: ParkedProtectedTaskHumanContinuationJobRow;
+  segment: ProtectedTaskExecutionSegmentReceipt;
+  human: Readonly<{
+    humanActorId: string;
+    userId: string;
+    kind: string;
+    disabledAt: Date | null;
+  }>;
+}>;
+
+function protectedTaskPendingAttentionPredicate(
+  viewer: ProtectedTaskPendingAttentionViewer,
+) {
+  return and(
+    eq(actors.id, viewer.humanActorId),
+    eq(actors.ownerId, viewer.userId),
+    eq(actors.kind, "user"),
+    eq(users.id, viewer.userId),
+    isNull(users.disabledAt),
+    or(
+      and(isNull(tasks.localExecutionDelegation), eq(tasks.ownerId, viewer.userId)),
+      and(
+        isNotNull(tasks.localExecutionDelegation),
+        eq(tasks.requestorId, viewer.userId),
+      ),
+    ),
+    or(
+      and(eq(tasks.scheduleKind, "cron"), eq(tasks.status, "pending")),
+      and(notInArray(tasks.scheduleKind, ["cron"]), eq(tasks.status, "awaiting")),
+    ),
+    inArray(tasks.contentRepresentation, ["dual", "protected"]),
+    eq(tasks.cryptoMappingState, "verified"),
+    eq(taskRuns.status, "awaiting"),
+    eq(jobs.status, "completed"),
+    sql`${jobs.input} ->> 'kind' = 'protected_task_run_v1'`,
+    sql`NOT (${jobs.metadata} ? ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY})`,
+  );
+}
+
+function parseProtectedTaskPendingAttentionRow(
+  row: ProtectedTaskPendingAttentionRow,
+  viewer: ProtectedTaskPendingAttentionViewer,
+): ProtectedTaskPendingAttentionCandidate | null {
+  const { task, run, job, segment, human } = row;
+  if (human.humanActorId !== viewer.humanActorId
+    || human.userId !== viewer.userId
+    || human.kind !== "user"
+    || human.disabledAt !== null
+    || !CANONICAL_UUID.test(task.id)
+    || !CANONICAL_UUID.test(task.ownerId)
+    || !CANONICAL_UUID.test(task.requestorId)
+    || !CANONICAL_UUID.test(task.agentId)
+    || task.status !== (task.scheduleKind === "cron" ? "pending" : "awaiting")
+    || task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected"
+    || task.contentNamespaceId === null
+    || task.cryptoObjectId === null
+    || task.cryptoRequiredNamespaceFingerprint === null
+    || task.cryptoRequiredNamespaceFingerprint.length !== 32
+    || task.cryptoMappingState !== "verified"
+    || task.contentPristine !== true
+    || run.taskId !== task.id
+    || run.jobId !== job.id
+    || run.status !== "awaiting"
+    || run.pristine !== true
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.status !== "completed"
+    || job.startedAt === null
+    || job.completedAt === null
+    || job.pristine !== true
+    || !isRecord(job.reference)
+    || !isRecord(job.parkReceipt)
+    || job.acceptanceReceipt !== null
+    || segment === null) return null;
+
+  const delegation = task.localExecutionDelegation === null
+    || task.localExecutionDelegation === undefined
+    ? null
+    : parseLocalExecutionDelegation(task.localExecutionDelegation);
+  const recipient = task.localExecutionDelegation === null
+    || task.localExecutionDelegation === undefined
+    ? task.ownerId
+    : delegation !== null
+        && delegation.humanUserId === task.requestorId
+        && delegation.agentId === task.agentId
+      ? delegation.humanUserId
+      : null;
+  if (recipient !== viewer.userId) return null;
+
+  const reference = job.reference as ProtectedTaskDurableJobReference;
+  if (!exactProtectedTaskJobReference(job.reference, reference)
+    || reference.taskId !== task.id
+    || reference.taskRunId !== run.id
+    || reference.inputObjectId !== task.cryptoObjectId
+    || reference.resultObjectId !== protectedTaskRunResultObjectId(task.id, run.id)
+    || reference.executionSegment < 1
+    || reference.executionSegment === Number.MAX_SAFE_INTEGER) return null;
+
+  const rawPark = job.parkReceipt;
+  const parkedAtText = rawPark["parkedAt"];
+  const parkedAt = typeof parkedAtText === "string"
+    ? new Date(parkedAtText)
+    : new Date(Number.NaN);
+  const stableRoutingDigest = decodeRoutingDigest(rawPark["stableRoutingDigest"]);
+  if (!Number.isFinite(parkedAt.getTime())
+    || parkedAt.toISOString() !== parkedAtText
+    || job.completedAt.getTime() !== parkedAt.getTime()
+    || !Number.isSafeInteger(rawPark["generation"])
+    || (rawPark["generation"] as number) < 0
+    || stableRoutingDigest === null) return null;
+
+  let interrupts: readonly ProtectedTaskRunInterruptCoordinate[];
+  try {
+    interrupts = canonicalInterruptCoordinates(
+      rawPark["interrupts"] as readonly ProtectedTaskRunInterruptCoordinate[],
+    );
+  } catch {
+    return null;
+  }
+  const park: ProtectedTaskRunParkReceipt = Object.freeze({
+    version: 1,
+    taskId: task.id,
+    taskRunId: run.id,
+    jobId: job.id,
+    graphThreadId: run.graphThreadId,
+    generation: rawPark["generation"] as number,
+    executionSegment: reference.executionSegment,
+    interrupts,
+    parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: rawPark["stableRoutingDigest"] as string,
+  });
+  if (!exactParkReceipt(rawPark, park)
+    || segment.taskRunId !== run.id
+    || segment.jobId !== job.id
+    || segment.executionSegment !== reference.executionSegment
+    || segment.route !== "native_langgraph_v1"
+    || segment.transcriptContract !== "protected_message_associations_v1"
+    || !Number.isSafeInteger(segment.expectedTranscriptAssociationCount)
+    || segment.expectedTranscriptAssociationCount < 0
+    || !(segment.transcriptAssociationDigest instanceof Uint8Array)
+    || segment.transcriptAssociationDigest.length !== 32
+    || segment.checkpointContract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(segment.expectedCheckpointCount)
+    || segment.expectedCheckpointCount < 1
+    || !(segment.checkpointDigest instanceof Uint8Array)
+    || segment.checkpointDigest.length !== 32
+    || !Number.isSafeInteger(segment.expectedCheckpointBlobCount)
+    || segment.expectedCheckpointBlobCount < 0
+    || !(segment.checkpointBlobDigest instanceof Uint8Array)
+    || segment.checkpointBlobDigest.length !== 32
+    || !Number.isSafeInteger(segment.expectedPendingWriteCount)
+    || segment.expectedPendingWriteCount < 0
+    || !(segment.pendingWriteDigest instanceof Uint8Array)
+    || segment.pendingWriteDigest.length !== 32
+    || !(segment.sealedAt instanceof Date)
+    || segment.sealedAt.getTime() !== parkedAt.getTime()) return null;
+
+  const pendingAttentionInterrupts: ProtectedTaskPendingAttentionInterrupt[] = [];
+  for (const interrupt of interrupts) {
+    if (interrupt.kind === "approval" && interrupt.requestId !== undefined) {
+      pendingAttentionInterrupts.push(Object.freeze({
+        id: interrupt.id,
+        kind: "approval",
+        requestId: interrupt.requestId,
+      }));
+    } else if (interrupt.kind === "prove_it"
+      && interrupt.requestId === undefined) {
+      pendingAttentionInterrupts.push(Object.freeze({
+        id: interrupt.id,
+        kind: "prove_it",
+      }));
+    } else if (interrupt.kind === "identity") {
+      pendingAttentionInterrupts.push(Object.freeze({
+        id: interrupt.id,
+        kind: "identity",
+        ...(interrupt.requestId === undefined
+          ? {}
+          : { requestId: interrupt.requestId }),
+      }));
+    }
+  }
+  if (pendingAttentionInterrupts.length === 0) return null;
+
+  return Object.freeze({
+    occurrence: Object.freeze({
+      task: Object.freeze({
+        id: task.id,
+        ownerId: task.ownerId,
+        requestorId: task.requestorId,
+        agentId: task.agentId,
+        callingRoomId: task.callingRoomId,
+        scheduleKind: task.scheduleKind,
+        status: task.status,
+        contentRepresentation: task.contentRepresentation,
+        contentNamespaceId: task.contentNamespaceId,
+        contentRevision: task.contentRevision,
+        cryptoObjectId: task.cryptoObjectId,
+        cryptoAccessRevision: task.cryptoAccessRevision,
+        cryptoRequiredNamespaceFingerprint:
+          task.cryptoRequiredNamespaceFingerprint.slice(),
+        targetRoomId: task.targetRoomId,
+        cryptoMappingState: "verified" as const,
+      }),
+      run: Object.freeze({
+        id: run.id,
+        taskId: run.taskId,
+        jobId: job.id,
+        graphThreadId: run.graphThreadId,
+        status: "awaiting" as const,
+        startedAt: new Date(run.startedAt.getTime()),
+      }),
+    }),
+    priorJob: Object.freeze({
+      id: job.id,
+      generation: park.generation,
+      parkedAt: new Date(parkedAt.getTime()),
+      interrupts: copyProtectedTaskInterrupts(interrupts),
+      reference: Object.freeze({ ...reference }),
+    }),
+    stableRoutingDigest: stableRoutingDigest.slice(),
+    pendingAttentionInterrupts: Object.freeze(pendingAttentionInterrupts),
+    checkpointManifest: Object.freeze({
+      contract: "encrypted_langgraph_v1" as const,
+      expectedCheckpointCount: segment.expectedCheckpointCount,
+      checkpointOrderedDigest: segment.checkpointDigest.slice(),
+      expectedBlobCount: segment.expectedCheckpointBlobCount,
+      blobOrderedDigest: segment.checkpointBlobDigest.slice(),
+      expectedPendingWriteCount: segment.expectedPendingWriteCount,
+      pendingWriteOrderedDigest: segment.pendingWriteDigest.slice(),
+    }),
+  });
+}
+
+function assertProtectedTaskPendingAttentionViewer(
+  viewer: ProtectedTaskPendingAttentionViewer,
+): void {
+  if (!CANONICAL_UUID.test(viewer.userId)
+    || !CANONICAL_UUID.test(viewer.humanActorId)) {
+    throw new TypeError("Protected Task pending-attention viewer is malformed");
+  }
+}
+
+/** Page active content-free Human dialog coordinates in stable Run order. */
+export async function listProtectedTaskPendingAttentionCandidates(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{
+    viewer: ProtectedTaskPendingAttentionViewer;
+    limit: number;
+    after?: ProtectedTaskPendingAttentionCursor;
+  }>,
+): Promise<ProtectedTaskPendingAttentionPage> {
+  assertProtectedTaskPendingAttentionViewer(input.viewer);
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1) {
+    throw new TypeError("Protected Task pending-attention limit is malformed");
+  }
+  if (input.after !== undefined
+    && (!(input.after.startedAt instanceof Date)
+      || !Number.isFinite(input.after.startedAt.getTime())
+      || !CANONICAL_UUID.test(input.after.taskRunId))) {
+    throw new TypeError("Protected Task pending-attention cursor is malformed");
+  }
+  const rows = await db.select(protectedTaskPendingAttentionProjection)
+    .from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .innerJoin(protectedTaskExecutionSegmentReceipts, and(
+      eq(protectedTaskExecutionSegmentReceipts.taskRunId, taskRuns.id),
+      eq(protectedTaskExecutionSegmentReceipts.jobId, jobs.id),
+    ))
+    .innerJoin(actors, eq(actors.id, input.viewer.humanActorId))
+    .innerJoin(users, eq(users.id, actors.ownerId))
+    .where(and(
+      protectedTaskPendingAttentionPredicate(input.viewer),
+      ...(input.after === undefined ? [] : [or(
+        gt(taskRuns.startedAt, input.after.startedAt),
+        and(
+          eq(taskRuns.startedAt, input.after.startedAt),
+          gt(taskRuns.id, input.after.taskRunId),
+        ),
+      )]),
+    ))
+    .orderBy(asc(taskRuns.startedAt), asc(taskRuns.id))
+    .limit(input.limit);
+  const candidates = rows.flatMap(row => {
+    const parsed = parseProtectedTaskPendingAttentionRow(
+      row as ProtectedTaskPendingAttentionRow,
+      input.viewer,
+    );
+    return parsed === null ? [] : [parsed];
+  });
+  const last = rows.length === input.limit ? rows.at(-1)?.run : undefined;
+  return Object.freeze({
+    candidates: Object.freeze(candidates),
+    nextCursor: last === undefined ? null : Object.freeze({
+      startedAt: new Date(last.startedAt.getTime()),
+      taskRunId: last.id,
+    }),
+  });
+}
+
+/** Re-read one exact Task/Run pair under the same discovery predicates. */
+export async function readProtectedTaskPendingAttentionCandidate(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{
+    viewer: ProtectedTaskPendingAttentionViewer;
+    taskId: string;
+    taskRunId: string;
+  }>,
+): Promise<ProtectedTaskPendingAttentionCandidate | null> {
+  assertProtectedTaskPendingAttentionViewer(input.viewer);
+  if (!CANONICAL_UUID.test(input.taskId) || !CANONICAL_UUID.test(input.taskRunId)) {
+    throw new TypeError("Protected Task pending-attention identity is malformed");
+  }
+  const rows = await db.select(protectedTaskPendingAttentionProjection)
+    .from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .innerJoin(jobs, eq(jobs.id, taskRuns.jobId))
+    .innerJoin(protectedTaskExecutionSegmentReceipts, and(
+      eq(protectedTaskExecutionSegmentReceipts.taskRunId, taskRuns.id),
+      eq(protectedTaskExecutionSegmentReceipts.jobId, jobs.id),
+    ))
+    .innerJoin(actors, eq(actors.id, input.viewer.humanActorId))
+    .innerJoin(users, eq(users.id, actors.ownerId))
+    .where(and(
+      protectedTaskPendingAttentionPredicate(input.viewer),
+      eq(tasks.id, input.taskId),
+      eq(taskRuns.id, input.taskRunId),
+    ))
+    .limit(2);
+  return rows.length === 1
+    ? parseProtectedTaskPendingAttentionRow(
+        rows[0] as ProtectedTaskPendingAttentionRow,
+        input.viewer,
+      )
+    : null;
 }
 
 async function readAcceptedParkedProtectedTaskHumanCandidate(

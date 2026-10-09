@@ -5,6 +5,8 @@ import postgres from "postgres";
 
 import {
   agents,
+  actors,
+  acceptProtectedTaskHumanContinuation,
   createDirectDb,
   cryptoObjects,
   eq,
@@ -17,14 +19,18 @@ import {
   protectedTaskAdditionalAuthorityContinuationFingerprint,
   protectedTaskSemanticAuthorityRequirementsDigest,
   protectedTaskExecutionSegmentReceipts,
+  protectedTaskHumanContinuationAcceptanceId,
   persistJobInTransaction,
+  discoverAcceptedParkedProtectedTaskHumanContinuation,
   readParkedProtectedTaskAdditionalAuthority,
   recoverUnstartedParkedProtectedTaskClaim,
   recoverUnstartedParkedProtectedTaskRun,
   resolveAppDatabaseConnectionString,
   sealAndParkProtectedTaskRun,
+  sealAndParkProtectedTaskHumanRun,
   settleCancelledProtectedTaskRunAuthorization,
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
+  startParkedProtectedTaskHumanRunSegment,
   sql,
   taskDefinitionCryptoRevisions,
   taskRuns,
@@ -32,7 +38,10 @@ import {
   transitionTaskLifecycleTerminal,
   users,
   type ProtectedTaskDurableJobReference,
+  type ProtectedTaskHumanContinuationAcceptance,
+  type SealAndParkProtectedTaskHumanRunInput,
   type SealAndParkProtectedTaskRunInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "@nautilo/db";
 import { protectedTaskRunResultObjectId } from
@@ -45,6 +54,7 @@ type ProductDb = ReturnType<typeof createProductDb>;
 
 type Fixture = Readonly<{
   userId: string;
+  humanActorId: string;
   agentId: string;
   namespaceId: string;
   taskId: string;
@@ -93,6 +103,7 @@ function fixtureIds(): Fixture {
   const cryptoObjectId = `task-definition:v1:${digest}`;
   return Object.freeze({
     userId: randomUUID(),
+    humanActorId: randomUUID(),
     agentId: randomUUID(),
     namespaceId: randomUUID(),
     taskId,
@@ -130,6 +141,7 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
     fixture.cryptoObjectId,
   ));
   await admin.delete(namespaces).where(eq(namespaces.id, fixture.namespaceId));
+  await admin.delete(actors).where(eq(actors.id, fixture.humanActorId));
   await admin.delete(users).where(eq(users.id, fixture.userId));
   await admin.delete(agents).where(eq(agents.id, fixture.agentId));
 }
@@ -144,6 +156,12 @@ async function createFixture(options: Readonly<{
       id: fixture.userId,
       name: "Protected Task atomic park fixture",
       email: `task-atomic-park-${fixture.userId}@test.local`,
+    });
+    await admin.insert(actors).values({
+      id: fixture.humanActorId,
+      ownerId: fixture.userId,
+      kind: "user",
+      displayName: "Protected Task Human continuation fixture",
     });
     await admin.insert(agents).values({
       id: fixture.agentId,
@@ -338,6 +356,131 @@ function additionalAuthorityStartInput(
       semanticAuthorityRequirements:
         parked.continuation.semanticAuthorityRequirements,
     },
+  };
+}
+
+const humanInterrupt = Object.freeze({
+  id: "interrupt:approval:1",
+  kind: "approval" as const,
+  requestId: "approval:1",
+});
+
+function humanParkInput(fixture: Fixture): SealAndParkProtectedTaskHumanRunInput {
+  const base = input(fixture);
+  return {
+    park: { ...base.park, interrupts: [humanInterrupt] },
+    segment: base.segment,
+    stableRoutingDigest: new Uint8Array(32).fill(0x54),
+  };
+}
+
+function humanAcceptance(
+  fixture: Fixture,
+  overrides: Partial<ProtectedTaskHumanContinuationAcceptance> = {},
+): ProtectedTaskHumanContinuationAcceptance {
+  const acceptedBy = overrides.acceptedBy ?? {
+    userId: fixture.userId,
+    humanActorId: fixture.humanActorId,
+  };
+  const interrupt = overrides.interrupt ?? humanInterrupt;
+  const response = overrides.response ?? {
+    kind: "approval" as const,
+    verb: "once" as const,
+  };
+  const acceptedAt = overrides.acceptedAt
+    ?? new Date(humanParkInput(fixture).park.parkedAt.getTime() + 1);
+  return {
+    acceptanceId: overrides.acceptanceId
+      ?? protectedTaskHumanContinuationAcceptanceId({
+        taskId: fixture.taskId,
+        taskRunId: fixture.taskRunId,
+        priorJobId: fixture.jobId,
+        executionSegment: 1,
+        acceptedBy,
+        interrupt,
+        response,
+      }),
+    acceptedBy,
+    interrupt,
+    response,
+    acceptedAt,
+  };
+}
+
+function humanAcceptanceInput(
+  fixture: Fixture,
+  acceptance = humanAcceptance(fixture),
+) {
+  const parked = humanParkInput(fixture);
+  return {
+    taskId: fixture.taskId,
+    taskRunId: fixture.taskRunId,
+    graphThreadId: fixture.graphThreadId,
+    priorJobId: fixture.jobId,
+    generation: parked.park.generation,
+    executionSegment: parked.park.executionSegment,
+    interrupts: parked.park.interrupts,
+    parkedAt: parked.park.parkedAt,
+    stableRoutingDigest: parked.stableRoutingDigest,
+    priorJobReference: fixture.jobReference,
+    acceptance,
+  } as const;
+}
+
+function humanReference(
+  fixture: Fixture,
+  acceptance = humanAcceptance(fixture),
+): ProtectedTaskDurableJobReference {
+  return Object.freeze({
+    ...fixture.jobReference,
+    authorizationRequestId: acceptance.acceptanceId,
+    executionSegment: 2,
+    resumeAcceptanceId: acceptance.acceptanceId,
+  });
+}
+
+async function insertHumanContinuationJob(
+  fixture: Fixture,
+  jobId = fixture.nextJobId,
+  acceptance = humanAcceptance(fixture),
+): Promise<void> {
+  await admin.insert(jobs).values({
+    id: jobId,
+    ownerId: fixture.userId,
+    requestorId: fixture.userId,
+    laneKey: `task:${fixture.taskId}`,
+    type: "foreground",
+    status: "queued",
+    input: humanReference(fixture, acceptance),
+  });
+}
+
+function humanStartInput(
+  fixture: Fixture,
+  jobId = fixture.nextJobId,
+  acceptance = humanAcceptance(fixture),
+): StartParkedProtectedTaskHumanRunSegmentInput {
+  const parked = humanParkInput(fixture);
+  return {
+    taskId: fixture.taskId,
+    taskRunId: fixture.taskRunId,
+    graphThreadId: fixture.graphThreadId,
+    priorJobId: fixture.jobId,
+    jobId,
+    generation: parked.park.generation,
+    interrupts: parked.park.interrupts,
+    parkedAt: parked.park.parkedAt,
+    stableRoutingDigest: parked.stableRoutingDigest,
+    contentRepresentation: "protected",
+    contentNamespaceId: fixture.namespaceId,
+    contentRevision: 1,
+    cryptoObjectId: fixture.cryptoObjectId,
+    cryptoAccessRevision: 0,
+    cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(0x41),
+    checkpointManifest: parked.segment.checkpoint,
+    priorJobReference: fixture.jobReference,
+    jobReference: humanReference(fixture, acceptance),
+    acceptance,
   };
 }
 
@@ -597,6 +740,176 @@ test("product-role continuation start has one durable next-Job winner", async ()
         protectedTaskContinuationReceipts.taskRunId,
         fixture.taskRunId,
       ))).toHaveLength(1);
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("Human acceptance binds the current actor and starts only one next Job", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskHumanRun(
+      productA,
+      humanParkInput(fixture),
+    )).toEqual({ status: "parked" });
+
+    const wrongActor = humanAcceptance(fixture, {
+      acceptedBy: { userId: fixture.userId, humanActorId: randomUUID() },
+    });
+    expect(await acceptProtectedTaskHumanContinuation(
+      productA,
+      humanAcceptanceInput(fixture, wrongActor),
+    )).toEqual({ status: "rejected", reason: "stale" });
+
+    const acceptance = humanAcceptance(fixture);
+    expect(await acceptProtectedTaskHumanContinuation(
+      productA,
+      humanAcceptanceInput(fixture, acceptance),
+    )).toEqual({ status: "accepted", acceptance });
+    const retry = humanAcceptance(fixture, {
+      acceptedAt: new Date(acceptance.acceptedAt.getTime() + 1),
+    });
+    expect(await acceptProtectedTaskHumanContinuation(
+      productA,
+      humanAcceptanceInput(fixture, retry),
+    )).toEqual({ status: "exact_replay", acceptance });
+    expect(await discoverAcceptedParkedProtectedTaskHumanContinuation(
+      productA,
+      { taskRunId: fixture.taskRunId },
+    )).toMatchObject({
+      acceptance: {
+        acceptanceId: acceptance.acceptanceId,
+        acceptedBy: acceptance.acceptedBy,
+        response: acceptance.response,
+      },
+      nextExecutionSegment: 2,
+    });
+
+    await insertHumanContinuationJob(fixture, fixture.nextJobId, acceptance);
+    await insertHumanContinuationJob(
+      fixture,
+      fixture.alternateNextJobId,
+      acceptance,
+    );
+    const candidates = [
+      humanStartInput(fixture, fixture.nextJobId, acceptance),
+      humanStartInput(fixture, fixture.alternateNextJobId, acceptance),
+    ] as const;
+    const results = await Promise.all([
+      startParkedProtectedTaskHumanRunSegment(productA, candidates[0]),
+      startParkedProtectedTaskHumanRunSegment(productB, candidates[1]),
+    ]);
+    expect(results.filter(result => result.status === "started")).toHaveLength(1);
+    expect(results.filter(result => result.status === "rejected"))
+      .toEqual([{ status: "rejected", reason: "conflict" }]);
+    const winner = results.findIndex(result => result.status === "started");
+    expect(await startParkedProtectedTaskHumanRunSegment(
+      productA,
+      candidates[winner]!,
+    )).toEqual({ status: "exact_replay" });
+    const [persistedRun] = await productA.select({
+      status: taskRuns.status,
+      jobId: taskRuns.jobId,
+    }).from(taskRuns).where(eq(taskRuns.id, fixture.taskRunId));
+    expect(persistedRun).toEqual({
+      status: "running",
+      jobId: candidates[winner]!.jobId,
+    });
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("Human recovery restores only a consumed acceptance for an unstarted Job", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskHumanRun(
+      productA,
+      humanParkInput(fixture),
+    )).toEqual({ status: "parked" });
+    const acceptance = humanAcceptance(fixture);
+    expect(await acceptProtectedTaskHumanContinuation(
+      productA,
+      humanAcceptanceInput(fixture, acceptance),
+    )).toMatchObject({ status: "accepted" });
+    await insertHumanContinuationJob(fixture, fixture.nextJobId, acceptance);
+    const start = humanStartInput(fixture, fixture.nextJobId, acceptance);
+    expect(await startParkedProtectedTaskHumanRunSegment(productA, start))
+      .toEqual({ status: "started" });
+
+    let deferrals = 0;
+    const recoveredAt = new Date(start.parkedAt.getTime() + 2);
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      productA,
+      start,
+      recoveredAt,
+      async () => {
+        deferrals += 1;
+        const [nextJob] = await productB.select({
+          status: jobs.status,
+          startedAt: jobs.startedAt,
+        }).from(jobs).where(eq(jobs.id, fixture.nextJobId));
+        expect(nextJob).toEqual({ status: "cancelled", startedAt: null });
+        return true;
+      },
+    )).toEqual({ status: "recovered" });
+    expect(deferrals).toBe(1);
+    const [priorJob] = await productA.select({ metadata: jobs.metadata })
+      .from(jobs).where(eq(jobs.id, fixture.jobId));
+    expect(priorJob?.metadata[
+      "nautilo.protectedTaskHumanContinuationAcceptance.v1"
+    ]).toMatchObject({
+      acceptanceId: acceptance.acceptanceId,
+    });
+    expect(priorJob?.metadata[
+      "nautilo.protectedTaskHumanContinuationAcceptance.v1"
+    ]).not.toHaveProperty("consumedByJobId");
+    const [run] = await productA.select({
+      status: taskRuns.status,
+      jobId: taskRuns.jobId,
+    }).from(taskRuns).where(eq(taskRuns.id, fixture.taskRunId));
+    expect(run).toEqual({ status: "awaiting", jobId: fixture.jobId });
+  } finally {
+    await cleanupFixture(fixture);
+  }
+});
+
+test("Human recovery cannot reset a continuation after its Job started", async () => {
+  const fixture = await createFixture();
+  try {
+    expect(await sealAndParkProtectedTaskHumanRun(
+      productA,
+      humanParkInput(fixture),
+    )).toEqual({ status: "parked" });
+    const acceptance = humanAcceptance(fixture);
+    expect(await acceptProtectedTaskHumanContinuation(
+      productA,
+      humanAcceptanceInput(fixture, acceptance),
+    )).toMatchObject({ status: "accepted" });
+    await insertHumanContinuationJob(fixture, fixture.nextJobId, acceptance);
+    const start = humanStartInput(fixture, fixture.nextJobId, acceptance);
+    expect(await startParkedProtectedTaskHumanRunSegment(productA, start))
+      .toEqual({ status: "started" });
+    await admin.update(jobs).set({
+      status: "running",
+      startedAt: new Date(start.parkedAt.getTime() + 1),
+    }).where(eq(jobs.id, fixture.nextJobId));
+    let deferrals = 0;
+    expect(await recoverUnstartedParkedProtectedTaskRun(
+      productA,
+      start,
+      new Date(start.parkedAt.getTime() + 2),
+      () => {
+        deferrals += 1;
+        return Promise.resolve(true);
+      },
+    )).toEqual({ status: "stale" });
+    expect(deferrals).toBe(0);
+    const [run] = await productA.select({
+      status: taskRuns.status,
+      jobId: taskRuns.jobId,
+    }).from(taskRuns).where(eq(taskRuns.id, fixture.taskRunId));
+    expect(run).toEqual({ status: "running", jobId: fixture.nextJobId });
   } finally {
     await cleanupFixture(fixture);
   }

@@ -29,6 +29,8 @@ import { deriveTaskContentCryptoObjectIdV1 } from "../../src/task/task-content-r
 import type { TaskRuntimeCheckpointCellCrypto } from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 import {
   createNativeTaskRuntimeCheckpointCellCrypto,
+  createHumanTaskCheckpointCellReader,
+  type HumanTaskCheckpointReadInput,
   type NativeTaskRuntimeCheckpointCellCryptoInput,
 } from "../../src/server/task/native-task-runtime-checkpoint-cell-crypto.ts";
 
@@ -274,6 +276,11 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
     run,
     stages,
     checks: () => productChecks,
+    reader: (overrides: Partial<HumanTaskCheckpointReadInput> = {}) => createHumanTaskCheckpointCellReader({
+      ...base, domains: [domain], deadlineAt: NOW + 1000,
+      identity: { ...base.identity, expectedAccessRevision: current.namespaceAccessRevision },
+      ...overrides,
+    }),
     rotate(nextAccessRevision = 0) {
       // Device-authority rotation advances the Namespace key without changing
       // product accessRevision (the concrete native replacement plan allows it).
@@ -613,5 +620,48 @@ describe("native Task checkpoint cell crypto", () => {
         domains: [{ ...value.base.domains[0]!, domainKey: bytes(9) }],
       }),
     );
+  });
+});
+
+
+describe("Human Task checkpoint reader", () => {
+  test("opens Runtime-written cells after key rotation without execution evidence", async () => {
+    const f = fixture(); const ciphertext = await f.run(seal);
+    f.rotate();
+    const plaintextRead = await open(f.reader(), ciphertext);
+    try { expect(plaintextRead).toEqual(plaintext); } finally { plaintextRead.fill(0); }
+  });
+
+  test("rejects write/delete/cleanup before reading keys", async () => {
+    const f = fixture(); const reader = f.reader();
+    for (const operation of ["write", "delete", "cleanup"] as const) {
+      expect(() => reader.crypto.executeAuthorizedOperation({
+        operation, scope: reader.scope, execute: () => Promise.resolve(),
+      })).toThrow("cannot execute or mutate");
+    }
+    expect(f.stages).toEqual([]);
+  });
+
+  test("rejects expired, cancelled, stale and substituted read authority", async () => {
+    const f = fixture(); const ciphertext = await f.run(seal);
+    await fails(open(f.reader({ deadlineAt: NOW }), ciphertext));
+    const cancelled = new AbortController(); cancelled.abort();
+    await fails(open(f.reader({ signal: cancelled.signal }), ciphertext));
+    await fails(open(f.reader({ assertCurrentTaskAuthority: () => { throw new Error("stale"); } }), ciphertext));
+    await fails(open(f.reader({ identity: { ...f.base.identity, taskRunId: "other-run" } }), ciphertext));
+    const reader = f.reader();
+    expect(() => reader.crypto.executeAuthorizedOperation({ operation: "read",
+      scope: { ...reader.scope, logicalThreadId: "other-thread" }, execute: () => Promise.resolve(),
+    })).toThrow("cannot execute or mutate");
+  });
+
+  test("checks authority again before returning decrypted cells", async () => {
+    const f = fixture(); const ciphertext = await f.run(seal);
+    let checked = 0;
+    await fails(open(f.reader({ assertCurrentTaskAuthority: () => {
+      if (++checked > 1) throw new Error("authority changed");
+      return Promise.resolve();
+    } }), ciphertext));
+    expect(checked).toBeGreaterThan(1);
   });
 });

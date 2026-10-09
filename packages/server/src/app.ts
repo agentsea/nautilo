@@ -1,3 +1,4 @@
+import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
 import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
@@ -996,6 +997,7 @@ export async function createApp(options?: CreateAppOptions) {
   });
   const liveShadowMessageComposition =
     createProductionLiveShadowMessageComposition({
+      taskContentOwner: () => dormantTaskContentOwner,
       wakeForegroundMemoryEffectRecovery: () =>
         foregroundMemoryEffectRecovery.wake(),
     });
@@ -1007,6 +1009,7 @@ export async function createApp(options?: CreateAppOptions) {
     Date.now,
     (clientActionSessionId) => {
       liveShadowMessageComposition.pendingAttention?.cancelForClientSession(clientActionSessionId);
+      liveShadowMessageComposition.taskPendingAttention?.cancelForClientSession(clientActionSessionId);
       liveShadowMessageComposition.recipients.deleteClientSession(
         clientActionSessionId,
       );
@@ -2367,6 +2370,12 @@ export async function createApp(options?: CreateAppOptions) {
       clientSessions: {
         inspect: (input) => clientActionBindingRegistry.inspectLiveSession(input),
       },
+    });
+  }
+  if (liveShadowMessageComposition.taskPendingAttention !== undefined) {
+    protectedTaskPendingAttentionRoutes(app, {
+      service: liveShadowMessageComposition.taskPendingAttention,
+      clientSessions: { inspect: value => clientActionBindingRegistry.inspectLiveSession(value) },
     });
   }
   messagesReadStateRoutes(app);

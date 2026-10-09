@@ -1,3 +1,5 @@
+import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import { createProtectedTaskPendingAttention } from "./protected-task-pending-attention";
 import {
   and,
   conversationSharedAgentShadowExecutions,
@@ -173,6 +175,7 @@ export interface ProductionLiveShadowMessageComposition
   readonly protectedEdit?: ProtectedHumanMessageEditRouteService;
   readonly recipients: LiveShadowRecipientRegistry;
   readonly pendingAttention?: ReturnType<typeof createProductionForegroundPendingAttention>;
+  readonly taskPendingAttention?: ReturnType<typeof createProtectedTaskPendingAttention> | undefined;
   admitPrepared(input: LiveShadowHumanPreparedAttempt):
     Promise<LiveShadowHumanAdmissionResult>;
   admitHumanPeer(input: HumanPeerLiveShadowPreparedAttempt & Readonly<{
@@ -569,6 +572,7 @@ export async function notifyProtectedTaskReplyAfterSharedAgentPublication(
 }
 
 export function createProductionLiveShadowMessageComposition(input: Readonly<{
+  taskContentOwner?: () => EncryptionDataOperationOwner;
   wakeForegroundMemoryEffectRecovery: () => void;
   resolveReadableNamespaces?: ResolveLiveShadowReadableNamespaces;
   loadRuntimePolicy?: () => Promise<StrictShadowEnforcementPolicy>;
@@ -603,6 +607,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
   };
   const recipients = new LiveShadowRecipientRegistry();
   let pendingAttention: ReturnType<typeof createProductionForegroundPendingAttention> | undefined;
+  let taskPendingAttention: ReturnType<typeof createProtectedTaskPendingAttention> | undefined;
   const foregroundAuthorizations =
     new LiveShadowForegroundAuthorizationSessions();
   const crypto = new LatticeCrypto();
@@ -4441,6 +4446,13 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       }
       return agentFallback(input.operationId, "plan_invalid");
     },
+    get taskPendingAttention() {
+      if (input.taskContentOwner === undefined) return undefined;
+      return taskPendingAttention ??= createProtectedTaskPendingAttention({
+        db: getServerDirectDb(), restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+        serverScope: serverId, owner: input.taskContentOwner(), recipients,
+      });
+    },
     get pendingAttention() {
       return pendingAttention ??= createProductionForegroundPendingAttention(recipients);
     },
@@ -4451,6 +4463,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         request.authority.humanActorId,
       );
       pendingAttention?.cancelForHuman(request.authority.humanActorId);
+      taskPendingAttention?.cancelForHuman(request.authority.humanActorId);
     },
     reconcileLifecycle: async (request: Readonly<{
       now?: number;
@@ -4500,6 +4513,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         if (rejected?.status === "rejected") throw rejected.reason;
       } finally {
         pendingAttention?.close();
+        taskPendingAttention?.close();
         foregroundAuthorizations.close();
         for (const waiter of sharedAgentAuthorizationWaiters.values()) {
           clearTimeout(waiter.timer);

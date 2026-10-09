@@ -8,6 +8,7 @@ import {
   humanId,
   withOpenedDomainForegroundAuthorization,
   type DomainForegroundAuthorityEntry,
+  type DomainForegroundSecretEntry,
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
@@ -36,11 +37,19 @@ import {
   createForegroundEntityCheckpointAuthorization,
 } from "./foreground-agent-entity-crypto-gateway";
 
-export type ForegroundCheckpointReadBinding = Readonly<{
+export type CheckpointReadBinding = Readonly<{
   userId: string;
   humanActorId: string;
   clientDeviceId: string;
   clientActionSessionId: string;
+}>;
+
+export type ForegroundCheckpointReadBinding = CheckpointReadBinding;
+
+export type CheckpointReadLocator = Readonly<{
+  checkpointThreadId: string;
+  topLevelRoomId: string;
+  namespaceId: string;
 }>;
 
 export type ForegroundCheckpointReadLocator = Readonly<{
@@ -73,23 +82,41 @@ export type ForegroundCheckpointReadSnapshot = Readonly<{
   domains: readonly DomainForegroundAuthorityEntry[];
 }>;
 
+/** Owned public authority bytes; the service wipes each returned snapshot. */
+export type CheckpointReadSnapshot = Readonly<{
+  policyRevision: number;
+  committerDeviceId: string;
+  committerDeviceSigningKeyGeneration: number;
+  committerDeviceSigningPublicKey: Uint8Array;
+  hostAuthorizationRevision: number;
+  namespaceAuthority: Omit<DomainForegroundNamespaceAuthorityInspectionV2, "status">;
+  domains: readonly DomainForegroundAuthorityEntry[];
+}>;
+
 type CheckpointAuthorization = ReturnType<typeof createForegroundEntityCheckpointAuthorization>;
 type Unavailable = Readonly<{ status: "unavailable" }>;
 const unavailable: Unavailable = Object.freeze({ status: "unavailable" });
 
-type Challenge = Readonly<{
-  binding: ForegroundCheckpointReadBinding;
-  locator: ForegroundCheckpointReadLocator;
-  snapshot: ForegroundCheckpointReadSnapshot;
+class CheckpointReadUnavailable extends Error {
+  override readonly name = "CheckpointReadUnavailable";
+}
+
+type Challenge<
+  Locator extends CheckpointReadLocator,
+  Snapshot extends CheckpointReadSnapshot,
+> = Readonly<{
+  binding: CheckpointReadBinding;
+  locator: Locator;
+  snapshot: Snapshot;
   planBytes: Uint8Array;
   issuedAt: number;
   deadlineAt: number;
   recipientKeyId: string;
 }>;
 
-function wipeSnapshot(snapshot: ForegroundCheckpointReadSnapshot): void {
+function wipeSnapshot(snapshot: CheckpointReadSnapshot): void {
   snapshot.committerDeviceSigningPublicKey.fill(0);
-  for (const value of Object.values(snapshot.room)) {
+  for (const value of Object.values(snapshot.namespaceAuthority)) {
     if (value instanceof Uint8Array) value.fill(0);
   }
   for (const domain of snapshot.domains) {
@@ -110,23 +137,42 @@ function wipeOnAbort(signal: AbortSignal, wipe: () => void): () => void {
  * resolver must revalidate its still-awaiting row and current product policy.
  * No execution reservation, message publication or reusable grant is created.
  */
-export function createForegroundCheckpointReadAuthority(input: Readonly<{
+export function createCheckpointReadAuthority<
+  Locator extends CheckpointReadLocator,
+  Checkpoint,
+  Snapshot extends CheckpointReadSnapshot = CheckpointReadSnapshot,
+>(input: Readonly<{
   crypto: LatticeCrypto;
   recipients: LiveShadowRecipientRegistry;
-  namespaceKeys: Parameters<typeof createForegroundAgentEntityCryptoGateway>[0]["namespaceKeys"];
   resolveCurrent(
-    binding: ForegroundCheckpointReadBinding,
-    locator: ForegroundCheckpointReadLocator,
-  ): Promise<ForegroundCheckpointReadSnapshot | null>;
+    binding: CheckpointReadBinding,
+    locator: Locator,
+  ): Promise<Snapshot | null>;
+  withCheckpoint<Value>(
+    context: Readonly<{
+      binding: CheckpointReadBinding;
+      locator: Locator;
+      snapshot: Snapshot;
+      domains: readonly DomainForegroundSecretEntry[];
+      signal: AbortSignal;
+      deadlineAt: number;
+      authorizationId: string;
+      recipientKeyId: string;
+      issuedAt: number;
+      authorizationDigest: Uint8Array;
+      assertCurrentAuthority(): Promise<void>;
+    }>,
+    use: (checkpoint: Checkpoint) => Promise<Value>,
+  ): Promise<Value>;
   now?: () => number;
 }>) {
   const now = input.now ?? Date.now;
-  const challenges = new Map<string, Challenge>();
+  const challenges = new Map<string, Challenge<Locator, Snapshot>>();
   const active = new Map<AbortController, Readonly<{
-    binding: ForegroundCheckpointReadBinding; deadlineAt: number;
+    binding: CheckpointReadBinding; deadlineAt: number;
   }>>();
   let closed = false;
-  const discard = (id: string, challenge: Challenge): void => {
+  const discard = (id: string, challenge: Challenge<Locator, Snapshot>): void => {
     challenges.delete(id);
     input.recipients.delete(id);
     challenge.planBytes.fill(0);
@@ -147,7 +193,7 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
       })) discard(id, challenge);
     }
   };
-  const cancel = (matches: (binding: ForegroundCheckpointReadBinding) => boolean): void => {
+  const cancel = (matches: (binding: CheckpointReadBinding) => boolean): void => {
     for (const [id, challenge] of challenges) {
       if (matches(challenge.binding)) discard(id, challenge);
     }
@@ -160,8 +206,8 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
   };
   return Object.freeze({
     async plan(request: Readonly<{
-      binding: ForegroundCheckpointReadBinding;
-      locator: ForegroundCheckpointReadLocator;
+      binding: CheckpointReadBinding;
+      locator: Locator;
       /** Supplied by the existing foreground challenge lifetime contract. */
       deadlineAt: number;
     }>): Promise<Unavailable | Readonly<{
@@ -175,7 +221,7 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
       const issuedAt = now();
       if (closed || request.deadlineAt <= issuedAt) return unavailable;
       const binding = Object.freeze({ ...request.binding });
-      const locator = Object.freeze({ ...request.locator });
+      const locator = Object.freeze(structuredClone(request.locator));
       const id = randomUUID();
       const reservation = {operationId: id, clientActionSessionId: binding.clientActionSessionId,
         actorId: binding.humanActorId, deadlineAt: request.deadlineAt};
@@ -184,7 +230,7 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
       active.set(controller, {binding, deadlineAt: request.deadlineAt});
       const cancelRecipient = (): void => {input.recipients.delete(id);};
       controller.signal.addEventListener("abort", cancelRecipient, {once: true});
-      let snapshot: ForegroundCheckpointReadSnapshot | null = null;
+      let snapshot: Snapshot | null = null;
       let retained = false;
       const recipientKeyId = `checkpoint-read-key:${id}`;
       let publicKey: Uint8Array | null = null;
@@ -209,10 +255,10 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
         }
         snapshot = await input.resolveCurrent(binding, locator);
         if (snapshot === null || controller.signal.aborted || closed
-          || snapshot.room.namespaceId !== locator.namespaceId
+          || snapshot.namespaceAuthority.namespaceId !== locator.namespaceId
           || snapshot.committerDeviceId !== binding.clientDeviceId
           || snapshot.domains.length !== 1
-          || snapshot.domains[0]!.domainId !== snapshot.room.domainId
+          || snapshot.domains[0]!.domainId !== snapshot.namespaceAuthority.domainId
           || now() >= request.deadlineAt
           || !input.recipients.hasOperation(reservation)) return unavailable;
         const plan = createDomainForegroundAuthorizationPlan(input.crypto, {
@@ -260,10 +306,10 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
     },
 
     async read<Value>(request: Readonly<{
-      binding: ForegroundCheckpointReadBinding;
+      binding: CheckpointReadBinding;
       challengeId: string;
       authorizationBytes: Uint8Array;
-      execute(checkpoint: CheckpointAuthorization, locator: ForegroundCheckpointReadLocator): Promise<Value>;
+      execute(checkpoint: Checkpoint, locator: Locator): Promise<Value>;
     }>): Promise<Unavailable | Readonly<{ status: "read"; value: Value }>> {
       prune();
       const challenge = challenges.get(request.challengeId);
@@ -306,20 +352,7 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
         } finally { destroyDomainForegroundAuthorizationV2(envelope); }
         if (!await currentMatches()) return unavailable;
         const snapshot = challenge.snapshot;
-        const scope: RuntimeLiveShadowForegroundAuthorizationScope = Object.freeze({
-          subjectHumanId: challenge.binding.humanActorId,
-          issuingDeviceId: challenge.binding.clientDeviceId,
-          recipientKind: "nautilo_foreground_runtime",
-          browserSessionId: challenge.binding.clientActionSessionId,
-          topLevelRoomId: challenge.locator.topLevelRoomId,
-          policyRevision: snapshot.policyRevision,
-          hostAuthorizationRevision: snapshot.hostAuthorizationRevision,
-          namespaceIds: [challenge.locator.namespaceId],
-          grantDomainIds: snapshot.domains.map((domain) => domain.domainId),
-          domainAuthoritySetDigest: domainForegroundAuthoritySetDigest(input.crypto, snapshot.domains),
-        });
-        try {
-          const opened = await withProtectedInvocationRecipientPrivateKey(recipient.recipient,
+        const opened = await withProtectedInvocationRecipientPrivateKey(recipient.recipient,
             async (privateKey) => {
               const detachPrivateKey = wipeOnAbort(controller.signal, () => {
                 privateKey.fill(0);
@@ -355,107 +388,49 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
                 privateKey.fill(0);
                 destroyProtectedInvocationRecipient(recipient.recipient);
                 if (!isActive()) return unavailable;
-                const capability = createDomainCompressedLiveShadowSessionCapability({
-                  description: {
-                    ...scope,
+                const wipeDomains = () => entries.forEach(
+                  (entry) => entry.domainKey.fill(0),
+                );
+                const detachDomains = wipeOnAbort(controller.signal, wipeDomains);
+                const assertCurrentAuthority = async (): Promise<void> => {
+                  if (!await currentMatches()) {
+                    throw new CheckpointReadUnavailable(
+                      "checkpoint read authority changed",
+                    );
+                  }
+                };
+                const authorizationDigest = input.crypto.hash(authorizationBytes);
+                try {
+                  const value = await input.withCheckpoint({
+                    binding: challenge.binding,
+                    locator: challenge.locator,
+                    snapshot,
+                    domains: entries,
+                    signal: controller.signal,
+                    deadlineAt: challenge.deadlineAt,
                     authorizationId: challengeId,
                     recipientKeyId: challenge.recipientKeyId,
                     issuedAt: challenge.issuedAt,
-                    expiresAt: challenge.deadlineAt,
-                    authorizationDigest: input.crypto.hash(authorizationBytes),
-                  },
-                  entries: entries.map((entry) => ({
-                    grantDomainId: entry.domainId,
-                    participantDigest: entry.participantDigest,
-                    domainKeyGeneration: entry.domainKeyGeneration,
-                    headDigest: entry.headDigest,
-                    authorizationRevision: entry.authorizationRevision,
-                    domainAiGrantKey: entry.domainKey,
-                  })),
-                });
-                entries.forEach((entry) => entry.domainKey.fill(0));
-                const detachCapability = wipeOnAbort(controller.signal,
-                  () => destroyDomainCompressedLiveShadowSessionCapability(capability));
-                try {
-                  const gateway = createForegroundAgentEntityCryptoGateway({
-                    namespaceKeys: {
-                      inspectForegroundNamespaceAuthority: (request) => input.namespaceKeys.inspectForegroundNamespaceAuthority(request),
-                      withOpenedForegroundNamespaceKey: (request) => input.namespaceKeys.withOpenedForegroundNamespaceKey({
-                        ...request,
-                        use: async (key) => {
-                          const detach = wipeOnAbort(controller.signal, () => key.fill(0));
-                          try { return await request.use(key); }
-                          finally { detach(); key.fill(0); }
-                        },
-                      }),
-                    },
-                    openCapabilityEntries: (value, use) => withDomainCompressedLiveShadowSessionCapabilityEntries(value, async (borrowed) => {
-                      const detach = wipeOnAbort(controller.signal,
-                        () => borrowed.forEach((entry) => entry.domainAiGrantKey.fill(0)));
-                      try { return await use(borrowed); }
-                      finally { detach(); }
-                    }),
-                    authorizations: {
-                      execute: async (operation) => {
-                        if (!isActive() || operation.sessionReference !== challengeId
-                          || operation.scope !== scope
-                          || operation.entrypointId !== challenge.locator.entrypointId
-                          || !isDeepStrictEqual(operation.operations, ["decrypt"])) {
-                          return { status: "unavailable", reason: "session_cancelled" };
-                        }
-                        const value = await operation.execute(capability, controller.signal);
-                        return isActive() ? value
-                          : { status: "unavailable", reason: "session_cancelled" };
-                      },
-                    },
-                  });
-                  const result = await gateway.execute({
-                    sessionReference: challengeId, scope,
-                    entrypointId: challenge.locator.entrypointId,
-                    operations: ["decrypt"],
-                    execute: ({ entities }) => {
-                      const checkpoint = createForegroundEntityCheckpointAuthorization({
-                        crypto: input.crypto, entities,
-                        namespaceId: snapshot.room.namespaceId,
-                        namespaceAccessRevision: snapshot.room.namespaceAccessRevision,
-                        namespaceKeyGeneration: snapshot.room.namespaceKeyGeneration,
-                        domainId: snapshot.room.domainId,
-                        agentAuthorizationRevision: snapshot.agentAuthorizationRevision,
-                        authorizationDeadlineAt: challenge.deadlineAt,
-                        entrypointId: challenge.locator.entrypointId,
-                      });
-                      const readCrypto: CheckpointAuthorization["crypto"] = {
-                          ...checkpoint.crypto,
-                          executeAuthorizedOperation: async (operation) => {
-                            if (operation.operation !== "read"
-                              || operation.scope.logicalThreadId !== challenge.locator.checkpointThreadId) {
-                              throw new ProtectedCheckpointCryptoError(
-                                "authorization_unavailable", "checkpoint read scope changed",
-                              );
-                            }
-                            return checkpoint.crypto.executeAuthorizedOperation(operation);
-                          },
-                      };
-                      return request.execute(Object.freeze({
-                        ...checkpoint,
-                        crypto: Object.freeze(readCrypto),
-                      }), challenge.locator);
-                    },
-                  });
-                  return result.status === "executed" && await currentMatches()
-                    ? Object.freeze({ status: "read" as const, value: result.value }) : unavailable;
+                    authorizationDigest,
+                    assertCurrentAuthority,
+                  }, checkpoint => request.execute(checkpoint, challenge.locator));
+                  return await currentMatches()
+                    ? Object.freeze({ status: "read" as const, value })
+                    : unavailable;
                 } finally {
-                  detachCapability();
-                  destroyDomainCompressedLiveShadowSessionCapability(capability);
+                  authorizationDigest.fill(0);
+                  detachDomains();
+                  wipeDomains();
                 }
               },
             }); } finally { detachPrivateKey(); }
           });
-          return opened !== null && opened.status === "opened" && isActive()
-            ? opened.value : unavailable;
-        } finally { scope.domainAuthoritySetDigest.fill(0); }
+        return opened !== null && opened.status === "opened" && isActive()
+          ? opened.value : unavailable;
       } catch (error) {
-        if (!isActive()) return unavailable;
+        if (!isActive() || error instanceof CheckpointReadUnavailable) {
+          return unavailable;
+        }
         throw error;
       } finally {
         input.recipients.delete(challengeId);
@@ -477,5 +452,181 @@ export function createForegroundCheckpointReadAuthority(input: Readonly<{
       cancel((value) => value.humanActorId === subjectHumanId);
     },
     close(): void { closed = true; cancel(() => true); },
+  });
+}
+
+type ForegroundCheckpointBrokerSnapshot = CheckpointReadSnapshot & Readonly<{
+  agentAuthorizationRevision: number;
+}>;
+
+/**
+ * Foreground adapter for the generic one-use checkpoint custody. Namespace-key
+ * access and the entity gateway remain private to this compatibility wrapper.
+ */
+export function createForegroundCheckpointReadAuthority(input: Readonly<{
+  crypto: LatticeCrypto;
+  recipients: LiveShadowRecipientRegistry;
+  namespaceKeys: Parameters<typeof createForegroundAgentEntityCryptoGateway>[0]["namespaceKeys"];
+  resolveCurrent(
+    binding: ForegroundCheckpointReadBinding,
+    locator: ForegroundCheckpointReadLocator,
+  ): Promise<ForegroundCheckpointReadSnapshot | null>;
+  now?: () => number;
+}>) {
+  return createCheckpointReadAuthority<
+    ForegroundCheckpointReadLocator,
+    CheckpointAuthorization,
+    ForegroundCheckpointBrokerSnapshot
+  >({
+    crypto: input.crypto,
+    recipients: input.recipients,
+    ...(input.now === undefined ? {} : { now: input.now }),
+    resolveCurrent: async (binding, locator) => {
+      const snapshot = await input.resolveCurrent(binding, locator);
+      return snapshot === null ? null : Object.freeze({
+        policyRevision: snapshot.policyRevision,
+        agentAuthorizationRevision: snapshot.agentAuthorizationRevision,
+        committerDeviceId: snapshot.committerDeviceId,
+        committerDeviceSigningKeyGeneration:
+          snapshot.committerDeviceSigningKeyGeneration,
+        committerDeviceSigningPublicKey:
+          snapshot.committerDeviceSigningPublicKey,
+        hostAuthorizationRevision: snapshot.hostAuthorizationRevision,
+        namespaceAuthority: snapshot.room,
+        domains: snapshot.domains,
+      });
+    },
+    withCheckpoint: async (context, use) => {
+      const { binding, locator, snapshot } = context;
+      const scope: RuntimeLiveShadowForegroundAuthorizationScope = Object.freeze({
+        subjectHumanId: binding.humanActorId,
+        issuingDeviceId: binding.clientDeviceId,
+        recipientKind: "nautilo_foreground_runtime",
+        browserSessionId: binding.clientActionSessionId,
+        topLevelRoomId: locator.topLevelRoomId,
+        policyRevision: snapshot.policyRevision,
+        hostAuthorizationRevision: snapshot.hostAuthorizationRevision,
+        namespaceIds: [locator.namespaceId],
+        grantDomainIds: snapshot.domains.map((domain) => domain.domainId),
+        domainAuthoritySetDigest:
+          domainForegroundAuthoritySetDigest(input.crypto, snapshot.domains),
+      });
+      try {
+        const capability = createDomainCompressedLiveShadowSessionCapability({
+          description: {
+            ...scope,
+            authorizationId: context.authorizationId,
+            recipientKeyId: context.recipientKeyId,
+            issuedAt: context.issuedAt,
+            expiresAt: context.deadlineAt,
+            authorizationDigest: context.authorizationDigest,
+          },
+          entries: context.domains.map((entry) => ({
+            grantDomainId: entry.domainId,
+            participantDigest: entry.participantDigest,
+            domainKeyGeneration: entry.domainKeyGeneration,
+            headDigest: entry.headDigest,
+            authorizationRevision: entry.authorizationRevision,
+            domainAiGrantKey: entry.domainKey,
+          })),
+        });
+        context.domains.forEach((entry) => entry.domainKey.fill(0));
+        const detachCapability = wipeOnAbort(context.signal,
+          () => destroyDomainCompressedLiveShadowSessionCapability(capability));
+        try {
+          const gateway = createForegroundAgentEntityCryptoGateway({
+            namespaceKeys: {
+              inspectForegroundNamespaceAuthority: (request) =>
+                input.namespaceKeys.inspectForegroundNamespaceAuthority(request),
+              withOpenedForegroundNamespaceKey: (request) =>
+                input.namespaceKeys.withOpenedForegroundNamespaceKey({
+                  ...request,
+                  use: async (key) => {
+                    const detach = wipeOnAbort(context.signal, () => key.fill(0));
+                    try { return await request.use(key); }
+                    finally { detach(); key.fill(0); }
+                  },
+                }),
+            },
+            openCapabilityEntries: (value, consume) =>
+              withDomainCompressedLiveShadowSessionCapabilityEntries(
+                value,
+                async (borrowed) => {
+                  const detach = wipeOnAbort(context.signal,
+                    () => borrowed.forEach(
+                      (entry) => entry.domainAiGrantKey.fill(0),
+                    ));
+                  try { return await consume(borrowed); }
+                  finally { detach(); }
+                },
+              ),
+            authorizations: {
+              execute: async (operation) => {
+                if (context.signal.aborted
+                  || operation.sessionReference !== context.authorizationId
+                  || operation.scope !== scope
+                  || operation.entrypointId !== locator.entrypointId
+                  || !isDeepStrictEqual(operation.operations, ["decrypt"])) {
+                  return { status: "unavailable", reason: "session_cancelled" };
+                }
+                const value = await operation.execute(capability, context.signal);
+                return context.signal.aborted ? {
+                  status: "unavailable", reason: "session_cancelled",
+                } : value;
+              },
+            },
+          });
+          const result = await gateway.execute({
+            sessionReference: context.authorizationId,
+            scope,
+            entrypointId: locator.entrypointId,
+            operations: ["decrypt"],
+            execute: ({ entities }) => {
+              const authority = snapshot.namespaceAuthority;
+              const checkpoint = createForegroundEntityCheckpointAuthorization({
+                crypto: input.crypto,
+                entities,
+                namespaceId: authority.namespaceId,
+                namespaceAccessRevision: authority.namespaceAccessRevision,
+                namespaceKeyGeneration: authority.namespaceKeyGeneration,
+                domainId: authority.domainId,
+                agentAuthorizationRevision: snapshot.agentAuthorizationRevision,
+                authorizationDeadlineAt: context.deadlineAt,
+                entrypointId: locator.entrypointId,
+              });
+              const readCrypto: CheckpointAuthorization["crypto"] = {
+                ...checkpoint.crypto,
+                executeAuthorizedOperation: async (operation) => {
+                  if (operation.operation !== "read"
+                    || operation.scope.logicalThreadId
+                      !== locator.checkpointThreadId) {
+                    throw new ProtectedCheckpointCryptoError(
+                      "authorization_unavailable",
+                      "checkpoint read scope changed",
+                    );
+                  }
+                  return checkpoint.crypto.executeAuthorizedOperation(operation);
+                },
+              };
+              return use(Object.freeze({
+                ...checkpoint,
+                crypto: Object.freeze(readCrypto),
+              }));
+            },
+          });
+          if (result.status !== "executed") {
+            throw new CheckpointReadUnavailable(
+              "checkpoint read session was cancelled",
+            );
+          }
+          return result.value;
+        } finally {
+          detachCapability();
+          destroyDomainCompressedLiveShadowSessionCapability(capability);
+        }
+      } finally {
+        scope.domainAuthoritySetDigest.fill(0);
+      }
+    },
   });
 }

@@ -56,6 +56,7 @@ import {
   getLatestResumableTaskRun,
   getLatestRunModelByTask,
   getCachedServerModelConfigRow,
+  findAwaitingTaskRunForApproval,
   listTasksForOwner,
   listAwaitingTaskRunsForOwner,
   profiles,
@@ -873,11 +874,24 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     const parked = await listAwaitingTaskRunsForOwner(getServerDirectDb(), ownerId, { approvalRecipient: true });
     const projected = await Promise.all(parked.map(async ({ task, run }) => {
       try {
-        if (taskApprovalRecipient(task) !== ownerId) return [] as ServerEvent[];
-        const authorized = task.localExecutionDelegation
-          ? await authorizeTaskApprovalResume({ taskId: task.id, threadId: run.graphThreadId, sessionUserId: ownerId })
-          : { ok: true as const, task, run };
-        if (!authorized.ok || authorized.run.id !== run.id || taskApprovalRecipient(authorized.task) !== ownerId) return [] as ServerEvent[];
+        if (task.contentRepresentation !== "ordinary"
+          || taskApprovalRecipient(task) !== ownerId) return [] as ServerEvent[];
+        const current = async (): Promise<{ task: Task; run: TaskRun } | null> => {
+          if (task.localExecutionDelegation) {
+            const authorized = await authorizeTaskApprovalResume({ taskId: task.id,
+              threadId: run.graphThreadId, sessionUserId: ownerId });
+            return authorized.ok ? authorized : null;
+          }
+          const found = await findAwaitingTaskRunForApproval(getServerDirectDb(),
+            task.id, run.graphThreadId);
+          return found !== undefined && found.task.localExecutionDelegation == null
+            ? found
+            : null;
+        };
+        const authorized = await current();
+        if (authorized === null || authorized.task.contentRepresentation !== "ordinary"
+          || authorized.run.id !== run.id
+          || taskApprovalRecipient(authorized.task) !== ownerId) return [] as ServerEvent[];
         const events = await replayTaskInterruptEvents({
           taskId: task.id,
           taskRunId: run.id,
@@ -887,11 +901,12 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           laneKey: `task:${task.id}`,
           hasRoom: authorized.task.targetRoomId !== null,
         });
-        if (authorized.task.localExecutionDelegation) {
-          const current = await authorizeTaskApprovalResume({ taskId: task.id, threadId: run.graphThreadId, sessionUserId: ownerId });
-          if (!current.ok || current.run.id !== authorized.run.id || taskApprovalRecipient(current.task) !== ownerId
-            || JSON.stringify(current.task.localExecutionDelegation) !== JSON.stringify(authorized.task.localExecutionDelegation)) return [] as ServerEvent[];
-        }
+        const revalidated = await current();
+        if (revalidated === null || revalidated.task.contentRepresentation !== "ordinary"
+          || revalidated.run.id !== authorized.run.id
+          || taskApprovalRecipient(revalidated.task) !== ownerId
+          || JSON.stringify(revalidated.task.localExecutionDelegation)
+            !== JSON.stringify(authorized.task.localExecutionDelegation)) return [] as ServerEvent[];
         return events;
       } catch {
         return [] as ServerEvent[];

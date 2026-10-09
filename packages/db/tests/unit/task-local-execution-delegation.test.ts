@@ -377,11 +377,14 @@ test("approval attention candidates do not broaden ordinary Task management list
   const management = new PgDialect().sqlToQuery(predicate!);
   expect(management.sql).toContain('"tasks"."owner_id" =');
   expect(management.sql).not.toContain('"tasks"."requestor_id" =');
+  expect(management.sql).toContain('"tasks"."content_representation" =');
+  expect(management.params).toContain("ordinary");
   await listAwaitingTaskRunsForOwner(db, "viewer", { approvalRecipient: true });
   const attention = new PgDialect().sqlToQuery(predicate!);
   expect(attention.sql).toContain('"tasks"."local_execution_delegation" is null');
   expect(attention.sql).toContain('"tasks"."local_execution_delegation" is not null');
   expect(attention.sql).toContain('"tasks"."requestor_id" =');
   expect(attention.params).toContain("viewer");
+  expect(attention.params).toContain("ordinary");
   expect(attention.params).toContain("awaiting");
 });

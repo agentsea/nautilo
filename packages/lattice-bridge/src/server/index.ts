@@ -1037,6 +1037,8 @@ export {
 
 export {
   createNativeTaskRuntimeCheckpointCellCrypto,
+  createHumanTaskCheckpointCellReader,
+  type HumanTaskCheckpointReadInput,
   type NativeTaskRuntimeCheckpointCellCryptoInput,
 } from "./task/native-task-runtime-checkpoint-cell-crypto.ts";
 export {

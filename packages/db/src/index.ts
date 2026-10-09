@@ -732,6 +732,11 @@ export {
   type ParkedProtectedTaskHumanContinuation,
   type ParkedProtectedTaskHumanContinuationTaskRow,
   type ParkedProtectedTaskHumanContinuationJobRow,
+  type ProtectedTaskPendingAttentionViewer,
+  type ProtectedTaskPendingAttentionCursor,
+  type ProtectedTaskPendingAttentionInterrupt,
+  type ProtectedTaskPendingAttentionCandidate,
+  type ProtectedTaskPendingAttentionPage,
   type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
   type LockedParkedProtectedTaskHumanContinuationTaskRow,
   type ProtectedTaskRunInterruptKind,
@@ -768,6 +773,8 @@ export {
   lockParkedProtectedTaskAdditionalAuthority,
   copyParkedProtectedTaskHumanContinuation,
   lockParkedProtectedTaskHumanContinuation,
+  listProtectedTaskPendingAttentionCandidates,
+  readProtectedTaskPendingAttentionCandidate,
 } from "./queries/tasks";
 export {
   appendPendingArtifactEvent,
