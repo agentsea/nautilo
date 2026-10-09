@@ -1,3 +1,4 @@
+import { isTaskExecutionWorkKind } from "@nautilo/runtime";
 import {
   and,
   createPostgresJsBridgeConnection,
@@ -209,8 +210,8 @@ function exactAuthorityRecord(
     record.snapshot.credentialSubject.runtimeVersion === 1 &&
     record.snapshot.workId === occurrence.run.id &&
     record.snapshot.namespaceId === occurrence.task.contentNamespaceId &&
-    record.workKind === "task.execute" &&
-    record.purpose === "task.execute" &&
+    isTaskExecutionWorkKind(record.workKind) &&
+    record.purpose === record.workKind &&
     record.processorAuthorizationRevision === null &&
     record.expectedDomainEpoch !== null &&
     Number.isSafeInteger(record.expectedDomainEpoch) &&

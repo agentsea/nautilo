@@ -306,9 +306,9 @@ function settlement(input: Readonly<{
 }
 
 describe("protected Task parked authorization settlement", () => {
-  test("settles the exact prior grant under Task, Run, and Job locks", async () => {
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)("settles the exact prior grant under Task, Run, and Job locks (%s)", async workKind => {
     const expected = candidate();
-    const record = runningRecord();
+    const record = { ...runningRecord(), workKind, purpose: workKind };
     const repository = new InMemoryBackgroundAuthorizationRepository();
     await repository.create(record);
     const database = fakeDatabase();
@@ -527,4 +527,44 @@ describe("protected Task parked authorization settlement", () => {
     expect(database.events.at(-2)).toBe("transaction-commit");
     expect(database.events.at(-1)).toBe("release");
   });
+});
+
+test.each([false, true])("settles accepted Human continuations only after exact locked acceptance (stale=%s)", async stale => {
+  const base = candidate();
+  const interrupt = { id: "human-interrupt", kind: "approval" as const, requestId: "approval-request" };
+  const expected = {
+    occurrence: base.occurrence,
+    priorJob: { ...base.priorJob, interrupts: [interrupt] },
+    segment: base.proof.segment,
+    stableRoutingDigest: new Uint8Array(32).fill(8),
+    acceptance: { acceptanceId: "accepted-human-response",
+      acceptedBy: { userId: base.occurrence.task.ownerId, humanActorId: "human-actor" },
+      interrupt, acceptedAt: new Date(PARKED_AT + 1), response: { kind: "approval" as const, verb: "once" as const } },
+    authorizationRequestId: base.authorizationRequestId,
+    nextExecutionSegment: base.nextExecutionSegment,
+  };
+  const record = runningRecord();
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(record);
+  const database = fakeDatabase();
+  const calls: string[] = [];
+  const service = createProtectedTaskParkedAuthorizationSettlement({
+    db: database.db, repository: {
+      get: id => { calls.push("grant-read"); return repository.get(id); },
+      compareAndSwap: input => { calls.push("grant-complete"); return repository.compareAndSwap(input); },
+    }, recipients: { delete: () => { calls.push("release"); return true; } },
+  }, {
+    discover: async () => expected,
+    read: async () => { throw new Error("Human continuation used additional-authority reader"); },
+    lockHuman: async (_transaction, supplied) => {
+      expect(supplied).toEqual(expected);
+      calls.push("locked-human-acceptance");
+      return { current: stale ? { ...expected, acceptance: { ...expected.acceptance,
+        acceptanceId: "replacement-response" } } : expected, task: {} as never };
+    },
+  });
+  expect(await service.settle(expected.occurrence)).toBe(stale ? "inactive" : "settled");
+  expect(calls).toEqual(stale ? ["locked-human-acceptance"]
+    : ["locked-human-acceptance", "grant-read", "grant-complete", "release"]);
+  expect((await repository.get(REQUEST))?.snapshot.state).toBe(stale ? "running" : "completed");
 });

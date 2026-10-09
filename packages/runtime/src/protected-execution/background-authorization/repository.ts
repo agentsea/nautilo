@@ -2225,7 +2225,7 @@ function validateTaskRuntimeCancellationPageInput(input: Readonly<{
   return limit;
 }
 
-function isTaskExecutionWorkKind(value: BackgroundAuthorizationRecord["workKind"]): boolean {
+export function isTaskExecutionWorkKind(value: BackgroundAuthorizationRecord["workKind"]): boolean {
   return value === "task.execute" || value === "task.approval_resume"
     || value === "task.await_reply_resume";
 }

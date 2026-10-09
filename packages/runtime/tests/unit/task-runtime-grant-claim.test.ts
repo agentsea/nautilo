@@ -366,7 +366,7 @@ type CompletionCas = (
   repository: InMemoryBackgroundAuthorizationRepository,
 ) => Promise<BackgroundAuthorizationCasResult>;
 
-async function fixture() {
+async function fixture(requestWorkKind: "task.execute" | "task.approval_resume" | "task.await_reply_resume" = "task.execute") {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const repository = new InMemoryBackgroundAuthorizationRepository();
@@ -551,8 +551,8 @@ async function fixture() {
       return createTaskRuntimeBackgroundAuthorizationRequestV1({
         requestId: REQUEST,
         workId: RUN,
-        workKind: "task.execute",
-        workPurpose: "task.execute",
+        workKind: requestWorkKind,
+        workPurpose: requestWorkKind,
         recipientGeneration: attempt.recipientGeneration,
         episodeId: grantPlan.sessionId,
         sourceRoomId: authority.sourceRoomId,
@@ -774,9 +774,10 @@ async function parkedClaimFixture(
   options: Readonly<{
     scopeWithSemanticExtra?: boolean;
     humanResumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
+    requestWorkKind?: "task.execute" | "task.approval_resume" | "task.await_reply_resume";
   }> = {},
 ) {
-  const value = await fixture();
+  const value = await fixture(options.requestWorkKind ?? options.humanResumeWorkKind);
   const discovered = options.humanResumeWorkKind === undefined
     ? parkedPreparation()
     : humanParkedPreparation(options.humanResumeWorkKind);
@@ -851,7 +852,10 @@ async function parkedClaimFixture(
     recipients: value.recipients,
     now: () => NOW,
   });
-  if (attached === null) throw new Error("parked recipient was not attached");
+  if (attached === null) {
+    value.recipients.close();
+    throw new Error("parked recipient was not attached");
+  }
   attached.requestBytes.fill(0);
   await acceptGrant(value);
 
@@ -1215,7 +1219,25 @@ describe("parked Task Runtime grant claim", () => {
       workKind: resumeWorkKind,
       purpose: resumeWorkKind,
     });
-    claimed.dispatch.candidate.onIneligible();
+    const nextJobId = "parked-continuation-job";
+    expect(await claimed.dispatch.candidate.persistJob?.(parkedPersistPayload(value.plan.reference))).toBe(nextJobId);
+    expect(await claimed.dispatch.candidate.start(nextJobId)).toEqual({ status: "started" });
+    await claimed.dispatch.candidate.run(async (input, _signal, settlement) => {
+      expect(input).toEqual({ message: SENTINEL });
+      await settlement.publish({ formatVersion: 1, resultText: "Human continuation completed", lastError: null });
+    });
+    expect(value.publishedResults).toEqual(["Human continuation completed"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects a different work kind before attaching a Human continuation grant", async () => {
+    const error = await parkedClaimFixture({
+      humanResumeWorkKind: "task.approval_resume",
+      requestWorkKind: "task.await_reply_resume",
+    }).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Task Runtime request was substituted");
   });
 
   test("lets only one parked claimant win the held grant CAS", async () => {

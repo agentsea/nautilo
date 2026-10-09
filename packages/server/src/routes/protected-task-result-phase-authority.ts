@@ -1,3 +1,4 @@
+import { isTaskExecutionWorkKind } from "@nautilo/runtime";
 import {
   and,
   eq,
@@ -94,8 +95,8 @@ function exactAcceptedCoordinates(
     record.snapshot.credentialSubject.runtimeVersion === 1 &&
     record.snapshot.workId === occurrence.run.id &&
     record.snapshot.namespaceId === occurrence.task.contentNamespaceId &&
-    record.workKind === "task.execute" &&
-    record.purpose === "task.execute" &&
+    isTaskExecutionWorkKind(record.workKind) &&
+    record.purpose === record.workKind &&
     record.descriptorBytes !== null &&
     record.snapshot.descriptorDigest !== null &&
     recipient !== null &&
@@ -107,8 +108,8 @@ function exactAcceptedCoordinates(
       TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V1 &&
     request.requestId === record.snapshot.requestId &&
     request.workId === occurrence.run.id &&
-    request.workKind === "task.execute" &&
-    request.workPurpose === "task.execute" &&
+    request.workKind === record.workKind &&
+    request.workPurpose === record.purpose &&
     request.recipientGeneration === record.snapshot.recipientGeneration &&
     request.recipientGeneration === accepted.recipientGeneration &&
     request.recipientKeyId === recipient.recipientKeyId &&

@@ -58,6 +58,7 @@ export {
   InMemoryBackgroundAuthorizationRepository,
   parseBackgroundAuthorizationRecord,
   isTaskRuntimeStableIdempotencyKey,
+  isTaskExecutionWorkKind,
   sameBackgroundAuthorizationRecord,
   type BackgroundAuthorizationAcceptResponseResult,
   type BackgroundAuthorizationAcceptedMaterial,

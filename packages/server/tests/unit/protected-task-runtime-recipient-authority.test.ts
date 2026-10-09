@@ -267,9 +267,9 @@ const binding = Object.freeze({
   deviceId: DEVICE,
 });
 
-test("lends exact awaiting recipient authority to the Runtime callback", async () => {
+test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)("lends exact awaiting recipient authority to the Runtime callback (%s)", async workKind => {
   const value = occurrence();
-  const durable = record(value);
+  const durable = { ...record(value), workKind, purpose: workKind };
   let inspected:
     | Parameters<
         ProtectedTaskRuntimeRecipientAuthorityDependencies["withAuthority"]
@@ -540,6 +540,8 @@ test("rejects non-awaiting and substituted durable records before lattice use", 
   const value = occurrence();
   const current = record(value);
   for (const changed of [
+    { ...current, workKind: "task.dispatch", purpose: "task.dispatch" },
+    { ...current, workKind: "task.approval_resume", purpose: "task.await_reply_resume" },
     Object.freeze({
       ...current,
       snapshot: Object.freeze({ ...current.snapshot, state: "grant_ready" }),

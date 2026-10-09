@@ -66,6 +66,7 @@ import {
 } from "./lifecycle";
 import {
   TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX,
+  isTaskExecutionWorkKind,
   parseBackgroundAuthorizationRecord,
   sameBackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecord,
@@ -570,9 +571,7 @@ function exactOccurrenceRecord(
     })
     && record.snapshot.workId === occurrence.run.id
     && record.snapshot.namespaceId === occurrence.task.contentNamespaceId
-    && (record.workKind === "task.execute"
-      || record.workKind === "task.approval_resume"
-      || record.workKind === "task.await_reply_resume")
+    && isTaskExecutionWorkKind(record.workKind)
     && record.purpose === record.workKind
     && (expectedWorkKind === undefined || record.workKind === expectedWorkKind)
     && record.processorAuthorizationRevision === null
@@ -1062,10 +1061,12 @@ function exactRequest(
   attempt: TaskRuntimeRecipientAttempt,
   request: TaskRuntimeBackgroundAuthorizationRequestV1,
 ): boolean {
-  return request.requestId === record.snapshot.requestId
+  return isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
+    && request.requestId === record.snapshot.requestId
     && request.workId === record.snapshot.workId
-    && request.workKind === "task.execute"
-    && request.workPurpose === "task.execute"
+    && request.workKind === record.workKind
+    && request.workPurpose === record.purpose
     && request.recipientGeneration === record.snapshot.recipientGeneration
     && request.recipientGeneration === attempt.recipientGeneration
     && request.recipientKeyId === attempt.recipientKeyId
