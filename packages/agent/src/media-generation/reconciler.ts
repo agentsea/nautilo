@@ -55,6 +55,7 @@ export interface MediaGenerationReconcilerRepository {
     now: Date;
     safeFailure?: MediaGenerationSafeFailure | null;
     artifactInternalId?: string;
+    actualUsdMicros?: number;
     nextAttemptAt?: Date;
     terminalAt?: Date | null;
   }>): Promise<ClaimedMediaGeneration | null>;
@@ -96,7 +97,17 @@ export interface MediaGenerationArtifactCustody {
 
 export interface MediaGenerationReconcilerDependencies {
   readonly repository: MediaGenerationReconcilerRepository;
-  readonly lifecycle: Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete">;
+  readonly lifecycle?: Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete"> &
+    Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">>;
+  /** Open only the exact persisted creating account for this claimed receipt. */
+  readonly lifecycleFor?: (claim: Claim) => Promise<Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete"> &
+    Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">>>;
+  /** Settle the pre-dispatch cost attempt from durable terminal evidence. */
+  readonly settleCost?: (claim: Claim, input: Readonly<{
+    outcome: "succeeded" | "failed" | "cancelled" | "unknown";
+    actualUsdMicros?: number;
+    failureCode?: string;
+  }>) => Promise<void>;
   readonly artifacts: MediaGenerationArtifactCustody;
   readonly serverArtifactRoot: string;
   readonly maxBytesFor: (claim: Claim) => number;
@@ -123,7 +134,13 @@ function isClaim(value: ClaimedMediaGeneration | null): value is Claim {
 }
 
 function acceptedForFirstWave(claim: Claim): VeniceAcceptedMediaWork | null {
-  if (!FIRST_WAVE_MODELS.has(claim.providerModel) || claim.providerQueueId === null) return null;
+  const provider = claim.provider ?? "venice";
+  if (!FIRST_WAVE_MODELS.has(claim.providerModel) || claim.providerQueueId === null ||
+      (provider !== "venice" && provider !== "surplus") ||
+      (claim.fundingBinding !== null && claim.fundingBinding !== undefined &&
+        (claim.fundingBinding.provider !== provider ||
+         claim.fundingBinding.credentialFingerprint !== claim.providerAccountFingerprint ||
+         claim.fundingBinding.humanUserId !== claim.ownerId))) return null;
   const model = claim.providerModel as VeniceMediaModel;
   if (claim.kind !== mediaGenerationKindForModel(model)) return null;
   // These four public models retrieve bytes directly. Do not invent or retain
@@ -281,7 +298,11 @@ export class MediaGenerationReconciler {
     claim: Claim,
     workerId: string,
     to: "retrieving" | "saving" | "ready" | "needs_action" | "failed" | "unknown",
-    extra: Readonly<{ safeFailure?: MediaGenerationSafeFailure; artifactInternalId?: string }> = {},
+    extra: Readonly<{
+      safeFailure?: MediaGenerationSafeFailure;
+      artifactInternalId?: string;
+      actualUsdMicros?: number;
+    }> = {},
   ): Promise<ClaimedMediaGeneration | null> {
     return this.deps.repository.transition({
       ...scope(claim), receiptId: claim.receiptId, workerId,
@@ -321,12 +342,21 @@ export class MediaGenerationReconciler {
     if (beforeRetrieve === null) return "lostLease";
     claim = beforeRetrieve;
 
+    let lifecycle: Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete"> &
+      Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">>;
+    try {
+      lifecycle = this.deps.lifecycleFor
+        ? await this.deps.lifecycleFor(claim)
+        : this.deps.lifecycle ?? (() => { throw new Error("media lifecycle unavailable"); })();
+    } catch (error) {
+      return this.handleFailure(claim, workerId, error);
+    }
     let retrieved: VeniceRetrieveResult;
     try {
       // The DB deliberately has no durable attempt counter. Use one fixed,
       // conservative capped cadence tier across restarts; claim revision is a
       // CAS token and must never be misrepresented as polling history.
-      retrieved = await this.deps.lifecycle.retrieve({ accepted, attempt: 4 });
+      retrieved = await lifecycle.retrieve({ accepted, attempt: 4 });
     } catch (error) {
       return this.handleFailure(claim, workerId, error);
     }
@@ -358,17 +388,30 @@ export class MediaGenerationReconciler {
       return ok ? "rescheduled" : "lostLease";
     }
 
-    // First-wave models must return bytes directly. The lifecycle cannot
-    // produce signed_delivery without an accepted signed URL; if an injected
-    // implementation does, fail closed and preserve the same receipt.
+    const terminalCost = retrieved.actualCostUsdMicros;
     if (retrieved.state === "signed_delivery") {
-      const terminal = await this.transition(claim, workerId, "needs_action", { safeFailure: operationalFailure({
-        code: "VENICE_SIGNED_DELIVERY_UNEXPECTED", phase: "download", retrySafe: false,
-        recoveryActions: ["repair_account"],
-      }) });
-      return terminal === null ? "lostLease" : "terminal";
+      if ((claim.provider ?? "venice") !== "surplus") {
+        const terminal = await this.transition(claim, workerId, "needs_action", { safeFailure: operationalFailure({
+          code: "VENICE_SIGNED_DELIVERY_UNEXPECTED", phase: "download", retrySafe: false,
+          recoveryActions: ["repair_account"],
+        }) });
+        return terminal === null ? "lostLease" : "terminal";
+      }
+      if (!lifecycle.downloadSignedDelivery) {
+        return this.reschedule(claim, workerId, operationalFailure({
+          code: "SURPLUS_DOWNLOAD_UNAVAILABLE", phase: "download", retrySafe: true,
+          recoveryActions: ["retry_same_receipt"],
+        }));
+      }
+      try {
+        retrieved = await lifecycle.downloadSignedDelivery({ accepted, signedDeliveryUrl: retrieved.signedDeliveryUrl });
+      } catch (error) {
+        return this.handleFailure(claim, workerId, error);
+      }
     }
 
+    const actualUsdMicros = terminalCost ?? retrieved.actualCostUsdMicros ??
+      ((claim.provider ?? "venice") === "venice" ? claim.quotedUsdMicros : undefined);
     const mimeType = outputMime(claim, retrieved.contentType);
     if (mimeType === null) {
       await retrieved.body.cancel().catch(() => undefined);
@@ -379,7 +422,9 @@ export class MediaGenerationReconciler {
     }
 
     if (claim.state !== "saving") {
-      const saving = await this.transition(claim, workerId, "saving");
+      const saving = await this.transition(claim, workerId, "saving", {
+        ...(actualUsdMicros === undefined ? {} : { actualUsdMicros }),
+      });
       if (!isClaim(saving) || saving.state !== "saving") return "lostLease";
       claim = saving;
     }
@@ -486,6 +531,29 @@ export class MediaGenerationReconciler {
     const beforeCleanup = await this.renew(claim, workerId);
     if (beforeCleanup === null) return "lostLease";
     claim = beforeCleanup;
+    // The paid output is already durably committed and recoverable here. Keep
+    // accounting retryable behind cleanup custody so a recorder outage cannot
+    // discard or force another download of valid bytes.
+    if (this.deps.settleCost) {
+      try {
+        await this.deps.settleCost(claim, {
+          outcome: "succeeded",
+          ...(claim.actualUsdMicros === null
+            ? (claim.provider === "venice" ? { actualUsdMicros: claim.quotedUsdMicros } : {})
+            : { actualUsdMicros: claim.actualUsdMicros }),
+        });
+      } catch {
+        const ok = await this.deps.repository.rescheduleCleanup({
+          ...scope(claim), receiptId: claim.receiptId, workerId, expectedRevision: claim.revision,
+          safeFailure: operationalFailure({
+            code: "MEDIA_COST_SETTLEMENT_RETRY", phase: "reconcile", retrySafe: true,
+            recoveryActions: ["retry_same_receipt"],
+          }),
+          nextAttemptAt: nextAttempt(this.now(), this.cleanupRetryDelayMs), now: this.now(),
+        });
+        return ok ? "rescheduled" : "lostLease";
+      }
+    }
     const commitProof: VeniceArtifactCommitProof = {
       receiptId: claim.receiptId,
       artifactInternalId: identity.artifactInternalId,
@@ -493,7 +561,10 @@ export class MediaGenerationReconciler {
       state: "durably_committed",
     };
     try {
-      await this.deps.lifecycle.complete({ accepted, commitProof });
+      const lifecycle = this.deps.lifecycleFor
+        ? await this.deps.lifecycleFor(claim)
+        : this.deps.lifecycle ?? (() => { throw new Error("media lifecycle unavailable"); })();
+      await lifecycle.complete({ accepted, commitProof });
     } catch (error) {
       const failure = error instanceof VeniceMediaLifecycleError
         ? safeFailure(error.failure)
@@ -532,7 +603,25 @@ export class MediaGenerationReconciler {
       return this.reschedule(claim, workerId, failure);
     }
     const state = terminalState(error.failure);
-    const terminal = await this.transition(claim, workerId, state, { safeFailure: failure });
+    if (this.deps.settleCost) {
+      try {
+        await this.deps.settleCost(claim, {
+          outcome: error.failure.code === "SURPLUS_CANCELLED" ? "cancelled" :
+            error.failure.completionCertainty === "unknown" ? "unknown" : "failed",
+          ...(error.actualCostUsdMicros === undefined ? {} : { actualUsdMicros: error.actualCostUsdMicros }),
+          failureCode: error.failure.code.toLowerCase(),
+        });
+      } catch {
+        return this.reschedule(claim, workerId, operationalFailure({
+          code: "MEDIA_COST_SETTLEMENT_RETRY", phase: "reconcile", retrySafe: true,
+          recoveryActions: ["retry_same_receipt"],
+        }));
+      }
+    }
+    const terminal = await this.transition(claim, workerId, state, {
+      safeFailure: failure,
+      ...(error.actualCostUsdMicros === undefined ? {} : { actualUsdMicros: error.actualCostUsdMicros }),
+    });
     return terminal === null ? "lostLease" : "terminal";
   }
 

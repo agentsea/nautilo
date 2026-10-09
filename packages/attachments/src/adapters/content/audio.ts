@@ -11,7 +11,7 @@ export async function attachmentAudioToTranscriptBlock(
   envelope: AttachmentEnvelope,
   classification: AttachmentClassification,
   provider: TranscriptionProvider | null | undefined,
-  options: { language?: string; timestamps?: boolean } = {},
+  options: { language?: string; timestamps?: boolean; signal?: AbortSignal } = {},
 ): Promise<AudioAdapterResult> {
   if (classification.decision !== "accept" || classification.kind !== "audio") {
     return {
@@ -43,6 +43,7 @@ export async function attachmentAudioToTranscriptBlock(
       mime: classification.normalizedMime,
       ...(options.language !== undefined ? { language: options.language } : {}),
       ...(options.timestamps !== undefined ? { timestamps: options.timestamps } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
   } catch (err) {
     return {

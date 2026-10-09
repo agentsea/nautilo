@@ -15,6 +15,7 @@ import {
   resetMediaGenerationApprovalRuntimeForTests,
   setMediaGenerationApprovalRuntime,
   submitMediaGenerationApproval,
+  verifyMediaGenerationPreparedApproval,
 } from "../tools/media/media-generation-approval-runtime";
 import { MediaGenerationValidationError, type NormalizedMediaGenerationRequest } from "./contracts";
 import { classifyVeniceMediaFailure } from "./errors";
@@ -160,7 +161,7 @@ function submitInput(
 }
 
 function harness(input?: {
-  readonly quote?: () => Promise<{ amountUsdMicros: number }>;
+  readonly quote?: () => Promise<{ amountUsdMicros: number; kind?: "exact" | "estimate" }>;
   readonly resolveRequest?: () => Promise<NormalizedMediaGenerationRequest>;
   readonly queue?: (proof: MediaGenerationAdmissionProof) => Promise<{
     receiptId: string;
@@ -273,6 +274,13 @@ describe("D525 media generation server core", () => {
     expect(left).toEqual(right);
     expect(left.ok).toBe(true);
     expect(quoteInputs).toEqual([{
+      provider: "venice",
+      fundingBinding: {
+        humanUserId: actor.userId,
+        provider: "venice",
+        binding: { kind: "server", providerRoute: "venice" },
+        credentialFingerprint: "a".repeat(32),
+      },
       endpoint: "/video/quote",
       pricingRequest: {
         model: request.model,
@@ -293,7 +301,47 @@ describe("D525 media generation server core", () => {
       currency: "USD",
       amountMicros: 410_000,
       display: "USD 0.410000",
+      kind: "exact",
     });
+  });
+
+  test("binds a marketplace estimate without presenting it as an exact quote", async () => {
+    const { core } = harness({ quote: async () => ({ amountUsdMicros: 105_600, kind: "estimate" }) });
+    const prepared = await preparedFrom(core);
+    expect(prepared.preview.quote).toEqual({
+      currency: "USD",
+      amountMicros: 105_600,
+      display: "USD 0.105600",
+      kind: "estimate",
+    });
+    expect(prepared.preview.spendNotice).toBe(
+      "Approving starts a paid generation using this current estimate. The final cost can be different.",
+    );
+    expect(verifyMediaGenerationPreparedApproval(prepared, {
+      userId: actor.userId,
+      roomId: actor.roomId,
+      origin: prepared.binding.origin,
+      approvalId: prepared.binding.approvalId,
+      receiptId: prepared.binding.receiptId,
+      digest: prepared.binding.approvalDigest,
+      quoteDigest: prepared.binding.quoteDigest,
+      revision: prepared.binding.revision,
+      now: NOW,
+    })).toBe(true);
+    expect(verifyMediaGenerationPreparedApproval({
+      ...prepared,
+      preview: { ...prepared.preview, quote: { ...prepared.preview.quote, kind: "exact" } },
+    }, {
+      userId: actor.userId,
+      roomId: actor.roomId,
+      origin: prepared.binding.origin,
+      approvalId: prepared.binding.approvalId,
+      receiptId: prepared.binding.receiptId,
+      digest: prepared.binding.approvalDigest,
+      quoteDigest: prepared.binding.quoteDigest,
+      revision: prepared.binding.revision,
+      now: NOW,
+    })).toBe(false);
   });
 
   test("queues exactly once and replays from the durable accepted receipt", async () => {

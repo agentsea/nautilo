@@ -26,6 +26,34 @@ export async function generateImagesOpenAi(
   apiKey: string,
 ): Promise<GenerateImagesResult> {
   const n = Math.min(4, Math.max(1, Math.floor(Number(args.count)) || 1));
+  const references = args.references ?? [];
+  if (references.length > 0) {
+    const body = new FormData();
+    body.set("model", args.model);
+    body.set("prompt", args.prompt);
+    body.set("n", String(n));
+    body.set("output_format", args.format);
+    body.set("background", args.background);
+    body.set("quality", args.quality);
+    if (args.size !== "auto") body.set("size", args.size);
+    for (const [index, reference] of references.entries()) {
+      const extension = reference.mime === "image/jpeg"
+        ? "jpg"
+        : reference.mime.slice("image/".length);
+      body.append(
+        "image[]",
+        new Blob([reference.bytes], { type: reference.mime }),
+        `reference-${index + 1}.${extension}`,
+      );
+    }
+    const res = await fetch("https://api.openai.com/v1/images/edits", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body,
+      redirect: "error",
+    });
+    return parseOpenAiImageResponse(res, n, args);
+  }
   const body: Record<string, unknown> = {
     model: args.model,
     prompt: args.prompt,
@@ -46,8 +74,17 @@ export async function generateImagesOpenAi(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    redirect: "error",
   });
 
+  return parseOpenAiImageResponse(res, n, args);
+}
+
+async function parseOpenAiImageResponse(
+  res: Response,
+  count: number,
+  args: GenerateImagesArgs,
+): Promise<GenerateImagesResult> {
   const bodyText = await res.text().catch(() => "");
   if (!res.ok) {
     throw new Error(
@@ -67,7 +104,7 @@ export async function generateImagesOpenAi(
   const row = data as { data?: Array<{ b64_json?: string }> };
   const items = row.data ?? [];
   const buffers: Buffer[] = [];
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < count; i++) {
     const b64 = items[i]?.b64_json;
     if (typeof b64 !== "string" || !b64.length) {
       throw new Error("OpenAI image generation failed: missing b64_json in response");

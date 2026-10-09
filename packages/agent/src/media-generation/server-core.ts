@@ -18,6 +18,7 @@ import type {
   MediaGenerationState,
 } from "@nautilo/db";
 import type { MediaGenerationPreparedApproval } from "@nautilo/types";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
 import {
   createUnboundMediaGenerationFailure,
   createMediaGenerationPreparedApproval,
@@ -64,7 +65,9 @@ export interface MediaGenerationCoreReceipt {
   readonly revision: number;
   readonly approvalDigest: string;
   readonly quoteDigest: string;
+  readonly provider?: "venice" | "surplus";
   readonly providerAccountFingerprint: string;
+  readonly fundingBinding?: DurableServiceFundingBinding;
   readonly requestPayload: MediaGenerationRequestPayload;
   readonly quotedUsdMicros: number;
   readonly safeFailure: MediaGenerationSafeFailure | null;
@@ -99,9 +102,11 @@ export interface MediaGenerationCoreRepository {
 
 export interface ExactMediaGenerationQuotePort {
   quote(input: Readonly<{
+    provider?: "venice" | "surplus";
+    fundingBinding?: DurableServiceFundingBinding;
     endpoint: "/video/quote" | "/audio/quote";
     pricingRequest: VeniceQuotePricingRequest;
-  }>): Promise<Readonly<{ amountUsdMicros: number }>>;
+  }>): Promise<Readonly<{ amountUsdMicros: number; kind?: "exact" | "estimate" }>>;
 }
 
 export interface VeniceMediaAdmissionPort {
@@ -124,8 +129,13 @@ export interface MediaGenerationServerCoreDependencies {
     request: MediaGenerationPreparationInput["request"],
     actor: MediaGenerationApprovalActorContext,
   ) => Promise<NormalizedMediaGenerationRequest>;
+  /** Select and freeze one payer/transport before quote or approval creation. */
+  readonly admitFunding?: (
+    actor: MediaGenerationApprovalActorContext,
+    request: NormalizedMediaGenerationRequest,
+  ) => Promise<DurableServiceFundingBinding>;
   /** One-way account discriminator, never the Venice key. */
-  readonly providerAccountFingerprint: string;
+  readonly providerAccountFingerprint?: string;
   readonly now?: () => Date;
   readonly approvalTtlMs?: number;
   readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
@@ -234,7 +244,6 @@ function safeSnapshot(request: NormalizedMediaGenerationRequest): MediaGeneratio
 function exactReceiptMatchesPrepared(
   receipt: MediaGenerationCoreReceipt,
   prepared: MediaGenerationPreparedApproval<NormalizedMediaGenerationRequest>,
-  providerAccountFingerprint: string,
   actor: MediaGenerationApprovalActorContext,
 ): boolean {
   const origin = prepared.binding.origin;
@@ -245,7 +254,11 @@ function exactReceiptMatchesPrepared(
     receipt.initiatingThreadId === expectedThreadId &&
     receipt.approvalDigest === prepared.binding.approvalDigest &&
     receipt.quoteDigest === prepared.binding.quoteDigest &&
-    receipt.providerAccountFingerprint === providerAccountFingerprint &&
+    (receipt.fundingBinding === undefined || (
+      receipt.providerAccountFingerprint === receipt.fundingBinding.credentialFingerprint &&
+      receipt.provider === receipt.fundingBinding.provider &&
+      receipt.ownerId === receipt.fundingBinding.humanUserId
+    )) &&
     receipt.quotedUsdMicros === prepared.quoteUsdMicros &&
     canonical(receipt.requestPayload) === canonical(requestPayload(prepared.request));
 }
@@ -283,7 +296,7 @@ function recoveryAction(
 
 function dbSafeFailure(failure: MediaGenerationFailure): MediaGenerationSafeFailure {
   const recoveryActions: MediaGenerationSafeFailure["recoveryActions"] =
-    failure.code === "VENICE_RATE_LIMITED" || failure.code === "VENICE_CAPACITY"
+    failure.code === "VENICE_RATE_LIMITED" || failure.code === "VENICE_CAPACITY" || failure.code === "SURPLUS_RATE_LIMITED"
       ? ["start_fresh"]
       : [...new Set(failure.recoveryActions.map(recoveryAction))];
   return {
@@ -393,13 +406,17 @@ function deterministicRefusal(
       failure.code === "VENICE_PAYLOAD_TOO_LARGE" ||
       failure.code === "VENICE_UNSUPPORTED_MEDIA" ||
       failure.code === "VENICE_RATE_LIMITED" ||
-      failure.code === "VENICE_CAPACITY") {
+      failure.code === "VENICE_CAPACITY" ||
+      failure.code === "SURPLUS_INVALID_REQUEST" ||
+      failure.code === "SURPLUS_MEDIA_ROUTE_UNSUPPORTED" ||
+      failure.code === "SURPLUS_RATE_LIMITED") {
     return { state: "failed", safeFailure };
   }
   if (failure.code === "VENICE_NEEDS_CONSENT" ||
       failure.code === "VENICE_AUTHENTICATION" ||
       failure.code === "VENICE_BILLING" ||
-      failure.code === "VENICE_ACCESS") {
+      failure.code === "VENICE_ACCESS" ||
+      failure.code === "SURPLUS_AUTHENTICATION") {
     return { state: "needs_action", safeFailure };
   }
   return null;
@@ -463,7 +480,8 @@ export function createMediaGenerationServerCore(
   if (!Number.isSafeInteger(approvalTtlMs) || approvalTtlMs <= 0) {
     throw new Error("media generation approval TTL must be a positive safe integer");
   }
-  if (!/^[a-f0-9]{16,128}$/u.test(dependencies.providerAccountFingerprint)) {
+  if (dependencies.providerAccountFingerprint !== undefined &&
+      !/^[a-f0-9]{16,128}$/u.test(dependencies.providerAccountFingerprint)) {
     throw new Error("media generation provider account fingerprint is invalid");
   }
 
@@ -504,15 +522,42 @@ export function createMediaGenerationServerCore(
       };
     }
     let amountUsdMicros: number;
-    await assertServerFunding(actor.userId, "media_generation_quote");
+    let quoteKind: "exact" | "estimate" = "exact";
+    let fundingBinding: DurableServiceFundingBinding;
+    try {
+      fundingBinding = dependencies.admitFunding
+        ? await dependencies.admitFunding(actor, request)
+        : await (async () => {
+            if (dependencies.assertCanUseServerProviderCredentials) {
+              await assertServerFunding(actor.userId, "media_generation_quote");
+            }
+            const fingerprint = dependencies.providerAccountFingerprint;
+            if (!fingerprint) throw new Error("media generation funding is unavailable");
+            return {
+              humanUserId: actor.userId,
+              provider: "venice" as const,
+              binding: { kind: "server" as const, providerRoute: "venice" },
+              credentialFingerprint: fingerprint,
+            };
+          })();
+    } catch {
+      return {
+        ok: false,
+        code: "quote_unavailable",
+        recovery: "The selected media account is unavailable. Repair its credentials and try again; no generation was started.",
+      };
+    }
     try {
       const quote = await dependencies.quotes.quote({
+        provider: fundingBinding.provider as "venice" | "surplus",
+        fundingBinding,
         endpoint: quoteEndpointFor(request),
         pricingRequest: toVeniceQuotePricingRequest(request),
       });
       amountUsdMicros = quote.amountUsdMicros;
+      quoteKind = quote.kind ?? "exact";
       if (!Number.isSafeInteger(amountUsdMicros) || amountUsdMicros < 0) {
-        throw new Error("invalid exact media quote");
+        throw new Error("invalid media price snapshot");
       }
     } catch (error) {
       if (error instanceof VeniceQuoteLifecycleError) {
@@ -539,6 +584,7 @@ export function createMediaGenerationServerCore(
         preparation: { ...input, request },
         receiptId,
         quoteUsdMicros: amountUsdMicros,
+        quoteKind,
         expiresAt: new Date(now().getTime() + approvalTtlMs).toISOString(),
       });
     } catch {
@@ -555,8 +601,10 @@ export function createMediaGenerationServerCore(
       initiatingAgentId: origin.kind === "genie_tool" ? actor.agentId : null,
       initiatingThreadId: origin.kind === "genie_tool" ? origin.threadId : null,
       kind: mediaGenerationKindForModel(request.model),
+      provider: fundingBinding.provider as "venice" | "surplus",
       providerModel: request.model,
-      providerAccountFingerprint: dependencies.providerAccountFingerprint,
+      providerAccountFingerprint: fundingBinding.credentialFingerprint,
+      fundingBinding,
       approvalDigest: prepared.binding.approvalDigest,
       quoteDigest: prepared.binding.quoteDigest,
       safeSnapshot: safeSnapshot(request),
@@ -566,7 +614,7 @@ export function createMediaGenerationServerCore(
 
     try {
       const receipt = await dependencies.repository.reserve(reservation);
-      if (!exactReceiptMatchesPrepared(receipt, prepared, dependencies.providerAccountFingerprint, actor) || receipt.state !== "prequeue") {
+      if (!exactReceiptMatchesPrepared(receipt, prepared, actor) || receipt.state !== "prequeue") {
         return {
           ok: false,
           code: "quote_binding_failed",
@@ -650,7 +698,7 @@ export function createMediaGenerationServerCore(
     } catch {
       return notStartedUnavailableResult(prepared);
     }
-    if (!receipt || !exactReceiptMatchesPrepared(receipt, prepared, dependencies.providerAccountFingerprint, actor)) {
+    if (!receipt || !exactReceiptMatchesPrepared(receipt, prepared, actor)) {
       return createUnboundMediaGenerationFailure({
         toolName: binding.origin.kind === "genie_tool" ? binding.origin.toolName : "generate_video",
         code: "MEDIA_RECEIPT_MISMATCH",
@@ -665,7 +713,6 @@ export function createMediaGenerationServerCore(
     }
     if (receipt.state !== "prequeue") return unavailableResult(prepared);
 
-    await assertServerFunding(actor.userId, "media_generation_submit");
     let proof: MediaGenerationAdmissionProof | null;
     try {
       proof = await dependencies.repository.beginAdmission(scope, receipt.receiptId, receipt.revision);
@@ -675,7 +722,7 @@ export function createMediaGenerationServerCore(
     if (!proof) {
       try {
         const raced = await dependencies.repository.find(scope, receipt.receiptId);
-        if (raced && exactReceiptMatchesPrepared(raced, prepared, dependencies.providerAccountFingerprint, actor)) {
+        if (raced && exactReceiptMatchesPrepared(raced, prepared, actor)) {
           if (isAcceptedState(raced.state)) return queuedResult(prepared);
           if (raced.state === "prequeue") return notStartedUnavailableResult(prepared);
           if (raced.state === "failed" || raced.state === "needs_action") {

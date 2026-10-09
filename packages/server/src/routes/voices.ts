@@ -1,4 +1,4 @@
-import { getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "@nautilo/agent";
+import { getServerSpeechModel, resolveFundedSpeechModel, estimateSpeechCostUsd, type SpeechModel, type UsageFundingProvenance } from "@nautilo/agent";
 import { dialogueSpeechResponse } from "../realtime/dialogue-speech";
 import { splitSpeechText } from "../realtime/speech-text";
 import { randomUUID } from "node:crypto";
@@ -20,13 +20,21 @@ import {
 } from "@nautilo/voice";
 import { isCloudManagedDeployment } from "@nautilo/config-guard";
 import {
-  safelyRecordProviderCost,
+  beginServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+  type ServerProviderCostAttemptAdmission,
+  type ServerProviderCostReceipt,
 } from "../costs/provider-cost-recorder";
 import {
   assertCanUseServerProviderCredentials,
   ServerProviderCredentialsDeniedError,
   toActionCapabilityHttpDenial,
 } from "@nautilo/trust";
+import {
+  directVoiceServiceFunding,
+  type VoiceServiceFunding,
+} from "../realtime/voice-service-funding";
+import { createCapabilityFundingSession } from "../lib/capability-funding";
 
 /** Featured customization floor — six voices spanning EN / ES / FR / DE / JA. */
 const FEATURED_CUSTOMIZATION_VOICE_IDS: Record<string, string> = {
@@ -72,7 +80,7 @@ const CURATED_VOICE_ID_SET = new Set(Object.values(FEATURED_CUSTOMIZATION_VOICE_
 function voiceProviderUnavailableMessage(): string {
   return isCloudManagedDeployment()
     ? "Managed voice service is unavailable"
-    : "ELEVENLABS_API_KEY is not set";
+    : "Voice provider credentials are not available";
 }
 import type { FastifyInstance } from "fastify";
 import type {
@@ -131,7 +139,7 @@ export type { VoiceCatalogEntry };
 
 type CatalogCache = { entries: VoiceCatalogEntry[]; expiresAt: number; cachedAt: number };
 
-let catalogCache: CatalogCache | null = null;
+const catalogCache = new Map<string, CatalogCache>();
 
 type CompatibleCatalogCacheEntry = {
   voices: CatalogVoice[];
@@ -159,6 +167,10 @@ export type VoiceCatalogPersistentCache = ProviderCatalogCache<VoiceCatalogPersi
 export interface VoiceRouteDeps {
   catalogCache?: VoiceCatalogPersistentCache | null | undefined;
   assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  funding?: VoiceServiceFunding;
+  beginCost?: (receipt: ServerProviderCostAttemptAdmission) => Promise<void>;
+  settleCost?: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  resolveSpeechModel?: (humanUserId: string, configuredId?: string) => Promise<SpeechModel>;
 }
 const compatibleCatalogCache = new Map<string, CompatibleCatalogCacheEntry>();
 const languageGroupCache = new Map<string, LanguageGroupCacheEntry>();
@@ -168,7 +180,24 @@ const compatibleCatalogRefreshInflight = new Map<string, Promise<void>>();
 const languageGroupRefreshInflight = new Map<string, Promise<void>>();
 const providerLanguageCache = new Map<string, ElevenLabsModelLanguageCache>();
 const providerLanguageInflight = new Map<string, Promise<Set<string>>>();
-const previewTimestamps: number[] = [];
+const previewTimestamps = new Map<string, number[]>();
+
+type VoiceProviderAccount = Readonly<{
+  fingerprint: string;
+  signal?: AbortSignal;
+  run<T>(callback: (attempt: { apiKey: string; usageFunding: UsageFundingProvenance }) => Promise<T>): Promise<T>;
+}>;
+
+function requestAbortSignal(
+  request: { raw: { once(event: "aborted", listener: () => void): unknown } },
+  reply: { raw: { once(event: "close", listener: () => void): unknown } },
+): AbortSignal {
+  const abort = new AbortController();
+  const cancel = () => abort.abort();
+  request.raw.once("aborted", cancel);
+  reply.raw.once("close", cancel);
+  return abort.signal;
+}
 
 /**
  * Generation guard for test resets. Incremented every time the shared catalog
@@ -182,18 +211,38 @@ const previewTimestamps: number[] = [];
  */
 let catalogCacheGeneration = 0;
 
-function prunePreviewTimestamps(): void {
-  const now = Date.now();
-  const cutoff = now - PREVIEW_RATE_WINDOW_MS;
-  while (previewTimestamps.length > 0 && previewTimestamps[0]! < cutoff) {
-    previewTimestamps.shift();
+function pruneExpiredVoiceState(now = Date.now()): void {
+  for (const [key, entry] of catalogCache) {
+    if (entry.expiresAt <= now) catalogCache.delete(key);
+  }
+  for (const [key, entry] of compatibleCatalogCache) {
+    if (entry.expiresAt <= now) compatibleCatalogCache.delete(key);
+  }
+  for (const [key, entry] of languageGroupCache) {
+    if (entry.expiresAt <= now) languageGroupCache.delete(key);
+  }
+  for (const [key, entry] of providerLanguageCache) {
+    if (entry.expiresAt <= now) providerLanguageCache.delete(key);
+  }
+
+  const previewCutoff = now - PREVIEW_RATE_WINDOW_MS;
+  for (const [key, timestamps] of previewTimestamps) {
+    while (timestamps.length > 0 && timestamps[0]! < previewCutoff) timestamps.shift();
+    if (timestamps.length === 0) previewTimestamps.delete(key);
   }
 }
 
-function allowPreview(): boolean {
-  prunePreviewTimestamps();
-  if (previewTimestamps.length >= PREVIEW_RATE_MAX) return false;
-  previewTimestamps.push(Date.now());
+function prunePreviewTimestamps(accountKey: string): number[] {
+  const now = Date.now();
+  pruneExpiredVoiceState(now);
+  return previewTimestamps.get(accountKey) ?? [];
+}
+
+function allowPreview(accountKey: string): boolean {
+  const timestamps = prunePreviewTimestamps(accountKey);
+  if (timestamps.length >= PREVIEW_RATE_MAX) return false;
+  timestamps.push(Date.now());
+  previewTimestamps.set(accountKey, timestamps);
   return true;
 }
 
@@ -512,22 +561,21 @@ function catalogFilterParams(params: Record<string, string>): Record<string, str
 }
 
 async function fetchSharedVoicesPage(
-  apiKey: string,
+  account: VoiceProviderAccount,
   params: Record<string, string>,
-  beforeProviderDispatch?: () => Promise<void>,
 ): Promise<{
   voices: ElevenLabsSharedVoiceRaw[];
   hasMore: boolean;
   totalCount: number;
 }> {
-  await beforeProviderDispatch?.();
   const url = new URL("https://api.elevenlabs.io/v1/shared-voices");
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
-  const res = await fetch(url.toString(), {
+  const res = await account.run(({ apiKey }) => fetch(url.toString(), {
     headers: { "xi-api-key": apiKey },
-  });
+    ...(account.signal ? { signal: account.signal } : {}),
+  }));
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`ElevenLabs shared-voices ${res.status}: ${body.slice(0, 200)}`);
@@ -545,10 +593,9 @@ async function fetchSharedVoicesPage(
 }
 
 async function fetchProviderLanguages(
-  apiKey: string,
-  beforeProviderDispatch?: () => Promise<void>,
+  account: VoiceProviderAccount,
 ): Promise<Set<string>> {
-  const fingerprint = providerAccountFingerprint(apiKey);
+  const fingerprint = account.fingerprint;
   const now = Date.now();
   const cached = providerLanguageCache.get(fingerprint);
   if (cached && cached.expiresAt > now) {
@@ -558,10 +605,10 @@ async function fetchProviderLanguages(
   if (inflight) return inflight;
 
   const promise = (async () => {
-    await beforeProviderDispatch?.();
-    const res = await fetch("https://api.elevenlabs.io/v1/models", {
+    const res = await account.run(({ apiKey }) => fetch("https://api.elevenlabs.io/v1/models", {
       headers: { "xi-api-key": apiKey },
-    });
+      ...(account.signal ? { signal: account.signal } : {}),
+    }));
     if (!res.ok) {
       await res.body?.cancel();
       throw new Error(`ElevenLabs models ${res.status}`);
@@ -602,14 +649,13 @@ async function mapWithConcurrency<T, R>(
 }
 
 async function fetchLanguageGroupsWithCounts(
-  apiKey: string,
+  account: VoiceProviderAccount,
   params: Record<string, string>,
   persistentCache: VoiceCatalogPersistentCache | null | undefined,
-  beforeProviderDispatch?: () => Promise<void>,
 ): Promise<CatalogLanguageGroup[]> {
   const countParams = catalogCountParams(params);
   const cacheKey = catalogCacheKey(countParams);
-  const fingerprint = providerAccountFingerprint(apiKey);
+  const fingerprint = account.fingerprint;
   const memoryKey = memoryCacheKey(fingerprint, cacheKey);
   const now = Date.now();
   const cached = languageGroupCache.get(memoryKey);
@@ -625,7 +671,7 @@ async function fetchLanguageGroupsWithCounts(
     const entry = { groups: stored.payload.groups, expiresAt: stored.payload.expiresAt };
     if (stored.state === "fresh") languageGroupCache.set(memoryKey, entry);
     if (stored.state === "stale") {
-      refreshLanguageGroupsCache(apiKey, countParams, cacheKey, persistentCache, beforeProviderDispatch);
+      refreshLanguageGroupsCache(account, countParams, cacheKey, persistentCache);
     }
     return entry.groups;
   }
@@ -633,7 +679,7 @@ async function fetchLanguageGroupsWithCounts(
   if (inflight) return inflight;
 
   const promise = (async () => {
-    const providerLanguages = await fetchProviderLanguages(apiKey, beforeProviderDispatch);
+    const providerLanguages = await fetchProviderLanguages(account);
     const languages = [...providerLanguages].sort((a, b) => {
       const rankDiff =
         languageGroupSortRank({ language: a, locale: null, label: "", count: 0 }) -
@@ -646,12 +692,12 @@ async function fetchLanguageGroupsWithCounts(
 
     const groups: CatalogLanguageGroup[] = (
       await mapWithConcurrency(languages, LANGUAGE_COUNT_CONCURRENCY, async (language) => {
-        const response = await fetchSharedVoicesPage(apiKey, {
+        const response = await fetchSharedVoicesPage(account, {
           ...countParams,
           language,
           page: "0",
           page_size: "1",
-        }, beforeProviderDispatch);
+        });
         return response.totalCount > 0 ?
             {
               language,
@@ -700,17 +746,16 @@ async function persistLanguageGroups(
 }
 
 function refreshLanguageGroupsCache(
-  apiKey: string,
+  account: VoiceProviderAccount,
   countParams: Record<string, string>,
   cacheKey: string,
   persistentCache: VoiceCatalogPersistentCache | null | undefined,
-  beforeProviderDispatch?: () => Promise<void>,
 ): void {
-  const memoryKey = memoryCacheKey(providerAccountFingerprint(apiKey), cacheKey);
+  const memoryKey = memoryCacheKey(account.fingerprint, cacheKey);
   if (languageGroupRefreshInflight.has(memoryKey)) return;
   const startedGeneration = catalogCacheGeneration;
   const promise = (async () => {
-    const providerLanguages = await fetchProviderLanguages(apiKey, beforeProviderDispatch);
+    const providerLanguages = await fetchProviderLanguages(account);
     const languages = [...providerLanguages].sort((a, b) => {
       const rankDiff =
         languageGroupSortRank({ language: a, locale: null, label: "", count: 0 }) -
@@ -722,12 +767,12 @@ function refreshLanguageGroupsCache(
     });
     const groups: CatalogLanguageGroup[] = (
       await mapWithConcurrency(languages, LANGUAGE_COUNT_CONCURRENCY, async (language) => {
-        const response = await fetchSharedVoicesPage(apiKey, {
+        const response = await fetchSharedVoicesPage(account, {
           ...countParams,
           language,
           page: "0",
           page_size: "1",
-        }, beforeProviderDispatch);
+        });
         return response.totalCount > 0 ?
             {
               language,
@@ -741,7 +786,7 @@ function refreshLanguageGroupsCache(
     const cachedAt = Date.now();
     if (catalogCacheGeneration !== startedGeneration) return;
     languageGroupCache.set(memoryKey, { groups, expiresAt: cachedAt + SHARED_CATALOG_TTL_MS });
-    await persistLanguageGroups(persistentCache, cacheKey, providerAccountFingerprint(apiKey), {
+    await persistLanguageGroups(persistentCache, cacheKey, account.fingerprint, {
       kind: "language-groups",
       groups,
       cachedAt,
@@ -803,14 +848,15 @@ export async function clearSharedCatalogCacheForTests(): Promise<void> {
   languageGroupRefreshInflight.clear();
   providerLanguageCache.clear();
   providerLanguageInflight.clear();
+  catalogCache.clear();
+  previewTimestamps.clear();
 }
 
 async function scanCompatibleCatalogEntry(
-  apiKey: string,
+  account: VoiceProviderAccount,
   filterParams: Record<string, string>,
   entry: CompatibleCatalogCacheEntry,
   targetCompatibleCount: number,
-  beforeProviderDispatch?: () => Promise<void>,
 ): Promise<CompatibleCatalogCacheEntry> {
   let scanned = 0;
   while (
@@ -818,11 +864,11 @@ async function scanCompatibleCatalogEntry(
     entry.upstreamHasMore &&
     scanned < COMPATIBLE_CATALOG_MAX_UPSTREAM_PAGES_PER_REQUEST
   ) {
-    const upstream = await fetchSharedVoicesPage(apiKey, {
+    const upstream = await fetchSharedVoicesPage(account, {
       ...filterParams,
       page: String(entry.nextUpstreamPage),
       page_size: String(COMPATIBLE_CATALOG_SCAN_PAGE_SIZE),
-    }, beforeProviderDispatch);
+    });
     entry.voices.push(...filterAndNormalizeSharedCatalog(upstream.voices));
     entry.nextUpstreamPage += 1;
     entry.upstreamHasMore = upstream.hasMore;
@@ -834,15 +880,14 @@ async function scanCompatibleCatalogEntry(
 }
 
 async function fillCompatibleCatalogCache(
-  apiKey: string,
+  account: VoiceProviderAccount,
   params: Record<string, string>,
   targetCompatibleCount: number,
   persistentCache: VoiceCatalogPersistentCache | null | undefined,
-  beforeProviderDispatch?: () => Promise<void>,
 ): Promise<CompatibleCatalogCacheEntry> {
   const filterParams = catalogFilterParams(params);
   const cacheKey = catalogCacheKey(filterParams);
-  const fingerprint = providerAccountFingerprint(apiKey);
+  const fingerprint = account.fingerprint;
   const memoryKey = memoryCacheKey(fingerprint, cacheKey);
 
   while (true) {
@@ -859,13 +904,12 @@ async function fillCompatibleCatalogCache(
     }
 
     const promise = loadOrScanCompatibleCatalogEntry(
-      apiKey,
+      account,
       filterParams,
       cacheKey,
       memoryKey,
       targetCompatibleCount,
       persistentCache,
-      beforeProviderDispatch,
     );
     compatibleCatalogInflight.set(memoryKey, promise);
     try {
@@ -877,27 +921,25 @@ async function fillCompatibleCatalogCache(
 }
 
 async function loadOrScanCompatibleCatalogEntry(
-  apiKey: string,
+  account: VoiceProviderAccount,
   filterParams: Record<string, string>,
   cacheKey: string,
   memoryKey: string,
   targetCompatibleCount: number,
   persistentCache: VoiceCatalogPersistentCache | null | undefined,
-  beforeProviderDispatch?: () => Promise<void>,
 ): Promise<CompatibleCatalogCacheEntry> {
   const now = Date.now();
-  const fingerprint = providerAccountFingerprint(apiKey);
+  const fingerprint = account.fingerprint;
   const memoryEntry = compatibleCatalogCache.get(memoryKey);
   if (memoryEntry && memoryEntry.expiresAt > now) {
     if (memoryEntry.voices.length >= targetCompatibleCount || !memoryEntry.upstreamHasMore) {
       return memoryEntry;
     }
     const filled = await scanCompatibleCatalogEntry(
-      apiKey,
+      account,
       filterParams,
       memoryEntry,
       targetCompatibleCount,
-      beforeProviderDispatch,
     );
     await persistCompatibleCatalogEntry(persistentCache, cacheKey, fingerprint, filled);
     return filled;
@@ -922,7 +964,7 @@ async function loadOrScanCompatibleCatalogEntry(
     if (stored.state === "fresh") compatibleCatalogCache.set(memoryKey, storedEntry);
     const usable = storedEntry.voices.length >= targetCompatibleCount || !storedEntry.upstreamHasMore;
     if (stored.state === "stale" && usable) {
-      refreshCompatibleCatalogCache(apiKey, filterParams, cacheKey, memoryKey, targetCompatibleCount, persistentCache, beforeProviderDispatch);
+      refreshCompatibleCatalogCache(account, filterParams, cacheKey, memoryKey, targetCompatibleCount, persistentCache);
       return storedEntry;
     }
     if (stored.state === "fresh" && usable) return storedEntry;
@@ -937,7 +979,7 @@ async function loadOrScanCompatibleCatalogEntry(
     expiresAt: now + SHARED_CATALOG_TTL_MS,
   };
   compatibleCatalogCache.set(memoryKey, entry);
-  const filled = await scanCompatibleCatalogEntry(apiKey, filterParams, entry, targetCompatibleCount, beforeProviderDispatch);
+  const filled = await scanCompatibleCatalogEntry(account, filterParams, entry, targetCompatibleCount);
   await persistCompatibleCatalogEntry(persistentCache, cacheKey, fingerprint, filled);
   return filled;
 }
@@ -961,13 +1003,12 @@ async function persistCompatibleCatalogEntry(
 }
 
 function refreshCompatibleCatalogCache(
-  apiKey: string,
+  account: VoiceProviderAccount,
   filterParams: Record<string, string>,
   cacheKey: string,
   memoryKey: string,
   targetCompatibleCount: number,
   persistentCache: VoiceCatalogPersistentCache | null | undefined,
-  beforeProviderDispatch?: () => Promise<void>,
 ): void {
   if (compatibleCatalogRefreshInflight.has(memoryKey)) return;
   const startedGeneration = catalogCacheGeneration;
@@ -980,11 +1021,11 @@ function refreshCompatibleCatalogCache(
     cachedAt: now,
     expiresAt: now + SHARED_CATALOG_TTL_MS,
   };
-  const promise = scanCompatibleCatalogEntry(apiKey, filterParams, entry, targetCompatibleCount, beforeProviderDispatch)
+  const promise = scanCompatibleCatalogEntry(account, filterParams, entry, targetCompatibleCount)
     .then(async (filled) => {
       if (catalogCacheGeneration !== startedGeneration) return;
       compatibleCatalogCache.set(memoryKey, filled);
-      await persistCompatibleCatalogEntry(persistentCache, cacheKey, providerAccountFingerprint(apiKey), filled);
+      await persistCompatibleCatalogEntry(persistentCache, cacheKey, account.fingerprint, filled);
     })
     .finally(() => {
       compatibleCatalogRefreshInflight.delete(memoryKey);
@@ -1016,18 +1057,76 @@ function curatedPayload(): VoiceCustomizationHydrationResponse["curated"] {
   });
 }
 
-async function synthesizePreviewMp3(apiKey: string, voiceId: string, text: string, model: SpeechModel): Promise<Buffer> {
+async function synthesizePreviewMp3(
+  account: VoiceProviderAccount,
+  voiceId: string,
+  text: string,
+  model: SpeechModel,
+  cost: Readonly<{
+    userId: string;
+    begin: (receipt: ServerProviderCostAttemptAdmission) => Promise<void>;
+    settle: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  }>,
+): Promise<Buffer> {
   const buffers: Buffer[] = [];
   for (const part of splitSpeechText(text, model.speech.maxInputCharacters)) {
-    const res = model.speech.transport === "elevenlabs-dialogue-http"
-      ? await dialogueSpeechResponse({ text: part, voiceId, model: model.providerModelId, format: "mp3_44100_128", apiKey,
-        signal: new AbortController().signal, onSubmitted() {} })
-      : await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`, {
-        method: "POST", headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ text: part, model_id: model.providerModelId, voice_settings: VOICE_SETTINGS }),
+    let admission: ServerProviderCostAttemptAdmission | undefined;
+    let attemptBegun = false;
+    let submitted = false;
+    let accepted = false;
+    let completed = false;
+    try {
+      const buffer = await account.run(async ({ apiKey, usageFunding }) => {
+        admission = {
+          identity: `elevenlabs:voice-preview:${randomUUID()}`,
+          userId: cost.userId,
+          usageFunding,
+          provider: "elevenlabs",
+          operation: "voice_preview",
+        };
+        await cost.begin(admission);
+        attemptBegun = true;
+        account.signal?.throwIfAborted();
+        const res = model.speech.transport === "elevenlabs-dialogue-http"
+          ? await dialogueSpeechResponse({
+              text: part,
+              voiceId,
+              model: model.providerModelId,
+              format: "mp3_44100_128",
+              apiKey,
+              signal: account.signal ?? new AbortController().signal,
+              onSubmitted() { submitted = true; },
+            })
+          : await (() => {
+              submitted = true;
+              return fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=mp3_44100_128`, {
+                method: "POST",
+                headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+                body: JSON.stringify({ text: part, model_id: model.providerModelId, voice_settings: VOICE_SETTINGS }),
+                ...(account.signal ? { signal: account.signal } : {}),
+              });
+            })();
+        accepted = res.ok;
+        if (!res.ok) {
+          await res.body?.cancel();
+          throw new Error("Speech preview provider unavailable");
+        }
+        const bytes = Buffer.from(await res.arrayBuffer());
+        completed = true;
+        return bytes;
       });
-    if (!res.ok) { await res.body?.cancel(); throw new Error("Speech preview provider unavailable"); }
-    buffers.push(Buffer.from(await res.arrayBuffer()));
+      buffers.push(buffer);
+    } finally {
+      if (attemptBegun && admission) {
+        await cost.settle({
+          ...admission,
+          estimatedCostUsd: accepted ? estimateSpeechCostUsd(part, model) : null,
+          evidenceState: accepted ? "estimated" : "unknown",
+          attemptOutcome: completed ? "succeeded" : account.signal?.aborted ? "cancelled" : submitted ? "failed" : "unknown",
+          ...(completed ? {} : { failureCode: account.signal?.aborted ? "cancelled" : "provider_error" }),
+        }).catch(() => {});
+      }
+    }
   }
   return Buffer.concat(buffers);
 }
@@ -1036,34 +1135,68 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
   const persistentCache = deps.catalogCache === undefined ? dbVoiceCatalogCache : deps.catalogCache;
   const assertServerFunding = deps.assertCanUseServerProviderCredentials
     ?? assertCanUseServerProviderCredentials;
-  const fundingGuard = (humanUserId: string, origin: string): (() => Promise<void>) => {
-    let admission: Promise<void> | undefined;
-    return () => admission ??= assertServerFunding(humanUserId, origin);
+  const funding = deps.funding ?? directVoiceServiceFunding;
+  const legacyServerTestSeam = Boolean(deps.assertCanUseServerProviderCredentials && !deps.funding);
+  const beginCost = deps.beginCost ?? (legacyServerTestSeam ? async () => {} : beginServerProviderCostAttempt);
+  const settleCost = deps.settleCost ?? (legacyServerTestSeam ? async () => {} : settleServerProviderCostAttempt);
+  const resolveSpeechModel = deps.resolveSpeechModel
+    ?? (deps.assertCanUseServerProviderCredentials && !deps.funding
+      ? () => Promise.resolve(getServerSpeechModel())
+      : async (humanUserId: string) => {
+          const selection = await createCapabilityFundingSession(humanUserId).resolveModel("speech");
+          return resolveFundedSpeechModel(selection.modelId);
+        });
+  const resolveAccount = async (humanUserId: string, origin: string, signal?: AbortSignal): Promise<VoiceProviderAccount> => {
+    pruneExpiredVoiceState();
+    // Existing route unit seams model a server-only account. Production uses
+    // the durable service funding owner even when the selected account is the server.
+    if (deps.assertCanUseServerProviderCredentials && !deps.funding) {
+      const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
+      if (!apiKey) throw new Error("provider_credentials_missing");
+      return {
+        fingerprint: providerAccountFingerprint(apiKey),
+        ...(signal ? { signal } : {}),
+        run: async callback => {
+          await assertServerFunding(humanUserId, origin);
+          return callback({ apiKey, usageFunding: { kind: "server", humanUserId, providerRoute: "elevenlabs" } });
+        },
+      };
+    }
+    const binding = await funding.admit(humanUserId, "elevenlabs");
+    return {
+      fingerprint: binding.credentialFingerprint,
+      ...(signal ? { signal } : {}),
+      run: callback => funding.run(binding, "spend", callback),
+    };
   };
   app.get("/api/voices", async (request, reply) => {
-    const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
     const curated = curatedPayload();
+    if (!request.sessionUserId) {
+      return reply.code(401).send({ error: "Authentication required" });
+    }
+    const ownerOrLoopback = requestAllowsOwnerOrLoopback(request);
+    if (!ownerOrLoopback && request.policyContext?.actorRole === "guest") {
+      return reply.code(403).send({ error: "Forbidden" });
+    }
+    const signal = requestAbortSignal(request, reply);
+    let account: VoiceProviderAccount | null = null;
+    try { account = await resolveAccount(request.sessionUserId, "voice_catalog_hydration", signal); }
+    catch { /* Missing or unavailable credentials are a steady-state hydration result. */ }
 
     // remote customization needs the guided curated floor and an
     // optional-voice capability, but must never enumerate provider-account
     // voices or call ElevenLabs merely to hydrate that screen.
-    if (!requestAllowsOwnerOrLoopback(request)) {
-      if (!request.sessionUserId) {
-        return reply.code(401).send({ error: "Authentication required" });
-      }
-      if (request.policyContext?.actorRole === "guest") {
-        return reply.code(403).send({ error: "Forbidden" });
-      }
+    if (!ownerOrLoopback) {
       const response: VoiceCustomizationHydrationResponse = {
         curated,
         voices: [],
-        elevenLabsConfigured: Boolean(apiKey),
+        elevenLabsConfigured: Boolean(account),
         cachedAt: null,
       };
       return reply.send(response);
     }
 
-    if (!apiKey) {
+    if (!account) {
       const response: VoiceCustomizationHydrationResponse = {
         curated,
         voices: [],
@@ -1074,23 +1207,20 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     }
 
     const now = Date.now();
-    if (catalogCache && catalogCache.expiresAt > now) {
+    const cachedCatalog = catalogCache.get(account.fingerprint);
+    if (cachedCatalog && cachedCatalog.expiresAt > now) {
       const response: VoiceCustomizationHydrationResponse = {
         curated,
-        voices: catalogCache.entries,
+        voices: cachedCatalog.entries,
         elevenLabsConfigured: true,
-        cachedAt: catalogCache.cachedAt,
+        cachedAt: cachedCatalog.cachedAt,
       };
       return reply.send(response);
     }
 
-    if (!request.sessionUserId) {
-      return reply.code(401).send({ error: "Authentication required" });
-    }
     try {
-      await assertServerFunding(request.sessionUserId, "voice_catalog_hydration");
-      const entries = await fetchElevenLabsCatalog(apiKey);
-      catalogCache = { entries, expiresAt: now + CATALOG_TTL_MS, cachedAt: now };
+      const entries = await account.run(({ apiKey }) => fetchElevenLabsCatalog(apiKey));
+      catalogCache.set(account.fingerprint, { entries, expiresAt: now + CATALOG_TTL_MS, cachedAt: now });
       const response: VoiceCustomizationHydrationResponse = {
         curated,
         voices: entries,
@@ -1122,8 +1252,10 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
       return reply.code(403).send({ error: "Forbidden" });
     }
 
-    const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
-    if (!apiKey) {
+    const signal = requestAbortSignal(request, reply);
+    let account: VoiceProviderAccount;
+    try { account = await resolveAccount(request.sessionUserId, "voice_catalog", signal); }
+    catch {
       return reply.code(400).send({
         error: voiceProviderUnavailableMessage(),
         voices: [] as CatalogVoice[],
@@ -1140,26 +1272,22 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     const queryRecord = request.query as Record<string, unknown>;
     const upstreamParams = pickCatalogQueryString(queryRecord);
     const now = Date.now();
-    const guard = fundingGuard(request.sessionUserId, "voice_catalog");
-
     try {
       const page = normalizeCatalogPage(upstreamParams["page"]);
       const pageSize = normalizeCatalogPageSize(upstreamParams["page_size"]);
       const neededCompatibleCount = (page + 1) * pageSize;
       const compatibleCache = await fillCompatibleCatalogCache(
-        apiKey,
+        account,
         upstreamParams,
         neededCompatibleCount,
         persistentCache,
-        guard,
       );
       const start = page * pageSize;
       const voices = compatibleCache.voices.slice(start, start + pageSize);
       const languageGroups = await fetchLanguageGroupsWithCounts(
-        apiKey,
+        account,
         upstreamParams,
         persistentCache,
-        guard,
       );
       const response: CatalogResponse = {
         voices,
@@ -1207,12 +1335,14 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
       return reply.code(400).send({ error: "Invalid voice id" });
     }
 
-    const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
-    if (!apiKey) {
+    const signal = requestAbortSignal(request, reply);
+    let account: VoiceProviderAccount;
+    try { account = await resolveAccount(request.sessionUserId, "voice_preview", signal); }
+    catch {
       return reply.code(400).send({ error: voiceProviderUnavailableMessage() });
     }
 
-    if (!allowPreview()) {
+    if (!allowPreview(account.fingerprint)) {
       return reply
         .code(429)
         .send({ error: "Too many preview requests; try again in a minute." });
@@ -1227,35 +1357,30 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     const textToSpeak =
       customText.length > 0 ? customText : AUDITION_SCRIPT_V2;
     let model: SpeechModel;
-    try { model = getServerSpeechModel(); }
+    try { model = await resolveSpeechModel(request.sessionUserId); }
     catch { return reply.code(503).send({ error: "The server speech model is unavailable." }); }
-    const path = previewFilePathForCustom(voiceId, JSON.stringify(["speech-preview-v1", model.id, model.providerModelId, model.speech.transport, "mp3_44100_128", VOICE_SETTINGS, textToSpeak]));
+    const path = previewFilePathForCustom(voiceId, JSON.stringify(["speech-preview-v2", account.fingerprint, model.id, model.providerModelId, model.speech.transport, "mp3_44100_128", VOICE_SETTINGS, textToSpeak]));
 
     if (existsSync(path)) {
       reply.header("Content-Type", "audio/mpeg");
-      reply.header("Cache-Control", "public, max-age=31536000");
+      reply.header("Cache-Control", "private, no-store");
       return reply.send(createReadStream(path));
     }
 
     try {
-      await assertServerFunding(request.sessionUserId, "voice_preview");
       // Ensure the parent directory exists. Both previewFilePath and
       // previewFilePathForCustom return paths under data/voice-previews/
       // which ensureDirectoryTree() creates on boot — the mkdir is
       // cheap insurance in case the zone was deleted at runtime.
       await mkdir(dirname(path), { recursive: true });
-      const buf = await synthesizePreviewMp3(apiKey, voiceId, textToSpeak, model);
-      await safelyRecordProviderCost({
-        identity: `elevenlabs:voice-preview:${randomUUID()}`,
+      const buf = await synthesizePreviewMp3(account, voiceId, textToSpeak, model, {
         userId: request.sessionUserId,
-        provider: "elevenlabs",
-        operation: "voice_preview",
-        estimatedCostUsd: estimateSpeechCostUsd(textToSpeak, model),
-        evidenceState: "estimated",
+        begin: beginCost,
+        settle: settleCost,
       });
       await writeFile(path, buf);
       reply.header("Content-Type", "audio/mpeg");
-      reply.header("Cache-Control", "public, max-age=31536000");
+      reply.header("Cache-Control", "private, no-store");
       return reply.send(createReadStream(path));
     } catch (error) {
       if (error instanceof ServerProviderCredentialsDeniedError) {

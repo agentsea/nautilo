@@ -18,7 +18,7 @@ export interface ProviderKeyCatalogueEntry {
   readonly formatHint?: string;
 }
 
-export const PERSONAL_PROVIDER_CAPABILITIES = ["chat", "research", "decision", "browsing", "conversion"] as const;
+export const PERSONAL_PROVIDER_CAPABILITIES = ["chat", "research", "decision", "browsing", "conversion", "images", "media", "voice", "transcription"] as const;
 export type PersonalProviderCapability = (typeof PERSONAL_PROVIDER_CAPABILITIES)[number];
 
 export interface PersonalProviderKeyCatalogueEntry extends ProviderKeyCatalogueEntry {
@@ -38,7 +38,7 @@ export const PROVIDER_KEY_CATALOGUE: readonly ProviderKeyCatalogueEntry[] = [
   { id: "together", name: "Together AI", envVar: "TOGETHER_API_KEY", category: "llm", purpose: "Together AI models", required: false, formatHint: "raw opaque API key" },
   { id: "venice", name: "Venice", envVar: "VENICE_API_KEY", category: "llm", purpose: "Venice AI — no-log inference proxy, anchor of the Paranoid tier", required: false, signupUrl: "https://venice.ai/settings/api", formatHint: "raw opaque API key (single printable line, 20+ chars)" },
   { id: "surplus", name: "Surplus Intelligence", envVar: "SURPLUS_API_KEY", category: "llm", purpose: "Marketplace serving for qualified text routes when Prefer Surplus is enabled", required: false, signupUrl: "https://www.surplusintelligence.ai/", formatHint: "raw Surplus buyer API key" },
-  { id: "elevenlabs", name: "ElevenLabs", envVar: "ELEVENLABS_API_KEY", category: "voice", purpose: "Text-to-speech — gives the assistant a voice", required: false, signupUrl: "https://elevenlabs.io/app/developers/api-keys", formatHint: "sk_..." },
+  { id: "elevenlabs", name: "ElevenLabs", envVar: "ELEVENLABS_API_KEY", category: "voice", purpose: "Speech and transcription with ElevenLabs", required: false, signupUrl: "https://elevenlabs.io/app/developers/api-keys", formatHint: "sk_..." },
   { id: "groq", name: "Groq", envVar: "GROQ_API_KEY", category: "voice", purpose: "Speech-to-text transcription (Whisper)", required: false, signupUrl: "https://console.groq.com/keys", formatHint: "gsk_..." },
   { id: "tavily", name: "Tavily", envVar: "TAVILY_API_KEY", category: "search", purpose: "Web search — enables internet access", required: false, signupUrl: "https://app.tavily.com/home", formatHint: "tvly-..." },
   { id: "browser-use", name: "Browser Use", envVar: "BROWSER_USE_API_KEY", category: "browser", purpose: "Protected website sign-in and cloud browser automation", required: false, signupUrl: "https://cloud.browser-use.com/settings?tab=api-keys&new=1", formatHint: "bu_..." },
@@ -76,7 +76,7 @@ export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalo
     purpose: entry.id === "surplus"
       ? "Marketplace serving for qualified personal chat and research routes; decisions require a pilot-enabled Surplus account"
       : entry.id === "openai"
-        ? "OpenAI text models; embeddings remain server-managed"
+        ? "OpenAI text and image models; embeddings remain server-managed"
         : entry.purpose,
     personalCapabilities: [
       ...(PERSONAL_CHAT_PROVIDER_IDS.has(entry.id) ? ["chat" as const] : []),
@@ -84,6 +84,10 @@ export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalo
       ...(PERSONAL_DECISION_PROVIDER_IDS.has(entry.id) ? ["decision" as const] : []),
       ...(entry.id === "browser-use" ? ["browsing" as const] : []),
       ...(entry.id === "cloudconvert" ? ["conversion" as const] : []),
+      ...(["openai", "openrouter", "google", "venice"].includes(entry.id) ? ["images" as const] : []),
+      ...(entry.id === "venice" ? ["media" as const] : []),
+      ...(entry.id === "elevenlabs" ? ["voice" as const] : []),
+      ...(["elevenlabs", "groq"].includes(entry.id) ? ["transcription" as const] : []),
     ],
   }));
 
@@ -93,6 +97,10 @@ const PERSONAL_PROVIDER_CAPABILITY_LABELS: Record<PersonalProviderCapability, st
   decision: "Decisions",
   browsing: "website browsing and actions",
   conversion: "cloud file conversion",
+  images: "image generation and supported edits",
+  media: "video and music generation",
+  voice: "speech and voice previews",
+  transcription: "audio transcription",
 };
 
 export function personalProviderCapabilitySummary(

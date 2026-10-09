@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createPersonalProviderCustody, decryptPersonalProviderCredential, encryptPersonalProviderCredential } from "@nautilo/operator-secrets";
 import type { PersonalProviderCredentialRecord } from "@nautilo/db";
-import type { PaidServiceProvider } from "@nautilo/types";
+import { PAID_SERVICE_PROVIDERS, type PaidServiceProvider } from "@nautilo/types";
 import {
   admitDurableServiceFunding,
+  bindAdmittedServiceFunding,
   admitLegacyServerServiceFunding,
   openServiceFunding,
   resolveServiceFunding,
@@ -83,7 +84,7 @@ describe("independent paid service funding", () => {
   });
 
   test("foreground admission supports every paid service provider", async () => {
-    for (const provider of ["tavily", "browser-use", "cloudconvert"] as const) {
+    for (const provider of PAID_SERVICE_PROVIDERS) {
       const h = harness();
       h.put(ALICE, 1, provider);
       const operation = await openServiceFunding(ALICE, provider, undefined, h.deps);
@@ -94,6 +95,19 @@ describe("independent paid service funding", () => {
 });
 
 describe("durable paid service funding", () => {
+  test("binding a model-selected personal media account cannot select a server payer after priority changes", async () => {
+    const h = harness(); h.put(ALICE, 1, "openai"); h.serverKeys.set("openai", "server-media");
+    const selected = await resolveServiceFunding(ALICE, "openai", undefined, h.deps);
+    h.priority("server_first");
+    const binding = await bindAdmittedServiceFunding(ALICE, "openai", selected, h.deps);
+    expect(binding.binding.kind).toBe("personal");
+    expect(await runWithDurableServiceFunding(binding, "spend", async ({ apiKey }) => apiKey, h.deps))
+      .toBe(`personal-${ALICE}-openai`);
+    h.put(ALICE, 2, "openai");
+    expect(runWithDurableServiceFunding(binding, "recover", async () => "should not run", h.deps))
+      .rejects.toThrow("personal_credential_stale");
+  });
+
   test("persists only non-secret creating-account facts and opens the key inside the callback", async () => {
     const h = harness();
     h.put(ALICE, 1, "browser-use", "bu_private_value");

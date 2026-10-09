@@ -65,8 +65,16 @@ export interface MediaGenerationApprovalPreview {
   readonly referenceVideos?: readonly Readonly<{ index: number; artifactId: string; label: string; durationSeconds: number; content?: MediaGenerationReferenceContent }>[];
   readonly referenceAudios?: readonly Readonly<{ index: number; artifactId: string; label: string; durationSeconds: number; content?: MediaGenerationReferenceContent }>[];
   readonly prompt: MediaGenerationPromptPreview;
-  readonly quote: { readonly currency: "USD"; readonly amountMicros: number; readonly display: string };
-  readonly spendNotice: "Approving starts a paid generation using this exact quote.";
+  readonly quote: {
+    readonly currency: "USD";
+    readonly amountMicros: number;
+    readonly display: string;
+    /** Missing only on already-checkpointed direct approvals from before estimate routing. */
+    readonly kind?: "exact" | "estimate";
+  };
+  readonly spendNotice:
+    | "Approving starts a paid generation using this exact quote."
+    | "Approving starts a paid generation using this current estimate. The final cost can be different.";
 }
 
 /** Public, secret-free approval projection carried over realtime. */
@@ -187,7 +195,8 @@ export function isMediaGenerationApprovalPreview(value: unknown): value is Media
   if ((prompt["characterCount"] as number) < prompt["summary"].length) return false;
   if (typeof prompt["truncated"] !== "boolean") return false;
   const quote = record(preview["quote"]);
-  if (!quote || !exactKeys(quote, ["currency", "amountMicros", "display"]) || quote["currency"] !== "USD") return false;
+  if (!quote || !exactKeys(quote, ["currency", "amountMicros", "display", ...(quote["kind"] === undefined ? [] : ["kind"])]) ||
+      quote["currency"] !== "USD" || (quote["kind"] !== undefined && quote["kind"] !== "exact" && quote["kind"] !== "estimate")) return false;
   if (!Number.isSafeInteger(quote["amountMicros"]) || (quote["amountMicros"] as number) < 0) return false;
   if (typeof quote["display"] !== "string" || !/^USD [0-9]+\.[0-9]{6}$/.test(quote["display"])) return false;
   const amountMicros = quote["amountMicros"] as number;
@@ -250,7 +259,10 @@ export function isMediaGenerationApprovalPreview(value: unknown): value is Media
     (typeof duration !== "number" || duration < 1 || duration > 600)) return false;
   if ((model === "seedance-2-5-text-to-video-basic" || model === "seedance-2-5-reference-to-video-basic" || model === "minimax-h3-enhanced-text-to-video") &&
     !["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].includes(settings["aspectRatio"] as string)) return false;
-  return preview["spendNotice"] === "Approving starts a paid generation using this exact quote.";
+  const quoteKind = quote["kind"] ?? "exact";
+  return preview["spendNotice"] === (quoteKind === "exact"
+    ? "Approving starts a paid generation using this exact quote."
+    : "Approving starts a paid generation using this current estimate. The final cost can be different.");
 }
 
 export function isMediaGenerationApproval(value: unknown): value is MediaGenerationApproval {

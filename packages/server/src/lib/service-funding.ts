@@ -28,6 +28,13 @@ const SERVER_KEY_ENV = {
   tavily: "TAVILY_API_KEY",
   "browser-use": "BROWSER_USE_API_KEY",
   cloudconvert: "CLOUDCONVERT_API_KEY",
+  elevenlabs: "ELEVENLABS_API_KEY",
+  groq: "GROQ_API_KEY",
+  openai: "OPENAI_API_KEY",
+  openrouter: "OPENROUTER_API_KEY",
+  google: "GOOGLE_API_KEY",
+  venice: "VENICE_API_KEY",
+  surplus: "SURPLUS_API_KEY",
 } as const satisfies Readonly<Record<PaidServiceProvider, string>>;
 
 const DEFAULT_DEPS: ServiceFundingDeps = {
@@ -164,6 +171,19 @@ export async function resolveServiceFunding(
   if (!serverAllowed) throw new ModelFundingError(personalAllowed ? "personal_credential_missing" : "server_credentials_forbidden");
   if (!deps.serverKey(provider)) throw new ModelFundingError("provider_credentials_missing");
   return { kind: "server", providerRoute: provider };
+}
+
+/** Pin a model-selected payer/transport without repeating fresh source selection. */
+export async function bindAdmittedServiceFunding(
+  humanUserId: string,
+  provider: PaidServiceProvider,
+  binding: TaskFundingBinding,
+  deps: ServiceFundingDeps = DEFAULT_DEPS,
+): Promise<DurableServiceFundingBinding> {
+  const checked = await resolveServiceFunding(humanUserId, provider, binding, deps);
+  const fingerprint = await withFundingKey(humanUserId, provider, checked, undefined,
+    ({ apiKey }) => credentialFingerprint(provider, apiKey), deps);
+  return Object.freeze({ humanUserId, provider, binding: checked, credentialFingerprint: fingerprint });
 }
 
 /**

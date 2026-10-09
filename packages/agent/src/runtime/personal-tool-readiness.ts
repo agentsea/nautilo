@@ -12,8 +12,7 @@ function hasPersonalCapabilityFunding(): boolean {
 /** These execution families do not yet have personal funding admission. */
 const DEFERRED_PERSONAL_TOOLS = new Set([
   "in_scope", "in_private_namespace", "ask_peer", "generate_repo_docs",
-  "regenerate_soul", "security_scan", "find_voice", "audition_voices",
-  "transcribe_audio", "generate_image", "generate_video", "generate_music",
+  "regenerate_soul", "security_scan",
 ]);
 
 /** Ordinary tools retain their existing permission/content/device gates. */

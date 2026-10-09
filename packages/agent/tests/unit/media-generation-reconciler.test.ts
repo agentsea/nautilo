@@ -32,12 +32,17 @@ function claim(overrides: Partial<ClaimedMediaGeneration> = {}): ClaimedMediaGen
     state: "queued",
     revision: 1,
     kind: "video",
+    provider: "venice",
+    providerAccountFingerprint: "a".repeat(64),
+    fundingBinding: null,
     providerModel: "seedance-2-5-text-to-video-basic",
     providerQueueId: "provider-private-queue",
     providerExecutionSeconds: null,
     providerAverageExecutionSeconds: null,
     artifactInternalId: null,
     cleanupState: "pending",
+    quotedUsdMicros: 410_000,
+    actualUsdMicros: null,
     ...overrides,
   };
 }
@@ -82,6 +87,7 @@ class FakeRepository implements MediaGenerationReconcilerRepository {
     to: ClaimedMediaGeneration["state"];
     safeFailure?: MediaGenerationSafeFailure | null;
     artifactInternalId?: string;
+    actualUsdMicros?: number;
   }): Promise<ClaimedMediaGeneration | null> {
     if (this.staleTransitionTo === input.to || !this.current ||
         this.current.revision !== input.expectedRevision || this.current.state !== input.from) return null;
@@ -95,6 +101,7 @@ class FakeRepository implements MediaGenerationReconcilerRepository {
       state: input.to,
       revision: input.expectedRevision + 1,
       ...(input.artifactInternalId === undefined ? {} : { artifactInternalId: input.artifactInternalId }),
+      ...(input.actualUsdMicros === undefined ? {} : { actualUsdMicros: input.actualUsdMicros }),
       ...(input.to === "failed" || input.to === "needs_action" || input.to === "unknown"
         ? { cleanupState: this.current.cleanupState }
         : {}),
@@ -219,6 +226,7 @@ async function reconciler(input: {
   custody?: ReturnType<typeof custody>;
   lifecycle?: ReturnType<typeof lifecycle>;
   maxBytes?: number;
+  settleCost?: ConstructorParameters<typeof MediaGenerationReconciler>[0]["settleCost"];
 }) {
   const repository = input.repository ?? new FakeRepository(input.initial ?? claim());
   const mediaCustody = input.custody ?? custody();
@@ -229,6 +237,7 @@ async function reconciler(input: {
     artifacts: mediaCustody,
     serverArtifactRoot: await root(),
     maxBytesFor: () => input.maxBytes ?? 1_000_000,
+    ...(input.settleCost === undefined ? {} : { settleCost: input.settleCost }),
     now: () => NOW,
   });
   return { worker, repository, mediaCustody, mediaLifecycle };
@@ -319,6 +328,55 @@ describe("D525 restart-safe media generation reconciler", () => {
       state: "durably_committed",
     });
     expect(h.repository.current).toMatchObject({ state: "ready", cleanupState: "completed" });
+  });
+
+  test("keeps a durably committed result ready while cost settlement is retried", async () => {
+    let settlementAttempts = 0;
+    const repository = new FakeRepository(claim({ provider: "surplus" }));
+    const mediaLifecycle = lifecycle({
+      retrieve: async (accepted) => ({
+        state: "binary",
+        receiptId: accepted.receiptId,
+        contentType: "video/mp4",
+        body: mp4Stream(),
+        actualCostUsdMicros: 105_600,
+      }),
+    });
+    const first = await reconciler({
+      repository,
+      lifecycle: mediaLifecycle,
+      settleCost: async () => {
+        settlementAttempts += 1;
+        throw new Error("recorder unavailable");
+      },
+    });
+
+    expect(await first.worker.runOnce({ workerId: "worker-cost" })).toMatchObject({ rescheduled: 1 });
+    expect(repository.current).toMatchObject({
+      state: "ready",
+      cleanupState: "pending",
+      actualUsdMicros: 105_600,
+      artifactInternalId: identity().artifactInternalId,
+    });
+    expect(first.mediaCustody.commits).toBe(1);
+    expect(first.mediaLifecycle.calls.complete).toBe(0);
+    expect(repository.cleanupReschedules.at(-1)?.failure.code).toBe("MEDIA_COST_SETTLEMENT_RETRY");
+
+    let settledActual: number | undefined;
+    const restarted = await reconciler({
+      repository,
+      custody: custody({ existing: identity() }),
+      lifecycle: mediaLifecycle,
+      settleCost: async (_claim, evidence) => {
+        settlementAttempts += 1;
+        settledActual = evidence.actualUsdMicros;
+      },
+    });
+    expect(await restarted.worker.runOnce({ workerId: "worker-cost" })).toMatchObject({ completed: 1 });
+    expect(settlementAttempts).toBe(2);
+    expect(settledActual).toBe(105_600);
+    expect(restarted.mediaLifecycle.calls.retrieve).toBe(1);
+    expect(repository.current).toMatchObject({ state: "ready", cleanupState: "completed" });
   });
 
   test("an over-cap accepted result stays on the same receipt and safely reschedules persistence", async () => {

@@ -6,6 +6,7 @@ export type TranscriptionInput = {
   mime: string;
   language?: string;
   timestamps?: boolean;
+  signal?: AbortSignal;
 };
 
 export type TranscriptionResult = {

@@ -7,6 +7,7 @@
  */
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   check,
   foreignKey,
   index,
@@ -23,6 +24,7 @@ import { agents } from "./agents";
 import { rooms } from "./rooms";
 import { namespaces } from "./trust";
 import { users } from "./users";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
 
 export const MEDIA_GENERATION_STATES = [
   "prequeue", "admitting", "queued", "retrieving", "saving", "ready", "needs_action", "failed", "unknown",
@@ -31,6 +33,9 @@ export type MediaGenerationState = (typeof MEDIA_GENERATION_STATES)[number];
 
 export const MEDIA_GENERATION_KINDS = ["video", "music"] as const;
 export type MediaGenerationKind = (typeof MEDIA_GENERATION_KINDS)[number];
+
+export const MEDIA_GENERATION_PROVIDERS = ["venice", "surplus"] as const;
+export type MediaGenerationProvider = (typeof MEDIA_GENERATION_PROVIDERS)[number];
 
 export const MEDIA_GENERATION_CLEANUP_STATES = ["pending", "completed"] as const;
 export type MediaGenerationCleanupState = (typeof MEDIA_GENERATION_CLEANUP_STATES)[number];
@@ -116,10 +121,12 @@ export const mediaGenerations = pgTable(
     initiatingAgentId: uuid("initiating_agent_id").references(() => agents.id, { onDelete: "restrict" }),
     initiatingThreadId: text("initiating_thread_id"),
     kind: text("kind", { enum: MEDIA_GENERATION_KINDS }).notNull(),
-    provider: text("provider").notNull().default("venice"),
+    provider: text("provider", { enum: MEDIA_GENERATION_PROVIDERS }).notNull().default("venice"),
     providerModel: text("provider_model").notNull(),
     /** A one-way account discriminator, never an API key. */
     providerAccountFingerprint: text("provider_account_fingerprint").notNull(),
+    /** Exact non-secret creating-account binding. Null is reserved for pre-BYOK Venice rows. */
+    fundingBinding: jsonb("funding_binding").$type<DurableServiceFundingBinding>(),
     /** Protected server-only queue coordinate. It is deliberately absent from public projections. */
     providerQueueId: text("provider_queue_id"),
     /** DB-minted queue-admission fence; never accepted from a tool caller. */
@@ -130,6 +137,8 @@ export const mediaGenerations = pgTable(
     safeSnapshot: jsonb("safe_snapshot").$type<MediaGenerationSafeSnapshot>().notNull(),
     requestPayload: jsonb("request_payload").$type<MediaGenerationRequestPayload>().notNull(),
     quotedUsdMicros: integer("quoted_usd_micros").notNull(),
+    /** Final provider-reported buyer charge. Null means no terminal amount was captured. */
+    actualUsdMicros: bigint("actual_usd_micros", { mode: "number" }),
     state: text("state", { enum: MEDIA_GENERATION_STATES }).notNull().default("prequeue"),
     revision: integer("revision").notNull().default(0),
     safeFailure: jsonb("safe_failure").$type<MediaGenerationSafeFailure>(),
@@ -168,9 +177,34 @@ export const mediaGenerations = pgTable(
       foreignColumns: [rooms.id, rooms.namespaceId],
     }).onDelete("restrict"),
     check("media_generations_receipt_portable", sql`octet_length(${table.receiptId}) between 1 and 128 and ${table.receiptId} ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'`),
-    check("media_generations_provider_fixed", sql`${table.provider} = 'venice' and octet_length(${table.providerModel}) between 1 and 256 and octet_length(${table.providerAccountFingerprint}) between 16 and 128`),
+    check("media_generations_provider_shape", sql`
+      ${table.provider} in ('venice', 'surplus')
+      and octet_length(${table.providerModel}) between 1 and 256
+      and octet_length(${table.providerAccountFingerprint}) between 16 and 128
+      and ((${table.fundingBinding} is null and ${table.provider} = 'venice') or coalesce((
+        jsonb_typeof(${table.fundingBinding}) = 'object'
+        and ${table.fundingBinding} ?& array['humanUserId', 'provider', 'binding', 'credentialFingerprint']
+        and ${table.fundingBinding} - 'humanUserId' - 'provider' - 'binding' - 'credentialFingerprint' = '{}'::jsonb
+        and (${table.ownerId} is null or ${table.fundingBinding}->>'humanUserId' = ${table.ownerId}::text)
+        and ${table.fundingBinding}->>'provider' = ${table.provider}
+        and ${table.fundingBinding}->>'credentialFingerprint' = ${table.providerAccountFingerprint}
+        and jsonb_typeof(${table.fundingBinding}->'binding') = 'object'
+        and ${table.fundingBinding}->'binding'->>'providerRoute' = ${table.provider}
+        and (
+          (${table.fundingBinding}->'binding'->>'kind' = 'server'
+            and (${table.fundingBinding}->'binding') - 'kind' - 'providerRoute' = '{}'::jsonb)
+          or
+          (${table.fundingBinding}->'binding'->>'kind' = 'personal'
+            and (${table.fundingBinding}->'binding') ?& array['credentialId', 'credentialRevision']
+            and (${table.fundingBinding}->'binding') - 'kind' - 'providerRoute' - 'credentialId' - 'credentialRevision' = '{}'::jsonb
+            and jsonb_typeof(${table.fundingBinding}->'binding'->'credentialRevision') = 'number'
+            and (${table.fundingBinding}->'binding'->>'credentialRevision')::numeric >= 1)
+        )
+      ), false))
+    `),
     check("media_generations_digests", sql`${table.approvalDigest} ~ '^[0-9a-f]{64}$' and ${table.quoteDigest} ~ '^[0-9a-f]{64}$'`),
     check("media_generations_quote_nonnegative", sql`${table.quotedUsdMicros} >= 0`),
+    check("media_generations_actual_cost_nonnegative", sql`${table.actualUsdMicros} is null or ${table.actualUsdMicros} >= 0`),
     check("media_generations_revision_nonnegative", sql`${table.revision} >= 0`),
     check("media_generations_provider_timing_nonnegative", sql`
       (${table.providerExecutionSeconds} is null or ${table.providerExecutionSeconds} between 0 and 2147483647)

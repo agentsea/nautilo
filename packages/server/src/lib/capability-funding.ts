@@ -1,7 +1,7 @@
 import { candidatesForModelRole, type ModelRole } from "@nautilo/config";
 import {
   getEligibleModels, listResolvedCatalogModels, resolveCatalogModel,
-  type CapabilityFundingSession, type PersonalCapabilityRole,
+  type CapabilityFundingSession,
 } from "@nautilo/agent";
 import {
   getPersonalCapabilityPreferences,
@@ -11,13 +11,17 @@ import {
 import {
   parseTaskFundingBinding,
   type PersonalCapabilityPreferences,
+  type ResearchCapabilityRole,
+  isMediaCapabilityRole,
   type TaskFundingBinding,
 } from "@nautilo/types";
-import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
+import { ModelFundingError, createModelFundingSnapshot, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
 import { usageFundingFor } from "./foreground-chat-funding";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
 import { openServiceFunding } from "./service-funding";
+import { mediaPreferenceFunding, resolvePersonalMediaModel } from "./media-model-preferences";
+import { openMediaFunding } from "./media-funding";
 
 const RESEARCH_ROLES = {
   webSearchSynthesis: { role: "webSearchSynthesis", env: "NAUTILO_WEB_SEARCH_MODEL", tools: false },
@@ -26,7 +30,7 @@ const RESEARCH_ROLES = {
   deepResearchSummarization: { role: "deepResearchSynthesis", env: "SUMMARIZATION_MODEL", tools: false },
   deepResearchCompression: { role: "deepResearchSynthesis", env: "COMPRESSION_MODEL", tools: false },
   deepResearchFinalReport: { role: "deepResearchFinalReport", env: "FINAL_REPORT_MODEL", tools: false },
-} satisfies Record<Exclude<PersonalCapabilityRole, "decision">, { role: ModelRole; env: string; tools: boolean }>;
+} satisfies Record<ResearchCapabilityRole, { role: ModelRole; env: string; tools: boolean }>;
 
 function assertModel(
   modelId: string,
@@ -65,14 +69,14 @@ export function createCapabilityFundingSession(
     ?? ((humanId: string) => getPersonalCapabilityPreferences(getServerDirectDb(), humanId));
   const resolveCatalog = overrides.resolveCatalog ?? resolveCatalogModel;
   let projectionCustody: ReturnType<typeof readPersonalProviderCustody> | undefined;
-  const validateProjectionCredential = async (decision: ModelFundingDecision): Promise<void> => {
+  const validateProjectionCredential = async (decision: TaskFundingBinding): Promise<void> => {
     if (!projectionDeps || decision.kind !== "personal") return;
     const provider = (PERSONAL_PROVIDER_IDS as readonly string[]).includes(decision.providerRoute)
       ? decision.providerRoute as PersonalProviderId
       : null;
     if (!provider) throw new ModelFundingError("personal_credential_unavailable");
-    const credential = await projectionDeps.getCredential(decision.humanUserId, provider);
-    if (!credential || credential.userId !== decision.humanUserId
+    const credential = await projectionDeps.getCredential(humanUserId, provider);
+    if (!credential || credential.userId !== humanUserId
       || credential.provider !== provider || credential.id !== decision.credentialId
       || credential.revision !== decision.credentialRevision) {
       throw new ModelFundingError("personal_credential_unavailable");
@@ -94,6 +98,9 @@ export function createCapabilityFundingSession(
     async resolveModel(role, configuredId) {
       await recheckAuthority();
       const preferences = await readPreferences(humanUserId);
+      if (isMediaCapabilityRole(role)) {
+        return resolvePersonalMediaModel(humanUserId, role, configuredId, preferences, projectionDeps, validateProjectionCredential);
+      }
       const explicit = configuredId?.trim() || preferences.overrides[role];
       const research = role === "decision" ? null : RESEARCH_ROLES[role];
       const configured = explicit || (research ? process.env[research.env]?.trim() : undefined);
@@ -159,6 +166,18 @@ export function createCapabilityFundingSession(
         },
       };
     },
+    async projectMediaFunding(modelId, role) {
+      await recheckAuthority();
+      const funding = await mediaPreferenceFunding(humanUserId, modelId, role, projectionDeps);
+      await validateProjectionCredential(funding);
+      return funding.kind === "personal"
+        ? { kind: "personal", providerRoute: funding.providerRoute, credentialId: funding.credentialId, credentialRevision: funding.credentialRevision }
+        : { kind: "server", providerRoute: funding.providerRoute };
+    },
+    async openMedia(modelId, family, options) {
+      await recheckAuthority();
+      return openMediaFunding(humanUserId, modelId, family, options, recheckAuthority);
+    },
     async openService(provider, prior) {
       await recheckAuthority();
       const admitted = await openServiceFunding(humanUserId, provider, prior);
@@ -173,7 +192,22 @@ export function createCapabilityFundingSession(
 
 /** Readiness is a projection; the selected operation still admits and rechecks live. */
 export async function prepareCapabilityFundingSession(humanUserId: string, recheckAuthority: () => Promise<void>, parentFundingKind: "personal" | "server"): Promise<CapabilityFundingSession> {
+  await recheckAuthority();
+  const [snapshot, preferences] = await Promise.all([
+    createModelFundingSnapshot(humanUserId),
+    getPersonalCapabilityPreferences(getServerDirectDb(), humanUserId),
+  ]);
+  // Share one read-only snapshot while probing candidates; execution below
+  // keeps fresh policy, permission and credential checks for every attempt.
+  const projection = createCapabilityFundingSession(humanUserId, undefined, snapshot.deps, {
+    readPreferences: () => Promise.resolve(preferences),
+  });
   const session = createCapabilityFundingSession(humanUserId, recheckAuthority);
-  const decisionModelId = await session.resolveModel("decision").then((choice) => choice.modelId).catch(() => null);
-  return { ...session, decisionModelId, parentFundingKind };
+  const [decisionModelId, image, video, music] = await Promise.all([
+    projection.resolveModel("decision").then((choice) => choice.modelId).catch(() => null),
+    projection.resolveModel("imageGeneration").then(() => true).catch(() => false),
+    projection.resolveModel("videoGeneration").then(() => true).catch(() => false),
+    projection.resolveModel("musicGeneration").then(() => true).catch(() => false),
+  ]);
+  return { ...session, decisionModelId, parentFundingKind, mediaGenerationReady: { image, video, music } };
 }

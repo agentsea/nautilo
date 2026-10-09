@@ -20,6 +20,9 @@ export async function generateImagesVenice(
   args: GenerateImagesArgs,
   apiKey: string,
 ): Promise<GenerateImagesResult> {
+  if ((args.references?.length ?? 0) > 0) {
+    throw new Error(`Venice image model ${args.model} has no qualified reference-edit request shape.`);
+  }
   const body: Record<string, unknown> = {
     model: args.model,
     prompt: args.prompt,
@@ -39,6 +42,7 @@ export async function generateImagesVenice(
       "Content-Type": "application/json",
     },
     body: JSON.stringify(body),
+    redirect: "error",
   });
   const text = await response.text().catch(() => "");
   if (!response.ok) {

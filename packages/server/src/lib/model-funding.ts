@@ -31,7 +31,8 @@ export type ModelFundingWorkload =
   | "native_text_task"
   | "research"
   | "decision"
-  | "image_assistance";
+  | "image_assistance"
+  | "generation";
 
 /** Runnable personal chat adapters; storing a service key never enables its paid path. */
 export const PERSONAL_CHAT_PROVIDER_IDS = [
@@ -116,6 +117,12 @@ export function resolveServerFundingRoute(
   const decision = resolveCatalogModel(modelId, { env });
   const preferSurplus = input.preferSurplus
     ?? getCachedServerModelConfigRow()?.preferSurplus === true;
+  if (decision.workload === "generation") {
+    // Generation has its own transport contract; a chat alias never admits it.
+    if (decision.provider === "openrouter" && !env["OPENROUTER_API_KEY"]?.trim()) return null;
+    return decision.availability === "selectable" && modelHasRunnableCredentials(modelId, env)
+      ? decision.provider : null;
+  }
   if (decision.workload === "decision") {
     if (!["selectable", "missing_credentials"].includes(decision.availability)) return null;
     const surplus = resolveSurplusDecisionServingAvailability({
@@ -156,7 +163,7 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   serverRoute: (modelId, _workload, transport) => resolveServerFundingRoute(modelId, {
     ...(transport === undefined ? {} : { preferSurplus: transport === "surplus" }),
   }),
-  personalSurplusRoute: (modelId, workload) => (workload === "decision" ? resolveSurplusDecisionServingAvailability : resolveSurplusChatServingAvailability)({
+  personalSurplusRoute: (modelId, workload) => workload !== "generation" && (workload === "decision" ? resolveSurplusDecisionServingAvailability : resolveSurplusChatServingAvailability)({
     catalogModelId: modelId,
     policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
     keyConfigured: true, fundingKind: "personal",
@@ -216,7 +223,7 @@ export async function resolveModelFunding(
 ): Promise<ModelFundingDecision> {
   if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task"
     && input.workload !== "research" && input.workload !== "decision"
-    && input.workload !== "image_assistance") {
+    && input.workload !== "image_assistance" && input.workload !== "generation") {
     throw new ModelFundingError("unsupported_workload");
   }
   if (input.workload === "image_assistance" && input.transport !== "direct") {

@@ -35,6 +35,7 @@ export class ElevenLabsTranscriptionProvider implements TranscriptionProvider {
         "xi-api-key": this.apiKey,
       },
       body: form,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
 
     if (!response.ok) {

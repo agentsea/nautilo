@@ -11,22 +11,21 @@ describe("provider key catalogue", () => {
     expect(PERSONAL_PROVIDER_KEY_CATALOGUE.some(({ id }) => id === "gateway")).toBe(false);
     expect(PERSONAL_PROVIDER_KEY_CATALOGUE.map(({ id }) => id)).not.toContain("nautilo-gateway");
     expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "openai")).toMatchObject({
-      purpose: "OpenAI text models; embeddings remain server-managed",
-      personalCapabilities: ["chat", "research"],
+      purpose: "OpenAI text and image models; embeddings remain server-managed",
+      personalCapabilities: ["chat", "research", "images"],
     });
     expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "tavily")?.personalCapabilities).toEqual(["research"]);
     expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "typesafe")?.personalCapabilities).toEqual(["decision"]);
-    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "openrouter")?.personalCapabilities).toEqual(["chat", "research", "decision"]);
-    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "venice")?.personalCapabilities).toEqual(["chat", "research", "decision"]);
+    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "openrouter")?.personalCapabilities).toEqual(["chat", "research", "decision", "images"]);
+    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "venice")?.personalCapabilities).toEqual(["chat", "research", "decision", "images", "media"]);
     for (const id of ["xai", "together"] as const) {
       expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find((entry) => entry.id === id)).toMatchObject({
         personalCapabilities: ["chat", "research"],
         category: "llm",
       });
     }
-    for (const id of ["elevenlabs", "groq"] as const) {
-      expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find((entry) => entry.id === id)?.personalCapabilities).toEqual([]);
-    }
+    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find((entry) => entry.id === "elevenlabs")?.personalCapabilities).toEqual(["voice", "transcription"]);
+    expect(PERSONAL_PROVIDER_KEY_CATALOGUE.find((entry) => entry.id === "groq")?.personalCapabilities).toEqual(["transcription"]);
     expect(JSON.stringify(PROVIDER_KEY_CATALOGUE)).not.toContain("formatCheck");
     expect(JSON.stringify(PROVIDER_KEY_CATALOGUE)).not.toContain("doctorHints");
   });

@@ -42,11 +42,53 @@ export class SpeechCapacity {
     });
   }
 
+  /** A pool entry is safe to retire only when it cannot own or grant work. */
+  isIdle(): boolean {
+    return this.active === 0 && this.waiting.length === 0;
+  }
+
   private drain(): void {
     while (this.active < this.limit && this.waiting.length > 0) {
       const next = this.waiting.shift()!;
       if (!next.signal.aborted) next.grant();
       else next.cancel();
     }
+  }
+}
+
+// Match the provider-model metadata cache lifetime. Observed account limits
+// remain useful across nearby turns, while inactive personal accounts do not
+// accumulate for the lifetime of the server process.
+const SPEECH_CAPACITY_IDLE_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Keeps provider-advertised concurrency limits isolated to one paid account. */
+export class SpeechCapacityPool {
+  private readonly accounts = new Map<string, { capacity: SpeechCapacity; lastUsedAt: number }>();
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly idleTtlMs = SPEECH_CAPACITY_IDLE_TTL_MS,
+  ) {}
+
+  forAccount(accountKey: string): SpeechCapacity {
+    const now = this.now();
+    for (const [key, entry] of this.accounts) {
+      if (
+        key !== accountKey &&
+        now - entry.lastUsedAt >= this.idleTtlMs &&
+        entry.capacity.isIdle()
+      ) {
+        this.accounts.delete(key);
+      }
+    }
+
+    let entry = this.accounts.get(accountKey);
+    if (!entry) {
+      entry = { capacity: new SpeechCapacity(), lastUsedAt: now };
+      this.accounts.set(accountKey, entry);
+    } else {
+      entry.lastUsedAt = now;
+    }
+    return entry.capacity;
   }
 }

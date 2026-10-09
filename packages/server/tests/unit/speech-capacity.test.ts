@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { SpeechCapacity } from "../../src/realtime/speech-capacity";
+import { SpeechCapacity, SpeechCapacityPool } from "../../src/realtime/speech-capacity";
 
 test("provider capacity admits waiting owners in order and removes cancellation", async () => {
   const capacity = new SpeechCapacity();
@@ -41,4 +41,49 @@ test("the provider's current maximum adjusts capacity without cancelling active 
   const next = capacity.acquire(signal).then(release => { nextAdmitted = true; return release; });
   first(); second(); await Promise.resolve(); expect(nextAdmitted).toBe(false);
   third(); const last = await next; expect(nextAdmitted).toBe(true); last();
+});
+
+test("provider limits remain isolated to the exact paid account", async () => {
+  const pool = new SpeechCapacityPool();
+  const signal = new AbortController().signal;
+  const personal = pool.forAccount("elevenlabs:personal-a");
+  const server = pool.forAccount("elevenlabs:server");
+  personal.observeMaximum("1");
+  server.observeMaximum("2");
+
+  const releasePersonal = await personal.acquire(signal);
+  let secondPersonalAdmitted = false;
+  const secondPersonal = personal.acquire(signal).then(release => {
+    secondPersonalAdmitted = true;
+    return release;
+  });
+  const releaseServerA = await server.acquire(signal);
+  const releaseServerB = await server.acquire(signal);
+
+  await Promise.resolve();
+  expect(secondPersonalAdmitted).toBe(false);
+  releaseServerA();
+  releaseServerB();
+  await Promise.resolve();
+  expect(secondPersonalAdmitted).toBe(false);
+  releasePersonal();
+  const releasePersonalB = await secondPersonal;
+  expect(secondPersonalAdmitted).toBe(true);
+  releasePersonalB();
+});
+
+test("retires expired idle accounts without replacing active account semaphores", async () => {
+  let now = 0;
+  const pool = new SpeechCapacityPool(() => now, 100);
+  const first = pool.forAccount("account-a");
+  const release = await first.acquire(new AbortController().signal);
+
+  now = 101;
+  pool.forAccount("account-b");
+  expect(pool.forAccount("account-a")).toBe(first);
+
+  release();
+  now = 202;
+  pool.forAccount("account-c");
+  expect(pool.forAccount("account-a")).not.toBe(first);
 });

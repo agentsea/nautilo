@@ -42,7 +42,7 @@ describe("D525 prepared paid media approval", () => {
     expect(valid).toEqual({
       ok: false,
       code: "quote_unavailable",
-      recovery: "Configure Venice for media generation, then request a fresh quote. No generation was started.",
+      recovery: "Configure media generation funding, then request a fresh price. No generation was started.",
     });
     expect(valid).not.toHaveProperty("prepared");
     expect(valid).not.toHaveProperty("receiptId");
@@ -195,7 +195,7 @@ describe("D525 prepared paid media approval", () => {
     if (!first.ok) return;
     const approval = mediaGenerationApprovalFromPrepared(first.prepared);
     expect(approval.preview.quote).toEqual({
-      currency: "USD", amountMicros: 1_250_000, display: "USD 1.250000",
+      currency: "USD", amountMicros: 1_250_000, display: "USD 1.250000", kind: "exact",
     });
     expect(approval.preview.prompt.summary).not.toContain("provider.example");
     expect(approval.preview.prompt.summary.length).toBeLessThanOrEqual(160);

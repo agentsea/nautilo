@@ -3174,8 +3174,8 @@ export async function createApp(options?: CreateAppOptions) {
   markReady("eventBridge");
 
   // server-side TTS streaming. Subscribes to voice.sentence events on
-  // the event bus and broadcasts voice.audio chunks via WS. No-op when
-  // ELEVENLABS_API_KEY is unset.
+  // the event bus and broadcasts voice.audio chunks via WS. Each turn admits
+  // its initiating Human's direct ElevenLabs funding independently.
   getTtsService().start();
 
   // Full Workstation access wiring.

@@ -76,7 +76,7 @@ The tool-card loads a preview only when the Human requests it; lock in with mana
         .describe("Suggested slate size when using convenience mode (defaults to 3; discovery owns its actual supported range)"),
     }),
 
-    func: async ({ candidates, role, sampleText, language, query, accent, limit }) => {
+    func: async ({ candidates, role, sampleText, language, query, accent, limit }, _runManager, config) => {
       try {
         const discoveryInput: DiscoverVoicesInput = {};
         if (language !== undefined) discoveryInput.language = language;
@@ -97,7 +97,7 @@ The tool-card loads a preview only when the Human requests it; lock in with mana
         }
 
         const convenienceInput = { ...discoveryInput, limit: limit ?? DEFAULT_SUGGESTED_SLATE_SIZE };
-        const discovered = await discoverVoices(convenienceInput, context, dependencies);
+        const discovered = await discoverVoices(convenienceInput, context, dependencies, config?.signal);
         const result: AuditionVoicesToolResult = {
           slate: discovered.candidates,
           suggestedSlate: true,
@@ -116,6 +116,7 @@ The tool-card loads a preview only when the Human requests it; lock in with mana
         }
         return JSON.stringify(result);
       } catch (e) {
+        if (config?.signal?.aborted) throw e;
         if (e instanceof ServerProviderCredentialsDeniedError) throw e;
         const msg = e instanceof Error ? e.message : String(e);
         return JSON.stringify({

@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal provider keys can fund image generation and editing, video/music,
+  ElevenLabs speech and transcription, and existing Groq transcription under
+  the administrator's funding policy. Personal capability settings include
+  image, video, music and speech models with inherited server defaults. Media
+  jobs and voice streams retain their creating account, and Costs distinguishes
+  estimates, actual charges and unresolved attempts.
+
 - Personal Browser Use and CloudConvert keys can fund website work and file
   conversion under the administrator's credential policy. Existing browser
   profiles and submitted conversions retain their creating account through

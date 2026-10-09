@@ -41,6 +41,7 @@ export class GroqTranscriptionProvider implements TranscriptionProvider {
         authorization: `Bearer ${this.apiKey}`,
       },
       body: form,
+      ...(input.signal ? { signal: input.signal } : {}),
     });
 
     if (!response.ok) {

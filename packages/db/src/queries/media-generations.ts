@@ -2,15 +2,18 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import {
+  parseDurableServiceFundingBinding,
   validateWorkspaceLogicalPath,
   VENICE_REFERENCE_AUDIO_MAX_BYTES,
   WORKSPACE_LOGICAL_PATH_MAX_CHARS,
+  type DurableServiceFundingBinding,
 } from "@nautilo/types";
 import type { DirectDatabase } from "../config/direct-database";
 import {
   mediaGenerations,
   type MediaGeneration,
   type MediaGenerationKind,
+  type MediaGenerationProvider,
   type MediaGenerationNormalizedSettings,
   type MediaGenerationRequestPayload,
   type MediaGenerationSafeFailure,
@@ -36,8 +39,10 @@ export interface CreateMediaGenerationInput extends MediaGenerationScope {
   readonly initiatingAgentId: string | null;
   readonly initiatingThreadId: string | null;
   readonly kind: MediaGenerationKind;
+  readonly provider: MediaGenerationProvider;
   readonly providerModel: string;
   readonly providerAccountFingerprint: string;
+  readonly fundingBinding: DurableServiceFundingBinding;
   readonly approvalDigest: string;
   readonly quoteDigest: string;
   readonly safeSnapshot: MediaGenerationSafeSnapshot;
@@ -53,6 +58,7 @@ export interface MediaGenerationTransitionInput extends MediaGenerationScope {
   readonly to: MediaGenerationState;
   readonly safeFailure?: MediaGenerationSafeFailure | null;
   readonly artifactInternalId?: string;
+  readonly actualUsdMicros?: number;
   readonly nextAttemptAt?: Date;
   readonly terminalAt?: Date | null;
 }
@@ -73,9 +79,14 @@ export interface ClaimedMediaGeneration {
   readonly state: MediaGenerationState;
   readonly revision: number;
   readonly kind: MediaGenerationKind;
+  readonly provider: MediaGenerationProvider;
   readonly providerModel: string;
+  readonly providerAccountFingerprint: string;
+  readonly fundingBinding: DurableServiceFundingBinding | null;
   /** Server-only provider coordinate. Never project this into a card or tool result. */
   readonly providerQueueId: string | null;
+  readonly quotedUsdMicros: number;
+  readonly actualUsdMicros: number | null;
   /** Last validated provider timing, needed to keep elapsed display monotonic across worker restarts. */
   readonly providerExecutionSeconds: number | null;
   /** Last validated provider P80 duration; presentation labels this as typical time. */
@@ -102,8 +113,13 @@ const claimedMediaGenerationColumns = {
   state: mediaGenerations.state,
   revision: mediaGenerations.revision,
   kind: mediaGenerations.kind,
+  provider: mediaGenerations.provider,
   providerModel: mediaGenerations.providerModel,
+  providerAccountFingerprint: mediaGenerations.providerAccountFingerprint,
+  fundingBinding: mediaGenerations.fundingBinding,
   providerQueueId: mediaGenerations.providerQueueId,
+  quotedUsdMicros: mediaGenerations.quotedUsdMicros,
+  actualUsdMicros: mediaGenerations.actualUsdMicros,
   providerExecutionSeconds: mediaGenerations.providerExecutionSeconds,
   providerAverageExecutionSeconds: mediaGenerations.providerAverageExecutionSeconds,
   artifactInternalId: mediaGenerations.artifactInternalId,
@@ -137,7 +153,10 @@ export interface MediaGenerationAdmissionProof extends MediaGenerationScope {
   readonly revision: number;
   readonly admissionToken: string;
   readonly kind: MediaGenerationKind;
+  readonly provider: MediaGenerationProvider;
   readonly providerModel: string;
+  readonly providerAccountFingerprint: string;
+  readonly fundingBinding: DurableServiceFundingBinding;
   readonly requestPayload: MediaGenerationRequestPayload;
   readonly [mediaGenerationAdmissionProofBrand]: true;
 }
@@ -153,6 +172,12 @@ function assertNonempty(value: string, label: string): void {
 
 function assertRevision(value: number): void {
   if (!Number.isSafeInteger(value) || value < 0) throw new Error("expectedRevision must be a nonnegative safe integer");
+}
+
+function assertUsdMicros(value: number, label: string, maximum = Number.MAX_SAFE_INTEGER): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    throw new Error(`${label} must be nonnegative exact USD micros`);
+  }
 }
 
 function assertSafeTimestamp(value: Date, label: string): Date {
@@ -228,7 +253,7 @@ function assertDeterministicAdmissionRefusal(
   }
 
   if (refusal.state === "needs_action" &&
-      (failure["code"] === "VENICE_AUTHENTICATION" || failure["code"] === "VENICE_BILLING") &&
+      (failure["code"] === "VENICE_AUTHENTICATION" || failure["code"] === "VENICE_BILLING" || failure["code"] === "SURPLUS_AUTHENTICATION") &&
       failure["retrySafe"] === true &&
       failure["chargeCertainty"] === "not_charged" &&
       failure["creditsRefunded"] === undefined &&
@@ -259,7 +284,8 @@ function assertDeterministicAdmissionRefusal(
   if (refusal.state === "failed" &&
       (failure["code"] === "VENICE_INVALID_REQUEST" ||
        failure["code"] === "VENICE_PAYLOAD_TOO_LARGE" ||
-       failure["code"] === "VENICE_UNSUPPORTED_MEDIA") &&
+       failure["code"] === "VENICE_UNSUPPORTED_MEDIA" ||
+       failure["code"] === "SURPLUS_INVALID_REQUEST") &&
       failure["retrySafe"] === false &&
       failure["chargeCertainty"] === "not_charged" &&
       creditsRefunded === undefined &&
@@ -268,13 +294,16 @@ function assertDeterministicAdmissionRefusal(
   }
 
   if (refusal.state === "failed" &&
-      (failure["code"] === "VENICE_RATE_LIMITED" || failure["code"] === "VENICE_CAPACITY") &&
+      (failure["code"] === "VENICE_RATE_LIMITED" || failure["code"] === "VENICE_CAPACITY" || failure["code"] === "SURPLUS_RATE_LIMITED") &&
       failure["retrySafe"] === true &&
       failure["chargeCertainty"] === "not_charged" &&
       creditsRefunded === undefined &&
       hasExactRecoveryActions(failure["recoveryActions"], ["start_fresh"])) {
     return;
   }
+  if (refusal.state === "failed" && failure["code"] === "SURPLUS_MEDIA_ROUTE_UNSUPPORTED" &&
+      failure["retrySafe"] === false && failure["chargeCertainty"] === "not_charged" &&
+      creditsRefunded === undefined && hasExactRecoveryActions(failure["recoveryActions"], ["switch_model"])) return;
   throw new Error("unsupported deterministic admission refusal");
 }
 
@@ -426,8 +455,14 @@ export async function createMediaGeneration(
   if (input.initiatingAgentId !== null) assertNonempty(input.initiatingAgentId, "initiatingAgentId");
   if (input.initiatingThreadId !== null) assertNonempty(input.initiatingThreadId, "initiatingThreadId");
   if (!Number.isSafeInteger(input.quotedUsdMicros) || input.quotedUsdMicros < 0) throw new Error("quotedUsdMicros must be a nonnegative safe integer");
+  assertUsdMicros(input.quotedUsdMicros, "quotedUsdMicros", 2_147_483_647);
   assertMediaGenerationSafeSnapshot(input.safeSnapshot);
   assertMediaGenerationRequestPayload(input.requestPayload, input.providerModel);
+  const funding = parseDurableServiceFundingBinding(input.fundingBinding);
+  if (funding.humanUserId !== input.ownerId || funding.provider !== input.provider ||
+      funding.credentialFingerprint !== input.providerAccountFingerprint) {
+    throw new Error("media generation funding binding does not match its owner and provider");
+  }
   const [row] = await db.insert(mediaGenerations).values({ ...input }).returning();
   if (!row) throw new Error("media generation receipt insert returned no row");
   return row;
@@ -469,10 +504,28 @@ export async function beginMediaGenerationAdmission(
     isNull(mediaGenerations.providerQueueId),
   )).returning({
     kind: mediaGenerations.kind,
+    provider: mediaGenerations.provider,
     providerModel: mediaGenerations.providerModel,
+    providerAccountFingerprint: mediaGenerations.providerAccountFingerprint,
+    fundingBinding: mediaGenerations.fundingBinding,
     requestPayload: mediaGenerations.requestPayload,
   });
   if (!row) return null;
+  const provider = row.provider ?? "venice";
+  const providerAccountFingerprint = row.providerAccountFingerprint ?? "0".repeat(64);
+  const fundingBinding = row.fundingBinding === null || row.fundingBinding === undefined
+    ? {
+        humanUserId: input.ownerId,
+        provider,
+        binding: { kind: "server" as const, providerRoute: provider },
+        credentialFingerprint: providerAccountFingerprint,
+      }
+    : parseDurableServiceFundingBinding(row.fundingBinding);
+  if (fundingBinding.humanUserId !== input.ownerId ||
+      fundingBinding.provider !== provider ||
+      fundingBinding.credentialFingerprint !== providerAccountFingerprint) {
+    throw new Error("media generation admission funding binding is invalid");
+  }
   return {
     ownerId: input.ownerId,
     roomId: input.roomId,
@@ -481,7 +534,10 @@ export async function beginMediaGenerationAdmission(
     revision: input.expectedRevision + 1,
     admissionToken,
     kind: row.kind,
+    provider,
     providerModel: row.providerModel,
+    providerAccountFingerprint,
+    fundingBinding,
     requestPayload: row.requestPayload,
     [mediaGenerationAdmissionProofBrand]: true,
   };
@@ -579,6 +635,7 @@ export async function transitionMediaGeneration(
   input: MediaGenerationTransitionInput,
 ): Promise<MediaGeneration | null> {
   assertScope(input); assertNonempty(input.receiptId, "receiptId"); assertRevision(input.expectedRevision);
+  if (input.actualUsdMicros !== undefined) assertUsdMicros(input.actualUsdMicros, "actualUsdMicros");
   if (!TRANSITIONS[input.from].includes(input.to)) throw new Error(`illegal media generation transition ${input.from} -> ${input.to}`);
   const now = new Date();
   const [row] = await db.update(mediaGenerations).set({
@@ -586,6 +643,7 @@ export async function transitionMediaGeneration(
     revision: input.expectedRevision + 1,
     ...(input.safeFailure === undefined ? {} : { safeFailure: input.safeFailure }),
     ...(input.artifactInternalId === undefined ? {} : { artifactInternalId: input.artifactInternalId }),
+    ...(input.actualUsdMicros === undefined ? {} : { actualUsdMicros: input.actualUsdMicros }),
     ...(input.nextAttemptAt === undefined ? {} : { nextAttemptAt: assertSafeTimestamp(input.nextAttemptAt, "nextAttemptAt") }),
     ...(input.terminalAt === undefined ? {} : { terminalAt: input.terminalAt === null ? null : assertSafeTimestamp(input.terminalAt, "terminalAt") }),
     ...(input.to === "ready" ? { readyAt: now } : {}),
@@ -661,6 +719,7 @@ export async function transitionClaimedMediaGeneration(
 ): Promise<ClaimedMediaGeneration | null> {
   const claimedInput = { ...input, state: input.from };
   assertClaimInput(claimedInput);
+  if (input.actualUsdMicros !== undefined) assertUsdMicros(input.actualUsdMicros, "actualUsdMicros");
   if (!TRANSITIONS[input.from].includes(input.to)) throw new Error(`illegal media generation transition ${input.from} -> ${input.to}`);
   const now = assertSafeTimestamp(input.now, "claimed transition time");
   const retainsClaim = input.to === "retrieving" || input.to === "saving" || input.to === "ready";
@@ -669,6 +728,7 @@ export async function transitionClaimedMediaGeneration(
     revision: input.expectedRevision + 1,
     ...(input.safeFailure === undefined ? {} : { safeFailure: input.safeFailure }),
     ...(input.artifactInternalId === undefined ? {} : { artifactInternalId: input.artifactInternalId }),
+    ...(input.actualUsdMicros === undefined ? {} : { actualUsdMicros: input.actualUsdMicros }),
     ...(input.nextAttemptAt === undefined ? {} : { nextAttemptAt: assertSafeTimestamp(input.nextAttemptAt, "nextAttemptAt") }),
     ...(input.terminalAt === undefined ? {} : { terminalAt: input.terminalAt === null ? null : assertSafeTimestamp(input.terminalAt, "terminalAt") }),
     ...(input.to === "ready" ? { readyAt: now } : {}),

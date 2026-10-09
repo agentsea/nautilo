@@ -221,7 +221,8 @@ export function registerAllTools(
   });
   const isOfficeCliAvailable = options.officeCliAvailable ?? officeCliAvailable;
   const mediaGenerationAvailable = options.mediaGenerationAvailable ?? ((kind: "video" | "music") =>
-    hasMediaGenerationApprovalRuntime() && Boolean(process.env["VENICE_API_KEY"]?.trim()) && activeCatalogHasMediaKind(kind));
+    hasMediaGenerationApprovalRuntime() && activeCatalogHasMediaKind(kind)
+      && (getCapabilityFundingSession()?.mediaGenerationReady?.[kind] ?? Boolean(process.env["VENICE_API_KEY"]?.trim())));
   // the factory itself accepts only a narrow port + trusted
   // context through the opaque catalog context. Registration deliberately
   // does not choose targets, relays, or filesystem authority.
@@ -1371,7 +1372,7 @@ export function registerAllTools(
     tags: ["audio", "transcription", "stt", "voice"],
     requiresApproval: true,
     approvalLevel: "confirm",
-    requiredCapabilities: ["use_transcription", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_transcription"],
     resultScanPolicy: "on-suspicious",
   });
 
@@ -1416,7 +1417,7 @@ export function registerAllTools(
     impact: "low",
     exposure: "discoverable",
     tags: ["image", "generate", "media"],
-    requiredCapabilities: ["use_image_generation", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_image_generation"],
     resultScanPolicy: "never",
   });
 
@@ -1432,7 +1433,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "destructive",
     exposure: "discoverable",
-    requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_media_generation"],
     requiresApproval: true,
     approvalLevel: "prove_it",
     tags: [
@@ -1450,7 +1451,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "destructive",
     exposure: "discoverable",
-    requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_media_generation"],
     requiresApproval: true,
     approvalLevel: "prove_it",
     tags: ["audio", "music", "generate", "media", "paid", "venice"],

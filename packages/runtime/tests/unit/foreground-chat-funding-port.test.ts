@@ -166,7 +166,6 @@ describe("foreground chat funding port", () => {
           protectedTurn,
         });
       const shapes = [
-        { voiceMode: true },
         { attachmentTextBlocks: ["text"] }, { retainedAttachmentIds: ["attachment"] },
         { artifactRefs: [{ id: "artifact" }] }, { focusedResources: [{ id: "resource" }] },
         { activeMiniApp: {} }, { liveMiniAppSession: {} },
@@ -183,15 +182,14 @@ describe("foreground chat funding port", () => {
     },
   );
 
-  test("personal sessions admit images but refuse unrelated voice work", () => {
-    expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, { hasImages: true, voiceRequested: false })).not.toThrow();
+  test("personal chat permits independently admitted voice without widening protected or resource access", () => {
+    expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, { hasImages: true, voiceRequested: true })).not.toThrow();
     for (const workload of [
-      { hasImages: false, voiceRequested: true },
+      { hasImages: false, voiceRequested: true, hasResources: true },
+      { hasImages: false, voiceRequested: true, protectedTurn: true },
     ]) {
-      expect(() => assertForegroundChatFundingWorkloadSupported(
-        personalSession,
-        workload,
-      )).toThrow(ForegroundChatFundingUnsupportedWorkloadError);
+      expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, workload))
+        .toThrow(ForegroundChatFundingUnsupportedWorkloadError);
     }
   });
 

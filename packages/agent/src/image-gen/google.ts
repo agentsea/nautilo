@@ -16,12 +16,23 @@ async function fetchGeminiOneImage(
   apiModel: string,
   apiKey: string,
   prompt: string,
+  references: GenerateImagesArgs["references"],
 ): Promise<{ bytes: Buffer; mime: string }> {
   const res = await fetch(geminiGenerateContentUrl(apiModel, apiKey), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      contents: [{
+        parts: [
+          ...(references ?? []).map((reference) => ({
+            inlineData: {
+              mimeType: reference.mime,
+              data: reference.bytes.toString("base64"),
+            },
+          })),
+          { text: prompt },
+        ],
+      }],
       generationConfig: { responseModalities: ["IMAGE"] },
       safetySettings: [
         // ARCH: filters at documented minimum — see ISSUE-D113 §5.
@@ -115,7 +126,12 @@ export async function generateImagesGoogle(
     const buffers: Buffer[] = [];
     let mime = "image/png";
     for (let i = 0; i < n; i++) {
-      const one = await fetchGeminiOneImage(args.model, apiKey, args.prompt);
+      const one = await fetchGeminiOneImage(
+        args.model,
+        apiKey,
+        args.prompt,
+        args.references,
+      );
       buffers.push(one.bytes);
       mime = one.mime;
     }
@@ -123,6 +139,9 @@ export async function generateImagesGoogle(
   }
 
   if (id.includes("imagen-4")) {
+    if ((args.references?.length ?? 0) > 0) {
+      throw new Error(`Google image model ${args.model} does not support reference editing.`);
+    }
     const batch = await fetchImagenBatch(args.model, apiKey, args.prompt, args.count);
     return { bytes: batch.bytes, model: args.model, mime: batch.mime };
   }

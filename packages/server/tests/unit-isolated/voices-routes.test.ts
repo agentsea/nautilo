@@ -8,10 +8,14 @@ import { existsSync } from "node:fs";
 import { unlink } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
+import { getServerSpeechModel } from "@nautilo/agent";
 import { voicePreviewPathForCustomText } from "@nautilo/voice";
 import type { ViewerRole } from "@nautilo/types";
-import type { VoiceCatalogPersistentCache } from "../../src/routes/voices";
+import type { VoiceCatalogPersistentCache, VoiceRouteDeps } from "../../src/routes/voices";
+import type { VoiceServiceFunding } from "../../src/realtime/voice-service-funding";
+import type { ServerProviderCostAttemptAdmission, ServerProviderCostReceipt } from "../../src/costs/provider-cost-recorder";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import { providerAccountFingerprint } from "../../src/lib/provider-catalog-cache";
 import {
   FakeVoiceCatalogCache,
   multilingualOnlyVoice,
@@ -111,6 +115,10 @@ describe("voice catalog routes", () => {
       viewerRole?: ViewerRole;
       sessionUserId?: string | null;
       serverFunding?: boolean;
+      funding?: VoiceServiceFunding;
+      beginCost?: (receipt: ServerProviderCostAttemptAdmission) => Promise<void>;
+      settleCost?: (receipt: ServerProviderCostReceipt) => Promise<void>;
+      resolveSpeechModel?: VoiceRouteDeps["resolveSpeechModel"];
     } = {},
   ): FastifyInstance {
     const app = Fastify({ logger: false });
@@ -123,6 +131,10 @@ describe("voice catalog routes", () => {
           throw new ServerProviderCredentialsDeniedError(humanUserId, "voice_test");
         }
       },
+      ...(input.funding ? { funding: input.funding } : {}),
+      ...(input.beginCost ? { beginCost: input.beginCost } : {}),
+      ...(input.settleCost ? { settleCost: input.settleCost } : {}),
+      ...(input.resolveSpeechModel ? { resolveSpeechModel: input.resolveSpeechModel } : {}),
     });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = input.sessionUserId === undefined ? "ordinary-user" : input.sessionUserId;
@@ -202,6 +214,7 @@ describe("voice catalog routes", () => {
     });
 
     for (const endpoint of [
+      { method: "GET" as const, url: "/api/voices" },
       { method: "GET" as const, url: "/api/voices/catalog" },
       { method: "POST" as const, url: "/api/voices/JSWO6cw2AyFE324d5kEr/preview" },
     ]) {
@@ -419,6 +432,45 @@ describe("voice catalog routes", () => {
     }
   });
 
+  test("GET /api/voices uses the admitted personal ElevenLabs account without a server key", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    const humanUserId = "11111111-1111-4111-8111-111111111111";
+    let rechecks = 0;
+    const funding: VoiceServiceFunding = {
+      admit: async () => ({
+        humanUserId,
+        provider: "elevenlabs",
+        binding: { kind: "personal", providerRoute: "elevenlabs", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 7 },
+        credentialFingerprint: "a".repeat(64),
+      }),
+      run: async (_binding, intent, callback) => {
+        expect(intent).toBe("spend");
+        rechecks += 1;
+        return callback({
+          apiKey: "personal-elevenlabs-key",
+          usageFunding: { kind: "personal", humanUserId, payerHumanId: humanUserId, providerRoute: "elevenlabs", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 7 },
+        });
+      },
+    };
+    try {
+      delete process.env["ELEVENLABS_API_KEY"];
+      globalThis.fetch = Object.assign(async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("xi-api-key")).toBe("personal-elevenlabs-key");
+        return Response.json({ voices: [{ voice_id: "PersonalVoice", name: "Personal voice" }] });
+      }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+      const app = createVoicesRouteApp(null, { sessionUserId: humanUserId, funding });
+      const res = await app.inject({ method: "GET", url: "/api/voices", remoteAddress: "127.0.0.1" });
+      expect(res.statusCode).toBe(200);
+      const body = parseVoiceHydrationBody(res.body);
+      expect(body.elevenLabsConfigured).toBe(true);
+      expect(body.voices).toEqual([expect.objectContaining({ voiceId: "PersonalVoice" })]);
+      expect(rechecks).toBe(1);
+    } finally {
+      if (previousKey === undefined) delete process.env["ELEVENLABS_API_KEY"];
+      else process.env["ELEVENLABS_API_KEY"] = previousKey;
+    }
+  });
+
   test("GET /api/voices/catalog returns 400 when ElevenLabs key missing", async () => {
     const prev = process.env["ELEVENLABS_API_KEY"];
     try {
@@ -431,7 +483,7 @@ describe("voice catalog routes", () => {
       });
       expect(res.statusCode).toBe(400);
       const body = JSON.parse(res.body) as { error: string; elevenLabsConfigured: boolean };
-      expect(body.error).toBe("ELEVENLABS_API_KEY is not set");
+      expect(body.error).toBe("Voice provider credentials are not available");
       expect(body.elevenLabsConfigured).toBe(false);
     } finally {
       if (prev !== undefined) process.env["ELEVENLABS_API_KEY"] = prev;
@@ -1209,11 +1261,147 @@ describe("voice catalog routes", () => {
     }
   });
 
+  test("preview cost attempts preserve an accepted first part when a later part fails", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    const settled: ServerProviderCostReceipt[] = [];
+    let providerCalls = 0;
+    try {
+      process.env["ELEVENLABS_API_KEY"] = "preview-partial-cost-key";
+      const baseModel = getServerSpeechModel("elevenlabs:eleven_v3", process.env);
+      const model = {
+        ...baseModel,
+        speech: { ...baseModel.speech, maxInputCharacters: 5 },
+      };
+      globalThis.fetch = Object.assign(
+        async () => {
+          providerCalls += 1;
+          return providerCalls === 1
+            ? new Response(Buffer.from("first-part"), { status: 200 })
+            : new Response("later failure", { status: 502 });
+        },
+        { preconnect: realFetch.preconnect.bind(realFetch) },
+      ) as typeof fetch;
+      const app = createVoicesRouteApp(null, {
+        resolveSpeechModel: async () => model,
+        beginCost: async () => {},
+        settleCost: async receipt => { settled.push(receipt); },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/voices/PreviewPartialCostVoice/preview",
+        remoteAddress: "127.0.0.1",
+        payload: { text: "abcdefghij" },
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(providerCalls).toBe(2);
+      expect(settled).toHaveLength(2);
+      expect(settled[0]).toMatchObject({
+        evidenceState: "estimated",
+        attemptOutcome: "succeeded",
+      });
+      expect(settled[0]?.estimatedCostUsd).not.toBeNull();
+      expect(settled[1]).toMatchObject({
+        estimatedCostUsd: null,
+        evidenceState: "unknown",
+        attemptOutcome: "failed",
+        failureCode: "provider_error",
+      });
+    } finally {
+      if (previousKey === undefined) delete process.env["ELEVENLABS_API_KEY"];
+      else process.env["ELEVENLABS_API_KEY"] = previousKey;
+    }
+  });
+
+  test("preview cost records an accepted response whose body read fails", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    const settled: ServerProviderCostReceipt[] = [];
+    try {
+      process.env["ELEVENLABS_API_KEY"] = "preview-body-failure-key";
+      const model = getServerSpeechModel("elevenlabs:eleven_v3", process.env);
+      globalThis.fetch = Object.assign(
+        async () => new Response(new ReadableStream({
+          start(controller) { controller.error(new Error("body read failed")); },
+        }), { status: 200 }),
+        { preconnect: realFetch.preconnect.bind(realFetch) },
+      ) as typeof fetch;
+      const app = createVoicesRouteApp(null, {
+        resolveSpeechModel: async () => model,
+        beginCost: async () => {},
+        settleCost: async receipt => { settled.push(receipt); },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/voices/PreviewBodyFailureVoice/preview",
+        remoteAddress: "127.0.0.1",
+        payload: { text: "charged response body" },
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(settled).toHaveLength(1);
+      expect(settled[0]).toMatchObject({
+        evidenceState: "estimated",
+        attemptOutcome: "failed",
+        failureCode: "provider_error",
+      });
+      expect(settled[0]?.estimatedCostUsd).not.toBeNull();
+    } finally {
+      if (previousKey === undefined) delete process.env["ELEVENLABS_API_KEY"];
+      else process.env["ELEVENLABS_API_KEY"] = previousKey;
+    }
+  });
+
+  test("preview delivery succeeds when post-provider cost settlement fails", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    const voiceId = "PreviewSettlementFailureVoice";
+    const text = "valid paid preview";
+    let previewPath = "";
+    try {
+      process.env["ELEVENLABS_API_KEY"] = "preview-settlement-failure-key";
+      const model = getServerSpeechModel("elevenlabs:eleven_v3", process.env);
+      previewPath = voicePreviewPathForCustomText(voiceId, JSON.stringify([
+        "speech-preview-v2",
+        providerAccountFingerprint("preview-settlement-failure-key"),
+        model.id,
+        model.providerModelId,
+        model.speech.transport,
+        "mp3_44100_128",
+        { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 },
+        text,
+      ]));
+      globalThis.fetch = Object.assign(
+        async () => new Response(Buffer.from("valid-preview"), { status: 200 }),
+        { preconnect: realFetch.preconnect.bind(realFetch) },
+      ) as typeof fetch;
+      const app = createVoicesRouteApp(null, {
+        resolveSpeechModel: async () => model,
+        beginCost: async () => {},
+        settleCost: async () => { throw new Error("settlement unavailable"); },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/api/voices/${voiceId}/preview`,
+        remoteAddress: "127.0.0.1",
+        payload: { text },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe("valid-preview");
+    } finally {
+      if (previewPath && existsSync(previewPath)) await unlink(previewPath);
+      if (previousKey === undefined) delete process.env["ELEVENLABS_API_KEY"];
+      else process.env["ELEVENLABS_API_KEY"] = previousKey;
+    }
+  });
+
   test("POST /api/voices/:voiceId/preview serves authenticated users, contains no provider secret, and remains throttled", async () => {
     const previousKey = process.env["ELEVENLABS_API_KEY"];
     const voiceId = "PreviewThrottleVoice";
     const text = "A synthetic preview sentence. ".repeat(100).trim();
-    const identity = JSON.stringify(["speech-preview-v1", "elevenlabs:eleven_v3_conversational", "eleven_v3_conversational", "elevenlabs-dialogue-http", "mp3_44100_128", { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 }, text]);
+    const identity = JSON.stringify(["speech-preview-v2", providerAccountFingerprint("test-provider-secret"), "elevenlabs:eleven_v3_conversational", "eleven_v3_conversational", "elevenlabs-dialogue-http", "mp3_44100_128", { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 }, text]);
     const previewPath = voicePreviewPathForCustomText(voiceId, identity);
     const providerRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
     try {
@@ -1257,6 +1445,7 @@ describe("voice catalog routes", () => {
       });
       expect(first.statusCode).toBe(200);
       expect(first.headers["content-type"]).toContain("audio/mpeg");
+      expect(first.headers["cache-control"]).toBe("private, no-store");
       expect(first.body).not.toContain("test-provider-secret");
       expect(providerRequests[0]?.url).toBe(
         "https://api.elevenlabs.io/v1/text-to-dialogue/stream?output_format=mp3_44100_128",
@@ -1270,8 +1459,8 @@ describe("voice catalog routes", () => {
       }).join("");
       expect(spoken).toBe(text);
 
-      // The rejected provider attempt above also consumes one of the global
-      // preview slots, so 18 cached requests take this window to its limit.
+      // The rejected provider attempt above also consumes one slot for this
+      // exact provider account, so 18 cached requests take it to the limit.
       for (let i = 0; i < 18; i += 1) {
         const allowed = await app.inject({
           method: "POST",

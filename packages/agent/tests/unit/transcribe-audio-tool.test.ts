@@ -10,6 +10,8 @@ import type { TranscriptionProvider } from "@nautilo/attachments";
 import { BLOCKED_CONTENT_USER_MESSAGE } from "@nautilo/security";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import type { CapabilityFundingSession } from "../../src/runtime/capability-funding";
+import type { ProviderCostRecorder } from "../../src/usage/provider-cost-recorder";
 
 let baseDir: string;
 let workspaceRoot: string;
@@ -61,6 +63,78 @@ describe("transcribe_audio tool", () => {
       humanUserId: CAUSAL_HUMAN_USER_ID,
     });
     expect(transcribe).not.toHaveBeenCalled();
+  });
+
+  test("uses personal Groq only after ElevenLabs admission reports missing credentials", async () => {
+    const events: string[] = [];
+    const missing = Object.assign(new Error("missing"), { code: "personal_credential_missing" });
+    const capability: CapabilityFundingSession = {
+      humanUserId: CAUSAL_HUMAN_USER_ID,
+      parentFundingKind: "personal",
+      resolveModel: async () => { throw new Error("unused"); },
+      openModel: async () => { throw new Error("unused"); },
+      openService: async provider => {
+        events.push(`admit:${provider}`);
+        if (provider === "elevenlabs") throw missing;
+        return {
+          binding: { kind: "personal", providerRoute: "groq", credentialId: "credential", credentialRevision: 2 },
+          runAttempt: async callback => {
+            events.push("recheck:groq");
+            return callback({
+              apiKey: "personal-groq-key",
+              usageFunding: { kind: "personal", humanUserId: CAUSAL_HUMAN_USER_ID, payerHumanId: CAUSAL_HUMAN_USER_ID, providerRoute: "groq", credentialId: "credential", credentialRevision: 2 },
+            });
+          },
+        };
+      },
+    };
+    const settled: unknown[] = [];
+    const recordProviderCost = Object.assign(
+      async (receipt: unknown) => { settled.push(receipt); events.push("settle"); },
+      {
+        beginAttempt: async () => {
+          events.push("begin");
+          return Object.assign(
+            async (receipt: unknown) => {
+              settled.push(receipt);
+              events.push("settle");
+              throw new Error("receipt unavailable");
+            },
+            { attemptStarted: true as const },
+          );
+        },
+      },
+    ) as ProviderCostRecorder;
+    const tool = createTranscribeAudioTool({
+      workspacePath: workspaceRoot,
+      currentFolder,
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
+      memoryAccessEnvelope: namespaceEnvelope(),
+    }, {
+      ...artifactDeps(),
+      getCapabilityFundingSession: () => capability,
+      recordProviderCost,
+      createTranscriptionProvider: (provider, apiKey) => ({
+        id: provider,
+        available: async () => true,
+        transcribe: async () => {
+          events.push(`provider:${provider}:${apiKey}`);
+          return { text: "Meeting starts at nine.", provider, model: "test-model" };
+        },
+      }),
+    });
+
+    const result = await tool.invoke({ path: "meeting.wav", zone: "workspace" });
+    expect(String(result)).toContain("Meeting starts at nine.");
+    expect(events).toEqual([
+      "admit:elevenlabs",
+      "admit:groq",
+      "recheck:groq",
+      "begin",
+      "provider:groq:personal-groq-key",
+      "settle",
+    ]);
+    expect(settled).toHaveLength(1);
   });
 
   test("validates through the attachment gate before requiring a provider", async () => {

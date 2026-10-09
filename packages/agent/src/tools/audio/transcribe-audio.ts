@@ -6,6 +6,8 @@ import {
   attachmentAudioToTranscriptBlock,
   classifyAttachment,
   createConfiguredTranscriptionProvider,
+  ElevenLabsTranscriptionProvider,
+  GroqTranscriptionProvider,
   readAttachmentBytesVerifiedSize,
   readAttachmentHeadPrefix,
   type AttachmentEnvelope,
@@ -17,6 +19,14 @@ import {
   ServerProviderCredentialsDeniedError,
   type MemoryAccessEnvelope,
 } from "@nautilo/trust";
+import {
+  getCapabilityFundingSession,
+  type CapabilityFundingSession,
+} from "../../runtime/capability-funding";
+import {
+  createToolProviderCostRecorder,
+  type ProviderCostRecorder,
+} from "../../usage/provider-cost-recorder";
 import {
   envelopeFactsForArtifacts,
   resolveWorkspaceArtifact,
@@ -41,6 +51,12 @@ export type TranscribeAudioToolDeps = {
     envelope: MemoryAccessEnvelope,
   ) => Promise<WorkspaceAudioResolution>;
   assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  getCapabilityFundingSession?: () => CapabilityFundingSession | undefined;
+  recordProviderCost?: ProviderCostRecorder;
+  createTranscriptionProvider?: (
+    provider: "elevenlabs" | "groq",
+    apiKey: string,
+  ) => TranscriptionProvider;
 };
 
 const transcribeAudioSchema = z.object({
@@ -63,7 +79,7 @@ function contextFromUnknown(ctx: unknown): TranscribeAudioContext {
       : "",
     transcriptionProvider: isTranscriptionProvider(c["transcriptionProvider"])
       ? c["transcriptionProvider"]
-      : createConfiguredTranscriptionProvider() ?? undefined,
+      : undefined,
   };
 }
 
@@ -131,13 +147,78 @@ export function createTranscribeAudioTool(
 ) {
   const toolCtx = contextFromUnknown(context);
   const readWorkspaceAudio = deps.resolveWorkspaceAudio ?? resolveWorkspaceAudio;
+  const costRecorder = deps.recordProviderCost
+    ?? createToolProviderCostRecorder(context as Parameters<typeof createToolProviderCostRecorder>[0]);
+
+  const admissionUnavailable = (error: unknown): boolean => {
+    const code = error && typeof error === "object" && "code" in error
+      ? (error as { code?: unknown }).code
+      : undefined;
+    return code === "personal_credential_missing" || code === "provider_credentials_missing";
+  };
+
+  const transcribeFunded = async (
+    envelope: AttachmentEnvelope,
+    classification: Parameters<typeof attachmentAudioToTranscriptBlock>[1],
+    options: { language?: string; timestamps?: boolean; signal?: AbortSignal },
+    capability: CapabilityFundingSession,
+  ) => {
+    let lastAdmissionError: unknown;
+    for (const providerId of ["elevenlabs", "groq"] as const) {
+      let service;
+      try {
+        service = await capability.openService(providerId);
+      } catch (error) {
+        if (!admissionUnavailable(error)) {
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+        lastAdmissionError = error;
+        continue;
+      }
+      return service.runAttempt(async ({ apiKey, usageFunding }) => {
+        const attemptRecorder = costRecorder.beginAttempt
+          ? await costRecorder.beginAttempt({ provider: providerId, operation: "speech_to_text", usageFunding })
+          : costRecorder;
+        const provider = deps.createTranscriptionProvider?.(providerId, apiKey)
+          ?? (providerId === "elevenlabs"
+            ? new ElevenLabsTranscriptionProvider(apiKey)
+            : new GroqTranscriptionProvider(apiKey));
+        let result;
+        try {
+          result = await attachmentAudioToTranscriptBlock(envelope, classification, provider, options);
+        } catch (error) {
+          await attemptRecorder({
+            provider: providerId,
+            operation: "speech_to_text",
+            usageFunding,
+            evidenceState: "unknown",
+            attemptOutcome: options.signal?.aborted ? "cancelled" : "failed",
+            failureCode: options.signal?.aborted ? "cancelled" : "provider_error",
+          }).catch(() => {});
+          throw error;
+        }
+        await attemptRecorder({
+          provider: providerId,
+          operation: "speech_to_text",
+          usageFunding,
+          evidenceState: "unknown",
+          attemptOutcome: result.ok ? "succeeded" : options.signal?.aborted ? "cancelled" : "failed",
+          ...(result.ok ? {} : { failureCode: options.signal?.aborted ? "cancelled" : result.code }),
+        }).catch(() => {});
+        return result;
+      });
+    }
+    throw lastAdmissionError instanceof Error
+      ? lastAdmissionError
+      : new Error("No transcription provider configured");
+  };
 
   return new DynamicStructuredTool({
     name: "transcribe_audio",
     description:
       "Transcribe a workspace audio artifact to text. Validates it through the D066 attachment security gate and scans the transcript before returning it.",
     schema: transcribeAudioSchema,
-    func: async ({ path, zone, language, timestamps }) => {
+    func: async ({ path, zone, language, timestamps }, _runManager, config) => {
       if (zone !== "workspace") {
         return "Error: transcribe_audio can only read workspace audio artifacts. " +
           "Use ingest_local_media or extract_audio_from_video first, then transcribe the resulting workspace artifact.";
@@ -194,27 +275,39 @@ export function createTranscribeAudioTool(
         sizeBytes: envelope.sizeBytes,
         bytes,
       };
-      const provider = toolCtx.transcriptionProvider;
-      if (!provider || !(await provider.available())) {
-        return "Error: No transcription provider configured";
-      }
       if (!toolCtx.causalHumanUserId) {
         throw new ServerProviderCredentialsDeniedError("", "audio_transcription");
       }
-      await (deps.assertCanUseServerProviderCredentials
-        ?? assertCanUseServerProviderCredentials)(
-          toolCtx.causalHumanUserId,
-          "audio_transcription",
+      const options = {
+        ...(language !== undefined ? { language } : {}),
+        ...(timestamps !== undefined ? { timestamps } : {}),
+        ...(config?.signal ? { signal: config.signal } : {}),
+      };
+      const capability = (deps.getCapabilityFundingSession
+        ?? getCapabilityFundingSession)();
+      let result;
+      if (capability) {
+        if (capability.humanUserId !== toolCtx.causalHumanUserId) {
+          throw new Error("Transcription funding identity does not match the causal Human");
+        }
+        result = await transcribeFunded(byteEnvelope, classification, options, capability);
+      } else {
+        const provider = toolCtx.transcriptionProvider ?? createConfiguredTranscriptionProvider();
+        if (!provider || !(await provider.available())) {
+          return "Error: No transcription provider configured";
+        }
+        await (deps.assertCanUseServerProviderCredentials
+          ?? assertCanUseServerProviderCredentials)(
+            toolCtx.causalHumanUserId,
+            "audio_transcription",
+          );
+        result = await attachmentAudioToTranscriptBlock(
+          byteEnvelope,
+          classification,
+          provider,
+          options,
         );
-      const result = await attachmentAudioToTranscriptBlock(
-        byteEnvelope,
-        classification,
-        provider,
-        {
-          ...(language !== undefined ? { language } : {}),
-          ...(timestamps !== undefined ? { timestamps } : {}),
-        },
-      );
+      }
       if (!result.ok) {
         return `Error: ${result.reason}`;
       }

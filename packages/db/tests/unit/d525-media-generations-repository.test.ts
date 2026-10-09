@@ -316,9 +316,10 @@ describe("D525 media generation repository", () => {
     const claimed = await claimDueMediaGenerations(db, { workerId: "worker", now: workerScope.now });
     expect(claimed).toHaveLength(1);
     expect(Object.keys(returningFields ?? {}).sort()).toEqual([
-      "artifactInternalId", "cleanupState", "initiatingAgentId", "kind", "namespaceId", "ownerId",
-      "providerAverageExecutionSeconds", "providerExecutionSeconds", "providerModel", "providerQueueId",
-      "receiptId", "revision", "roomId", "state",
+      "actualUsdMicros", "artifactInternalId", "cleanupState", "fundingBinding", "initiatingAgentId", "kind",
+      "namespaceId", "ownerId", "provider", "providerAccountFingerprint", "providerAverageExecutionSeconds",
+      "providerExecutionSeconds", "providerModel", "providerQueueId", "quotedUsdMicros", "receiptId", "revision",
+      "roomId", "state",
     ]);
     expect(Object.keys(claimed[0] ?? {}).sort()).not.toContain("requestPayload");
     expect(Object.keys(claimed[0] ?? {}).sort()).not.toContain("safeSnapshot");
@@ -372,9 +373,10 @@ describe("D525 media generation repository", () => {
       where() { return runningChain; }, returning: async () => [{ id: "row" }],
     };
     await transitionClaimedMediaGeneration({ update: () => runningChain } as never, {
-      ...workerScope, from: "queued", to: "retrieving",
+      ...workerScope, from: "queued", to: "retrieving", actualUsdMicros: 3_000_000_000,
     });
     expect(runningPatch?.["state"]).toBe("retrieving");
+    expect(runningPatch?.["actualUsdMicros"]).toBe(3_000_000_000);
     expect(runningPatch?.["claimOwner"]).toBeUndefined();
 
     let terminalPatch: Record<string, unknown> | undefined;
