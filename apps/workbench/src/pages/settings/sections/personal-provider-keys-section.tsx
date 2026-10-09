@@ -8,6 +8,7 @@ import {
   PERSONAL_PROVIDER_KEY_CATALOGUE,
   orderProviderKeys,
   personalProviderCapabilitySummary,
+  personalProviderWorkflowHint,
   type PersonalProviderCapability,
   type PersonalProviderKeyCatalogueEntry,
 } from "@nautilo/types";
@@ -265,6 +266,7 @@ export function PersonalProviderKeysSection({
     const rows = orderProviderKeys([
       ...PERSONAL_PROVIDER_KEY_CATALOGUE.map((provider) => ({
         ...provider,
+        personalCapabilities: state.kind === "ready" ? responseProviders.get(provider.id)?.personalCapabilities ?? [] : provider.personalCapabilities,
         destination: responseProviders.get(provider.id)?.destination ?? null,
         catalogued: true,
         available: state.kind === "ready" && responseIds.has(provider.id),
@@ -305,6 +307,8 @@ export function PersonalProviderKeysSection({
       chat: forCapability("chat"),
       research: forCapability("research"),
       decision: forCapability("decision"),
+      browsing: forCapability("browsing"),
+      conversion: forCapability("conversion"),
     };
   }, [providerRows]);
 
@@ -440,7 +444,7 @@ export function PersonalProviderKeysSection({
     <SectionCard
       id="personal-provider-keys"
       title="Personal API keys"
-      description={personalKeysDisabled ? undefined : "Add your own provider keys for supported personal chat, native text Tasks, Research and Decisions. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
+      description={personalKeysDisabled ? undefined : "Add your own provider keys for supported personal chat, native text Tasks, Research, Decisions, browsing and file conversion. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
       actions={<a className="text-sm font-medium text-primary hover:underline" href="/account/costs">View your costs</a>}
     >
       <div>
@@ -464,13 +468,15 @@ export function PersonalProviderKeysSection({
           ) : null}
           {!personalKeysDisabled ? <><section className="mb-5 border-b border-border pb-5" aria-labelledby="personal-provider-key-coverage-title" data-testid="personal-provider-key-coverage">
             <h3 id="personal-provider-key-coverage-title" className="text-sm font-semibold">API key coverage</h3>
-            <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat, Research and Decisions. Provider and key status remain pending until the server confirms them.</p>
+            <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat, Research, Decisions, browsing and file conversion. Provider and key status remain pending until the server confirms them.</p>
             <ProviderKeyCoverageTable
               configuredProviderIds={configuredPersonalProviderIds}
               rows={[
                 { functionality: "Chat", providers: personalCapabilityProviders.chat },
                 { functionality: "Research", providers: personalCapabilityProviders.research },
                 { functionality: "Decisions", providers: personalCapabilityProviders.decision },
+                { functionality: "Browsing", providers: personalCapabilityProviders.browsing },
+                { functionality: "File conversion", providers: personalCapabilityProviders.conversion },
               ]}
               unknownStatusLabel={state.kind === "ready"
                 ? undefined
@@ -622,7 +628,7 @@ export function PersonalProviderKeysSection({
                   ) : null}
                   {!personalKeysDisabled && savedProvider === provider.id ? (
                     <p role="status" className="text-xs text-foreground-muted">
-                      Key saved and checked without making a paid request.{" "}
+                      {current?.validationStatus === "unverified" ? "Key saved. No automatic credential check is available for this provider." : "Key saved. Validation did not make a paid request."}{" "}
                       {provider.catalogued ? <>
                         {personalProviderCapabilitySummary(provider)}{" "}
                         {provider.personalCapabilities.includes("chat") ? (
@@ -632,6 +638,12 @@ export function PersonalProviderKeysSection({
                           <a className="text-primary hover:underline" href="/settings#capability-models">Configure Research and Decision models.</a>
                         ) : null}
                       </> : null}
+                    </p>
+                  ) : null}
+                  {!personalKeysDisabled && provider.catalogued && current && provider.personalCapabilities.length > 0 && personalProviderWorkflowHint(provider.id) ? (
+                    <p className="text-xs text-foreground-muted">
+                      {personalProviderWorkflowHint(provider.id)}{" "}
+                      <a className="text-primary hover:underline" href="/">Open your chats.</a>
                     </p>
                   ) : null}
                   {!personalKeysDisabled && provider.catalogued && savedProvider !== provider.id ? (

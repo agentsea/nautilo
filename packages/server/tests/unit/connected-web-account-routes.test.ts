@@ -14,7 +14,7 @@ test("connected website paid routes return the stable server-funding denial", as
   });
   connectedWebAccountRoutes(app, {
     controller: {
-      providerSetupStatus: () => "ready",
+      providerSetupStatusForHuman: () => Promise.resolve("ready"),
       create: async () => { throw new ConnectedWebAccountControllerError("server_funding_required"); },
     } as unknown as ConnectedWebAccountRoutesController,
   });

@@ -105,6 +105,15 @@ test("presents provider actual, current estimate, and unresolved evidence withou
     unknownOperations: 1, actualCostUsd: 0, estimatedCostUsd: 0,
     totalCostUsd: 0,
   }).costPending).toBe(true);
+  expect(personalCostProviderEvidence({
+    provider: "cloudconvert", operation: "conversion", operations: 1,
+    unknownOperations: 1, measuredUnits: 3, unitType: "cloudconvert_credit",
+    actualCostUsd: 0, estimatedCostUsd: 0, totalCostUsd: 0,
+  })).toMatchObject({
+    costPending: true,
+    measuredUsage: "3 credits",
+    detail: "3 credits · USD cost unknown · unresolved charges excluded",
+  });
 });
 
 test("merges Task model and paid-service presentation with legacy-safe counts", () => {

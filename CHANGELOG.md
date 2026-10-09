@@ -7,6 +7,18 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal Browser Use and CloudConvert keys can fund website work and file
+  conversion under the administrator's credential policy. Existing browser
+  profiles and submitted conversions retain their creating account through
+  recovery, cancellation and cleanup; replacing a key never silently switches
+  their payer. Conversion recovery does not resubmit uncertain paid jobs.
+  Browser and conversion attempts appear in the existing Costs views, including
+  unresolved charges, estimated browser usage and measured conversion credits
+  without invented dollar prices. Hosted connected-app actions independently
+  check server-spending permission, including when the parent chat uses a
+  personal model key. Active browser status, live view and Stop recover the
+  creating account's key. Hosted steering leaves the current run unchanged
+  while provisional provider costs prevent proving a safe replacement budget.
 - Creating a background Task no longer invalidates unrelated foreground command
   grants. Tasks that can start managed commands also retain their output and
   cancellation tool, including existing command-only task whitelists.

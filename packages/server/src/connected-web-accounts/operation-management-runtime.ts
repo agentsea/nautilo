@@ -5,10 +5,8 @@ import type {
   ConnectedWebOperationToolResult,
   ConnectedWebOperationToolRuntime,
 } from "@nautilo/agent";
-import { buildConnectedWebReadTask, buildPublicBrowserReadTask } from "./read-operation-admission-runtime";
-import { buildWebsiteTask, canRunWebsiteTask } from "./website-task-contract";
+import { canRunWebsiteTask } from "./website-task-contract";
 import { randomUUID } from "node:crypto";
-import { connectedWebRunCost } from "./operation-cost";
 import type {
   ConnectedWebOperationProviderReferences,
   ConnectedWebOperationSafeActivity,
@@ -16,6 +14,7 @@ import type {
 import type { ConnectedWebOperation } from "./store";
 import type { ConnectedWebAccountReadFacts } from "./read-tool-runtime";
 import type { ConnectedWebAccountStore } from "./store";
+import type { UsageFundingProvenance } from "@nautilo/agent";
 
 type ProviderFailure = Readonly<{ kind: "failure"; code: string }>;
 type ProviderRunStatus = "queued" | "dispatching" | "running" | "completed" | "failed" | "cancelled";
@@ -29,17 +28,8 @@ type ProviderResult<T> = T | ProviderFailure;
 
 /** The exact V4 operations this management vertical needs; no browser capability escapes it. */
 export interface ConnectedWebOperationManagementProvider {
-  getHostedReadResult(runId: string): Promise<ProviderResult<ProviderRun & { readonly totalCostUsd: string | null }>>;
   cancelHostedReadRun(runId: string): Promise<ProviderResult<ProviderRun>>;
   pollHostedReadRun(runId: string): Promise<ProviderResult<ProviderRun>>;
-  inspectHostedSessionQueue(sessionId: string): Promise<ProviderResult<unknown>>;
-  createHostedReadContinuationRun(input: {
-    readonly sessionId: string;
-    readonly workspaceId?: string;
-    readonly task: string;
-    readonly model: string;
-    readonly maxCostUsd: number;
-  }): Promise<ProviderResult<ProviderRun>>;
 }
 
 /** Server-only secret boundary. The plaintext intent is never returned or logged. */
@@ -51,10 +41,24 @@ export interface ConnectedWebOperationManagementSecrets {
   unsealProviderReferences(input: {
     readonly context: { readonly operationId: string; readonly ownerUserId: string; readonly accountId: string | null };
     readonly references: ConnectedWebOperationProviderReferences;
-  }): { readonly runId?: string; readonly sessionId?: string; readonly workspaceId?: string; readonly browserId?: string };
+  }): {
+    readonly runId?: string;
+    readonly sessionId?: string;
+    readonly workspaceId?: string;
+    readonly browserId?: string;
+    readonly runCost?: { readonly identity: string; readonly workload: string };
+    readonly browserCost?: { readonly identity: string; readonly workload: string };
+  };
   sealProviderReferences(input: {
     readonly context: { readonly operationId: string; readonly ownerUserId: string; readonly accountId: string | null };
-    readonly coordinates: { readonly runId?: string; readonly sessionId?: string; readonly workspaceId?: string; readonly browserId?: string };
+    readonly coordinates: {
+      readonly runId?: string;
+      readonly sessionId?: string;
+      readonly workspaceId?: string;
+      readonly browserId?: string;
+      readonly runCost?: { readonly identity: string; readonly workload: string };
+      readonly browserCost?: { readonly identity: string; readonly workload: string };
+    };
   }): ConnectedWebOperationProviderReferences;
 }
 
@@ -66,13 +70,15 @@ export interface ConnectedWebOperationManagementRuntimeOptions {
   readonly facts: ConnectedWebAccountReadFacts;
   readonly store: Pick<
     ConnectedWebAccountStore,
-    "getOperationForOwner" | "scheduleOperationCheck" | "rotateOperationProviderRunByControl"
-      | "claimOperationForControl" | "releaseOperationClaim"
+    "getOperationForOwner" | "scheduleOperationCheck" | "claimOperationForControl" | "releaseOperationClaim"
   >;
   readonly provider: ConnectedWebOperationManagementProvider;
+  readonly withProvider?: <T>(
+    operation: ConnectedWebOperation,
+    intent: "spend" | "recover",
+    callback: (provider: ConnectedWebOperationManagementProvider, usageFunding?: UsageFundingProvenance) => Promise<T>,
+  ) => Promise<T>;
   readonly secrets: ConnectedWebOperationManagementSecrets;
-  /** Explicit continuation model; never inferred from provider defaults. */
-  readonly continuationModel: string;
   readonly clock?: ConnectedWebOperationManagementClock;
   /** Optional listener-owned direct runtime.  Keeping this explicit prevents
    * management from ever creating a browser or accepting model coordinates. */
@@ -90,7 +96,7 @@ const SYSTEM_CLOCK: ConnectedWebOperationManagementClock = { now: () => new Date
 // the already-due operation eligible for ordinary reconciliation again.
 const DIRECT_TAKEOVER_CLAIM_LEASE_MS = 5 * 60 * 1_000;
 
-function failure(code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result"): ConnectedWebOperationToolResult {
+function failure(code: "unavailable" | "not_found" | "forbidden" | "conflict" | "invalid_result" | "steer_budget_unverified"): ConnectedWebOperationToolResult {
   return { ok: false, code, recovery: "none" };
 }
 
@@ -146,7 +152,7 @@ function projection(operation: Pick<
       page: operation.terminalReadResult.page,
       read: operation.terminalReadResult.read === null ? null : { ...operation.terminalReadResult.read, facts: [...operation.terminalReadResult.read.facts] },
       cost: operation.terminalReadResult.cost,
-      outputs: [],
+      outputs: operation.terminalReadResult.outputs.map((output) => ({ ...output })),
       outputsTruncated: operation.terminalReadResult.outputsTruncated,
     },
   };
@@ -157,10 +163,6 @@ function accepted(
   operation: Parameters<typeof projection>[0],
 ): ConnectedWebOperationToolResult {
   return { ok: true, accepted: control, operation: projection(operation, control === "inspect") };
-}
-
-function validContinuationModel(value: string): boolean {
-  return value.trim().length > 0 && value.length <= 256;
 }
 
 function dueAt(value: string): Date | null {
@@ -192,6 +194,7 @@ export function createConnectedWebOperationManagementServerRuntime(
   options: ConnectedWebOperationManagementRuntimeOptions,
 ): ConnectedWebOperationToolRuntime {
   const clock = options.clock ?? SYSTEM_CLOCK;
+  const withProvider = options.withProvider ?? ((_operation, _intent, callback) => callback(options.provider));
 
   async function authorized(
     actor: ConnectedWebOperationToolActorContext,
@@ -256,10 +259,10 @@ export function createConnectedWebOperationManagementServerRuntime(
     }
   }
 
-  async function cancelAndProveTerminal(runId: string): Promise<boolean> {
+  async function cancelAndProveTerminal(operation: ConnectedWebOperation, runId: string): Promise<boolean> {
     let cancellation: ProviderResult<ProviderRun>;
     try {
-      cancellation = await options.provider.cancelHostedReadRun(runId);
+      cancellation = await withProvider(operation, "recover", (provider) => provider.cancelHostedReadRun(runId));
     } catch {
       return false;
     }
@@ -268,19 +271,11 @@ export function createConnectedWebOperationManagementServerRuntime(
     if (providerFailure(cancellation)) return false;
     let observed: ProviderResult<ProviderRun>;
     try {
-      observed = await options.provider.pollHostedReadRun(runId);
+      observed = await withProvider(operation, "recover", (provider) => provider.pollHostedReadRun(runId));
     } catch {
       return false;
     }
     return !providerFailure(observed) && observed.runId === runId && isTerminal(observed.status);
-  }
-
-  async function scheduleSteerRecovery(operation: ConnectedWebOperation): Promise<void> {
-    await schedule(
-      operation,
-      clock.now(),
-      activity("attention", "steer_reconciliation_pending", "The requested direction could not be started; Nautilo is reconciling the connected website operation."),
-    );
   }
 
   async function stop(operation: ConnectedWebOperation): Promise<ConnectedWebOperationToolResult> {
@@ -294,7 +289,7 @@ export function createConnectedWebOperationManagementServerRuntime(
       if (coordinates.runId !== undefined) {
         // Cancellation is intentionally idempotent, but its acknowledgement is
         // not a terminal receipt. The supervisor performs the next observation.
-        const cancellation = await options.provider.cancelHostedReadRun(coordinates.runId);
+        const cancellation = await withProvider(operation, "recover", (provider) => provider.cancelHostedReadRun(coordinates.runId!));
         // A missing provider run is not completion/terminal truth. The
         // supervisor currently rechecks that state, so surface this Stop as
         // unavailable rather than claiming it was accepted by the provider.
@@ -314,159 +309,17 @@ export function createConnectedWebOperationManagementServerRuntime(
       : { ok: true, accepted: "stop", operation: scheduled };
   }
 
-  async function steer(
-    operation: ConnectedWebOperation,
-    instruction: string,
-  ): Promise<ConnectedWebOperationToolResult> {
+  function steer(operation: ConnectedWebOperation): ConnectedWebOperationToolResult {
     // An admitted external effect has a separate action ledger/postcondition
     // authority. A same-session replay would be an unproven repeat effect.
     if (operation.actionOperationId !== null || operation.effectIdempotencyKey !== null) return failure("conflict");
     if (operation.lifecycle === "terminal" || (operation.driver !== "hosted" && operation.driver !== "checking")) return failure("unavailable");
-    if (!validContinuationModel(options.continuationModel) || operation.remainingBudgetUsdMicros <= 0) return failure("unavailable");
-
-    let coordinates: ReturnType<ConnectedWebOperationManagementSecrets["unsealProviderReferences"]>;
-    let originalIntent: string;
-    try {
-      const context = secretContext(operation);
-      coordinates = options.secrets.unsealProviderReferences({ context, references: operation.sealedProviderRefs });
-      originalIntent = options.secrets.unsealIntent({ context, sealedIntent: operation.sealedIntent });
-      const intent = JSON.parse(originalIntent) as Record<string, unknown>;
-      if (typeof intent["origin"] !== "string" || typeof intent["request"] !== "string") return failure("invalid_result");
-      if (operation.accountId === null) {
-        if ((intent["kind"] !== "browse_web" && intent["kind"] !== "run_website_task") || typeof intent["targetUrl"] !== "string"
-          || typeof intent["origin"] !== "string" || typeof intent["request"] !== "string"
-          || new URL(intent["targetUrl"]).origin !== intent["origin"]) return failure("invalid_result");
-        originalIntent = intent["kind"] === "run_website_task"
-          ? buildWebsiteTask({ origin: intent["origin"], targetUrl: intent["targetUrl"], request: intent["request"] })
-          : buildPublicBrowserReadTask({ origin: intent["origin"], targetUrl: intent["targetUrl"] }, intent["request"]);
-      } else {
-        originalIntent = intent["kind"] === "run_website_task"
-          ? buildWebsiteTask({ origin: intent["origin"], request: intent["request"] })
-          : buildConnectedWebReadTask({ origin: intent["origin"], request: { account: operation.accountId, request: intent["request"], delivery: "text" } });
-      }
-    } catch {
-      return failure("unavailable");
-    }
-    if (!coordinates.runId || !coordinates.sessionId || originalIntent.trim().length === 0) return failure("unavailable");
-
-    // V4 queue inspection is mandatory before steering. Its documented
-    // interrupt handoff remains best-effort, so this runtime cannot honestly
-    // claim a queued message altered the active run. Use a fenced replacement.
-    try {
-      const queue = await options.provider.inspectHostedSessionQueue(coordinates.sessionId);
-      if (providerFailure(queue)) return failure("unavailable");
-    } catch {
-      return failure("unavailable");
-    }
-
-    const workerId = `hosted-steer:${randomUUID()}`;
-    const claimedEpoch = await options.store.claimOperationForControl({
-      operationId: operation.id, ownerUserId: operation.ownerUserId,
-      expectedControlEpoch: operation.controlEpoch, expectedRunRef: operation.sealedProviderRefs.runRef!,
-      workerId, now: clock.now(), leaseMs: DIRECT_TAKEOVER_CLAIM_LEASE_MS,
-      safeActivity: activity("checking", "steer_preparing", "Your Genie is updating the connected website task."),
-    }).catch(() => null);
-    if (claimedEpoch === null) return failure("conflict");
-    operation = { ...operation, controlEpoch: claimedEpoch };
-    try {
-      if (!await cancelAndProveTerminal(coordinates.runId)) {
-        await scheduleSteerRecovery(operation);
-        return failure("unavailable");
-      }
-
-      const previous = await options.provider.getHostedReadResult(coordinates.runId).catch(() => null);
-      if (!previous || providerFailure(previous) || previous.runId !== coordinates.runId || !isTerminal(previous.status)) {
-        await scheduleSteerRecovery(operation);
-        return failure("unavailable");
-      }
-      const cost = connectedWebRunCost({ operation, result: previous });
-      if (!cost || !cost.known || cost.exceeded || cost.remaining <= 0) {
-        await scheduleSteerRecovery(operation);
-        return failure("unavailable");
-      }
-      const maxCostUsd = cost.remaining / 1_000_000;
-      let replacement: ProviderResult<ProviderRun>;
-      try {
-        // V4 creates have no idempotency key. A process death after POST reaches
-        // the provider but before this runtime receives a run id is an
-        // irreducible orphan-risk window; every observable post-create failure
-        // path below cancels the exact replacement before returning.
-        replacement = await options.provider.createHostedReadContinuationRun({
-          sessionId: coordinates.sessionId,
-          ...(coordinates.workspaceId === undefined ? {} : { workspaceId: coordinates.workspaceId }),
-          task: `${originalIntent}\n\n[Steering instruction]\n${instruction}`,
-          model: options.continuationModel,
-          maxCostUsd,
-        });
-      } catch {
-        await scheduleSteerRecovery(operation);
-        return failure("unavailable");
-      }
-      if (providerFailure(replacement) || replacement.sessionId !== coordinates.sessionId || !replacement.workspaceId) {
-        await scheduleSteerRecovery(operation);
-        return failure("unavailable");
-      }
-
-      let observedReplacement: ProviderResult<ProviderRun>;
-      try {
-        observedReplacement = await options.provider.pollHostedReadRun(replacement.runId);
-      } catch {
-        observedReplacement = { kind: "failure", code: "network_error" };
-      }
-      if (providerFailure(observedReplacement) || observedReplacement.runId !== replacement.runId) {
-        await options.provider.cancelHostedReadRun(replacement.runId).catch(() => undefined);
-        await scheduleSteerRecovery(operation);
-        return failure("unavailable");
-      }
-
-      const nextActivity = isTerminal(observedReplacement.status)
-        ? activity("finishing", "steer_replacement_observed", "A replacement connected website run was observed and is waiting for reconciliation.")
-        : activity("working", "steer_replacement_started", "A replacement connected website run is following the requested direction.");
-      let nextEpoch: number | null = null;
-      try {
-        nextEpoch = await options.store.rotateOperationProviderRunByControl({
-          workerId,
-          expectedOpaqueExecutionRef: coordinates.runId,
-          opaqueExecutionRef: replacement.runId,
-          operationId: operation.id,
-          ownerUserId: operation.ownerUserId,
-          now: clock.now(),
-          expectedControlEpoch: operation.controlEpoch,
-          expectedRunRef: operation.sealedProviderRefs.runRef ?? null,
-          sealedProviderRefs: options.secrets.sealProviderReferences({
-            context: secretContext(operation),
-            coordinates: {
-              runId: replacement.runId,
-              sessionId: replacement.sessionId,
-              workspaceId: replacement.workspaceId,
-            },
-          }),
-          safeActivity: nextActivity,
-          nextCheckAt: clock.now(),
-          cumulativeCostUsdMicros: cost.cumulative,
-          remainingBudgetUsdMicros: cost.remaining,
-        });
-      } catch {
-        nextEpoch = null;
-      }
-      if (nextEpoch === null) {
-        await options.provider.cancelHostedReadRun(replacement.runId).catch(() => undefined);
-        await scheduleSteerRecovery(operation);
-        return failure("conflict");
-      }
-      return accepted("steer", {
-        ...operation,
-        driver: "hosted",
-        lifecycle: "running",
-        controlEpoch: nextEpoch,
-        safeActivity: nextActivity,
-        terminalReceipt: null,
-      });
-    } finally {
-      await options.store.releaseOperationClaim({ operationId: operation.id, workerId,
-        expectedControlEpoch: claimedEpoch, now: clock.now(), nextCheckAt: clock.now(),
-      }).catch(() => false);
-    }
+    // Browser Use exposes only provisional run usage and no settlement marker.
+    // Cancelling a useful run would not prove the remaining hosted-run budget,
+    // so steering cannot safely authorize a paid replacement. Keep the current
+    // run and its supervision state intact; inspect, stop, and direct takeover
+    // remain independent controls.
+    return failure("steer_budget_unverified");
   }
 
   return {
@@ -523,7 +376,7 @@ export function createConnectedWebOperationManagementServerRuntime(
 
         // The direct router is admitted only after the exact hosted writer is
         // cancelled and re-observed terminal under the takeover fence.
-        if (!await cancelAndProveTerminal(coordinates.runId)) {
+        if (!await cancelAndProveTerminal(operation, coordinates.runId)) {
           await releaseTakeoverClaim();
           return failure("unavailable");
         }
@@ -560,7 +413,7 @@ export function createConnectedWebOperationManagementServerRuntime(
         }
         return stop(operation);
       }
-      return steer(operation, input.instruction);
+      return steer(operation);
     },
   };
 }

@@ -3,6 +3,8 @@ import {
   getAcceptedInvocationAuthoritySubject,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
+import { and, connectedWebOperations, eq } from "@nautilo/db";
+import { getTaskRunDb } from "./tasks/task-runtime-context";
 
 export type ForegroundChatFundingEntrypoint =
   | "foreground.main"
@@ -80,6 +82,56 @@ function hasUnsupportedForegroundFundingShape(
     || input["taskReportBackContinuation"] != null
     || metadata?.["originatedBy"] === "task"
     || metadata?.["originatedBy"] === "connected_web_operation";
+}
+
+/**
+ * Restore model funding for a server-authored connected-website wake only
+ * after the durable operation proves the exact owner, Genie, Room, control
+ * epoch, and pending wake fingerprint. Metadata alone never grants funding.
+ */
+export async function openConnectedWebOperationWakeFundingSessionForInvocation(input: Readonly<{
+  authority: AcceptedInvocationAuthority | undefined;
+  jobInput: Readonly<Record<string, unknown>>;
+  causalHumanUserId: string | null;
+  modelId: string;
+  roomId: string;
+  agentId: string;
+}>): Promise<ForegroundChatFundingSession | null> {
+  const metadata = input.jobInput["metadata"] as Readonly<Record<string, unknown>> | undefined;
+  if (metadata?.["originatedBy"] !== "connected_web_operation") return null;
+  const operationId = metadata["operationId"];
+  const controlEpoch = metadata["controlEpoch"];
+  const wakeFingerprint = metadata["wakeFingerprint"];
+  const humanUserId = input.authority === undefined ? null : getAcceptedInvocationAuthoritySubject(input.authority);
+  if (!installedPort || !humanUserId || typeof operationId !== "string" || operationId.length === 0
+    || !Number.isSafeInteger(controlEpoch) || Number(controlEpoch) < 1
+    || typeof wakeFingerprint !== "string" || wakeFingerprint.length === 0
+    || input.jobInput["requestorId"] !== humanUserId || input.jobInput["ownerId"] !== humanUserId
+    || input.causalHumanUserId !== humanUserId) throw new ForegroundChatFundingAuthorityError();
+  const rows = await getTaskRunDb().select({ id: connectedWebOperations.id })
+    .from(connectedWebOperations).where(and(
+      eq(connectedWebOperations.id, operationId),
+      eq(connectedWebOperations.ownerUserId, humanUserId),
+      eq(connectedWebOperations.initiatingAgentId, input.agentId),
+      eq(connectedWebOperations.initiatingRoomId, input.roomId),
+      eq(connectedWebOperations.controlEpoch, Number(controlEpoch)),
+      eq(connectedWebOperations.wakeFingerprint, wakeFingerprint),
+    )).limit(2);
+  if (rows.length !== 1) throw new ForegroundChatFundingAuthorityError();
+  const session = await installedPort.openSession({
+    humanUserId,
+    modelId: input.modelId,
+    roomId: input.roomId,
+    agentId: input.agentId,
+    entrypoint: "foreground.main",
+    hasImages: false,
+  });
+  assertForegroundChatFundingWorkloadSupported(session, {
+    hasImages: false,
+    voiceRequested: input.jobInput["voiceMode"] === true,
+    hasResources: false,
+  });
+  return session;
 }
 
 /**

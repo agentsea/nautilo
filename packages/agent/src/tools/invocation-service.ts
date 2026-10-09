@@ -1298,6 +1298,10 @@ export function createNautiloToolInvocationSession(
           currentTaskRunId: state.currentTaskRunId,
           turnId: state.turnId,
           toolCallId,
+          // The generic invocation layer may mint a one-process correlation
+          // ID when a malformed call omitted its model ID. Paid connected-app
+          // replay protection accepts only the checkpoint-stable original.
+          stableToolCallId: invocationCall.id === toolCallId ? toolCallId : null,
           signal: config?.signal,
           browserDecision: currentBrowserDecision(state),
           browserDecisionCall: invocationCall,

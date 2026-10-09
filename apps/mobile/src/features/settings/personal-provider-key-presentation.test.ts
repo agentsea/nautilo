@@ -28,7 +28,7 @@ describe("personal provider key presentation", () => {
     expect(rows.every((row) => !row.available)).toBeTrue();
     expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "tavily")!)).toBe("Eligible for Research.");
     expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "surplus")!)).toContain("saving a key does not grant that entitlement");
-    expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "browser-use")!)).toBe("Not used by delivered personal workflows in this release.");
+    expect(personalProviderCapabilitySummary(rows.find((row) => row.id === "browser-use")!)).toBe("Eligible for website browsing and actions.");
   });
 
   test("adds a saved legacy gateway only as an unavailable delete-only row", () => {
@@ -60,4 +60,13 @@ describe("personal provider key presentation", () => {
     expect(rows.every((row) => row.deleteOnly && !row.available)).toBeTrue();
     expect(rows.find((row) => row.id === "gateway")).toMatchObject({ catalogued: false });
   });
+});
+
+
+test("server capability metadata overrides bundled claims during a rolling upgrade", () => {
+  const rows = personalProviderKeyRows({ credentials: [], providers: [
+    { id: "browser-use", name: "Browser Use", purpose: "Stored", personalCapabilities: [], destination: null },
+  ] });
+  expect(rows.find((row) => row.id === "browser-use")?.personalCapabilities).toEqual([]);
+  expect(rows.find((row) => row.id === "cloudconvert")?.personalCapabilities).toEqual([]);
 });

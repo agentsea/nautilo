@@ -14,7 +14,11 @@ function fixture() {
   const operation = {
     id: OPERATION, ownerUserId: OWNER, accountId: ACCOUNT, controlEpoch: 7,
     driver: "direct", lifecycle: "running",
-    sealedProviderRefs: secrets.sealProviderReferences({ context, coordinates: { runId: "run-1", browserId: "browser-1" } }),
+    sealedProviderRefs: secrets.sealProviderReferences({ context, coordinates: {
+      runId: "run-1",
+      browserId: "browser-1",
+      browserCost: { identity: "stable-direct-browser-cost", workload: "connected_web_direct" },
+    } }),
   } as ConnectedWebOperation;
   return { secrets, operation };
 }
@@ -56,6 +60,44 @@ test("D568 restart recovery closes daemon, proves exact browser stop, releases d
     now: () => now,
   });
   expect(calls).toEqual(["inventory", "close-daemon", "release", "get", "stop", "rotate"]);
+});
+
+test("restart recovery settles the immutable direct-browser cost owner as estimated usage", async () => {
+  const { secrets, operation } = fixture();
+  const settlements: unknown[] = [];
+  expect(await recoverDirectConnectedWebOperation({
+    store: {
+      listDirectOperationsForRecovery: async () => [operation],
+      rotateOperationDriver: async () => ({ controlEpoch: 8, controlLeaseToken: "private" }),
+    },
+    secrets,
+    provider: {
+      getBrowser: async () => browser("active"),
+      stopBrowser: async () => ({
+        ...browser("stopped"),
+        costEvidence: { estimatedCostUsd: "0.12500000", evidenceState: "estimated" },
+      }),
+    },
+    settleCostAttempt: async (receipt) => { settlements.push(receipt); },
+    directories: {
+      allocate: async () => { throw new Error("must not allocate"); },
+      async *forRecovery() { yield { socketDirectory: "/tmp/private/s", homeDirectory: "/tmp/private/h" }; },
+      release: async () => undefined,
+    },
+    harness: {
+      buildArgv: () => [], invoke: async () => ({ text: "", truncated: false }),
+      closePrivateDaemons: async () => undefined,
+    },
+  }, operation)).toBe(true);
+  expect(settlements).toMatchObject([{
+    identity: "stable-direct-browser-cost",
+    workload: "connected_web_direct",
+    operation: "browser_session",
+    estimatedCostUsd: "0.12500000",
+    actualCostUsd: null,
+    evidenceState: "estimated",
+    attemptOutcome: "succeeded",
+  }]);
 });
 
 test("D568 restart recovery releases daemon-free dirs but preserves the direct fence on provider uncertainty", async () => {

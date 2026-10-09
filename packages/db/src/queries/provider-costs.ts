@@ -67,6 +67,8 @@ export interface InsertProviderCostEventInput {
   idempotencyKey: string;
 }
 
+export type ProviderCostClaimOutcome = "inserted" | "existing";
+
 function normalizedMeasuredUnits(value: number | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   if (!Number.isFinite(value) || value < 0) throw new Error("Invalid provider measured units");
@@ -126,47 +128,76 @@ function assertEvidence(input: InsertProviderCostEventInput): {
   return { estimatedCostUsd, actualCostUsd };
 }
 
-export async function insertProviderCostEventWith(
-  handle: Pick<DirectDatabase, "insert">,
-  input: InsertProviderCostEventInput,
-): Promise<void> {
+function providerCostEventValues(input: InsertProviderCostEventInput) {
   const amounts = assertEvidence(input);
   const measuredUnits = normalizedMeasuredUnits(input.measuredUnits);
   const failureCode = normalizedFailureCode(input.failureCode);
   const requestReference = normalizedRequestReference(input.requestReference);
+  return {
+    ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
+    userId: input.userId ?? null,
+    roomId: input.roomId ?? null,
+    agentId: input.agentId ?? null,
+    taskId: input.taskId ?? null,
+    runId: input.runId ?? null,
+    jobId: input.jobId ?? null,
+    provider: input.provider,
+    operation: input.operation,
+    workload: input.workload ?? null,
+    fundingKind: input.fundingKind ?? null,
+    payerHumanId: input.payerHumanId ?? null,
+    providerRoute: input.providerRoute ?? null,
+    credentialId: input.credentialId ?? null,
+    credentialRevision: input.credentialRevision ?? null,
+    attemptOutcome: input.attemptOutcome ?? null,
+    failureCode,
+    pricingVersion: input.pricingVersion ?? null,
+    measuredUnits,
+    unitType: input.unitType ?? null,
+    requestReference,
+    evidenceState: input.evidenceState,
+    idempotencyKey: input.idempotencyKey,
+    ...amounts,
+  };
+}
+
+export async function insertProviderCostEventWith(
+  handle: Pick<DirectDatabase, "insert">,
+  input: InsertProviderCostEventInput,
+): Promise<void> {
+  const values = providerCostEventValues(input);
   await handle
     .insert(providerCostEvents)
-    .values({
-      ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
-      userId: input.userId ?? null,
-      roomId: input.roomId ?? null,
-      agentId: input.agentId ?? null,
-      taskId: input.taskId ?? null,
-      runId: input.runId ?? null,
-      jobId: input.jobId ?? null,
-      provider: input.provider,
-      operation: input.operation,
-      workload: input.workload ?? null,
-      fundingKind: input.fundingKind ?? null,
-      payerHumanId: input.payerHumanId ?? null,
-      providerRoute: input.providerRoute ?? null,
-      credentialId: input.credentialId ?? null,
-      credentialRevision: input.credentialRevision ?? null,
-      attemptOutcome: input.attemptOutcome ?? null,
-      failureCode,
-      pricingVersion: input.pricingVersion ?? null,
-      measuredUnits,
-      unitType: input.unitType ?? null,
-      requestReference,
-      evidenceState: input.evidenceState,
-      idempotencyKey: input.idempotencyKey,
-      ...amounts,
-    })
+    .values(values)
     .onConflictDoNothing({ target: providerCostEvents.idempotencyKey });
 }
 
 export async function insertProviderCostEvent(input: InsertProviderCostEventInput): Promise<void> {
   await insertProviderCostEventWith(getSharedDirectDb(), input);
+}
+
+/**
+ * Atomically claims a provider attempt identity. Callers must dispatch only
+ * when this returns `inserted`; `existing` means an earlier process already
+ * crossed the durable pre-dispatch boundary.
+ */
+export async function claimProviderCostEventWith(
+  handle: Pick<DirectDatabase, "insert">,
+  input: InsertProviderCostEventInput,
+): Promise<ProviderCostClaimOutcome> {
+  const values = providerCostEventValues(input);
+  const rows = await handle
+    .insert(providerCostEvents)
+    .values(values)
+    .onConflictDoNothing({ target: providerCostEvents.idempotencyKey })
+    .returning({ id: providerCostEvents.id });
+  return rows.length === 1 ? "inserted" : "existing";
+}
+
+export async function claimProviderCostEvent(
+  input: InsertProviderCostEventInput,
+): Promise<ProviderCostClaimOutcome> {
+  return claimProviderCostEventWith(getSharedDirectDb(), input);
 }
 
 /**
@@ -315,6 +346,32 @@ export function buildProviderCostsSummaryQueries(
       operations: sql<number>`COUNT(*)::int`,
       unknown_operations:
         sql<number>`COUNT(*) FILTER (WHERE ${providerCostEvents.evidenceState} = 'unknown')::int`,
+      measured_units: sql<string | null>`CASE
+        WHEN COUNT(*) FILTER (
+          WHERE ${providerCostEvents.measuredUnits} IS NOT NULL
+            AND ${providerCostEvents.unitType} IS NULL
+        ) = 0
+          AND COUNT(DISTINCT ${providerCostEvents.unitType}) FILTER (
+            WHERE ${providerCostEvents.measuredUnits} IS NOT NULL
+          ) = 1
+        THEN SUM(${providerCostEvents.measuredUnits}) FILTER (
+          WHERE ${providerCostEvents.measuredUnits} IS NOT NULL
+        )
+        ELSE NULL
+      END`,
+      unit_type: sql<string | null>`CASE
+        WHEN COUNT(*) FILTER (
+          WHERE ${providerCostEvents.measuredUnits} IS NOT NULL
+            AND ${providerCostEvents.unitType} IS NULL
+        ) = 0
+          AND COUNT(DISTINCT ${providerCostEvents.unitType}) FILTER (
+            WHERE ${providerCostEvents.measuredUnits} IS NOT NULL
+          ) = 1
+        THEN MAX(${providerCostEvents.unitType}) FILTER (
+          WHERE ${providerCostEvents.measuredUnits} IS NOT NULL
+        )
+        ELSE NULL
+      END`,
       estimated_cost: sql<string>`COALESCE(SUM(${estimatedCost}), 0)`,
       actual_cost: sql<string>`COALESCE(SUM(${providerCostEvents.actualCostUsd}), 0)`,
       total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),

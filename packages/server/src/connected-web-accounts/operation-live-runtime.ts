@@ -6,10 +6,7 @@ import {
 } from "@nautilo/agent";
 import type { DirectDatabase } from "@nautilo/db";
 
-import {
-  BROWSER_USE_DEFAULT_MODEL,
-  type BrowserUseCloudAdapter,
-} from "../browser-use/browser-use-cloud";
+import type { BrowserUseCloudAdapter } from "../browser-use/browser-use-cloud";
 import {
   createConnectedWebOperationProductionRuntime,
   type ConnectedWebOperationProductionRuntimeScheduler,
@@ -48,7 +45,6 @@ export function createConnectedWebOperationLiveRuntime(
     store: options.store,
     provider: options.provider,
     secrets,
-    continuationModel: BROWSER_USE_DEFAULT_MODEL,
     ...(options.directRuntime === undefined ? {} : { direct: options.directRuntime }),
   });
   const production = createConnectedWebOperationProductionRuntime({

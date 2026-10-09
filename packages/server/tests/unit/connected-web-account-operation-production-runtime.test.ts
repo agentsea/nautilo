@@ -42,6 +42,8 @@ test("production polling is non-overlapping while scheduled wakes remain indepen
   let firstSignal: AbortSignal | undefined;
   const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     store: {} as never,
     provider: {} as never,
@@ -88,10 +90,12 @@ test("production polling is non-overlapping while scheduled wakes remain indepen
   runtime.stop();
 });
 
-test("D568 production operation pump keeps supervisor and wake transport claims distinct", async () => {
+test("production operation pump keeps supervisor and wake transport claims distinct", async () => {
   const manual = scheduler();
   const calls: Array<{ readonly kind: string; readonly workerId: string }> = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     store: {} as never,
     provider: {} as never,
@@ -121,6 +125,8 @@ test("finished sync cleanup retries independently while provider supervision is 
   let finished!: () => void;
   const complete = new Promise<void>((resolve) => { finished = resolve; });
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never, secrets: {} as never, scheduler: manual.scheduler,
     runSupervisor: async () => {
       await new Promise<void>((resolve) => { releaseSupervisor = resolve; });
@@ -158,7 +164,12 @@ test("idle cleanup is wired to the pump without blocking supervision or claiming
   const context = { operationId: "11111111-1111-4111-8111-111111111111", ownerUserId: "22222222-2222-4222-8222-222222222222", accountId: "33333333-3333-4333-8333-333333333333" };
   const operation = { id: context.operationId, ownerUserId: context.ownerUserId, accountId: context.accountId,
     lifecycle: "terminal", browserCleanupStartedAt: now,
-    sealedProviderRefs: secrets.sealProviderReferences({ context, coordinates: { sessionId: "idle-session" } }),
+    initiatingRoomId: "44444444-4444-4444-8444-444444444444",
+    initiatingAgentId: "55555555-5555-4555-8555-555555555555",
+    sealedProviderRefs: secrets.sealProviderReferences({ context, coordinates: {
+      sessionId: "idle-session",
+      browserCost: { identity: "browser-cost-attempt", workload: "connected_web_read" },
+    } }),
   } as ConnectedWebOperation;
   let claims = 0;
   let supervised = 0;
@@ -169,7 +180,10 @@ test("idle cleanup is wired to the pump without blocking supervision or claiming
   const stopping = new Promise<void>((resolve) => { startedStop = resolve; });
   const finished = new Promise<void>((resolve) => { completedCleanup = resolve; });
   const completed: unknown[] = [];
+  const settled: unknown[] = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async (receipt) => { settled.push(receipt); },
     db: {} as never, scheduler: manual.scheduler, clock: { now: () => now }, secrets,
     runSupervisor: async () => { supervised++; return { claimed: 0, reconciled: 0, rescheduled: 0, terminalized: 0, stale: 0 }; },
     deliverWakes: async () => { wakePasses++; },
@@ -185,7 +199,7 @@ test("idle cleanup is wired to the pump without blocking supervision or claiming
       stopBrowser: async (id: string) => {
         expect(id).toBe("exact-idle-browser"); startedStop();
         await new Promise<void>((resolve) => { releaseStop = resolve; });
-        return { browserId: id, status: "stopped" };
+        return { browserId: id, status: "stopped", costEvidence: { estimatedCostUsd: "0.12500000", evidenceState: "estimated" as const } };
       },
     } as never,
   });
@@ -195,10 +209,20 @@ test("idle cleanup is wired to the pump without blocking supervision or claiming
   expect(completed).toEqual([]);
   releaseStop(); await finished;
   expect(completed).toEqual([{ operationId: context.operationId, now, stopped: true }]);
+  expect(settled).toMatchObject([{
+    identity: "browser-cost-attempt",
+    workload: "connected_web_read",
+    provider: "browser_use",
+    operation: "browser_session",
+    estimatedCostUsd: "0.12500000",
+    actualCostUsd: null,
+    evidenceState: "estimated",
+    attemptOutcome: "succeeded",
+  }]);
   runtime.stop();
 });
 
-test("D568 production composition unseals provider coordinates only with the exact claimed operation context", async () => {
+test("production composition unseals provider coordinates only with the exact claimed operation context", async () => {
   const manual = scheduler();
   const now = new Date("2026-09-03T12:00:00.000Z");
   const secrets = new ConnectedWebOperationSecrets({ stableServerSecret: "s".repeat(32) });
@@ -217,6 +241,7 @@ test("D568 production composition unseals provider coordinates only with the exa
     deliveryId: "delivery-1",
     requestDigest: "a".repeat(64),
     sealedIntent: "sealed-intent",
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted" as const,
@@ -244,6 +269,8 @@ test("D568 production composition unseals provider coordinates only with the exa
   } satisfies ConnectedWebOperation;
   const polled: string[] = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     scheduler: manual.scheduler,
     clock: { now: () => now },
@@ -284,7 +311,7 @@ test("D568 production composition unseals provider coordinates only with the exa
   runtime.stop();
 });
 
-test("D568 production composition preserves sealed read authority after a cursor checkpoint clones the claimed row", async () => {
+test("production composition preserves sealed read authority after a cursor checkpoint clones the claimed row", async () => {
   const manual = scheduler();
   const now = new Date("2026-09-04T12:00:00.000Z");
   const secrets = new ConnectedWebOperationSecrets({ stableServerSecret: "s".repeat(32) });
@@ -336,6 +363,7 @@ test("D568 production composition preserves sealed read authority after a cursor
     wakeAttempts: 0,
     wakeDeliveredAt: null,
     cumulativeCostUsdMicros: 0,
+    fundingBinding: null,
     remainingBudgetUsdMicros: 1_000_000,
     terminalReceipt: null,
     terminalReadResult: null,
@@ -345,6 +373,8 @@ test("D568 production composition preserves sealed read authority after a cursor
   } satisfies ConnectedWebOperation;
   const terminalizations: Array<Record<string, unknown>> = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     scheduler: manual.scheduler,
     clock: { now: () => now },
@@ -406,7 +436,7 @@ test("D568 production composition preserves sealed read authority after a cursor
 
   runtime.start();
   manual.queued.shift()?.();
-  for (let step = 0; step < 20 && terminalizations.length === 0; step += 1) await Promise.resolve();
+  for (let step = 0; step < 100 && terminalizations.length === 0; step += 1) await Promise.resolve();
   expect(terminalizations).toHaveLength(1);
   expect(terminalizations[0]?.["receipt"]).toMatchObject({ outcome: "completed", code: "provider_completed" });
   expect(terminalizations[0]?.["terminalReadResult"]).toMatchObject({

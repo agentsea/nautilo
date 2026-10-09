@@ -847,6 +847,8 @@ export interface CostsByProviderRow {
   operation: string;
   operations: number;
   unknownOperations: number;
+  measuredUnits: number | null;
+  unitType: string | null;
   estimatedCostUsd: number;
   actualCostUsd: number;
   totalCostUsd: number;
@@ -889,6 +891,10 @@ export interface CostsSummary {
 function n(v: unknown): number {
   const parsed = typeof v === "number" ? v : Number(v ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function nullableN(v: unknown): number | null {
+  return v === null || v === undefined ? null : n(v);
 }
 
 function serviceOperations(row: Record<string, unknown> | undefined): ServiceCostOperationsSummary {
@@ -1400,6 +1406,8 @@ export async function getCostsSummary(range: CostsRange): Promise<CostsSummary> 
       operation: String(r["operation"]),
       operations: n(r["operations"]),
       unknownOperations: n(r["unknown_operations"]),
+      measuredUnits: nullableN(r["measured_units"]),
+      unitType: s(r["unit_type"]),
       estimatedCostUsd: n(r["estimated_cost"]),
       actualCostUsd: n(r["actual_cost"]),
       totalCostUsd: n(r["total_cost"]),
@@ -1516,6 +1524,8 @@ export async function getPersonalCostsSummary(input: {
     operation: String(row["operation"]),
     operations: n(row["operations"]),
     unknownOperations: n(row["unknown_operations"]),
+    measuredUnits: nullableN(row["measured_units"]),
+    unitType: s(row["unit_type"]),
     estimatedCostUsd: n(row["estimated_cost"]),
     actualCostUsd: n(row["actual_cost"]),
     totalCostUsd: n(row["total_cost"]),
@@ -1525,6 +1535,8 @@ export async function getPersonalCostsSummary(input: {
     operation: String(row["operation"]),
     operations: n(row["operations"]),
     unknownOperations: n(row["unknown_operations"]),
+    measuredUnits: null,
+    unitType: null,
     estimatedCostUsd: n(row["estimated_cost"]),
     actualCostUsd: n(row["actual_cost"]),
     totalCostUsd: n(row["total_cost"]),

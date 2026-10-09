@@ -44,7 +44,7 @@ const WEBSITE_SESSION_WARNING = "Disconnecting Nautilo does not sign you out of 
  * lifecycle and bearer capabilities stay inside the injected controller.
  */
 export interface ConnectedWebAccountRoutesController {
-  providerSetupStatus(): ConnectedWebAccountProviderSetupStatus;
+  providerSetupStatusForHuman(ownerUserId: string): Promise<ConnectedWebAccountProviderSetupStatus>;
   create(input: { readonly ownerUserId: string; readonly account: ConnectedWebAccountCreateRequest }): Promise<ConnectedWebAccountLoginResponse>;
   list(ownerUserId: string): Promise<readonly ConnectedWebAccount[]>;
   get(input: { readonly ownerUserId: string; readonly accountId: string }): Promise<ConnectedWebAccount | null>;
@@ -131,9 +131,13 @@ export function connectedWebAccountRoutes(app: FastifyInstance, deps: ConnectedW
   app.get("/api/connected-web-accounts", async (request, reply) => {
     const ownerUserId = owner(request, reply); if (!ownerUserId) return;
     try {
+      const [accounts, providerSetupStatus] = await Promise.all([
+        deps.controller.list(ownerUserId),
+        deps.controller.providerSetupStatusForHuman(ownerUserId),
+      ]);
       return reply.send(connectedWebAccountListResponseSchema.parse({
-        accounts: await deps.controller.list(ownerUserId),
-        providerSetupStatus: deps.controller.providerSetupStatus(),
+        accounts,
+        providerSetupStatus,
       }));
     } catch (error) { return replyForStoreError(error, reply); }
   });
@@ -142,9 +146,12 @@ export function connectedWebAccountRoutes(app: FastifyInstance, deps: ConnectedW
     const ownerUserId = owner(request, reply); if (!ownerUserId) return;
     const parsed = connectedWebAccountCreateRequestSchema.safeParse(request.body);
     if (!parsed.success) return reply.code(400).send({ error: "Invalid connected web account request" });
-    const setupError = providerSetupError(deps.controller.providerSetupStatus(), reply);
-    if (setupError !== null) return setupError;
     try {
+      const setupError = providerSetupError(
+        await deps.controller.providerSetupStatusForHuman(ownerUserId),
+        reply,
+      );
+      if (setupError !== null) return setupError;
       return reply.send(connectedWebAccountLoginResponseSchema.parse(await deps.controller.create({ ownerUserId, account: parsed.data })));
     } catch (error) { return replyForStoreError(error, reply); }
   });
@@ -169,8 +176,6 @@ export function connectedWebAccountRoutes(app: FastifyInstance, deps: ConnectedW
     const ownerUserId = owner(request, reply); if (!ownerUserId) return;
     const id = accountId(request.params, reply); if (!id) return;
     if (!connectedWebAccountReconnectRequestSchema.safeParse(request.body).success) return reply.code(400).send({ error: "Invalid connected web account request" });
-    const setupError = providerSetupError(deps.controller.providerSetupStatus(), reply);
-    if (setupError !== null) return setupError;
     try { return reply.send(connectedWebAccountLoginResponseSchema.parse(await deps.controller.reconnect({ ownerUserId, accountId: id }))); } catch (error) { return replyForStoreError(error, reply); }
   });
 
@@ -178,8 +183,6 @@ export function connectedWebAccountRoutes(app: FastifyInstance, deps: ConnectedW
     const ownerUserId = owner(request, reply); if (!ownerUserId) return;
     const id = accountId(request.params, reply); if (!id) return;
     if (!connectedWebAccountOpenPageRequestSchema.safeParse(request.body).success) return reply.code(400).send({ error: "Invalid connected web account request" });
-    const setupError = providerSetupError(deps.controller.providerSetupStatus(), reply);
-    if (setupError !== null) return setupError;
     try { return reply.send(connectedWebAccountLoginResponseSchema.parse(await deps.controller.openPage({ ownerUserId, accountId: id }))); } catch (error) { return replyForStoreError(error, reply); }
   });
 

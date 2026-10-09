@@ -37,6 +37,13 @@ export interface ConnectedWebOperationProviderCoordinates {
   readonly sessionId?: string;
   readonly workspaceId?: string;
   readonly browserId?: string;
+  readonly runCost?: ConnectedWebOperationCostCustody;
+  readonly browserCost?: ConnectedWebOperationCostCustody;
+}
+
+export interface ConnectedWebOperationCostCustody {
+  readonly identity: string;
+  readonly workload: string;
 }
 
 export interface ConnectedWebOperationSecretsOptions {
@@ -119,10 +126,10 @@ export class ConnectedWebOperationSecrets {
     const { context, coordinates } = input;
     return {
       version: 1,
-      ...(coordinates.runId === undefined ? {} : { runRef: this.seal("run", coordinates.runId, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
-      ...(coordinates.sessionId === undefined ? {} : { sessionRef: this.seal("session", coordinates.sessionId, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
+      ...(coordinates.runId === undefined ? {} : { runRef: this.seal("run", encodeRunCoordinate(coordinates.runId, coordinates.runCost, coordinates.browserCost), context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
+      ...(coordinates.sessionId === undefined ? {} : { sessionRef: this.seal("session", encodeCostCoordinate(coordinates.sessionId, coordinates.browserCost), context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
       ...(coordinates.workspaceId === undefined ? {} : { workspaceRef: this.seal("workspace", coordinates.workspaceId, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
-      ...(coordinates.browserId === undefined ? {} : { browserRef: this.seal("browser", coordinates.browserId, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
+      ...(coordinates.browserId === undefined ? {} : { browserRef: this.seal("browser", encodeCostCoordinate(coordinates.browserId, coordinates.browserCost), context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
     };
   }
 
@@ -135,10 +142,10 @@ export class ConnectedWebOperationSecrets {
       throw new ConnectedWebOperationSecretError();
     }
     return {
-      ...(references.runRef === undefined ? {} : { runId: this.unseal("run", references.runRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
-      ...(references.sessionRef === undefined ? {} : { sessionId: this.unseal("session", references.sessionRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
+      ...(references.runRef === undefined ? {} : decodeCostCoordinate("run", this.unseal("run", references.runRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES))),
+      ...(references.sessionRef === undefined ? {} : decodeCostCoordinate("session", this.unseal("session", references.sessionRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES))),
       ...(references.workspaceRef === undefined ? {} : { workspaceId: this.unseal("workspace", references.workspaceRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
-      ...(references.browserRef === undefined ? {} : { browserId: this.unseal("browser", references.browserRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES) }),
+      ...(references.browserRef === undefined ? {} : decodeCostCoordinate("browser", this.unseal("browser", references.browserRef, context, PROVIDER_COORDINATE_PLAINTEXT_MAX_BYTES, PROVIDER_COORDINATE_ENVELOPE_MAX_BYTES))),
     };
   }
 
@@ -241,6 +248,85 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 
 function hasOnlyProviderReferenceKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).every((key) => ["version", "runRef", "sessionRef", "workspaceRef", "browserRef"].includes(key));
+}
+
+function encodeCostCoordinate(
+  providerId: string,
+  cost: ConnectedWebOperationCostCustody | undefined,
+): string {
+  if (cost === undefined) return providerId;
+  return JSON.stringify({ v: 2, providerId, cost: validatedCostCustody(cost) });
+}
+
+function validatedCostCustody(
+  cost: ConnectedWebOperationCostCustody,
+): ConnectedWebOperationCostCustody {
+  if (cost.identity.trim() !== cost.identity || cost.identity.length < 1 || cost.identity.length > 256
+    || cost.workload.trim() !== cost.workload || cost.workload.length < 1 || cost.workload.length > 128) {
+    throw new ConnectedWebOperationSecretError();
+  }
+  return cost;
+}
+
+function encodeRunCoordinate(
+  providerId: string,
+  runCost: ConnectedWebOperationCostCustody | undefined,
+  browserCost: ConnectedWebOperationCostCustody | undefined,
+): string {
+  if (runCost === undefined && browserCost === undefined) return providerId;
+  return JSON.stringify({
+    v: 2,
+    providerId,
+    ...(runCost === undefined ? {} : { cost: validatedCostCustody(runCost) }),
+    ...(browserCost === undefined ? {} : { browserCost: validatedCostCustody(browserCost) }),
+  });
+}
+
+function decodeCostCoordinate(
+  kind: "run" | "session" | "browser",
+  plaintext: string,
+): Pick<ConnectedWebOperationProviderCoordinates, "runId" | "sessionId" | "browserId" | "runCost" | "browserCost"> {
+  try {
+    const parsed: unknown = JSON.parse(plaintext);
+    if (!isPlainRecord(parsed) || parsed["v"] !== 2 || typeof parsed["providerId"] !== "string"
+      || parsed["providerId"].length < 1) {
+      throw new ConnectedWebOperationSecretError();
+    }
+    const cost = parsed["cost"] === undefined
+      ? undefined
+      : decodeCostCustody(parsed["cost"]);
+    const browserCost = kind === "run" && parsed["browserCost"] !== undefined
+      ? decodeCostCustody(parsed["browserCost"])
+      : undefined;
+    if (kind === "session" || kind === "browser") {
+      if (cost === undefined) throw new ConnectedWebOperationSecretError();
+      return kind === "session"
+        ? { sessionId: parsed["providerId"], browserCost: cost }
+        : { browserId: parsed["providerId"], browserCost: cost };
+    }
+    if (cost === undefined && browserCost === undefined) throw new ConnectedWebOperationSecretError();
+    return {
+      runId: parsed["providerId"],
+      ...(cost === undefined ? {} : { runCost: cost }),
+      ...(browserCost === undefined ? {} : { browserCost }),
+    };
+  } catch (error) {
+    if (error instanceof ConnectedWebOperationSecretError) throw error;
+    // Legacy envelopes contain the raw provider id and honestly carry no
+    // cost owner. They remain recoverable without inventing attribution.
+    return kind === "run" ? { runId: plaintext }
+      : kind === "session" ? { sessionId: plaintext }
+      : { browserId: plaintext };
+  }
+}
+
+function decodeCostCustody(value: unknown): ConnectedWebOperationCostCustody {
+  if (!isPlainRecord(value)
+    || typeof value["identity"] !== "string"
+    || typeof value["workload"] !== "string") {
+    throw new ConnectedWebOperationSecretError();
+  }
+  return validatedCostCustody({ identity: value["identity"], workload: value["workload"] });
 }
 
 function maximumPlaintextBytes(maxEnvelopeBytes: number): number {
