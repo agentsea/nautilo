@@ -45,8 +45,8 @@ export type ConnectedWebTerminalReadResult = Readonly<{
     readonly origin: string;
   }> | null;
   readonly cost: Readonly<{ readonly currency: "USD"; readonly amountUsd: number | null; readonly state: "actual" | "unknown" }>;
-  readonly outputs: readonly [];
-  readonly outputsTruncated: false;
+  readonly outputs: readonly Readonly<{ artifactId: string; path: string; mime: string; bytes: number }>[];
+  readonly outputsTruncated: boolean;
 }>;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -116,8 +116,18 @@ export function parseConnectedWebProviderOutcome(raw: string | null, expectedOri
 }
 
 export function parseConnectedWebTerminalReadResult(value: unknown): ConnectedWebTerminalReadResult | null {
-  if (!isPlainObject(value) || !exactKeys(value, ["account", "cost", "outputs", "outputsTruncated", "page", "read", "version"]) || value["version"] !== 1 || !Array.isArray(value["outputs"]) || value["outputs"].length !== 0 || value["outputsTruncated"] !== false) return null;
+  if (!isPlainObject(value) || !exactKeys(value, ["account", "cost", "outputs", "outputsTruncated", "page", "read", "version"]) || value["version"] !== 1 || !Array.isArray(value["outputs"]) || value["outputs"].length > 4 || typeof value["outputsTruncated"] !== "boolean") return null;
+  const outputs: Array<{ artifactId: string; path: string; mime: string; bytes: number }> = [];
+  for (const raw of value["outputs"]) {
+    if (!isPlainObject(raw) || !exactKeys(raw, ["artifactId", "bytes", "mime", "path"])) return null;
+    const artifactId = boundedText(raw["artifactId"], 256);
+    const path = boundedText(raw["path"], 512);
+    const mime = boundedText(raw["mime"], 128);
+    if (!artifactId || !path || path.includes("://") || !mime || typeof raw["bytes"] !== "number" || !Number.isSafeInteger(raw["bytes"]) || raw["bytes"] < 0) return null;
+    outputs.push({ artifactId, path, mime, bytes: raw["bytes"] });
+  }
   if (value["account"] === null) {
+    if (outputs.length !== 0 || value["outputsTruncated"] !== false) return null;
     const { version: _version, ...body } = value;
     const parsed = connectedWebOperationTerminalReadResultSchema.safeParse({ ...body, ok: true, status: "completed" });
     if (!parsed.success || parsed.data.account !== null) return null;
@@ -135,7 +145,7 @@ export function parseConnectedWebTerminalReadResult(value: unknown): ConnectedWe
   if (!accountId || !label || !service || !origin || page["ref"] !== accountId || page["title"] !== label || page["origin"] !== origin) return null;
   const parsedCost = parseConnectedWebProviderCost(cost["state"] === "actual" && typeof cost["amountUsd"] === "number" ? String(cost["amountUsd"]) : cost["state"] === "unknown" && cost["amountUsd"] === null ? null : "");
   if (parsedCost === null || parsedCost.state !== cost["state"]) return null;
-  if (value["read"] === null) return { version: 1, account: { id: accountId, label, service, origin }, page: { ref: accountId, title: label, origin }, read: null, cost: { currency: "USD", ...parsedCost }, outputs: [], outputsTruncated: false };
+  if (value["read"] === null) return { version: 1, account: { id: accountId, label, service, origin }, page: { ref: accountId, title: label, origin }, read: null, cost: { currency: "USD", ...parsedCost }, outputs, outputsTruncated: value["outputsTruncated"] };
   const read = value["read"];
   if (!isPlainObject(read) || !exactKeys(read, ["answer", "completeness", "facts", "origin", "provenance"])) return null;
   const parsedRead = parseConnectedWebProviderOutcome(JSON.stringify(read), origin);
@@ -151,6 +161,6 @@ export function parseConnectedWebTerminalReadResult(value: unknown): ConnectedWe
       provenance: "authenticated_website",
       origin,
     },
-    cost: { currency: "USD", ...parsedCost }, outputs: [], outputsTruncated: false,
+    cost: { currency: "USD", ...parsedCost }, outputs, outputsTruncated: value["outputsTruncated"],
   };
 }

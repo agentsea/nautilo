@@ -1,6 +1,6 @@
 export const SOURCE_ALARM_BASELINE = {
-  "count": 3346,
-  "sha256": "3d3380bd78547e1af953b3c7af70f13265e61234a53f38e6e27b50e40da187c5"
+  "count": 3419,
+  "sha256": "8a8b431174d6caddf80ed1189f7e5316266131a4b9d816d5453f8dc738d15367"
 } as const;
 
 // Reviewed public-browser receipt constraints (0289–0291), scoped media
@@ -10,10 +10,10 @@ export const SOURCE_ALARM_BASELINE = {
 // 0295 migration, followed by the execution-input message lookup index at 0296
 // for selected-message interruption summaries. No migration body was edited.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 297,
-  "snapshots": 268,
-  "tip": 296,
-  "sha256": "440dbbebb6b46bf5beece0f24f7e97ae2d417ad4081cf7336ea205f89a5cc46c"
+  "migrations": 332,
+  "snapshots": 303,
+  "tip": 331,
+  "sha256": "2128d755a2cac1f5615052505870263c0d6767c5de4ca29c82c6deda1c4d556c"
 } as const;
 
 /**
@@ -40,12 +40,12 @@ export const MIGRATION_TREE_BASELINE = {
 // Its exact execution-state and publication guards are covered by the shared-Agent
 // planner and conversation product-store unit suites; it never writes content.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1377,
-  "insert": 466,
-  "update": 722,
-  "delete": 172,
+  "count": 1508,
+  "insert": 501,
+  "update": 813,
+  "delete": 177,
   "unresolved": 17,
-  "sha256": "9ee70550efead50646cba282ac614fc9786c15fa3930fd88bbbaa9a9125d851a"
+  "sha256": "256213fe05ce911d0cb626ff45a6b2b1116570d3c8175bafe135abc09cbef389"
 } as const;
 
 /**

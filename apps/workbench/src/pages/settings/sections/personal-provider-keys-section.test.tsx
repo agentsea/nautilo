@@ -368,3 +368,26 @@ describe("PersonalProviderKeysSection", () => {
     await waitFor(() => expect(keyApi.deleteProviderCredential).toHaveBeenCalledWith("openai", { expectedRevision: 4 }));
   });
 });
+
+
+test("service keys use server-advertised capabilities and link the existing chat workflow", async () => {
+  const browserProvider: PersonalProviderCatalogEntry = { id: "browser-use", name: "Browser Use", purpose: "Browsing", personalCapabilities: ["browsing"], destination: null };
+  const credential = { ...saved, provider: "browser-use" };
+  const view = render(<PersonalProviderKeysSection credentialApi={api({
+    listProviderCredentials: mock(async () => ({ credentials: [credential], providers: [browserProvider] })),
+  })} />);
+  await waitFor(() => expect(view.getByText("Eligible for website browsing and actions.")).toBeTruthy());
+  expect(view.getByRole("link", { name: "Open your chats." }).getAttribute("href")).toBe("/");
+  expect(view.getByText(/Existing website accounts keep the key/)).toBeTruthy();
+});
+
+test("an older server cannot inherit newly advertised client service support", async () => {
+  const view = render(<PersonalProviderKeysSection credentialApi={api({
+    listProviderCredentials: mock(async () => ({ credentials: [{ ...saved, provider: "browser-use" }], providers: [
+      { id: "browser-use", name: "Browser Use", purpose: "Stored", personalCapabilities: [], destination: null },
+    ] })),
+  })} />);
+  await waitFor(() => expect(view.getByRole("button", { name: "Delete Browser Use key" })).toBeTruthy());
+  expect(view.queryByText("Eligible for website browsing and actions.")).toBeNull();
+  expect(view.queryByRole("link", { name: "Open your chats." })).toBeNull();
+});

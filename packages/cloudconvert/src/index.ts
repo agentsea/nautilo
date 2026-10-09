@@ -18,8 +18,21 @@ export {
   resolveConvertConfig,
 } from "./config.ts";
 
-export type { ConvertOptions } from "./service.ts";
-export { convert } from "./service.ts";
+export type { ConvertOptions, ConversionResult, ConversionSubmission } from "./service.ts";
+export {
+  assertJobSucceeded,
+  buildConvertTasks,
+  cancelConversionWithClient,
+  cloudConvertCredits,
+  convert,
+  downloadConversionWithClient,
+  fetchExportBuffer,
+  findConversionsByTag,
+  getConversionWithClient,
+  submitConversionWithClient,
+  verifyCompletedJobTag,
+  waitForConversionWithClient,
+} from "./service.ts";
 
 export type { JobTagData } from "./tags.ts";
 export {

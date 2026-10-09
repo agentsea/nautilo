@@ -15,8 +15,14 @@ export interface CloudConvertClient {
     create: (config: {
       tag?: string;
       tasks: Record<string, unknown>;
-    }) => Promise<CloudConvertJob>;
+    }, options?: { signal?: AbortSignal }) => Promise<CloudConvertJob>;
     wait: (jobId: string) => Promise<CloudConvertJob>;
+    get: (jobId: string) => Promise<CloudConvertJob>;
+    all: (query?: {
+      "filter[tag]"?: string;
+      per_page?: number;
+      page?: number;
+    }) => Promise<CloudConvertJob[]>;
     getExportUrls: (
       job: CloudConvertJob,
     ) => Array<{ url?: string; filename?: string }>;
@@ -27,6 +33,7 @@ export interface CloudConvertClient {
       stream: NodeJS.ReadableStream | Buffer,
       filename: string,
     ) => Promise<void>;
+    cancel: (taskId: string) => Promise<CloudConvertTask>;
   };
 }
 
@@ -43,6 +50,7 @@ export interface CloudConvertTask {
   operation: string;
   status: string;
   message?: string;
+  credits?: number | null;
   result?: {
     files?: Array<{ url?: string }>;
   };
@@ -77,5 +85,27 @@ export function createCloudConvertClient(
   region?: string,
 ): CloudConvertClient {
   const SDK = loadCloudConvertSdk();
-  return new SDK(apiKey, sandbox, region);
+  const client = new SDK(apiKey, sandbox, region);
+  const baseUrl = sandbox
+    ? "https://api.sandbox.cloudconvert.com/v2/"
+    : `https://${region ? `${region}.` : ""}api.cloudconvert.com/v2/`;
+  const sdkCreate = client.jobs.create.bind(client.jobs);
+  client.jobs.create = async (config, options) => {
+    if (!options?.signal) return sdkCreate(config);
+    const response = await fetch(new URL("jobs", baseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": "nautilo-cloudconvert-request-client",
+      },
+      body: JSON.stringify(config),
+      signal: options.signal,
+    });
+    if (!response.ok) throw new Error(response.statusText, { cause: response });
+    const payload = await response.json() as { data?: CloudConvertJob };
+    if (!payload.data) throw new Error("CloudConvert create response did not include a job");
+    return payload.data;
+  };
+  return client;
 }

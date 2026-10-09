@@ -16,6 +16,7 @@ export function personalProviderKeyRows(data: PersonalCredentialsData | null): P
     .filter((id) => id !== "gateway" && id !== "nautilo-gateway"));
   const catalog = PERSONAL_PROVIDER_KEY_CATALOGUE.map((provider): PersonalProviderKeyRow => ({
     ...provider,
+    personalCapabilities: data ? responseProviders.get(provider.id)?.personalCapabilities ?? [] : provider.personalCapabilities,
     destination: responseProviders.get(provider.id)?.destination ?? null,
     catalogued: true,
     available: Boolean(enabled && data && responseIds.has(provider.id)),

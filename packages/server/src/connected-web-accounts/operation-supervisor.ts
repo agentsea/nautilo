@@ -1,5 +1,6 @@
 import type {
   BrowserUseHostedReadResult,
+  BrowserUseHostedOutputCollection,
   BrowserUseHostedReadRun,
   BrowserUseHostedRunEvent,
   BrowserUseHostedRunEventDelta,
@@ -25,6 +26,9 @@ import type {
   ConnectedWebOperationSafeActivity,
   ConnectedWebOperationSafeReceipt,
 } from "@nautilo/db";
+import type { UsageFundingProvenance } from "@nautilo/agent";
+import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import type { ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
 
 export interface ConnectedWebOperationSupervisorClock {
   now(): Date;
@@ -40,6 +44,8 @@ export interface ConnectedWebOperationProviderReferenceCodec {
     readonly sessionId: string | null;
     readonly workspaceId: string | null;
     readonly browserId: string | null;
+    readonly runCost?: { readonly identity: string; readonly workload: string } | null;
+    readonly browserCost?: { readonly identity: string; readonly workload: string } | null;
   } | null>;
   unsealIntent?(input: {
     readonly operation: ConnectedWebOperation;
@@ -55,6 +61,7 @@ export interface ConnectedWebOperationSupervisorProvider {
     readonly limit: number;
   }): Promise<BrowserUseResult<BrowserUseHostedRunEventDelta>>;
   getHostedReadResult(runId: string): Promise<BrowserUseResult<BrowserUseHostedReadResult>>;
+  collectHostedReadOutputs?(input: { readonly sessionId: string; readonly workspaceId: string; readonly maxOutputs: number }): Promise<BrowserUseResult<BrowserUseHostedOutputCollection>>;
 }
 
 export type ConnectedWebOperationSupervisorRescheduleReason = "provider_active" | "provider_unavailable" | "missing_provider_reference";
@@ -66,6 +73,17 @@ export interface ConnectedWebOperationSupervisorOptions {
     | "terminalizeReadOperationAndCompleteExecution"
   > & Partial<Pick<ConnectedWebAccountStore, "getForOwner">>;
   readonly provider: ConnectedWebOperationSupervisorProvider;
+  readonly withProvider?: <T>(
+    operation: ConnectedWebOperation,
+    intent: "recover",
+    callback: (provider: ConnectedWebOperationSupervisorProvider, usageFunding: UsageFundingProvenance) => Promise<T>,
+  ) => Promise<T>;
+  readonly settleCostAttempt?: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  readonly importOutput?: (input: {
+    readonly actor: { readonly userId: string; readonly agentId: string; readonly roomId: string; readonly callingRoomId: null; readonly memoryAccessEnvelope: MemoryAccessEnvelope };
+    readonly output: { readonly logicalPath: string; readonly mimeType: string; readonly bytes: Uint8Array };
+    readonly publicationId: string;
+  }) => Promise<{ readonly artifactId: string; readonly path: string; readonly mime: string } | null>;
   readonly providerReferences: ConnectedWebOperationProviderReferenceCodec;
   readonly clock: ConnectedWebOperationSupervisorClock;
   /** V4 cursor page size, supplied by boot policy rather than hidden in the worker. */
@@ -206,7 +224,13 @@ function terminalReceipt(
 }
 
 
-type SealedReadIntent = Readonly<{ readonly origin: string; readonly delivery: "text"; readonly publicTarget: boolean; }>;
+type SealedReadIntent = Readonly<{
+  readonly origin: string;
+  readonly delivery: "text" | "workspace";
+  readonly publicTarget: boolean;
+  readonly fundingHumanUserId: string;
+  readonly memoryAccessEnvelope: MemoryAccessEnvelope | null;
+}>;
 
 /** Re-validate the sealed async-admission authority before projecting any text. */
 function parseSealedReadIntent(operation: ConnectedWebOperation, raw: string | null): SealedReadIntent | null {
@@ -215,11 +239,11 @@ function parseSealedReadIntent(operation: ConnectedWebOperation, raw: string | n
   try { value = JSON.parse(raw) as unknown; } catch { return null; }
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const intent = value as Record<string, unknown>;
-  const keys = Object.keys(intent).filter((key) => key !== "voiceMode" && !(operation.accountId === null && key === "targetUrl")).sort();
+  const keys = Object.keys(intent).filter((key) => key !== "voiceMode" && key !== "memoryAccessEnvelope" && !(operation.accountId === null && key === "targetUrl")).sort();
   const expected = ["delivery", "deliveryId", "fundingHumanUserId", "kind", "lane", "origin", "request", "threadId", "turnId", "version"];
   if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])
     || intent["version"] !== 2 || typeof intent["fundingHumanUserId"] !== "string" || !isUuidString(intent["fundingHumanUserId"])
-    || (intent["kind"] !== "run_website_task" && intent["kind"] !== (operation.accountId === null ? "browse_web" : "read_connected_web_account")) || intent["delivery"] !== "text"
+    || (intent["kind"] !== "run_website_task" && intent["kind"] !== (operation.accountId === null ? "browse_web" : "read_connected_web_account")) || (intent["delivery"] !== "text" && intent["delivery"] !== "workspace")
     || typeof intent["origin"] !== "string" || intent["origin"].trim().length === 0
     || typeof intent["request"] !== "string" || intent["request"].trim().length === 0
     || intent["deliveryId"] !== operation.deliveryId || intent["threadId"] !== operation.initiatingThreadId
@@ -229,7 +253,18 @@ function parseSealedReadIntent(operation: ConnectedWebOperation, raw: string | n
     try { if (typeof intent["targetUrl"] !== "string" || new URL(intent["targetUrl"]).origin !== intent["origin"]) return null; }
     catch { return null; }
   }
-  return { origin: intent["origin"], delivery: "text", publicTarget: operation.accountId === null };
+  let memoryAccessEnvelope: MemoryAccessEnvelope | null = null;
+  if (intent["delivery"] === "workspace") {
+    const envelope = intent["memoryAccessEnvelope"];
+    if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return null;
+    const candidate = envelope as Record<string, unknown>;
+    if (candidate["ownerId"] !== intent["fundingHumanUserId"] || candidate["agentId"] !== operation.initiatingAgentId
+      || candidate["roomId"] !== operation.initiatingRoomId || typeof candidate["actorId"] !== "string"
+      || !candidate["toolPolicy"] || typeof candidate["toolPolicy"] !== "object") return null;
+    memoryAccessEnvelope = envelope as MemoryAccessEnvelope;
+  } else if (intent["memoryAccessEnvelope"] !== undefined) return null;
+  return { origin: intent["origin"], delivery: intent["delivery"], publicTarget: operation.accountId === null,
+    fundingHumanUserId: intent["fundingHumanUserId"], memoryAccessEnvelope };
 }
 
 function terminalReadSnapshot(input: {
@@ -253,7 +288,11 @@ function terminalReadSnapshot(input: {
         // Server binds this wording, rather than trusting a provider claim.
         provenance: input.intent.publicTarget ? "public_website" : "authenticated_website", origin: input.intent.origin,
       } : null,
-      cost: { currency: "USD", ...cost },
+      // V4 documents totalCostUsd as a still-moving run amount after terminal
+      // status. The Costs ledger retains it as an estimate; this completed-read
+      // contract has no estimated state, so it must not present that amount as
+      // provider-final actual spend.
+      cost: { currency: "USD", amountUsd: null, state: "unknown" },
       outputs: [],
       outputsTruncated: false,
     },
@@ -268,9 +307,12 @@ export class ConnectedWebOperationSupervisor {
   private readonly store: ConnectedWebOperationSupervisorOptions["store"];
   private readonly provider: ConnectedWebOperationSupervisorProvider;
   private readonly providerReferences: ConnectedWebOperationProviderReferenceCodec;
+  private readonly withProvider: NonNullable<ConnectedWebOperationSupervisorOptions["withProvider"]>;
   private readonly clock: ConnectedWebOperationSupervisorClock;
   private readonly eventPageLimit: number;
   private readonly nextCheckAt: ConnectedWebOperationSupervisorOptions["nextCheckAt"];
+  private readonly settleCostAttempt: ConnectedWebOperationSupervisorOptions["settleCostAttempt"];
+  private readonly importOutput: ConnectedWebOperationSupervisorOptions["importOutput"];
 
   constructor(options: ConnectedWebOperationSupervisorOptions) {
     if (!Number.isSafeInteger(options.eventPageLimit) || options.eventPageLimit < 1) {
@@ -278,10 +320,16 @@ export class ConnectedWebOperationSupervisor {
     }
     this.store = options.store;
     this.provider = options.provider;
+    this.withProvider = options.withProvider ?? ((_operation, _intent, callback) => callback(
+      this.provider,
+      { kind: "service", providerRoute: "browser-use" },
+    ));
     this.providerReferences = options.providerReferences;
     this.clock = options.clock;
     this.eventPageLimit = options.eventPageLimit;
     this.nextCheckAt = options.nextCheckAt;
+    this.settleCostAttempt = options.settleCostAttempt;
+    this.importOutput = options.importOutput;
   }
 
   async runOnce(input: ConnectedWebOperationSupervisorRunOnceInput): Promise<ConnectedWebOperationSupervisorRunOnceResult> {
@@ -321,8 +369,10 @@ export class ConnectedWebOperationSupervisor {
     if (!unsealed?.runId) {
       return this.reschedule(input, "missing_provider_reference", activity("checking", "provider_reference_unavailable", "Waiting to reconcile the connected website operation."));
     }
+    const runId = unsealed.runId;
 
-    const status = await this.provider.pollHostedReadRun(unsealed.runId).catch(() => ({ kind: "failure", code: "network_error" } as const));
+    const status = await this.withProvider(operation, "recover", (provider) => provider.pollHostedReadRun(runId))
+      .catch(() => ({ kind: "failure", code: "network_error" } as const));
     if (isProviderFailure(status)) {
       return this.reschedule(input, "provider_unavailable", activity("checking", "provider_check_pending", "Waiting to recheck the connected website operation."));
     }
@@ -331,11 +381,11 @@ export class ConnectedWebOperationSupervisor {
     let nextActivity = current.safeActivity.code === "browser_action" && !isTerminalRunStatus(status.status)
       ? current.safeActivity : statusActivity(status.status);
     for (;;) {
-      const page = await this.provider.readHostedRunEventDelta({
-        runId: unsealed.runId,
+      const page = await this.withProvider(current, "recover", (provider) => provider.readHostedRunEventDelta({
+        runId,
         after: current.eventCursor,
         limit: this.eventPageLimit,
-      }).catch(() => ({ kind: "failure", code: "network_error" } as const));
+      })).catch(() => ({ kind: "failure", code: "network_error" } as const));
       if (isProviderFailure(page)) {
         return this.reschedule({ operation: current, workerId }, "provider_unavailable", activity("checking", "provider_check_pending", "Waiting to recheck the connected website operation."));
       }
@@ -388,13 +438,39 @@ export class ConnectedWebOperationSupervisor {
       return this.reschedule({ operation: current, workerId }, "provider_active", nextActivity);
     }
 
-    const summary = await this.provider.getHostedReadResult(unsealed.runId).catch(() => ({ kind: "failure", code: "network_error" } as const));
+    const summary = await this.withProvider(current, "recover", (provider) => provider.getHostedReadResult(runId))
+      .catch(() => ({ kind: "failure", code: "network_error" } as const));
     if (isProviderFailure(summary) || summary.status !== status.status) {
       return this.reschedule({ operation: current, workerId }, "provider_unavailable", activity("checking", "provider_terminal_pending", "Waiting to verify the connected website result."));
     }
     const cost = connectedWebRunCost({ operation: current, result: summary });
     if (cost === null) {
       return this.reschedule({ operation: current, workerId }, "provider_unavailable", activity("checking", "provider_cost_pending", "Waiting to verify connected website cost details."));
+    }
+    if (this.settleCostAttempt && unsealed.runCost) {
+      try {
+        await this.withProvider(current, "recover", async (_provider, usageFunding) => {
+          await this.settleCostAttempt!({
+            identity: unsealed.runCost!.identity,
+            usageFunding,
+            userId: current.fundingBinding?.humanUserId ?? current.ownerUserId,
+            roomId: current.initiatingRoomId,
+            agentId: current.initiatingAgentId,
+            workload: unsealed.runCost!.workload,
+            provider: "browser_use",
+            operation: "hosted_run",
+            estimatedCostUsd: cost.known ? summary.totalCostUsd : null,
+            actualCostUsd: null,
+            evidenceState: cost.known ? "estimated" : "unknown",
+            attemptOutcome: status.status === "completed" ? "succeeded"
+              : status.status === "cancelled" ? "cancelled" : "failed",
+            failureCode: status.status === "failed" ? "provider_failed" : null,
+          });
+        });
+      } catch {
+        return this.reschedule({ operation: current, workerId }, "provider_unavailable",
+          activity("checking", "provider_cost_settlement_pending", "Waiting to record connected website cost details."));
+      }
     }
     let terminalRead: ReturnType<typeof terminalReadSnapshot> = { auth: false, result: null };
     let invalidReadAuthority = false;
@@ -414,6 +490,45 @@ export class ConnectedWebOperationSupervisor {
         invalidReadAuthority = true;
       } else {
         terminalRead = terminalReadSnapshot({ account, intent, summary, operationId: current.id });
+        if (intent.delivery === "workspace" && terminalRead.result !== null) {
+          if (account === null || intent.memoryAccessEnvelope === null || !unsealed.sessionId || !unsealed.workspaceId
+            || this.provider.collectHostedReadOutputs === undefined || this.importOutput === undefined) {
+            return this.reschedule({ operation: current, workerId }, "provider_unavailable",
+              activity("checking", "output_publication_pending", "Waiting to publish the requested website output."));
+          }
+          const collected = await this.withProvider(current, "recover", (provider) => provider.collectHostedReadOutputs!({
+            sessionId: unsealed.sessionId!, workspaceId: unsealed.workspaceId!, maxOutputs: 4,
+          })).catch(() => ({ kind: "failure", code: "network_error" } as const));
+          if (isProviderFailure(collected)) {
+            return this.reschedule({ operation: current, workerId }, "provider_unavailable",
+              activity("checking", "output_download_pending", "Waiting to retrieve the requested website output."));
+          }
+          const outputs: Array<{ artifactId: string; path: string; mime: string; bytes: number }> = [];
+          for (let index = 0; index < collected.outputs.length; index += 1) {
+            const output = collected.outputs[index]!;
+            const published = await this.importOutput({
+              actor: {
+                userId: intent.fundingHumanUserId,
+                agentId: current.initiatingAgentId,
+                roomId: current.initiatingRoomId,
+                callingRoomId: null,
+                memoryAccessEnvelope: intent.memoryAccessEnvelope,
+              },
+              output: { logicalPath: output.path, mimeType: output.mimeType, bytes: output.bytes },
+              publicationId: `connected-web:${current.id}:${index}`,
+            }).catch(() => null);
+            if (published === null) {
+              return this.reschedule({ operation: current, workerId }, "provider_unavailable",
+                activity("checking", "output_publication_pending", "Waiting to publish the requested website output."));
+            }
+            outputs.push({ ...published, bytes: output.bytes.byteLength });
+          }
+          terminalRead = { auth: false, result: {
+            ...terminalRead.result,
+            outputs,
+            outputsTruncated: collected.truncated || outputs.length === 0,
+          } };
+        }
       }
     }
     const costActivity = cost.exceeded

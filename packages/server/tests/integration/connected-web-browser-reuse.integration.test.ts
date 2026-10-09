@@ -1,9 +1,27 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { agents, connectedWebAccounts, connectedWebOperations, createDirectDb, ensureDatabase, eq, namespaces, rooms, users } from "@nautilo/db";
+import {
+  agents,
+  connectedWebAccounts,
+  connectedWebActionOperations,
+  connectedWebOperations,
+  createDirectDb,
+  ensureDatabase,
+  eq,
+  insertProviderCostEventWith,
+  namespaces,
+  providerCostEvents,
+  rooms,
+  settleProviderCostEventWith,
+  users,
+} from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { createConnectedWebAccountStore, type ConnectedWebOperationAdmission, type ConnectedWebOperation } from "../../src/connected-web-accounts/store";
 import { ConnectedWebOperationSecrets } from "../../src/connected-web-accounts/operation-secrets";
+import {
+  beginServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+} from "../../src/costs/provider-cost-recorder";
 
 let db: ReturnType<typeof createDirectDb>;
 let store: ReturnType<typeof createConnectedWebAccountStore>;
@@ -15,7 +33,9 @@ const secrets = new ConnectedWebOperationSecrets({ stableServerSecret: "d568-dis
 const now = new Date();
 
 beforeAll(async () => {
-  if (bootstrapTestDbInstance() !== "test-cruft") throw new Error("This fixture requires test-cruft");
+  if (bootstrapTestDbInstance() !== "personal-workspace-8422c449") {
+    throw new Error("This fixture runs only against its authorized disposable personal-workspace clone");
+  }
   // Never reset a shared scratch DB merely to make this focused test pass.
   process.env["NAUTILO_TEST_DB_AUTOHEAL"] = "0";
   await ensureDatabase();
@@ -29,6 +49,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (!db) return;
+  await db.delete(providerCostEvents).where(eq(providerCostEvents.userId, owner));
   await db.delete(connectedWebOperations).where(eq(connectedWebOperations.ownerUserId, owner));
   await db.delete(connectedWebAccounts).where(eq(connectedWebAccounts.ownerUserId, owner));
   await db.delete(rooms).where(eq(rooms.id, room));
@@ -53,6 +74,7 @@ async function admit(accountId: string, at: Date, thread = "same-thread") {
     id, ownerUserId: owner, accountId, initiatingAgentId: agent, initiatingRoomId: room,
     initiatingThreadId: thread, initiatingLane: "foreground", deliveryId: randomUUID(), requestDigest: "a".repeat(64),
     sealedIntent: secrets.sealIntent({ context: context(id, accountId), intent: "fixture read" }),
+    fundingBinding: { humanUserId: owner, provider: "browser-use", binding: { kind: "server", providerRoute: "browser-use" }, credentialFingerprint: "f".repeat(64) },
     safeActivity: { version: 1, phase: "starting", code: "start", summary: "Starting." }, remainingBudgetUsdMicros: 1_000_000,
   };
   const result = await store.admitReadOperation({ admission,
@@ -97,11 +119,125 @@ test("a later turn reuses persisted custody after a store restart; old cleanup c
   expect(second.browserIdleUntil).toEqual(new Date(now.getTime() + 500_000));
 });
 
+test("a restart retains exact browser funding and settles the original pre-dispatch cost attempt", async () => {
+  const accountId = await account();
+  const admitted = await admit(accountId, now);
+  const operation = admitted.operation!;
+  const identity = `browser-use:connected-web:${operation.id}:run:1`;
+  const usageFunding = { kind: "service" as const, providerRoute: "browser-use" };
+  await beginServerProviderCostAttempt({
+    identity,
+    usageFunding,
+    userId: owner,
+    roomId: room,
+    agentId: agent,
+    workload: "connected_web_read",
+    provider: "browser_use",
+    operation: "hosted_run",
+  }, (event) => insertProviderCostEventWith(db, event));
+
+  store = createConnectedWebAccountStore(db);
+  const recovered = await store.getOperationForOwner({ ownerUserId: owner, operationId: operation.id });
+  expect(recovered.fundingBinding).toEqual(operation.fundingBinding);
+  await settleServerProviderCostAttempt({
+    identity,
+    usageFunding,
+    userId: owner,
+    roomId: room,
+    agentId: agent,
+    workload: "connected_web_read",
+    provider: "browser_use",
+    operation: "hosted_run",
+    estimatedCostUsd: "0.125",
+    actualCostUsd: null,
+    evidenceState: "estimated",
+    attemptOutcome: "succeeded",
+  }, (event) => settleProviderCostEventWith(db, event));
+  const rows = await db.select({
+    estimatedCostUsd: providerCostEvents.estimatedCostUsd,
+    actualCostUsd: providerCostEvents.actualCostUsd,
+    evidenceState: providerCostEvents.evidenceState,
+    attemptOutcome: providerCostEvents.attemptOutcome,
+    fundingKind: providerCostEvents.fundingKind,
+  }).from(providerCostEvents).where(eq(providerCostEvents.userId, owner));
+  expect(rows).toEqual([{
+    estimatedCostUsd: "0.12500000",
+    actualCostUsd: null,
+    evidenceState: "estimated",
+    attemptOutcome: "succeeded",
+    fundingKind: "service",
+  }]);
+});
+
+test("action cost custody accepts its exact shape and legacy null while rejecting scalar type bypasses", async () => {
+  const accountId = await account();
+  const valid = {
+    version: 1 as const,
+    phase: "writer" as const,
+    hostedRun: { identity: "hosted-cost", workload: "connected_web_action" as const },
+    browserSession: { identity: "browser-cost", workload: "connected_web_action" as const },
+    attribution: { humanUserId: owner, roomId: room, agentId: agent },
+  };
+  const insert = (runCostCustody: unknown, suffix: string) => db.insert(connectedWebActionOperations).values({
+    ownerUserId: owner,
+    accountId,
+    deliveryId: `cost-shape-${suffix}-${randomUUID()}`,
+    requestDigest: "c".repeat(64),
+    target: "Fixture target",
+    status: "running",
+    opaqueRunRef: `run-${suffix}`,
+    runCostCustody: runCostCustody as never,
+  });
+
+  await insert(valid, "valid");
+  await insert(null, "legacy-null");
+  for (const [suffix, malformed] of [
+    ["null-identity", { ...valid, hostedRun: { ...valid.hostedRun, identity: null } }],
+    ["numeric-identity", { ...valid, hostedRun: { ...valid.hostedRun, identity: 7 } }],
+    ["string-version", { ...valid, version: "1" }],
+  ] as const) {
+    const error = await insert(malformed, suffix).then(() => null, (cause: unknown) => cause);
+    expect(error).toMatchObject({
+      cause: {
+        code: "23514",
+        constraint_name: "connected_web_action_operations_run_cost_shape",
+      },
+    });
+  }
+});
+
 test("concurrent new turns cannot both inherit the warm browser", async () => {
   const id = await account();
   await complete(await admit(id, now), now);
   const attempts = await Promise.all([admit(id, now), admit(id, now)]);
   expect(attempts.map((entry) => entry.kind).sort()).toEqual(["busy", "new"]);
+});
+
+test("direct-browser rotation commits its immutable browser cost owner for restart recovery", async () => {
+  const accountId = await account();
+  const admitted = await admit(accountId, now);
+  const operation = admitted.operation!;
+  const refs = secrets.sealProviderReferences({ context: context(operation.id, accountId), coordinates: {
+    browserId: "direct-browser",
+    browserCost: { identity: "stable-direct-browser-cost", workload: "connected_web_direct" },
+  } });
+  expect(await store.rotateOperationDriver({
+    operationId: operation.id,
+    expectedControlEpoch: 1,
+    now,
+    driver: "direct",
+    lifecycle: "running",
+    safeActivity: { version: 1, phase: "working", code: "direct", summary: "Direct browser control is active." },
+    nextCheckAt: null,
+    sealedProviderRefs: refs,
+  })).toMatchObject({ controlEpoch: 2 });
+
+  store = createConnectedWebAccountStore(db);
+  const recovered = await store.getOperationForOwner({ ownerUserId: owner, operationId: operation.id });
+  expect(secrets.unsealProviderReferences({ context: context(operation.id, accountId), references: recovered.sealedProviderRefs })).toEqual({
+    browserId: "direct-browser",
+    browserCost: { identity: "stable-direct-browser-cost", workload: "connected_web_direct" },
+  });
 });
 
 test("expiry and another conversation retire the browser instead of reusing it", async () => {
@@ -165,6 +301,7 @@ test("D585 public operation persists and cleans up without any account row", asy
     id, ownerUserId: owner, accountId: null, initiatingAgentId: agent, initiatingRoomId: room,
     initiatingThreadId: "public-thread", initiatingLane: "foreground", deliveryId: randomUUID(), requestDigest: "b".repeat(64),
     sealedIntent: secrets.sealIntent({ context: { operationId: id, ownerUserId: owner, accountId: null }, intent: "public fixture" }),
+    fundingBinding: { humanUserId: owner, provider: "browser-use", binding: { kind: "server", providerRoute: "browser-use" }, credentialFingerprint: "f".repeat(64) },
     safeActivity: { version: 1, phase: "starting", code: "start", summary: "Starting public research." }, remainingBudgetUsdMicros: 1_000_000,
   };
   const checkpoint = { resource: "read" as const, phase: "reserving" as const, reservationToken, recordedAt: now.toISOString() };

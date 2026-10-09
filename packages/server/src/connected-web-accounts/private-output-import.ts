@@ -21,6 +21,8 @@ export type ConnectedWebAccountPrivateOutputReceipt = Readonly<{
 export async function importConnectedWebPrivateOutput(input: {
   readonly actor: ConnectedWebAccountReadToolActorContext;
   readonly output: ConnectedWebAccountPrivateOutput;
+  /** Stable operation/output identity for crash-safe replay of publication. */
+  readonly publicationId?: string;
 }): Promise<ConnectedWebAccountPrivateOutputReceipt | null> {
   const saved = await createWorkspaceBinaryArtifact({
     envelope: input.actor.memoryAccessEnvelope,
@@ -28,6 +30,10 @@ export async function importConnectedWebPrivateOutput(input: {
     logicalPath: input.output.logicalPath,
     bytes: input.output.bytes,
     mimeType: input.output.mimeType,
+    ...(input.publicationId === undefined ? {} : {
+      clientMutationId: input.publicationId,
+      overwrite: true,
+    }),
   });
   return saved.ok
     ? { artifactId: saved.artifactId, path: saved.displayPath, mime: input.output.mimeType }

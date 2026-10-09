@@ -54,13 +54,11 @@ function adapter(
   responses: readonly (Response | Error)[] = [],
   seen: Array<{ readonly url: string; readonly init: RequestInit }> = [],
   secrets: Readonly<Record<string, string | undefined>> = { BROWSER_USE_API_KEY: API_KEY },
-  recordProviderCost: NonNullable<ConstructorParameters<typeof BrowserUseCloudAdapter>[0]["recordProviderCost"]> = async () => undefined,
 ): BrowserUseCloudAdapter {
   return new BrowserUseCloudAdapter({
     serverKeys: secrets,
     fetch: queuedFetch(responses, seen),
     clock: { now: () => FIXED_TIME },
-    recordProviderCost,
   });
 }
 
@@ -114,12 +112,55 @@ describe("BrowserUseCloudAdapter configuration and profile lifecycle", () => {
     expect(await provider.createProfile()).toEqual({ profileId: PROFILE_ID });
     expect(seen).toHaveLength(1);
   });
+
+  test("pins a request-local personal key across server key replacement", async () => {
+    const serverKeys: Record<string, string | undefined> = { BROWSER_USE_API_KEY: "bu_server-old" };
+    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+    const scoped = adapter([
+      jsonResponse({ id: PROFILE_ID }),
+      jsonResponse({ id: `${PROFILE_ID}-again` }),
+    ], seen, serverKeys).withRequestCredential({
+      apiKey: "bu_personal-pinned",
+      usageFunding: { kind: "personal", providerRoute: "browser-use", humanUserId: "11111111-1111-4111-8111-111111111111", payerHumanId: "11111111-1111-4111-8111-111111111111", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 7 },
+    });
+    serverKeys["BROWSER_USE_API_KEY"] = "bu_server-new";
+    expect(await scoped.createProfile()).toEqual({ profileId: PROFILE_ID });
+    serverKeys["BROWSER_USE_API_KEY"] = undefined;
+    expect(await scoped.createProfile()).toEqual({ profileId: `${PROFILE_ID}-again` });
+    expect(seen.map(({ init }) => (init.headers as Record<string, string>)["x-browser-use-api-key"]))
+      .toEqual(["bu_personal-pinned", "bu_personal-pinned"]);
+  });
+
+  test("never falls back to a server key when a request-local credential is invalid", async () => {
+    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+    const scoped = adapter([], seen, { BROWSER_USE_API_KEY: API_KEY }).withRequestCredential({
+      apiKey: " ",
+      usageFunding: { kind: "service", providerRoute: "browser-use" },
+    });
+    expect(scoped.health()).toEqual({ kind: "unavailable", reason: "invalid_configuration" });
+    expect(await scoped.createProfile()).toEqual({ kind: "failure", code: "invalid_configuration" });
+    expect(seen).toEqual([]);
+  });
 });
 
 describe("BrowserUseCloudAdapter browser lifecycle", () => {
+  test("returns partial provider browser cost evidence as unknown rather than zero-filling a component", async () => {
+    const provider = adapter([jsonResponse({
+      id: BROWSER_ID,
+      status: "stopped",
+      liveUrl: null,
+      cdpUrl: null,
+      timeoutAt: "2026-09-01T16:00:00.000Z",
+      browserCost: "0.004",
+    })]);
+    expect(await provider.stopBrowser(BROWSER_ID)).toMatchObject({
+      status: "stopped",
+      costEvidence: { estimatedCostUsd: null, evidenceState: "unknown" },
+    });
+  });
+
   test("starts, gets, and explicitly stops a non-recorded browser using provider expiry", async () => {
     const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const receipts: unknown[] = [];
     const session = {
       id: BROWSER_ID,
       status: "active",
@@ -131,7 +172,7 @@ describe("BrowserUseCloudAdapter browser lifecycle", () => {
       jsonResponse(session, 201),
       jsonResponse(session),
       jsonResponse({ ...session, status: "stopped", liveUrl: null, browserCost: "0.004", proxyCost: "0.0015" }),
-    ], seen, { BROWSER_USE_API_KEY: API_KEY }, async (receipt) => { receipts.push(receipt); });
+    ], seen);
 
     expect(await provider.startBrowser({ profileId: PROFILE_ID, timeoutMinutes: 240 })).toMatchObject({
       browserId: BROWSER_ID,
@@ -141,7 +182,10 @@ describe("BrowserUseCloudAdapter browser lifecycle", () => {
       observedAt: FIXED_TIME,
     });
     expect(await provider.getBrowser(BROWSER_ID)).toMatchObject({ browserId: BROWSER_ID });
-    expect(await provider.stopBrowser(BROWSER_ID)).toMatchObject({ status: "stopped" });
+    expect(await provider.stopBrowser(BROWSER_ID)).toMatchObject({
+      status: "stopped",
+      costEvidence: { estimatedCostUsd: "0.00550000", evidenceState: "estimated" },
+    });
     expect(jsonBody(seen[0]!.init)).toEqual({
       profileId: PROFILE_ID,
       timeout: 240,
@@ -150,13 +194,6 @@ describe("BrowserUseCloudAdapter browser lifecycle", () => {
     expect(jsonBody(seen[2]!.init)).toEqual({ action: "stop" });
     expect(seen[1]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/browsers/${BROWSER_ID}`);
     expect(seen[2]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/browsers/${BROWSER_ID}`);
-    expect(receipts).toEqual([expect.objectContaining({
-      identity: `browser-use:browser-session:${BROWSER_ID}`,
-      provider: "browser_use",
-      operation: "browser_session",
-      actualCostUsd: "0.00550000",
-      evidenceState: "actual",
-    })]);
   });
 
   test("requires an explicit documented browser timeout policy before any fetch", async () => {
@@ -223,6 +260,21 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
     expect(seen[1]!.url).toContain("agentSessionId=session");
     expect(seen[2]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/browsers/${BROWSER_ID}`);
     expect(jsonBody(seen[2]!.init)).toEqual({ action: "stop" });
+  });
+
+  test("terminal run cleanup aggregates complete browser and proxy usage as an estimate", async () => {
+    const browser = { id: BROWSER_ID, status: "active", liveUrl: null, cdpUrl: null,
+      timeoutAt: "2026-09-01T16:00:00.000Z", agentSessionId: "session" };
+    const provider = adapter([
+      jsonResponse({ id: RUN_ID, sessionId: "session", status: "completed", result: "done" }),
+      jsonResponse({ items: [browser], totalItems: 1, pageNumber: 1, pageSize: 100 }),
+      jsonResponse({ ...browser, status: "stopped", browserCost: "0.004", proxyCost: "0.0015" }),
+    ]);
+    expect(await provider.stopHostedReadBrowserWithCost(RUN_ID)).toEqual({
+      stopped: true,
+      estimatedCostUsd: "0.00550000",
+      evidenceState: "estimated",
+    });
   });
 
   test("cancellation acceptance is not terminal browser cleanup proof", async () => {

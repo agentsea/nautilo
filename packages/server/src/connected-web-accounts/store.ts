@@ -16,6 +16,7 @@ import {
   sql,
   type ConnectedWebAccountExecutionCheckpoint,
   type ConnectedWebActionOperationStatus,
+  type ConnectedWebActionRunCostCustody,
   type ConnectedWebAccountRow,
   type ConnectedWebAccountStatus,
   type ConnectedWebOperationDriver,
@@ -26,7 +27,13 @@ import {
   type DirectDatabase,
 } from "@nautilo/db";
 import { createHash, randomUUID } from "node:crypto";
-import { connectedWebActivityEntrySchema, connectedWebActivityPageSchema, type ConnectedWebActivityPage } from "@nautilo/types";
+import {
+  connectedWebActivityEntrySchema,
+  connectedWebActivityPageSchema,
+  parseDurableServiceFundingBinding,
+  type ConnectedWebActivityPage,
+  type DurableServiceFundingBinding,
+} from "@nautilo/types";
 import { CONNECTED_WEB_ACTIVITY_PAGE_SIZE, type ConnectedWebActivityWrite } from "./activity-ledger";
 import { canReuseConnectedWebBrowser, connectedWebBrowserIdleUntil, CONNECTED_WEB_BROWSER_CLEANUP_RETRY_MS } from "./browser-idle";
 import type {
@@ -56,12 +63,15 @@ export type ConnectedWebAccountStaleExecution = Readonly<{
   accountId: string;
   ownerUserId: string;
   checkpoint: ConnectedWebAccountExecutionCheckpoint;
+  profileFundingBinding: DurableServiceFundingBinding | null;
 }>;
 
 /** A revoked account whose server-only provider profile still needs deletion. */
 export type ConnectedWebAccountProviderCleanupCandidate = Readonly<{
   accountId: string;
+  ownerUserId: string;
   profileRef: string;
+  profileFundingBinding: DurableServiceFundingBinding | null;
 }>;
 
 /** Server-only profile/recovery binding for provider orchestration. */
@@ -72,6 +82,7 @@ export type ConnectedWebAccountBinding = Readonly<{
   origin: string;
   status: ConnectedWebAccountStatus;
   profileRef: string | null;
+  profileFundingBinding: DurableServiceFundingBinding | null;
   executionCheckpoint: ConnectedWebAccountExecutionCheckpoint | null;
 }>;
 
@@ -92,6 +103,8 @@ export type ConnectedWebActionOperation = Readonly<{
   target: string;
   status: ConnectedWebActionOperationStatus;
   opaqueRunRef: string | null;
+  runCostCustody: ConnectedWebActionRunCostCustody | null;
+  fundingBinding: DurableServiceFundingBinding | null;
   receipt: ConnectedWebActionSafeReceipt | null;
 }>;
 
@@ -117,6 +130,7 @@ export type ConnectedWebOperation = Readonly<{
   deliveryId: string;
   requestDigest: string;
   sealedIntent: string;
+  fundingBinding: DurableServiceFundingBinding | null;
   actionOperationId: string | null;
   effectIdempotencyKey: string | null;
   driver: ConnectedWebOperationDriver;
@@ -161,6 +175,7 @@ export type ConnectedWebOperationAdmission = Readonly<{
   requestDigest: string;
   /** Server-encrypted intent envelope; the store never accepts plaintext task text. */
   sealedIntent: string;
+  fundingBinding: DurableServiceFundingBinding;
   actionOperationId?: string | null;
   effectIdempotencyKey?: string | null;
   driver?: ConnectedWebOperationDriver;
@@ -203,6 +218,16 @@ function opaqueSealedText(value: unknown): string | null {
 
 function nonnegativeMicros(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function durableFundingBinding(value: unknown): DurableServiceFundingBinding | null {
+  if (value === null) return null;
+  try {
+    const parsed = parseDurableServiceFundingBinding(value);
+    return parsed.provider === "browser-use" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function safeOperationDate(value: Date | null | undefined): Date | null {
@@ -258,6 +283,7 @@ function assertOperationAdmission(input: ConnectedWebOperationAdmission): void {
   if (nonempty.some((value) => value.trim().length === 0) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(input.id) || Buffer.byteLength(input.initiatingThreadId, "utf8") > 512 || Buffer.byteLength(input.initiatingLane, "utf8") > 128 || Buffer.byteLength(input.deliveryId, "utf8") > 256 || !/^[0-9a-f]{64}$/u.test(input.requestDigest) || Buffer.byteLength(input.sealedIntent, "utf8") > OPERATION_SEALED_INTENT_MAX_CHARS || !isConnectedWebOperationSealedEnvelope(input.sealedIntent) || !nonnegativeMicros(input.remainingBudgetUsdMicros) || !parseConnectedWebOperationSafeActivity(input.safeActivity) || (input.effectIdempotencyKey !== undefined && input.effectIdempotencyKey !== null && (Buffer.byteLength(input.effectIdempotencyKey, "utf8") === 0 || Buffer.byteLength(input.effectIdempotencyKey, "utf8") > 256))) {
     throw new ConnectedWebAccountStoreError("conflict");
   }
+  if (durableFundingBinding(input.fundingBinding) === null) throw new ConnectedWebAccountStoreError("conflict");
   if (input.accountId === null && (input.actionOperationId != null || input.effectIdempotencyKey != null || (input.driver !== undefined && input.driver !== "hosted"))) throw new ConnectedWebAccountStoreError("conflict");
   safeOperationDate(input.nextCheckAt);
 }
@@ -265,6 +291,7 @@ function assertOperationAdmission(input: ConnectedWebOperationAdmission): void {
 const RECEIPT_EXECUTION_REF_MAX_CHARS = 128;
 const RECEIPT_POSTCONDITION_MAX_CHARS = 2_048;
 const RECEIPT_EVIDENCE_CODE_MAX_CHARS = 128;
+const ACTION_COST_IDENTITY_MAX_CHARS = 512;
 
 function safeReceiptText(value: unknown, max: number): string | null {
   return typeof value === "string" && value.trim().length > 0 && value.length <= max
@@ -275,6 +302,36 @@ function safeReceiptText(value: unknown, max: number): string | null {
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   return actual.length === keys.length && actual.every((key, index) => key === keys[index]);
+}
+
+/** Strictly parses the nonsecret provider-cost custody paired with one live run. */
+function parseConnectedWebActionRunCostCustody(value: unknown): ConnectedWebActionRunCostCustody | null {
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, ["attribution", "browserSession", "hostedRun", "phase", "version"])
+    || value["version"] !== 1) return null;
+  const phase = value["phase"];
+  if (phase !== "writer" && phase !== "verifier" && phase !== "resume_precheck") return null;
+  const hostedRun = value["hostedRun"];
+  const browserSession = value["browserSession"];
+  const attribution = value["attribution"];
+  if (!isPlainRecord(hostedRun) || !hasExactKeys(hostedRun, ["identity", "workload"])
+    || hostedRun["workload"] !== "connected_web_action"
+    || !isPlainRecord(browserSession) || !hasExactKeys(browserSession, ["identity", "workload"])
+    || browserSession["workload"] !== "connected_web_action"
+    || !isPlainRecord(attribution) || !hasExactKeys(attribution, ["agentId", "humanUserId", "roomId"])) return null;
+  const identity = safeReceiptText(hostedRun["identity"], ACTION_COST_IDENTITY_MAX_CHARS);
+  const browserIdentity = safeReceiptText(browserSession["identity"], ACTION_COST_IDENTITY_MAX_CHARS);
+  const humanUserId = safeReceiptText(attribution["humanUserId"], ACTION_COST_IDENTITY_MAX_CHARS);
+  const roomId = safeReceiptText(attribution["roomId"], ACTION_COST_IDENTITY_MAX_CHARS);
+  const agentId = safeReceiptText(attribution["agentId"], ACTION_COST_IDENTITY_MAX_CHARS);
+  if (!identity || !browserIdentity || !humanUserId || !roomId || !agentId) return null;
+  return {
+    version: 1,
+    phase,
+    hostedRun: { identity, workload: "connected_web_action" },
+    browserSession: { identity: browserIdentity, workload: "connected_web_action" },
+    attribution: { humanUserId, roomId, agentId },
+  };
 }
 
 /**
@@ -340,11 +397,13 @@ export interface ConnectedWebAccountStore {
   createPending(input: {
     readonly ownerUserId: string;
     readonly account: ConnectedWebAccountCreateRequest;
+    readonly profileFundingBinding?: DurableServiceFundingBinding;
   }): Promise<ConnectedWebAccount>;
   listForOwner(ownerUserId: string): Promise<readonly ConnectedWebAccount[]>;
   getForOwner(input: { readonly ownerUserId: string; readonly accountId: string }): Promise<ConnectedWebAccount | null>;
   getBindingForOwner(input: { readonly ownerUserId: string; readonly accountId: string }): Promise<ConnectedWebAccountBinding>;
-  bindProfileReference(input: { readonly ownerUserId: string; readonly accountId: string; readonly profileRef: string }): Promise<void>;
+  bindProfileReference(input: { readonly ownerUserId: string; readonly accountId: string; readonly profileRef: string; readonly profileFundingBinding?: DurableServiceFundingBinding }): Promise<void>;
+  markProfileCreationUncertain(input: { readonly ownerUserId: string; readonly accountId: string }): Promise<void>;
   completeExecution(input: {
     readonly ownerUserId?: string;
     readonly accountId: string;
@@ -443,14 +502,24 @@ export interface ConnectedWebAccountStore {
     readonly deliveryId: string;
     readonly requestDigest: string;
     readonly target: string;
+    readonly fundingBinding: DurableServiceFundingBinding;
   }): Promise<{ readonly kind: "new" | "existing" | "conflict"; readonly operation?: ConnectedWebActionOperation }>;
   /** CAS rotation keeps the ledger and account checkpoint aligned on the exact live run. */
   activateActionOperation(input: {
     readonly operationId: string;
     readonly opaqueRunRef: string;
+    readonly runCostCustody: ConnectedWebActionRunCostCustody;
     readonly expectedOpaqueRunRef?: string | null;
     /** A resume pre-observation rotates to another running run before the write. */
     readonly nextStatus?: "running" | "verifying";
+  }): Promise<void>;
+  /** Quarantines an unknown follow-up create without releasing its account writer fence. */
+  quarantineActionCreate(input: {
+    readonly operationId: string;
+    readonly ownerUserId: string;
+    readonly accountId: string;
+    readonly reservationToken: string;
+    readonly expectedOpaqueRunRef: string;
   }): Promise<void>;
   finishActionOperation(input: {
     readonly operationId: string;
@@ -575,6 +644,8 @@ export interface ConnectedWebAccountStore {
     readonly safeActivity: ConnectedWebOperationSafeActivity;
     readonly nextCheckAt: Date | null;
     readonly controlLeaseExpiresAt?: Date | null;
+    /** Exact direct-browser custody committed with the driver fence. */
+    readonly sealedProviderRefs?: ConnectedWebOperationProviderReferences;
   }): Promise<{ readonly controlEpoch: number; readonly controlLeaseToken: string } | null>;
   /**
    * Hosted-read takeover is one transaction: it retains the exact active read
@@ -678,11 +749,18 @@ interface ConnectedWebOperationTerminalCheckpoint {
 
 function actionOperation(row: typeof connectedWebActionOperations.$inferSelect): ConnectedWebActionOperation {
   const receipt = parseConnectedWebActionSafeReceipt(row.receipt);
+  const fundingBinding = durableFundingBinding(row.fundingBinding);
+  const runCostCustody = parseConnectedWebActionRunCostCustody(row.runCostCustody);
+  if ((row.fundingBinding !== null && fundingBinding === null)
+    || (row.runCostCustody !== null && runCostCustody === null)
+    || (row.opaqueRunRef === null && runCostCustody !== null)) throw new ConnectedWebAccountStoreError("conflict");
   return {
     id: row.id, ownerUserId: row.ownerUserId, accountId: row.accountId,
     deliveryId: row.deliveryId, requestDigest: row.requestDigest,
     actionType: "save_item", target: row.target, status: row.status,
     opaqueRunRef: row.opaqueRunRef,
+    runCostCustody,
+    fundingBinding,
     // Do not let malformed/stale JSONB cross the store boundary. Callers must
     // fail closed when a terminal row has no valid receipt.
     receipt: receipt !== null && receipt.executionRef === row.id && receipt.target === row.target ? receipt : null,
@@ -694,7 +772,8 @@ function operation(row: typeof connectedWebOperations.$inferSelect): ConnectedWe
   const activity = parseConnectedWebOperationSafeActivity(row.safeActivity);
   const receipt = row.terminalReceipt === null ? null : parseConnectedWebOperationSafeReceipt(row.terminalReceipt);
   const terminalReadResult = row.terminalReadResult === null ? null : parseConnectedWebTerminalReadResult(row.terminalReadResult);
-  if (refs === null || activity === null || Buffer.byteLength(row.sealedIntent, "utf8") > OPERATION_SEALED_INTENT_MAX_CHARS || !isConnectedWebOperationSealedEnvelope(row.sealedIntent) || (row.terminalReceipt !== null && receipt === null)
+  const fundingBinding = durableFundingBinding(row.fundingBinding);
+  if (refs === null || activity === null || (row.fundingBinding !== null && fundingBinding === null) || Buffer.byteLength(row.sealedIntent, "utf8") > OPERATION_SEALED_INTENT_MAX_CHARS || !isConnectedWebOperationSealedEnvelope(row.sealedIntent) || (row.terminalReceipt !== null && receipt === null)
     || (row.terminalReadResult !== null && terminalReadResult === null)
     || (row.lifecycle === "terminal") !== (row.terminalAt !== null && receipt !== null)
     || (row.lifecycle !== "terminal" && terminalReadResult !== null)
@@ -708,6 +787,7 @@ function operation(row: typeof connectedWebOperations.$inferSelect): ConnectedWe
     initiatingAgentId: row.initiatingAgentId, initiatingRoomId: row.initiatingRoomId,
     initiatingThreadId: row.initiatingThreadId, initiatingLane: row.initiatingLane,
     deliveryId: row.deliveryId, requestDigest: row.requestDigest, sealedIntent: row.sealedIntent,
+    fundingBinding,
     actionOperationId: row.actionOperationId, effectIdempotencyKey: row.effectIdempotencyKey,
     driver: row.driver, lifecycle: row.lifecycle, controlEpoch: row.controlEpoch,
     controlLeaseToken: row.controlLeaseToken, controlLeaseExpiresAt: row.controlLeaseExpiresAt,
@@ -755,13 +835,16 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
   }
 
   return {
-    async createPending({ ownerUserId, account }) {
+    async createPending({ ownerUserId, account, profileFundingBinding }) {
+      const fundingBinding = profileFundingBinding === undefined ? null : durableFundingBinding(profileFundingBinding);
+      if (profileFundingBinding !== undefined && fundingBinding === null) throw new ConnectedWebAccountStoreError("conflict");
       const [row] = await db.insert(connectedWebAccounts).values({
         ownerUserId,
         service: account.service,
         origin: account.origin,
         label: account.label,
         status: "connecting",
+        profileFundingBinding: fundingBinding,
       }).returning();
       if (!row) throw new ConnectedWebAccountStoreError("conflict");
       return asPublic(row);
@@ -784,6 +867,8 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
 
     async getBindingForOwner({ ownerUserId, accountId }) {
       const row = await ownedRow(ownerUserId, accountId);
+      const profileFundingBinding = durableFundingBinding(row.profileFundingBinding);
+      if (row.profileFundingBinding !== null && profileFundingBinding === null) throw new ConnectedWebAccountStoreError("conflict");
       return {
         accountId: row.id,
         ownerUserId: row.ownerUserId,
@@ -791,23 +876,43 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         origin: row.origin,
         status: row.status,
         profileRef: row.profileRef,
+        profileFundingBinding,
         executionCheckpoint: row.executionCheckpoint,
       };
     },
 
-    async bindProfileReference({ ownerUserId, accountId, profileRef }) {
-      if (profileRef.length === 0) {
+    async bindProfileReference({ ownerUserId, accountId, profileRef, profileFundingBinding }) {
+      const fundingBinding = profileFundingBinding === undefined ? null : durableFundingBinding(profileFundingBinding);
+      if (profileRef.length === 0 || (profileFundingBinding !== undefined && fundingBinding === null)) {
         throw new ConnectedWebAccountStoreError("conflict");
       }
       const [updated] = await db.update(connectedWebAccounts)
-        .set({ profileRef, updatedAt: new Date() })
+        .set({ profileRef, profileFundingBinding: fundingBinding, updatedAt: new Date() })
         .where(and(
           eq(connectedWebAccounts.id, accountId),
           eq(connectedWebAccounts.ownerUserId, ownerUserId),
           eq(connectedWebAccounts.status, "connecting"),
           isNull(connectedWebAccounts.profileRef),
+          fundingBinding === null
+            ? isNull(connectedWebAccounts.profileFundingBinding)
+            : eq(connectedWebAccounts.profileFundingBinding, fundingBinding),
         ))
         .returning({ id: connectedWebAccounts.id });
+      if (!updated) throw new ConnectedWebAccountStoreError("conflict");
+    },
+
+    async markProfileCreationUncertain({ ownerUserId, accountId }) {
+      const [updated] = await db.update(connectedWebAccounts).set({
+        status: "provider_unavailable",
+        cleanupState: "failed",
+        cleanupFailureCode: "profile_creation_uncertain",
+        updatedAt: new Date(),
+      }).where(and(
+        eq(connectedWebAccounts.id, accountId),
+        eq(connectedWebAccounts.ownerUserId, ownerUserId),
+        eq(connectedWebAccounts.status, "connecting"),
+        isNull(connectedWebAccounts.profileRef),
+      )).returning({ id: connectedWebAccounts.id });
       if (!updated) throw new ConnectedWebAccountStoreError("conflict");
     },
 
@@ -940,7 +1045,8 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         sql`${connectedWebAccounts.executionCheckpoint}->>'cleanupStatus' IN ('connected', 'attention_needed')`,
       ));
       return rows.flatMap((row) => row.executionCheckpoint
-        ? [{ accountId: row.id, ownerUserId: row.ownerUserId, checkpoint: row.executionCheckpoint }]
+        ? [{ accountId: row.id, ownerUserId: row.ownerUserId, checkpoint: row.executionCheckpoint,
+          profileFundingBinding: durableFundingBinding(row.profileFundingBinding) }]
         : []);
     },
 
@@ -951,7 +1057,8 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         sql`${connectedWebAccounts.status} IN ('connecting', 'busy')`,
       ));
       return rows.flatMap((row) => row.executionCheckpoint
-        ? [{ accountId: row.id, ownerUserId: row.ownerUserId, checkpoint: row.executionCheckpoint }]
+        ? [{ accountId: row.id, ownerUserId: row.ownerUserId, checkpoint: row.executionCheckpoint,
+          profileFundingBinding: durableFundingBinding(row.profileFundingBinding) }]
         : []);
     },
 
@@ -968,7 +1075,9 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
     async listRevokedProfilesForCleanup() {
       const rows = await db.select({
         accountId: connectedWebAccounts.id,
+        ownerUserId: connectedWebAccounts.ownerUserId,
         profileRef: connectedWebAccounts.profileRef,
+        profileFundingBinding: connectedWebAccounts.profileFundingBinding,
       }).from(connectedWebAccounts).where(and(
         eq(connectedWebAccounts.status, "revoked"),
         isNotNull(connectedWebAccounts.profileRef),
@@ -976,7 +1085,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
       ));
       return rows.flatMap((row) => row.profileRef === null
         ? []
-        : [{ accountId: row.accountId, profileRef: row.profileRef }]);
+        : [{ accountId: row.accountId, ownerUserId: row.ownerUserId, profileRef: row.profileRef, profileFundingBinding: durableFundingBinding(row.profileFundingBinding) }]);
     },
 
     async reconcileStaleExecution({ accountId, status }) {
@@ -1023,11 +1132,12 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
       ));
     },
 
-    async claimActionOperation({ ownerUserId, accountId, deliveryId, requestDigest, target }) {
+    async claimActionOperation({ ownerUserId, accountId, deliveryId, requestDigest, target, fundingBinding }) {
+      const parsedFundingBinding = durableFundingBinding(fundingBinding);
       if (!deliveryId || deliveryId.length > 256 || !/^[0-9a-f]{64}$/u.test(requestDigest)
-        || !target || target.length > 1_024) throw new ConnectedWebAccountStoreError("conflict");
+        || !target || target.length > 1_024 || parsedFundingBinding === null) throw new ConnectedWebAccountStoreError("conflict");
       const [inserted] = await db.insert(connectedWebActionOperations).values({
-        ownerUserId, accountId, deliveryId, requestDigest, actionType: "save_item", target, status: "reserving",
+        ownerUserId, accountId, deliveryId, requestDigest, actionType: "save_item", target, status: "reserving", fundingBinding: parsedFundingBinding,
       }).onConflictDoNothing().returning();
       if (inserted) return { kind: "new" as const, operation: actionOperation(inserted) };
       const [existing] = await db.select().from(connectedWebActionOperations).where(and(
@@ -1035,15 +1145,17 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         eq(connectedWebActionOperations.deliveryId, deliveryId),
       )).limit(1);
       if (!existing) throw new ConnectedWebAccountStoreError("conflict");
-      if (existing.requestDigest !== requestDigest || existing.accountId !== accountId) return { kind: "conflict" as const };
+      if (existing.requestDigest !== requestDigest || existing.accountId !== accountId
+        || JSON.stringify(durableFundingBinding(existing.fundingBinding)) !== JSON.stringify(parsedFundingBinding)) return { kind: "conflict" as const };
       return { kind: "existing" as const, operation: actionOperation(existing) };
     },
 
-    async activateActionOperation({ operationId, opaqueRunRef, expectedOpaqueRunRef = null, nextStatus }) {
-      if (!opaqueRunRef) throw new ConnectedWebAccountStoreError("conflict");
+    async activateActionOperation({ operationId, opaqueRunRef, runCostCustody, expectedOpaqueRunRef = null, nextStatus }) {
+      const parsedRunCostCustody = parseConnectedWebActionRunCostCustody(runCostCustody);
+      if (!opaqueRunRef || parsedRunCostCustody === null) throw new ConnectedWebAccountStoreError("conflict");
       const targetStatus = expectedOpaqueRunRef === null ? "running" : (nextStatus ?? "verifying");
       const [updated] = await db.update(connectedWebActionOperations).set({
-        status: targetStatus, opaqueRunRef, updatedAt: new Date(),
+        status: targetStatus, opaqueRunRef, runCostCustody: parsedRunCostCustody, updatedAt: new Date(),
       }).where(and(
         eq(connectedWebActionOperations.id, operationId),
         expectedOpaqueRunRef === null ? isNull(connectedWebActionOperations.opaqueRunRef) : eq(connectedWebActionOperations.opaqueRunRef, expectedOpaqueRunRef),
@@ -1055,6 +1167,35 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
       if (!updated) throw new ConnectedWebAccountStoreError("conflict");
     },
 
+    async quarantineActionCreate({ operationId, ownerUserId, accountId, reservationToken, expectedOpaqueRunRef }) {
+      if (!operationId || !reservationToken || !expectedOpaqueRunRef) throw new ConnectedWebAccountStoreError("conflict");
+      await db.transaction(async (tx) => {
+        const [operation] = await tx.update(connectedWebActionOperations).set({
+          status: "reserving", opaqueRunRef: null, runCostCustody: null, receipt: null, updatedAt: new Date(),
+        }).where(and(
+          eq(connectedWebActionOperations.id, operationId),
+          eq(connectedWebActionOperations.ownerUserId, ownerUserId),
+          eq(connectedWebActionOperations.accountId, accountId),
+          eq(connectedWebActionOperations.opaqueRunRef, expectedOpaqueRunRef),
+          sql`${connectedWebActionOperations.status} in ('running', 'verifying')`,
+        )).returning({ id: connectedWebActionOperations.id });
+        if (!operation) throw new ConnectedWebAccountStoreError("conflict");
+        const [account] = await tx.update(connectedWebAccounts).set({
+          executionCheckpoint: sql`(${connectedWebAccounts.executionCheckpoint} - 'opaqueExecutionRef' - 'cleanupStatus') || jsonb_build_object('phase', 'reserving'::text)`,
+          updatedAt: new Date(),
+        }).where(and(
+          eq(connectedWebAccounts.id, accountId),
+          eq(connectedWebAccounts.ownerUserId, ownerUserId),
+          eq(connectedWebAccounts.status, "busy"),
+          sql`${connectedWebAccounts.executionCheckpoint}->>'resource' = 'action'`,
+          sql`${connectedWebAccounts.executionCheckpoint}->>'phase' = 'active'`,
+          sql`${connectedWebAccounts.executionCheckpoint}->>'reservationToken' = ${reservationToken}`,
+          sql`${connectedWebAccounts.executionCheckpoint}->>'opaqueExecutionRef' = ${expectedOpaqueRunRef}`,
+        )).returning({ id: connectedWebAccounts.id });
+        if (!account) throw new ConnectedWebAccountStoreError("conflict");
+      });
+    },
+
     async finishActionOperation({ operationId, status, receipt, expectedOpaqueRunRef }) {
       const parsedReceipt = parseConnectedWebActionSafeReceipt(receipt);
       if (!parsedReceipt || parsedReceipt.executionRef !== operationId
@@ -1062,7 +1203,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         throw new ConnectedWebAccountStoreError("conflict");
       }
       const [updated] = await db.update(connectedWebActionOperations).set({
-        status, receipt: parsedReceipt, opaqueRunRef: null, updatedAt: new Date(),
+        status, receipt: parsedReceipt, opaqueRunRef: null, runCostCustody: null, updatedAt: new Date(),
       }).where(and(
         eq(connectedWebActionOperations.id, operationId),
         sql`${connectedWebActionOperations.status} in ('reserving', 'running', 'verifying')`,
@@ -1084,7 +1225,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
 
     async resumeActionOperation({ operationId, ownerUserId, accountId, requestDigest }) {
       const [updated] = await db.update(connectedWebActionOperations).set({
-        status: "reserving", opaqueRunRef: null, receipt: null, updatedAt: new Date(),
+        status: "reserving", opaqueRunRef: null, runCostCustody: null, receipt: null, updatedAt: new Date(),
       }).where(and(
         eq(connectedWebActionOperations.id, operationId),
         eq(connectedWebActionOperations.ownerUserId, ownerUserId),
@@ -1102,7 +1243,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         throw new ConnectedWebAccountStoreError("conflict");
       }
       const [updated] = await db.update(connectedWebActionOperations).set({
-        status: "cancelled", opaqueRunRef: null, receipt: parsedReceipt, updatedAt: new Date(),
+        status: "cancelled", opaqueRunRef: null, runCostCustody: null, receipt: parsedReceipt, updatedAt: new Date(),
       }).where(and(
         eq(connectedWebActionOperations.id, operationId),
         eq(connectedWebActionOperations.ownerUserId, ownerUserId),
@@ -1129,6 +1270,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
       if (!activity) throw new ConnectedWebAccountStoreError("conflict");
       const sameDelivery = (existing: typeof connectedWebOperations.$inferSelect) => (
         existing.accountId === admission.accountId
+        && JSON.stringify(durableFundingBinding(existing.fundingBinding)) === JSON.stringify(admission.fundingBinding)
         && existing.requestDigest === admission.requestDigest
         && existing.initiatingAgentId === admission.initiatingAgentId
         && existing.initiatingRoomId === admission.initiatingRoomId
@@ -1146,6 +1288,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         deliveryId: admission.deliveryId,
         requestDigest: admission.requestDigest,
         sealedIntent: admission.sealedIntent,
+        fundingBinding: admission.fundingBinding,
         actionOperationId: admission.actionOperationId ?? null,
         effectIdempotencyKey: admission.effectIdempotencyKey ?? null,
         driver: admission.driver ?? "hosted",
@@ -1373,6 +1516,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         deliveryId: input.deliveryId,
         requestDigest: input.requestDigest,
         sealedIntent: input.sealedIntent,
+        fundingBinding: input.fundingBinding,
         actionOperationId: input.actionOperationId ?? null,
         effectIdempotencyKey: input.effectIdempotencyKey ?? null,
         driver: input.driver ?? "hosted",
@@ -1388,6 +1532,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
       )).limit(1);
       if (!existing) throw new ConnectedWebAccountStoreError("conflict");
       if (existing.accountId !== input.accountId || existing.requestDigest !== input.requestDigest
+        || JSON.stringify(durableFundingBinding(existing.fundingBinding)) !== JSON.stringify(input.fundingBinding)
         || existing.initiatingAgentId !== input.initiatingAgentId || existing.initiatingRoomId !== input.initiatingRoomId
         || existing.initiatingThreadId !== input.initiatingThreadId || existing.initiatingLane !== input.initiatingLane) {
         return { kind: "conflict" as const };
@@ -1666,7 +1811,11 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
 
     async rotateOperationDriver(input) {
       const activity = parseConnectedWebOperationSafeActivity(input.safeActivity);
+      const refs = input.sealedProviderRefs === undefined
+        ? undefined
+        : parseConnectedWebOperationProviderReferences(input.sealedProviderRefs);
       if (!activity || !Number.isSafeInteger(input.expectedControlEpoch) || input.expectedControlEpoch < 1) throw new ConnectedWebAccountStoreError("conflict");
+      if (input.sealedProviderRefs !== undefined && refs === null) throw new ConnectedWebAccountStoreError("conflict");
       const rotatedAt = safeOperationDate(input.now);
       const leaseExpiresAt = safeOperationDate(input.controlLeaseExpiresAt);
       if (!rotatedAt) throw new ConnectedWebAccountStoreError("conflict");
@@ -1677,6 +1826,7 @@ export function createConnectedWebAccountStore(db: DirectDatabase = getSharedDir
         controlEpoch: input.expectedControlEpoch + 1,
         controlLeaseToken,
         controlLeaseExpiresAt: leaseExpiresAt,
+        ...(refs === undefined || refs === null ? {} : { sealedProviderRefs: refs }),
         safeActivity: activity,
         nextCheckAt: safeOperationDate(input.nextCheckAt),
         supervisorClaimOwner: null,

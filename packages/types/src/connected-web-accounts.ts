@@ -195,8 +195,13 @@ export const connectedWebOperationTerminalReadResultSchema = z.object({
     origin: originSchema,
   }).strict().nullable(),
   cost: z.object({ currency: z.literal("USD"), amountUsd: z.number().finite().nonnegative().nullable(), state: z.enum(["actual", "unknown"]) }).strict(),
-  outputs: z.array(z.never()).max(0),
-  outputsTruncated: z.literal(false),
+  outputs: z.array(z.object({
+    artifactId: z.string().trim().min(1).max(256),
+    path: z.string().trim().min(1).max(512).refine((value) => !value.includes("://")),
+    mime: z.string().trim().min(1).max(128),
+    bytes: z.number().int().nonnegative().safe(),
+  }).strict()).max(4),
+  outputsTruncated: z.boolean(),
 }).strict().superRefine((value, context) => {
   const origin = new URL(value.page.origin);
   if (!["http:", "https:"].includes(origin.protocol) || origin.origin !== value.page.origin || origin.username || origin.password) {
@@ -210,6 +215,9 @@ export const connectedWebOperationTerminalReadResultSchema = z.object({
   }
   if ((value.cost.state === "actual") !== (value.cost.amountUsd !== null)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: "terminal cost state must match amount" });
+  }
+  if (value.account === null && (value.outputs.length !== 0 || value.outputsTruncated)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: "public terminal reads cannot publish private workspace outputs" });
   }
 });
 export type ConnectedWebOperationTerminalReadResult = z.infer<typeof connectedWebOperationTerminalReadResultSchema>;

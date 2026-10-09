@@ -13,6 +13,7 @@ function operation(overrides: Partial<ConnectedWebOperation> = {}): ConnectedWeb
     id: OPERATION, ownerUserId: OWNER, accountId: "22222222-2222-4222-8222-222222222222",
     initiatingAgentId: "44444444-4444-4444-8444-444444444444", initiatingRoomId: "55555555-5555-4555-8555-555555555555",
     initiatingThreadId: "thread", initiatingLane: "lane", deliveryId: "delivery", requestDigest: "a".repeat(64), sealedIntent: "cwo1.aaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaa.aa",
+    fundingBinding: null,
     actionOperationId: null, effectIdempotencyKey: null, driver: "hosted", lifecycle: "running", controlEpoch: 1,
     controlLeaseToken: "66666666-6666-4666-8666-666666666666", controlLeaseExpiresAt: null,
     sealedProviderRefs: { version: 1, runRef: "cwo1.aaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaa.aa" }, eventCursor: 0,
@@ -45,6 +46,41 @@ test("owner operation projection uses exact ownership and fresh provider capabil
   });
   await expectStoreFailure(() => controller.get({ ownerUserId: "other", operationId: OPERATION }), "not_found");
   expect(await controller.get({ ownerUserId: OWNER, operationId: OPERATION })).toMatchObject({ operationId: OPERATION, canWatch: true, canStop: true, result: null });
+});
+
+test("owner terminal projection returns only the durable owned artifact receipt", async () => {
+  const row = operation({
+    lifecycle: "terminal",
+    terminalReceipt: { version: 1, outcome: "completed", code: "provider_completed", summary: "Connected website work completed." },
+    terminalReadResult: {
+      version: 1,
+      account: { id: "22222222-2222-4222-8222-222222222222", label: "Example", service: "example", origin: "https://example.com" },
+      page: { ref: "22222222-2222-4222-8222-222222222222", title: "Example", origin: "https://example.com" },
+      read: null,
+      cost: { currency: "USD", amountUsd: 0.01, state: "actual" },
+      outputs: [{ artifactId: "artifact-1", path: "connected-web/report.csv", mime: "text/csv", bytes: 3 }],
+      outputsTruncated: false,
+    },
+    terminalAt: new Date(),
+  });
+  const controller = new ConnectedWebOperationOwnerController({
+    store: { getOperationForOwner: async () => row, scheduleOperationCheck: async () => true },
+    provider: {
+      observeHostedReadRun: async () => { throw new Error("terminal result must not reopen the provider"); },
+      cancelHostedReadRun: async () => { throw new Error("terminal result must not reopen the provider"); },
+    },
+    secrets: () => null,
+  });
+
+  expect(await controller.get({ ownerUserId: OWNER, operationId: OPERATION })).toMatchObject({
+    lifecycle: "terminal",
+    canWatch: false,
+    canStop: false,
+    result: {
+      outputs: [{ artifactId: "artifact-1", path: "connected-web/report.csv", mime: "text/csv", bytes: 3 }],
+      outputsTruncated: false,
+    },
+  });
 });
 
 test("stop cancels then only schedules immediate reconciliation", async () => {

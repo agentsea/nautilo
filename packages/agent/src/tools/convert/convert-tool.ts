@@ -7,6 +7,7 @@
  */
 
 import * as fsp from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import {
@@ -42,6 +43,19 @@ import {
   inferFormatFromPath,
   pathMatchesOutputFormat,
 } from "./format";
+import {
+  getConversionRuntime,
+  type CloudConversionDestinationBinding,
+  type CloudConversionExecutionResult,
+  type CloudConversionRecoveryRequest,
+  type ConversionRuntime,
+} from "./conversion-runtime";
+import {
+  createFileMutationRequestId,
+  getWorkspaceFileContentCommitExecution,
+  getWorkspaceFileContentRecoveryExecution,
+  type WorkspaceFileContentCommitResult,
+} from "../file/workspace-runtime-adapter";
 import { readLocalZoneBytes, type LocalZoneIoContext } from "../file/local-zone-io";
 import {
   executeLocalOfficeOperation,
@@ -55,7 +69,7 @@ import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 import { getUsageContext } from "../../usage/usage-context";
 
 const CLOUD_FORMAT_MATRIX =
-  "CloudConvert routes (when CLOUDCONVERT_API_KEY is set): HTML → PDF/DOCX/ODT/RTF/PNG/JPG/TXT/MD/EPUB/MOBI/AZW3 and more; " +
+  "CloudConvert routes (when connected): HTML → PDF/DOCX/ODT/RTF/PNG/JPG/TXT/MD/EPUB/MOBI/AZW3 and more; " +
   "Office/spreadsheet/presentation ↔ conversions; PDF → XLSX; image/audio/video/archive formats. " +
   "No html→xlsx — use the officecli tool for spreadsheets.";
 
@@ -80,6 +94,10 @@ interface ConvertToolContext {
   activeModelId: string;
   agentId: string;
   roomId: string;
+  stableToolCallId: string;
+  currentTaskId: string;
+  currentTaskRunId: string;
+  jobId: string;
   memoryAccessEnvelope: MemoryAccessEnvelope | null;
 }
 
@@ -90,6 +108,8 @@ export interface ConvertToolDeps {
   markdownToDocxBuffer?: typeof markdownToDocxBuffer;
   recordProviderCost?: ProviderCostRecorder;
   assertServerFunding?: typeof assertCanUseServerProviderCredentials;
+  conversionRuntime?: ConversionRuntime;
+  prepareWorkspaceDestination?: typeof prepareDestination;
 }
 
 function contextFromUnknown(ctx: unknown): ConvertToolContext {
@@ -106,6 +126,10 @@ function contextFromUnknown(ctx: unknown): ConvertToolContext {
     workspacePath: typeof c["workspacePath"] === "string" ? c["workspacePath"] : "",
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
     roomId: typeof c["roomId"] === "string" ? c["roomId"] : "",
+    stableToolCallId: typeof c["stableToolCallId"] === "string" ? c["stableToolCallId"] : "",
+    currentTaskId: typeof c["currentTaskId"] === "string" ? c["currentTaskId"] : "",
+    currentTaskRunId: typeof c["currentTaskRunId"] === "string" ? c["currentTaskRunId"] : "",
+    jobId: typeof c["jobId"] === "string" ? c["jobId"] : "",
     activeModelId: typeof c["activeModelId"] === "string" ? c["activeModelId"] : "",
     memoryAccessEnvelope: envelope,
   };
@@ -113,6 +137,9 @@ function contextFromUnknown(ctx: unknown): ConvertToolContext {
 
 const convertSchema = z
   .object({
+    action: z.enum(["start", "resume", "cancel"]).optional().default("start"),
+    recoveryHandle: z.string().regex(/^cvr_[0-9a-f]{32}$/).optional()
+      .describe("Opaque handle returned by an interrupted cloud conversion."),
     html: z.string().optional().describe("Inline HTML source (mutually exclusive with markdown/sourcePath)."),
     markdown: z.string().optional().describe("Inline Markdown source (mutually exclusive with html/sourcePath)."),
     sourcePath: z
@@ -123,8 +150,8 @@ const convertSchema = z
       .enum(["workspace", "current", "absolute"])
       .optional()
       .describe("Zone for sourcePath (defaults to workspace)."),
-    format: z.string().min(1).describe("Output format (e.g. pdf, docx, png)."),
-    destinationPath: z.string().min(1).describe("Path for the generated file."),
+    format: z.string().min(1).optional().describe("Output format (e.g. pdf, docx, png)."),
+    destinationPath: z.string().min(1).optional().describe("Path for the generated file."),
     destinationZone: z
       .enum(["workspace", "current", "absolute"])
       .optional()
@@ -136,6 +163,17 @@ const convertSchema = z
       .describe("Conversion backend override (else NAUTILO_CONVERT_BACKEND env, else local)."),
   })
   .superRefine((val, ctx) => {
+    if (val.action === "cancel") {
+      if (!val.recoveryHandle) ctx.addIssue({ code: "custom", message: "cancel requires recoveryHandle." });
+      return;
+    }
+    if (!val.format || !val.destinationPath) {
+      ctx.addIssue({ code: "custom", message: `${val.action} requires format and destinationPath.` });
+    }
+    if (val.action === "resume") {
+      if (!val.recoveryHandle) ctx.addIssue({ code: "custom", message: "resume requires recoveryHandle." });
+      return;
+    }
     const hasHtml = typeof val.html === "string";
     const hasMarkdown = typeof val.markdown === "string";
     const hasSourcePath = typeof val.sourcePath === "string" && val.sourcePath.length > 0;
@@ -152,12 +190,26 @@ type ConvertInput = z.infer<typeof convertSchema>;
 
 type ResolvedSource =
   | { kind: "inline"; inputFormat: string; bytes: Buffer }
-  | { kind: "file"; inputFormat: string; bytes: Buffer; sourcePath: string; sourceZone: "workspace" | "current" | "absolute" };
+  | {
+      kind: "file";
+      inputFormat: string;
+      bytes: Buffer;
+      sourcePath: string;
+      sourceZone: "workspace" | "current" | "absolute";
+      artifactInternalId?: string;
+      artifactRevision?: number;
+    };
 
 async function readWorkspaceSourceBytes(
   sourcePath: string,
   ctx: DispatchContext,
-): Promise<{ ok: true; bytes: Buffer; inputFormat: string } | { ok: false; error: string }> {
+): Promise<{
+  ok: true;
+  bytes: Buffer;
+  inputFormat: string;
+  artifactInternalId: string;
+  artifactRevision: number;
+} | { ok: false; error: string }> {
   const factsResult = envelopeFactsForArtifacts(ctx.memoryAccessEnvelope);
   if (!factsResult.ok) {
     return { ok: false, error: factsResult.reason };
@@ -179,7 +231,13 @@ async function readWorkspaceSourceBytes(
   }
   try {
     const bytes = await fsp.readFile(resolution.physicalPath);
-    return { ok: true, bytes, inputFormat };
+    return {
+      ok: true,
+      bytes,
+      inputFormat,
+      artifactInternalId: resolution.artifact.id,
+      artifactRevision: resolution.artifact.revision,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Error reading source artifact: ${msg}` };
@@ -253,6 +311,8 @@ async function resolveSource(
         bytes: read.bytes,
         sourcePath,
         sourceZone,
+        artifactInternalId: read.artifactInternalId,
+        artifactRevision: read.artifactRevision,
       },
     };
   }
@@ -451,13 +511,25 @@ async function prepareDestination(
         ...(prepared.structured ? { structured: true } : {}),
       };
     }
+    let meta = prepared.meta;
+    if (meta.mode === "update") {
+      const current = await resolveWorkspaceArtifact({
+        logicalPath: validated.path,
+        facts: factsResult.facts,
+        intent: "create_or_update",
+      });
+      if (!current.ok || !current.artifact || current.artifact.id !== meta.rowId) {
+        return { ok: false, error: "Destination artifact changed while conversion was prepared." };
+      }
+      meta = { ...meta, expectedRevision: current.artifact.revision };
+    }
     return {
       ok: true,
       resolution: {
         resolved: prepared.physicalPath,
         resolvedZone: "workspace",
       },
-      ctx: { ...dispatchCtx, workspaceArtifactMeta: prepared.meta },
+      ctx: { ...dispatchCtx, workspaceArtifactMeta: meta },
     };
   }
 
@@ -471,10 +543,256 @@ async function prepareDestination(
   };
 }
 
+function sha256(value: string | Buffer | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function authorityDigest(value: unknown): string {
+  const canonical = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(canonical);
+    if (candidate !== null && typeof candidate === "object") return Object.fromEntries(
+      Object.entries(candidate as Record<string, unknown>)
+        .filter(([, child]) => child !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, canonical(child)]),
+    );
+    return candidate;
+  };
+  return sha256(JSON.stringify(canonical(value)));
+}
+
+function destinationBinding(
+  dest: Extract<Awaited<ReturnType<typeof prepareDestination>>, { ok: true }>,
+): CloudConversionDestinationBinding | null {
+  const meta = dest.ctx.workspaceArtifactMeta;
+  const envelope = dest.ctx.memoryAccessEnvelope;
+  if (!meta || !envelope) return null;
+  return {
+    ...(meta.rowId ? { artifactInternalId: meta.rowId } : {}),
+    ...(meta.expectedRevision === undefined ? {} : { revision: meta.expectedRevision }),
+    namespaceId: meta.namespaceId,
+    pathDigest: sha256(meta.logicalPath),
+    authorityDigest: authorityDigest({
+      domain: "nautilo/cloud-conversion-destination/v1",
+      ownerId: dest.ctx.ownerId,
+      agentId: dest.ctx.agentId,
+      roomId: dest.ctx.roomId,
+      actorId: envelope.actorId,
+      namespaceId: meta.namespaceId,
+      logicalPathDigest: sha256(meta.logicalPath),
+    }),
+  };
+}
+
+function sourceBinding(
+  source: ResolvedSource,
+  dispatchCtx: DispatchContext,
+): {
+  kind: "inline" | "artifact";
+  artifactInternalId?: string;
+  revision?: number;
+  sha256: string;
+  authorityDigest: string;
+} {
+  const sourceSha256 = sha256(source.bytes);
+  const isArtifact = source.kind === "file"
+    && source.sourceZone === "workspace"
+    && source.artifactInternalId !== undefined
+    && source.artifactRevision !== undefined;
+  return {
+    kind: isArtifact ? "artifact" : "inline",
+    ...(isArtifact ? {
+      artifactInternalId: source.artifactInternalId,
+      revision: source.artifactRevision,
+    } : {}),
+    sha256: sourceSha256,
+    authorityDigest: authorityDigest({
+      domain: "nautilo/cloud-conversion-source/v1",
+      ownerId: dispatchCtx.ownerId,
+      agentId: dispatchCtx.agentId,
+      roomId: dispatchCtx.roomId,
+      actorId: dispatchCtx.memoryAccessEnvelope?.actorId ?? null,
+      kind: isArtifact ? "artifact" : "inline",
+      artifactInternalId: isArtifact ? source.artifactInternalId : null,
+      revision: isArtifact ? source.artifactRevision : null,
+      sha256: sourceSha256,
+    }),
+  };
+}
+
+function conversionRecoveryRequest(
+  recoveryHandle: string,
+  causalHumanUserId: string,
+  destination: CloudConversionDestinationBinding,
+  signal?: AbortSignal,
+): CloudConversionRecoveryRequest {
+  return {
+    recoveryHandle,
+    causalHumanUserId,
+    destination,
+    maxOutputBytes: DELIVERED_FORMAT_LIMITS.generatedBytes,
+    ...(signal ? { signal } : {}),
+  };
+}
+
+function publicationAuthority(
+  dest: Extract<Awaited<ReturnType<typeof prepareDestination>>, { ok: true }>,
+) {
+  const envelope = dest.ctx.memoryAccessEnvelope;
+  if (!envelope || !dest.ctx.agentId || !dest.ctx.roomId || !dest.ctx.turnId) return null;
+  return {
+    envelope,
+    ownerId: dest.ctx.ownerId,
+    agentId: dest.ctx.agentId,
+    roomId: dest.ctx.roomId,
+    turnId: dest.ctx.turnId,
+  };
+}
+
+async function publishCloudConversion(input: {
+  runtime: ConversionRuntime;
+  result: Extract<CloudConversionExecutionResult, { status: "ready_to_publish" | "recover_publication" | "published" }>;
+  recovery: CloudConversionRecoveryRequest;
+  dest: Extract<Awaited<ReturnType<typeof prepareDestination>>, { ok: true }>;
+  destinationPath: string;
+}): Promise<string> {
+  let result = input.result;
+  if (result.status === "published") {
+    return JSON.stringify({
+      applied: true,
+      recovered: true,
+      zone: "workspace",
+      command: "convert",
+      artifactId: result.artifactId,
+      revisionId: result.revisionId,
+      recoveryHandle: result.recoveryHandle,
+      summary: "Recovered the already published CloudConvert result.",
+    });
+  }
+  const authority = publicationAuthority(input.dest);
+  if (!authority) {
+    return `Error: Current Workspace publication authority is unavailable. Resume ${result.recoveryHandle} from the original Room.`;
+  }
+  const commandArgs = {
+    command: "convert",
+    destinationPathDigest: input.recovery.destination.pathDigest,
+    outputFormat: result.outputFormat,
+    backend: "cloud",
+  };
+  const mutationRequestId = createFileMutationRequestId(result.operationKey, commandArgs);
+  if (result.status === "recover_publication") {
+    const recover = getWorkspaceFileContentRecoveryExecution();
+    if (recover) {
+      const recovered = await recover({ authority, mutationRequestId, command: "convert" });
+      if (recovered.ok) {
+        const artifactId = recovered.artifactId ?? input.dest.ctx.workspaceArtifactMeta?.artifactId;
+        if (!artifactId) return `Error: Conversion publication recovered without an Artifact identity. Resume ${result.recoveryHandle}.`;
+        await input.runtime.confirmPublication({
+          operationKey: result.operationKey,
+          artifactId,
+          revisionId: recovered.revisionId,
+        });
+        return JSON.stringify({
+          applied: true,
+          recovered: true,
+          path: input.destinationPath,
+          zone: "workspace",
+          command: "convert",
+          artifactId,
+          revisionId: recovered.revisionId,
+          recoveryHandle: result.recoveryHandle,
+          summary: "Recovered the committed CloudConvert Artifact publication.",
+        });
+      }
+      if (recovered.code === "unknown") {
+        return `Error: Artifact publication is still uncertain. Resume ${result.recoveryHandle}; the provider job will not be submitted again.`;
+      }
+    }
+    const resumed = await input.runtime.resumePublication(input.recovery);
+    if (resumed.status !== "ready_to_publish") {
+      return resumed.status === "error"
+        ? `Error: ${resumed.message}`
+        : `Error: Conversion publication could not be resumed safely. Resume ${result.recoveryHandle}.`;
+    }
+    result = resumed;
+  }
+  const commit = getWorkspaceFileContentCommitExecution();
+  const meta = input.dest.ctx.workspaceArtifactMeta;
+  if (!commit || !meta) {
+    return `Error: Workspace Artifact publication is unavailable. Resume ${result.recoveryHandle}.`;
+  }
+  let source: Parameters<typeof commit>[0]["source"];
+  if (meta.mode === "update") {
+    if (!meta.rowId || meta.expectedRevision === undefined) {
+      return `Error: Destination revision is unavailable. Resume ${result.recoveryHandle} after reopening the Artifact.`;
+    }
+    let priorBytes: Buffer;
+    try {
+      priorBytes = await fsp.readFile(input.dest.resolution.resolved);
+    } catch {
+      return `Error: Destination bytes are unavailable. Resume ${result.recoveryHandle} after reopening the Artifact.`;
+    }
+    source = {
+      artifactInternalId: meta.rowId,
+      artifactId: meta.artifactId,
+      logicalPath: meta.logicalPath,
+      revision: meta.expectedRevision,
+      bytes: priorBytes,
+    };
+  }
+  let committed: WorkspaceFileContentCommitResult;
+  try {
+    committed = await commit({
+      authority,
+      mutationRequestId,
+      command: "convert",
+      commandArgs,
+      ...(source ? { source } : {}),
+      output: {
+        artifactInternalId: meta.rowId ?? meta.artifactId,
+        artifactId: meta.artifactId,
+        logicalPath: meta.logicalPath,
+        bytes: result.bytes,
+      },
+    });
+  } catch {
+    return `Error: Artifact publication outcome is uncertain. Resume ${result.recoveryHandle}; the provider job will not be submitted again.`;
+  }
+  if (!committed.ok) {
+    if (committed.code === "unknown") {
+      return `Error: Artifact publication outcome is uncertain. Resume ${result.recoveryHandle}; the provider job will not be submitted again.`;
+    }
+    await input.runtime.failPublication({
+      operationKey: result.operationKey,
+      failureCode: committed.code === "human_edit_conflict" ? "destination_human_edit_conflict" : "destination_publication_failed",
+    });
+    return `Error: ${committed.message} The provider conversion was not repeated.`;
+  }
+  const artifactId = committed.artifactId ?? meta.artifactId;
+  await input.runtime.confirmPublication({
+    operationKey: result.operationKey,
+    artifactId,
+    revisionId: committed.revisionId,
+  });
+  return JSON.stringify({
+    applied: true,
+    path: input.destinationPath,
+    zone: "workspace",
+    command: "convert",
+    binary: true,
+    bytes: result.bytes.byteLength,
+    artifactId,
+    revisionId: committed.revisionId,
+    recoveryHandle: result.recoveryHandle,
+    summary: `Published CloudConvert ${result.outputFormat.toUpperCase()} output (${result.bytes.byteLength} bytes).`,
+    warnings: ["Bytes were sent to CloudConvert."],
+  });
+}
+
 function buildCommandArgs(input: ConvertInput, source: ResolvedSource, backend: ConvertBackend): Record<string, unknown> {
   const base: Record<string, unknown> = {
-    format: input.format,
-    destinationPath: input.destinationPath,
+    format: input.format ?? "",
+    destinationPath: input.destinationPath ?? "",
     destinationZone: input.destinationZone,
     backend: backend,
   };
@@ -496,8 +814,11 @@ function hasPersonalCapabilityFunding(): boolean {
 
 export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {}) {
   const toolCtx = contextFromUnknown(context);
-  const cloudConfigured = !hasPersonalCapabilityFunding()
-    && (deps.isCloudConvertConfigured ?? isCloudConvertConfigured)();
+  const conversionRuntime = deps.conversionRuntime ?? getConversionRuntime();
+  const prepareCloudDestination = deps.prepareWorkspaceDestination ?? prepareDestination;
+  const cloudConfigured = conversionRuntime !== undefined
+    || (!hasPersonalCapabilityFunding()
+      && (deps.isCloudConvertConfigured ?? isCloudConvertConfigured)());
   const recordProviderCost = deps.recordProviderCost ?? createToolProviderCostRecorder(
     context as Record<string, unknown> | undefined,
   );
@@ -506,12 +827,31 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
     name: "convert",
     description: buildConvertToolDescription(cloudConfigured),
     schema: convertSchema,
-    func: async (input: ConvertInput) => {
-      const personalFunding = hasPersonalCapabilityFunding()
-        || getUsageContext()?.funding?.kind === "personal";
-      const outputFormat = normalizeFormat(input.format);
+    func: async (input: ConvertInput, _runManager, config) => {
+      if (input.action === "cancel") {
+        if (!conversionRuntime || !toolCtx.causalHumanUserId || !input.recoveryHandle) {
+          return "Error: Cloud conversion recovery is unavailable.";
+        }
+        const cancelled = await conversionRuntime.cancel({
+          operationKey: input.recoveryHandle,
+          causalHumanUserId: toolCtx.causalHumanUserId,
+          ...(config?.signal ? { signal: config.signal } : {}),
+        });
+        if (cancelled.status === "error") {
+          return JSON.stringify({
+            error: cancelled.code,
+            message: cancelled.message,
+            retryable: cancelled.retryable,
+            uncertainEffect: cancelled.uncertainEffect,
+            recoveryHandle: input.recoveryHandle,
+          });
+        }
+        return JSON.stringify(cancelled);
+      }
+      const outputFormat = normalizeFormat(input.format!);
+      const destinationZone = input.destinationZone ?? "workspace";
       const expectedExt = expectedExtensionForFormat(outputFormat);
-      if (!pathMatchesOutputFormat(input.destinationPath, outputFormat)) {
+      if (!pathMatchesOutputFormat(input.destinationPath!, outputFormat)) {
         return `Error: format=${outputFormat} requires destinationPath to end in ${expectedExt}`;
       }
 
@@ -528,6 +868,7 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         ...(toolCtx.agentId ? { agentId: toolCtx.agentId } : {}),
         ...(toolCtx.roomId ? { roomId: toolCtx.roomId } : {}),
         memoryAccessEnvelope: toolCtx.memoryAccessEnvelope,
+        ...(config?.signal ? { signal: config.signal } : {}),
       };
 
       const ioCtx: LocalZoneIoContext = {
@@ -539,6 +880,50 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         approvalObtained: true,
       };
 
+      if (input.action === "resume") {
+        if (!conversionRuntime || !input.recoveryHandle || !toolCtx.causalHumanUserId) {
+          return "Error: Cloud conversion recovery is unavailable.";
+        }
+        if (destinationZone !== "workspace") {
+          return "Error: Cloud conversion recovery requires the original Workspace Artifact destination.";
+        }
+        const dest = await prepareCloudDestination(
+          input.destinationPath!,
+          destinationZone,
+          zoneCtx,
+          dispatchCtx,
+        );
+        if (!dest.ok) return dest.structured ? dest.error : `Error: ${dest.error}`;
+        const binding = destinationBinding(dest);
+        if (!binding) return "Error: Current Workspace destination authority is unavailable.";
+        const recovery = conversionRecoveryRequest(
+          input.recoveryHandle,
+          toolCtx.causalHumanUserId,
+          binding,
+          dispatchCtx.signal,
+        );
+        const resumed = await conversionRuntime.resume(recovery);
+        if (resumed.status === "error") {
+          return JSON.stringify({
+            error: resumed.code,
+            message: resumed.message,
+            retryable: resumed.retryable,
+            uncertainEffect: resumed.uncertainEffect,
+            recoveryHandle: input.recoveryHandle,
+          });
+        }
+        if (resumed.outputFormat !== outputFormat) {
+          return "Error: The requested format does not match the durable conversion receipt.";
+        }
+        return publishCloudConversion({
+          runtime: conversionRuntime,
+          result: resumed,
+          recovery,
+          dest,
+          destinationPath: input.destinationPath!,
+        });
+      }
+
       if (isFullyLocalFileConvert(input)) {
         const inputFormat = inferFormatFromPath(input.sourcePath);
         if (!inputFormat) {
@@ -548,13 +933,10 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
           explicit: input.backend,
           inputFormat,
           outputFormat,
-          isCloudConfigured: deps.isCloudConvertConfigured ?? isCloudConvertConfigured,
+          isCloudConfigured: () => cloudConfigured,
         });
         if (!backendResult.ok) return `Error: ${backendResult.error}`;
         const { backend } = backendResult;
-        if (personalFunding && backend === "cloud") {
-          return "Error: Cloud conversion is unavailable with personal funding. Use a supported local Markdown → PDF/DOCX conversion.";
-        }
         const unsupported = unsupportedLocalConvertPair(
           {
             kind: "file",
@@ -578,7 +960,7 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         const relayOutcome = await dispatchFullyLocalConvert({
           sourcePath: input.sourcePath,
           sourceZone: input.sourceZone,
-          destinationPath: input.destinationPath,
+          destinationPath: input.destinationPath!,
           destinationZone: input.destinationZone,
           inputFormat,
           outputFormat,
@@ -600,13 +982,10 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         explicit: input.backend,
         inputFormat: source.inputFormat,
         outputFormat,
-        isCloudConfigured: deps.isCloudConvertConfigured ?? isCloudConvertConfigured,
+        isCloudConfigured: () => cloudConfigured,
       });
       if (!backendResult.ok) return `Error: ${backendResult.error}`;
       const { backend } = backendResult;
-      if (personalFunding && backend === "cloud") {
-        return "Error: Cloud conversion is unavailable with personal funding. Use a supported local Markdown → PDF/DOCX conversion.";
-      }
 
       const sourceZone =
         source.kind === "file" ? source.sourceZone : input.sourceZone;
@@ -618,6 +997,71 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         source.inputFormat,
       );
       if (unsupported) return unsupported;
+      const personalFunding = hasPersonalCapabilityFunding()
+        || getUsageContext()?.funding?.kind === "personal";
+      if (backend === "cloud" && !conversionRuntime && personalFunding) {
+        return "Error: Personal CloudConvert funding requires the durable conversion runtime. No server credential was used.";
+      }
+
+      if (backend === "cloud" && conversionRuntime) {
+        if (!toolCtx.causalHumanUserId || !toolCtx.stableToolCallId || !currentTurnId
+          || !toolCtx.agentId || !toolCtx.roomId) {
+          return "Error: Durable cloud conversion requires trusted Human, Room, turn, and tool-call identity.";
+        }
+        if (destinationZone !== "workspace") {
+          return "Error: Cloud conversion requires a Workspace Artifact destination.";
+        }
+        const dest = await prepareCloudDestination(
+          input.destinationPath!,
+          destinationZone,
+          zoneCtx,
+          dispatchCtx,
+        );
+        if (!dest.ok) return dest.structured ? dest.error : `Error: ${dest.error}`;
+        const destination = destinationBinding(dest);
+        if (!destination) return "Error: Current Workspace destination authority is unavailable.";
+        const result = await conversionRuntime.execute({
+          execution: {
+            toolCallId: toolCtx.stableToolCallId,
+            turnId: currentTurnId,
+            causalHumanUserId: toolCtx.causalHumanUserId,
+            roomId: toolCtx.roomId,
+            agentId: toolCtx.agentId,
+            ...(toolCtx.currentTaskId ? { taskId: toolCtx.currentTaskId } : {}),
+            ...(toolCtx.currentTaskRunId ? { runId: toolCtx.currentTaskRunId } : {}),
+            ...(toolCtx.jobId ? { jobId: toolCtx.jobId } : {}),
+          },
+          source: sourceBinding(source, dispatchCtx),
+          destination,
+          inputFormat: source.inputFormat,
+          outputFormat,
+          bytes: source.bytes,
+          maxOutputBytes: DELIVERED_FORMAT_LIMITS.generatedBytes,
+          ...(dispatchCtx.signal ? { signal: dispatchCtx.signal } : {}),
+        });
+        if (result.status === "error") {
+          return JSON.stringify({
+            error: result.code,
+            message: result.message,
+            retryable: result.retryable,
+            uncertainEffect: result.uncertainEffect,
+            ...(result.recoveryHandle ? { recoveryHandle: result.recoveryHandle } : {}),
+          });
+        }
+        const recovery = conversionRecoveryRequest(
+          result.recoveryHandle,
+          toolCtx.causalHumanUserId,
+          destination,
+          dispatchCtx.signal,
+        );
+        return publishCloudConversion({
+          runtime: conversionRuntime,
+          result,
+          recovery,
+          dest,
+          destinationPath: input.destinationPath!,
+        });
+      }
 
       let generatedBytes: Buffer;
       try {
@@ -657,7 +1101,7 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
       );
 
       const dest = await prepareDestination(
-        input.destinationPath,
+        input.destinationPath!,
         input.destinationZone,
         zoneCtx,
         dispatchCtx,

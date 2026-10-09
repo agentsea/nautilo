@@ -19,7 +19,7 @@ function terminalResult(operation: ConnectedWebOperation): ConnectedWebOperation
     page: { ...result.page },
     read: result.read === null ? null : { ...result.read, facts: result.read.facts.map((fact) => ({ ...fact })) },
     cost: { ...result.cost },
-    outputs: [],
+    outputs: result.outputs.map((output) => ({ ...output })),
     outputsTruncated: result.outputsTruncated,
   };
 }

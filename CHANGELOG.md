@@ -7,6 +7,17 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal Browser Use and CloudConvert keys can fund website work and file
+  conversion under the administrator's credential policy. Existing browser
+  profiles and submitted conversions retain their creating account through
+  recovery, cancellation and cleanup; replacing a key never silently switches
+  their payer. Conversion recovery does not resubmit uncertain paid jobs.
+  Browser and conversion attempts appear in the existing Costs views, including
+  unresolved charges, estimated browser usage and measured conversion credits
+  without invented dollar prices. Hosted connected-app actions independently
+  check server-spending permission, including when the parent chat uses a
+  personal model key.
+
 - Members can choose personal models for research and decisions independently
   of the server defaults. Personal Tavily and model keys fund supported research,
   native decisions, and ordinary tools under the administrator's funding policy.

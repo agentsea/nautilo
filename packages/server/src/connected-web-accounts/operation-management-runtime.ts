@@ -14,8 +14,13 @@ import type {
   ConnectedWebOperationSafeActivity,
 } from "@nautilo/db";
 import type { ConnectedWebOperation } from "./store";
-import type { ConnectedWebAccountReadFacts } from "./read-tool-runtime";
+import { isConfirmedConnectedWebPreCreateFailure, type ConnectedWebAccountReadFacts } from "./read-tool-runtime";
 import type { ConnectedWebAccountStore } from "./store";
+import type {
+  ServerProviderCostAttemptAdmission,
+  ServerProviderCostReceipt,
+} from "../costs/provider-cost-recorder";
+import type { UsageFundingProvenance } from "@nautilo/agent";
 
 type ProviderFailure = Readonly<{ kind: "failure"; code: string }>;
 type ProviderRunStatus = "queued" | "dispatching" | "running" | "completed" | "failed" | "cancelled";
@@ -51,10 +56,24 @@ export interface ConnectedWebOperationManagementSecrets {
   unsealProviderReferences(input: {
     readonly context: { readonly operationId: string; readonly ownerUserId: string; readonly accountId: string | null };
     readonly references: ConnectedWebOperationProviderReferences;
-  }): { readonly runId?: string; readonly sessionId?: string; readonly workspaceId?: string; readonly browserId?: string };
+  }): {
+    readonly runId?: string;
+    readonly sessionId?: string;
+    readonly workspaceId?: string;
+    readonly browserId?: string;
+    readonly runCost?: { readonly identity: string; readonly workload: string };
+    readonly browserCost?: { readonly identity: string; readonly workload: string };
+  };
   sealProviderReferences(input: {
     readonly context: { readonly operationId: string; readonly ownerUserId: string; readonly accountId: string | null };
-    readonly coordinates: { readonly runId?: string; readonly sessionId?: string; readonly workspaceId?: string; readonly browserId?: string };
+    readonly coordinates: {
+      readonly runId?: string;
+      readonly sessionId?: string;
+      readonly workspaceId?: string;
+      readonly browserId?: string;
+      readonly runCost?: { readonly identity: string; readonly workload: string };
+      readonly browserCost?: { readonly identity: string; readonly workload: string };
+    };
   }): ConnectedWebOperationProviderReferences;
 }
 
@@ -70,6 +89,13 @@ export interface ConnectedWebOperationManagementRuntimeOptions {
       | "claimOperationForControl" | "releaseOperationClaim"
   >;
   readonly provider: ConnectedWebOperationManagementProvider;
+  readonly withProvider?: <T>(
+    operation: ConnectedWebOperation,
+    intent: "spend" | "recover",
+    callback: (provider: ConnectedWebOperationManagementProvider, usageFunding?: UsageFundingProvenance) => Promise<T>,
+  ) => Promise<T>;
+  readonly beginCostAttempt?: (input: ServerProviderCostAttemptAdmission) => Promise<void>;
+  readonly settleCostAttempt?: (input: ServerProviderCostReceipt) => Promise<void>;
   readonly secrets: ConnectedWebOperationManagementSecrets;
   /** Explicit continuation model; never inferred from provider defaults. */
   readonly continuationModel: string;
@@ -146,7 +172,7 @@ function projection(operation: Pick<
       page: operation.terminalReadResult.page,
       read: operation.terminalReadResult.read === null ? null : { ...operation.terminalReadResult.read, facts: [...operation.terminalReadResult.read.facts] },
       cost: operation.terminalReadResult.cost,
-      outputs: [],
+      outputs: operation.terminalReadResult.outputs.map((output) => ({ ...output })),
       outputsTruncated: operation.terminalReadResult.outputsTruncated,
     },
   };
@@ -192,6 +218,7 @@ export function createConnectedWebOperationManagementServerRuntime(
   options: ConnectedWebOperationManagementRuntimeOptions,
 ): ConnectedWebOperationToolRuntime {
   const clock = options.clock ?? SYSTEM_CLOCK;
+  const withProvider = options.withProvider ?? ((_operation, _intent, callback) => callback(options.provider));
 
   async function authorized(
     actor: ConnectedWebOperationToolActorContext,
@@ -256,10 +283,10 @@ export function createConnectedWebOperationManagementServerRuntime(
     }
   }
 
-  async function cancelAndProveTerminal(runId: string): Promise<boolean> {
+  async function cancelAndProveTerminal(operation: ConnectedWebOperation, runId: string): Promise<boolean> {
     let cancellation: ProviderResult<ProviderRun>;
     try {
-      cancellation = await options.provider.cancelHostedReadRun(runId);
+      cancellation = await withProvider(operation, "recover", (provider) => provider.cancelHostedReadRun(runId));
     } catch {
       return false;
     }
@@ -268,7 +295,7 @@ export function createConnectedWebOperationManagementServerRuntime(
     if (providerFailure(cancellation)) return false;
     let observed: ProviderResult<ProviderRun>;
     try {
-      observed = await options.provider.pollHostedReadRun(runId);
+      observed = await withProvider(operation, "recover", (provider) => provider.pollHostedReadRun(runId));
     } catch {
       return false;
     }
@@ -294,7 +321,7 @@ export function createConnectedWebOperationManagementServerRuntime(
       if (coordinates.runId !== undefined) {
         // Cancellation is intentionally idempotent, but its acknowledgement is
         // not a terminal receipt. The supervisor performs the next observation.
-        const cancellation = await options.provider.cancelHostedReadRun(coordinates.runId);
+        const cancellation = await withProvider(operation, "recover", (provider) => provider.cancelHostedReadRun(coordinates.runId!));
         // A missing provider run is not completion/terminal truth. The
         // supervisor currently rechecks that state, so surface this Stop as
         // unavailable rather than claiming it was accepted by the provider.
@@ -348,12 +375,13 @@ export function createConnectedWebOperationManagementServerRuntime(
       return failure("unavailable");
     }
     if (!coordinates.runId || !coordinates.sessionId || originalIntent.trim().length === 0) return failure("unavailable");
+    const sessionId = coordinates.sessionId;
 
     // V4 queue inspection is mandatory before steering. Its documented
     // interrupt handoff remains best-effort, so this runtime cannot honestly
     // claim a queued message altered the active run. Use a fenced replacement.
     try {
-      const queue = await options.provider.inspectHostedSessionQueue(coordinates.sessionId);
+      const queue = await withProvider(operation, "recover", (provider) => provider.inspectHostedSessionQueue(sessionId));
       if (providerFailure(queue)) return failure("unavailable");
     } catch {
       return failure("unavailable");
@@ -369,12 +397,12 @@ export function createConnectedWebOperationManagementServerRuntime(
     if (claimedEpoch === null) return failure("conflict");
     operation = { ...operation, controlEpoch: claimedEpoch };
     try {
-      if (!await cancelAndProveTerminal(coordinates.runId)) {
+      if (!await cancelAndProveTerminal(operation, coordinates.runId)) {
         await scheduleSteerRecovery(operation);
         return failure("unavailable");
       }
 
-      const previous = await options.provider.getHostedReadResult(coordinates.runId).catch(() => null);
+      const previous = await withProvider(operation, "recover", (provider) => provider.getHostedReadResult(coordinates.runId!)).catch(() => null);
       if (!previous || providerFailure(previous) || previous.runId !== coordinates.runId || !isTerminal(previous.status)) {
         await scheduleSteerRecovery(operation);
         return failure("unavailable");
@@ -385,36 +413,145 @@ export function createConnectedWebOperationManagementServerRuntime(
         return failure("unavailable");
       }
       const maxCostUsd = cost.remaining / 1_000_000;
+      if (coordinates.runCost && options.settleCostAttempt) {
+        try {
+          await withProvider(operation, "recover", async (_provider, usageFunding) => options.settleCostAttempt!({
+            identity: coordinates.runCost!.identity,
+            ...(usageFunding === undefined ? {} : { usageFunding }),
+            userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+            roomId: operation.initiatingRoomId,
+            agentId: operation.initiatingAgentId,
+            workload: coordinates.runCost!.workload,
+            provider: "browser_use",
+            operation: "hosted_run",
+            estimatedCostUsd: cost.known ? previous.totalCostUsd : null,
+            actualCostUsd: null,
+            evidenceState: cost.known ? "estimated" : "unknown",
+            attemptOutcome: previous.status === "completed" ? "succeeded" : previous.status === "cancelled" ? "cancelled" : "failed",
+            failureCode: previous.status === "failed" ? "provider_failed" : null,
+          }));
+        } catch {
+          await scheduleSteerRecovery(operation);
+          return failure("unavailable");
+        }
+      }
+      const replacementRunCost = {
+        identity: `browser-use:connected-web:${operation.id}:run:${operation.controlEpoch}:${workerId}`,
+        workload: "connected_web_steer",
+      };
+      const settleReplacement = async (input: {
+        readonly actualCostUsd: string | null;
+        readonly estimatedCostUsd?: string | null;
+        readonly evidenceState: "actual" | "estimated" | "unknown";
+        readonly attemptOutcome: "succeeded" | "failed" | "cancelled";
+        readonly failureCode: string | null;
+      }): Promise<boolean> => {
+        if (!options.settleCostAttempt) return true;
+        try {
+          await withProvider(operation, "recover", async (_provider, usageFunding) => options.settleCostAttempt!({
+            identity: replacementRunCost.identity,
+            ...(usageFunding === undefined ? {} : { usageFunding }),
+            userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+            roomId: operation.initiatingRoomId,
+            agentId: operation.initiatingAgentId,
+            workload: replacementRunCost.workload,
+            provider: "browser_use",
+            operation: "hosted_run",
+            ...input,
+          }));
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const cancelReplacementAndSettle = async (runId: string): Promise<boolean> => {
+        let cancelled: ProviderResult<ProviderRun>;
+        try {
+          cancelled = await withProvider(operation, "recover", (provider) => provider.cancelHostedReadRun(runId));
+        } catch {
+          return false;
+        }
+        if (providerFailure(cancelled) || cancelled.runId !== runId || !isTerminal(cancelled.status)) return false;
+        const terminal = await withProvider(operation, "recover", (provider) => provider.getHostedReadResult(runId)).catch(() => null);
+        const verified = terminal !== null && !providerFailure(terminal) && terminal.runId === runId && isTerminal(terminal.status)
+          ? terminal : null;
+        const actual = verified === null ? null : connectedWebRunCost({ operation, result: verified });
+        const finalStatus = verified?.status ?? cancelled.status;
+        return settleReplacement({
+          estimatedCostUsd: actual?.known ? verified!.totalCostUsd : null,
+          actualCostUsd: null,
+          evidenceState: actual?.known ? "estimated" : "unknown",
+          attemptOutcome: finalStatus === "completed" ? "succeeded" : finalStatus === "failed" ? "failed" : "cancelled",
+          failureCode: finalStatus === "failed" ? "provider_failed" : null,
+        });
+      };
       let replacement: ProviderResult<ProviderRun>;
+      let replacementCostBegun = false;
+      let replacementDispatchStarted = false;
       try {
         // V4 creates have no idempotency key. A process death after POST reaches
         // the provider but before this runtime receives a run id is an
         // irreducible orphan-risk window; every observable post-create failure
         // path below cancels the exact replacement before returning.
-        replacement = await options.provider.createHostedReadContinuationRun({
-          sessionId: coordinates.sessionId,
-          ...(coordinates.workspaceId === undefined ? {} : { workspaceId: coordinates.workspaceId }),
-          task: `${originalIntent}\n\n[Steering instruction]\n${instruction}`,
-          model: options.continuationModel,
-          maxCostUsd,
+        replacement = await withProvider(operation, "spend", async (provider, usageFunding) => {
+          await options.beginCostAttempt?.({
+            identity: replacementRunCost.identity,
+            ...(usageFunding === undefined ? {} : { usageFunding }),
+            userId: operation.fundingBinding?.humanUserId ?? operation.ownerUserId,
+            roomId: operation.initiatingRoomId,
+            agentId: operation.initiatingAgentId,
+            workload: replacementRunCost.workload,
+            provider: "browser_use",
+            operation: "hosted_run",
+          });
+          replacementCostBegun = options.beginCostAttempt !== undefined;
+          replacementDispatchStarted = true;
+          return provider.createHostedReadContinuationRun({
+            sessionId,
+            ...(coordinates.workspaceId === undefined ? {} : { workspaceId: coordinates.workspaceId }),
+            task: `${originalIntent}\n\n[Steering instruction]\n${instruction}`,
+            model: options.continuationModel,
+            maxCostUsd,
+          });
         });
       } catch {
+        if (replacementCostBegun && !replacementDispatchStarted) {
+          await settleReplacement({
+            actualCostUsd: "0",
+            evidenceState: "actual",
+            attemptOutcome: "failed",
+            failureCode: "local_admission_failed",
+          });
+        }
         await scheduleSteerRecovery(operation);
         return failure("unavailable");
       }
-      if (providerFailure(replacement) || replacement.sessionId !== coordinates.sessionId || !replacement.workspaceId) {
+      if (providerFailure(replacement)) {
+        if (replacementCostBegun && isConfirmedConnectedWebPreCreateFailure(replacement.code)) {
+          await settleReplacement({
+            actualCostUsd: null,
+            evidenceState: "unknown",
+            attemptOutcome: "failed",
+            failureCode: "provider_create_failed",
+          });
+        }
+        await scheduleSteerRecovery(operation);
+        return failure("unavailable");
+      }
+      if (replacement.sessionId !== sessionId || !replacement.workspaceId) {
+        await cancelReplacementAndSettle(replacement.runId);
         await scheduleSteerRecovery(operation);
         return failure("unavailable");
       }
 
       let observedReplacement: ProviderResult<ProviderRun>;
       try {
-        observedReplacement = await options.provider.pollHostedReadRun(replacement.runId);
+        observedReplacement = await withProvider(operation, "recover", (provider) => provider.pollHostedReadRun(replacement.runId));
       } catch {
         observedReplacement = { kind: "failure", code: "network_error" };
       }
       if (providerFailure(observedReplacement) || observedReplacement.runId !== replacement.runId) {
-        await options.provider.cancelHostedReadRun(replacement.runId).catch(() => undefined);
+        await cancelReplacementAndSettle(replacement.runId);
         await scheduleSteerRecovery(operation);
         return failure("unavailable");
       }
@@ -437,7 +574,9 @@ export function createConnectedWebOperationManagementServerRuntime(
             context: secretContext(operation),
             coordinates: {
               runId: replacement.runId,
+              runCost: replacementRunCost,
               sessionId: replacement.sessionId,
+              ...(coordinates.browserCost === undefined ? {} : { browserCost: coordinates.browserCost }),
               workspaceId: replacement.workspaceId,
             },
           }),
@@ -450,7 +589,7 @@ export function createConnectedWebOperationManagementServerRuntime(
         nextEpoch = null;
       }
       if (nextEpoch === null) {
-        await options.provider.cancelHostedReadRun(replacement.runId).catch(() => undefined);
+        await cancelReplacementAndSettle(replacement.runId);
         await scheduleSteerRecovery(operation);
         return failure("conflict");
       }
@@ -523,7 +662,7 @@ export function createConnectedWebOperationManagementServerRuntime(
 
         // The direct router is admitted only after the exact hosted writer is
         // cancelled and re-observed terminal under the takeover fence.
-        if (!await cancelAndProveTerminal(coordinates.runId)) {
+        if (!await cancelAndProveTerminal(operation, coordinates.runId)) {
           await releaseTakeoverClaim();
           return failure("unavailable");
         }

@@ -30,6 +30,7 @@ function operation(overrides: Partial<ConnectedWebOperation> = {}): ConnectedWeb
     deliveryId: "delivery-id",
     requestDigest: "a".repeat(64),
     sealedIntent: "sealed-intent",
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted",
@@ -130,7 +131,14 @@ function supervisor(input: {
   readonly store: Pick<ConnectedWebAccountStore, "claimDueOperations" | "releaseOperationClaim" | "recordOperationCheckpoint" | "terminalizeOperation" | "terminalizeReadOperationAndCompleteExecution" | "getForOwner">;
   readonly provider?: ConnectedWebOperationSupervisorProvider;
   readonly intent?: string;
-  readonly unseal?: () => Promise<{ readonly runId: string | null; readonly sessionId: string | null; readonly workspaceId: string | null; readonly browserId: string | null; } | null>;
+  readonly unseal?: () => Promise<{
+    readonly runId: string | null;
+    readonly sessionId: string | null;
+    readonly workspaceId: string | null;
+    readonly browserId: string | null;
+    readonly runCost?: { readonly identity: string; readonly workload: string };
+  } | null>;
+  readonly settleCostAttempt?: ConstructorParameters<typeof ConnectedWebOperationSupervisor>[0]["settleCostAttempt"];
 }) {
   return new ConnectedWebOperationSupervisor({
     store: input.store,
@@ -147,6 +155,7 @@ function supervisor(input: {
     clock: { now: () => NOW },
     eventPageLimit: 2,
     nextCheckAt: ({ now }) => new Date(now.getTime() + 1_000),
+    ...(input.settleCostAttempt === undefined ? {} : { settleCostAttempt: input.settleCostAttempt }),
   });
 }
 
@@ -174,6 +183,32 @@ describe("ConnectedWebOperationSupervisor", () => {
     await runner.runOnce({ workerId: "worker-a", leaseMs: 1_000 });
     expect(terminalWrites.map((write) => write.cumulativeCostUsdMicros)).toEqual([original + 10_000, original + 10_000]);
     expect(current.cumulativeCostUsdMicros).toBe(original);
+  });
+
+  test("publishes the result while retaining terminal run cost as provider-reported estimate", async () => {
+    const terminalizations: unknown[] = [];
+    const settlements: Array<{ estimatedCostUsd?: string | null; actualCostUsd?: string | null; evidenceState: string; attemptOutcome?: string | null }> = [];
+    const store = storeFor({ operations: [operation()], records: [], releases: [], terminalizations });
+    await supervisor({
+      store,
+      provider: provider({
+        pollHostedReadRun: async () => terminal("completed"),
+        getHostedReadResult: async () => ({ runId: RUN_ID, status: "completed", result: null, totalCostUsd: "0.01", observedAt: NOW }),
+      }),
+      unseal: async () => ({
+        runId: RUN_ID, sessionId: "session-private-id", workspaceId: "workspace-private-id", browserId: null,
+        runCost: { identity: "browser-use:connected-web:run-cost", workload: "connected_web_read" },
+      }),
+      settleCostAttempt: async (receipt) => { settlements.push({
+        ...(receipt.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: receipt.estimatedCostUsd }),
+        ...(receipt.actualCostUsd === undefined ? {} : { actualCostUsd: receipt.actualCostUsd }),
+        evidenceState: receipt.evidenceState,
+        ...(receipt.attemptOutcome === undefined ? {} : { attemptOutcome: receipt.attemptOutcome }),
+      }); },
+    }).runOnce({ workerId: "worker-a", leaseMs: 1_000 });
+
+    expect(settlements).toMatchObject([{ estimatedCostUsd: "0.01", actualCostUsd: null, evidenceState: "estimated", attemptOutcome: "succeeded" }]);
+    expect(terminalizations).toMatchObject([{ terminalReadResult: { cost: { currency: "USD", amountUsd: null, state: "unknown" } } }]);
   });
 
   test("commits supported browser actions for the activity log without waking the Genie", async () => {

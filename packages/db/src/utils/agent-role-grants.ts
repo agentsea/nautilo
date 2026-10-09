@@ -11,6 +11,8 @@ export const SENSITIVE_TABLES = [
   "server_provider_policy",
   "personal_provider_credentials",
   "personal_capability_preferences",
+  // Exact-account paid conversion recovery belongs to the server control plane.
+  "conversion_operations",
   "credentials",
   "recovery_codes",
   "logto_account_security",

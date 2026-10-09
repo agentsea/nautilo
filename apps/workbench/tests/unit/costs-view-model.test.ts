@@ -257,10 +257,12 @@ test("provider normalization retains evidence buckets and safely defaults legacy
   } as unknown as Parameters<typeof normalizePersonalCosts>[0];
   expect(normalizePersonalCosts(data).byProvider).toEqual([
     { provider: "tavily", operation: "search", operations: 1,
-      unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0.02,
+      unknownOperations: 0, measuredUnits: null, unitType: null,
+      actualCostUsd: 0, estimatedCostUsd: 0.02,
       totalCostUsd: 0.02 },
     { provider: "legacy", operation: "read", operations: 1,
-      unknownOperations: 0, actualCostUsd: 0, estimatedCostUsd: 0,
+      unknownOperations: 0, measuredUnits: null, unitType: null,
+      actualCostUsd: 0, estimatedCostUsd: 0,
       totalCostUsd: 0 },
   ]);
 });

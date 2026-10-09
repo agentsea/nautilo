@@ -52,6 +52,8 @@ describe("personal tool readiness", () => {
       "convert",
       "run_deep_research",
       "evaluate_decisions",
+      "browse_web",
+      "run_website_task",
     ];
 
     for (const name of admitted) {
@@ -79,8 +81,6 @@ describe("personal tool readiness", () => {
         "ask_peer",
         "in_scope",
         "in_private_namespace",
-        "browse_web",
-        "run_website_task",
       ]) {
         expect(personalToolReady(name)).toBe(false);
         expect(personalToolCallSupported(call(name), true)).toBe(false);

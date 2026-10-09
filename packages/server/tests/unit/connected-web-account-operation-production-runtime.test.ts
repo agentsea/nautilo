@@ -42,6 +42,8 @@ test("production polling is non-overlapping while scheduled wakes remain indepen
   let firstSignal: AbortSignal | undefined;
   const firstStartedPromise = new Promise<void>((resolve) => { firstStarted = resolve; });
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     store: {} as never,
     provider: {} as never,
@@ -92,6 +94,8 @@ test("D568 production operation pump keeps supervisor and wake transport claims 
   const manual = scheduler();
   const calls: Array<{ readonly kind: string; readonly workerId: string }> = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     store: {} as never,
     provider: {} as never,
@@ -121,6 +125,8 @@ test("finished sync cleanup retries independently while provider supervision is 
   let finished!: () => void;
   const complete = new Promise<void>((resolve) => { finished = resolve; });
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never, secrets: {} as never, scheduler: manual.scheduler,
     runSupervisor: async () => {
       await new Promise<void>((resolve) => { releaseSupervisor = resolve; });
@@ -170,6 +176,8 @@ test("idle cleanup is wired to the pump without blocking supervision or claiming
   const finished = new Promise<void>((resolve) => { completedCleanup = resolve; });
   const completed: unknown[] = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never, scheduler: manual.scheduler, clock: { now: () => now }, secrets,
     runSupervisor: async () => { supervised++; return { claimed: 0, reconciled: 0, rescheduled: 0, terminalized: 0, stale: 0 }; },
     deliverWakes: async () => { wakePasses++; },
@@ -217,6 +225,7 @@ test("D568 production composition unseals provider coordinates only with the exa
     deliveryId: "delivery-1",
     requestDigest: "a".repeat(64),
     sealedIntent: "sealed-intent",
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted" as const,
@@ -244,6 +253,8 @@ test("D568 production composition unseals provider coordinates only with the exa
   } satisfies ConnectedWebOperation;
   const polled: string[] = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     scheduler: manual.scheduler,
     clock: { now: () => now },
@@ -336,6 +347,7 @@ test("D568 production composition preserves sealed read authority after a cursor
     wakeAttempts: 0,
     wakeDeliveredAt: null,
     cumulativeCostUsdMicros: 0,
+    fundingBinding: null,
     remainingBudgetUsdMicros: 1_000_000,
     terminalReceipt: null,
     terminalReadResult: null,
@@ -345,6 +357,8 @@ test("D568 production composition preserves sealed read authority after a cursor
   } satisfies ConnectedWebOperation;
   const terminalizations: Array<Record<string, unknown>> = [];
   const runtime = createConnectedWebOperationProductionRuntime({
+    withProvider: async (_resource, _intent, provider, callback) => callback(provider),
+    settleCostAttempt: async () => undefined,
     db: {} as never,
     scheduler: manual.scheduler,
     clock: { now: () => now },
@@ -406,7 +420,7 @@ test("D568 production composition preserves sealed read authority after a cursor
 
   runtime.start();
   manual.queued.shift()?.();
-  for (let step = 0; step < 20 && terminalizations.length === 0; step += 1) await Promise.resolve();
+  for (let step = 0; step < 100 && terminalizations.length === 0; step += 1) await Promise.resolve();
   expect(terminalizations).toHaveLength(1);
   expect(terminalizations[0]?.["receipt"]).toMatchObject({ outcome: "completed", code: "provider_completed" });
   expect(terminalizations[0]?.["terminalReadResult"]).toMatchObject({

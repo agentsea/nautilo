@@ -35,7 +35,7 @@ describe("personal costs client contract", () => {
     client.setToken("human-session");
 
     expect(await client.getPersonalCosts("30d")).toEqual(summary);
-    expect(calls).toEqual([{ url: `${BASE}/api/account/costs?range=30d`, authorization: "Bearer human-session" }]);
+    expect(calls).toEqual([{ url: `${BASE}/api/account/costs?range=30d&includeMeasuredUnits=true`, authorization: "Bearer human-session" }]);
   });
 
   test("preserves unknown service counts independently of model-route rows", async () => {
@@ -49,6 +49,28 @@ describe("personal costs client contract", () => {
     };
     globalThis.fetch = (async () => Response.json(response)) as unknown as typeof fetch;
     expect((await new NautiloApiClient(BASE).getPersonalCosts("30d")).totals.unknownProviderOperations).toBe(1);
+  });
+
+  test("parses measured provider units even when USD evidence is unknown", async () => {
+    globalThis.fetch = (async () => Response.json({
+      ...summary,
+      byProvider: [{
+        provider: "cloudconvert",
+        operation: "conversion",
+        operations: 1,
+        unknownOperations: 1,
+        measuredUnits: 3,
+        unitType: "cloudconvert_credit",
+        estimatedCostUsd: 0,
+        actualCostUsd: 0,
+        totalCostUsd: 0,
+      }],
+    })) as unknown as typeof fetch;
+    expect((await new NautiloApiClient(BASE).getPersonalCosts("30d")).byProvider[0]).toMatchObject({
+      measuredUnits: 3,
+      unitType: "cloudconvert_credit",
+      totalCostUsd: 0,
+    });
   });
 
   test("retains service outcomes and unresolved cost evidence without accepting payload data", async () => {

@@ -74,6 +74,7 @@ function operation(): ConnectedWebOperation {
       intent: JSON.stringify({ version: 1, kind: "read_connected_web_account", origin: "https://example.com", request: "Read the requested page", delivery: "text",
         deliveryId: "delivery-d568", threadId: "graph-thread-d568", lane: `room:${ROOM}`, turnId: "turn-d568" }),
     }),
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted",

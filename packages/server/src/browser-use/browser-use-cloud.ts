@@ -5,10 +5,7 @@ import {
 import { RELAY_MEDIA_MAX_BYTES } from "@nautilo/relay";
 import { createHash } from "node:crypto";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
-import {
-  safelyRecordProviderCost,
-  type ServerProviderCostReceipt,
-} from "../costs/provider-cost-recorder";
+import type { UsageFundingProvenance } from "@nautilo/agent";
 
 export const BROWSER_USE_V4_BASE_URL = "https://api.browser-use.com/api/v4";
 export const BROWSER_USE_DEFAULT_MODEL = "gpt-5.6-luna";
@@ -54,7 +51,11 @@ export interface BrowserUseCloudAdapterOptions {
   readonly clock?: BrowserUseClock;
   /** Operational request deadline to avoid a stuck server fetch. */
   readonly requestTimeoutMs?: number;
-  readonly recordProviderCost?: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  /** Exact request-local credential selected by the durable funding owner. */
+  readonly requestCredential?: Readonly<{
+    apiKey: string;
+    usageFunding: UsageFundingProvenance;
+  }>;
 }
 
 export type BrowserUseProviderHealth =
@@ -104,6 +105,17 @@ export interface BrowserUseBrowserSession {
   readonly timeoutAt: Date;
   readonly observedAt: Date;
   readonly status: "active" | "stopped";
+  /** Terminal provider evidence. The durable lifecycle owner records it. */
+  readonly costEvidence?: Readonly<{
+    readonly estimatedCostUsd: string | null;
+    readonly evidenceState: "estimated" | "unknown";
+  }>;
+}
+
+export interface BrowserUseHostedBrowserCleanup {
+  readonly stopped: boolean;
+  readonly estimatedCostUsd: string | null;
+  readonly evidenceState: "estimated" | "unknown";
 }
 
 /**
@@ -475,21 +487,43 @@ export class BrowserUseCloudAdapter {
   private readonly fetchImpl: BrowserUseFetch;
   private readonly clock: BrowserUseClock;
   private readonly requestTimeoutMs: number;
-  private readonly recordProviderCost: (receipt: ServerProviderCostReceipt) => Promise<void>;
+  private readonly requestCredential: BrowserUseCloudAdapterOptions["requestCredential"];
 
   constructor(options: BrowserUseCloudAdapterOptions) {
     this.serverKeys = options.serverKeys;
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.clock = options.clock ?? SYSTEM_CLOCK;
-    this.recordProviderCost = options.recordProviderCost ?? safelyRecordProviderCost;
+    this.requestCredential = options.requestCredential;
     const requestTimeoutMs = options.requestTimeoutMs;
     this.requestTimeoutMs = typeof requestTimeoutMs === "number" && Number.isInteger(requestTimeoutMs) && requestTimeoutMs > 0
       ? requestTimeoutMs
       : BROWSER_USE_NETWORK_DEADLINE_MS;
   }
 
+  /**
+   * Binds one admitted key to one callback-owned adapter. No process-global
+   * environment or shared key registry is changed, and this adapter never
+   * falls back to the server key while the request credential is present.
+   */
+  withRequestCredential(input: {
+    readonly apiKey: string;
+    readonly usageFunding: UsageFundingProvenance;
+  }): BrowserUseCloudAdapter {
+    return new BrowserUseCloudAdapter({
+      serverKeys: this.serverKeys,
+      fetch: this.fetchImpl,
+      clock: this.clock,
+      requestTimeoutMs: this.requestTimeoutMs,
+      requestCredential: input,
+    });
+  }
+
   health(): BrowserUseProviderHealth {
-    const resolution = resolveBrowserUseApiKey(this.serverKeys);
+    const resolution: BrowserUseApiKeyResolution = this.requestCredential === undefined
+      ? resolveBrowserUseApiKey(this.serverKeys)
+      : this.requestCredential.apiKey.trim().length === 0
+        ? { kind: "invalid" }
+        : { kind: "configured", apiKey: this.requestCredential.apiKey };
     if (resolution.kind === "configured") {
       // The captured public V4 contract has no non-mutating health endpoint.
       return { kind: "available", verification: "not_checked" };
@@ -558,16 +592,18 @@ export class BrowserUseCloudAdapter {
     if (!isFailure(session) && session.status === "stopped") {
       const browserCost = providerUsd((body as BrowserWireSession)["browserCost"]);
       const proxyCost = providerUsd((body as BrowserWireSession)["proxyCost"]);
-      const total = browserCost === null && proxyCost === null
+      // The provider reports these as separate components. A missing component
+      // is unknown evidence, not a zero-cost component.
+      const total = browserCost === null || proxyCost === null
         ? null
-        : ((browserCost ?? 0) + (proxyCost ?? 0)).toFixed(8);
-      await this.recordProviderCost({
-        identity: `browser-use:browser-session:${browserId}`,
-        provider: "browser_use",
-        operation: "browser_session",
-        actualCostUsd: total,
-        evidenceState: total === null ? "unknown" : "actual",
-      });
+        : (browserCost + proxyCost).toFixed(8);
+      return {
+        ...session,
+        costEvidence: {
+          estimatedCostUsd: total,
+          evidenceState: total === null ? "unknown" : "estimated",
+        },
+      };
     }
     return session;
   }
@@ -724,27 +760,51 @@ export class BrowserUseCloudAdapter {
    * Missing run/session coordinates are unresolved, never proof of shutdown.
    */
   async stopHostedReadBrowser(runId: string): Promise<boolean> {
+    return (await this.stopHostedReadBrowserWithCost(runId)).stopped;
+  }
+
+  /**
+   * Stops every browser attached to the exact hosted run and returns the
+   * provider's usage estimate only when every browser and proxy component is
+   * present. Resource disappearance proves no final amount.
+   */
+  async stopHostedReadBrowserWithCost(runId: string): Promise<BrowserUseHostedBrowserCleanup> {
+    const unresolved = (stopped = false): BrowserUseHostedBrowserCleanup => ({
+      stopped, estimatedCostUsd: null, evidenceState: "unknown",
+    });
     try {
       const run = await this.getHostedReadResult(runId);
-      if (isFailure(run) || !run.sessionId) return false;
+      if (isFailure(run) || !run.sessionId) return unresolved();
       if (run.status !== "completed" && run.status !== "cancelled" && run.status !== "failed") {
         const cancelled = await this.cancelHostedReadRun(runId);
-        if (isFailure(cancelled)) return false;
+        if (isFailure(cancelled)) return unresolved();
         const terminal = await this.pollHostedReadRun(runId);
-        if (isFailure(terminal) || (terminal.status !== "completed" && terminal.status !== "cancelled" && terminal.status !== "failed")) return false;
+        if (isFailure(terminal) || (terminal.status !== "completed" && terminal.status !== "cancelled" && terminal.status !== "failed")) return unresolved();
       }
       const browsers = await this.findHostedBrowsers({ agentSessionId: run.sessionId });
-      if (isFailure(browsers)) return false;
+      if (isFailure(browsers)) return unresolved();
+      let estimatedCostUsd = 0;
+      let completeEstimate = browsers.length > 0;
       for (const browser of browsers) {
-        if (browser.agentSessionId !== run.sessionId) return false;
-        if (browser.status === "stopped") continue;
-        const stopped = await this.stopBrowser(browser.browserId);
+        if (browser.agentSessionId !== run.sessionId) return unresolved();
+        const stopped = browser.status === "stopped" ? browser : await this.stopBrowser(browser.browserId);
         if (isFailure(stopped)) {
-          if (stopped.code !== "resource_not_found") return false;
-        } else if (stopped.browserId !== browser.browserId || stopped.status !== "stopped") return false;
+          if (stopped.code !== "resource_not_found") return unresolved();
+          completeEstimate = false;
+          continue;
+        }
+        if (stopped.browserId !== browser.browserId || stopped.status !== "stopped") return unresolved();
+        const amount = stopped.costEvidence?.estimatedCostUsd === null
+          || stopped.costEvidence?.estimatedCostUsd === undefined
+          ? NaN
+          : Number(stopped.costEvidence.estimatedCostUsd);
+        if (!Number.isFinite(amount) || amount < 0 || stopped.costEvidence?.evidenceState !== "estimated") completeEstimate = false;
+        else estimatedCostUsd += amount;
       }
-      return true;
-    } catch { return false; }
+      return completeEstimate
+        ? { stopped: true, estimatedCostUsd: estimatedCostUsd.toFixed(8), evidenceState: "estimated" }
+        : unresolved(true);
+    } catch { return unresolved(); }
   }
 
   async cancelHostedReadRun(runId: string): Promise<BrowserUseResult<BrowserUseHostedReadRun>> {
@@ -1074,7 +1134,11 @@ export class BrowserUseCloudAdapter {
     path: string,
     request: { readonly method: "GET" | "POST" | "PATCH" | "DELETE"; readonly body?: unknown },
   ): Promise<Response | BrowserUseProviderFailure> {
-    const resolution = resolveBrowserUseApiKey(this.serverKeys);
+    const resolution: BrowserUseApiKeyResolution = this.requestCredential === undefined
+      ? resolveBrowserUseApiKey(this.serverKeys)
+      : this.requestCredential.apiKey.trim().length === 0
+        ? { kind: "invalid" }
+        : { kind: "configured", apiKey: this.requestCredential.apiKey };
     const unavailable = unavailableFailure(resolution);
     if (unavailable !== null) return unavailable;
     if (resolution.kind !== "configured") return { kind: "failure", code: "invalid_configuration" };
@@ -1165,8 +1229,16 @@ export class BrowserUseCloudAdapter {
       cdpUrl: typeof session["cdpUrl"] === "string" ? session["cdpUrl"] : null,
       timeoutAt,
       observedAt: this.clock.now(),
+      ...(session["status"] === "stopped" ? { costEvidence: browserCostEvidence(session) } : {}),
     };
   }
+}
+
+function browserCostEvidence(session: BrowserWireSession): NonNullable<BrowserUseBrowserSession["costEvidence"]> {
+  const browserCost = providerUsd(session["browserCost"]);
+  const proxyCost = providerUsd(session["proxyCost"]);
+  const total = browserCost === null || proxyCost === null ? null : (browserCost + proxyCost).toFixed(8);
+  return { estimatedCostUsd: total, evidenceState: total === null ? "unknown" : "estimated" };
 }
 
 function providerUsd(value: unknown): number | null {

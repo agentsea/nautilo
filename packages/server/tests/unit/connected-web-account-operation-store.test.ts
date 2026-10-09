@@ -54,6 +54,12 @@ const admission = {
   deliveryId: "delivery-1",
   requestDigest: "a".repeat(64),
   sealedIntent: operationSecrets.sealIntent({ context: secretContext, intent: "Read the connected website." }),
+  fundingBinding: {
+    humanUserId: "11111111-1111-4111-8111-111111111111",
+    provider: "browser-use" as const,
+    binding: { kind: "server" as const, providerRoute: "browser-use" },
+    credentialFingerprint: "f".repeat(64),
+  },
   safeActivity,
   remainingBudgetUsdMicros: Number.MAX_SAFE_INTEGER,
 };

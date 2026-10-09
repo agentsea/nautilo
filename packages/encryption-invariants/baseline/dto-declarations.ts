@@ -23,6 +23,10 @@ import {
 } from "./reviewed-m322-dto";
 import type { DtoDeclaration } from "../src/node/dto-inventory";
 import { reviewedImageAssistanceDtoReplacements } from "./reviewed-image-assistance-dto";
+import {
+  reviewedPaidServiceFundingDtoReplacements,
+  SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS,
+} from "./reviewed-paid-service-funding-dto";
 import { REVIEWED_LANDING_DTO_DECLARATIONS, SUPERSEDED_LANDING_DTO_LOCATORS } from "./reviewed-main-2026-09-05-landing-dto";
 import { REVIEWED_D487_DTO_DECLARATIONS } from "./reviewed-d487-dto";
 import {
@@ -6188,5 +6192,14 @@ const PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ),
 ];
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
+const PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS: readonly DtoDeclaration[] =
   reviewedImageAssistanceDtoReplacements(PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS);
+
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+  ...PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS.filter((entry) =>
+    !SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS.has(entry.locator)
+  ),
+  ...reviewedPaidServiceFundingDtoReplacements(
+    PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS,
+  ),
+];

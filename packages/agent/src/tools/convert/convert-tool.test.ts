@@ -1,12 +1,109 @@
-import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import { runWithTurn } from "@nautilo/logger";
 import { resolveConvertBackend } from "./backend-resolver";
-import { createConvertTool } from "./convert-tool";
+import { createConvertTool, type ConvertToolDeps } from "./convert-tool";
 import { runWithCapabilityFundingSession, type CapabilityFundingSession } from "../../runtime/capability-funding";
 import { runWithUsageContext } from "../../usage/usage-context";
+import type { ConversionRuntime } from "./conversion-runtime";
+import {
+  setWorkspaceFileContentCommitExecution,
+  setWorkspaceFileContentRecoveryExecution,
+  type WorkspaceFileContentCommitExecution,
+  type WorkspaceFileContentRecoveryExecution,
+} from "../file/workspace-runtime-adapter";
+
+function sha(value: Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function conversionRuntime(overrides: Partial<ConversionRuntime> = {}): ConversionRuntime {
+  return {
+    execute: async () => ({
+      status: "error",
+      code: "unused",
+      message: "unused",
+      retryable: false,
+      uncertainEffect: false,
+    }),
+    resume: async () => ({
+      status: "error",
+      code: "unused",
+      message: "unused",
+      retryable: false,
+      uncertainEffect: false,
+    }),
+    resumePublication: async () => ({
+      status: "error",
+      code: "unused",
+      message: "unused",
+      retryable: false,
+      uncertainEffect: false,
+    }),
+    confirmPublication: async () => undefined,
+    failPublication: async () => undefined,
+    cancel: async () => ({
+      status: "error",
+      code: "unused",
+      message: "unused",
+      retryable: false,
+      uncertainEffect: false,
+    }),
+    ...overrides,
+  };
+}
+
+const memoryAccessEnvelope = {
+  ownerId: "owner-1",
+  actorId: "owner-1",
+  agentId: "agent-1",
+  roomId: "room-1",
+  readableNamespaces: ["10000000-0000-4000-8000-000000000004"],
+  mutableNamespaces: ["10000000-0000-4000-8000-000000000004"],
+  writableNamespaces: ["10000000-0000-4000-8000-000000000004"],
+  toolPolicy: {},
+};
+
+function durableToolContext() {
+  return {
+    ownerId: "owner-1",
+    causalHumanUserId: "owner-1",
+    workspacePath: "/unused",
+    currentFolder: "/unused",
+    agentId: "agent-1",
+    roomId: "room-1",
+    stableToolCallId: "tool-call-1",
+    memoryAccessEnvelope,
+  };
+}
+
+function destinationPreparer(
+  mode: "create" | "update" = "create",
+  revision = 1,
+): NonNullable<ConvertToolDeps["prepareWorkspaceDestination"]> {
+  return async (destinationPath, _zone, _zoneCtx, ctx) => ({
+    ok: true,
+    resolution: { resolved: path.join(baseDir, destinationPath), resolvedZone: "workspace" },
+    ctx: {
+      ...ctx,
+      workspaceArtifactMeta: {
+        mode,
+        artifactId: "artifact-1",
+        logicalPath: destinationPath,
+        namespaceId: "10000000-0000-4000-8000-000000000004",
+        storageUri: `artifact://${destinationPath}`,
+        mimeType: "application/pdf",
+        ...(mode === "update" ? {
+          rowId: "10000000-0000-4000-8000-000000000020",
+          expectedRevision: revision,
+        } : {}),
+      },
+    },
+  });
+}
 
 const personalCapability = {
   humanUserId: "owner-1",
@@ -40,6 +137,8 @@ afterAll(async () => {
 });
 
 afterEach(() => {
+  setWorkspaceFileContentCommitExecution(undefined);
+  setWorkspaceFileContentRecoveryExecution(undefined);
   if (originalBackendEnv === undefined) {
     delete process.env["NAUTILO_CONVERT_BACKEND"];
   } else {
@@ -127,7 +226,7 @@ describe("resolveConvertBackend", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toContain("CloudConvert not configured");
+      expect(result.error).toContain("CloudConvert is not connected");
     }
   });
 });
@@ -161,9 +260,215 @@ describe("convert tool description", () => {
       createConvertTool(undefined, { isCloudConvertConfigured: () => true }).description);
     expect(description).toContain("CloudConvert routes");
   });
+
+  test("personal capability advertises CloudConvert when the durable runtime is installed", () => {
+    const description = runWithCapabilityFundingSession(personalCapability, () =>
+      createConvertTool(undefined, {
+        isCloudConvertConfigured: () => false,
+        conversionRuntime: conversionRuntime(),
+      }).description);
+    expect(description).toContain("CloudConvert routes");
+  });
 });
 
 describe("createConvertTool", () => {
+  test("refuses durable dispatch without a canonical stable tool-call identity", async () => {
+    const execute = mock(async (_input: Parameters<ConversionRuntime["execute"]>[0]) => ({
+      status: "error" as const,
+      code: "must_not_execute",
+      message: "must not execute",
+      retryable: false,
+      uncertainEffect: false,
+    }));
+    const tool = createConvertTool({ ...durableToolContext(), stableToolCallId: "" }, {
+      conversionRuntime: conversionRuntime({ execute }),
+    });
+    const result = await runWithTurn("turn-without-stable-call", () => tool.invoke({
+      html: "<p>Hi</p>",
+      format: "pdf",
+      destinationPath: "report.pdf",
+      backend: "cloud",
+    }));
+    expect(String(result)).toContain("requires trusted Human, Room, turn, and tool-call identity");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("exposes durable cancellation by opaque recovery handle", async () => {
+    const cancel = mock(async (_input: Parameters<ConversionRuntime["cancel"]>[0]) => ({
+      status: "error" as const,
+      code: "conversion_cancel_pending",
+      message: "Cancellation is pending.",
+      retryable: true,
+      uncertainEffect: true,
+      recoveryHandle: `cvr_${"a".repeat(32)}`,
+    }));
+    const tool = createConvertTool({ causalHumanUserId: "owner-1" }, {
+      conversionRuntime: conversionRuntime({ cancel }),
+    });
+    const controller = new AbortController();
+    const result = await tool.invoke({
+      action: "cancel",
+      recoveryHandle: `cvr_${"a".repeat(32)}`,
+    }, { signal: controller.signal });
+    expect(cancel).toHaveBeenCalledWith({
+      operationKey: `cvr_${"a".repeat(32)}`,
+      causalHumanUserId: "owner-1",
+      signal: controller.signal,
+    });
+    expect(String(result)).toContain("conversion_cancel_pending");
+  });
+
+  test("publishes a durable start through the canonical Artifact commit port", async () => {
+    const output = Buffer.from("%PDF-durable");
+    const execute = mock(async (_input: Parameters<ConversionRuntime["execute"]>[0]) => ({
+      status: "ready_to_publish" as const,
+      operationKey: "1".repeat(64),
+      recoveryHandle: `cvr_${"2".repeat(32)}`,
+      outputFormat: "pdf",
+      bytes: output,
+      outputSha256: "3".repeat(64),
+    }));
+    const confirmPublication = mock(async () => undefined);
+    const commit = mock(async (_request: Parameters<WorkspaceFileContentCommitExecution>[0]) => ({
+      ok: true as const,
+      revisionId: "10000000-0000-4000-8000-000000000030",
+      artifactId: "artifact-1",
+      artifactInternalId: "10000000-0000-4000-8000-000000000020",
+    }));
+    setWorkspaceFileContentCommitExecution(commit);
+    const controller = new AbortController();
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ execute, confirmPublication }),
+      prepareWorkspaceDestination: destinationPreparer(),
+    });
+    const result = await runWithTurn("turn-durable-start", () => tool.invoke({
+      html: "<p>Hi</p>",
+      format: "pdf",
+      destinationPath: "report.pdf",
+      backend: "cloud",
+    }, { signal: controller.signal }));
+    expect(execute.mock.calls[0]![0].signal).toBe(controller.signal);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit.mock.calls[0]![0].commandArgs).toEqual({
+      command: "convert",
+      destinationPathDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      outputFormat: "pdf",
+      backend: "cloud",
+    });
+    expect(confirmPublication).toHaveBeenCalledWith({
+      operationKey: "1".repeat(64),
+      artifactId: "artifact-1",
+      revisionId: "10000000-0000-4000-8000-000000000030",
+    });
+    expect(String(result)).toContain(`cvr_${"2".repeat(32)}`);
+  });
+
+  test("recovers a committed Artifact receipt after the destination revision changed", async () => {
+    const resume = mock(async () => ({
+      status: "recover_publication" as const,
+      operationKey: "4".repeat(64),
+      recoveryHandle: `cvr_${"5".repeat(32)}`,
+      outputFormat: "pdf",
+    }));
+    const resumePublication = mock(async () => { throw new Error("must not redownload"); });
+    const confirmPublication = mock(async () => undefined);
+    const recover = mock(async (_request: Parameters<WorkspaceFileContentRecoveryExecution>[0]) => ({
+      ok: true as const,
+      revisionId: "10000000-0000-4000-8000-000000000031",
+      artifactId: "artifact-1",
+      artifactInternalId: "10000000-0000-4000-8000-000000000020",
+    }));
+    setWorkspaceFileContentRecoveryExecution(recover);
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ resume, resumePublication, confirmPublication }),
+      prepareWorkspaceDestination: destinationPreparer("update", 2),
+    });
+    const result = await runWithTurn("turn-durable-recover", () => tool.invoke({
+      action: "resume",
+      recoveryHandle: `cvr_${"5".repeat(32)}`,
+      format: "pdf",
+      destinationPath: "report.pdf",
+    }));
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(resumePublication).not.toHaveBeenCalled();
+    expect(confirmPublication).toHaveBeenCalledTimes(1);
+    expect(String(result)).toContain("Recovered the committed");
+  });
+
+  test("does not project a published receipt onto the caller's supplied path", async () => {
+    const resume = mock(async () => ({
+      status: "published" as const,
+      operationKey: "8".repeat(64),
+      recoveryHandle: `cvr_${"9".repeat(32)}`,
+      outputFormat: "pdf",
+      artifactId: "artifact-original",
+      revisionId: "10000000-0000-4000-8000-000000000039",
+    }));
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ resume }),
+      prepareWorkspaceDestination: destinationPreparer(),
+    });
+    const result = await runWithTurn("turn-published-recovery", () => tool.invoke({
+      action: "resume",
+      recoveryHandle: `cvr_${"9".repeat(32)}`,
+      format: "pdf",
+      destinationPath: "caller-supplied.pdf",
+    }));
+    expect(String(result)).toContain("artifact-original");
+    expect(String(result)).not.toContain("caller-supplied.pdf");
+  });
+
+  test("reapplies the same publication receipt when no Artifact commit exists", async () => {
+    const bytes = Buffer.from("%PDF-reapply");
+    const resume = mock(async () => ({
+      status: "recover_publication" as const,
+      operationKey: "6".repeat(64),
+      recoveryHandle: `cvr_${"7".repeat(32)}`,
+      outputFormat: "pdf",
+    }));
+    const resumePublication = mock(async () => ({
+      status: "ready_to_publish" as const,
+      operationKey: "6".repeat(64),
+      recoveryHandle: `cvr_${"7".repeat(32)}`,
+      outputFormat: "pdf",
+      bytes,
+      outputSha256: sha(bytes),
+    }));
+    const confirmPublication = mock(async () => undefined);
+    const recover = mock(async (_request: Parameters<WorkspaceFileContentRecoveryExecution>[0]) => ({
+      ok: false as const,
+      code: "reapply_required" as const,
+      message: "No committed mutation exists.",
+    }));
+    const commit = mock(async (_request: Parameters<WorkspaceFileContentCommitExecution>[0]) => ({
+      ok: true as const,
+      revisionId: "10000000-0000-4000-8000-000000000032",
+      artifactId: "artifact-1",
+    }));
+    setWorkspaceFileContentRecoveryExecution(recover);
+    setWorkspaceFileContentCommitExecution(commit);
+    const tool = createConvertTool(durableToolContext(), {
+      conversionRuntime: conversionRuntime({ resume, resumePublication, confirmPublication }),
+      prepareWorkspaceDestination: destinationPreparer(),
+    });
+    await runWithTurn("turn-durable-reapply", () => tool.invoke({
+      action: "resume",
+      recoveryHandle: `cvr_${"7".repeat(32)}`,
+      format: "pdf",
+      destinationPath: "report.pdf",
+    }));
+    expect(resumePublication).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(recover.mock.calls[0]![0].mutationRequestId)
+      .toBe(commit.mock.calls[0]![0].mutationRequestId);
+    expect(commit.mock.calls[0]![0].commandArgs).toEqual({
+      command: "convert",
+      destinationPathDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      outputFormat: "pdf",
+      backend: "cloud",
+    });
+  });
+
   test("local inline md→pdf with local destination fails closed (mixed route)", async () => {
     const destRel = "out.pdf";
     const tool = createConvertTool(
@@ -280,7 +585,7 @@ describe("createConvertTool", () => {
       backend: "cloud",
     });
 
-    expect(String(result)).toContain("CloudConvert not configured");
+    expect(String(result)).toContain("CloudConvert is not connected");
   });
 
   test("personal capability blocks explicit cloud conversion before dispatch", async () => {
@@ -297,7 +602,7 @@ describe("createConvertTool", () => {
       html: "<p>Hi</p>", format: "pdf", destinationPath: "personal.pdf",
       destinationZone: "workspace", backend: "cloud",
     }));
-    expect(String(result)).toContain("Cloud conversion is unavailable with personal funding");
+    expect(String(result)).toContain("Personal CloudConvert funding requires the durable conversion runtime");
     expect(convertCalled).toBe(false);
   });
 
@@ -341,7 +646,7 @@ describe("createConvertTool", () => {
       html: "<p>Hi</p>", format: "pdf", destinationPath: "personal-auto.pdf",
       destinationZone: "workspace", backend: "auto",
     }));
-    expect(String(result)).toContain("Cloud conversion is unavailable with personal funding");
+    expect(String(result)).toContain("Personal CloudConvert funding requires the durable conversion runtime");
     expect(convertCalled).toBe(false);
   });
 

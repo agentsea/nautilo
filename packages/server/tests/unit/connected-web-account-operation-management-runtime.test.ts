@@ -26,6 +26,7 @@ function operation(input: Partial<ConnectedWebOperation> = {}): ConnectedWebOper
     deliveryId: "initial-delivery-d568",
     requestDigest: "a".repeat(64),
     sealedIntent: "sealed-intent-not-visible",
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted",
@@ -171,6 +172,67 @@ describe("D568 connected website operation management runtime", () => {
     expect(steered.calls.rotate).toMatchObject([{ cumulativeCostUsdMicros: 1_500_000, remainingBudgetUsdMicros: 500_000 }]);
   });
 
+  test("steering carries immutable replacement cost custody while preserving the browser creator", async () => {
+    const begun: string[] = [];
+    const settled: string[] = [];
+    const sealed: Array<{
+      runId?: string;
+      runCost?: { readonly identity: string; readonly workload: string };
+      browserCost?: { readonly identity: string; readonly workload: string };
+    }> = [];
+    const priorRunCost = { identity: "browser-use:connected-web:prior-run", workload: "connected_web_read" };
+    const browserCost = { identity: "browser-use:connected-web:creating-browser", workload: "connected_web_read" };
+    const steered = runtime(operation(), {
+      beginCostAttempt: async (value) => { begun.push(value.identity); },
+      settleCostAttempt: async (value) => { settled.push(value.identity); },
+      secrets: {
+        unsealIntent: () => JSON.stringify({ version: 1, kind: "read_connected_web_account", origin: "https://example.com", request: "Original private website task." }),
+        unsealProviderReferences: () => ({
+          runId: "run-old", sessionId: "session-old", workspaceId: "workspace-old",
+          runCost: priorRunCost, browserCost,
+        }),
+        sealProviderReferences: ({ coordinates }) => {
+          sealed.push({
+            ...(coordinates.runId === undefined ? {} : { runId: coordinates.runId }),
+            ...(coordinates.runCost === undefined ? {} : { runCost: coordinates.runCost }),
+            ...(coordinates.browserCost === undefined ? {} : { browserCost: coordinates.browserCost }),
+          });
+          return { version: 1, runRef: `sealed:${coordinates.runId}`, sessionRef: `sealed:${coordinates.sessionId}`, workspaceRef: `sealed:${coordinates.workspaceId}` };
+        },
+      },
+    });
+
+    expect((await steered.subject.manage(actor(), input("steer"))).ok).toBe(true);
+    expect(settled).toContain(priorRunCost.identity);
+    expect(begun).toHaveLength(1);
+    expect(sealed).toHaveLength(1);
+    expect(sealed[0]?.runCost?.identity).toBe(begun[0]);
+    expect(sealed[0]?.runCost?.workload).toBe("connected_web_steer");
+    expect(sealed[0]?.browserCost).toEqual(browserCost);
+  });
+
+  test("a confirmed replacement refusal terminalizes its pre-dispatch cost attempt", async () => {
+    const begun: string[] = [];
+    const settled: Array<{ identity: string; evidenceState: string; attemptOutcome: string | null | undefined }> = [];
+    const provider = {
+      cancelHostedReadRun: async (runId: string) => ({ runId, status: "cancelled" as const }),
+      pollHostedReadRun: async (runId: string) => ({ runId, status: "cancelled" as const }),
+      inspectHostedSessionQueue: async () => ({}),
+      getHostedReadResult: async (runId: string) => ({ runId, status: "cancelled" as const, totalCostUsd: "0" }),
+      createHostedReadContinuationRun: async () => ({ kind: "failure" as const, code: "invalid_cost_policy" }),
+    };
+    const fixture = runtime(operation(), {
+      provider,
+      beginCostAttempt: async (value) => { begun.push(value.identity); },
+      settleCostAttempt: async (value) => { settled.push({ identity: value.identity, evidenceState: value.evidenceState, attemptOutcome: value.attemptOutcome }); },
+    });
+
+    expect(await fixture.subject.manage(actor(), input("steer"))).toEqual({ ok: false, code: "unavailable", recovery: "none" });
+    expect(begun).toHaveLength(1);
+    expect(settled).toEqual([{ identity: begun[0]!, evidenceState: "unknown", attemptOutcome: "failed" }]);
+    expect(fixture.calls.schedule).toHaveLength(1);
+  });
+
   test("inspect reauthorizes the exact owner/Genie/Room/thread/lane and projects no durable coordinates", async () => {
     const { subject } = runtime();
     const result = await subject.manage(actor(), input("inspect"));
@@ -208,11 +270,11 @@ describe("D568 connected website operation management runtime", () => {
         page: { ref: ACCOUNT, title: "Example", origin: "https://example.com" },
         read: { answer: "The requested answer.", facts: [{ label: "Status", value: "Ready" }], completeness: "complete", provenance: "authenticated_website", origin: "https://example.com" },
         cost: { currency: "USD", amountUsd: 0.01, state: "actual" },
-        outputs: [], outputsTruncated: false,
+        outputs: [{ artifactId: "artifact-1", path: "connected-web/report.csv", mime: "text/csv", bytes: 3 }], outputsTruncated: false,
       },
     }));
     const inspected = await subject.manage(actor(), input("inspect"));
-    expect(inspected).toMatchObject({ ok: true, accepted: "inspect", operation: { lifecycle: "terminal", result: { status: "completed", read: { answer: "The requested answer." }, outputs: [], outputsTruncated: false } } });
+    expect(inspected).toMatchObject({ ok: true, accepted: "inspect", operation: { lifecycle: "terminal", result: { status: "completed", read: { answer: "The requested answer." }, outputs: [{ artifactId: "artifact-1", path: "connected-web/report.csv", mime: "text/csv", bytes: 3 }], outputsTruncated: false } } });
     const stopped = await subject.manage(actor(), input("stop"));
     expect(stopped).toMatchObject({ ok: true, accepted: "stop", operation: { result: null } });
     const foreign = await subject.manage(actor({ agentId: "different-agent" }), input("inspect"));

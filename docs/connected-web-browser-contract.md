@@ -177,6 +177,27 @@ stop, including its billing/refund effect, in its
    A later retry is a new user/agent decision with a new run, never an
    automatic replay of the cancelled action.
 
+### Cost evidence
+
+Browser Use's [session-cost contract](https://docs.browser-use.com/cloud/api-v4/sessions/get-session-cost)
+reports recorded usage, not the account's final invoice charges. A hosted run's
+`total_cost_usd` covers model and web-search usage; browser time and proxy
+bandwidth are separate charges. Run usage may continue changing after the run
+finishes, and the API exposes no final-settlement flag. Credits and promotions
+can also change the amount ultimately charged.
+
+The provider's `maxCostUsd` and Nautilo's retained remaining budget apply to
+hosted model-run and search usage. They do not cap separate browser hosting or
+proxy usage, and must not be presented as an all-in invoice ceiling.
+
+Nautilo therefore records reported dollars as estimates and missing evidence
+as unknown. It does not turn a terminal run, cancellation, or browser stop into
+proof of a final buyer charge. Run and browser-session records have distinct,
+stable identities so cleanup and warm-session reuse update the creating
+operation's evidence without double counting. Successful results are delivered
+without waiting for financial settlement. Confirmed cancellation before any
+provider request is sent can record zero; an uncertain request cannot.
+
 The current adapter is the implementation seam:
 [`browser-use-cloud.ts`](../packages/server/src/browser-use/browser-use-cloud.ts).
 Its existing read methods establish the server-only key custody, coarse event
