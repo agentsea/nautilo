@@ -13,7 +13,7 @@ import { createExecCommandTool, createWriteStdinTool } from "../../src/tools/loc
 
 afterEach(() => { setOrdinaryHostResolver(null); setAgentEventSink(null); setRelayRegistry(null); setWorkstationDispatchPlanRegistry(null); clearToolCatalog(); });
 function fixture() {
-  let protocol = 23; let admitted = true;
+  let protocol = 29; let admitted = true;
   const catalog = new ToolCatalog();
   for (const factory of [createExecCommandTool, createWriteStdinTool]) {
     catalog.register({ name: factory().name, factory, exposure: "core", category: "development", trustTier: "admin",
@@ -27,7 +27,7 @@ function fixture() {
     findByCapabilityForUser: (_capability: string, userId: string) => userId === "human-fixture" ? ["relay-fixture"] : [],
     getCapabilities: () => ({ profile: "desktop-agent", canExecuteLocal: true,
       basicExecution: { version: 1, currentFolder: "/tmp/fixture", serverBindingId: "server-fixture", protectedPolicyVersion: 1 },
-      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, capacity: 1 } }),
+      localExecution: { version: 1, generation: "generation-fixture", pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
     getUserId: () => "human-fixture", getDesktopSessionId: () => "desktop-fixture", getProtocolVersion: () => protocol,
     getPairingGeneration: () => "pairing-fixture",
     getLocalExecutionPairingGeneration: () => "pairing-fixture",
@@ -74,7 +74,7 @@ test("Basic starts have no Development binding and continuations retain original
 test("Basic requires explicit current plan, protocol and foreground owner", async () => {
   const f = fixture(); f.admitted(false); await toolsNode(f.state("exec_command", { cmd: "printf fixture" }));
   f.admitted(true); f.protocol(22); await toolsNode(f.state("exec_command", { cmd: "printf fixture" }));
-  f.protocol(23); await toolsNode(f.state("exec_command", { cmd: "printf fixture" }, { agentId: "foreign" }));
+  f.protocol(29); await toolsNode(f.state("exec_command", { cmd: "printf fixture" }, { agentId: "foreign" }));
   await toolsNode(f.state("exec_command", { cmd: "printf fixture" }, { verifiedOrdinaryOrigin: null }));
   expect(f.sent).toHaveLength(0);
 });

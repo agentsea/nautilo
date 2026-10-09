@@ -1382,14 +1382,32 @@ describe("PUT /api/security/posture", () => {
       deploymentMode: "desktop-permissive",
       securityLevel: "cautious",
       networkPolicy: { mode: "host" },
+      localNetworkPolicy: { mode: "host" },
       allowUncontainedHostCommands: false,
     });
     expect(call.next).toEqual({
       deploymentMode: "server",
       securityLevel: "cautious",
       networkPolicy: { mode: "isolated" },
+      localNetworkPolicy: { mode: "host" },
       allowUncontainedHostCommands: false,
     });
+  });
+
+  test("local network ceiling requires security capability and own PIN", async () => {
+    userCaps.set(OWNER_USER_ID, ["manage_uncontained_host_commands"]);
+    const denied = await app.inject({ method: "PUT", url: "/api/security/posture",
+      headers: { Authorization: `Bearer ${ownerToken}` },
+      payload: { localNetworkPolicy: { mode: "isolated" }, pin: OWNER_PIN } });
+    expect(denied.statusCode).toBe(403);
+    expect(mutatorCalls).toHaveLength(0);
+    userCaps.set(OWNER_USER_ID, ["manage_server_security"]);
+    const allowed = await app.inject({ method: "PUT", url: "/api/security/posture",
+      headers: { Authorization: `Bearer ${ownerToken}` },
+      payload: { localNetworkPolicy: { mode: "isolated" }, pin: OWNER_PIN } });
+    expect(allowed.statusCode).toBe(200);
+    expect(mutatorCalls[0]?.next.localNetworkPolicy).toEqual({ mode: "isolated" });
+    expect(mutatorCalls[0]?.next.networkPolicy).toEqual(mutatorCalls[0]?.prev.networkPolicy);
   });
 
   test("policy-only PUT requires manage_uncontained_host_commands", async () => {

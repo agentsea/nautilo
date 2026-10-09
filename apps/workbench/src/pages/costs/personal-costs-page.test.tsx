@@ -69,13 +69,15 @@ beforeEach(() => {
     byCallType: [],
     byProvider: [
       {
-        provider: "surplus",
-        operation: "chat",
+        provider: "cloudconvert",
+        operation: "conversion",
         operations: 2,
         unknownOperations: 1,
-        estimatedCostUsd: 0.01,
-        actualCostUsd: 0.02,
-        totalCostUsd: 0.03,
+        measuredUnits: 3,
+        unitType: "cloudconvert_credit",
+        estimatedCostUsd: 0,
+        actualCostUsd: 0,
+        totalCostUsd: 0,
       },
     ],
     timeSeries: [],
@@ -137,10 +139,9 @@ test("separates personal payer costs and preserves unresolved receipt states", a
     ),
   ).toBeTruthy();
   expect(view.getByText("Provider routes and services")).toBeTruthy();
-  const providerRow = view.getByText("Surplus · Chat").closest("tr");
-  expect(providerRow?.textContent).toContain("$0.02");
-  expect(providerRow?.textContent).toContain("$0.01");
-  expect(providerRow?.textContent).toContain("$0.03");
+  const providerRow = view.getByText("Cloudconvert · Conversion").closest("tr");
+  expect(providerRow?.textContent).toContain("3 credits");
+  expect(providerRow?.textContent).toContain("Cost pending");
   expect(view.getByText("Current estimate")).toBeTruthy();
   expect(view.queryByText("By user")).toBeNull();
   expect(

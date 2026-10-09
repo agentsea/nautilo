@@ -3,6 +3,7 @@ import type { ConnectedWebAccount } from "@nautilo/types";
 import { ConnectedWebAccountController } from "../../src/connected-web-accounts/controller";
 import type { BrowserUseCloudAdapter } from "../../src/browser-use/browser-use-cloud";
 import type { ConnectedWebAccountStore } from "../../src/connected-web-accounts/store";
+import type { ServerProviderCostReceipt } from "../../src/costs/provider-cost-recorder";
 
 const ownerUserId = "11111111-1111-4111-8111-111111111111";
 const accountId = "22222222-2222-4222-8222-222222222222";
@@ -624,6 +625,43 @@ test("D568 stopping a verifier is ambiguous, never a claimed cancelled website a
   expect(events).toEqual(["cancel:run-b", "receipt:ambiguous:run-b:owner_stopped_verifier", "release:run-b"]);
 });
 
+test("action Stop settles the exact run and browser estimates before clearing durable custody", async () => {
+  const events: string[] = [];
+  const settlements: ServerProviderCostReceipt[] = [];
+  const account = connectedAccount("busy");
+  const custody = {
+    version: 1 as const,
+    phase: "verifier" as const,
+    hostedRun: { identity: "action-hosted-cost", workload: "connected_web_action" as const },
+    browserSession: { identity: "action-browser-cost", workload: "connected_web_action" as const },
+    attribution: { humanUserId: ownerUserId, roomId: "room", agentId: "agent" },
+  };
+  const operation = { id: "operation", ownerUserId, accountId, deliveryId: "tool-call", requestDigest: "a".repeat(64), actionType: "save_item" as const,
+    target: "Report", status: "verifying" as const, opaqueRunRef: "run-b", runCostCustody: custody, receipt: null, fundingBinding: null };
+  const store = {
+    async getActionOperationForOwnerDelivery() { return operation; },
+    async getBindingForOwner() { return { ...account, ownerUserId, profileRef: "profile", executionCheckpoint: { resource: "action" as const, phase: "active" as const, reservationToken: "reservation", recordedAt: timestamp, opaqueExecutionRef: "run-b" } }; },
+    async finishActionOperation() { events.push("receipt"); },
+    async completeExecution() { events.push("release"); },
+  } as unknown as ConnectedWebAccountStore;
+  const browser = {
+    async cancelHostedReadRun(runId: string) { events.push(`cancel:${runId}`); return { runId, status: "cancelled" as const }; },
+    async getHostedReadResult(runId: string) { events.push("result"); return { runId, status: "cancelled" as const, result: null, totalCostUsd: "0.01000000", observedAt: new Date(timestamp) }; },
+    async stopHostedReadBrowserWithCost() { events.push("stop"); return { stopped: true, estimatedCostUsd: "0.02000000", evidenceState: "estimated" as const }; },
+  } as unknown as BrowserUseCloudAdapter;
+  const controller = controllerFor({ store, browser, events, settleCostAttempt: async (receipt) => {
+    settlements.push(receipt);
+    events.push(`settle:${receipt.operation}`);
+  } });
+
+  expect(await controller.stopAction({ ownerUserId, deliveryId: "tool-call" })).toMatchObject({ terminal: "ambiguous" });
+  expect(events).toEqual(["cancel:run-b", "stop", "result", "settle:hosted_run", "settle:browser_session", "receipt", "release"]);
+  expect(settlements).toMatchObject([
+    { identity: "action-hosted-cost", estimatedCostUsd: "0.01000000", actualCostUsd: null, evidenceState: "estimated", attemptOutcome: "cancelled" },
+    { identity: "action-browser-cost", estimatedCostUsd: "0.02000000", actualCostUsd: null, evidenceState: "estimated", attemptOutcome: "succeeded" },
+  ]);
+});
+
 function connectedAccount(status: ConnectedWebAccount["status"]): ConnectedWebAccount {
   return { id: accountId, service: "Example", origin: "https://example.com", label: "Example", status, lastVerifiedAt: null, createdAt: timestamp, updatedAt: timestamp };
 }
@@ -661,6 +699,7 @@ function controllerFor(input: {
     readonly authenticationRequired: boolean;
   }>;
   readonly assertServerFunding?: (humanUserId: string, origin?: string) => Promise<void>;
+  readonly settleCostAttempt?: (receipt: ServerProviderCostReceipt) => Promise<void>;
 }): ConnectedWebAccountController {
   return new ConnectedWebAccountController({
     store: input.store,
@@ -675,6 +714,7 @@ function controllerFor(input: {
     lookup: async () => [{ address: "93.184.216.34", family: 4 }],
     now: () => new Date(timestamp),
     assertServerFunding: input.assertServerFunding ?? (async () => undefined),
+    ...(input.settleCostAttempt === undefined ? {} : { settleCostAttempt: input.settleCostAttempt }),
   });
 }
 

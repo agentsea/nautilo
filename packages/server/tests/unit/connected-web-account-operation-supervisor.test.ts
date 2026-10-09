@@ -30,6 +30,7 @@ function operation(overrides: Partial<ConnectedWebOperation> = {}): ConnectedWeb
     deliveryId: "delivery-id",
     requestDigest: "a".repeat(64),
     sealedIntent: "sealed-intent",
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted",
@@ -130,7 +131,15 @@ function supervisor(input: {
   readonly store: Pick<ConnectedWebAccountStore, "claimDueOperations" | "releaseOperationClaim" | "recordOperationCheckpoint" | "terminalizeOperation" | "terminalizeReadOperationAndCompleteExecution" | "getForOwner">;
   readonly provider?: ConnectedWebOperationSupervisorProvider;
   readonly intent?: string;
-  readonly unseal?: () => Promise<{ readonly runId: string | null; readonly sessionId: string | null; readonly workspaceId: string | null; readonly browserId: string | null; } | null>;
+  readonly unseal?: () => Promise<{
+    readonly runId: string | null;
+    readonly sessionId: string | null;
+    readonly workspaceId: string | null;
+    readonly browserId: string | null;
+    readonly runCost?: { readonly identity: string; readonly workload: string };
+  } | null>;
+  readonly settleCostAttempt?: ConstructorParameters<typeof ConnectedWebOperationSupervisor>[0]["settleCostAttempt"];
+  readonly importOutput?: ConstructorParameters<typeof ConnectedWebOperationSupervisor>[0]["importOutput"];
 }) {
   return new ConnectedWebOperationSupervisor({
     store: input.store,
@@ -147,6 +156,8 @@ function supervisor(input: {
     clock: { now: () => NOW },
     eventPageLimit: 2,
     nextCheckAt: ({ now }) => new Date(now.getTime() + 1_000),
+    ...(input.settleCostAttempt === undefined ? {} : { settleCostAttempt: input.settleCostAttempt }),
+    ...(input.importOutput === undefined ? {} : { importOutput: input.importOutput }),
   });
 }
 
@@ -174,6 +185,32 @@ describe("ConnectedWebOperationSupervisor", () => {
     await runner.runOnce({ workerId: "worker-a", leaseMs: 1_000 });
     expect(terminalWrites.map((write) => write.cumulativeCostUsdMicros)).toEqual([original + 10_000, original + 10_000]);
     expect(current.cumulativeCostUsdMicros).toBe(original);
+  });
+
+  test("publishes the result while retaining terminal run cost as provider-reported estimate", async () => {
+    const terminalizations: unknown[] = [];
+    const settlements: Array<{ estimatedCostUsd?: string | null; actualCostUsd?: string | null; evidenceState: string; attemptOutcome?: string | null }> = [];
+    const store = storeFor({ operations: [operation()], records: [], releases: [], terminalizations });
+    await supervisor({
+      store,
+      provider: provider({
+        pollHostedReadRun: async () => terminal("completed"),
+        getHostedReadResult: async () => ({ runId: RUN_ID, status: "completed", result: null, totalCostUsd: "0.01", observedAt: NOW }),
+      }),
+      unseal: async () => ({
+        runId: RUN_ID, sessionId: "session-private-id", workspaceId: "workspace-private-id", browserId: null,
+        runCost: { identity: "browser-use:connected-web:run-cost", workload: "connected_web_read" },
+      }),
+      settleCostAttempt: async (receipt) => { settlements.push({
+        ...(receipt.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: receipt.estimatedCostUsd }),
+        ...(receipt.actualCostUsd === undefined ? {} : { actualCostUsd: receipt.actualCostUsd }),
+        evidenceState: receipt.evidenceState,
+        ...(receipt.attemptOutcome === undefined ? {} : { attemptOutcome: receipt.attemptOutcome }),
+      }); },
+    }).runOnce({ workerId: "worker-a", leaseMs: 1_000 });
+
+    expect(settlements).toMatchObject([{ estimatedCostUsd: "0.01", actualCostUsd: null, evidenceState: "estimated", attemptOutcome: "succeeded" }]);
+    expect(terminalizations).toMatchObject([{ terminalReadResult: { cost: { currency: "USD", amountUsd: null, state: "unknown" } } }]);
   });
 
   test("commits supported browser actions for the activity log without waking the Genie", async () => {
@@ -399,6 +436,88 @@ describe("ConnectedWebOperationSupervisor", () => {
     expect(result.terminalized).toBe(1);
     expect(gets).toBe(1);
     expect(terminalizations).toMatchObject([{ receipt: { outcome: "completed" }, terminalReadResult: { read: null, outputs: [], outputsTruncated: false } }]);
+  });
+
+  test("terminalizes an unsafe Workspace publication as truncated without retrying it or retaining the browser", async () => {
+    const records: unknown[] = [];
+    const releases: unknown[] = [];
+    const terminalizations: unknown[] = [];
+    let publications = 0;
+    const fundingHumanUserId = "77777777-7777-4777-8777-777777777777";
+    const intent = JSON.stringify({
+      version: 2,
+      kind: "read_connected_web_account",
+      fundingHumanUserId,
+      origin: "https://example.com",
+      request: "export the report",
+      delivery: "workspace",
+      deliveryId: "delivery-id",
+      threadId: "thread-id",
+      lane: "foreground",
+      turnId: "turn-id",
+      memoryAccessEnvelope: {
+        ownerId: fundingHumanUserId,
+        agentId: "agent-id",
+        roomId: "room-id",
+        actorId: "actor-id",
+        toolPolicy: {},
+      },
+    });
+    const result = await supervisor({
+      store: storeFor({ operations: [operation()], records, releases, terminalizations }),
+      intent,
+      provider: provider({
+        pollHostedReadRun: async () => terminal("completed"),
+        getHostedReadResult: async () => ({ runId: RUN_ID, status: "completed", result: null, totalCostUsd: "0", observedAt: NOW }),
+        collectHostedReadOutputs: async () => ({
+          outputs: [
+            { path: "connected-web/scope/report.csv", mimeType: "text/csv", bytes: new Uint8Array([1, 2, 3]) },
+            { path: "connected-web/scope/second.csv", mimeType: "text/csv", bytes: new Uint8Array([4, 5, 6]) },
+          ],
+          truncated: false,
+        }),
+      }),
+      importOutput: async () => {
+        publications += 1;
+        return publications === 1 ? { kind: "unsafe_failure" } : { kind: "retryable_failure" };
+      },
+    }).runOnce({ workerId: "worker-a", leaseMs: 1_000 });
+
+    expect(result).toEqual({ claimed: 1, reconciled: 0, rescheduled: 0, terminalized: 1, stale: 0 });
+    expect(publications).toBe(1);
+    expect(releases).toEqual([]);
+    expect(terminalizations).toMatchObject([{
+      retainBrowserForWarmReuse: false,
+      terminalReadResult: { outputs: [], outputsTruncated: true },
+    }]);
+    expect(records.filter((record) => (record as { safeActivity?: { code?: string } }).safeActivity?.code === "output_publication_pending")).toEqual([]);
+  });
+
+  test("reschedules only an explicitly retryable Workspace publication failure", async () => {
+    const records: unknown[] = [];
+    const releases: unknown[] = [];
+    const terminalizations: unknown[] = [];
+    const fundingHumanUserId = "77777777-7777-4777-8777-777777777777";
+    const result = await supervisor({
+      store: storeFor({ operations: [operation()], records, releases, terminalizations }),
+      intent: JSON.stringify({
+        version: 2, kind: "read_connected_web_account", fundingHumanUserId,
+        origin: "https://example.com", request: "export", delivery: "workspace",
+        deliveryId: "delivery-id", threadId: "thread-id", lane: "foreground", turnId: "turn-id",
+        memoryAccessEnvelope: { ownerId: fundingHumanUserId, agentId: "agent-id", roomId: "room-id", actorId: "actor-id", toolPolicy: {} },
+      }),
+      provider: provider({
+        pollHostedReadRun: async () => terminal("completed"),
+        getHostedReadResult: async () => ({ runId: RUN_ID, status: "completed", result: null, totalCostUsd: "0", observedAt: NOW }),
+        collectHostedReadOutputs: async () => ({ outputs: [{ path: "connected-web/scope/report.csv", mimeType: "text/csv", bytes: new Uint8Array([1]) }], truncated: false }),
+      }),
+      importOutput: async () => ({ kind: "retryable_failure" }),
+    }).runOnce({ workerId: "worker-a", leaseMs: 1_000 });
+
+    expect(result).toEqual({ claimed: 1, reconciled: 0, rescheduled: 1, terminalized: 0, stale: 0 });
+    expect(records.at(-1)).toMatchObject({ safeActivity: { code: "output_publication_pending" } });
+    expect(releases).toHaveLength(1);
+    expect(terminalizations).toEqual([]);
   });
 
   test("converts a validated terminal authentication outcome into exact account attention", async () => {

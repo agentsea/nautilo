@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
-import type { CloudConvertClient, CloudConvertJob } from "./client.ts";
-import { convert, convertWithClient } from "./service.ts";
+import { createCloudConvertClient, type CloudConvertClient, type CloudConvertJob } from "./client.ts";
+import { convert, convertWithClient, fetchExportBuffer, submitConversionWithClient } from "./service.ts";
 import { createJobTag, verifyJobOwnership } from "./tags.ts";
 
 const originalFetch = globalThis.fetch;
@@ -39,10 +39,18 @@ function makeMockClient(handlers?: {
         }
         return makeCompletedJob({ id: jobId });
       }),
-      getExportUrls: mock(() => [{ url: "https://example.com/out.pdf", filename: "out.pdf" }]),
+      get: mock(async (jobId: string) => makeCompletedJob({ id: jobId })),
+      all: mock(async () => []),
+      getExportUrls: mock(() => [{ url: "https://storage.cloudconvert.com/out.pdf", filename: "out.pdf" }]),
     },
     tasks: {
       upload: mock(async () => undefined),
+      cancel: mock(async (taskId: string) => ({
+        id: taskId,
+        name: "convert-file",
+        operation: "convert",
+        status: "canceled",
+      })),
     },
   };
 }
@@ -62,6 +70,35 @@ afterEach(() => {
 });
 
 describe("convertWithClient", () => {
+  test("uses one abortable request for durable provider submission", async () => {
+    const controller = new AbortController();
+    const calls: RequestInit[] = [];
+    globalThis.fetch = mock(async (
+      _input: Parameters<typeof fetch>[0],
+      init?: Parameters<typeof fetch>[1],
+    ) => {
+      calls.push(init ?? {});
+      return new Response(JSON.stringify({
+        data: makeCompletedJob({ id: "job-once", tag: "durable-tag", status: "waiting" }),
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const client = createCloudConvertClient("request-local-key", false);
+
+    const submitted = await submitConversionWithClient(
+      client,
+      Buffer.from("source"),
+      "html",
+      "pdf",
+      "durable-tag",
+      controller.signal,
+    );
+
+    expect(submitted.job.id).toBe("job-once");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe("POST");
+    expect(calls[0]?.signal).toBe(controller.signal);
+  });
+
   test("builds a 3-task import/base64 → convert → export/url job", async () => {
     const input = Buffer.from("<p>hello</p>", "utf8");
     let capturedTasks: Record<string, unknown> | undefined;
@@ -157,6 +194,41 @@ describe("convert", () => {
 
     expect(convert(Buffer.from("x"), "html", "pdf")).rejects.toThrow(
       "CLOUDCONVERT_API_KEY environment variable is required",
+    );
+  });
+});
+
+describe("fetchExportBuffer", () => {
+  test("rejects multiple outputs instead of silently dropping files", async () => {
+    const client = makeMockClient();
+    client.jobs.getExportUrls = mock(() => [
+      { url: "https://storage.cloudconvert.com/page-1.png" },
+      { url: "https://storage.cloudconvert.com/page-2.png" },
+    ]);
+    expect(fetchExportBuffer(client, makeCompletedJob())).rejects.toThrow(
+      "multiple output files",
+    );
+  });
+
+  test("rejects redirects outside CloudConvert's HTTPS download boundary", async () => {
+    const client = makeMockClient();
+    globalThis.fetch = mock(async () => new Response(null, {
+      status: 302,
+      headers: { location: "https://example.com/result.pdf" },
+    })) as unknown as typeof fetch;
+    expect(fetchExportBuffer(client, makeCompletedJob())).rejects.toThrow(
+      "outside the trusted download boundary",
+    );
+  });
+
+  test("rejects an advertised output larger than the caller's bound", async () => {
+    const client = makeMockClient();
+    globalThis.fetch = mock(async () => new Response("too large", {
+      status: 200,
+      headers: { "content-length": "9" },
+    })) as unknown as typeof fetch;
+    expect(fetchExportBuffer(client, makeCompletedJob(), 8)).rejects.toThrow(
+      "exceeds the permitted result size",
     );
   });
 });

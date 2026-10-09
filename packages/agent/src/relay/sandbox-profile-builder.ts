@@ -309,7 +309,7 @@ function networkAllowRuleKey(rule: NetworkAllowRule): string {
   }
 }
 
-function toRelayNetworkPolicy(policy: NetworkPolicy): RelayNetworkPolicy {
+export function toRelayNetworkPolicy(policy: NetworkPolicy): RelayNetworkPolicy {
   if (policy.mode === "host" || policy.mode === "isolated") {
     return { mode: policy.mode };
   }

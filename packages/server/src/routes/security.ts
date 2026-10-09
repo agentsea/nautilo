@@ -870,6 +870,9 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       networkPolicy: maySeePathDetails
         ? networkPolicy
         : redactNetworkPolicy(networkPolicy),
+      localNetworkPolicy: maySeePathDetails
+        ? posture.localNetworkPolicy ?? { mode: "host" }
+        : redactNetworkPolicy(posture.localNetworkPolicy ?? { mode: "host" }),
       backend,
     });
   });
@@ -1123,6 +1126,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       deploymentMode?: string;
       securityLevel?: string;
       networkPolicy?: unknown;
+      localNetworkPolicy?: unknown;
       allowUncontainedHostCommands?: unknown;
       pin?: string;
     };
@@ -1137,13 +1141,15 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       deploymentMode,
       securityLevel,
       networkPolicy,
+      localNetworkPolicy,
       allowUncontainedHostCommands,
       pin,
     } = request.body ?? {};
     const mutatesExistingPosture =
       deploymentMode !== undefined ||
       securityLevel !== undefined ||
-      networkPolicy !== undefined;
+      networkPolicy !== undefined ||
+      localNetworkPolicy !== undefined;
     // Preserve the existing empty-body gate, while an uncontained-policy-only request is
     // governed solely by its dedicated management capability.
     const requiredCapabilities = [
@@ -1196,11 +1202,12 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       deploymentMode === undefined &&
       securityLevel === undefined &&
       networkPolicy === undefined &&
+      localNetworkPolicy === undefined &&
       allowUncontainedHostCommands === undefined
     ) {
       return reply.status(400).send({
         error:
-          "At least one of deploymentMode / securityLevel / networkPolicy / allowUncontainedHostCommands must be supplied",
+          "At least one of deploymentMode / securityLevel / networkPolicy / localNetworkPolicy / allowUncontainedHostCommands must be supplied",
       });
     }
 
@@ -1239,6 +1246,12 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
         });
       }
       nextNetworkPolicy = result.data;
+    }
+    let nextLocalNetworkPolicy: NetworkPolicy | null = null;
+    if (localNetworkPolicy !== undefined) {
+      const result = NetworkPolicySchema.safeParse(localNetworkPolicy);
+      if (!result.success) return reply.status(400).send({ error: "Invalid localNetworkPolicy" });
+      nextLocalNetworkPolicy = result.data;
     }
     let nextAllowUncontainedHostCommands: boolean | null = null;
     if (allowUncontainedHostCommands !== undefined) {
@@ -1323,6 +1336,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       deploymentMode: effectiveNextMode,
       securityLevel: nextLevel ?? prev.securityLevel,
       networkPolicy: effectiveNetworkPolicy,
+      localNetworkPolicy: nextLocalNetworkPolicy ?? prev.localNetworkPolicy ?? { mode: "host" },
       allowUncontainedHostCommands:
         nextAllowUncontainedHostCommands ??
         prev.allowUncontainedHostCommands,
@@ -1335,12 +1349,14 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       next.deploymentMode === prev.deploymentMode &&
       next.securityLevel === prev.securityLevel &&
       JSON.stringify(next.networkPolicy) === JSON.stringify(prev.networkPolicy) &&
+      JSON.stringify(next.localNetworkPolicy) === JSON.stringify(prev.localNetworkPolicy ?? { mode: "host" }) &&
       next.allowUncontainedHostCommands === prev.allowUncontainedHostCommands
     ) {
       return reply.send({
         deploymentMode: next.deploymentMode,
         securityLevel: next.securityLevel,
         networkPolicy: next.networkPolicy,
+        localNetworkPolicy: next.localNetworkPolicy,
         allowUncontainedHostCommands: next.allowUncontainedHostCommands,
         capabilities: requiredCapabilities,
         changed: false,
@@ -1368,6 +1384,7 @@ export function securityRoutes(app: FastifyInstance, deps: SecurityRouteDeps) {
       deploymentMode: next.deploymentMode,
       securityLevel: next.securityLevel,
       networkPolicy: next.networkPolicy,
+      localNetworkPolicy: next.localNetworkPolicy,
       allowUncontainedHostCommands: next.allowUncontainedHostCommands,
       capabilities: requiredCapabilities,
       changed: true,

@@ -238,6 +238,7 @@ export {
 // exposed so the runtime task-dispatch seam validates a task's
 // tool whitelist at dispatch time (single source of truth for every surface).
 export {
+  normalizeTaskToolWhitelist,
   validateSubagentToolWhitelist,
   type ValidateSubagentToolsResult,
 } from "./tools/subagents/validate-subagent-whitelist";
@@ -737,6 +738,7 @@ export {
   getConnectedAppActionRuntime,
   setConnectedAppActionRuntime,
   type ConnectedAppActionRuntime,
+  type ConnectedAppExecutionIdentity,
 } from "./tools/connected-apps/runtime";
 export {
   RECALL_RECORDS_POLICY_V1,
@@ -1473,3 +1475,5 @@ export { readForegroundFundingForThread } from "./graph/turn-id";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
 
 export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";
+
+export { installConversionRuntime, uninstallConversionRuntime, type ConversionRuntime, type CloudConversionExecutionRequest, type CloudConversionExecutionResult, type CloudConversionRecoveryRequest, type CloudConversionSourceBinding, type CloudConversionDestinationBinding } from "./tools/convert/conversion-runtime";

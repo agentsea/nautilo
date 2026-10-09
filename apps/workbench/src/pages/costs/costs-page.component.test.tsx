@@ -19,9 +19,9 @@ const fetchCostsSummary = mock(async (): Promise<CostsSummary> => ({
   byModel: [],
   byCallType: [],
   byProvider: [{
-    provider: "tavily", operation: "search", operations: 1,
-    unknownOperations: 1, estimatedCostUsd: 0.01, actualCostUsd: 0.02,
-    totalCostUsd: 0.03,
+    provider: "cloudconvert", operation: "conversion", operations: 1,
+    unknownOperations: 1, measuredUnits: 3, unitType: "cloudconvert_credit",
+    estimatedCostUsd: 0, actualCostUsd: 0, totalCostUsd: 0,
   }],
   byUser: [],
   timeSeries: [],
@@ -61,9 +61,8 @@ test("administrator Costs shows service outcomes and unresolved diagnostics", as
   expect(view.container.textContent).toContain("Request req_0123456789ab");
   expect(view.container.textContent).toContain("100 newest");
   expect(view.container.textContent).toContain("Older unresolved operations remain included in the totals.");
-  const providerRow = view.getByText("Tavily · Search").closest("tr");
-  expect(providerRow?.textContent).toContain("$0.02");
-  expect(providerRow?.textContent).toContain("$0.01");
-  expect(providerRow?.textContent).toContain("$0.03");
+  const providerRow = view.getByText("Cloudconvert · Conversion").closest("tr");
+  expect(providerRow?.textContent).toContain("3 credits");
+  expect(providerRow?.textContent).toContain("Cost pending");
   expect(providerRow?.textContent).toContain("1");
 });

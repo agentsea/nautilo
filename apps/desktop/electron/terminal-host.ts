@@ -352,7 +352,7 @@ function setController(id: string, controller: Controller): boolean {
  *
  * This operation mints legacy consent only. Generic `setController` may
  * consume it but never creates it. Human retake revokes it; scoped handoff
- * uses grantHumanTerminalControl with an authenticated owner instead.
+ * uses grantHumanTerminalConsent with an authenticated owner instead.
  */
 function grantAgentControl(id: string): boolean {
   const s = sessions.get(id);
@@ -368,68 +368,6 @@ function grantAgentControl(id: string): boolean {
     getWebContents?.()?.send("terminal:request", { sessionId: id, requested: false });
   }
   return true;
-}
-
-/** Current lock state for a session (P2.2b) — lets the relay wait for a grant. */
-export function getSessionControl(
-  id: string,
-): { controller: Controller; requested: boolean } | null {
-  const s = sessions.get(id);
-  if (!s) return null;
-  return { controller: s.controller, requested: s.requested };
-}
-
-/**
- * Exact Human-selected PTY awaiting the agent's next terminal operation.
- * `peek` powers truthful `terminal list` output; `consume` binds a mistaken
- * next `spawn` to this existing PTY instead. Any successful operation against
- * the exact session acknowledges the handoff through `acknowledge`.
- */
-export function peekAgentHandoffSession(): TerminalSessionInfo | null {
-  if (pendingAgentHandoffSessionId === null) return null;
-  const s = sessions.get(pendingAgentHandoffSessionId);
-  if (!s || s.sandboxed || !s.agentControlConsented || s.controller !== "agent") {
-    setPendingAgentHandoffSessionId(null);
-    return null;
-  }
-  return {
-    id: s.id,
-    title: s.title,
-    cwd: s.cwd,
-    sandboxed: s.sandboxed,
-    controller: s.controller,
-    requested: s.requested,
-    agentControlConsented: s.agentControlConsented,
-  };
-}
-
-/** The Human-selected PTY that remains Genie's default while Genie controls it. */
-export function peekBoundAgentTerminalSession(): TerminalSessionInfo | null {
-  if (boundAgentTerminalSessionId === null) return null;
-  const s = sessions.get(boundAgentTerminalSessionId);
-  if (!s || s.sandboxed || !s.agentControlConsented || s.controller !== "agent") {
-    boundAgentTerminalSessionId = null;
-    return null;
-  }
-  return {
-    id: s.id,
-    title: s.title,
-    cwd: s.cwd,
-    sandboxed: s.sandboxed,
-    controller: s.controller,
-    requested: s.requested,
-    agentControlConsented: s.agentControlConsented,
-  };
-}
-
-export function consumeAgentHandoffSession(): TerminalSessionInfo | null {
-  const info = peekAgentHandoffSession();
-  if (info !== null) setPendingAgentHandoffSessionId(null);
-  return info;
-}
-
-export function acknowledgeAgentHandoffSession(id: string): void {
-  if (pendingAgentHandoffSessionId === id) setPendingAgentHandoffSessionId(null);
 }
 
 /** Dismiss a pending agent control request without handing over (P2.2b). */
@@ -448,10 +386,7 @@ function resizeSession(id: string, cols: number, rows: number): void {
   if (s && cols > 0 && rows > 0) s.pty.resize(cols, rows);
 }
 
-/** Legacy Agent dispatch must not discover, kill or borrow a scoped Human PTY. */
-export function isHumanTerminalScoped(id: string): boolean { return sessions.get(id)?.humanTerminalScoped === true; }
-
-export function killSession(id: string): void {
+function killSession(id: string): void {
   const s = sessions.get(id);
   if (!s) return;
   if (s.flushTimer !== null) clearTimeout(s.flushTimer);
@@ -498,24 +433,8 @@ function attachSession(
   };
 }
 
-/**
- * Poll read for the agent (P2): return new output produced after `cursor`
- * and the next cursor. If `cursor` predates the retained scrollback (head
- * evicted under the cap), `truncated` flags the gap and we return the whole
- * buffer. First read: pass cursor 0.
- */
-export function readTerminalSince(
-  id: string,
-  cursor: number,
-): { ok: true; data: string; cursor: number; truncated: boolean } | { ok: false } {
-  // This is the legacy Agent helper, not Human renderer authority.
-  if (sessions.get(id)?.humanTerminalScoped) return { ok: false };
-  return readHumanTerminalSince(id, cursor);
-}
-
-/** Trusted Human IPC may read its own PTY without consuming Genie consent.
- * Do not expose this helper through an unscoped Agent dispatcher. */
-export function readHumanTerminalSince(
+/** Read a PTY only after the caller has checked its current consent owner. */
+function readHumanTerminalSince(
   id: string,
   cursor: number,
 ): { ok: true; data: string; cursor: number; truncated: boolean } | { ok: false } {
@@ -534,16 +453,6 @@ export function readHumanTerminalSince(
     cursor: s.produced,
     truncated: false,
   };
-}
-
-/** Called only after fresh explicit Human UI consent and trusted main tuple
- * validation. This never spawns a PTY and never infers an Agent from a name. */
-export function grantHumanTerminalControl(id: string, owner: HumanTerminalOwner): HumanTerminalGrant | null {
-  const parsed = parseHumanTerminalOwner(owner);
-  if (!parsed) return null;
-  const { conversationId: _conversationId, ...selection } = parsed;
-  const consent = grantHumanTerminalConsent(id, selection);
-  return consent ? bindHumanTerminalConsent(parsed, consent.generation) : null;
 }
 
 /** Explicit Human consent is pending until an admitted foreground dispatch
@@ -605,14 +514,6 @@ export function peekHumanTerminalGrant(owner: HumanTerminalOwner): HumanTerminal
   return parsed && grant && session && session.controller === "agent" && session.agentControlConsented
     && grant.conversationId === parsed.conversationId && sameHumanTerminalConsentOwner(grant.owner, parsed)
     ? { owner: { ...grant.owner, conversationId: grant.conversationId }, generation: grant.generation } : null;
-}
-
-/** Session/auth retirement uses the captured generation, so stale cleanup
- * cannot revoke a newer explicit handoff. No PTY is killed. */
-export function revokeHumanTerminalGrant(owner: HumanTerminalOwner, generation: string): boolean {
-  const grant = peekHumanTerminalGrant(owner);
-  if (!grant || grant.generation !== generation || !humanTerminalGrant) return false;
-  return setController(humanTerminalGrant.sessionId, "user");
 }
 
 /** Fresh checks surround awaits; the exact retained grant is rechecked in the

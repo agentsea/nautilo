@@ -163,3 +163,5 @@ export {
   type GitDispositionReason,
   type GitProfileInputs,
 } from "./git-broker";
+
+export { intersectNetworkPolicies } from "./network/intersection";

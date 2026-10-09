@@ -20,6 +20,20 @@ test("adapter never accepts a legacy name or authority in model arguments", asyn
   expect(await dispatchGitHubOperation(broker, "local_github", args, { owner, toolCallId: "call-fixture" })).toMatchObject({ code: "authority_changed" });
   expect(custody).toBe(0);
 });
+test("account status uses the existing read stage and cannot carry publishing state", async () => {
+  let calls = 0;
+  const broker = new GitHubBroker({ preparations: new GitHubPreparations({ generation: "generation-fixture", capacity: 1 }),
+    credentials: { async withClient(_signal, work) { return work({ async request(method, path) {
+      calls += 1; expect({ method, path }).toEqual({ method: "GET", path: "/user" });
+      return { status: 200, data: { id: 10, login: "fixture-user", token: "ignored-provider-field" } };
+    } }); } }, isCurrent: async () => true, isCurrentNow: () => true, isPublishingApproved: async () => false });
+  const request = { operation: "account_status" };
+  expect(await dispatchGitHubOperation(broker, "local_github", request, { owner, toolCallId: "call-fixture" }))
+    .toMatchObject({ ok: true, operation: "account_status", account: { id: 10, login: "fixture-user" }, operationReady: true });
+  expect(await dispatchGitHubOperation(broker, "local_github", request, { owner, toolCallId: "call-fixture",
+    publishingApproval: { verb: "once", approvalId: "fabricated", digest: "a".repeat(64) } })).toMatchObject({ code: "invalid_request" });
+  expect(calls).toBe(1);
+});
 test("comment cannot bypass preparation by providing approval only", async () => {
   const broker = new GitHubBroker({ preparations: new GitHubPreparations({ generation: "generation-fixture", capacity: 1 }),
     credentials: { async withClient() { throw new Error("Must not reach custody"); } },

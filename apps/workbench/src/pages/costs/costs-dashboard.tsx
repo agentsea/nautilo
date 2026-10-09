@@ -17,6 +17,7 @@ import {
   formatCompact,
   formatDayShort,
   formatInt,
+  formatMeasuredUsage,
   formatPercent,
   formatUsd,
   type ModelCostBarRow,
@@ -169,6 +170,8 @@ export interface NormalizedCostsDashboard {
     operation: string;
     operations: number;
     unknownOperations: number;
+    measuredUnits: number | null;
+    unitType: string | null;
     estimatedCostUsd: number;
     actualCostUsd: number;
     totalCostUsd: number;
@@ -453,6 +456,7 @@ function ProviderCostList({
             <th className="pb-2 font-medium">Provider / operation</th>
             <th className="pb-2 text-right font-medium">Operations</th>
             <th className="pb-2 text-right font-medium">Unknown</th>
+            <th className="pb-2 text-right font-medium">Measured usage</th>
             <th className="pb-2 text-right font-medium">Actual</th>
             <th className="pb-2 text-right font-medium">Current estimate</th>
             <th className="pb-2 text-right font-medium">Known spend</th>
@@ -474,13 +478,18 @@ function ProviderCostList({
                 {formatInt(row.unknownOperations)}
               </td>
               <td className="py-1.5 text-right tabular-nums text-foreground-muted">
+                {formatMeasuredUsage(row.measuredUnits, row.unitType) ?? "—"}
+              </td>
+              <td className="py-1.5 text-right tabular-nums text-foreground-muted">
                 {formatUsd(row.actualCostUsd)}
               </td>
               <td className="py-1.5 text-right tabular-nums text-foreground-muted">
                 {formatUsd(row.estimatedCostUsd)}
               </td>
               <td className="py-1.5 text-right font-medium tabular-nums">
-                {formatUsd(row.totalCostUsd)}
+                {row.totalCostUsd === 0 && row.unknownOperations > 0
+                  ? "Cost pending"
+                  : formatUsd(row.totalCostUsd)}
               </td>
             </tr>
           ))}

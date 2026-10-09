@@ -1,8 +1,8 @@
 import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
 import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
 import { bindGitHubInvocation, prepareGitHubInvocation } from "../tools/invocation-service";
-import { githubApprovalId, githubPublishing, parseGitHubOperation, type GitHubInvocationBinding } from "@nautilo/types";
-import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { githubApprovalId, githubPublishing, parseGitHubGitOperation, parseGitHubOperation } from "@nautilo/types";
+import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayGitHubInvocationBinding } from "@nautilo/relay";
 import { parseHumanTerminalOperation } from "../../../types/src/human-terminal";
 import { createHash } from "node:crypto";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION } from "@nautilo/relay";
@@ -1004,13 +1004,15 @@ export function createPostModelNode(
     // The checkpointed task keeps the original account/target/body and custody
     // generation through interrupt replay. Publishing never consults AutoApprove
     // or standing command rules and cannot silently prepare a replacement.
-    const githubInvocationBindings: Record<string, GitHubInvocationBinding> = {};
-    const githubCalls = [...approved, ...pending].filter(tc => tc.name === "local_github");
-    approved = approved.filter(tc => tc.name !== "local_github");
-    pending = pending.filter(tc => tc.name !== "local_github");
+    const githubInvocationBindings: Record<string, RelayGitHubInvocationBinding> = {};
+    const isGitHubCall = (tc: ToolCall) => tc.name === "local_github" || (tc.name === "local_git" && parseGitHubGitOperation(tc.args) !== null);
+    const githubCalls = [...approved, ...pending].filter(isGitHubCall);
+    approved = approved.filter(tc => !isGitHubCall(tc));
+    pending = pending.filter(tc => !isGitHubCall(tc));
     for (const tc of githubCalls) {
       const port = deps?.humanTerminalAdmissionPortForState?.(state);
-      const request = parseGitHubOperation(tc.args);
+      const git = parseGitHubGitOperation(tc.args);
+      const request = parseGitHubOperation(tc.args) ?? git;
       if (!tc.id || !port || !request) {
         forbidden.push({ tc, reason: "GitHub requires an exact source-admitted account operation." }); continue;
       }
@@ -1019,17 +1021,17 @@ export function createPostModelNode(
         try {
           if (publishing) return await prepareGitHubInvocation(state, tc, port);
           return await port.withAdmission(() => {
-            const binding = bindGitHubInvocation(state, tc.id!, "read", state.githubInvocationBindings?.[tc.id!]);
+            const binding = bindGitHubInvocation(state, tc.id!, "read", state.githubInvocationBindings?.[tc.id!], git !== null);
             return Promise.resolve(binding ? { binding, prepared: null } : null);
           });
         } catch { return null; }
       })();
-      if (!captured || (captured.prepared && JSON.stringify(parseGitHubOperation(captured.prepared.request)) !== JSON.stringify(request))
-        || !bindGitHubInvocation(state, tc.id, publishing ? "prepare" : "read", captured.binding)) {
+      if (!captured || (captured.prepared && JSON.stringify(parseGitHubOperation(captured.prepared.request) ?? parseGitHubGitOperation(captured.prepared.request)) !== JSON.stringify(request))
+        || !bindGitHubInvocation(state, tc.id, publishing ? "prepare" : "read", captured.binding, git !== null)) {
         forbidden.push({ tc, reason: "The original GitHub account/profile/source binding is no longer available. Nothing was republished." }); continue;
       }
       try { await port.withAdmission(() => {
-        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", captured.binding)) return Promise.reject(new Error("GITHUB_AUTHORITY_CHANGED"));
+        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", captured.binding, git !== null)) return Promise.reject(new Error("GITHUB_AUTHORITY_CHANGED"));
         return Promise.resolve();
       }); } catch { forbidden.push({ tc, reason: "GitHub source admission changed. No account content was released." }); continue; }
       if (!publishing) { githubInvocationBindings[tc.id] = captured.binding; approved.push(tc); continue; }
@@ -1042,7 +1044,7 @@ export function createPostModelNode(
         github: { version: 1, approvalId, digest: captured.prepared.digest, prepared: captured.prepared } });
       if (decision?.approved !== true || decision.verb !== "once" || decision.githubApprovalId !== approvalId
         || decision.githubDigest !== captured.prepared.digest || decision.githubLaneKey !== githubLaneKey
-        || !bindGitHubInvocation(state, tc.id, "prepare", captured.binding)) {
+        || !bindGitHubInvocation(state, tc.id, "prepare", captured.binding, git !== null)) {
         forbidden.push({ tc, reason: "GitHub publishing was denied or its exact review is stale. No publication was retried." }); continue;
       }
       githubInvocationBindings[tc.id] = { ...captured.binding, stage: "publish", prepared: captured.prepared,

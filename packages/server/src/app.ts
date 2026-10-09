@@ -36,6 +36,10 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
+import { createCloudConversionRuntime } from "./conversions";
+import { installConversionRuntime, uninstallConversionRuntime } from "@nautilo/agent";
+import { connectedWebBrowserFunding } from "./connected-web-accounts/browser-use-funding";
+import { beginServerProviderCostAttempt, settleServerProviderCostAttempt } from "./costs/provider-cost-recorder";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
 import { openImageAssistance } from "./lib/image-assistance";
 import {
@@ -2289,7 +2293,10 @@ export async function createApp(options?: CreateAppOptions) {
     securityRoutes(app, {
       pinProvider,
       auditLogPath: securityAuditLogPath,
-      mutatePosture: createPostureMutator({ auditLogPath: securityAuditLogPath, sidecarPath }),
+      mutatePosture: async meta => {
+        await createPostureMutator({ auditLogPath: securityAuditLogPath, sidecarPath })(meta);
+        relayRegistry.revokeLocalExecutionsForNetworkPolicy();
+      },
       auditEvent,
       //  real Capability-store lookup. The
       // owner-actor heuristic is gone; household/teammate/guest
@@ -2877,6 +2884,7 @@ export async function createApp(options?: CreateAppOptions) {
       return service.execute({
         scope: { userId: input.userId, namespaceId: input.namespaceId },
         causalHumanUserId: input.causalHumanUserId,
+        executionIdentity: input.executionIdentity,
         operationId: input.operationId,
         effect: input.effect,
         args: input.input,
@@ -2926,7 +2934,18 @@ export async function createApp(options?: CreateAppOptions) {
     vault: connectionVault,
     auditConnection: writeConnectionVaultAudit,
   });
-  //  first-house operator policy. These are Nautilo execution choices,
+  const conversionRuntime = createCloudConversionRuntime();
+  installConversionRuntime(conversionRuntime);
+  app.addHook("onListen", () => {
+    // Match the existing media worker's bounded recovery cadence and batch.
+    // This only reconciles submitted jobs; it never submits or publishes content.
+    conversionRuntime.start({ intervalMs: 5_000, batchSize: 4 });
+  });
+  app.addHook("onClose", async () => {
+    await conversionRuntime.stop();
+    uninstallConversionRuntime();
+  });
+  // First-party operator policy. These are Nautilo execution choices,
   // deliberately separate from the provider's browser/session parameters.
   const connectedWebAccountStore = createConnectedWebAccountStore(getServerDirectDb());
   const connectedWebAccountBrowser = new BrowserUseCloudAdapter({ serverKeys: process.env });
@@ -2936,6 +2955,9 @@ export async function createApp(options?: CreateAppOptions) {
   // createApp/inject never reaches DB-backed stable secret material.
   let connectedWebOperationSecrets: ConnectedWebOperationSecrets | null = null;
   const connectedWebAccountController = new ConnectedWebAccountController({
+    funding: connectedWebBrowserFunding,
+    beginCostAttempt: beginServerProviderCostAttempt,
+    settleCostAttempt: settleServerProviderCostAttempt,
     stopDirectOperations: async (input) => {
       for (const operation of await connectedWebAccountStore.listDirectOperationsForRecovery(input)) {
         const stopped = await connectedWebOperationDirectRuntime?.stopForOwner({
@@ -2952,6 +2974,7 @@ export async function createApp(options?: CreateAppOptions) {
   const connectedWebOperationOwnerController = new ConnectedWebOperationOwnerController({
     store: connectedWebAccountStore,
     provider: connectedWebAccountBrowser,
+    funding: connectedWebBrowserFunding,
     // Same listener-owned codec as admission/supervision. This remains null
     // for createApp/inject, so route registration never reads stable secrets.
     secrets: () => connectedWebOperationSecrets,

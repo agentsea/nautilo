@@ -269,7 +269,7 @@ describe("OFFICIAL_SKILLS registry", () => {
   test("developer-workstation metadata + body", () => {
     const skill = getBundledSkill("developer-workstation")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(11);
+    expect(skill.version).toBe(12);
     expect(skill.id).toBe("official:developer-workstation");
     expect(skill.requiresTools).toEqual(["exec_command", "write_stdin", "apply_patch"]);
 
@@ -300,6 +300,9 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("Own setup instead of bouncing the Human to a terminal");
     expect(skill.body).toContain("Settings → Workstation");
     expect(skill.body).toContain("When `local_github` is offered");
+    expect(skill.body).toContain("`account_status` operation");
+    expect(skill.body).toContain("instead of running `gh auth status`");
+    expect(skill.body).toContain("cannot\nread the protected GitHub CLI configuration");
     expect(skill.body).toContain("Publishing retains its separate Human review");
     expect(skill.body).toContain("Never copy credentials");
     expect(skill.body).not.toContain("gh auth setup-git");
@@ -313,9 +316,9 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("An `exec_command` call may complete or return a live `session_id`");
     expect(skill.body).toContain("A quiet read is not completion");
     expect(skill.body).toContain("history recovery never reruns it");
-    expect(skill.body).toContain("The legacy `terminal` tool may remain");
+    expect(skill.body).toContain("request a managed PTY through `exec_command`");
     expect(skill.body).toContain("If the optional `read_shell_output` tool is offered");
-    expect(skill.body).toContain("hands over their existing terminal");
+    expect(skill.body).toContain("hands over their\nexisting terminal");
     expect(skill.body).toContain("local execution is unavailable here");
     expect(skill.body).toContain("Never weaken containment");
   });
@@ -348,38 +351,36 @@ describe("OFFICIAL_SKILLS registry", () => {
     expect(skill.body).toContain("optional `read_shell_output`");
     expect(skill.body).toContain("Use `local_git`");
     expect(skill.body).toContain("Use `human_terminal` only after");
-    expect(skill.body).toContain("legacy `terminal` tool may still be offered");
+    expect(skill.body).toContain("terminal-sessions skill");
   });
 
   test("terminal-sessions metadata + body", () => {
     const skill = getBundledSkill("terminal-sessions")!;
     expect(skill.source).toBe("official");
-    expect(skill.version).toBe(3);
+    expect(skill.version).toBe(4);
     expect(skill.id).toBe("official:terminal-sessions");
-    expect(skill.requiresTools).toEqual(["terminal"]);
+    expect(skill.requiresTools).toEqual(["exec_command", "write_stdin"]);
 
     expect(skill.body.startsWith("# Terminal Sessions")).toBe(true);
     expect(skill.body).toContain("PTY");
-    expect(skill.body).toContain("spawn");
-    expect(skill.body).toContain("run");
-    expect(skill.body).toContain("write");
-    expect(skill.body).toContain("read");
-    expect(skill.body).toContain("kill");
-    expect(skill.body).toContain("use_workstation");
-    expect(skill.body).toContain("canUseTerminal");
+    expect(skill.body).toContain("live `session_id`");
+    expect(skill.body).toContain("`write_stdin`");
+    expect(skill.body).toContain("`cancel: true`");
+    expect(skill.body).toContain("unknown delivery outcome");
+    expect(skill.body).toContain("`human_terminal`");
+    expect(skill.body).not.toContain("legacy persistent terminal");
     expect(skill.body).not.toContain("use_high_impact_tools");
     expect(skill.body).not.toContain("use_destructive_tools");
     expect(skill.body).not.toContain("use_terminal");
     expect(skill.body).not.toContain("use_workstation_profiles");
-    expect(skill.body).toContain("capability-gated");
-    expect(skill.body).toContain("managed `exec_command` and `write_stdin`");
-    expect(skill.body).toContain("`human_terminal`, when offered");
-    expect(skill.body).toContain("does not prove");
+    expect(skill.body).toContain("managed local execution authority");
+    expect(skill.body).toContain("Use `human_terminal` only after");
   });
 
   test("bundled skills neither require nor recommend the retired shell tool", () => {
     for (const skill of OFFICIAL_SKILLS) {
       expect(skill.requiresTools).not.toContain("run_shell");
+      expect(skill.requiresTools).not.toContain("terminal");
       expect(skill.body).not.toContain("run_shell");
     }
   });
@@ -516,6 +517,8 @@ const PER_SKILL_CROSS_REFERENCES: Record<string, Set<string>> = {
   // masked and use the multi-file primitive when present.
   "developer-workstation": new Set([
     "local_github",
+    // Natural-language references to the Human's terminal are not references
+    // to the retired `terminal` tool tombstone.
     "terminal",
     "local_git",
     "read_shell_output",
@@ -524,12 +527,10 @@ const PER_SKILL_CROSS_REFERENCES: Record<string, Set<string>> = {
     "discover_tools",
     "activate_tools",
   ]),
-  // Managed execution names optional typed/history/handoff routes and the
-  // legacy terminal only when those capabilities are actually offered.
+  // Managed execution names optional typed/history/handoff routes.
   "shell-execution": new Set(["terminal", "local_git", "read_shell_output", "human_terminal"]),
-  // Legacy terminal guidance explains the preferred managed and explicit
-  // Human-handoff surfaces without requiring them.
-  "terminal-sessions": new Set(["exec_command", "write_stdin", "human_terminal"]),
+  // Managed terminal guidance also explains the optional Human handoff.
+  "terminal-sessions": new Set(["terminal", "human_terminal"]),
   // office-control (requiresTools: [edit_doc, office]) — the interactive
   // editing skill — teaches the interactive-vs-headless routing split by
   // pointing at `officecli` (see the office-generate skill) for

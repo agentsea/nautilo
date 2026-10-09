@@ -102,6 +102,7 @@ function makeRuntime(
         origin: ORIGIN,
         status: "connected",
         profileRef: "profile-private-id",
+        profileFundingBinding: null,
       }),
     },
     executions: {
@@ -263,6 +264,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
           origin: nebiusOrigin,
           status: "connected",
           profileRef: "profile-private-id",
+          profileFundingBinding: null,
         }),
       },
     });
@@ -309,6 +311,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
           origin: ORIGIN,
           status: "connected",
           profileRef: "profile-private-id",
+          profileFundingBinding: null,
         }),
       },
     });
@@ -340,8 +343,8 @@ describe("ConnectedWebAccount read runtime authority", () => {
       agentId: AGENT_ID,
       provider: "browser_use",
       operation: "hosted_read",
-      actualCostUsd: "0.014",
-      evidenceState: "actual",
+      actualCostUsd: null,
+      evidenceState: "unknown",
     });
     expect(recordedCosts[0]!.idempotencyKey).toMatch(/^[0-9a-f]{64}$/);
     expect(recordedCosts[0]!.idempotencyKey).not.toContain("run-private-id");
@@ -357,7 +360,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
         provenance: "authenticated_website",
         origin: ORIGIN,
       },
-      cost: { currency: "USD", amountUsd: 0.014, state: "actual" },
+      cost: { currency: "USD", amountUsd: null, state: "unknown" },
       outputs: [],
       outputsTruncated: false,
     });
@@ -395,7 +398,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
 
     expect(await runtime.read(ACTOR, INPUT)).toMatchObject({
       ok: true,
-      cost: { currency: "USD", amountUsd: 0.014, state: "actual" },
+      cost: { currency: "USD", amountUsd: null, state: "unknown" },
     });
     expect(finishes).toEqual(["connected:reservation-private-token"]);
   });
@@ -610,7 +613,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
     const expired = makeRuntime({
       accounts: {
         listForOwner: async () => [account({ status: "expired" })],
-        getBindingForOwner: async () => ({ accountId: ACCOUNT_ID, ownerUserId: OWNER_ID, service: "Example", origin: ORIGIN, status: "expired", profileRef: "profile-private-id" }),
+        getBindingForOwner: async () => ({ accountId: ACCOUNT_ID, ownerUserId: OWNER_ID, service: "Example", origin: ORIGIN, status: "expired", profileRef: "profile-private-id", profileFundingBinding: null }),
       },
     });
     expect(await expired.runtime.read(ACTOR, INPUT)).toEqual({
@@ -641,7 +644,7 @@ describe("ConnectedWebAccount read runtime authority", () => {
       account: { id: ACCOUNT_ID, label: "My Example", service: "Example", origin: ORIGIN },
       page: { ref: ACCOUNT_ID, title: "My Example", origin: ORIGIN },
       read: null,
-      cost: { currency: "USD", amountUsd: 0.014, state: "actual" },
+      cost: { currency: "USD", amountUsd: null, state: "unknown" },
       outputs: [],
       outputsTruncated: false,
     });

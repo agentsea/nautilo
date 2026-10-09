@@ -10,7 +10,7 @@ test("failed synchronous shutdown retains exact custody for a later cleanup tick
   const store = {
     requestExecutionCleanup: async () => { pending = true; events.push("checkpoint"); return "run"; },
     completeExecution: async () => { pending = false; events.push("complete"); return {} as never; },
-    listPendingExecutionCleanup: async () => pending ? [{ accountId: "account", ownerUserId: "owner", checkpoint }] : [],
+    listPendingExecutionCleanup: async () => pending ? [{ accountId: "account", ownerUserId: "owner", profileFundingBinding: null, checkpoint }] : [],
   } satisfies Pick<ConnectedWebAccountStore, "requestExecutionCleanup" | "completeExecution" | "listPendingExecutionCleanup">;
   const provider = { stopHostedReadBrowser: async (runId: string) => { events.push(`stop:${runId}`); return ++stops > 1; } };
   expect(await completeHostedExecution(store, provider, { accountId: "account", reservationToken: "reservation", status: "connected" }).catch((error: unknown) => error)).toBeInstanceOf(Error);

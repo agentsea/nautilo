@@ -12,6 +12,8 @@ const prepared: Omit<GitHubPreparedOperation, "digest"> = { version: 1, preparat
   resource: { id: 30, number: 12, kind: "issue", htmlUrl: "https://github.com/fixture-org/project/issues/12", title: "Fixture", body: "Details", state: "open" } };
 
 test("typed GitHub grammar closes URL, shell, credential and unsupported publishing fields", () => {
+  expect(parseGitHubOperation({ operation: "account_status" })).toEqual({ operation: "account_status" });
+  expect(parseGitHubOperation({ operation: "account_status", token: "synthetic-provider-value" })).toBeNull();
   expect(parseGitHubOperation({ operation: "pr_read", repository: "fixture-org/project", number: 12 })).not.toBeNull();
   for (const repository of ["https://github.com/fixture-org/project", "../project", "fixture-org/..", "fixture-org/project?x=1", "fixture-org/project/other"]) {
     expect(parseGitHubOperation({ operation: "issue_read", repository, number: 12 })).toBeNull();
@@ -46,6 +48,7 @@ test("closed preparation rejects forged links, marker coercion and private metad
   for (const invalid of [{ ...value, token: "synthetic-provider-value" }, { ...value, version: [1] },
     { ...value, repository: { ...value.repository, htmlUrl: "https://other.example/project" } },
     { ...value, resource: { ...value.resource, kind: ["issue"] } }]) expect(parseGitHubPreparedOperation(invalid)).toBeNull();
+  expect(parseGitHubPreparedOperation({ ...value, request: { operation: "account_status" } })).toBeNull();
 });
 
 const createRequest = { operation: "pr_create" as const, repository: "fixture-org/project", headRepository: "fixture-user/fork", baseBranch: "main",

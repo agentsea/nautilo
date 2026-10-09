@@ -1,6 +1,8 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
-import { outputArtifactPageSchema, outputArtifactSearchSchema } from "./output-artifact-schema";
+
+export const RETIRED_LOCAL_EXECUTION_MESSAGE =
+  "This legacy local execution interface has been retired. Update Nautilo Desktop and use exec_command, write_stdin, local_git, or read_shell_output. No command was run.";
 
 /**
  * run_shell timeout tiers.
@@ -26,7 +28,6 @@ function readEnvSeconds(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
-const RUN_SHELL_DEFAULT_TIMEOUT_SECONDS = 60;
 const RUN_SHELL_SOFT_TIMEOUT_SECONDS = readEnvSeconds(
   "NAUTILO_RUN_SHELL_SOFT_TIMEOUT_SECONDS",
   1800, // 30 min
@@ -103,159 +104,17 @@ export function resolveRunShellTimeout(
   };
 }
 
-export function createRunShellTool() {
+/**
+ * A narrow tombstone retained only so persisted calls receive an actionable,
+ * deterministic refusal. It is permanently unavailable to discovery and
+ * activation in register-all.ts and intentionally carries no execution
+ * arguments.
+ */
+export function createRetiredRunShellTool() {
   return new DynamicStructuredTool({
     name: "run_shell",
-    description:
-      "Execute a one-shot shell command via the relay and return stdout/stderr. " +
-      "Use for bounded development: git, tests, builds, file reads, and the baseline " +
-      "(pwd / git rev-parse --show-toplevel / git status --short / runtime versions). " +
-      "Starts from the user's selected Current Folder when one is available; otherwise it starts " +
-      "from the visible Genie Workspace. Current Folder is only the initial working directory, " +
-      "not a filesystem boundary after the shell starts. Nautilo derives the execution lane from " +
-      "the live server policy and Desktop session; do not select an execution environment. An " +
-      "active Developer Workstation supplies the requesting Human's approved local tools and CLI " +
-      "identity while the command remains contained. Direct Mac changes containment only; it must " +
-      "never make a tool, credential, Connection, or ordinary workstation capability appear. When " +
-      "Direct Mac is active for this foreground Desktop, raw commands run as the " +
-      "signed-in macOS user under `/bin/zsh -l -c`, are not sandboxed, and return command output " +
-      "to the model. Critical destruction/elevation retains normal approval. For Bash-only or multiline scripts, use a literal single-quoted " +
-      "heredoc (`/bin/bash <<'BASH'`), not a nested `/bin/bash -lc '…'` payload. Approval is " +
-      "conditional: prove_it/ask by default, or auto-admitted for eligible profile-bound " +
-      "attempts when Full Workstation Mode is active. Defaults to a 60s timeout; pass " +
-      "timeout_seconds to wait on slow commands (up to " + RUN_SHELL_SOFT_TIMEOUT_SECONDS +
-      "s freely, or up to " + RUN_SHELL_HARD_TIMEOUT_SECONDS + "s with a timeout_reason). " +
-      "Do not use this for long-running/interactive work — use the terminal tool instead.\n\n" +
-      "Exactly ONE of `command` (raw shell), `git` (a structured Git operation), or " +
-      "`output_artifact` (bounded continuation retrieval). `git` is " +
-      "routed to the typed GitBroker. Do NOT pass `git: \"...\"` as a string. A raw " +
-      "`command: \"git ...\"` is never promoted into the broker. Use the structured `git` " +
-      "variant only for its narrow broker-owned workflow while a Full Workstation profile " +
-      "is active; `worktree-remove` only removes a broker-created worktree. For the user's " +
-      "full installed Git/gh CLI, existing repositories/worktrees, host credentials, or " +
-      "arbitrary Git operations, use raw `command`; Nautilo derives its lane from the live " +
-      "Desktop session. The `git` " +
-      "variant requires a Full Workstation profile-bound dispatch and an exact writable " +
-      "grant for any worktree `target`; the broker preflights " +
-      "identity, rejects alternates/submodules/symlinks/live-.env/pathspec magic, disables " +
-      "hooks/filters/signing, and classifies sideEffectStarted/retrySafe. Never retry a " +
-      "git disposition whose `retrySafe` is false. When a truncated raw-shell result includes " +
-      "an opaque `outputArtifact.reference`, the preview is not evidence that you saw all " +
-      "output. Its `capturedBytes`, `totalBytes`, and `truncated` fields are canonical: " +
-      "`truncated: true` means Nautilo retained only a bounded prefix of sanitized output " +
-      "after redaction and UTF-8 normalization, " +
-      "while preview truncation can still have a complete retained capture. Use the mutually " +
-      "exclusive `output_artifact` variant before its Desktop-local expiry: for a known error, " +
-      "path, or test name, use literal `{operation: \"search\", query}` first; inspect each " +
-      "returned stream-local match byte offset, artifact byte offset, and context, then use existing bounded " +
-      "`{offset_bytes, max_bytes}` paging nearby (including a tail range) only as needed. " +
-      "Do not blindly download every page or rerun an expensive or mutating command merely " +
-      "to recover output. Search is bounded, case-sensitive literal matching, not regex. If a search " +
-      "continuation returns `RUN_SHELL_OUTPUT_ARTIFACT_REQUEST_INVALID` from an older Desktop or " +
-      "`RUN_SHELL_OUTPUT_ARTIFACT_SEARCH_UNSUPPORTED`, fall back exactly once to legacy paging. " +
-      "Missing or unavailable artifacts cannot be recovered by paging; never rerun the original command. Continue with " +
-      "`nextOffsetBytes`; request deletion on the final page.",
-    schema: z
-      .object({
-        command: z
-          .string()
-          .optional()
-          .describe(
-            "Raw shell command to execute (mutually exclusive with `git` and `output_artifact`). Nautilo " +
-              "derives contained versus uncontained host execution from live authority; no lane selector is " +
-              "accepted. A `command: \"git ...\"` string is NEVER parsed into the " +
-              "typed broker.",
-          ),
-        git: z
-          .discriminatedUnion("operation", [
-            z.object({ operation: z.literal("status") }).describe(
-              "git status --porcelain (read-only).",
-            ),
-            z
-              .object({ operation: z.literal("diff"), ref: z.string().optional() })
-              .describe("git diff (read-only); optional `ref` compares working tree to a ref/commit."),
-            z
-              .object({ operation: z.literal("add"), paths: z.array(z.string()).min(1) })
-              .describe(
-                "Stage explicit relative `paths` into the broker-owned index. No pathspecs, " +
-                  "no magic, no live .env, no symlinks.",
-              ),
-            z
-              .object({ operation: z.literal("commit"), message: z.string().min(1) })
-              .describe(
-                "Commit the broker-staged index with an explicit `message`. Requires a " +
-                  "preceding `add`. Mutating; never retried when retrySafe is false.",
-              ),
-            z
-              .object({
-                operation: z.literal("worktree-add"),
-                target: z.string(),
-                ref: z.string(),
-              })
-              .describe(
-                "git worktree add --no-checkout --detach <target> <ref>. `target` must be an " +
-                  "empty directory inside an exact active writable grant — no implicit /tmp.",
-              ),
-            z
-              .object({ operation: z.literal("worktree-remove"), target: z.string() })
-              .describe(
-                "Remove a broker-created worktree at `target`. Mutating; dirty removal is " +
-                  "refused (no --force over operator files).",
-              ),
-          ])
-          .optional()
-          .describe(
-            "Narrow structured GitBroker operation (mutually exclusive with `command`). " +
-              "Requires an active Full Workstation profile; worktree-remove is only for a " +
-              "broker-created worktree. For existing repositories/worktrees or the full " +
-              "installed Git CLI, use raw `command`; Nautilo derives its execution lane.",
-          ),
-        output_artifact: z
-          .union([outputArtifactPageSchema, outputArtifactSearchSchema])
-          .optional()
-          .describe("Retrieve a bounded page or literal-search a short-lived Desktop-local run_shell continuation."),
-        cwd: z.string().optional().describe("Working directory (optional)"),
-        timeout_seconds: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe(
-            `Max seconds before the command is killed. Defaults to ${RUN_SHELL_DEFAULT_TIMEOUT_SECONDS} ` +
-              `when omitted. Up to ${RUN_SHELL_SOFT_TIMEOUT_SECONDS}s needs no justification; ` +
-              `${RUN_SHELL_SOFT_TIMEOUT_SECONDS}–${RUN_SHELL_HARD_TIMEOUT_SECONDS}s requires timeout_reason. ` +
-              `Note: a long command holds your turn for its whole duration and won't survive a restart — ` +
-              `prefer background execution for very long work.`,
-          ),
-        timeout_reason: z
-          .string()
-          .optional()
-          .describe(
-            `Required only when timeout_seconds exceeds ${RUN_SHELL_SOFT_TIMEOUT_SECONDS}s. ` +
-              "A non-empty description of the long wait. It is shown verbatim on a Human approval surface; " +
-              "when execution is automatic, it is retained as execution intent/audit information.",
-          ),
-      })
-      .superRefine((value, ctx) => {
-        const hasCommand = typeof value.command === "string" && value.command.length > 0;
-        const hasGit = value.git !== undefined;
-        const hasArtifact = value.output_artifact !== undefined;
-        if (Number(hasCommand) + Number(hasGit) + Number(hasArtifact) !== 1) {
-          ctx.addIssue({
-            code: "custom",
-            message:
-              "run_shell requires exactly one of `command`, `git`, or `output_artifact`.",
-          });
-        }
-        if (hasArtifact && (value.timeout_seconds !== undefined || value.timeout_reason !== undefined)) {
-          ctx.addIssue({
-            code: "custom",
-            message: "run_shell output_artifact retrieval does not accept shell timeout fields.",
-          });
-        }
-      }),
-    func: () => {
-      return Promise.reject(new Error("run_shell is a relay tool — execution goes through the relay protocol, not direct invocation. If you see this error, the tool routing in toolsNode is broken."));
-    },
+    description: RETIRED_LOCAL_EXECUTION_MESSAGE,
+    schema: z.object({}).strict(),
+    func: () => Promise.reject(new Error(RETIRED_LOCAL_EXECUTION_MESSAGE)),
   });
 }
