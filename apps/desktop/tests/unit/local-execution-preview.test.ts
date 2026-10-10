@@ -31,6 +31,7 @@ function fixture() {
     read: (input) => { reads.push(input); return receipt.promise; },
     isCurrent: (captured, requestedGeneration) => captured.session === session && captured.renderer === renderer &&
       !captured.renderer.destroyed && generation === requestedGeneration,
+    verifyListener: async () => true,
     send: (captured, url) => { captured.renderer.sent.push(url); },
   };
   return { ports, receipt, reads, oldRenderer,
@@ -54,7 +55,7 @@ describe("local execution preview delivery", () => {
       expect(f.reads).toEqual([reference]);
       f.receipt.resolve(running);
       await open;
-      expect(f.oldRenderer.sent).toEqual([url]);
+      expect(f.oldRenderer.sent).toEqual([url.replace("localhost", "127.0.0.1")]);
     },
   );
 
@@ -101,6 +102,20 @@ describe("local execution preview delivery", () => {
       expect(await rejected(openLocalExecutionPreview(request, f.ports))).toBeInstanceOf(Error);
       expect(f.oldRenderer.sent).toEqual([]);
     }
+  });
+
+  test("a collision, detached service, or not-ready listener never opens", async () => {
+    const f = fixture(); f.ports.verifyListener = async () => false;
+    f.receipt.resolve(running);
+    expect(await rejected(openLocalExecutionPreview(request, f.ports))).toBeInstanceOf(Error);
+    expect(f.oldRenderer.sent).toEqual([]);
+  });
+
+  test("owner replacement during the OS probe prevents navigation", async () => {
+    const f = fixture(); f.receipt.resolve(running);
+    f.ports.verifyListener = async () => { f.changeGeneration("replacement"); return true; };
+    expect(await rejected(openLocalExecutionPreview(request, f.ports))).toBeInstanceOf(Error);
+    expect(f.oldRenderer.sent).toEqual([]);
   });
 
   test("inactive sender fails before parsing or reading", async () => {

@@ -1844,6 +1844,7 @@ export interface GetEligibleModelsQuery {
 }
 
 export interface SecurityPostureResponse {
+  localNetworkPolicy?: SecurityPostureResponse["networkPolicy"];
   deploymentMode: "server" | "desktop-permissive" | "desktop-locked";
   securityLevel: "yolo" | "permissive" | "standard" | "cautious" | "paranoid";
   allowUncontainedHostCommands: boolean;
@@ -1945,7 +1946,7 @@ export interface AccountSecurityResponse {
 
 export type AccountDeletionEligibility =
   | { eligible: true }
-  | { eligible: false; code: "user_not_found" | "federated_user" | "protected_custody" | "active_media_operation" | "last_owner" }
+  | { eligible: false; code: "user_not_found" | "federated_user" | "protected_custody" | "active_media_operation" | "active_conversion_operation" | "last_owner" }
   | { eligible: false; code: "owns_shared_rooms"; sharedRoomCount: number };
 
 export interface AccountDeletionResponse {
@@ -2475,6 +2476,8 @@ const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
     operation: z.string().min(1),
     operations: personalCostsCountSchema,
     unknownOperations: personalCostsCountSchema,
+    measuredUnits: personalCostsMoneySchema.nullable().optional().default(null),
+    unitType: z.string().min(1).nullable().optional().default(null),
     estimatedCostUsd: personalCostsMoneySchema,
     actualCostUsd: personalCostsMoneySchema,
     totalCostUsd: personalCostsMoneySchema,
@@ -4233,6 +4236,12 @@ export class NautiloApiClient {
                   "This user has active provider media work. Wait for it to finish and its cleanup to complete before deleting the account.",
                 );
               }
+              if (body["code"] === "active_conversion_operation") {
+                return new ApiError(
+                  409,
+                  "This user has an active or uncertain file conversion. Wait for it to reach a terminal state before deleting the account.",
+                );
+              }
               return new ApiError(409, "Conflict");
             },
           },
@@ -5427,6 +5436,8 @@ export class NautiloApiClient {
               ? "Reassign or delete shared Rooms owned by this account first."
               : body["code"] === "active_media_operation"
                 ? "Wait for active media work to reach a safe terminal state before deleting this account."
+                : body["code"] === "active_conversion_operation"
+                  ? "Wait for active or uncertain file conversions to reach a terminal state before deleting this account."
               : "Account deletion is currently blocked.",
         ),
         422: () => new ApiError(422, "This account is managed by another server."),
@@ -5859,7 +5870,6 @@ export class NautiloApiClient {
       readonly revision: number;
     },
     cryptoBinding?: ForegroundResumeCryptoBinding,
-    githubDigest?: string,
   ): Promise<{ ok: boolean }> {
     return this.request<{ ok: boolean }>({
       method: "POST",
@@ -5878,7 +5888,6 @@ export class NautiloApiClient {
             }
           : {}),
         ...cryptoBinding,
-        ...(githubDigest === undefined ? {} : { githubDigest }),
       },
       defaultErrorPrefix: "POST /api/auth/approval-reply",
     });
@@ -6028,7 +6037,7 @@ export class NautiloApiClient {
     options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<PersonalCostsSummary> {
     return this.request({
-      path: `/api/account/costs?range=${encodeURIComponent(range)}`,
+      path: `/api/account/costs?range=${encodeURIComponent(range)}&includeMeasuredUnits=true`,
       schema: personalCostsSummarySchema,
       defaultErrorPrefix: "GET /api/account/costs",
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
@@ -7252,6 +7261,8 @@ export class NautiloApiClient {
   }
 
   async updateSecurityPosture(request: {
+    networkPolicy?: SecurityPostureResponse["networkPolicy"];
+    localNetworkPolicy?: SecurityPostureResponse["networkPolicy"];
     deploymentMode?: SecurityPostureResponse["deploymentMode"];
     securityLevel?: SecurityPostureResponse["securityLevel"];
     allowUncontainedHostCommands?: boolean;
@@ -10206,6 +10217,7 @@ export class NautiloApiClient {
       content: string;
       toolCalls?: string | null;
       toolName?: string | null;
+      toolCallId?: string;
       displayContent?: string;
       createdAt: string;
       editedAt?: string | null;
@@ -10239,6 +10251,7 @@ export class NautiloApiClient {
         content: string;
         toolCalls?: string | null;
         toolName?: string | null;
+        toolCallId?: string;
         displayContent?: string;
         createdAt: string;
         editedAt?: string | null;
@@ -10270,6 +10283,7 @@ export class NautiloApiClient {
       content: string;
       toolCalls?: string | null;
       toolName?: string | null;
+      toolCallId?: string;
       displayContent?: string;
       createdAt: string;
       editedAt?: string | null;
@@ -10311,6 +10325,7 @@ export class NautiloApiClient {
         content: string;
         toolCalls?: string | null;
         toolName?: string | null;
+        toolCallId?: string;
         displayContent?: string;
         createdAt: string;
         editedAt?: string | null;

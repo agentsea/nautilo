@@ -197,12 +197,18 @@ The served Workbench feature-detects the Desktop bridge for reads, Stop and
 Human-clicked loopback previews. A URL in output is an unverified suggestion,
 not proof of readiness or port ownership. Preview uses the existing Browser
 surface. The capability is not advertised by headless Relay or older peers.
-On the exact initiating Desktop, protocol 26 or later with managed pipe/PTY,
-typed local Git and retained-output support hides `run_shell` and `terminal`
-from model binding, discovery and activation. The registered handlers remain
-available to older or incomplete peers. `local_git`, `read_shell_output` and
-explicit `human_terminal` handoff preserve the separate supported operations;
-active handoff consent is not a prerequisite for hiding the legacy tools.
+Legacy Agent `run_shell` and `terminal` handlers are retired. Commands use the
+managed `exec_command` / `write_stdin` path; retained output and explicit
+`human_terminal` handoff remain separate operations. Git and GitHub run as ordinary
+commands. There is no typed Git/GitHub account-operation lane or approval binding.
+
+A locally validated Development profile with `user_environment` adds the native
+HOME, user package prefixes, authentication helper paths and login-shell environment
+only to managed command preparation. It does not create whole-HOME filesystem
+grants. Credentials are usable by commands and dependency scripts; they are not
+non-exportable. Nautilo's internal state masks, current execution identity and
+grants, revocation, and the administrator networking ceiling still apply. Old or
+custom profiles without this capability retain their existing authority.
 
 ## Fixed Desktop dispatch order
 
@@ -218,20 +224,19 @@ Managed `exec_command` / `write_stdin` dispatch uses its dedicated local executi
 authority adapter before the fixed router. The router retains this order for
 the existing tools:
 
-1. structured SSH and its retained output;
-2. retained `run_shell` output continuation;
-3. Current Folder prepare/commit/select and paired-directory work;
-4. browser research;
-5. real-workstation execution;
-6. Hue;
-7. media;
-8. interactive browser;
-9. Google Workspace;
-10. direct local-file/document work;
-11. filesystem transport;
-12. sandboxed local search;
-13. sandboxed `run_shell` and typed Git; and
-14. terminal, followed by the unknown-tool fallback.
+1. Computer Use;
+2. structured SSH and its retained output;
+3. retained `run_shell` output continuation;
+4. Current Folder prepare/commit/select and paired-directory work;
+5. browser research;
+6. retired Agent shell rejection;
+7. Hue;
+8. media;
+9. interactive browser;
+10. Google Workspace;
+11. direct local-file/document work;
+12. filesystem transport; and
+13. sandboxed local search, followed by the unknown-tool fallback.
 
 Handlers are a closed tuple. They cannot register dynamically, download code,
 or grant authority. There is no legacy Desktop/Peekaboo handler.
@@ -299,15 +304,15 @@ the provider.
 
 ## Workstation authority
 
-Ready-to-work retains
-contained workstation tools and supported identity, while Direct Mac changes
-containment only. A raw credential in arbitrary shell environment is not an
-acceptable implementation of that contract. Exact-value output redaction does
-not prevent transformation, file write, or exfiltration, and GitHub-specific
-credential code does not belong in `relay.ts`. The workstation capability must
-arrive through a narrow Desktop-owned broker/module (and ultimately the earned
-Local Execution Host boundary below), with no raw credential exposed to the
-model-controlled shell.
+Ready-to-work retains workstation identity and explicit consent. Development
+with the approved `user_environment` capability lets commands use native HOME
+credentials and locally captured shell exports. Commands and package scripts
+can read, transform, or transmit those credentials within the active network
+policy; output redaction is not credential containment. Desktop derives this
+authority locally after validating the current profile and execution binding.
+It never accepts credential-access authority from a serialized sandbox policy,
+and it does not grant whole-HOME access to filesystem tools. Direct Mac remains
+a separate execution mode.
 
 Headless pairing and service behavior need their own tests. Browser/mobile pairing is
 separate surface acceptance and cannot substitute for the Electron journey.
@@ -319,8 +324,8 @@ extra process is justified only for a large capability family with meaningful
 upstream/runtime churn, native/process supervision, security-sensitive parsing,
 and a demonstrated need for fixes between Desktop releases.
 
-`run_shell` is the first earned candidate. Its surface includes raw sandboxed
-execution, real-workstation execution, typed Git, Current Folder/profile/grant
+Managed command execution is the first earned candidate. Its surface includes
+sandboxed execution, real-workstation execution, Current Folder/profile/grant
 binding, protected-path and network policy, progress, redaction, retained
 output, cancellation, process-tree cleanup, and result classification. A
 separate follow-on should define one Managed Local Execution Host:
@@ -329,7 +334,8 @@ separate follow-on should define one Managed Local Execution Host:
 - Relay/Desktop owns device/session identity, approval, grants, profiles,
   Current Folder, protected paths, effect floor, cancellation, and revocation.
 - The signed Host owns exact request parsing, sandbox/process supervision,
-  typed Git, output redaction/continuation, and private diagnostics.
+  output redaction/continuation, and private diagnostics. Git and GitHub remain
+  ordinary commands within that execution contract.
 
 Raw shell is always arbitrary-process, high-risk, and non-replay-safe; neither
 catalogue nor Host self-description can downgrade that security floor.

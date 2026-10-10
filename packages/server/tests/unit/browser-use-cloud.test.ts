@@ -54,13 +54,11 @@ function adapter(
   responses: readonly (Response | Error)[] = [],
   seen: Array<{ readonly url: string; readonly init: RequestInit }> = [],
   secrets: Readonly<Record<string, string | undefined>> = { BROWSER_USE_API_KEY: API_KEY },
-  recordProviderCost: NonNullable<ConstructorParameters<typeof BrowserUseCloudAdapter>[0]["recordProviderCost"]> = async () => undefined,
 ): BrowserUseCloudAdapter {
   return new BrowserUseCloudAdapter({
     serverKeys: secrets,
     fetch: queuedFetch(responses, seen),
     clock: { now: () => FIXED_TIME },
-    recordProviderCost,
   });
 }
 
@@ -114,12 +112,55 @@ describe("BrowserUseCloudAdapter configuration and profile lifecycle", () => {
     expect(await provider.createProfile()).toEqual({ profileId: PROFILE_ID });
     expect(seen).toHaveLength(1);
   });
+
+  test("pins a request-local personal key across server key replacement", async () => {
+    const serverKeys: Record<string, string | undefined> = { BROWSER_USE_API_KEY: "bu_server-old" };
+    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+    const scoped = adapter([
+      jsonResponse({ id: PROFILE_ID }),
+      jsonResponse({ id: `${PROFILE_ID}-again` }),
+    ], seen, serverKeys).withRequestCredential({
+      apiKey: "bu_personal-pinned",
+      usageFunding: { kind: "personal", providerRoute: "browser-use", humanUserId: "11111111-1111-4111-8111-111111111111", payerHumanId: "11111111-1111-4111-8111-111111111111", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 7 },
+    });
+    serverKeys["BROWSER_USE_API_KEY"] = "bu_server-new";
+    expect(await scoped.createProfile()).toEqual({ profileId: PROFILE_ID });
+    serverKeys["BROWSER_USE_API_KEY"] = undefined;
+    expect(await scoped.createProfile()).toEqual({ profileId: `${PROFILE_ID}-again` });
+    expect(seen.map(({ init }) => (init.headers as Record<string, string>)["x-browser-use-api-key"]))
+      .toEqual(["bu_personal-pinned", "bu_personal-pinned"]);
+  });
+
+  test("never falls back to a server key when a request-local credential is invalid", async () => {
+    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+    const scoped = adapter([], seen, { BROWSER_USE_API_KEY: API_KEY }).withRequestCredential({
+      apiKey: " ",
+      usageFunding: { kind: "service", providerRoute: "browser-use" },
+    });
+    expect(scoped.health()).toEqual({ kind: "unavailable", reason: "invalid_configuration" });
+    expect(await scoped.createProfile()).toEqual({ kind: "failure", code: "invalid_configuration" });
+    expect(seen).toEqual([]);
+  });
 });
 
 describe("BrowserUseCloudAdapter browser lifecycle", () => {
+  test("returns partial provider browser cost evidence as unknown rather than zero-filling a component", async () => {
+    const provider = adapter([jsonResponse({
+      id: BROWSER_ID,
+      status: "stopped",
+      liveUrl: null,
+      cdpUrl: null,
+      timeoutAt: "2026-09-01T16:00:00.000Z",
+      browserCost: "0.004",
+    })]);
+    expect(await provider.stopBrowser(BROWSER_ID)).toMatchObject({
+      status: "stopped",
+      costEvidence: { estimatedCostUsd: null, evidenceState: "unknown" },
+    });
+  });
+
   test("starts, gets, and explicitly stops a non-recorded browser using provider expiry", async () => {
     const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const receipts: unknown[] = [];
     const session = {
       id: BROWSER_ID,
       status: "active",
@@ -131,7 +172,7 @@ describe("BrowserUseCloudAdapter browser lifecycle", () => {
       jsonResponse(session, 201),
       jsonResponse(session),
       jsonResponse({ ...session, status: "stopped", liveUrl: null, browserCost: "0.004", proxyCost: "0.0015" }),
-    ], seen, { BROWSER_USE_API_KEY: API_KEY }, async (receipt) => { receipts.push(receipt); });
+    ], seen);
 
     expect(await provider.startBrowser({ profileId: PROFILE_ID, timeoutMinutes: 240 })).toMatchObject({
       browserId: BROWSER_ID,
@@ -141,7 +182,10 @@ describe("BrowserUseCloudAdapter browser lifecycle", () => {
       observedAt: FIXED_TIME,
     });
     expect(await provider.getBrowser(BROWSER_ID)).toMatchObject({ browserId: BROWSER_ID });
-    expect(await provider.stopBrowser(BROWSER_ID)).toMatchObject({ status: "stopped" });
+    expect(await provider.stopBrowser(BROWSER_ID)).toMatchObject({
+      status: "stopped",
+      costEvidence: { estimatedCostUsd: "0.00550000", evidenceState: "estimated" },
+    });
     expect(jsonBody(seen[0]!.init)).toEqual({
       profileId: PROFILE_ID,
       timeout: 240,
@@ -150,13 +194,6 @@ describe("BrowserUseCloudAdapter browser lifecycle", () => {
     expect(jsonBody(seen[2]!.init)).toEqual({ action: "stop" });
     expect(seen[1]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/browsers/${BROWSER_ID}`);
     expect(seen[2]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/browsers/${BROWSER_ID}`);
-    expect(receipts).toEqual([expect.objectContaining({
-      identity: `browser-use:browser-session:${BROWSER_ID}`,
-      provider: "browser_use",
-      operation: "browser_session",
-      actualCostUsd: "0.00550000",
-      evidenceState: "actual",
-    })]);
   });
 
   test("requires an explicit documented browser timeout policy before any fetch", async () => {
@@ -223,6 +260,21 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
     expect(seen[1]!.url).toContain("agentSessionId=session");
     expect(seen[2]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/browsers/${BROWSER_ID}`);
     expect(jsonBody(seen[2]!.init)).toEqual({ action: "stop" });
+  });
+
+  test("terminal run cleanup aggregates complete browser and proxy usage as an estimate", async () => {
+    const browser = { id: BROWSER_ID, status: "active", liveUrl: null, cdpUrl: null,
+      timeoutAt: "2026-09-01T16:00:00.000Z", agentSessionId: "session" };
+    const provider = adapter([
+      jsonResponse({ id: RUN_ID, sessionId: "session", status: "completed", result: "done" }),
+      jsonResponse({ items: [browser], totalItems: 1, pageNumber: 1, pageSize: 100 }),
+      jsonResponse({ ...browser, status: "stopped", browserCost: "0.004", proxyCost: "0.0015" }),
+    ]);
+    expect(await provider.stopHostedReadBrowserWithCost(RUN_ID)).toEqual({
+      stopped: true,
+      estimatedCostUsd: "0.00550000",
+      evidenceState: "estimated",
+    });
   });
 
   test("cancellation acceptance is not terminal browser cleanup proof", async () => {
@@ -371,40 +423,6 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
       .toEqual({ kind: "failure", code: "malformed_response" });
   });
 
-  test("creates an explicit same-session continuation with its own model and remaining cost", async () => {
-    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const provider = adapter([
-      jsonResponse({
-        id: "continuation-private-id",
-        status: "queued",
-        sessionId: "session-private-id",
-        workspaceId: "workspace-private-id",
-      }),
-    ], seen);
-
-    expect(await provider.createHostedReadContinuationRun({
-      sessionId: "session-private-id",
-      workspaceId: "workspace-private-id",
-      task: "Continue the original bounded task.",
-      model: "gpt-5.6-terra",
-      maxCostUsd: 0.11,
-    })).toEqual({
-      runId: "continuation-private-id",
-      sessionId: "session-private-id",
-      workspaceId: "workspace-private-id",
-      status: "queued",
-      observedAt: FIXED_TIME,
-    });
-    expect(jsonBody(seen[0]!.init)).toEqual({
-      task: "Continue the original bounded task.",
-      model: "gpt-5.6-terra",
-      sessionId: "session-private-id",
-      workspaceId: "workspace-private-id",
-      maxCostUsd: 0.11,
-    });
-    expect(seen[0]!.url).toBe(`${BROWSER_USE_V4_BASE_URL}/runs`);
-  });
-
   test("does not erase an accepted cursor when the final drained page is empty", async () => {
     const provider = adapter([
       jsonResponse({
@@ -419,74 +437,6 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
       nextAfter: 4,
       hasMore: false,
     });
-  });
-
-  test("inspects and submits queue steering without returning provider message text", async () => {
-    const seen: Array<{ readonly url: string; readonly init: RequestInit }> = [];
-    const provider = adapter([
-      jsonResponse({
-        queue: [{
-          id: 7,
-          sessionId: "session-private-id",
-          runId: RUN_ID,
-          mode: "interrupt",
-          status: "dispatching",
-          text: "private prior steer must not escape",
-          createdAt: "2026-09-01T12:00:07.000Z",
-        }, {
-          id: 9,
-          sessionId: "session-private-id",
-          runId: null,
-          mode: "queue",
-          status: "consumed",
-          text: "",
-          createdAt: "2026-09-01T12:00:09.000Z",
-        }],
-        steeringCutoffs: [{ sourceRunId: RUN_ID, createdAt: "2026-09-01T12:00:07.000Z" }],
-      }),
-      jsonResponse({
-        id: 8,
-        sessionId: "session-private-id",
-        runId: null,
-        mode: "interrupt",
-        status: "pending",
-        text: "private new steer must not escape",
-        createdAt: "2026-09-01T12:00:08.000Z",
-      }),
-    ], seen);
-
-    const inspected = await provider.inspectHostedSessionQueue("session-private-id");
-    expect(inspected).toMatchObject({
-      sessionId: "session-private-id",
-      messages: [
-        { messageId: 7, runId: RUN_ID, mode: "interrupt", status: "dispatching" },
-        { messageId: 9, runId: null, mode: "queue", status: "consumed" },
-      ],
-      steeringCutoffRunIds: [RUN_ID],
-    });
-    expect(JSON.stringify(inspected)).not.toContain("private prior steer");
-
-    const queued = await provider.queueHostedSessionSteer({
-      sessionId: "session-private-id",
-      text: "Correct the task; do not repeat an external effect.",
-      interrupt: true,
-    });
-    expect(queued).toMatchObject({
-      messageId: 8,
-      runId: null,
-      mode: "interrupt",
-      status: "pending",
-      delivery: "interrupt_best_effort",
-    });
-    expect(JSON.stringify(queued)).not.toContain("private new steer");
-    expect(jsonBody(seen[1]!.init)).toEqual({
-      text: "Correct the task; do not repeat an external effect.",
-      interrupt: true,
-    });
-    expect(seen.map((request) => request.url)).toEqual([
-      `${BROWSER_USE_V4_BASE_URL}/sessions/session-private-id/queue`,
-      `${BROWSER_USE_V4_BASE_URL}/sessions/session-private-id/queue`,
-    ]);
   });
 
   test("looks up only hosted browsers associated with the requested agent session", async () => {
@@ -532,17 +482,6 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
     })]);
     expect(await mismatch.findHostedBrowsers({ agentSessionId: "agent-session-private-id" }))
       .toEqual({ kind: "failure", code: "malformed_response" });
-  });
-
-  test("maps steering queue rejection without leaking the provider body", async () => {
-    const provider = adapter([jsonResponse({ detail: "private queue capacity detail" }, 429)]);
-    const result = await provider.queueHostedSessionSteer({
-      sessionId: "session-private-id",
-      text: "Correct the current task.",
-      interrupt: true,
-    });
-    expect(result).toEqual({ kind: "failure", code: "rate_limited" });
-    expect(JSON.stringify(result)).not.toContain("private queue capacity detail");
   });
 
   test("rejects missing cost policy and malformed success bodies before returning provider state", async () => {
@@ -624,6 +563,23 @@ describe("BrowserUseCloudAdapter hosted V4 read runs", () => {
     expect(JSON.stringify(collected)).not.toContain("storage.example");
     expect(JSON.stringify(collected)).not.toContain("session-private-id");
     expect(JSON.stringify(collected)).not.toContain("workspace-private-id");
+  });
+
+  test("falls back to a bounded safe MIME when the provider media type exceeds the terminal contract", async () => {
+    const provider = adapter([
+      jsonResponse({ files: [{ path: "report.bin", size: 1, url: "https://storage.example/workspace?sig=private" }], hasMore: false }),
+      jsonResponse({ files: [], hasMore: false }),
+      new Response(new Uint8Array([1]), { headers: { "content-type": `application/${"x".repeat(128)}` } }),
+    ]);
+
+    expect(await provider.collectHostedReadOutputs({
+      workspaceId: "workspace-private-id",
+      sessionId: "session-private-id",
+      maxOutputs: 1,
+    })).toMatchObject({
+      truncated: false,
+      outputs: [{ mimeType: "application/octet-stream", bytes: new Uint8Array([1]) }],
+    });
   });
 
   test("fails closed on malformed output lists before fetching a provider URL", async () => {

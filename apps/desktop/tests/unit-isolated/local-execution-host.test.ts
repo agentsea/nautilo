@@ -598,17 +598,14 @@ describe("owned pipe process adapter", () => {
     expect(result.failureCode).toBeUndefined();
   });
 
-  test("raw account token projection is rejected at the spawn seam", () => {
-    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
-    try {
-      // Admission must reject before spawning; no POSIX process is created.
-      Object.defineProperty(process, "platform", { ...platform, value: "darwin" });
-      expect(() => spawnLocalExecutionProcess({
-        program: "/bin/sh", args: [], cwd: "/tmp", env: { GH_TOKEN: "test-only" }, dispose() {},
-      }, false, () => {})).toThrow("CREDENTIAL_ENV_DENIED");
-    } finally {
-      Object.defineProperty(process, "platform", platform);
-    }
+  posixProcessTest("locally prepared credentials reach the child without being printed", async () => {
+    const output: string[] = [];
+    const process = spawnLocalExecutionProcess({
+      program: "/bin/sh", args: ["-c", 'test "$GH_TOKEN" = test-only'], cwd: "/tmp",
+      env: { GH_TOKEN: "test-only" }, dispose() {},
+    }, false, (_stream, bytes) => output.push(bytes.toString()));
+    expect(await process.exited).toEqual({ exitCode: 0, signal: null });
+    expect(output.join("")).toBe("");
   });
 });
 

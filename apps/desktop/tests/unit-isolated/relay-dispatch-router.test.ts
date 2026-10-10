@@ -21,11 +21,10 @@ function handlers(
     computerUse: handler("computerUse"),
     structuredSsh: handler("structuredSsh"), runShellOutput: handler("runShellOutput"),
     currentFolder: handler("currentFolder"), browserResearch: handler("browserResearch"),
-    realWorkstation: handler("realWorkstation"),
+    retiredAgentShell: handler("retiredAgentShell"),
     hue: handler("hue"), media: handler("media"), interactiveBrowser: handler("interactiveBrowser"),
     googleWorkspace: handler("googleWorkspace"), directLocalFile: handler("directLocalFile"),
     filesystem: handler("filesystem"), sandboxedLocalSearch: handler("sandboxedLocalSearch"),
-    sandboxedRunShell: handler("sandboxedRunShell"), terminal: handler("terminal"),
   };
 }
 
@@ -33,8 +32,8 @@ describe("fixed Desktop dispatch router", () => {
   test("pins the intended precedence tuple", () => {
     expect(FIXED_DESKTOP_DISPATCH_ORDER).toEqual([
       "computerUse", "structuredSsh", "runShellOutput", "currentFolder", "browserResearch",
-      "realWorkstation", "hue", "media", "interactiveBrowser", "googleWorkspace",
-      "directLocalFile", "filesystem", "sandboxedLocalSearch", "sandboxedRunShell", "terminal",
+      "retiredAgentShell", "hue", "media", "interactiveBrowser", "googleWorkspace",
+      "directLocalFile", "filesystem", "sandboxedLocalSearch",
     ]);
     expect(Object.isFrozen(FIXED_DESKTOP_DISPATCH_NOT_HANDLED)).toBe(true);
   });

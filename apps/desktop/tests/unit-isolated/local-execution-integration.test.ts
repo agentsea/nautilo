@@ -24,8 +24,10 @@ afterEach(async () => {
 
 function fixture(tty = false, revokeDuringPreparation = false, authorityExpiresAt?: number) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
+  const tools = join(root, "tools"); mkdirSync(tools);
   roots.push(root);
   let closeCount = 0;
+  let envelopeNetwork: unknown;
   let sandboxCount = 0;
   let spawnCount = 0;
   let finish!: (exit: LocalProcessExit) => void;
@@ -55,18 +57,27 @@ function fixture(tty = false, revokeDuringPreparation = false, authorityExpiresA
   };
   const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: root }), {
     relayId: "relay-a", isProduction: true, localExecution,
+    trustedToolsBin: tools,
+    workstationProfileStateProvider: {
+      getProfileSnapshot: async () => ({ profileId: "profile-a", profileRevision: 1, grantIds: ["grant-a"],
+        protectedPolicyVersion: 1, networkMode: "host", capabilities: [] }),
+      getExecutionEnvironment: () => ({ profileId: "profile-a", profileRevision: 1, protectedPolicyVersion: 1,
+        home: root, environmentValues: {}, executables: [] }),
+    },
     getLocalWorkspacePath: () => root,
     localShellWorkspaceAuthority: async () => ({ ok: true, workspace: root, ...(authorityExpiresAt === undefined ? {} : { authorityExpiresAt }) }),
     workstationShellBindingAuthority: async () => sandboxCount > 0 && revokeDuringPreparation
       ? { ok: false, code: "GRANT_REVOKED" }
       : { ok: true, roots: [root], readOnlyRoots: [], writableRoots: [root], grantIds: ["grant-a"], networkPolicy: { mode: "host" } },
     createGuardedShellScratch: () => ({ workspace: root, protectedFileMaskPath: join(root, "mask") }),
-    createSandbox: async (envelope) => {
+    createSandbox: async (envelope, authority) => {
       sandboxCount += 1;
-      expect(envelope.config.networkPolicy).toEqual({ mode: "host" });
+      envelopeNetwork = envelope.config.networkPolicy;
+      expect(authority?.preparedEnvironment?.["HOME"]).toBe(root);
+      expect(authority?.preparedEnvironment?.["PATH"]).toStartWith(tools);
       return {
         containmentActive: () => true, protectedFileMaskSupported: () => true,
-        wrap: (program: string, args: readonly string[], cwd: string) => ({ program, args: [...args], cwd, env: { BUILD_TEST: "prepared" } }),
+        wrap: (program: string, args: readonly string[], cwd: string) => ({ program, args: [...args], cwd, env: { ...authority?.preparedEnvironment } }),
         close: () => { closeCount += 1; return Promise.resolve(); },
       } as unknown as Sandbox;
     },
@@ -76,6 +87,7 @@ function fixture(tty = false, revokeDuringPreparation = false, authorityExpiresA
     impact: "destructive", approvalObtained: true, workstationShellBinding: binding,
     runShellOwnerBinding: { instanceId: "instance-a", userId: "human-a", relayId: "relay-a", desktopSessionId: "desktop-a" },
     localExecutionBinding: { version: 1, generation: host.hostGeneration, invocationId: "call-a", executionId: "execution-a", operation: "start",
+      localNetworkPolicy: { mode: "host" },
       owner: { instanceId: "instance-a", humanUserId: "human-a", agentId: "agent-a", runId: "run-a", conversationId: "conversation-a",
         relayId: "relay-a", desktopSessionId: "desktop-a", pairingGeneration: "pair-a", serverBindingId: "server-a",
         profileId: "profile-a", profileRevision: 1, grantIds: ["grant-a"], grantRevision: 1, protectedPolicyVersion: 1 } },
@@ -85,9 +97,10 @@ function fixture(tty = false, revokeDuringPreparation = false, authorityExpiresA
       config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: [], networkPolicy: { mode: "isolated" } },
     },
   };
-  return { root, host, localExecution, handler, request, spawned,
+  return { root, tools, host, localExecution, handler, request, spawned,
     finish: () => finish({ exitCode: 7, signal: null }),
     counts: () => ({ closeCount, sandboxCount, spawnCount }),
+    envelopeNetwork: () => envelopeNetwork,
     command: () => command,
     view: { generation: host.hostGeneration, executionId: "execution-a", cursor: 0, maxBytes: 1024 },
   };
@@ -100,7 +113,8 @@ describe("complete Desktop dispatch resource lifetime", () => {
       expect((await f.handler(f.request)).status).toBe("ok");
       await f.spawned;
       expect(f.counts()).toEqual({ sandboxCount: 1, spawnCount: 1, closeCount: 0 });
-      expect(f.command()).toMatchObject({ program: "/bin/sh", args: ["-c", "printf first\nprintf second"], cwd: f.root, env: { BUILD_TEST: "prepared" } });
+      expect(f.command()).toMatchObject({ program: "/bin/sh", args: ["-c", "printf first\nprintf second"], cwd: f.root,
+        env: { HOME: f.root, PATH: expect.stringContaining(f.tools) } });
       expect((await f.localExecution.humanRead(f.view)).state).toBe("running");
       f.finish();
       await f.host.finishDisposal();
@@ -118,6 +132,16 @@ describe("complete Desktop dispatch resource lifetime", () => {
     await f.spawned;
     expect(f.command()).toMatchObject({ cwd: f.root });
     expect(f.counts().spawnCount).toBe(1);
+  });
+
+  test("the server local-network ceiling narrows the profile policy before sandbox preparation", async () => {
+    const f = fixture();
+    expect((await f.handler({ ...f.request, localExecutionBinding: {
+      ...f.request.localExecutionBinding!, localNetworkPolicy: { mode: "isolated" },
+    } })).status).toBe("ok");
+    await f.spawned;
+    expect(f.envelopeNetwork()).toEqual({ mode: "isolated" });
+    f.finish();
   });
 
   test("managed traversal workdirs remain rejected with a stable receipt code", async () => {

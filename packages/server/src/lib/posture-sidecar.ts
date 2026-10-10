@@ -79,7 +79,11 @@ const SidecarV3Schema = z.object({
   allowUncontainedHostCommands: z.boolean(),
 });
 
-const SidecarSchema = z.union([SidecarV1Schema, SidecarV2Schema, SidecarV3Schema]);
+const SidecarV4Schema = SidecarV3Schema.extend({
+  version: z.literal(4),
+  localNetworkPolicy: NetworkPolicySchema,
+});
+const SidecarSchema = z.union([SidecarV1Schema, SidecarV2Schema, SidecarV3Schema, SidecarV4Schema]);
 
 /** The persisted security posture, including D538's default-off policy. */
 export type PersistedPosture = ServerPosture & {
@@ -113,14 +117,15 @@ export function readPostureSidecar(path: string): PersistedPosture | null {
     const parsed: unknown = JSON.parse(raw);
     const validated = SidecarSchema.parse(parsed);
     return {
+      localNetworkPolicy: validated.version === 4 ? validated.localNetworkPolicy : { mode: "host" },
       deploymentMode: validated.deploymentMode,
       securityLevel: validated.securityLevel,
       networkPolicy:
-        validated.version === 2 || validated.version === 3
+        validated.version === 2 || validated.version === 3 || validated.version === 4
           ? validated.networkPolicy
           : defaultNetworkPolicyForDeploymentMode(validated.deploymentMode),
       allowUncontainedHostCommands:
-        validated.version === 3
+        validated.version === 3 || validated.version === 4
           ? validated.allowUncontainedHostCommands
           : false,
     };
@@ -165,12 +170,12 @@ export function ensurePostureSidecar(
   if (existsSync(path)) {
     const existing = readPostureSidecar(path);
     if (existing !== null) return existing;
-    // File exists but malformed — DO NOT overwrite. Use defaults for
-    // this process; preserve the bad file for operator triage.
-    return { ...defaults, allowUncontainedHostCommands: false };
+    // Preserve the malformed file for operator triage and fail closed for
+    // local networking and uncontained commands in this process.
+    return { ...defaults, localNetworkPolicy: { mode: "isolated" }, allowUncontainedHostCommands: false };
   }
   writePostureSidecar(path, defaults);
-  return { ...defaults, allowUncontainedHostCommands: false };
+  return { ...defaults, localNetworkPolicy: defaults.localNetworkPolicy ?? { mode: "host" }, allowUncontainedHostCommands: false };
 }
 
 /**
@@ -191,7 +196,8 @@ export function writePostureSidecar(
 
   const tmpPath = `${path}.tmp-${process.pid}`;
   const line = `${JSON.stringify({
-    version: 3,
+    version: 4,
+    localNetworkPolicy: posture.localNetworkPolicy ?? { mode: "host" },
     deploymentMode: posture.deploymentMode,
     securityLevel: posture.securityLevel,
     networkPolicy:

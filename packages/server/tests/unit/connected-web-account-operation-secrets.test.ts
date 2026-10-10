@@ -45,6 +45,8 @@ describe("D568 supervised operation secret codec", () => {
         sessionId: "session-private-coordinate",
         workspaceId: "workspace-private-coordinate",
         browserId: "browser-private-coordinate",
+        runCost: { identity: "run-cost-identity", workload: "connected_web_read" },
+        browserCost: { identity: "browser-cost-identity", workload: "connected_web_read" },
       },
     });
 
@@ -57,6 +59,8 @@ describe("D568 supervised operation secret codec", () => {
       sessionId: "session-private-coordinate",
       workspaceId: "workspace-private-coordinate",
       browserId: "browser-private-coordinate",
+      runCost: { identity: "run-cost-identity", workload: "connected_web_read" },
+      browserCost: { identity: "browser-cost-identity", workload: "connected_web_read" },
     });
   });
 
@@ -71,6 +75,21 @@ describe("D568 supervised operation secret codec", () => {
     expect(isConnectedWebOperationSealedEnvelope("sealed:opaque")).toBe(false);
     expect(isConnectedWebOperationSealedEnvelope("cwo1.a.b.c.extra")).toBe(false);
     expect(isConnectedWebOperationSealedEnvelope("cwo1.!!!!.!!!!.!!!!")).toBe(false);
+  });
+
+  test("keeps a saved-profile browser cost owner recoverable without a hosted run or session", () => {
+    const codec = secrets();
+    const references = codec.sealProviderReferences({
+      context,
+      coordinates: {
+        browserId: "direct-browser-private-coordinate",
+        browserCost: { identity: "direct-browser-cost-identity", workload: "connected_web_direct" },
+      },
+    });
+    expect(codec.unsealProviderReferences({ context, references })).toEqual({
+      browserId: "direct-browser-private-coordinate",
+      browserCost: { identity: "direct-browser-cost-identity", workload: "connected_web_direct" },
+    });
   });
 
   test("uses UTF-8 byte limits that fit the existing sealed intent and provider-ref store bounds", () => {

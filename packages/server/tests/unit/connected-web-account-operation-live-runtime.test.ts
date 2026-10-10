@@ -74,6 +74,7 @@ function operation(): ConnectedWebOperation {
       intent: JSON.stringify({ version: 1, kind: "read_connected_web_account", origin: "https://example.com", request: "Read the requested page", delivery: "text",
         deliveryId: "delivery-d568", threadId: "graph-thread-d568", lane: `room:${ROOM}`, turnId: "turn-d568" }),
     }),
+    fundingBinding: null,
     actionOperationId: null,
     effectIdempotencyKey: null,
     driver: "hosted",
@@ -101,7 +102,7 @@ function operation(): ConnectedWebOperation {
   };
 }
 
-test("D568 listener-owned runtime installs exact DB-authorized management and clears only its singleton on stop", async () => {
+test("listener-owned runtime installs exact DB-authorized management and clears only its singleton on stop", async () => {
   const queued: Array<() => void> = [];
   const scheduler: ConnectedWebOperationProductionRuntimeScheduler = {
     queue: (callback) => { queued.push(callback); },
@@ -112,7 +113,6 @@ test("D568 listener-owned runtime installs exact DB-authorized management and cl
   const store = {
     getOperationForOwner: async () => connectedOperation,
     scheduleOperationCheck: async () => true,
-    rotateOperationProviderRunByControl: async () => 2,
     claimDueOperations: async () => [],
     releaseOperationClaim: async () => true,
     recordOperationCheckpoint: async () => true,
@@ -159,7 +159,7 @@ test("D568 listener-owned runtime installs exact DB-authorized management and cl
   expect(getConnectedWebOperationToolRuntime()).toBeNull();
 });
 
-test("D568 listener-owned runtime refuses unstable secret material before installing management", () => {
+test("listener-owned runtime refuses unstable secret material before installing management", () => {
   expect(() => createConnectedWebOperationLiveRuntime({
     db: {} as DirectDatabase,
     store: {} as ConnectedWebAccountStore,

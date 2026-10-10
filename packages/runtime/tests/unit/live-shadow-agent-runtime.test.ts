@@ -24,6 +24,7 @@ import {
   type StrictShadowEnforcementPolicy,
 } from "@nautilo/lattice-bridge";
 import { parseFullEncryptionMessageRealtimeContentEventV2, type ProtectedMessageDtoV2 } from "@nautilo/types";
+import { normalizeModelToolCallIdentity } from "../../../agent/src/nodes/model-tool-call-identity";
 
 import { createLiveShadowAgentRuntimeTurn as createRuntimeTurn } from
   "../../src/conversation/live-shadow-agent-runtime";
@@ -974,6 +975,79 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
       toolCallId: "call-live-shadow",
       foregroundExecutionId: "turn-owned",
     });
+  });
+
+  test("keeps normalized Gemini signature bindings on the immediate opened tool call", async () => {
+    let captured: Parameters<LiveShadowAgentTurnSession["publishMessage"]>[0]
+      | undefined;
+    const session: LiveShadowAgentTurnSession = Object.freeze({
+      reserveAssistantStream: () => Promise.reject(new Error("unused")),
+      sealAssistantStreamChunk: () => {
+        throw new Error("unused");
+      },
+      publishMessage: async (
+        request: Parameters<LiveShadowAgentTurnSession["publishMessage"]>[0],
+      ) => {
+        captured = request;
+        return Object.freeze({
+          status: "protected" as const,
+          value: Object.freeze({
+            reservation: Object.freeze({
+              messageId: 86,
+              transcriptOrdinal: 5,
+              authorRole: "assistant" as const,
+            }) as LiveShadowAgentPublishedMessage["reservation"],
+            policyRevision: 9,
+            ordinaryPayloadBytes: new Uint8Array([1]),
+            openedPayload: request.payload,
+            protectedMessage: Object.freeze({}) as ProtectedMessageDtoV2,
+            durableEventDigest: new Uint8Array(32),
+            streamEvidence: null,
+          }),
+        });
+      },
+      fail: () => undefined,
+      destroy: () => undefined,
+    });
+    const runtime = createLiveShadowAgentRuntimeTurn(session);
+    const signature = "opaque-gemini-function-signature";
+    const source = normalizeModelToolCallIdentity(new AIMessage({
+      content: [{
+        type: "functionCall",
+        functionCall: {
+          id: "provider-call",
+          name: "look_up",
+          args: { query: "needle" },
+        },
+      }],
+      tool_calls: [{
+        id: "provider-call",
+        name: "look_up",
+        args: { query: "needle" },
+      }],
+      additional_kwargs: {
+        __gemini_function_call_thought_signatures__: {
+          "provider-call": signature,
+        },
+      },
+    }));
+    const canonicalId = source.tool_calls![0]!.id!;
+
+    const opened = await runtime.toolBoundary.protectAssistantToolCall(source);
+
+    expect(captured?.payload).toEqual({
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: canonicalId, name: "look_up", args: { query: "needle" } }],
+    });
+    expect(opened?.tool_calls).toEqual([{
+      id: canonicalId,
+      name: "look_up",
+      args: { query: "needle" },
+      type: "tool_call",
+    }]);
+    expect(opened?.additional_kwargs["__gemini_function_call_thought_signatures__"])
+      .toEqual({ [canonicalId]: signature });
   });
 
   test("makes malformed confidential tool transport terminal even in fallback mode", async () => {

@@ -26,7 +26,6 @@ import {
   MEMORY_BRIEF_HEADER,
   MEMORY_DELTA_HEADER,
   ROOM_PARTICIPANTS_HEADER,
-  buildPendingTerminalHandoffBlock,
   buildTwoPathBlock,
   buildActiveMiniAppBlock,
   buildLiveMiniAppSessionBlock,
@@ -120,28 +119,6 @@ import { listConnectedWebAccountCapabilities } from "../tools/connected-web-acco
 import { connectedAppEligibleProviderIdsForContext } from "../tools/connected-apps/runtime";
 
 export type AssignedVoicesPortForState = typeof getVoices;
-
-export function reconcileLiveTerminalHandoffCapabilities(
-  checkpointCapabilities: Readonly<Record<string, boolean>> | undefined,
-  liveCapabilities: Readonly<Record<string, boolean>> | undefined,
-): Readonly<Record<string, boolean>> | undefined {
-  if (
-    liveCapabilities?.["canUseTerminal"] === true &&
-    liveCapabilities["hasPendingTerminalHandoff"] === true
-  ) {
-    return {
-      ...checkpointCapabilities,
-      canUseTerminal: true,
-      hasPendingTerminalHandoff: true,
-    };
-  }
-  if (checkpointCapabilities?.["hasPendingTerminalHandoff"] !== true) {
-    return checkpointCapabilities;
-  }
-  const reconciled = { ...checkpointCapabilities };
-  delete reconciled["hasPendingTerminalHandoff"];
-  return Object.keys(reconciled).length > 0 ? reconciled : undefined;
-}
 
 /**
  * Selects schemas only after the catalog has applied its shared eligibility
@@ -606,18 +583,11 @@ export async function preModelNode(
 
   const isGuest = state.actorRole === "guest";
   const initiatingClientSurface = getCurrentInitiatingClientSurface();
-  // Relay capability snapshots enter with the Human message, but Let Genie
-  // drive can happen while that turn is already running. Re-read only this
-  // transient presence signal at every model step so the continuation after
-  // a fenced run_shell receives terminal immediately. Execution authority and
-  // the exact PTY remain Electron-local.
+  // Relay capability snapshots enter with the Human message. Exact local
+  // execution and Human-terminal capabilities are refreshed below against the
+  // selected relay and its current local receipt.
   const relayRegistry = getRelayRegistry();
-  const capabilitiesAtModelStep = relayRegistry === null
-    ? state.relayCapabilities
-    : reconcileLiveTerminalHandoffCapabilities(
-        state.relayCapabilities,
-        buildRuntimeCapabilityTokens(relayRegistry, state.userId, state.agentId),
-      );
+  const capabilitiesAtModelStep = state.relayCapabilities;
   const executionHuman = causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "";
   const delegatedPort = getCurrentLocalExecutionDelegation();
   let delegatedRelayId: string | undefined;
@@ -638,8 +608,6 @@ export async function preModelNode(
       && (delegatedReady || (state.verifiedOrdinaryOrigin?.kind === "local_electron"
         && relayRegistry?.getDesktopSessionId?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.desktopSessionId
         && relayRegistry?.getPairingGeneration?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.pairingGeneration)),
-    canUseGitHub: !delegatedRelayId && exactExecutionCapabilities?.["canUseGitHub"] === true,
-    canUseLocalGit: !delegatedRelayId && exactExecutionCapabilities?.["canUseLocalGit"] === true,
     canUseHumanTerminal: exactExecutionCapabilities?.["canUseHumanTerminal"] === true
       && relayRegistry?.getCapabilities(state.verifiedOrdinaryOrigin?.kind === "local_electron" ? state.verifiedOrdinaryOrigin.relayId : "")?.humanTerminal?.owner.roomId === state.roomId,
     canReadShellOutput: !delegatedRelayId && exactExecutionCapabilities?.["canReadShellOutput"] === true,
@@ -782,20 +750,13 @@ export async function preModelNode(
         eligibleToolNameSet,
       )
     : retainedActivatedToolNames;
-  // Let Genie drive is an explicit local authority event, not model intent.
-  // Whenever its presence-only relay token is live, bind `terminal` on this
-  // very model step even if the progressive intent pack was already applied.
-  // Normal catalog eligibility still enforces actor policy + live PTY relay.
+  // A Human terminal handoff binds only the dedicated human_terminal tool.
+  // The retired six-action terminal tombstone must never be autoactivated by
+  // an old presence hint retained in a checkpoint or relay capability set.
   const activatedToolNames = personalFunding && !getCapabilityFundingSession()
     ? personalTaskControls ? [...PERSONAL_TASK_CONTROL_TOOL_NAMES] : []
     : !isGuest && relayCapabilities?.["canUseHumanTerminal"] === true
       ? mergeEligibleActivatedToolNames(ordinaryActivatedToolNames, ["human_terminal"], eligibleToolNameSet)
-    : !isGuest && relayCapabilities?.["hasPendingTerminalHandoff"] === true
-      ? mergeEligibleActivatedToolNames(
-          ordinaryActivatedToolNames,
-          ["terminal"],
-          eligibleToolNameSet,
-        )
       : ordinaryActivatedToolNames;
   const applyPatchContext = buildApplyPatchToolContext({
     ownerId: state.userId,
@@ -908,12 +869,9 @@ export async function preModelNode(
         ? "This delegated work uses the original Human's saved Mac and project under its Basic or Development ceiling. It never inherits Full Mac or a Human terminal handoff. If that Mac or its source/project authority is unavailable, report the exact blocker; never substitute another computer. "
         : "Commands use the exact initiating Desktop and its currently admitted access. ")
       + "A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
-      + (relayCapabilities["canUseLocalGit"] === true ? "Use local_git for supported typed local Git. " : "")
       + (relayCapabilities["canReadShellOutput"] === true ? "Use read_shell_output for earlier retained shell output. " : "")
       + (relayCapabilities["canUseHumanTerminal"] === true ? "Use human_terminal for the exact Human terminal handoff. " : "")
-      + (tools.some(tool => tool.name === "terminal") ? "Use terminal for an existing terminal handoff only when offered. " : "")
-      + (relayCapabilities["canUseGitHub"] === true ? "" : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
-      + "Unavailable tools have no shell fallback."
+      + "Use ordinary command-line tools, including git and gh, through exec_command when the active profile permits them."
     : "";
   const stableSystemPrefix = buildSystemPrompt({
     assistantName: state.assistantName || "Genie",
@@ -944,14 +902,6 @@ export async function preModelNode(
   // Exact client surface is process-local and varies per accepted turn, so it
   // must stay outside the cached stable prefix.
   systemPrompt += buildInitiatingClientSurfaceGuidance(initiatingClientSurface);
-
-  if (
-    !isGuest &&
-    relayCapabilities?.["hasPendingTerminalHandoff"] === true &&
-    tools.some((tool) => tool.name === "terminal")
-  ) {
-    systemPrompt += buildPendingTerminalHandoffBlock();
-  }
 
   // owner-only `## Current time` block: local time + day + IANA tz +
   // UTC offset, the UTC ISO timestamp, and the bucketed "last user message in

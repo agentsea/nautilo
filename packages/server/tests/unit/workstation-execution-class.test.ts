@@ -23,12 +23,12 @@ describe("workstation execution class", () => {
     }
   });
 
-  test("routes the structured Git payload to the typed broker", () => {
+  test("does not create a special execution class for legacy structured Git payloads", () => {
     expect(
       classifyWorkstationExecutionClass("run_shell", {
         git: { operation: "status" },
       }),
-    ).toBe("typed_broker");
+    ).toBe("profile_bound_sandbox");
   });
 
   test("another tool cannot smuggle the workstation argument", () => {
@@ -71,18 +71,11 @@ describe("workstation command safety branch", () => {
     }
   });
 
-  test("does not apply shell scanning to another tool or the typed broker", () => {
+  test("does not apply shell scanning to another tool", () => {
     expect(
       requiresNormalWorkstationCommandApproval({
         toolName: "file",
         executionClass: "real_workstation",
-        args: { command: "sudo rm -rf /" },
-      }),
-    ).toBe(false);
-    expect(
-      requiresNormalWorkstationCommandApproval({
-        toolName: "run_shell",
-        executionClass: "typed_broker",
         args: { command: "sudo rm -rf /" },
       }),
     ).toBe(false);

@@ -39,7 +39,12 @@ export type ProfileCapabilityBackend = (typeof PROFILE_CAPABILITY_BACKENDS)[numb
  * only permitted as typed {@link ProfileToolchainCapability} entries that
  * declare a backend and typed operation identifiers.
  */
-export const PROFILE_CAPABILITIES = ["background_processes", "device_control", "mcp_hosts"] as const;
+export const PROFILE_CAPABILITIES = [
+  "background_processes",
+  "device_control",
+  "mcp_hosts",
+  "user_environment",
+] as const;
 export type ProfileCapability = (typeof PROFILE_CAPABILITIES)[number];
 
 /**
@@ -244,6 +249,8 @@ export interface DiscoveredProfileCapability {
 export interface DiscoveredWorkstationFacts {
   roots: readonly DiscoveredProfileRoot[];
   environmentKeys: readonly string[];
+  /** Exact path-valued settings captured by bounded discovery. */
+  environmentValues?: Readonly<Record<string, string>>;
   capabilities: readonly DiscoveredProfileCapability[];
 }
 
@@ -267,6 +274,7 @@ export interface CompiledWorkstationProfile {
   profileRevision: number;
   roots: readonly CompiledProfileRoot[];
   environmentKeys: readonly string[];
+  environmentValues: Readonly<Record<string, string>>;
   capabilities: readonly CompiledProfileCapability[];
   compiledAt: string;
 }
@@ -747,13 +755,21 @@ function isDiscoveredCapability(value: unknown): value is DiscoveredProfileCapab
 
 function isDiscoveredFacts(value: unknown): value is DiscoveredWorkstationFacts {
   if (!isRecord(value)) return false;
-  if (!hasOnlyKeys(value, new Set(["roots", "environmentKeys", "capabilities"]))) return false;
+  if (!hasOnlyKeys(value, new Set(["roots", "environmentKeys", "environmentValues", "capabilities"]))) return false;
   if (!Array.isArray(value.roots)) return false;
   for (const entry of value.roots) {
     if (!isDiscoveredRoot(entry)) return false;
   }
   if (!isStringArray(value.environmentKeys)) return false;
   if (value.environmentKeys.some((key) => !isNonBlankString(key) || CONTROL_CHARACTER.test(key))) return false;
+  if (value["environmentValues"] !== undefined) {
+    if (!isRecord(value["environmentValues"])) return false;
+    for (const [key, environmentValue] of Object.entries(value["environmentValues"])) {
+      if (!value.environmentKeys.includes(key) ||
+          typeof environmentValue !== "string" ||
+          canonicalizeRootPath(environmentValue) === undefined) return false;
+    }
+  }
   if (!Array.isArray(value.capabilities)) return false;
   for (const entry of value.capabilities) {
     if (!isDiscoveredCapability(entry)) return false;
@@ -813,6 +829,15 @@ export function compileWorkstationProfile(
       return compileFail(
         "discovered_environment_key_not_allowed",
         "a discovered environment key is not declared by the profile",
+      );
+    }
+  }
+  const environmentValues = facts.environmentValues ?? {};
+  for (const key of Object.keys(environmentValues)) {
+    if (!facts.environmentKeys.includes(key) || !profile.environmentKeys.includes(key)) {
+      return compileFail(
+        "discovered_environment_key_not_allowed",
+        "a discovered environment value is not declared by the profile",
       );
     }
   }
@@ -896,6 +921,9 @@ export function compileWorkstationProfile(
       profileRevision: profile.revision,
       roots: compiledRoots,
       environmentKeys: [...facts.environmentKeys],
+      environmentValues: Object.fromEntries(
+        Object.entries(environmentValues).map(([key, value]) => [key, canonicalizeRootPath(value) ?? value]),
+      ),
       capabilities: compiledCapabilities,
       compiledAt: now.toISOString(),
     },

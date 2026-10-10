@@ -38,6 +38,7 @@ import { warn } from "@nautilo/logger";
 
 import {
   SAFE_ENV_VARS,
+  withoutNativeLoaderEnvironment,
   isDangerousEnvVar,
   isReservedEnvVar,
 } from "./env-vars";
@@ -47,6 +48,7 @@ import type { SandboxConfig, SpawnArgs } from "./types";
 export interface SandboxExecBuildOptions {
   readonly workspace: string;
   readonly managedHome?: string;
+  readonly preparedEnvironment?: Readonly<Record<string, string>>;
   readonly dataDir: string;
   readonly toolsBin: string;
   readonly config: SandboxConfig;
@@ -57,6 +59,8 @@ export interface SandboxExecBuildOptions {
   readonly args: readonly string[];
   /** Trusted local Developer Workstation profile; never sourced from wire config. */
   readonly allowWorkspaceGovernanceWrites?: boolean;
+  /** Locally admitted developer access to user credential files; never wire policy. */
+  readonly allowUserCredentialFiles?: boolean;
   /**
    * Whether to allow outbound + inbound network. Defaults to true
    * for Phase 2 (parity with bubblewrap — no network containment).
@@ -111,6 +115,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // unit-testable without pulling in `child_process` or env state.
   const profile = buildSbplProfile({
     workspace: opts.workspace,
+    allowUserCredentialFiles: opts.allowUserCredentialFiles === true,
     dataDir: opts.dataDir,
     toolsBin: opts.toolsBin,
     config: opts.config,
@@ -133,21 +138,20 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // env-clear-and-rebuild: start with `{}` and only add what we
   // explicitly approve. Unlike the bwrap path, we NEVER let parent
   // env leak — spawn will pass exactly this object.
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = opts.preparedEnvironment === undefined
+    ? {}
+    : withoutNativeLoaderEnvironment(opts.preparedEnvironment);
 
   // Hardened defaults (match bubblewrap.ts Step 11 Spacebot
   // src/sandbox.rs:556-570).
   const parentPath = process.env["PATH"] ?? "";
-  const pathSegments = [opts.toolsBin];
-  const resolvedPythonBin = resolvedToolBinDir(opts.toolsBin, "python3");
-  if (resolvedPythonBin !== null) {
-    pathSegments.unshift(resolvedPythonBin);
+  if (opts.preparedEnvironment === undefined) {
+    const pathSegments = [opts.toolsBin];
+    const resolvedPythonBin = resolvedToolBinDir(opts.toolsBin, "python3");
+    if (resolvedPythonBin !== null) pathSegments.unshift(resolvedPythonBin);
+    if (parentPath.length > 0) pathSegments.push(parentPath);
+    env["PATH"] = pathSegments.join(pathDelimiter);
   }
-  if (parentPath.length > 0) {
-    pathSegments.push(parentPath);
-  }
-  const pathVal = pathSegments.join(pathDelimiter);
-  env["PATH"] = pathVal;
   // Local managed HOME overrides the legacy workspace default in both backends.
   // This keeps tools that read HOME
   // (npm, python's `~/.cache`, etc.) constrained to the same
@@ -160,10 +164,12 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // real HOME. Matches Spacebot's port semantic and is the lesser
   // evil vs leaking HOME-relative reads into the agent's actual
   // home directory. Documented in `packages/sandbox/README.md`.
-  env["HOME"] = opts.managedHome ?? opts.workspace;
-  env["TMPDIR"] = "/tmp";
-  env["CI"] = "true";
-  env["DEBIAN_FRONTEND"] = "noninteractive";
+  if (opts.preparedEnvironment === undefined) {
+    env["HOME"] = opts.managedHome ?? opts.workspace;
+    env["TMPDIR"] = "/tmp";
+    env["CI"] = "true";
+    env["DEBIAN_FRONTEND"] = "noninteractive";
+  }
   if (opts.networkProxyUrl !== undefined) {
     env["HTTP_PROXY"] = opts.networkProxyUrl;
     env["HTTPS_PROXY"] = opts.networkProxyUrl;
@@ -174,7 +180,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // present in the parent — absent vars stay absent rather than
   // being set to empty string (which could confuse locale-sensitive
   // tools).
-  for (const name of SAFE_ENV_VARS) {
+  for (const name of opts.preparedEnvironment === undefined ? SAFE_ENV_VARS : []) {
     const val = process.env[name];
     if (val !== undefined) {
       env[name] = val;
@@ -183,7 +189,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
 
   // passthroughEnv from user config — skip reserved (matches bwrap
   // Step 13 Spacebot src/sandbox.rs:590-600).
-  for (const name of opts.config.passthroughEnv) {
+  for (const name of opts.preparedEnvironment === undefined ? opts.config.passthroughEnv : []) {
     if (isReservedEnvVar(name)) continue;
     const val = process.env[name];
     if (val !== undefined) {
@@ -199,7 +205,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   //     let the LLM-emitted command hijack the process regardless of
   //     the filesystem containment the SBPL profile provides.
   //   - otherwise → include.
-  for (const [name, value] of Object.entries(opts.commandEnv)) {
+  for (const [name, value] of Object.entries(opts.preparedEnvironment === undefined ? opts.commandEnv : {})) {
     if (isReservedEnvVar(name)) continue;
     if (isDangerousEnvVar(name)) {
       warn(

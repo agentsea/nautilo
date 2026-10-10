@@ -16,6 +16,7 @@ import {
   type BrowserUseProviderFailure,
   type BrowserUseServerFundingAdmission,
 } from "../browser-use/browser-use-cloud";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
 import {
   ConnectedWebAccountStoreError,
   type ConnectedWebAccountStore,
@@ -25,6 +26,16 @@ import {
   type ConnectedWebAccountDnsLookup,
   validateConnectedWebTarget,
 } from "./target-validator";
+import {
+  type ConnectedWebBrowserFunding,
+  withFundedBrowserUse,
+} from "./browser-use-funding";
+import type { UsageFundingProvenance } from "@nautilo/agent";
+import type {
+  ServerProviderCostAttemptAdmission,
+  ServerProviderCostReceipt,
+} from "../costs/provider-cost-recorder";
+import { settleConnectedWebActionRunCleanup } from "./action-tool-runtime";
 
 const CONNECTED_WEB_ACCOUNT_LOGIN_TIMEOUT_MINUTES = 240;
 /** Bounded one-shot CDP setup/verification; never a click-loop deadline. */
@@ -51,6 +62,17 @@ function isFailure(value: unknown): value is BrowserUseProviderFailure {
 
 function isAlreadyGone(value: unknown): boolean {
   return isFailure(value) && value.code === "resource_not_found";
+}
+
+function isConfirmedProfileCreateFailure(value: BrowserUseProviderFailure): boolean {
+  return value.code === "missing_configuration"
+    || value.code === "invalid_configuration"
+    || value.code === "authentication_failed"
+    || value.code === "insufficient_balance"
+    || value.code === "conflict"
+    || value.code === "rate_limited"
+    || value.code === "invalid_browser_policy"
+    || value.code === "invalid_cost_policy";
 }
 
 /** A cancel acknowledgement is not enough: queued/running is still a live fence. */
@@ -104,7 +126,93 @@ export class ConnectedWebAccountController {
     readonly lookup?: ConnectedWebAccountDnsLookup;
     readonly now?: () => Date;
     readonly assertServerFunding?: BrowserUseServerFundingAdmission;
+    readonly funding?: ConnectedWebBrowserFunding;
+    readonly beginCostAttempt?: (input: ServerProviderCostAttemptAdmission) => Promise<void>;
+    readonly settleCostAttempt?: (input: ServerProviderCostReceipt) => Promise<void>;
   }) {}
+
+  private async withFunding<T>(
+    ownerUserId: string,
+    binding: DurableServiceFundingBinding | null,
+    intent: "spend" | "recover",
+    callback: (browser: BrowserUseCloudAdapter, usageFunding?: UsageFundingProvenance) => Promise<T> | T,
+  ): Promise<T> {
+    if (!this.deps.funding) return Promise.resolve(callback(this.deps.browser));
+    const exact = binding ?? await this.deps.funding.admitLegacyServer(ownerUserId);
+    return withFundedBrowserUse(this.deps.funding, this.deps.browser, exact, intent,
+      (browser, usageFunding) => Promise.resolve(callback(browser, usageFunding)));
+  }
+
+  private browserCostIdentity(accountId: string, reservationToken: string): string {
+    return `browser-use:connected-web-account:${accountId}:browser:${reservationToken}`;
+  }
+
+  private async startFundedBrowser(input: {
+    readonly ownerUserId: string;
+    readonly accountId: string;
+    readonly reservationToken: string;
+    readonly resource: "login" | "view";
+    readonly fundingBinding: DurableServiceFundingBinding | null;
+    readonly profileId: string;
+  }): Promise<Awaited<ReturnType<BrowserUseCloudAdapter["startBrowser"]>>> {
+    return this.withFunding(input.ownerUserId, input.fundingBinding, "spend", async (provider, usageFunding) => {
+      await this.deps.beginCostAttempt?.({
+        identity: this.browserCostIdentity(input.accountId, input.reservationToken),
+        ...(usageFunding === undefined ? {} : { usageFunding }),
+        userId: input.ownerUserId,
+        workload: `connected_web_account_${input.resource}`,
+        provider: "browser_use",
+        operation: "browser_session",
+      });
+      const started = await provider.startBrowser({
+        profileId: input.profileId,
+        timeoutMinutes: CONNECTED_WEB_ACCOUNT_LOGIN_TIMEOUT_MINUTES,
+      });
+      if (isFailure(started) && isConfirmedProfileCreateFailure(started) && this.deps.settleCostAttempt) {
+        await this.deps.settleCostAttempt({
+          identity: this.browserCostIdentity(input.accountId, input.reservationToken),
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: input.ownerUserId,
+          workload: `connected_web_account_${input.resource}`,
+          provider: "browser_use",
+          operation: "browser_session",
+          actualCostUsd: null,
+          evidenceState: "unknown",
+          attemptOutcome: "failed",
+          failureCode: "provider_create_failed",
+        });
+      }
+      return started;
+    });
+  }
+
+  private async stopFundedBrowser(input: {
+    readonly ownerUserId: string;
+    readonly accountId: string;
+    readonly reservationToken: string;
+    readonly resource: "login" | "view";
+    readonly fundingBinding: DurableServiceFundingBinding | null;
+    readonly browserId: string;
+  }): Promise<Awaited<ReturnType<BrowserUseCloudAdapter["stopBrowser"]>>> {
+    return this.withFunding(input.ownerUserId, input.fundingBinding, "recover", async (provider, usageFunding) => {
+      const stopped = await provider.stopBrowser(input.browserId);
+      if (this.deps.settleCostAttempt && (!isFailure(stopped) || isAlreadyGone(stopped))) {
+        await this.deps.settleCostAttempt({
+          identity: this.browserCostIdentity(input.accountId, input.reservationToken),
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          userId: input.ownerUserId,
+          workload: `connected_web_account_${input.resource}`,
+          provider: "browser_use",
+          operation: "browser_session",
+          estimatedCostUsd: isFailure(stopped) ? null : stopped.costEvidence?.estimatedCostUsd ?? null,
+          actualCostUsd: null,
+          evidenceState: isFailure(stopped) ? "unknown" : stopped.costEvidence?.evidenceState ?? "unknown",
+          attemptOutcome: "succeeded",
+        });
+      }
+      return stopped;
+    });
+  }
 
   providerSetupStatus(): ConnectedWebAccountProviderSetupStatus {
     const health = this.deps.browser.health();
@@ -112,6 +220,21 @@ export class ConnectedWebAccountController {
     return health.reason === "missing_configuration"
       ? "api_key_required"
       : "api_key_invalid";
+  }
+
+  async providerSetupStatusForHuman(ownerUserId: string): Promise<ConnectedWebAccountProviderSetupStatus> {
+    if (!this.deps.funding) return this.providerSetupStatus();
+    try {
+      const binding = await this.deps.funding.admit(ownerUserId);
+      return await this.withFunding(ownerUserId, binding, "spend", (provider) => {
+        const health = provider.health();
+        return health.kind === "available"
+          ? "ready"
+          : health.reason === "missing_configuration" ? "api_key_required" : "api_key_invalid";
+      });
+    } catch {
+      return "api_key_required";
+    }
   }
 
   async create(input: { readonly ownerUserId: string; readonly account: ConnectedWebAccountCreateRequest }): Promise<ConnectedWebAccountLoginResponse> {
@@ -129,26 +252,42 @@ export class ConnectedWebAccountController {
         return this.reconnect({ ownerUserId: input.ownerUserId, accountId: reusable.id });
       }
     }
-    await this.requireServerFunding(input.ownerUserId, "connected_web_account_profile");
+    const profileFundingBinding = this.deps.funding
+      ? await this.deps.funding.admit(input.ownerUserId).catch(() => {
+        throw new ConnectedWebAccountControllerError("provider_unavailable");
+      })
+      : (await this.requireServerFunding(input.ownerUserId, "connected_web_account_profile"), undefined);
     const account = await this.deps.store.createPending({
       ownerUserId: input.ownerUserId,
       account: { ...input.account, origin: target.origin },
+      ...(profileFundingBinding === undefined ? {} : { profileFundingBinding }),
     });
     try {
       // Recheck after persistence so a concurrent grant revocation cannot use
       // the process-wide Browser Use key for profile creation.
-      await this.requireServerFunding(input.ownerUserId, "connected_web_account_profile");
+      if (profileFundingBinding === undefined) {
+        await this.requireServerFunding(input.ownerUserId, "connected_web_account_profile");
+      }
     } catch (error) {
       await this.deps.store.revokeForOwner({ ownerUserId: input.ownerUserId, accountId: account.id });
       throw error;
     }
-    const profile = await this.deps.browser.createProfile();
+    const profile = profileFundingBinding === undefined
+      ? await this.deps.browser.createProfile()
+      : await this.withFunding(input.ownerUserId, profileFundingBinding, "spend", (browser) => browser.createProfile());
     if (isFailure(profile)) {
-      await this.deps.store.revokeForOwner({ ownerUserId: input.ownerUserId, accountId: account.id });
+      if (isConfirmedProfileCreateFailure(profile)) {
+        await this.deps.store.revokeForOwner({ ownerUserId: input.ownerUserId, accountId: account.id });
+      } else {
+        // The provider may have created a profile before the response was
+        // lost. Keep this row quarantined; reconnect must not submit another.
+        await this.deps.store.markProfileCreationUncertain({ ownerUserId: input.ownerUserId, accountId: account.id });
+      }
       throw new ConnectedWebAccountControllerError("provider_unavailable");
     }
     try {
-      await this.deps.store.bindProfileReference({ ownerUserId: input.ownerUserId, accountId: account.id, profileRef: profile.profileId });
+      await this.deps.store.bindProfileReference({ ownerUserId: input.ownerUserId, accountId: account.id, profileRef: profile.profileId,
+        ...(profileFundingBinding === undefined ? {} : { profileFundingBinding }) });
       return await this.startNewLogin({ ownerUserId: input.ownerUserId, accountId: account.id, targetUrl: target.targetUrl, account, createdNewAccount: true });
     } catch (error) {
       const binding = await this.deps.store.getBindingForOwner({ ownerUserId: input.ownerUserId, accountId: account.id }).catch(() => null);
@@ -170,7 +309,8 @@ export class ConnectedWebAccountController {
       if (binding.executionCheckpoint.phase === "reserving" || !binding.executionCheckpoint.opaqueExecutionRef) {
         throw new ConnectedWebAccountStoreError("conflict");
       }
-      const existing = await this.deps.browser.getBrowser(binding.executionCheckpoint.opaqueExecutionRef);
+      const existing = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+        (browser) => browser.getBrowser(binding.executionCheckpoint!.opaqueExecutionRef!));
       if (!isFailure(existing) && existing.status === "active" && existing.liveViewUrl !== null) {
         const account = await this.deps.store.getForOwner(input);
         if (!account) throw new ConnectedWebAccountStoreError("not_found");
@@ -185,7 +325,7 @@ export class ConnectedWebAccountController {
       }
       binding = await this.deps.store.getBindingForOwner(input);
     }
-    await this.requireServerFunding(input.ownerUserId, "connected_web_account_login");
+    if (!this.deps.funding) await this.requireServerFunding(input.ownerUserId, "connected_web_account_login");
     const account = await this.deps.store.beginReconnect(input);
     return this.startNewLogin({
       ownerUserId: input.ownerUserId,
@@ -204,7 +344,8 @@ export class ConnectedWebAccountController {
       return account;
     }
     if (!binding.profileRef || binding.executionCheckpoint?.resource !== "login" || binding.executionCheckpoint.phase !== "active" || !binding.executionCheckpoint.opaqueExecutionRef) throw new ConnectedWebAccountStoreError("conflict");
-    const browser = await this.deps.browser.getBrowser(binding.executionCheckpoint.opaqueExecutionRef);
+    const browser = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+      (provider) => provider.getBrowser(binding.executionCheckpoint!.opaqueExecutionRef!));
     if (isAlreadyGone(browser)) {
       return this.deps.store.completeExecution({ ...input, reservationToken: binding.executionCheckpoint.reservationToken, status: "expired" });
     }
@@ -221,7 +362,13 @@ export class ConnectedWebAccountController {
     if (!verification.atExpectedOrigin || verification.authenticationRequired) {
       throw new ConnectedWebAccountControllerError("authentication_incomplete");
     }
-    const stopped = await this.deps.browser.stopBrowser(binding.executionCheckpoint.opaqueExecutionRef);
+    const stopped = await this.stopFundedBrowser({
+      ...input,
+      reservationToken: binding.executionCheckpoint.reservationToken,
+      resource: "login",
+      fundingBinding: binding.profileFundingBinding,
+      browserId: binding.executionCheckpoint.opaqueExecutionRef,
+    });
     if (isFailure(stopped) && !isAlreadyGone(stopped)) {
       throw new ConnectedWebAccountControllerError("provider_unavailable");
     }
@@ -243,10 +390,11 @@ export class ConnectedWebAccountController {
     if (binding.status !== "connected" || binding.executionCheckpoint !== null || !binding.profileRef) {
       throw new ConnectedWebAccountStoreError("conflict");
     }
+    const profileRef = binding.profileRef;
     const account = await this.deps.store.getForOwner(input);
     if (!account) throw new ConnectedWebAccountStoreError("not_found");
 
-    await this.requireServerFunding(input.ownerUserId, "connected_web_account_view");
+    if (!this.deps.funding) await this.requireServerFunding(input.ownerUserId, "connected_web_account_view");
     const reservationToken = randomUUID();
     await this.deps.store.reserveExecutionCheckpoint({
       ownerUserId: input.ownerUserId,
@@ -258,9 +406,12 @@ export class ConnectedWebAccountController {
         recordedAt: (this.deps.now ?? (() => new Date()))().toISOString(),
       },
     });
-    const browser = await this.deps.browser.startBrowser({
-      profileId: binding.profileRef,
-      timeoutMinutes: CONNECTED_WEB_ACCOUNT_LOGIN_TIMEOUT_MINUTES,
+    const browser = await this.startFundedBrowser({
+      ...input,
+      reservationToken,
+      resource: "view",
+      fundingBinding: binding.profileFundingBinding,
+      profileId: profileRef,
     });
     if (isFailure(browser)) {
       await this.deps.store.releaseExecutionReservation({
@@ -279,7 +430,7 @@ export class ConnectedWebAccountController {
         opaqueExecutionRef: browser.browserId,
       });
     } catch (error) {
-      const stopped = await this.deps.browser.stopBrowser(browser.browserId);
+      const stopped = await this.stopFundedBrowser({ ...input, reservationToken, resource: "view", fundingBinding: binding.profileFundingBinding, browserId: browser.browserId });
       if (!isFailure(stopped) || isAlreadyGone(stopped)) {
         await this.deps.store.releaseExecutionReservation({
           ownerUserId: input.ownerUserId,
@@ -291,7 +442,7 @@ export class ConnectedWebAccountController {
       throw error;
     }
     if (browser.cdpUrl === null) {
-      const stopped = await this.deps.browser.stopBrowser(browser.browserId);
+      const stopped = await this.stopFundedBrowser({ ...input, reservationToken, resource: "view", fundingBinding: binding.profileFundingBinding, browserId: browser.browserId });
       if (!isFailure(stopped) || isAlreadyGone(stopped)) {
         await this.deps.store.completeExecution({
           ownerUserId: input.ownerUserId,
@@ -312,7 +463,7 @@ export class ConnectedWebAccountController {
       if (!saved) throw new ConnectedWebAccountStoreError("not_found");
       return loginResponse(saved, browser, false);
     } catch (error) {
-      const stopped = await this.deps.browser.stopBrowser(browser.browserId);
+      const stopped = await this.stopFundedBrowser({ ...input, reservationToken, resource: "view", fundingBinding: binding.profileFundingBinding, browserId: browser.browserId });
       if (!isFailure(stopped) || isAlreadyGone(stopped)) {
         await this.deps.store.completeExecution({
           ownerUserId: input.ownerUserId,
@@ -330,7 +481,13 @@ export class ConnectedWebAccountController {
     if (binding.executionCheckpoint?.resource !== "view" || binding.executionCheckpoint.phase !== "active" || !binding.executionCheckpoint.opaqueExecutionRef) {
       throw new ConnectedWebAccountStoreError("conflict");
     }
-    const stopped = await this.deps.browser.stopBrowser(binding.executionCheckpoint.opaqueExecutionRef);
+    const stopped = await this.stopFundedBrowser({
+      ...input,
+      reservationToken: binding.executionCheckpoint.reservationToken,
+      resource: "view",
+      fundingBinding: binding.profileFundingBinding,
+      browserId: binding.executionCheckpoint.opaqueExecutionRef,
+    });
     if (isFailure(stopped) && !isAlreadyGone(stopped)) {
       throw new ConnectedWebAccountControllerError("provider_unavailable");
     }
@@ -350,7 +507,13 @@ export class ConnectedWebAccountController {
     // Human can cancel the now-active browser deterministically.
     if (binding.executionCheckpoint.phase === "reserving") throw new ConnectedWebAccountStoreError("conflict");
     if (binding.executionCheckpoint.phase === "active" && binding.executionCheckpoint.opaqueExecutionRef) {
-      const stopped = await this.deps.browser.stopBrowser(binding.executionCheckpoint.opaqueExecutionRef);
+      const stopped = await this.stopFundedBrowser({
+        ...input,
+        reservationToken: binding.executionCheckpoint.reservationToken,
+        resource: "login",
+        fundingBinding: binding.profileFundingBinding,
+        browserId: binding.executionCheckpoint.opaqueExecutionRef,
+      });
       if (isFailure(stopped) && !isAlreadyGone(stopped)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     }
     return this.deps.store.completeExecution({ ...input, reservationToken: binding.executionCheckpoint.reservationToken, status: "attention_needed" });
@@ -363,7 +526,8 @@ export class ConnectedWebAccountController {
     if (checkpoint.phase === "reserving" || !checkpoint.opaqueExecutionRef) {
       return { accountId: input.accountId, stage: "starting", canWatch: false };
     }
-    const observed = await this.deps.browser.observeHostedReadRun(checkpoint.opaqueExecutionRef);
+    const observed = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+      (provider) => provider.observeHostedReadRun(checkpoint.opaqueExecutionRef!));
     if (isFailure(observed)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     return { accountId: input.accountId, stage: observed.stage, canWatch: observed.liveViewUrl !== null };
   }
@@ -374,7 +538,8 @@ export class ConnectedWebAccountController {
     if (checkpoint?.resource !== "read" || checkpoint.phase !== "active" || !checkpoint.opaqueExecutionRef) {
       throw new ConnectedWebAccountStoreError("conflict");
     }
-    const observed = await this.deps.browser.observeHostedReadRun(checkpoint.opaqueExecutionRef);
+    const observed = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+      (provider) => provider.observeHostedReadRun(checkpoint.opaqueExecutionRef!));
     if (isFailure(observed)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     if (observed.liveViewUrl === null) throw new ConnectedWebAccountStoreError("conflict");
     return { liveViewUrl: observed.liveViewUrl };
@@ -386,12 +551,14 @@ export class ConnectedWebAccountController {
     if (checkpoint?.resource !== "read" || checkpoint.phase !== "active" || !checkpoint.opaqueExecutionRef) {
       throw new ConnectedWebAccountStoreError("conflict");
     }
-    const cancelled = await this.deps.browser.cancelHostedReadRun(checkpoint.opaqueExecutionRef);
+    const cancelled = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+      (provider) => provider.cancelHostedReadRun(checkpoint.opaqueExecutionRef!));
     if (isFailure(cancelled) && !isAlreadyGone(cancelled)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     if (!isFailure(cancelled) && cancelled.status !== "cancelled" && cancelled.status !== "completed" && cancelled.status !== "failed") {
       throw new ConnectedWebAccountControllerError("provider_unavailable");
     }
-    if (!await this.deps.browser.stopHostedReadBrowser(checkpoint.opaqueExecutionRef)) throw new ConnectedWebAccountControllerError("provider_unavailable");
+    if (!await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+      (provider) => provider.stopHostedReadBrowser(checkpoint.opaqueExecutionRef!))) throw new ConnectedWebAccountControllerError("provider_unavailable");
     return this.deps.store.completeExecution({
       ...input,
       reservationToken: checkpoint.reservationToken,
@@ -419,7 +586,8 @@ export class ConnectedWebAccountController {
       || !operation.opaqueRunRef || checkpoint.opaqueExecutionRef !== operation.opaqueRunRef) {
       throw new ConnectedWebAccountStoreError("conflict");
     }
-    const observed = await this.deps.browser.observeHostedReadRun(operation.opaqueRunRef);
+    const observed = await this.withFunding(input.ownerUserId, operation.fundingBinding ?? binding.profileFundingBinding, "recover",
+      (provider) => provider.observeHostedReadRun(operation.opaqueRunRef!));
     if (isFailure(observed)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     const active = observed.status === "queued" || observed.status === "dispatching" || observed.status === "running";
     return { deliveryId: operation.deliveryId, accountId: operation.accountId, action: "save_item", stage: observed.stage,
@@ -434,7 +602,8 @@ export class ConnectedWebAccountController {
     const checkpoint = binding.executionCheckpoint;
     if ((operation.status !== "running" && operation.status !== "verifying") || !operation.opaqueRunRef || checkpoint?.resource !== "action"
       || checkpoint.phase !== "active" || checkpoint.opaqueExecutionRef !== operation.opaqueRunRef) throw new ConnectedWebAccountStoreError("conflict");
-    const observed = await this.deps.browser.observeHostedReadRun(operation.opaqueRunRef);
+    const observed = await this.withFunding(input.ownerUserId, operation.fundingBinding ?? binding.profileFundingBinding, "recover",
+      (provider) => provider.observeHostedReadRun(operation.opaqueRunRef!));
     if (isFailure(observed)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     if (observed.status !== "queued" && observed.status !== "dispatching" && observed.status !== "running") throw new ConnectedWebAccountStoreError("conflict");
     if (observed.liveViewUrl === null) throw new ConnectedWebAccountStoreError("conflict");
@@ -446,10 +615,21 @@ export class ConnectedWebAccountController {
     const checkpoint = binding.executionCheckpoint;
     if ((operation.status !== "running" && operation.status !== "verifying") || !operation.opaqueRunRef || checkpoint?.resource !== "action"
       || checkpoint.phase !== "active" || checkpoint.opaqueExecutionRef !== operation.opaqueRunRef) throw new ConnectedWebAccountStoreError("conflict");
-    const cancelled = await this.deps.browser.cancelHostedReadRun(operation.opaqueRunRef);
+    const cancelled = await this.withFunding(input.ownerUserId, operation.fundingBinding ?? binding.profileFundingBinding, "recover",
+      (provider) => provider.cancelHostedReadRun(operation.opaqueRunRef!));
     const providerTerminal = isAlreadyGone(cancelled) || isConfirmedHostedRunTerminal(cancelled, operation.opaqueRunRef);
     if (!providerTerminal) throw new ConnectedWebAccountControllerError("provider_unavailable");
-    if (!await this.deps.browser.stopHostedReadBrowser(operation.opaqueRunRef)) throw new ConnectedWebAccountControllerError("provider_unavailable");
+    const cleaned = await this.withFunding(input.ownerUserId, operation.fundingBinding ?? binding.profileFundingBinding, "recover",
+      (provider, usageFunding) => operation.runCostCustody
+        ? settleConnectedWebActionRunCleanup({
+          provider,
+          runId: operation.opaqueRunRef!,
+          custody: operation.runCostCustody,
+          ...(usageFunding === undefined ? {} : { usageFunding }),
+          ...(this.deps.settleCostAttempt === undefined ? {} : { settleCostAttempt: this.deps.settleCostAttempt }),
+        })
+        : provider.stopHostedReadBrowser(operation.opaqueRunRef!));
+    if (!cleaned) throw new ConnectedWebAccountControllerError("provider_unavailable");
     // No terminal response for action A—including an exact cancellation—can
     // prove there is no verifier B being created after the runtime's last
     // ledger check and before either durable rotation. Leave A fenced; the
@@ -488,19 +668,28 @@ export class ConnectedWebAccountController {
     }
     if (binding.executionCheckpoint?.phase === "active" && binding.executionCheckpoint.opaqueExecutionRef) {
       if (binding.executionCheckpoint.resource === "login" || binding.executionCheckpoint.resource === "view") {
-        const stopped = await this.deps.browser.stopBrowser(binding.executionCheckpoint.opaqueExecutionRef);
+        const stopped = await this.stopFundedBrowser({
+          ...input,
+          reservationToken: binding.executionCheckpoint.reservationToken,
+          resource: binding.executionCheckpoint.resource,
+          fundingBinding: binding.profileFundingBinding,
+          browserId: binding.executionCheckpoint.opaqueExecutionRef,
+        });
         if (isFailure(stopped) && !isAlreadyGone(stopped)) throw new ConnectedWebAccountControllerError("provider_unavailable");
       } else {
-        const cancelled = await this.deps.browser.cancelHostedReadRun(binding.executionCheckpoint.opaqueExecutionRef);
+        const cancelled = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+          (provider) => provider.cancelHostedReadRun(binding.executionCheckpoint!.opaqueExecutionRef!));
         if (isFailure(cancelled) && !isAlreadyGone(cancelled)) throw new ConnectedWebAccountControllerError("provider_unavailable");
         if (!isAlreadyGone(cancelled) && !isConfirmedHostedRunTerminal(cancelled, binding.executionCheckpoint.opaqueExecutionRef)) {
           throw new ConnectedWebAccountControllerError("provider_unavailable");
         }
-        if (!await this.deps.browser.stopHostedReadBrowser(binding.executionCheckpoint.opaqueExecutionRef)) throw new ConnectedWebAccountControllerError("provider_unavailable");
+        if (!await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+          (provider) => provider.stopHostedReadBrowser(binding.executionCheckpoint!.opaqueExecutionRef!))) throw new ConnectedWebAccountControllerError("provider_unavailable");
       }
     }
     if (binding.profileRef) {
-      const deleted = await this.deps.browser.deleteProfile(binding.profileRef);
+      const deleted = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover",
+        (provider) => provider.deleteProfile(binding.profileRef!));
       if (isFailure(deleted) && !isAlreadyGone(deleted)) throw new ConnectedWebAccountControllerError("provider_unavailable");
     }
     const account = await this.deps.store.revokeForOwner(input);
@@ -510,6 +699,12 @@ export class ConnectedWebAccountController {
 
   async reconcileStaleExecutions(): Promise<void> {
     const stale = await this.deps.store.listStaleExecutions();
+    const listStaleActions = (this.deps.store as Partial<ConnectedWebAccountStore>).listStaleActionOperations;
+    const staleActions = listStaleActions ? await listStaleActions.call(this.deps.store) : [];
+    const actionByCheckpoint = new Map<string, (typeof staleActions)[number]>(staleActions.flatMap((operation) => operation.opaqueRunRef
+      ? [[`${operation.accountId}\0${operation.opaqueRunRef}`, operation] as const]
+      : []));
+    const processedActionIds = new Set<string>();
     const actionCheckpointKeys = new Set(stale.flatMap((execution) =>
       execution.checkpoint.resource === "action" && execution.checkpoint.phase === "active"
         && execution.checkpoint.opaqueExecutionRef
@@ -540,11 +735,23 @@ export class ConnectedWebAccountController {
         });
         continue;
       }
+      const checkpointKey = execution.checkpoint.resource === "action" && execution.checkpoint.opaqueExecutionRef
+        ? `${execution.accountId}\0${execution.checkpoint.opaqueExecutionRef}`
+        : null;
+      const actionOperation = checkpointKey === null ? undefined : actionByCheckpoint.get(checkpointKey);
       let result: Awaited<ReturnType<BrowserUseCloudAdapter["stopBrowser"]>> | Awaited<ReturnType<BrowserUseCloudAdapter["cancelHostedReadRun"]>>;
       try {
         result = execution.checkpoint.resource === "login" || execution.checkpoint.resource === "view"
-          ? await this.deps.browser.stopBrowser(execution.checkpoint.opaqueExecutionRef ?? "")
-          : await this.deps.browser.cancelHostedReadRun(execution.checkpoint.opaqueExecutionRef ?? "");
+          ? await this.stopFundedBrowser({
+            ownerUserId: execution.ownerUserId,
+            accountId: execution.accountId,
+            reservationToken: execution.checkpoint.reservationToken,
+            resource: execution.checkpoint.resource,
+            fundingBinding: execution.profileFundingBinding,
+            browserId: execution.checkpoint.opaqueExecutionRef ?? "",
+          })
+          : await this.withFunding(execution.ownerUserId, actionOperation?.fundingBinding ?? execution.profileFundingBinding, "recover", (provider) =>
+            provider.cancelHostedReadRun(execution.checkpoint.opaqueExecutionRef ?? ""));
       } catch {
         // A failed cancellation leaves the exact opaque reference fenced for
         // the next boot; do not make the saved profile writable yet.
@@ -554,8 +761,32 @@ export class ConnectedWebAccountController {
         ? (!isFailure(result) || isAlreadyGone(result))
         : (isAlreadyGone(result) || isConfirmedHostedRunTerminal(result, execution.checkpoint.opaqueExecutionRef ?? ""));
       if (terminal) {
-        if ((execution.checkpoint.resource === "read" || execution.checkpoint.resource === "action")
-          && !await this.deps.browser.stopHostedReadBrowser(execution.checkpoint.opaqueExecutionRef ?? "").catch(() => false)) continue;
+        if (execution.checkpoint.resource === "read"
+          && !await this.withFunding(execution.ownerUserId, execution.profileFundingBinding, "recover",
+            (provider) => provider.stopHostedReadBrowser(execution.checkpoint.opaqueExecutionRef ?? "")).catch(() => false)) continue;
+        if (execution.checkpoint.resource === "action") {
+          const cleaned = await this.withFunding(execution.ownerUserId, actionOperation?.fundingBinding ?? execution.profileFundingBinding, "recover",
+            (provider, usageFunding) => actionOperation?.runCostCustody
+              ? settleConnectedWebActionRunCleanup({
+                provider,
+                runId: execution.checkpoint.opaqueExecutionRef ?? "",
+                custody: actionOperation.runCostCustody,
+                ...(usageFunding === undefined ? {} : { usageFunding }),
+                ...(this.deps.settleCostAttempt === undefined ? {} : { settleCostAttempt: this.deps.settleCostAttempt }),
+              })
+              : provider.stopHostedReadBrowser(execution.checkpoint.opaqueExecutionRef ?? "")).catch(() => false);
+          if (!cleaned) continue;
+          if (actionOperation) {
+            const finished = await this.deps.store.finishActionOperation({
+              operationId: actionOperation.id,
+              status: "ambiguous",
+              receipt: { executionRef: actionOperation.id, action: "save_item", target: actionOperation.target, effectState: "ambiguous", postcondition: null, evidenceCode: "restart_possible_effect", cost: { amountUsd: null, state: "unknown" } },
+              expectedOpaqueRunRef: execution.checkpoint.opaqueExecutionRef ?? "",
+            }).then(() => true, () => false);
+            if (!finished) continue;
+            processedActionIds.add(actionOperation.id);
+          }
+        }
         if (execution.checkpoint.resource === "action" && execution.checkpoint.opaqueExecutionRef) {
           confirmedActionCheckpointKeys.add(`${execution.accountId}\0${execution.checkpoint.opaqueExecutionRef}`);
         }
@@ -577,9 +808,9 @@ export class ConnectedWebAccountController {
     // durable references until provider cancellation is terminal/gone.
     // Older, read-only store fakes and deployments have no action ledger. The
     // recovery loop remains additive until the schema/runtime seam is wired.
-    const listStaleActions = (this.deps.store as Partial<ConnectedWebAccountStore>).listStaleActionOperations;
     if (!listStaleActions) return;
-    for (const operation of await listStaleActions.call(this.deps.store)) {
+    for (const operation of staleActions) {
+      if (processedActionIds.has(operation.id)) continue;
       if (operation.status === "reserving") {
         await this.deps.store.finishActionOperation({
           operationId: operation.id, status: "ambiguous", receipt: { executionRef: operation.id, action: "save_item", target: operation.target, effectState: "ambiguous", postcondition: null, evidenceCode: "restart_before_provider_reference", cost: { amountUsd: null, state: "unknown" } },
@@ -600,10 +831,20 @@ export class ConnectedWebAccountController {
         continue;
       }
       let cancelled: Awaited<ReturnType<BrowserUseCloudAdapter["cancelHostedReadRun"]>>;
-      try { cancelled = await this.deps.browser.cancelHostedReadRun(operation.opaqueRunRef); }
+      try { cancelled = await this.withFunding(operation.ownerUserId, operation.fundingBinding, "recover",
+        (provider) => provider.cancelHostedReadRun(operation.opaqueRunRef!)); }
       catch { continue; }
       if (!isAlreadyGone(cancelled) && !isConfirmedHostedRunTerminal(cancelled, operation.opaqueRunRef)) continue;
-      if (!await this.deps.browser.stopHostedReadBrowser(operation.opaqueRunRef).catch(() => false)) continue;
+      if (!await this.withFunding(operation.ownerUserId, operation.fundingBinding, "recover",
+        (provider, usageFunding) => operation.runCostCustody
+          ? settleConnectedWebActionRunCleanup({
+            provider,
+            runId: operation.opaqueRunRef!,
+            custody: operation.runCostCustody,
+            ...(usageFunding === undefined ? {} : { usageFunding }),
+            ...(this.deps.settleCostAttempt === undefined ? {} : { settleCostAttempt: this.deps.settleCostAttempt }),
+          })
+          : provider.stopHostedReadBrowser(operation.opaqueRunRef!)).catch(() => false)) continue;
       await this.deps.store.finishActionOperation({
         operationId: operation.id, status: "ambiguous", receipt: { executionRef: operation.id, action: "save_item", target: operation.target, effectState: "ambiguous", postcondition: null, evidenceCode: "restart_possible_effect", cost: { amountUsd: null, state: "unknown" } },
         expectedOpaqueRunRef: operation.opaqueRunRef,
@@ -621,7 +862,8 @@ export class ConnectedWebAccountController {
     for (const candidate of candidates) {
       let deleted: Awaited<ReturnType<BrowserUseCloudAdapter["deleteProfile"]>>;
       try {
-        deleted = await this.deps.browser.deleteProfile(candidate.profileRef);
+        deleted = await this.withFunding(candidate.ownerUserId, candidate.profileFundingBinding, "recover",
+          (provider) => provider.deleteProfile(candidate.profileRef));
       } catch {
         await this.markProfileCleanupFailed(candidate.accountId);
         continue;
@@ -644,14 +886,21 @@ export class ConnectedWebAccountController {
   private async startNewLogin(input: { readonly ownerUserId: string; readonly accountId: string; readonly targetUrl: string; readonly account: ConnectedWebAccount; readonly createdNewAccount: boolean }): Promise<ConnectedWebAccountLoginResponse> {
     const binding = await this.deps.store.getBindingForOwner(input);
     if (!binding.profileRef) throw new ConnectedWebAccountStoreError("conflict");
-    await this.requireServerFunding(input.ownerUserId, "connected_web_account_login");
+    if (!this.deps.funding) await this.requireServerFunding(input.ownerUserId, "connected_web_account_login");
     const reservationToken = randomUUID();
     await this.deps.store.reserveExecutionCheckpoint({
       ownerUserId: input.ownerUserId,
       accountId: input.accountId,
       checkpoint: { resource: "login", phase: "reserving", reservationToken, recordedAt: (this.deps.now ?? (() => new Date()))().toISOString() },
     });
-    const browser = await this.deps.browser.startBrowser({ profileId: binding.profileRef, timeoutMinutes: CONNECTED_WEB_ACCOUNT_LOGIN_TIMEOUT_MINUTES });
+    const browser = await this.startFundedBrowser({
+      ownerUserId: input.ownerUserId,
+      accountId: input.accountId,
+      reservationToken,
+      resource: "login",
+      fundingBinding: binding.profileFundingBinding,
+      profileId: binding.profileRef,
+    });
     if (isFailure(browser)) {
       await this.deps.store.releaseExecutionReservation({ ownerUserId: input.ownerUserId, accountId: input.accountId, reservationToken, status: "provider_unavailable" });
       throw new ConnectedWebAccountControllerError("provider_unavailable");
@@ -664,7 +913,7 @@ export class ConnectedWebAccountController {
         opaqueExecutionRef: browser.browserId,
       });
     } catch (error) {
-      const stopped = await this.deps.browser.stopBrowser(browser.browserId);
+      const stopped = await this.stopFundedBrowser({ ownerUserId: input.ownerUserId, accountId: input.accountId, reservationToken, resource: "login", fundingBinding: binding.profileFundingBinding, browserId: browser.browserId });
       if (!isFailure(stopped) || isAlreadyGone(stopped)) {
         await this.deps.store.releaseExecutionReservation({
           ownerUserId: input.ownerUserId,
@@ -676,7 +925,7 @@ export class ConnectedWebAccountController {
       throw error;
     }
     if (browser.cdpUrl === null) {
-      const stopped = await this.deps.browser.stopBrowser(browser.browserId);
+      const stopped = await this.stopFundedBrowser({ ownerUserId: input.ownerUserId, accountId: input.accountId, reservationToken, resource: "login", fundingBinding: binding.profileFundingBinding, browserId: browser.browserId });
       if (!isFailure(stopped) || isAlreadyGone(stopped)) {
         await this.deps.store.completeExecution({ ownerUserId: input.ownerUserId, accountId: input.accountId, reservationToken, status: "attention_needed" });
       }
@@ -688,7 +937,7 @@ export class ConnectedWebAccountController {
       if (!saved) throw new ConnectedWebAccountStoreError("not_found");
       return loginResponse(saved, browser, input.createdNewAccount);
     } catch (error) {
-      const stopped = await this.deps.browser.stopBrowser(browser.browserId);
+      const stopped = await this.stopFundedBrowser({ ownerUserId: input.ownerUserId, accountId: input.accountId, reservationToken, resource: "login", fundingBinding: binding.profileFundingBinding, browserId: browser.browserId });
       if (!isFailure(stopped) || isAlreadyGone(stopped)) {
         await this.deps.store.completeExecution({ ownerUserId: input.ownerUserId, accountId: input.accountId, reservationToken, status: "attention_needed" });
       }
@@ -698,7 +947,8 @@ export class ConnectedWebAccountController {
 
   private async revokeAndDeleteProfile(input: { readonly ownerUserId: string; readonly accountId: string; readonly profileId: string }): Promise<void> {
     await this.deps.store.revokeForOwner(input);
-    const deleted = await this.deps.browser.deleteProfile(input.profileId);
+    const binding = await this.deps.store.getBindingForOwner({ ownerUserId: input.ownerUserId, accountId: input.accountId });
+    const deleted = await this.withFunding(input.ownerUserId, binding.profileFundingBinding, "recover", (provider) => provider.deleteProfile(input.profileId));
     if (isFailure(deleted) && !isAlreadyGone(deleted)) await this.deps.store.markProviderCleanupFailed({ accountId: input.accountId, safeFailureCode: "cleanup_unavailable" });
     else await this.deps.store.markProviderCleanupCompleted(input.accountId);
   }

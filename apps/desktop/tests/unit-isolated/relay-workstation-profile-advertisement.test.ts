@@ -241,31 +241,6 @@ describe("local authority-boundary correction — dispatch handler wiring (sourc
     expect(optsSlice).toContain("RelayWorkstationProfileSnapshotProvider");
   });
 
-  test("makeDispatchHandler gates run_shell before generic sandbox construction under an active profile", () => {
-    const fnStart = relay.indexOf("export function makeDispatchHandler");
-    expect(fnStart).toBeGreaterThan(-1);
-    const fnSlice = relay.slice(fnStart, relay.indexOf("export function makeDispatchHandler", fnStart + 1));
-    // The gate reads the active-profile state provider and refuses with a
-    // stable code BEFORE the generic sandbox envelope construction.
-    const gateIdx = fnSlice.indexOf("WORKSTATION_SHELL_BINDING_REQUIRED");
-    expect(gateIdx).toBeGreaterThan(-1);
-    expect(fnSlice.indexOf("WORKSTATION_PROFILE_LOOKUP_FAILED", gateIdx)).toBeGreaterThan(gateIdx);
-    const policyIdx = fnSlice.indexOf("prepareLocalDispatchPolicy({");
-    expect(policyIdx).toBeGreaterThan(-1);
-    // The request-local policy evaluates the injected refusal before it
-    // augments an envelope or constructs a Sandbox.
-    const policy = readFileSync(
-      join(desktopRoot, "electron/relay-dispatch/local-dispatch-policy.ts"),
-      "utf-8",
-    );
-    expect(policy.indexOf("const unboundRefusal = await input.checkUnboundRunShell()")).toBeLessThan(
-      policy.indexOf("resolveRelayDispatchSandbox({"),
-    );
-    // The gate is run_shell-specific and only fires when no binding is carried.
-    expect(fnSlice).toContain('req.toolName !== "run_shell"');
-    expect(fnSlice).toContain("req.workstationShellBinding !== undefined");
-    expect(fnSlice).toContain("options.workstationProfileStateProvider === undefined");
-  });
 
   test("startRelay threads the shared controller into makeDispatchHandler as the state provider", () => {
     const startFn = relay.indexOf("export async function startRelay");

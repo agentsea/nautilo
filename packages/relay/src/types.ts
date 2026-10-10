@@ -1,4 +1,3 @@
-import type { GitHubCapability } from "../../types/src/github-invocation";
 import { parseHumanTerminalConsentOwner, type HumanTerminalConsent } from "../../types/src/human-terminal";
 import type {
   DesktopFilesystemAccessOperation,
@@ -394,8 +393,6 @@ export type RelayCapabilities = {
    *  Electron desktop relay advertises this — it hosts the PTY pool; the
    *  standalone relay can run shell but has no terminal host. */
   canUseTerminal?: boolean | undefined;
-  canUseGitHub?: boolean | undefined;
-  github?: GitHubCapability | undefined;
   canUseHumanTerminal?: boolean | undefined;
   humanTerminal?: RelayHumanTerminalCapability | undefined;
   /** Secret-free, transient notification that the Human explicitly handed
@@ -411,8 +408,6 @@ export type RelayCapabilities = {
   /** Electron-local, opaque, directory-only paired phone picker. */
   canBrowsePairedFilesystem?: boolean | undefined;
   canRunShell?: boolean | undefined;
-  canUseLocalGit?: boolean | undefined;
-  localGit?: { readonly version: 1 } | undefined;
   canReadShellOutput?: boolean | undefined;
   canExecuteLocal?: boolean | undefined;
   /** Static support for fresh Task-run admission against a durable project grant. */
@@ -1262,6 +1257,7 @@ export function canRelayExecuteBrowserResearchConsentRecovery(
 
 /** Complete contained execution readiness, owned by one Desktop generation. */
 export interface RelayLocalExecutionCapability {
+  readonly localNetworkPolicy?: true;
   readonly version: 1;
   readonly generation: string;
   readonly pipe: true;
@@ -1272,11 +1268,13 @@ export interface RelayLocalExecutionCapability {
 export function parseRelayLocalExecutionCapability(value: unknown): RelayLocalExecutionCapability | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const v = value as Record<string, unknown>;
-  if (Object.keys(v).length !== 5 || Object.keys(v).some(k => !["version", "generation", "pipe", "pty", "capacity"].includes(k))
+  if (Object.keys(v).length !== 5 + ("localNetworkPolicy" in v ? 1 : 0) || Object.keys(v).some(k => !["version", "generation", "pipe", "pty", "capacity", "localNetworkPolicy"].includes(k))
+    || ("localNetworkPolicy" in v && v["localNetworkPolicy"] !== true)
     || v["version"] !== 1 || typeof v["generation"] !== "string" || v["generation"].length === 0
     || v["pipe"] !== true || typeof v["pty"] !== "boolean"
     || !Number.isSafeInteger(v["capacity"]) || (v["capacity"] as number) <= 0) return null;
-  return { version: 1, generation: v["generation"], pipe: true, pty: v["pty"], capacity: v["capacity"] as number };
+  return { version: 1, generation: v["generation"], pipe: true, pty: v["pty"], capacity: v["capacity"] as number,
+    ...(v["localNetworkPolicy"] === true ? { localNetworkPolicy: true as const } : {}) };
 }
 
 /** Advisory Basic selection. Electron revalidates the selected root locally. */

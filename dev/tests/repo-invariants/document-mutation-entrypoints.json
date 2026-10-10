@@ -692,13 +692,24 @@
       "id": "CONVERT",
       "module": "packages/agent/src/tools/convert/convert-tool.ts",
       "symbols": [
-        "applyBinaryContentPatch"
+        "applyBinaryContentPatch",
+        "publishCloudConversionAttempt",
+        "getWorkspaceFileContentCommitExecution",
+        "getWorkspaceFileContentRecoveryExecution"
       ],
       "disposition": "planner",
       "owner": "coordinator",
       "hits": [
         {
           "primitive": "workspace_binary_patch",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_content_commit_execution",
+          "count": 1
+        },
+        {
+          "primitive": "workspace_content_recovery_execution",
           "count": 1
         }
       ]

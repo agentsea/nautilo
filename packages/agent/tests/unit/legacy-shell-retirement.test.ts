@@ -72,7 +72,7 @@ function makeState(overrides: Partial<NautiloState>): NautiloState {
 const origin = { kind: "local_electron", userId: "fixture-human", actorId: "fixture-actor",
   relayId: "fixture-desktop", desktopSessionId: "fixture-session", pairingGeneration: "fixture-pairing", requestId: "fixture-request" } as const;
 function fixture() {
-  const live = { protocol: 26, connected: true, managed: true, pty: true, history: false, localGit: true, retainedReader: true, humanConsent: true,
+  const live = { protocol: 29, connected: true, managed: true, pty: true, history: false, retainedReader: true, humanConsent: true,
     profile: "desktop-agent" as "desktop-agent" | "headless-agent", owner: origin.userId as string };
   setRelayRegistry({
     findByCapabilityForUser: (_cap: string, human: string) => live.connected && human === live.owner ? [origin.relayId] : [],
@@ -84,8 +84,9 @@ function fixture() {
     getCapabilities: (id: string) => live.connected && id === origin.relayId ? {
       profile: live.profile, canRunShell: true, canUseTerminal: true, hasPendingTerminalHandoff: true,
       canExecuteLocal: live.managed, canReadLocalExecutionHistory: live.history,
-      localExecution: { version: 1, generation: "fixture-generation", pipe: true, pty: live.pty, capacity: 1 },
-      canUseLocalGit: live.localGit, localGit: { version: 1 }, canReadShellOutput: live.retainedReader,
+      localExecution: { version: 1, generation: "fixture-generation", pipe: true, pty: live.pty, capacity: 1,
+        localNetworkPolicy: true },
+      canReadShellOutput: live.retainedReader,
       canUseHumanTerminal: live.humanConsent, humanTerminal: { version: 1, generation: "fixture-handoff",
         owner: { humanUserId: origin.userId, agentId: "fixture-agent", roomId: "fixture-room", relayId: origin.relayId,
           desktopSessionId: origin.desktopSessionId, pairingGeneration: origin.pairingGeneration,
@@ -95,7 +96,7 @@ function fixture() {
   } as ToolRelayRegistry);
   const state = makeState({ userId: "fixture-agent-owner", causalHumanUserId: origin.userId, agentId: "fixture-agent", roomId: "fixture-room",
     verifiedOrdinaryOrigin: origin, trustedExecutionEntrypoint: "foreground.main", turnId: "fixture-turn",
-    activatedToolNames: ["run_shell", "terminal", "exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal"],
+    activatedToolNames: ["run_shell", "terminal", "exec_command", "write_stdin", "read_shell_output", "human_terminal"],
     relayCapabilities: { canRunShell: true, canUseTerminal: true, canReplaceLegacyShellTools: true } });
   return { live, state };
 }
@@ -123,7 +124,7 @@ test("capable exact Desktop removes legacy schemas, discovery and activation whi
   for (const name of ["run_shell", "terminal"]) {
     expect(next.toolNames).not.toContain(name); expect(next.activatedToolNames).not.toContain(name); expect(names).not.toContain(name);
   }
-  for (const name of ["exec_command", "write_stdin", "local_git", "read_shell_output", "human_terminal"]) expect(names).toContain(name);
+  for (const name of ["exec_command", "write_stdin", "read_shell_output", "human_terminal"]) expect(names).toContain(name);
   expect(await activateLegacy(next)).toEqual([]);
   const again = await project({ ...next, activatedToolNames: ["run_shell", "terminal"] });
   expect(again.toolNames).not.toContain("terminal"); expect(again.activatedToolNames).not.toContain("run_shell");
@@ -139,7 +140,7 @@ test("capable exact Desktop removes legacy schemas, discovery and activation whi
 test("a live legacy handoff hint cannot resurrect terminal on the managed Desktop", async () => {
   const { state } = fixture();
   const next = await project({ ...state, userId: origin.userId });
-  expect(next.relayCapabilities?.["hasPendingTerminalHandoff"]).toBeTrue();
+  expect(next.relayCapabilities?.["hasPendingTerminalHandoff"]).not.toBeTrue();
   expect(next.toolNames).not.toContain("terminal"); expect(next.activatedToolNames).not.toContain("terminal");
   expect(prompt(next)).not.toContain("Call `terminal` with");
 });
@@ -150,14 +151,13 @@ test("retirement requires the supported contract rather than active Human termin
   expect(await discover(next)).not.toContain("human_terminal");
   expect(next.toolNames).not.toContain("terminal"); expect(next.toolNames).not.toContain("run_shell");
 });
-for (const loss of ["old protocol", "replacement protocol 20", "replacement protocol 23", "replacement protocol 25", "no typed Git", "no retained reader", "pipe only", "headless", "no managed execution", "history only", "foreign Human", "foreign Relay owner", "other Desktop", "stale Desktop session", "stale pairing", "no origin"] as const) {
-  test(`${loss} keeps terminal compatibility but never exposes the retired shell`, async () => {
+for (const loss of ["old protocol", "replacement protocol 20", "replacement protocol 23", "replacement protocol 25", "no retained reader", "pipe only", "headless", "no managed execution", "history only", "foreign Human", "foreign Relay owner", "other Desktop", "stale Desktop session", "stale pairing", "no origin"] as const) {
+  test(`${loss} cannot restore either retired local execution interface`, async () => {
     const { live, state } = fixture();
     if (loss === "old protocol") live.protocol = 19;
     else if (loss === "replacement protocol 20") live.protocol = 20;
     else if (loss === "replacement protocol 23") live.protocol = 23;
     else if (loss === "replacement protocol 25") live.protocol = 25;
-    else if (loss === "no typed Git") live.localGit = false;
     else if (loss === "no retained reader") live.retainedReader = false;
     else if (loss === "pipe only") live.pty = false;
     else if (loss === "headless") live.profile = "headless-agent";
@@ -171,11 +171,14 @@ for (const loss of ["old protocol", "replacement protocol 20", "replacement prot
     else state.verifiedOrdinaryOrigin = null;
     const next = await project(state);
     expect(next.relayCapabilities?.["canReplaceLegacyShellTools"]).toBeFalse();
-    expect(await discover(next)).not.toContain("run_shell"); expect(await discover(next)).toContain("terminal");
-    expect(await activateLegacy(next)).toEqual(loss === "no origin" ? [] : ["terminal"]);
-    expect(next.toolNames).not.toContain("run_shell"); expect(next.toolNames).toContain("terminal");
+    const discovered = await discover(next);
+    expect(discovered).not.toContain("run_shell"); expect(discovered).not.toContain("terminal");
+    expect(await activateLegacy(next)).toEqual([]);
+    expect(next.toolNames).not.toContain("run_shell"); expect(next.toolNames).not.toContain("terminal");
     expect(next.activatedToolNames).not.toContain("run_shell");
+    expect(next.activatedToolNames).not.toContain("terminal");
     expect(prompt(next)).not.toContain("run_shell");
+    expect(prompt(next)).not.toContain("Call `terminal` with");
   });
 }
 
@@ -213,16 +216,22 @@ test("background Task continuation and persisted leases cannot restore run_shell
   expect(next.toolNames).not.toContain("run_shell");
   expect(next.activatedToolNames).not.toContain("run_shell");
   expect(await discover(next)).not.toContain("run_shell");
-  expect(await activateLegacy(next)).toEqual(["terminal"]);
+  expect(await activateLegacy(next)).toEqual([]);
   const family = await receipt(next, "activate_tools", { families: ["shell"] }) as { accepted: string[] };
   expect(family.accepted).not.toContain("run_shell");
   expect(prompt(next)).not.toContain("run_shell");
 });
 
-test("a stale approved shell call reports unavailability without invoking the retained executor", async () => {
+test.each([
+  ["run_shell", { command: "printf fixture" }],
+  ["terminal", { action: "run", data: "printf fixture" }],
+] as const)("a stale approved %s call reports an upgrade refusal without dispatch", async (name, args) => {
   const { state } = fixture();
   const result = await toolsNode({ ...state,
-    approvedToolCalls: [{ id: "stale-shell", type: "tool_call", name: "run_shell", args: { command: "printf fixture" } }],
+    approvedToolCalls: [{ id: `stale-${name}`, type: "tool_call", name, args }],
   });
-  expect(result.messages?.at(-1)?.content).toContain("legacy command tool is unavailable");
+  const rawContent = result.messages?.at(-1)?.content;
+  const content = typeof rawContent === "string" ? rawContent : JSON.stringify(rawContent);
+  expect(content).toContain("legacy local execution interface has been retired");
+  expect(content).toContain("No command was run");
 });

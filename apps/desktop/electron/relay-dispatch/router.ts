@@ -22,7 +22,7 @@ export const FIXED_DESKTOP_DISPATCH_ORDER = [
   "runShellOutput",
   "currentFolder",
   "browserResearch",
-  "realWorkstation",
+  "retiredAgentShell",
   "hue",
   "media",
   "interactiveBrowser",
@@ -30,8 +30,6 @@ export const FIXED_DESKTOP_DISPATCH_ORDER = [
   "directLocalFile",
   "filesystem",
   "sandboxedLocalSearch",
-  "sandboxedRunShell",
-  "terminal",
 ] as const;
 
 export type FixedDesktopDispatchHandlers = {

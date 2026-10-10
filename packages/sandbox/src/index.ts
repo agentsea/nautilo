@@ -137,29 +137,4 @@ export {
   type NetworkProxyOptions,
 } from "./network";
 
-// D440 Phase 2 — typed Git broker (operation-aware sandbox
-// defense-in-depth). See `git-broker/README` block in `broker.ts`.
-export {
-  GitBroker,
-  GitPreflightError,
-  canonicalizeRepositoryIdentity,
-  rejectAlternates,
-  rejectSubmodules,
-  rejectEscapingSymlinks,
-  rejectLiveEnvPath,
-  normalizePathspec,
-  validateWorktreeTarget,
-  auditLocalConfig,
-  isUnderRoot as gitBrokerIsUnderRoot,
-  compileGitBrokerProfile,
-  buildGitBrokerEnv,
-  gitBrokerConfigOverrides,
-  type GitOperation,
-  type GitBrokerDisposition,
-  type GitBrokerOptions,
-  type GitBrokerAuthority,
-  type GitRepositoryIdentity,
-  type BrokerRegisteredWorktree,
-  type GitDispositionReason,
-  type GitProfileInputs,
-} from "./git-broker";
+export { intersectNetworkPolicies } from "./network/intersection";

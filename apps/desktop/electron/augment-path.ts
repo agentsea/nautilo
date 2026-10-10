@@ -46,7 +46,54 @@ const EXCLUDED_VARS = new Set([
   "ELECTRON_RUN_AS_NODE",
   "NODE_OPTIONS",
   "NODE_ENV",
+  "DYLD_INSERT_LIBRARIES",
+  "DYLD_LIBRARY_PATH",
+  "LD_PRELOAD",
+  "LD_LIBRARY_PATH",
 ]);
+
+const CLEAN_BASELINE_PASSTHROUGH = [
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "SSH_AUTH_SOCK",
+  "XDG_RUNTIME_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+] as const;
+
+/**
+ * Build the explicit OS/user baseline inherited by login-shell capture. It is
+ * deliberately smaller than Electron's environment so app credentials,
+ * loader hooks and process-control variables never become shell input.
+ */
+export function cleanLoginShellCaptureEnvironment(
+  shell: string,
+  parentEnvironment: Readonly<NodeJS.ProcessEnv> = process.env,
+): Record<string, string> {
+  const username = os.userInfo().username;
+  const baseline: Record<string, string> = {
+    HOME: os.homedir(),
+    USER: username,
+    LOGNAME: username,
+    SHELL: shell,
+    PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+    TMPDIR: os.tmpdir(),
+  };
+  for (const key of CLEAN_BASELINE_PASSTHROUGH) {
+    const value = parentEnvironment[key];
+    if (typeof value === "string" && value.length > 0 && !value.includes("\0")) {
+      baseline[key] = value;
+    }
+  }
+  return baseline;
+}
+
+function isExcludedCapturedVariable(key: string): boolean {
+  return EXCLUDED_VARS.has(key) || key.startsWith("ELECTRON_");
+}
 
 let captured: Record<string, string> | null | undefined;
 
@@ -121,6 +168,7 @@ function captureOneShellEnv(shell: string): Record<string, string> | null {
       timeout: 5000,
       stdio: ["ignore", "pipe", "ignore"],
       maxBuffer: 4 * 1024 * 1024,
+      env: cleanLoginShellCaptureEnvironment(shell),
     });
     const start = out.indexOf(ENV_START);
     const end = out.indexOf(ENV_END);
@@ -132,7 +180,7 @@ function captureOneShellEnv(shell: string): Record<string, string> | null {
       if (eq <= 0) continue; // skip malformed / continuation lines
       const key = line.slice(0, eq);
       const value = line.slice(eq + 1);
-      if (EXCLUDED_VARS.has(key)) continue;
+      if (isExcludedCapturedVariable(key)) continue;
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
       // Skip exported shell functions (security, matches MCP SDK behavior).
       if (value.startsWith("()")) continue;

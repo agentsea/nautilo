@@ -45,6 +45,7 @@ export * from "./local-tool-control";
 export * from "./security-scan-card";
 export * from "./task-api";
 export * from "./task-funding";
+export * from "./service-funding";
 export * from "./task-content-api";
 export * from "./task-operation-ipc";
 export * from "./task-presentation";
@@ -71,7 +72,5 @@ export * from "./moderation";
 
 export { isLocalExecutionReadArgs } from "./local-execution-read";
 
-export * from "./github-invocation";
 
-export * from "./github-broker";
 export * from "./local-execution-delegation";

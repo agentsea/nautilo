@@ -3,7 +3,7 @@ name: developer-workstation
 description: Develop on the initiating Nautilo Desktop through managed local execution — Current Folder authority, contained Basic and Development access, temporary Full Mac, file editing, Git and GitHub setup, retained execution, and precise denial remediation.
 requiresTools: [exec_command, write_stdin, apply_patch]
 source: official
-version: 11
+version: 13
 ---
 # Developer Workstation — Skill
 
@@ -80,19 +80,13 @@ The user-facing surfaces are:
 3. **Settings → Workstation** owns Basic, the Development environment session,
    protected access, and temporary Full Mac authorization.
 
-For GitHub work, inspect the available account tools and Connection status first.
-An installed `gh` binary or the Human's host login does not prove that a
-contained command has authenticated account access. Never copy credentials,
-read protected account files, run shell authentication setup, or inject tokens
-into a command to bypass the admitted account capability.
-
-When `local_github` is offered, use only its declared issue/PR read and publishing
-operations. Publishing retains its separate Human review. It does not provide
-arbitrary `gh`, merge, review submission, or authenticated network Git. If the
-required operation or account capability is unavailable, report that precise
-limitation; do not claim Development enables it. Human account login and account
-selection remain in Connections. Ask before switching accounts or changing
-healthy account configuration.
+Development commands run in the Human's trusted user environment. They can use
+the real HOME, native credential helpers, SSH agents, package-manager settings,
+and the full installed `git` and `gh` command lines. Use `gh auth status` when
+account state matters. Do not print, copy, or deliberately expose credentials;
+let native tools and helpers use them in place. Connections → GitHub remains the
+UI for signing in and choosing an account. Ask before switching accounts or
+changing healthy account configuration.
 
 For other developer tools, use an already admitted installer only when setup is
 part of the Human's request and its writes and network access fit the profile.
@@ -106,12 +100,9 @@ including read operations and explicitly authorized worktree management. For
 `git worktree remove`, prove the exact target first, avoid `--force`, and verify
 both registration and directory state afterward.
 
-When `local_git` is actually available, it offers only typed `status`, `diff`,
-`add`, `commit`, `worktree-add`, and safe broker-created `worktree-remove`.
-It disables hooks, signing, credential helpers, external filters, and network
-Git. Respect its `sideEffectStarted` and `retrySafe` result. Use it when that
-narrow contract fits; use Development execution for other admitted local Git
-behavior. Never treat the typed broker as proof of GitHub authentication.
+Use ordinary `git` and `gh` commands through managed Development execution.
+Generic command approval and the Human's requested Git safety constraints still
+apply. Never retry an uncertain push; inspect the exact remote branch first.
 
 ## Write workstation commands portably
 
@@ -211,12 +202,10 @@ confirms cleanup. After a restart, saved final history may be read through
 If the optional `read_shell_output` tool is offered, use it only for older
 retained shell evidence, not for managed session continuation.
 
-The legacy `terminal` tool may remain on an older Desktop. Use it only when it
-is offered and a persistent shared legacy PTY is actually helpful. A legacy
-session is independent of managed execution and is not evidence for Current
-Folder, Basic, Development, or Full Mac admission. If the Human explicitly
-hands over their existing terminal and `human_terminal` is offered, follow its
-exact read/run/write receipts and never retry uncertain input.
+For an interactive local process, request a managed PTY through `exec_command`
+and continue it with `write_stdin`. If the Human explicitly hands over their
+existing terminal and `human_terminal` is offered, follow its exact
+read/run/write receipts and never retry uncertain input.
 
 ## Denial and remediation map
 

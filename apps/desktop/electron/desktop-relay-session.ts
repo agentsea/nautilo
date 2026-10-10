@@ -1,4 +1,3 @@
-import type { DesktopGitHubRuntime } from "./relay-dispatch/github";
 import type { RelayMcpHostHandle } from "@nautilo/mcp-client";
 import {
   RELAY_MEDIA_TRANSFER_TTL_MS,
@@ -80,17 +79,6 @@ export class DesktopRelaySession {
   private mcpHostValue: RelayMcpHostHandle | null = null;
   private clientValue: RelayClient | null = null;
   private publisherValue: RelayCapabilityPublisher | null = null;
-  private githubRuntimeAttached = false;
-  private githubRuntimeValue: DesktopGitHubRuntime | null = null;
-  get githubRuntime(): DesktopGitHubRuntime | null { return this.closedValue ? null : this.githubRuntimeValue; }
-  attachGitHubRuntime(runtime: DesktopGitHubRuntime): void {
-    if (this.closedValue || this.githubRuntimeAttached) throw new Error("GitHub runtime already attached or session retired");
-    this.githubRuntimeAttached = true;
-    this.githubRuntimeValue = runtime;
-  }
-  retireGitHubRuntime(): void {
-    const runtime = this.githubRuntimeValue; this.githubRuntimeValue = null; runtime?.retire();
-  }
   private structuredSshRuntimeValue: StructuredSshDispatchRuntime | null = null;
   private readonly boundWork = new Set<Promise<void>>();
   private localExecutionUnsubscribe: (() => void) | null = null;
@@ -311,7 +299,6 @@ export class DesktopRelaySession {
     this.coordinateScales.clear();
     this.visualObservations.clear();
     this.googleOAuthContextValue = null;
-    this.retireGitHubRuntime();
     this.structuredSshRuntimeValue = null;
   }
 

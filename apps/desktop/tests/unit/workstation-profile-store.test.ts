@@ -7,7 +7,10 @@ import {
   type WorkstationProfile,
 } from "@nautilo/workstation-profiles";
 
-import { WorkstationProfileStore } from "../../electron/workstation-profiles/store";
+import {
+  WorkstationProfileStore,
+  type WorkstationProfileStoreEnvelope,
+} from "../../electron/workstation-profiles/store";
 import type { WorkstationProfileStorage } from "../../electron/workstation-profiles/storage";
 
 const INSTANCE = "desktop-profile-store-test";
@@ -279,6 +282,76 @@ describe("WorkstationProfileStore — update with optimistic concurrency", () =>
       profile: validProfile("ghost", { revision: 2, updatedAt: "2026-07-12T12:30:00.000Z" }),
     });
     expect(res).toMatchObject({ ok: false, code: "profile_not_found" });
+  });
+});
+
+describe("WorkstationProfileStore — explicitly reviewed revision replacement", () => {
+  test("atomically advances across a skipped revision without weakening ordinary update", async () => {
+    const { storage } = createInMemoryStorage();
+    const store = createStore(INSTANCE, storage);
+    await store.create({ profile: validProfile("profile-1") });
+
+    const replacement = validProfile("profile-1", {
+      revision: 3,
+      name: "Reviewed Developer Workstation",
+      updatedAt: "2026-07-12T12:30:00.000Z",
+    });
+    expect(await store.replaceReviewedRevision({
+      profileId: "profile-1",
+      expectedRevision: 1,
+      expectedProfile: validProfile("profile-1"),
+      profile: replacement,
+    })).toMatchObject({ ok: true, data: { profile: { revision: 3 } } });
+
+    expect(await store.update({
+      profileId: "profile-1",
+      expectedRevision: 3,
+      profile: validProfile("profile-1", { revision: 5 }),
+    })).toMatchObject({ ok: false, code: "invalid_profile" });
+  });
+
+  test("rejects stale, same-revision and downgraded replacements", async () => {
+    const { storage } = createInMemoryStorage();
+    const store = createStore(INSTANCE, storage);
+    await store.create({ profile: validProfile("profile-1", { revision: 2 }) });
+
+    expect(await store.replaceReviewedRevision({
+      profileId: "profile-1",
+      expectedRevision: 1,
+      expectedProfile: validProfile("profile-1"),
+      profile: validProfile("profile-1", { revision: 3 }),
+    })).toMatchObject({ ok: false, code: "profile_revision_conflict" });
+    for (const revision of [1, 2]) {
+      expect(await store.replaceReviewedRevision({
+        profileId: "profile-1",
+        expectedRevision: 2,
+        expectedProfile: validProfile("profile-1", { revision: 2 }),
+        profile: validProfile("profile-1", { revision }),
+      })).toMatchObject({ ok: false, code: "invalid_profile" });
+    }
+  });
+
+  test("rejects same-revision content that changed after review", async () => {
+    const { storage, getBytes, setBytes } = createInMemoryStorage();
+    const store = createStore(INSTANCE, storage);
+    const reviewed = validProfile("profile-1");
+    await store.create({ profile: reviewed });
+
+    const envelope = JSON.parse(getBytes()!) as WorkstationProfileStoreEnvelope;
+    envelope.profiles[0] = validProfile("profile-1", { name: "Changed after review" });
+    setBytes(`${JSON.stringify(envelope)}\n`);
+
+    expect(await store.replaceReviewedRevision({
+      profileId: "profile-1",
+      expectedRevision: reviewed.revision,
+      expectedProfile: reviewed,
+      profile: validProfile("profile-1", { revision: 3 }),
+    })).toMatchObject({ ok: false, code: "profile_revision_conflict" });
+
+    expect(await store.get({ profileId: "profile-1" })).toMatchObject({
+      ok: true,
+      data: { profile: { revision: 1, name: "Changed after review" } },
+    });
   });
 });
 

@@ -43,19 +43,26 @@ test("hosted execution without an exact causal Human fails before capability loo
   expect(assertServerFunding).not.toHaveBeenCalled();
 });
 
-test("personal capability scope rejects hosted execution before server funding or dispatch", async () => {
+test("a personal chat independently admits hosted execution when its Human has server permission", async () => {
   const assertServerFunding = mock(async (_humanUserId: string, _origin?: string) => {});
-  const error = await runWithCapabilityFundingSession(capabilityFunding("personal"), () =>
-    assertConnectedAppExecutionFunding({
-      hosted: true,
-      causalHumanUserId: "caller",
-    }, assertServerFunding)).catch((caught: unknown) => caught);
+  await runWithCapabilityFundingSession(capabilityFunding("personal"), () =>
+    assertConnectedAppExecutionFunding({ hosted: true, causalHumanUserId: "caller" }, assertServerFunding));
+  expect(assertServerFunding).toHaveBeenCalledWith("caller", "connected_app_execute");
+});
 
-  expect(error).toBeInstanceOf(ServerProviderCredentialsDeniedError);
-  expect(error).toMatchObject({
-    humanUserId: "caller",
-    origin: "connected_app_execute",
+test("a personal-only Human cannot spend the hosted project key", async () => {
+  const assertServerFunding = mock(async (humanUserId: string) => {
+    throw new ServerProviderCredentialsDeniedError(humanUserId, "connected_app_execute");
   });
+  await Promise.resolve(expect(runWithCapabilityFundingSession(capabilityFunding("personal"), () =>
+    assertConnectedAppExecutionFunding({ hosted: true, causalHumanUserId: "caller" }, assertServerFunding))).rejects.toBeInstanceOf(ServerProviderCredentialsDeniedError));
+  expect(assertServerFunding).toHaveBeenCalledTimes(1);
+});
+
+test("a capability session cannot substitute another Human to obtain hosted funding", async () => {
+  const assertServerFunding = mock(async (_humanUserId: string, _origin?: string) => {});
+  await Promise.resolve(expect(runWithCapabilityFundingSession(capabilityFunding("personal"), () =>
+    assertConnectedAppExecutionFunding({ hosted: true, causalHumanUserId: "someone-else" }, assertServerFunding))).rejects.toBeInstanceOf(ServerProviderCredentialsDeniedError));
   expect(assertServerFunding).not.toHaveBeenCalled();
 });
 

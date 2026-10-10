@@ -32,10 +32,15 @@ interface ActionRuntimeOverrides {
   finishCompletedThrows?: boolean;
   failAttentionFinish?: boolean;
   totalCosts?: (string | null)[];
+  failBeginAt?: number;
+  failBrowserCleanupAt?: number;
+  browserCostEstimates?: (string | null)[];
+  throwCreateAt?: number;
+  malformedCreateAt?: number;
 }
 
 function runtime(overrides: ActionRuntimeOverrides = {}) {
-  const calls = { create: 0, reserve: 0, release: 0, complete: 0, cancel: 0, authenticationCancellationReceipt: null as unknown, finish: [] as string[], events: [] as string[], budgets: [] as number[], cost: [] as Array<{ operation: string; total: string | null }>, costUsers: [] as string[] };
+  const calls = { create: 0, reserve: 0, release: 0, complete: 0, cancel: 0, browserCleanup: 0, checkpointActivation: 0, begin: [] as string[], custodyPhases: [] as string[], authenticationCancellationReceipt: null as unknown, finish: [] as string[], events: [] as string[], budgets: [] as number[], cost: [] as Array<{ operation: string; total: string | null; actual: string | null }>, costUsers: [] as string[] };
   const providerResults = overrides.providerResults ?? [
     JSON.stringify({ outcome: "action_attempted", action: "save_item", target: input.target, origin: account.origin }),
     JSON.stringify({ outcome: "postcondition", observed: true, postcondition, origin: account.origin }),
@@ -48,22 +53,30 @@ function runtime(overrides: ActionRuntimeOverrides = {}) {
     facts: { hasExactOwnedGenie: async () => overrides.authorized !== false, isOwnersPersonalPrivateRoom: async () => overrides.authorized !== false },
     accounts: {
       listForOwner: async () => status === "revoked" ? [{ ...account, status: "revoked" as const }] : [account],
-      getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status, profileRef: "profile", }),
+      getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status, profileRef: "profile", profileFundingBinding: null }),
     },
     executions: {
       reserveExecutionCheckpoint: async () => { calls.reserve++; },
-      activateExecutionCheckpoint: async ({ opaqueExecutionRef }: { opaqueExecutionRef: string }) => { calls.events.push(`checkpoint:${opaqueExecutionRef}`); if (overrides.failCheckpointActivationAt === 1) throw new Error("checkpoint_activation_failed"); },
-      rotateExecutionCheckpointReference: async ({ opaqueExecutionRef }: { opaqueExecutionRef: string }) => { calls.events.push(`checkpoint:${opaqueExecutionRef}`); if (overrides.failCheckpointActivationAt === 2) throw new Error("checkpoint_rotation_failed"); },
+      activateExecutionCheckpoint: async ({ opaqueExecutionRef }: { opaqueExecutionRef: string }) => {
+        calls.checkpointActivation += 1;
+        calls.events.push(`checkpoint:${opaqueExecutionRef}`);
+        if (overrides.failCheckpointActivationAt === calls.checkpointActivation) throw new Error("checkpoint_activation_failed");
+      },
       completeExecution: async ({ status: next }: { status: string }) => {
         calls.complete++;
         if (next === "attention_needed" && overrides.failAttentionFinish) throw new Error("attention_checkpoint_failed");
         return account;
       }, releaseExecutionReservation: async () => { calls.release++; },
       claimActionOperation: async () => claimed as never,
-      activateActionOperation: async ({ opaqueRunRef, nextStatus }: { opaqueRunRef: string; nextStatus?: "running" | "verifying" }) => {
+      activateActionOperation: async ({ opaqueRunRef, nextStatus, runCostCustody }: { opaqueRunRef: string; nextStatus?: "running" | "verifying"; runCostCustody: { phase: string } }) => {
         calls.events.push(`operation:${opaqueRunRef}`); const index = opaqueRunRef === "run-1" ? 1 : 2;
+        calls.custodyPhases.push(runCostCustody.phase);
         if (overrides.failActionActivationAt === index) throw new Error("operation_activation_failed");
         if (currentOperation) currentOperation = { ...currentOperation, status: nextStatus ?? "running", opaqueRunRef };
+      },
+      quarantineActionCreate: async () => {
+        calls.events.push("quarantine");
+        if (currentOperation) currentOperation = { ...currentOperation, status: "reserving", opaqueRunRef: null, receipt: null };
       },
       finishActionOperation: async ({ status: next, receipt }: { status: string; receipt: unknown }) => {
         if (next === "completed" && overrides.finishCompletedThrows) throw new Error("receipt_write_failed");
@@ -77,10 +90,17 @@ function runtime(overrides: ActionRuntimeOverrides = {}) {
       },
     },
     provider: {
-      stopHostedReadBrowser: async (runId) => { calls.events.push(`browser-stop:${runId}`); return true; },
+      stopHostedReadBrowser: async (runId) => {
+        calls.events.push(`browser-stop:${runId}`);
+        calls.browserCleanup++;
+        return calls.browserCleanup !== overrides.failBrowserCleanupAt;
+      },
       health: () => ({ kind: "available" as const }),
       createHostedReadRun: async ({ maxCostUsd }: { maxCostUsd: number }) => {
         calls.budgets.push(maxCostUsd);
+        const attempt = calls.budgets.length;
+        if (attempt === overrides.throwCreateAt) throw new Error("create_response_lost");
+        if (attempt === overrides.malformedCreateAt) return { malformed: true } as never;
         return overrides.createFailureCode
         ? { kind: "failure" as const, code: overrides.createFailureCode }
         : ({ runId: `run-${++calls.create}`, status: overrides.createStatus ?? overrides.terminalStatus ?? "completed" });
@@ -90,11 +110,27 @@ function runtime(overrides: ActionRuntimeOverrides = {}) {
         : ({ runId: "unused", status: overrides.pollStatuses?.shift() ?? "completed" }),
       getHostedReadResult: async () => { getCalls++; if (overrides.throwGetAt === getCalls) throw new Error("result_transport_lost"); const result = providerResults.shift() ?? null; const total = overrides.totalCosts?.shift() ?? null; return { runId: "unused", status: "completed" as const, result, totalCostUsd: total }; },
       cancelHostedReadRun: async () => { calls.cancel++; return { runId: calls.create === 0 ? "run-1" : `run-${calls.create}`, status: "cancelled" as const }; },
+      ...(overrides.browserCostEstimates ? {
+        stopHostedReadBrowserWithCost: async (runId: string) => {
+          calls.events.push(`browser-stop:${runId}`);
+          calls.browserCleanup++;
+          const estimatedCostUsd = overrides.browserCostEstimates!.shift() ?? null;
+          return {
+            stopped: calls.browserCleanup !== overrides.failBrowserCleanupAt,
+            estimatedCostUsd,
+            evidenceState: estimatedCostUsd === null ? "unknown" as const : "estimated" as const,
+          };
+        },
+      } : {}),
     },
     policy: { maxCostUsd: 1, pollIntervalMs: 1 },
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.sleep ? { sleep: overrides.sleep } : {}),
-    recordProviderCost: async ({ operation, actualCostUsd, userId }) => { calls.cost.push({ operation, total: actualCostUsd }); calls.costUsers.push(userId); },
+    beginCostAttempt: async ({ operation }) => {
+      calls.begin.push(operation);
+      if (calls.begin.length === overrides.failBeginAt) throw new Error("ledger unavailable");
+    },
+    settleCostAttempt: async ({ operation, estimatedCostUsd, actualCostUsd, userId }) => { calls.cost.push({ operation, total: estimatedCostUsd ?? null, actual: actualCostUsd ?? null }); calls.costUsers.push(userId ?? ""); },
   });
   return { value, calls };
 }
@@ -140,19 +176,33 @@ describe("connected website save action", () => {
     }
   });
 
+  test("quarantines a verifier whose create response is lost before any cleanup can release the profile", async () => {
+    const subject = runtime({ throwCreateAt: 2 });
+    expect(await subject.value.act(actor, input)).toEqual({ ok: false, code: "ambiguous", recovery: "none" });
+    expect(subject.calls.create).toBe(1);
+    expect(subject.calls.release).toBe(0);
+    expect(subject.calls.finish).toEqual([]);
+    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "quarantine"]);
+  });
+
   test("releases the action reservation only for a clearly rejected admission", async () => {
-    for (const code of ["invalid_configuration", "invalid_browser_policy", "resource_not_found", "conflict", "rate_limited"] as const) {
+    for (const code of ["invalid_configuration", "invalid_browser_policy"] as const) {
       const subject = runtime({ createFailureCode: code });
       expect(await subject.value.act(actor, input)).toEqual({ ok: false, code: "failed", recovery: "none" });
       expect(subject.calls.release).toBe(1);
       expect(subject.calls.finish).toEqual(["failed"]);
+    }
+    for (const code of ["resource_not_found", "conflict", "rate_limited"] as const) {
+      const subject = runtime({ createFailureCode: code });
+      expect(await subject.value.act(actor, input)).toEqual({ ok: false, code: "ambiguous", recovery: "none" });
+      expect(subject.calls.release).toBe(0);
     }
   });
 
   test("persists each operation run before its matching account checkpoint, including verifier rotation", async () => {
     const subject = runtime();
     expect((await subject.value.act(actor, input)).ok).toBe(true);
-    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "operation:run-2", "checkpoint:run-2"]);
+    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "quarantine", "operation:run-2", "checkpoint:run-2", "browser-stop:run-2"]);
   });
 
   test("first action operation activation failure cancels the known provider run and stays ambiguous", async () => {
@@ -165,7 +215,7 @@ describe("connected website save action", () => {
   test("verification checkpoint rotation failure cancels the verifier and stays ambiguous", async () => {
     const subject = runtime({ failCheckpointActivationAt: 2 });
     expect(await subject.value.act(actor, input)).toEqual({ ok: false, code: "ambiguous", recovery: "none" });
-    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "operation:run-2", "checkpoint:run-2", "browser-stop:run-2"]);
+    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "quarantine", "operation:run-2", "checkpoint:run-2", "browser-stop:run-2"]);
     expect(subject.calls.cancel).toBe(1);
     expect(subject.calls.finish).toEqual(["ambiguous"]);
   });
@@ -180,19 +230,20 @@ describe("connected website save action", () => {
       let completed = 0;
       const value = createConnectedWebAccountActionServerRuntime({
         facts: { hasExactOwnedGenie: async () => true, isOwnersPersonalPrivateRoom: async () => true },
-        accounts: { listForOwner: async () => [account], getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status: "connected" as const, profileRef: "profile" }) },
+        accounts: { listForOwner: async () => [account], getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status: "connected" as const, profileRef: "profile", profileFundingBinding: null }) },
         executions: {
           reserveExecutionCheckpoint: async () => undefined,
-          activateExecutionCheckpoint: async () => undefined,
-          rotateExecutionCheckpointReference: async () => {
+          activateExecutionCheckpoint: async () => {
+            if (create !== 2) return;
             events.push("checkpoint:B");
-            if (barrier === "between-rotations") { events.push("stop:prior"); stoppedNow = true; throw new Error("stop raced checkpoint rotation"); }
+            if (barrier === "between-rotations") { events.push("stop:prior"); stoppedNow = true; throw new Error("stop raced checkpoint activation"); }
             if (barrier === "after-both-rotations") { events.push("stop:prior"); stoppedNow = true; }
           },
           completeExecution: async () => { completed++; return account; },
           releaseExecutionReservation: async () => { events.push("release"); },
           claimActionOperation: async () => ({ kind: "new" as const, operation: { ...active, status: "reserving" as const, opaqueRunRef: null } }),
           activateActionOperation: async ({ opaqueRunRef }: { opaqueRunRef: string }) => { if (opaqueRunRef === "run-2") { events.push("operation:B"); if (barrier === "after-b-create") { events.push("stop:prior"); stoppedNow = true; throw new Error("stop raced operation rotation"); } } },
+          quarantineActionCreate: async () => { events.push("quarantine"); },
           finishActionOperation: async () => { events.push("finish"); },
           getActionOperationForOwnerDelivery: async () => { events.push(`ledger:${stoppedNow ? "terminal" : "active"}`); return stoppedNow ? stopped : active; },
         } as never,
@@ -221,24 +272,55 @@ describe("connected website save action", () => {
     }
   });
 
-  test("records both hosted costs and returns their known combined actual cost", async () => {
+  test("records both hosted run estimates without presenting them as final actual cost", async () => {
     const subject = runtime({ totalCosts: ["0.1", "0.2"] });
     const result = await subject.value.act(actor, input);
-    expect(result).toMatchObject({ ok: true, receipt: { cost: { state: "actual", amountUsd: 0.30000000000000004 } } });
+    expect(result).toMatchObject({ ok: true, receipt: { cost: { state: "unknown", amountUsd: null } } });
     expect(subject.calls.cost).toEqual([
-      { operation: "hosted_action", total: "0.1" },
-      { operation: "hosted_action_observation", total: "0.2" },
+      { operation: "hosted_run", total: "0.1", actual: null },
+      { operation: "browser_session", total: null, actual: null },
+      { operation: "hosted_run", total: "0.2", actual: null },
+      { operation: "browser_session", total: null, actual: null },
     ]);
-    expect(subject.calls.costUsers).toEqual(["calling-human", "calling-human"]);
+    expect(subject.calls.costUsers).toEqual(["calling-human", "calling-human", "calling-human", "calling-human"]);
+  });
+
+  test("records a separate estimated browser session amount for every action phase", async () => {
+    const subject = runtime({ totalCosts: ["0.1", "0.2"], browserCostEstimates: ["0.03", "0.04"] });
+    expect(await subject.value.act(actor, input)).toMatchObject({ ok: true });
+    expect(subject.calls.cost).toEqual([
+      { operation: "hosted_run", total: "0.1", actual: null },
+      { operation: "browser_session", total: "0.03", actual: null },
+      { operation: "hosted_run", total: "0.2", actual: null },
+      { operation: "browser_session", total: "0.04", actual: null },
+    ]);
   });
 
   test("returns unknown combined cost when either hosted cost is not actual", async () => {
     const subject = runtime({ totalCosts: ["0.1", null] });
     expect(await subject.value.act(actor, input)).toMatchObject({ ok: true, receipt: { cost: { state: "unknown", amountUsd: null } } });
     expect(subject.calls.cost).toEqual([
-      { operation: "hosted_action", total: "0.1" },
-      { operation: "hosted_action_observation", total: null },
+      { operation: "hosted_run", total: "0.1", actual: null },
+      { operation: "browser_session", total: null, actual: null },
+      { operation: "hosted_run", total: null, actual: null },
+      { operation: "browser_session", total: null, actual: null },
     ]);
+  });
+
+  test("does not dispatch when the second cost attempt cannot be admitted", async () => {
+    const subject = runtime({ failBeginAt: 2 });
+    expect(await subject.value.act(actor, input)).toEqual({ ok: false, code: "provider_unavailable", recovery: "none" });
+    expect(subject.calls.create).toBe(0);
+    expect(subject.calls.begin).toEqual(["hosted_run", "browser_session"]);
+    expect(subject.calls.cost).toEqual([{ operation: "hosted_run", total: null, actual: "0" }]);
+  });
+
+  test("retains the active verifier and its cost custody when final browser cleanup cannot be proved", async () => {
+    const subject = runtime({ failBrowserCleanupAt: 2 });
+    expect(await subject.value.act(actor, input)).toEqual({ ok: false, code: "ambiguous", recovery: "none" });
+    expect(subject.calls.custodyPhases).toEqual(["writer", "verifier"]);
+    expect(subject.calls.finish).toEqual([]);
+    expect(subject.calls.complete).toBe(0);
   });
 
   test("action result throw cancels and persists ambiguous rather than escaping", async () => {
@@ -289,7 +371,23 @@ describe("connected website save action", () => {
     });
     expect(subject.calls.create).toBe(1);
     expect(subject.calls.budgets).toEqual([1 / 6]);
-    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1"]);
+    expect(subject.calls.events).toEqual(["operation:run-1", "checkpoint:run-1", "browser-stop:run-1"]);
+  });
+
+  test("a lost resume precheck response stays ambiguous and cannot submit a duplicate run", async () => {
+    const parked = {
+      id: "op-parked", ownerUserId: "user", accountId: account.id, deliveryId: input.deliveryId,
+      requestDigest: parkedRequestDigest, actionType: "save_item" as const, target: input.target,
+      status: "authentication_required" as const, opaqueRunRef: null,
+      receipt: { executionRef: "op-parked", action: "save_item" as const, target: input.target,
+        effectState: "authentication_required" as const, postcondition: null, evidenceCode: "authentication_required",
+        cost: { amountUsd: null, state: "unknown" as const } },
+    };
+    const subject = runtime({ claimed: { kind: "existing", operation: parked }, throwCreateAt: 1 });
+    expect(await subject.value.resumeAfterAuthentication(actor, { deliveryId: input.deliveryId })).toEqual({ ok: false, code: "ambiguous", recovery: "none" });
+    expect(await subject.value.resumeAfterAuthentication(actor, { deliveryId: input.deliveryId })).toEqual({ ok: false, code: "ambiguous", recovery: "none" });
+    expect(subject.calls.budgets).toHaveLength(1);
+    expect(subject.calls.release).toBe(0);
   });
 
   test("resume writes only after a fresh negative observation, then independently verifies", async () => {
@@ -310,11 +408,11 @@ describe("connected website save action", () => {
     expect(subject.calls.create).toBe(3);
     expect(subject.calls.budgets).toEqual([1 / 6, 1 / 6, 1 / 6]);
     expect(subject.calls.events).toEqual([
-      "operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "operation:run-2", "checkpoint:run-2", "browser-stop:run-2", "operation:run-3", "checkpoint:run-3",
+      "operation:run-1", "checkpoint:run-1", "browser-stop:run-1", "quarantine", "operation:run-2", "checkpoint:run-2", "browser-stop:run-2", "quarantine", "operation:run-3", "checkpoint:run-3", "browser-stop:run-3",
     ]);
   });
 
-  test("a resumed receipt includes every known cost already incurred by that delivery", async () => {
+  test("a resumed receipt stays unknown when new hosted run costs are still estimates", async () => {
     const parked = {
       id: "op-parked", ownerUserId: "user", accountId: account.id, deliveryId: input.deliveryId,
       requestDigest: parkedRequestDigest, actionType: "save_item" as const, target: input.target,
@@ -334,8 +432,7 @@ describe("connected website save action", () => {
     });
 
     const result = await subject.value.resumeAfterAuthentication(actor, { deliveryId: input.deliveryId });
-    expect(result).toMatchObject({ ok: true, receipt: { cost: { state: "actual" } } });
-    if (result.ok) expect(result.receipt.cost.amountUsd).toBeCloseTo(0.7);
+    expect(result).toMatchObject({ ok: true, receipt: { cost: { state: "unknown", amountUsd: null } } });
     expect(subject.calls.budgets).toEqual([0.8 / 3, 0.8 / 3, 0.8 / 3]);
   });
 
@@ -542,7 +639,7 @@ describe("connected website save action", () => {
     let revoked = 0;
     const controller = new ConnectedWebAccountController({
       store: {
-        getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status: "busy", profileRef: "profile", executionCheckpoint: { resource: "action", phase: "reserving", reservationToken: "reservation", recordedAt: "2026-01-01T00:00:00.000Z" } }),
+        getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status: "busy", profileRef: "profile", profileFundingBinding: null, executionCheckpoint: { resource: "action", phase: "reserving", reservationToken: "reservation", recordedAt: "2026-01-01T00:00:00.000Z" } }),
         revokeForOwner: async () => { revoked++; return { ...account, status: "revoked" as const }; },
       } as never,
       browser: {} as never,
@@ -557,7 +654,7 @@ describe("connected website save action", () => {
     let deleted = 0;
     const controller = new ConnectedWebAccountController({
       store: {
-        getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status: "busy", profileRef: "profile", executionCheckpoint: { resource: "action", phase: "active", reservationToken: "reservation", opaqueExecutionRef: "run-live", recordedAt: "2026-01-01T00:00:00.000Z" } }),
+        getBindingForOwner: async () => ({ accountId: account.id, ownerUserId: "user", service: account.service, origin: account.origin, status: "busy", profileRef: "profile", profileFundingBinding: null, executionCheckpoint: { resource: "action", phase: "active", reservationToken: "reservation", opaqueExecutionRef: "run-live", recordedAt: "2026-01-01T00:00:00.000Z" } }),
         revokeForOwner: async () => { revoked++; return { ...account, status: "revoked" as const }; },
       } as never,
       browser: { cancelHostedReadRun: async () => ({ runId: "run-live", status: "running" }), deleteProfile: async () => { deleted++; return { kind: "failure", code: "resource_not_found" }; } } as never,

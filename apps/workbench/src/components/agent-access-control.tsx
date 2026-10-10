@@ -187,6 +187,7 @@ export function AgentAccessControl({ readyToWork = desktopAPI?.readyToWork,
         <p>Network: {developmentReview.scope.network.mode === "host" ? "Destinations available to this Mac, including the internet." : developmentReview.scope.network.mode === "isolated" ? "Isolated network." : developmentReview.scope.network.allow.map(rule => `${rule.kind}: ${rule.value}`).join(", ") || "No allowed destinations."}</p>
         <p>Tools: {developmentReview.seed.capabilities.map(capability => capability.id).join(", ") || "None declared"}.</p>
         <p>Environment names: {developmentReview.scope.environmentKeys.join(", ") || "None"}.</p>
+        {developmentReview.seed.userEnvironment === true ? <p className="font-medium text-foreground">Your developer environment: Commands and package scripts can read and use credentials in your home folder and use your shell environment and credential helpers. They can also change or delete other files in your home folder and install or update tools there and in discovered Homebrew directories. Network restrictions still apply.</p> : null}
         <p>Tool and network access can send data to reachable destinations. This does not grant Full Mac access.</p>
       </div> : undefined}
       error={fullMacError ?? access.error ?? undefined} submitting={busy} submittingLabel="Checking access…"

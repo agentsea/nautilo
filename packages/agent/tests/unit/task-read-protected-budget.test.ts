@@ -45,10 +45,13 @@ test("protected model output carries task paging debt and actual smaller-model b
   const response = new AIMessage({ content: "Recover the omitted report input.", tool_calls: calls });
   let expectedBudget = 0;
   let initialBudget = 0;
+  let preparedMessagesForBudget: BaseMessage[] = [];
+  let resolvedPreparedMessageBudget = 0;
   const provider = spyOn(invocation, "invokeChatModelWithFallback").mockImplementation(async (messages, tools) => {
     expect(JSON.stringify(messages)).toContain("private runtime-only configuration");
     expect(JSON.stringify(messages)).not.toContain(page.text);
-    expectedBudget = taskReadResponseByteBudget(await invocation.resolvePreparedMessageBudget(modelUsed, tools), [...messages, response]);
+    preparedMessagesForBudget = [...messages];
+    resolvedPreparedMessageBudget = await invocation.resolvePreparedMessageBudget(modelUsed, tools);
     return { modelUsed, response };
   });
   const checkpoint = { messages: canonical, preparedMessages: [], soulFile: "", memoryBrief: "", skills: [], userId: "owner", personaId: "owner", agentId: "agent", roomId: "", turnId: "turn", actorRole: "owner",
@@ -66,6 +69,14 @@ test("protected model output carries task paging debt and actual smaller-model b
           taskReadPendingPages: pendingTaskReadPages(canonical, prepared) };
       }, invokeModel: agentNode,
     });
+    const admittedResponse = output.messages?.[output.messages.length - 1];
+    if (!admittedResponse || !AIMessage.isInstance(admittedResponse)) {
+      throw new Error("Expected an admitted Agent response");
+    }
+    expectedBudget = taskReadResponseByteBudget(
+      resolvedPreparedMessageBudget,
+      [...preparedMessagesForBudget, admittedResponse],
+    );
     expect(output.taskReadPageBytes).toBe(expectedBudget);
     expect(expectedBudget).toBeGreaterThan(0);
     expect(expectedBudget).toBeLessThan(initialBudget);
@@ -78,7 +89,12 @@ test("protected model output carries task paging debt and actual smaller-model b
     expect(output).not.toHaveProperty("memoryBrief");
     const actualState = { ...checkpoint, ...output };
     const session = createNautiloToolInvocationSession(createServerToolInvocationContext(actualState, () => ({ status: "allowed" })));
-    const receipts = await Promise.all(calls.map((call) => session.invoke({ callId: call.id, toolName: "task", args: call.args, authorityRef: "admitted-test" })));
+    const admittedCalls = admittedResponse.tool_calls ?? [];
+    expect(admittedCalls).toHaveLength(2);
+    const receipts = await Promise.all(admittedCalls.map((call) => {
+      if (!call.id) throw new Error("Expected an admitted canonical tool-call ID");
+      return session.invoke({ callId: call.id, toolName: "task", args: call.args, authorityRef: "admitted-test" });
+    }));
     expect(receipts.every((receipt) => receipt.status === "success")).toBe(true);
     expect(receipts.every((receipt) => typeof receipt.content === "string" && receipt.content.includes("error handling"))).toBe(true);
     expect(captured).toHaveLength(2);

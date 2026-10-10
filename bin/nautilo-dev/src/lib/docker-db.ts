@@ -441,6 +441,8 @@ export const DATA_TABLES = [
   "public.task_run_result_crypto_revisions",
   "public.tasks",
   "public.task_runs",
+  // Preserve paid conversion recovery only after all Task/Job/Room parents.
+  "public.conversion_operations",
   "public.protected_task_run_output_bindings",
   "public.task_run_message_associations",
   "public.protected_task_execution_segment_receipts",

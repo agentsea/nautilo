@@ -7,12 +7,11 @@ import type {
   PublicBrowserReadResult,
   ConnectedWebAccountReadToolInput,
 } from "@nautilo/agent";
-import type { ConnectedWebAccount } from "@nautilo/types";
+import type { ConnectedWebAccount, DurableServiceFundingBinding } from "@nautilo/types";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import { warn } from "@nautilo/logger";
 import { importConnectedWebPrivateOutput } from "./private-output-import";
 import {
-  parseConnectedWebProviderCost,
   parseConnectedWebProviderOutcome,
 } from "./read-result-contract";
 
@@ -100,6 +99,12 @@ export interface ConnectedWebAccountReadProvider {
   getHostedReadResult(runId: string): Promise<ConnectedWebAccountProviderResult<ConnectedWebAccountHostedReadResult>>;
   cancelHostedReadRun(runId: string): Promise<ConnectedWebAccountProviderResult<ConnectedWebAccountHostedReadRun>>;
   stopHostedReadBrowser(runId: string): Promise<boolean>;
+  /** Cost-bearing cleanup used by durable action lifecycle owners. */
+  stopHostedReadBrowserWithCost?(runId: string): Promise<Readonly<{
+    stopped: boolean;
+    estimatedCostUsd: string | null;
+    evidenceState: "estimated" | "unknown";
+  }>>;
   /** Optional until a provider has a documented hosted-output locator contract. */
   collectHostedReadOutputs?(input: {
     readonly sessionId: string;
@@ -116,6 +121,7 @@ export interface ConnectedWebAccountReadAccountBinding {
   readonly origin: string;
   readonly status: string;
   readonly profileRef: string | null;
+  readonly profileFundingBinding: DurableServiceFundingBinding | null;
 }
 
 /** Public account discovery stays owner-scoped even before binding lookup. */
@@ -417,8 +423,6 @@ export function createConnectedWebAccountReadServerRuntime(
   async function safelyRecordHostedReadCost(
     actor: ConnectedWebAccountReadRuntimeActor,
     runId: string,
-    totalCostUsd: string | null,
-    cost: ReturnType<typeof parseConnectedWebProviderCost>,
   ): Promise<void> {
     if (options.recordProviderCost === undefined || !actor.causalHumanUserId) return;
     try {
@@ -429,8 +433,8 @@ export function createConnectedWebAccountReadServerRuntime(
         agentId: actor.agentId,
         provider: "browser_use",
         operation: "hosted_read",
-        actualCostUsd: cost?.state === "actual" ? totalCostUsd!.trim() : null,
-        evidenceState: cost?.state === "actual" ? "actual" : "unknown",
+        actualCostUsd: null,
+        evidenceState: "unknown",
         idempotencyKey: browserUseCostIdempotencyKey(runId),
       });
     } catch {
@@ -676,8 +680,7 @@ export function createConnectedWebAccountReadServerRuntime(
           return providerUnavailable();
         }
         const read = parseConnectedWebProviderOutcome(result.result, binding.origin);
-        const cost = parseConnectedWebProviderCost(result.totalCostUsd);
-        await safelyRecordHostedReadCost(actor, run.runId, result.totalCostUsd, cost);
+        await safelyRecordHostedReadCost(actor, run.runId);
         if (read?.kind === "authentication_required") {
           await safelyFinish(actor, account.id, reservationToken, "attention_needed");
           return reconnectRequired(account, read.reason);
@@ -709,7 +712,7 @@ export function createConnectedWebAccountReadServerRuntime(
             provenance: "authenticated_website",
             origin: binding.origin,
           } : null,
-          cost: { currency: "USD", ...(cost ?? { amountUsd: null, state: "unknown" as const }) },
+          cost: { currency: "USD", amountUsd: null, state: "unknown" },
           outputs: outputDelivery.outputs,
           outputsTruncated: outputDelivery.truncated,
         };

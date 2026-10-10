@@ -38,6 +38,7 @@ import { debug, warn } from "@nautilo/logger";
 
 import {
   SAFE_ENV_VARS,
+  withoutNativeLoaderEnvironment,
   isDangerousEnvVar,
   isReservedEnvVar,
 } from "./env-vars";
@@ -46,8 +47,11 @@ import { LINUX_READ_ONLY_SYSTEM_PATHS } from "./system-paths";
 import type { SandboxConfig, SpawnArgs } from "./types";
 
 export interface BubblewrapBuildOptions {
+  /** Detector-proven absolute path used for the outer trusted launch. */
+  readonly bwrapExecutable: string;
   readonly workspace: string;
   readonly managedHome?: string;
+  readonly preparedEnvironment?: Readonly<Record<string, string>>;
   readonly dataDir: string;
   readonly toolsBin: string;
   readonly procSupported: boolean;
@@ -211,7 +215,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
 
   // Step 9: --clearenv (default-deny).
   // Port: src/sandbox.rs:550.
-  bwrapArgs.push("--clearenv");
+  if (opts.preparedEnvironment === undefined) bwrapArgs.push("--clearenv");
 
   // Step 10: --chdir cwd.
   // Port: src/sandbox.rs:553.
@@ -221,19 +225,22 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   // PATH includes toolsBin prepended (Spacebot src/sandbox.rs:418-429).
   // Port: src/sandbox.rs:556-570.
   const parentPath = process.env["PATH"] ?? "";
-  const path =
-    parentPath.length > 0
+  // A locally prepared environment may contain user credentials. Pass it as
+  // process environment, never expose its values in bubblewrap's argv.
+  if (opts.preparedEnvironment === undefined) {
+    const path = parentPath.length > 0
       ? `${opts.toolsBin}${pathDelimiter}${parentPath}`
       : opts.toolsBin;
-  bwrapArgs.push("--setenv", "PATH", path);
-  bwrapArgs.push("--setenv", "HOME", opts.managedHome ?? opts.workspace);
-  bwrapArgs.push("--setenv", "TMPDIR", "/tmp");
-  bwrapArgs.push("--setenv", "CI", "true");
-  bwrapArgs.push("--setenv", "DEBIAN_FRONTEND", "noninteractive");
+    bwrapArgs.push("--setenv", "PATH", path);
+    bwrapArgs.push("--setenv", "HOME", opts.managedHome ?? opts.workspace);
+    bwrapArgs.push("--setenv", "TMPDIR", "/tmp");
+    bwrapArgs.push("--setenv", "CI", "true");
+    bwrapArgs.push("--setenv", "DEBIAN_FRONTEND", "noninteractive");
+  }
 
   // Step 12: SAFE_ENV_VARS forwards from parent (if present).
   // Port: src/sandbox.rs:573-577.
-  for (const name of SAFE_ENV_VARS) {
+  for (const name of opts.preparedEnvironment === undefined ? SAFE_ENV_VARS : []) {
     const val = process.env[name];
     if (val !== undefined) {
       bwrapArgs.push("--setenv", name, val);
@@ -242,7 +249,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
 
   // Step 13: passthroughEnv from user config (skip reserved).
   // Port: src/sandbox.rs:590-600.
-  for (const name of opts.config.passthroughEnv) {
+  for (const name of opts.preparedEnvironment === undefined ? opts.config.passthroughEnv : []) {
     if (isReservedEnvVar(name)) continue;
     const val = process.env[name];
     if (val !== undefined) {
@@ -252,7 +259,7 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
 
   // Step 14: per-command env (skip reserved, DROP dangerous w/ WARN).
   // Port: src/sandbox.rs:602-614.
-  for (const [name, value] of Object.entries(opts.commandEnv)) {
+  for (const [name, value] of Object.entries(opts.preparedEnvironment === undefined ? opts.commandEnv : {})) {
     if (isReservedEnvVar(name)) continue;
     if (isDangerousEnvVar(name)) {
       warn(`[sandbox/bwrap] dropping dangerous per-command env var: ${name}`);
@@ -266,9 +273,9 @@ export function buildBubblewrap(opts: BubblewrapBuildOptions): SpawnArgs {
   bwrapArgs.push("--", opts.program, ...opts.args);
 
   return {
-    program: "bwrap",
+    program: opts.bwrapExecutable,
     args: bwrapArgs,
-    env: { PATH: parentPath },
+    env: opts.preparedEnvironment === undefined ? { PATH: parentPath } : withoutNativeLoaderEnvironment(opts.preparedEnvironment),
     cwd: opts.cwd,
   };
 }

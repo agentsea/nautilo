@@ -26,7 +26,7 @@ import {
 const FIXED_TS = "2026-07-20T12:00:00.000Z";
 const clock = () => new Date(FIXED_TS);
 
-function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }>> = {}): Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" }> {
+function plan(overrides: Partial<Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "real_workstation" }>> = {}): Extract<WorkstationDispatchPlan, { executionClass: "profile_bound_sandbox" | "real_workstation" }> {
   return {
     toolCallId: "tc-1",
     userId: "user-1",

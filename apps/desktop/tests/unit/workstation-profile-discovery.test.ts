@@ -26,11 +26,14 @@ import {
   CAP_ANDROID_SDK,
   CAP_BUN,
   CAP_EXPO_METRO,
+  CAP_GIT,
   CAP_GRADLE,
   CAP_HOMEBREW,
   CAP_JDK,
   CAP_MASTRO,
+  CAP_NODE,
   CAP_NPM,
+  CAP_PYTHON,
   CAP_XCODE,
   DEVELOPER_WORKSTATION_ENV_ALLOWLIST,
   developerWorkstationSeedProfile,
@@ -109,6 +112,10 @@ function fullyInstalledDarwinSeams(): FakeSeams {
     nodePath.join(HOME, ".bun"),
     nodePath.join(HOME, ".bun", "bin", "bun"),
     nodePath.join(HOME, ".npm"),
+    "/opt/homebrew/bin/node",
+    "/opt/homebrew/bin/npm",
+    "/usr/bin/python3",
+    "/usr/bin/git",
     "/opt/homebrew",
     "/opt/homebrew/bin/brew",
     nodePath.join(HOME, "Library", "Caches", "Homebrew"),
@@ -127,7 +134,10 @@ function fullyInstalledDarwinSeams(): FakeSeams {
   ];
   const execResponses = new Map<string, string>([
     [`${nodePath.join(HOME, ".bun", "bin", "bun")}\u0000${JSON.stringify(["--version"])}`, "1.2.0"],
-    [`npm\u0000${JSON.stringify(["--version"])}`, "10.5.0"],
+    [`/opt/homebrew/bin/node\u0000${JSON.stringify(["--version"])}`, "v22.0.0"],
+    [`/opt/homebrew/bin/npm\u0000${JSON.stringify(["--version"])}`, "10.5.0"],
+    [`/usr/bin/python3\u0000${JSON.stringify(["--version"])}`, "Python 3.12.0"],
+    [`/usr/bin/git\u0000${JSON.stringify(["--version"])}`, "git version 2.45.0"],
     [`/opt/homebrew/bin/brew\u0000${JSON.stringify(["--prefix"])}`, "/opt/homebrew"],
     [`/opt/homebrew/bin/brew\u0000${JSON.stringify(["--version"])}`, "Homebrew 4.2.0"],
     [`/usr/libexec/java_home\u0000${JSON.stringify([])}`, JDK_HOME],
@@ -169,11 +179,14 @@ describe("discoverWorkstationFacts — fully installed darwin host", () => {
         CAP_ANDROID_SDK,
         CAP_BUN,
         CAP_EXPO_METRO,
+        CAP_GIT,
         CAP_GRADLE,
         CAP_HOMEBREW,
         CAP_JDK,
         CAP_MASTRO,
+        CAP_NODE,
         CAP_NPM,
+        CAP_PYTHON,
         CAP_XCODE,
       ].sort(),
     );
@@ -193,7 +206,7 @@ describe("discoverWorkstationFacts — fully installed darwin host", () => {
     }
 
     // All review rows are "found".
-    expect(review.summary).toEqual({ found: 9, optional: 0, missing: 0 });
+    expect(review.summary).toEqual({ found: 12, optional: 0, missing: 0 });
     expect(review.rows.every((r) => r.status === "found")).toBe(true);
   });
 
@@ -256,7 +269,7 @@ describe("discoverWorkstationFacts — fully installed darwin host", () => {
       throw new Error(`expected compile to succeed, got ${compiled.error.code}: ${compiled.error.message}`);
     }
     expect(compiled.ok).toBe(true);
-    expect(compiled.compiled.capabilities.length).toBe(9);
+    expect(compiled.compiled.capabilities.length).toBe(12);
   });
 });
 
@@ -308,6 +321,45 @@ describe("discoverWorkstationFacts — safety contract", () => {
     expect(seams.envCalls).not.toContain("HOME");
     expect(seams.envCalls).not.toContain("USER");
   });
+
+  test("generic core tools ignore user-home candidates and canonical targets outside sandbox system roots", async () => {
+    const profile = darwinSeed();
+    const unsupportedNode = nodePath.join(HOME, ".local", "bin", "node");
+    const escapedNode = nodePath.join(HOME, ".nvm", "bin", "node");
+    const linkedNode = "/usr/local/bin/node";
+    const linkedPython = "/usr/local/bin/python3";
+    const supportedPython = "/opt/homebrew/bin/python3";
+    const seams = createFakeSeams({
+      existing: [unsupportedNode, linkedNode, linkedPython],
+      execResponses: new Map([
+        [`${unsupportedNode}\u0000${JSON.stringify(["--version"])}`, "v22-home"],
+        [`${escapedNode}\u0000${JSON.stringify(["--version"])}`, "v22-linked-home"],
+        [`${supportedPython}\u0000${JSON.stringify(["--version"])}`, "Python 3.12.0"],
+      ]),
+      env: {},
+    });
+    const fs = {
+      ...seams.fs,
+      realpath: (candidate: string) => Promise.resolve(
+        candidate === linkedNode ? escapedNode : candidate === linkedPython ? supportedPython : candidate,
+      ),
+    };
+    const { facts, review } = await discoverWorkstationFacts({
+      profile,
+      fs,
+      execFileAsync: seams.exec,
+      getEnv: seams.getEnv,
+      home: HOME,
+      platform: "darwin",
+      clock: () => NOW,
+    });
+
+    expect(facts.capabilities.find((entry) => entry.id === CAP_NODE)).toBeUndefined();
+    expect(review.rows.find((entry) => entry.capabilityId === CAP_NODE)?.status).toBe("missing");
+    expect(facts.capabilities.find((entry) => entry.id === CAP_PYTHON)?.executable).toBe(supportedPython);
+    expect(seams.execCalls.map((call) => call.file)).not.toContain(unsupportedNode);
+    expect(seams.execCalls.map((call) => call.file)).not.toContain(escapedNode);
+  });
 });
 
 describe("discoverWorkstationFacts — missing tools are review rows, not errors", () => {
@@ -327,7 +379,7 @@ describe("discoverWorkstationFacts — missing tools are review rows, not errors
     expect(facts.roots).toEqual([]);
     expect(facts.environmentKeys).toEqual([]);
     expect(review.summary.found).toBe(0);
-    expect(review.summary.missing + review.summary.optional).toBe(9);
+    expect(review.summary.missing + review.summary.optional).toBe(12);
     // The empty facts still compile (nothing to intersect).
     const compiled = compileWorkstationProfile(profile, facts, { now: NOW });
     expect(compiled.ok).toBe(true);
@@ -506,7 +558,7 @@ describe("discoverWorkstationFacts — platform + review model", () => {
     expect(review.generatedAt).toBe(NOW.toISOString());
     expect(review.platform).toBe("darwin");
     expect(review.home).toBe(HOME);
-    expect(review.summary.found).toBe(9);
+    expect(review.summary.found).toBe(12);
   });
 });
 

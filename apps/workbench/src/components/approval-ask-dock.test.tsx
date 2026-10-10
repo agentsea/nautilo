@@ -573,28 +573,20 @@ describe("ApprovalAskDock (capability scope)", () => {
   });
 });
 
-test("missing GitHub exact review exposes only Deny, including Enter", async () => {
-  askState = makeState({ requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }], allowedVerbs: ["once", "room", "always", "deny"] });
+test("obsolete mixed broker review stays recognizable and dismissible when its event had no verbs", async () => {
+  askState = makeState({
+    requiresExplicitReview: true,
+    tools: [{ name: "local_github", args: {} }, { name: "apply_patch", args: { patch: "fixture" } }],
+    allowedVerbs: [],
+    reason: "This pending approval contains an unavailable legacy local action. Deny the whole batch to dismiss it and continue.",
+  });
   const host = happyWindow.document.createElement("div"); happyWindow.document.body.appendChild(host);
   const root = createDockRoot(host as unknown as HTMLElement); act(() => root.render(<ApprovalAskDock />)); await flush();
   expect(host.querySelector('[data-verb="once"]')).toBeNull(); expect(host.querySelector('[data-verb="always"]')).toBeNull();
   expect(host.querySelector('[data-verb="deny"]')).not.toBeNull();
+  expect(host.textContent).toContain("local_github"); expect(host.textContent).toContain("apply_patch");
+  expect(host.textContent).toContain("Deny the whole batch");
   happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" })); expect(submitted).toEqual(["deny"]);
-  act(() => root.unmount()); mountedRoots.delete(root); host.remove();
-});
-
-test("valid GitHub review exposes only Once/Deny and keyboard submits exact Once", async () => {
-  const digest = "a".repeat(64), approvalId = `github-publish:preparation:${digest}`;
-  askState = makeState({ approvalId, requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }], github: {
-    version: 1, approvalId, digest, prepared: { version: 1, preparationId: "preparation", generation: "generation", toolCallId: "call", digest,
-      request: { operation: "comment_create", repository: "fixture/project", number: 12, body: "Exact complete body" },
-      account: { id: 1, login: "fixture" }, repository: { id: 2, fullName: "fixture/project", htmlUrl: "https://github.com/fixture/project" },
-      resource: { id: 3, number: 12, kind: "issue", htmlUrl: "https://github.com/fixture/project/issues/12", title: "Target", body: "Original", state: "open" } } } });
-  const host = happyWindow.document.createElement("div"); happyWindow.document.body.appendChild(host);
-  const root = createDockRoot(host as unknown as HTMLElement); act(() => root.render(<ApprovalAskDock />)); await flush();
-  expect(host.textContent).toContain("Exact complete body"); expect(host.textContent).toContain("fixture/project");
-  expect(host.querySelector('[data-verb="once"]')).not.toBeNull(); expect(host.querySelector('[data-verb="room"]')).toBeNull(); expect(host.querySelector('[data-verb="always"]')).toBeNull();
-  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" })); expect(submitted).toEqual(["once"]);
   act(() => root.unmount()); mountedRoots.delete(root); host.remove();
 });
 

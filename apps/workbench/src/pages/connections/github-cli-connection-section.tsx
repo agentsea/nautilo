@@ -70,10 +70,10 @@ export function GitHubCliConnectionSection({
     return (
       <div id="github-cli" tabIndex={-1} className="rounded-lg border border-border bg-background-panel outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-labelledby="github-cli-connection-title">
         <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-4">
-          <div className="min-w-0"><h3 id="github-cli-connection-title" className="text-sm font-medium text-foreground">GitHub CLI</h3><p className="mt-1 text-xs text-foreground-muted">Available in the Nautilo desktop app.</p></div>
+          <div className="min-w-0"><h3 id="github-cli-connection-title" className="text-sm font-medium text-foreground">GitHub account</h3><p className="mt-1 text-xs text-foreground-muted">Available in the Nautilo desktop app.</p></div>
           <ConnectionDisclosureControl expanded={disclosure.expanded} detailsId={disclosure.detailsId} onToggle={disclosure.toggle} />
         </div>
-        <div id={disclosure.detailsId} hidden={!disclosure.expanded} className="px-4 pb-4 text-sm text-foreground-muted">GitHub CLI integration is available in the Nautilo desktop app.</div>
+        <div id={disclosure.detailsId} hidden={!disclosure.expanded} className="px-4 pb-4 text-sm text-foreground-muted">GitHub account connection is available in the Nautilo desktop app.</div>
       </div>
     );
   }
@@ -81,7 +81,7 @@ export function GitHubCliConnectionSection({
   const pill = !status
     ? { tone: "info" as const, label: "Checking" }
     : !status.installed
-      ? { tone: "warn" as const, label: "gh not installed" }
+      ? { tone: "warn" as const, label: "Unavailable" }
       : status.authenticated
         ? { tone: "ok" as const, label: "Signed in" }
         : { tone: "muted" as const, label: "Signed out" };
@@ -91,12 +91,11 @@ export function GitHubCliConnectionSection({
       <div className="flex flex-wrap items-start justify-between gap-3 px-4 py-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h3 id="github-cli-connection-title" className="text-sm font-medium text-foreground">GitHub CLI</h3>
+            <h3 id="github-cli-connection-title" className="text-sm font-medium text-foreground">GitHub account</h3>
             <StatusPill tone={pill.tone}>{pill.label}</StatusPill>
           </div>
           <p className="mt-1 text-xs text-foreground-muted">
-            Full host <code>gh</code>, <code>gh api</code>, GraphQL, Git, worktrees, and
-            installed developer tooling—not a reduced GitHub command subset.
+            Sign in to GitHub CLI for ordinary Git and GitHub work in Development mode.
           </p>
           {status?.authenticated ? (
             <p className="mt-2 text-xs text-foreground-muted">
@@ -119,6 +118,11 @@ export function GitHubCliConnectionSection({
       </div>
 
       <div id={disclosure.detailsId} hidden={!disclosure.expanded} className="px-4 pb-4">
+      <p className="text-xs text-foreground-muted">
+        After you approve the current Development profile, Genie can use ordinary <code>git</code> and <code>gh</code> commands
+        with your local credentials and check sign-in with <code>gh auth status</code>.
+        Existing command permissions and network restrictions apply.
+      </p>
       {device && !status?.authenticated ? (
         <div className="mt-4 rounded-md border border-border bg-background px-3 py-3">
           <p className="text-xs text-foreground-muted">
@@ -156,8 +160,8 @@ export function GitHubCliConnectionSection({
 
       {!status?.installed && status ? (
         <p className="mt-3 text-xs text-foreground-muted">
-          Install the official GitHub CLI, then refresh. Nautilo uses its normal host
-          configuration under <code>~/.config/gh</code>.
+          Nautilo&apos;s built-in GitHub support is unavailable in this Desktop session.
+          Refresh, and update or restart Desktop if it remains unavailable.
         </p>
       ) : null}
       {error ? <p role="alert" className="mt-3 text-xs text-[var(--error)]">{error}</p> : null}

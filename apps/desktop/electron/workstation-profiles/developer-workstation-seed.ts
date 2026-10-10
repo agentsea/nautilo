@@ -27,9 +27,9 @@
  *     for device-control surfaces — ADB/emulator, iOS Simulator, Maestro).
  *     No escape capability (Docker socket, raw host control) is representable
  *     here; those require the separate Real Workstation tier.
- *   - **Bounded environment key allowlist.** Only the named developer keys
- *     (`JAVA_HOME`, `ANDROID_HOME`, `DEVELOPER_DIR`, `GRADLE_USER_HOME`, …)
- *     are permitted. Arbitrary raw `process.env` is never authorized.
+ *   - **Explicit user environment authority.** The bounded discovery keys
+ *     remain separate from the command-only `user_environment` capability.
+ *     Native values are captured and admitted only by local execution.
  *   - **Safe root templates.** Roots are host-canonical, absolute, traversal-
  *     free developer prefixes and caches derived from the operator home and
  *     platform. The literal filesystem root (`/`) and the exact user home are
@@ -63,8 +63,10 @@ export const DEVELOPER_WORKSTATION_SEED_PROFILE_ID = "developer-workstation";
 /** Human-readable name shown in the profile review / settings surface. */
 export const DEVELOPER_WORKSTATION_SEED_PROFILE_NAME = "Developer Workstation";
 
-/** First shipped revision of the seed profile. */
-export const DEVELOPER_WORKSTATION_SEED_PROFILE_REVISION = 1 as const;
+/** Revision 3 explicitly admits the local user's environment for Development commands. */
+export const DEVELOPER_WORKSTATION_SEED_PROFILE_REVISION = 3 as const;
+
+type DeveloperWorkstationLegacySeedRevision = 1 | 2;
 
 /**
  * `protectedPolicyVersion` stamped on the seed. Bumped when the shipped seed's
@@ -81,7 +83,10 @@ export const DEVELOPER_WORKSTATION_SEED_PROTECTED_POLICY_VERSION = 1 as const;
 // only; a missing tool yields an optional/missing review row, never an error.
 
 export const CAP_BUN = "cap-bun";
+export const CAP_NODE = "cap-node";
 export const CAP_NPM = "cap-npm";
+export const CAP_PYTHON = "cap-python";
+export const CAP_GIT = "cap-git";
 export const CAP_HOMEBREW = "cap-homebrew";
 export const CAP_JDK = "cap-jdk";
 export const CAP_GRADLE = "cap-gradle";
@@ -138,12 +143,36 @@ export const DEVELOPER_WORKSTATION_SEED_CAPABILITY_DECLARATIONS: readonly Develo
       environmentKeys: ["BUN_INSTALL"],
     },
     {
+      id: CAP_NODE,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      backend: "sandboxed",
+      operations: ["run"],
+      environmentKeys: [],
+    },
+    {
       id: CAP_NPM,
       kind: "toolchain",
       discoveredFrom: "fixed_argv",
       backend: "sandboxed",
       operations: ["run", "install", "test"],
       environmentKeys: ["NPM_CONFIG_CACHE"],
+    },
+    {
+      id: CAP_PYTHON,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      backend: "sandboxed",
+      operations: ["run"],
+      environmentKeys: [],
+    },
+    {
+      id: CAP_GIT,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      backend: "sandboxed",
+      operations: ["read", "local_worktree"],
+      environmentKeys: [],
     },
     {
       id: CAP_HOMEBREW,
@@ -235,6 +264,7 @@ export const DEVELOPER_WORKSTATION_SEED_CAPABILITIES = [
   "background_processes",
   "mcp_hosts",
   "device_control",
+  "user_environment",
 ] as const;
 
 /** Options for materializing the seed profile against a specific host. */
@@ -258,6 +288,39 @@ export interface CreateDeveloperWorkstationSeedProfileOptions {
   /** Override the profile revision (e.g. when applying an admin delta). */
   readonly revision?: number;
 }
+
+/** Host inputs used to recognize and propose a shipped seed migration. */
+export type ResolveDeveloperWorkstationSeedOptions = Pick<
+  CreateDeveloperWorkstationSeedProfileOptions,
+  "home" | "platform" | "now"
+>;
+
+/**
+ * Pure classification of the stored Developer Workstation profile. Callers
+ * may use `reviewProfile` for a read-only review, but must persist an upgrade
+ * only after exact-revision review and fresh PIN verification.
+ */
+export type DeveloperWorkstationSeedResolution =
+  | {
+      readonly kind: "absent";
+      readonly reviewProfile: WorkstationProfile;
+    }
+  | {
+      readonly kind: "current";
+      readonly storedProfile: WorkstationProfile;
+      readonly reviewProfile: WorkstationProfile;
+    }
+  | {
+      readonly kind: "shipped_upgrade";
+      readonly storedProfile: WorkstationProfile;
+      readonly reviewProfile: WorkstationProfile;
+      readonly previousRevision: DeveloperWorkstationLegacySeedRevision;
+    }
+  | {
+      readonly kind: "custom";
+      readonly storedProfile: WorkstationProfile;
+      readonly reviewProfile: WorkstationProfile;
+    };
 
 function rootRule(
   path: string,
@@ -350,15 +413,16 @@ export function buildDeveloperWorkstationSeedRecord(
   const paths = resolveHostPaths(home, platform);
 
   // ── Top-level roots: broad shared developer prefixes / caches ──────────
-  // These are the genuinely shared developer roots (Homebrew prefix + cache).
+  // Installed Homebrew files remain discoverable/readable shared roots.
+  // Revision 3 authorizes writes only through command-local preparation.
   // Per-toolchain home dirs (`.bun`, `.gradle`, …) live under their capability
   // roots. The Current Folder / monorepo is intentionally NOT here — it is
   // discovered and compiled separately or added as an admin delta.
   const roots: ProfileRootRule[] = [];
   for (const prefix of paths.homebrewPrefixes) {
-    roots.push(rootRule(prefix, READ_WRITE));
+    roots.push(rootRule(prefix, READ_ONLY));
   }
-  roots.push(rootRule(paths.homebrewCache, READ_WRITE_NO_DELETE));
+  roots.push(rootRule(paths.homebrewCache, READ_ONLY));
   for (const extra of paths.homebrewExtra) {
     roots.push(rootRule(extra, READ_ONLY));
   }
@@ -378,6 +442,17 @@ export function buildDeveloperWorkstationSeedRecord(
   });
 
   toolchainCapabilities.push({
+    id: CAP_NODE,
+    kind: "toolchain",
+    discoveredFrom: "fixed_argv",
+    executable: "node",
+    roots: [],
+    environmentKeys: [],
+    backend: "sandboxed",
+    operations: ["run"],
+  });
+
+  toolchainCapabilities.push({
     id: CAP_NPM,
     kind: "toolchain",
     discoveredFrom: "fixed_argv",
@@ -386,6 +461,28 @@ export function buildDeveloperWorkstationSeedRecord(
     environmentKeys: ["NPM_CONFIG_CACHE"],
     backend: "sandboxed",
     operations: ["run", "install", "test"],
+  });
+
+  toolchainCapabilities.push({
+    id: CAP_PYTHON,
+    kind: "toolchain",
+    discoveredFrom: "fixed_argv",
+    executable: "python3",
+    roots: [],
+    environmentKeys: [],
+    backend: "sandboxed",
+    operations: ["run"],
+  });
+
+  toolchainCapabilities.push({
+    id: CAP_GIT,
+    kind: "toolchain",
+    discoveredFrom: "fixed_argv",
+    executable: "git",
+    roots: [],
+    environmentKeys: [],
+    backend: "sandboxed",
+    operations: ["read", "local_worktree"],
   });
 
   toolchainCapabilities.push({
@@ -545,4 +642,303 @@ export function developerWorkstationSeedProfile(
     );
   }
   return result.profile;
+}
+
+function shippedRevisionTwoSeedProfile(
+  options: ResolveDeveloperWorkstationSeedOptions,
+): WorkstationProfile {
+  const now = options.now ?? new Date();
+  const home = options.home ?? homedir();
+  const platform = options.platform ?? "darwin";
+  const timestamp = now.toISOString();
+  const paths = resolveHostPaths(home, platform);
+
+  // Historical snapshot: keep this definition independent from the current
+  // seed so later defaults cannot silently change the revision-2 fingerprint.
+  const roots = [
+    ...paths.homebrewPrefixes.map((prefix) => rootRule(prefix, READ_ONLY)),
+    rootRule(paths.homebrewCache, READ_ONLY),
+    ...paths.homebrewExtra.map((extra) => rootRule(extra, READ_ONLY)),
+  ];
+  const toolchainCapabilities: ProfileToolchainCapability[] = [
+    {
+      id: CAP_BUN,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      executable: nodePath.join(home, ".bun", "bin", "bun"),
+      roots: [rootRule(nodePath.join(home, ".bun"), READ_WRITE_NO_DELETE)],
+      environmentKeys: ["BUN_INSTALL"],
+      backend: "sandboxed",
+      operations: ["run", "install", "test"],
+    },
+    {
+      id: CAP_NODE,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      executable: "node",
+      roots: [],
+      environmentKeys: [],
+      backend: "sandboxed",
+      operations: ["run"],
+    },
+    {
+      id: CAP_NPM,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      executable: "npm",
+      roots: [rootRule(nodePath.join(home, ".npm"), READ_WRITE_NO_DELETE)],
+      environmentKeys: ["NPM_CONFIG_CACHE"],
+      backend: "sandboxed",
+      operations: ["run", "install", "test"],
+    },
+    {
+      id: CAP_PYTHON,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      executable: "python3",
+      roots: [],
+      environmentKeys: [],
+      backend: "sandboxed",
+      operations: ["run"],
+    },
+    {
+      id: CAP_GIT,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      executable: "git",
+      roots: [],
+      environmentKeys: [],
+      backend: "sandboxed",
+      operations: ["read", "local_worktree"],
+    },
+    {
+      id: CAP_HOMEBREW,
+      kind: "toolchain",
+      discoveredFrom: "well_known_path",
+      executable: paths.homebrewExecutable,
+      roots: [],
+      environmentKeys: [],
+      backend: "sandboxed",
+      operations: ["list"],
+    },
+    {
+      id: CAP_JDK,
+      kind: "toolchain",
+      discoveredFrom: "fixed_argv",
+      executable: paths.jdkExecutable,
+      roots: [rootRule(paths.jdkParent, READ_EXECUTE)],
+      environmentKeys: ["JAVA_HOME"],
+      backend: "sandboxed",
+      operations: ["compile", "run"],
+    },
+    {
+      id: CAP_GRADLE,
+      kind: "toolchain",
+      discoveredFrom: "existing_config",
+      executable: "gradle",
+      roots: [rootRule(nodePath.join(home, ".gradle"), READ_WRITE_NO_DELETE)],
+      environmentKeys: ["GRADLE_USER_HOME"],
+      backend: "sandboxed",
+      operations: ["build", "test"],
+    },
+    {
+      id: CAP_EXPO_METRO,
+      kind: "toolchain",
+      discoveredFrom: "existing_config",
+      executable: "expo",
+      roots: [rootRule(nodePath.join(home, ".expo"), READ_WRITE_NO_DELETE)],
+      environmentKeys: [],
+      backend: "sandboxed",
+      operations: ["start", "build"],
+    },
+    {
+      id: CAP_ANDROID_SDK,
+      kind: "toolchain",
+      discoveredFrom: "well_known_path",
+      executable: paths.androidAdb,
+      roots: [
+        rootRule(paths.androidSdk, READ_WRITE),
+        rootRule(paths.androidAvd, READ_WRITE_NO_DELETE),
+      ],
+      environmentKeys: ["ANDROID_HOME", "ANDROID_SDK_ROOT"],
+      backend: "brokered_host_service",
+      operations: ["adb", "emulator", "build"],
+    },
+  ];
+  if (paths.isDarwin) {
+    toolchainCapabilities.push({
+      id: CAP_XCODE,
+      kind: "toolchain",
+      discoveredFrom: "well_known_path",
+      executable: paths.xcodeExecutable,
+      roots: [
+        rootRule(
+          nodePath.join(home, "Library", "Developer", "Xcode", "DerivedData"),
+          READ_WRITE_NO_DELETE,
+        ),
+        rootRule(
+          nodePath.join(home, "Library", "Developer", "CoreSimulator"),
+          READ_WRITE_NO_DELETE,
+        ),
+      ],
+      environmentKeys: ["DEVELOPER_DIR"],
+      backend: "brokered_host_service",
+      operations: ["build", "test", "simulate"],
+    });
+  }
+  toolchainCapabilities.push({
+    id: CAP_MASTRO,
+    kind: "toolchain",
+    discoveredFrom: "well_known_path",
+    executable: nodePath.join(home, ".maestro", "bin", "maestro"),
+    roots: [rootRule(nodePath.join(home, ".maestro"), READ_WRITE_NO_DELETE)],
+    environmentKeys: [],
+    backend: "brokered_host_service",
+    operations: ["test", "drive"],
+  });
+
+  const record = {
+    schemaVersion: 1,
+    id: DEVELOPER_WORKSTATION_SEED_PROFILE_ID,
+    revision: 2,
+    name: DEVELOPER_WORKSTATION_SEED_PROFILE_NAME,
+    roots,
+    discoveryProviders: [
+      "bun",
+      "npm",
+      "homebrew",
+      "gradle",
+      "expo_metro",
+      "android_sdk",
+      "xcode",
+      "maestro",
+    ],
+    environmentKeys: [
+      "BUN_INSTALL",
+      "NPM_CONFIG_CACHE",
+      "JAVA_HOME",
+      "GRADLE_USER_HOME",
+      "ANDROID_HOME",
+      "ANDROID_SDK_ROOT",
+      "DEVELOPER_DIR",
+    ],
+    executableRules: [{
+      id: "exec-bun",
+      executable: nodePath.join(home, ".bun", "bin", "bun"),
+      argv: ["install", "run", "test"],
+      backend: "sandboxed",
+    }],
+    network: { mode: "host", allow: [] },
+    capabilities: ["background_processes", "mcp_hosts", "device_control"],
+    toolchainCapabilities,
+    protectedPolicyVersion: 1,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+
+  const parsed = parseWorkstationProfile(record, { now });
+  if (!parsed.ok) {
+    throw new Error(
+      `Historical Developer Workstation seed profile rejected: ${parsed.error.code} — ${parsed.error.message}`,
+    );
+  }
+  return parsed.profile;
+}
+
+function shippedRevisionOneSeedProfile(
+  options: ResolveDeveloperWorkstationSeedOptions,
+): WorkstationProfile {
+  const now = options.now ?? new Date();
+  const home = options.home ?? homedir();
+  const platform = options.platform ?? "darwin";
+  const paths = resolveHostPaths(home, platform);
+  const revisionTwo = shippedRevisionTwoSeedProfile({ home, platform, now });
+  const record = { ...revisionTwo } as Record<string, unknown>;
+
+  record["revision"] = 1;
+  record["roots"] = [
+    ...paths.homebrewPrefixes.map((prefix) => rootRule(prefix, READ_WRITE)),
+    rootRule(paths.homebrewCache, READ_WRITE_NO_DELETE),
+    ...paths.homebrewExtra.map((extra) => rootRule(extra, READ_ONLY)),
+  ];
+  record["toolchainCapabilities"] = (
+    record["toolchainCapabilities"] as ProfileToolchainCapability[]
+  )
+    .filter((capability) =>
+      capability.id !== CAP_NODE && capability.id !== CAP_PYTHON && capability.id !== CAP_GIT
+    )
+    .map((capability) =>
+      capability.id === CAP_HOMEBREW
+        ? { ...capability, operations: ["install", "upgrade", "list"] }
+        : capability
+    );
+
+  const parsed = parseWorkstationProfile(record, { now });
+  if (!parsed.ok) {
+    throw new Error(
+      `Historical Developer Workstation seed profile rejected: ${parsed.error.code} — ${parsed.error.message}`,
+    );
+  }
+  return parsed.profile;
+}
+
+function profileContentFingerprint(profile: WorkstationProfile): string {
+  const { createdAt: _createdAt, updatedAt: _updatedAt, ...content } = profile;
+  return stableJson(content);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Recognize only untouched shipped seed profiles. Revision numbers alone are
+ * insufficient: an admin may have customized a stored revision 1 profile.
+ * Timestamps are metadata and intentionally ignored; every authority-bearing
+ * field, the profile name, and array order remain part of the fingerprint.
+ */
+export function resolveDeveloperWorkstationSeed(
+  storedProfile: WorkstationProfile | null,
+  options: ResolveDeveloperWorkstationSeedOptions = {},
+): DeveloperWorkstationSeedResolution {
+  const currentSeed = developerWorkstationSeedProfile(options);
+  if (storedProfile === null) {
+    return { kind: "absent", reviewProfile: currentSeed };
+  }
+
+  const storedFingerprint = profileContentFingerprint(storedProfile);
+  if (storedFingerprint === profileContentFingerprint(currentSeed)) {
+    return { kind: "current", storedProfile, reviewProfile: storedProfile };
+  }
+
+  const historicalSeeds: readonly [DeveloperWorkstationLegacySeedRevision, WorkstationProfile][] = [
+    [1, shippedRevisionOneSeedProfile(options)],
+    [2, shippedRevisionTwoSeedProfile(options)],
+  ];
+  for (const [previousRevision, historicalSeed] of historicalSeeds) {
+    if (storedFingerprint === profileContentFingerprint(historicalSeed)) {
+      const reviewProfile = {
+        ...currentSeed,
+        createdAt: storedProfile.createdAt,
+      };
+      return {
+        kind: "shipped_upgrade",
+        storedProfile,
+        reviewProfile,
+        previousRevision,
+      };
+    }
+  }
+
+  return { kind: "custom", storedProfile, reviewProfile: storedProfile };
 }

@@ -101,6 +101,42 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Windows tests retain an event-loop reference while each test runs, allowing
   unref timers and test timeouts to settle instead of leaving a busy test process.
 
+- Separate Genie tool calls keep their own arguments, results, and history even
+  when a model provider reuses call IDs. Approval resumes and repeated delivery
+  continue to use the original invocation identity.
+
+- Personal Browser Use and CloudConvert keys can fund website work and file
+  conversion under the administrator's credential policy. Existing browser
+  profiles and submitted conversions retain their creating account through
+  recovery, cancellation and cleanup; replacing a key never silently switches
+  their payer. Conversion recovery does not resubmit uncertain paid jobs.
+  Browser and conversion attempts appear in the existing Costs views, including
+  unresolved charges, estimated browser usage and measured conversion credits
+  without invented dollar prices. Hosted connected-app actions independently
+  check server-spending permission, including when the parent chat uses a
+  personal model key. Active browser status, live view and Stop recover the
+  creating account's key. Hosted steering leaves the current run unchanged
+  while provisional provider costs prevent proving a safe replacement budget.
+- Creating a background Task no longer invalidates unrelated foreground command
+  grants. Tasks that can start managed commands also retain their output and
+  cancellation tool, including existing command-only task whitelists.
+- Development commands can use the user's HOME credentials, native authentication
+  helpers and login-shell environment through ordinary `git`, `gh` and developer
+  CLIs. User package installs and local listeners work within the active profile
+  and administrator network policy. The broader authority requires consent to
+  the revised shipped Developer profile; older and customized profiles retain
+  their existing authority. Basic and Full Mac behavior is unchanged.
+- Removed the separate typed Git/GitHub Agent tools and account-operation approval
+  lane. GitHub Connections still provides native CLI sign-in and status. Foreground
+  and delegated commands use the same Development environment and existing managed
+  command permissions, output, cancellation and revocation.
+- Security managers can set a separate local-computer network ceiling. It combines
+  with each computer's execution profile; unsupported executors remain unavailable
+  under a restricted ceiling.
+- Local preview opens only after verifying a live listener owned by the selected
+  execution. Legacy Agent shell and terminal execution is retired; new commands
+  require the current Desktop/server contract. Saved results remain readable, and
+  Human Terminal and structured SSH retain their separate interfaces.
 - Chat managers can change personal 1:1 chats between Private, External, and
   Public. Returning an unchanged personal Human–Genie chat to Private restores
   its private-chat behavior without replacing the conversation.
@@ -164,7 +200,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Commands keep running after yielding, retain output and actual exit status,
   and provide explicit Stop and local preview actions. Compatible Desktops hide
   the legacy Genie command tools once the replacement capabilities are available;
-  older clients retain their existing tools. Human Terminal remains available.
+  older clients must upgrade for new commands. Human Terminal remains available.
   Command cards update automatically as processes produce output or finish,
   including while collapsed, and preview links work in colored tool output.
   Stopping npm-launched commands confirms process-group cleanup on macOS
@@ -183,9 +219,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Compatible Desktop versions retain supported execution capabilities when
   reconnecting to an older server. Pure output reads retain actor permission
   checks without asking to reactivate Development access.
-  Typed local Git operations are available through `local_git`, and retained
-  shell output can be paged or searched through `read_shell_output`, without
-  launching another shell command.
+  Git runs through ordinary managed commands. Retained shell output can be
+  paged or searched through `read_shell_output` without launching another
+  shell command.
   Basic commands can use installed utilities inside the selected project without
   activating Development access. They use a private temporary home, isolated
   networking, and the existing chat, encryption, and approval checks. Continuing

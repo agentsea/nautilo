@@ -431,6 +431,35 @@ describe("POST /api/auth/approval-reply — route→graph dispatch (M-4)", () =>
     expect(call[3]).toBe("thread-abc");
   });
 
+  test("allows denial but rejects approval of an obsolete broker checkpoint", async () => {
+    resumeSpy.mockClear();
+    const payload = {
+      threadId: "thread-retired-broker",
+      laneKey: "thread-retired-broker",
+      approvalId: "github-publish:retired",
+    };
+
+    const approve = await app.inject({
+      method: "POST",
+      url: "/api/auth/approval-reply",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      payload: { ...payload, verb: "once" },
+    });
+    expect(approve.statusCode).toBe(409);
+    expect(resumeSpy).not.toHaveBeenCalled();
+
+    const deny = await app.inject({
+      method: "POST",
+      url: "/api/auth/approval-reply",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${validToken}` },
+      payload: { ...payload, verb: "deny" },
+    });
+    expect(deny.statusCode).toBe(200);
+    expect(resumeSpy).toHaveBeenCalledTimes(1);
+    expect(resumeSpy.mock.calls[0]?.[1]).toBe("deny");
+    expect(resumeSpy.mock.calls[0]?.[17]).toBe(payload.approvalId);
+  });
+
   test("does not resume a Strict checkpoint when client authorization metadata is absent", async () => {
     resumeSpy.mockClear();
     shadowBehavior = "strict";

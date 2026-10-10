@@ -111,6 +111,12 @@ describe("task intent shortcuts", () => {
     });
   });
 
+  test("in_scope persists the complete managed execution lifecycle", async () => {
+    stubRuntime();
+    await createInScopeTool(CTX).invoke({ brief: "run it", tools: ["exec_command"] });
+    expect(capturedCreate?.toolsWhitelist).toEqual(["exec_command", "write_stdin"]);
+  });
+
   test("in_scope passes scope_id when provided", async () => {
     stubRuntime();
     await createInScopeTool(CTX).invoke({
@@ -440,6 +446,12 @@ describe("task intent shortcuts", () => {
     expect(capturedCreate?.toolsWhitelist).toEqual(["search_memory"]);
   });
 
+  test("in_background persists the complete managed execution lifecycle", async () => {
+    stubRuntime();
+    await createInBackgroundTool(CTX).invoke({ brief: "run it", tools: ["exec_command"] });
+    expect(capturedCreate?.toolsWhitelist).toEqual(["exec_command", "write_stdin"]);
+  });
+
   test("in_background result_delivery raw", async () => {
     stubRuntime();
     await createInBackgroundTool(CTX).invoke({
@@ -519,6 +531,16 @@ describe("task intent shortcuts", () => {
     expect(capturedCreate?.toolsMode).toBe("whitelist");
     expect(capturedCreate?.toolsWhitelist).toEqual(["search_memory"]);
     expect(capturedCreate?.targetChatHandle).toBe("@alex");
+  });
+
+  test("ask_peer persists the complete managed execution lifecycle", async () => {
+    stubRuntime();
+    await createAskPeerTool(CTX).invoke({
+      peer_handle: "alex",
+      message_to_peer: "q",
+      tools: ["exec_command"],
+    });
+    expect(capturedCreate?.toolsWhitelist).toEqual(["exec_command", "write_stdin"]);
   });
 
   test("ask_peer focused Artifact handoff grants exact access and authors sealed task metadata", async () => {

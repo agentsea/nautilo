@@ -18,7 +18,7 @@ export interface ProviderKeyCatalogueEntry {
   readonly formatHint?: string;
 }
 
-export const PERSONAL_PROVIDER_CAPABILITIES = ["chat", "research", "decision"] as const;
+export const PERSONAL_PROVIDER_CAPABILITIES = ["chat", "research", "decision", "browsing", "conversion"] as const;
 export type PersonalProviderCapability = (typeof PERSONAL_PROVIDER_CAPABILITIES)[number];
 
 export interface PersonalProviderKeyCatalogueEntry extends ProviderKeyCatalogueEntry {
@@ -82,6 +82,8 @@ export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalo
       ...(PERSONAL_CHAT_PROVIDER_IDS.has(entry.id) ? ["chat" as const] : []),
       ...(PERSONAL_RESEARCH_PROVIDER_IDS.has(entry.id) ? ["research" as const] : []),
       ...(PERSONAL_DECISION_PROVIDER_IDS.has(entry.id) ? ["decision" as const] : []),
+      ...(entry.id === "browser-use" ? ["browsing" as const] : []),
+      ...(entry.id === "cloudconvert" ? ["conversion" as const] : []),
     ],
   }));
 
@@ -89,6 +91,8 @@ const PERSONAL_PROVIDER_CAPABILITY_LABELS: Record<PersonalProviderCapability, st
   chat: "personal chat and native text Tasks",
   research: "Research",
   decision: "Decisions",
+  browsing: "website browsing and actions",
+  conversion: "cloud file conversion",
 };
 
 export function personalProviderCapabilitySummary(
@@ -137,4 +141,11 @@ export function orderProviderKeys<T extends { id: string }>(providers: readonly 
       displayOrder(left.provider.id) - displayOrder(right.provider.id)
       || left.registryIndex - right.registryIndex)
     .map(({ provider }) => provider);
+}
+
+/** A service key uses the existing Genie workflow, without another model choice. */
+export function personalProviderWorkflowHint(providerId: string): string | null {
+  if (providerId === "browser-use") return "Ask your Genie to browse a website or connect a website account. Existing website accounts keep the key that created them; reconnect explicitly to change accounts.";
+  if (providerId === "cloudconvert") return "Ask your Genie to convert a file. The key needs task.read and task.write access. Submitted conversions keep their original account; replacing a key may leave them unavailable.";
+  return null;
 }

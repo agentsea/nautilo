@@ -1,4 +1,3 @@
-import { parseGitHubInvocationBinding, type GitHubInvocationBinding } from "@nautilo/types";
 import { parseRelayHumanTerminalBinding, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import type { ForegroundModelControlSnapshot } from "../config/foreground-model-controls";
 import { Annotation } from "@langchain/langgraph";
@@ -258,11 +257,6 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => ({}),
   }),
 
-  githubInvocationBindings: Annotation<Readonly<Record<string, GitHubInvocationBinding>>>({
-    reducer: (_, update) => Object.fromEntries(Object.entries(update ?? {}).flatMap(([id, value]) => {
-      const parsed = parseGitHubInvocationBinding(value); return parsed && parsed.toolCallId === id ? [[id, parsed]] : [];
-    })), default: () => ({}),
-  }),
   /** Server-admitted exact handoff generation for each queued call. */
   humanTerminalInvocationBindings: Annotation<Readonly<Record<string, RelayHumanTerminalBinding>>>({
     reducer: (_, update) => Object.fromEntries(Object.entries(update ?? {}).flatMap(([id, value]) => {
@@ -983,7 +977,6 @@ export type NautiloState = Omit<
   | "desktopAutomationRouteBinding"
   | "computerUseInvocationBindings"
   | "humanTerminalInvocationBindings"
-  | "githubInvocationBindings"
   | "fullMacInvocationBindings"
   | "delegatedLocalExecutionBindings"
   | "ordinaryContentAccessBindings" | "ordinaryContentAccessRejectedToolCallIds"
@@ -1056,7 +1049,6 @@ export type NautiloState = Omit<
   computerUseInvocationBindings?: Readonly<Record<string, ComputerUseInvocationBinding>>;
   delegatedLocalExecutionBindings?: Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>;
   fullMacInvocationBindings?: Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>;
-  githubInvocationBindings?: Readonly<Record<string, GitHubInvocationBinding>>;
   humanTerminalInvocationBindings?: Readonly<Record<string, RelayHumanTerminalBinding>>;
   ordinaryContentAccessBindings?: Readonly<Record<string, OrdinaryContentAccessBinding>>;
   ordinaryContentAccessRejectedToolCallIds?: string[];

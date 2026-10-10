@@ -566,6 +566,8 @@ export interface DesktopWorkstationProfileSeedDescriptor {
   discoveryProviders: readonly ProfileDiscoveryProvider[];
   environmentKeys: readonly string[];
   capabilities: readonly DesktopWorkstationProfileCapabilityEntry[];
+  /** Present only when the reviewed profile explicitly grants native user-environment authority. */
+  userEnvironment?: boolean;
 }
 
 /** redacted stored-profile summary (no roots, no executables, no env values). */

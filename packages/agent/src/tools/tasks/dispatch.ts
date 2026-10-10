@@ -32,6 +32,7 @@ import {
   type TaskToolHarnessCreateInput,
   type TaskToolHermesAcpHarnessCreateInput,
 } from "./task-tool-runtime";
+import { normalizeTaskToolWhitelist } from "../subagents/validate-subagent-whitelist";
 import { rejectNotYetWiredTaskParams } from "./validate";
 import { validateTaskModelSelectionForCreate } from "./selection-validation";
 import { codexHarnessFailureGuidance } from "./codex-harness-guidance";
@@ -146,7 +147,7 @@ function toolsFieldsFromArgs(
   if (tools.length === 0) {
     return { toolsMode: "none" };
   }
-  return { toolsMode: "whitelist", toolsWhitelist: tools };
+  return { toolsMode: "whitelist", toolsWhitelist: normalizeTaskToolWhitelist(tools) };
 }
 
 /**

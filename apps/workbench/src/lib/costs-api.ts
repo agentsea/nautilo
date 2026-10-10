@@ -62,6 +62,8 @@ export interface CostsByProviderRow {
   operation: string;
   operations: number;
   unknownOperations: number;
+  measuredUnits?: number | null;
+  unitType?: string | null;
   estimatedCostUsd: number;
   actualCostUsd: number;
   totalCostUsd: number;
@@ -114,7 +116,7 @@ function authHeaders(): HeadersInit {
 }
 
 export async function fetchCostsSummary(range: CostsRangeKey): Promise<CostsSummary> {
-  const res = await workbenchFetch(`/api/costs?range=${encodeURIComponent(range)}`, {
+  const res = await workbenchFetch(`/api/costs?range=${encodeURIComponent(range)}&includeMeasuredUnits=true`, {
     headers: authHeaders(),
   });
   if (!res.ok) {

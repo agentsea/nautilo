@@ -92,9 +92,7 @@ const CANON: Record<string, CanonEntry> = {
   run_shell:          { impact: "destructive", standardVerb: "ask" },
   exec_command:       { impact: "destructive", standardVerb: "prove_it" },
   write_stdin:        { impact: "destructive", standardVerb: "prove_it" },
-  local_git:          { impact: "destructive", standardVerb: "ask" },
   read_shell_output:  { impact: "read-only",   standardVerb: "auto" },
-  local_github:       { impact: "destructive", standardVerb: "ask" },
   human_terminal:     { impact: "high",        standardVerb: "auto" },
   // generic HIL is auto because invocation-service owns the sole exact
   // review after Electron resolves the remote user and host-trust evidence.

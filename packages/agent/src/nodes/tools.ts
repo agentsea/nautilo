@@ -606,7 +606,6 @@ function settleToolsNode(
     computerUseInvocationBindings: remainingComputerUseBindings,
     delegatedLocalExecutionBindings: Object.fromEntries(Object.entries(state.delegatedLocalExecutionBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     fullMacInvocationBindings: Object.fromEntries(Object.entries(state.fullMacInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
-    githubInvocationBindings: Object.fromEntries(Object.entries(state.githubInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     humanTerminalInvocationBindings: Object.fromEntries(Object.entries(state.humanTerminalInvocationBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id))),
     ordinaryContentAccessBindings: Object.fromEntries(
       Object.entries(state.ordinaryContentAccessBindings ?? {}).filter(([id]) => remainingToolCallIds.has(id)),

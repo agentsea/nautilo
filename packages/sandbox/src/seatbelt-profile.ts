@@ -428,6 +428,8 @@ export interface SbplProfileOptions {
    * envelope cannot suppress governance denies.
    */
   readonly allowWorkspaceGovernanceWrites?: boolean;
+  /** Locally admitted developer access to user credential files; never wire policy. */
+  readonly allowUserCredentialFiles?: boolean;
 }
 
 /**
@@ -523,6 +525,14 @@ export function buildSbplProfile(opts: SbplProfileOptions): string {
     }
   }
 
+  // User-installed interpreters and native modules need executable mappings
+  // as well as file reads. Only locally admitted Development grants this.
+  if (opts.allowUserCredentialFiles === true) {
+    for (const raw of [...allWritables, ...(opts.config.readOnlyPaths ?? [])]) {
+      profile += `(allow file-map-executable (subpath "${escapeSchemeString(canonicalize(raw))}"))\n`;
+    }
+  }
+
   // --- Governance file denies (AFTER workspace allow so they win).
   //
   // Without these, `rm -rf .git` inside a writable workspace is
@@ -578,7 +588,7 @@ export function buildSbplProfile(opts: SbplProfileOptions): string {
   // base and the canonicalized base (same belt-and-suspenders as the
   // governance section above). Deduped below so we don't emit
   // redundant lines when raw === real.
-  const secretBasesRaw = [opts.workspace, ...allWritables];
+  const secretBasesRaw = opts.allowUserCredentialFiles === true ? [] : [opts.workspace, ...allWritables];
   const secretBases: string[] = [];
   for (const base of secretBasesRaw) {
     if (!secretBases.includes(base)) secretBases.push(base);
@@ -740,6 +750,11 @@ export function buildSbplProfile(opts: SbplProfileOptions): string {
     if (real !== raw) {
       profile += `(deny file-read* file-write* (subpath "${escapeSchemeString(real)}"))\n`;
     }
+  }
+
+  // Native credential helpers are independent of outbound network permission.
+  if (opts.allowUserCredentialFiles === true) {
+    profile += '(allow mach-lookup (global-name "com.apple.SecurityServer"))\n';
   }
 
   // --- Network.

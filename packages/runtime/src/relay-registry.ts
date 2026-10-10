@@ -1,13 +1,13 @@
+import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { resolveServerPosture } from "@nautilo/config";
 import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "@nautilo/relay";
-import { parseGitHubCapability, parseGitHubInvocationBinding, type GitHubInvocationBinding } from "../../types/src/github-invocation";
-import { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "@nautilo/relay";
 import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability } from "@nautilo/relay";
-import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import { RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
 import { parseRelayLocalExecutionBinding, parseRelayLocalExecutionCapability, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION,
   LOCAL_EXECUTION_MAX_IDENTITIES, type RelayLocalExecutionBinding } from "@nautilo/relay";
@@ -616,7 +616,7 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canReplayResearchConsent",
   "canRecoverResearchConsent",
   "canUseTerminal",
-  "canUseGitHub", "canUseHumanTerminal",
+  "canUseHumanTerminal",
   "hasPendingTerminalHandoff",
   "canUseGoogleWorkspace",
   "canSeeDesktop",
@@ -624,7 +624,6 @@ const CAPABILITY_BOOLEAN_KEYS = [
   "canWriteWorkspace",
   "canBrowsePairedFilesystem",
   "canRunShell",
-  "canUseLocalGit",
   "canReadShellOutput",
   "canExecuteLocal",
   "canDelegateLocalExecution",
@@ -690,16 +689,6 @@ function parseKnownCapabilityFields(
   protocolVersion: number,
 ): { ok: true; fields: Record<string, unknown> } | { ok: false; error: string } {
   const fields: Record<string, unknown> = {};
-  if (raw["localGit"] !== undefined) {
-    if (!isRelayLocalGitCapability(raw["localGit"]) || raw["profile"] !== "desktop-agent"
-      || protocolVersion < RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION) return { ok: false, error: "capabilities.localGit is invalid or unsupported" };
-    fields["localGit"] = raw["localGit"];
-  }
-  if (raw["github"] !== undefined) {
-    const github = parseGitHubCapability(raw["github"]);
-    if (!github || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_GITHUB_PROTOCOL_VERSION) return { ok: false, error: "capabilities.github is invalid or unsupported" };
-    fields["github"] = github;
-  }
   if (raw["humanTerminal"] !== undefined) {
     const capability = parseRelayHumanTerminalCapability(raw["humanTerminal"]);
     if (!capability || raw["profile"] !== "desktop-agent" || protocolVersion < RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION)
@@ -896,6 +885,7 @@ function parseCapabilityUpdate(value: unknown, protocolVersion: number): {
 }
 
 interface PendingDispatch {
+  humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
   localExecutionBinding?: RelayLocalExecutionBinding | undefined;
   resolve: (result: RelayDispatchResult) => void;
   reject: (error: Error) => void;
@@ -1267,8 +1257,7 @@ function isRawRunShellCommand(request: {
   readonly toolName: string;
   readonly args: Record<string, unknown>;
 }): boolean {
-  return (request.toolName === "run_shell" && typeof request.args["command"] === "string" && request.args["command"].length > 0)
-    || request.toolName === "exec_command"
+  return request.toolName === "exec_command"
     || (request.toolName === "write_stdin" && (request.args["cancel"] === true
       || (typeof request.args["chars"] === "string" && request.args["chars"].length > 0)));
 }
@@ -1939,6 +1928,22 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     return matching.length;
   }
 
+  /** Called after the canonical posture write; fence before sending cancellation. */
+  revokeLocalExecutionsForNetworkPolicy(): void {
+    const policy = resolveServerPosture().localNetworkPolicy ?? { mode: "host" as const };
+    if (policy.mode === "host") return;
+    const matching = [...this.localExecutions.values()].flatMap(generation => [...generation.records.values()])
+      .filter(record => !record.authorityRevoked && !record.resourcesReleased
+        && JSON.stringify(record.binding.localNetworkPolicy ?? { mode: "host" }) !== JSON.stringify(policy));
+    for (const record of matching) { record.cancelled = true; record.authorityRevoked = true; record.detach(); }
+    for (const record of matching) this.deliverLocalExecutionCancellation(record.binding);
+    for (const [id, pending] of this.pending) {
+      if (pending.humanTerminalBinding) {
+        try { this.cancelDispatch(id); } catch { /* Frame loss retains the operation's unknown outcome. */ }
+      }
+    }
+  }
+
   getLocalExecutionWorkstationBinding(relayId: string, executionId: string): RelayWorkstationShellBinding | null {
     if (!this.getLocalExecutionBinding(relayId, executionId)) return null;
     const binding = this.localExecutions.get(relayId)?.records.get(executionId)?.shellBinding;
@@ -1989,6 +1994,17 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         : typeof request.args["chars"] === "string" && request.args["chars"].length > 0 ? "input" : "read"))) {
       throw new Error("LOCAL_EXECUTION_BINDING_INVALID");
     }
+    const localNetworkPolicy = resolveServerPosture().localNetworkPolicy ?? { mode: "host" as const };
+    if ((binding.operation === "start" || binding.operation === "input")
+      && (entry.protocolVersion < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION
+        || capability.localNetworkPolicy !== true || binding.localNetworkPolicy === undefined)) {
+      throw new Error("LOCAL_EXECUTION_UPGRADE_REQUIRED: Upgrade Desktop and server to use exec_command and write_stdin.");
+    }
+    if ((binding.operation === "start" || binding.operation === "input") && localNetworkPolicy.mode !== "host"
+      && (capability.localNetworkPolicy !== true || binding.version === 3
+        || JSON.stringify(binding.localNetworkPolicy) !== JSON.stringify(localNetworkPolicy))) {
+      throw new Error("LOCAL_NETWORK_POLICY_CHANGED_OR_UNSUPPORTED");
+    }
     let generation = this.localExecutions.get(relayId);
     if (generation?.generation !== binding.generation) {
       for (const record of generation?.records.values() ?? []) record.detach();
@@ -1996,11 +2012,12 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       this.localExecutions.set(relayId, generation);
     }
     const original = generation.records.get(binding.executionId);
-    const fingerprint = createHash("sha256").update(JSON.stringify([request.args, binding.owner, binding.version !== 1 ? binding.authority : null])).digest("hex");
+    const fingerprint = createHash("sha256").update(JSON.stringify([request.args, binding.owner, binding.version !== 1 ? binding.authority : null, binding.localNetworkPolicy ?? { mode: "host" }])).digest("hex");
     if (binding.operation !== "start") {
       if (!original || original.binding.version !== binding.version
         || (binding.version !== 1 && original.binding.version !== 1 && JSON.stringify(original.binding.authority) !== JSON.stringify(binding.authority))
         || JSON.stringify(original.binding.owner) !== JSON.stringify(binding.owner)
+        || JSON.stringify(original.binding.localNetworkPolicy ?? { mode: "host" }) !== JSON.stringify(binding.localNetworkPolicy ?? { mode: "host" })
         || (original.authorityRevoked && binding.operation !== "cancel")
         || (binding.operation === "input" && (original.cancelled
           || JSON.stringify(request.workstationShellBinding ?? null) !== JSON.stringify(original.shellBinding)))) throw new Error("LOCAL_EXECUTION_OWNER_FENCED");
@@ -2989,7 +3006,6 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       localExecutionActivationSignal?: AbortSignal | undefined;
       retainLocalExecutionSource?: (() => () => void) | undefined;
       localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
-      githubBinding?: GitHubInvocationBinding | undefined;
       humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
       /** server-owned marker for a live-session-admitted uncontained raw shell. */
       uncontainedHostCommandsSession?: true | undefined;
@@ -3048,22 +3064,25 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
       throw new Error("Hosted MCP dispatch Relay binding changed before dispatch");
     }
 
-    if (request.toolName === "local_git" || request.toolName === "read_shell_output") {
-      const supported = entry.protocolVersion >= RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
-        && entry.capabilities.profile === "desktop-agent"
-        && (request.toolName === "local_git"
-          ? entry.capabilities.canUseLocalGit === true && isRelayLocalGitCapability(entry.capabilities.localGit)
-          : entry.capabilities.canReadShellOutput === true);
-      if (!supported || request.hostedBy !== undefined) throw new Error("LOCAL_TOOL_UNAVAILABLE");
+    if (request.hostedBy === undefined && (request.toolName === "terminal" || (request.toolName === "run_shell"
+      && !isStructuredSshDispatch(request) && request.args["output_artifact"] === undefined))) {
+      throw new Error("LOCAL_EXECUTION_UPGRADE_REQUIRED: Legacy Agent shell execution is retired; use exec_command and write_stdin.");
     }
-    if (request.toolName === "local_github" || request.githubBinding !== undefined) {
-      const binding = parseGitHubInvocationBinding(request.githubBinding, request.args);
-      if (!binding || !isRelayGitHubDispatch(request.toolName, request.args, binding, entry.capabilities, entry.protocolVersion)
-        || binding.owner.humanUserId !== entry.userId || binding.owner.relayId !== relayId
-        || binding.owner.desktopSessionId !== entry.desktopSessionId || binding.owner.pairingGeneration !== entry.pairingGenerationRef
-        || request.hostedBy !== undefined || request.humanTerminalBinding !== undefined || request.localExecutionBinding !== undefined
-        || request.localExecutionHistoryBinding !== undefined || request.workstationShellBinding !== undefined || request.uncontainedHostCommandsSession === true
-        || (binding.stage === "publish" && request.approvalObtained !== true) || request.executionClass === "real_workstation") throw new Error("GITHUB_UNAVAILABLE");
+    if (request.toolName === "local_git" || request.toolName === "local_github" || "githubBinding" in request) {
+      throw new Error("LOCAL_TOOL_UNAVAILABLE");
+    }
+
+    if (entry.capabilities.profile === "desktop-agent"
+      && (resolveServerPosture().localNetworkPolicy ?? { mode: "host" }).mode !== "host"
+      && request.hostedBy === undefined && request.toolName === "human_terminal") {
+      throw new Error("LOCAL_NETWORK_POLICY_UNSUPPORTED_EXECUTOR");
+    }
+
+    if (request.toolName === "read_shell_output") {
+      const supported = entry.protocolVersion >= RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION
+        && entry.capabilities.profile === "desktop-agent"
+        && entry.capabilities.canReadShellOutput === true;
+      if (!supported || request.hostedBy !== undefined) throw new Error("LOCAL_TOOL_UNAVAILABLE");
     }
     if (request.toolName === "human_terminal" || request.humanTerminalBinding !== undefined) {
       const binding = parseRelayHumanTerminalBinding(request.humanTerminalBinding);
@@ -3248,7 +3267,6 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         structuredSshTransferStarted: false,
         lastStructuredSshTransferBytes: 0,
         ...(request.localExecutionBinding ? { localExecutionBinding: request.localExecutionBinding } : {}),
-        ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
         ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),
       };
       this.pending.set(correlationId, pending);
@@ -3277,7 +3295,6 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
             : {}),
           ...(request.localExecutionDelegationCapture !== undefined ? { localExecutionDelegationCapture: request.localExecutionDelegationCapture } : {}),
           ...(request.localExecutionBinding !== undefined ? { localExecutionBinding: request.localExecutionBinding } : {}),
-          ...(request.githubBinding ? { githubBinding: request.githubBinding } : {}),
           ...(request.humanTerminalBinding ? { humanTerminalBinding: request.humanTerminalBinding } : {}),
           ...(request.localExecutionHistoryBinding !== undefined ? { localExecutionHistoryBinding: request.localExecutionHistoryBinding } : {}),
           ...(request.workstationShellBinding !== undefined

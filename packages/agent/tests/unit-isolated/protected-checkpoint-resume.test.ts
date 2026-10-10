@@ -383,6 +383,88 @@ describe("protected Human resume checkpoint selection", () => {
     expect(streamCalls).toBe(0);
   });
 
+  test("approval.ask rejects approval but permits atomic denial of a mixed retired broker checkpoint", async () => {
+    const interruptId = "33333333333333333333333333333333";
+    const approvalId = "legacy-mixed-batch";
+    checkpoint = {
+      values: { turnId: "turn-protected-resume" },
+      tasks: [{ interrupts: [{
+        id: interruptId,
+        value: {
+          type: "approval_ask",
+          approvalId,
+          tools: [
+            { name: "local_git", args: { operation: "status" } },
+            { name: "apply_patch", args: { patch: "fixture" } },
+          ],
+        },
+      }] }],
+    };
+
+    const resume = (verb: "once" | "deny") => resumeGraphWithAskReply(
+      "room:room-1:bot:agent-1",
+      verb,
+      processor,
+      "room:room-1",
+      encryptedSaver(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      approvalId,
+    );
+
+    await expectFailure(resume("once"), "retired broker approval");
+    expect(streamCalls).toBe(0);
+    expect(streamedCommand).toBeUndefined();
+
+    await resume("deny");
+    expect(streamCalls).toBe(1);
+    expect(streamedCommand?.resume).toEqual({
+      [interruptId]: { approved: false, verb: "deny" },
+    });
+  });
+
+  test("legacy approval reply without an approval id cannot approve a retired mixed batch", async () => {
+    checkpoint = {
+      values: { turnId: "turn-protected-resume" },
+      tasks: [{ interrupts: [{
+        id: "33333333333333333333333333333333",
+        value: {
+          type: "approval_ask",
+          approvalId: "legacy-mixed-batch",
+          tools: [
+            { name: "local_github", args: { operation: "comment_create" } },
+            { name: "apply_patch", args: { patch: "fixture" } },
+          ],
+        },
+      }] }],
+    };
+
+    const resume = (verb: "once" | "deny") => resumeGraphWithAskReply(
+      "room:room-1:bot:agent-1",
+      verb,
+      processor,
+      "room:room-1",
+      encryptedSaver(),
+    );
+
+    await expectFailure(resume("once"), "retired broker approval");
+    expect(streamCalls).toBe(0);
+
+    await resume("deny");
+    expect(streamCalls).toBe(1);
+    expect(streamedCommand?.resume).toEqual({ approved: false, verb: "deny" });
+  });
+
   test("approval.ask validates its public approval id and keys its graph resume", async () => {
     const interruptId = "33333333333333333333333333333333";
     checkpoint = {

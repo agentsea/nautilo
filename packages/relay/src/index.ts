@@ -207,8 +207,7 @@ export {
 } from "./codex-protocol";
 export {
   RELAY_PROTOCOL_VERSION,
-  RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION,
-  isRelayLocalGitCapability,
+  RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION,
   RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION,
   RELAY_RUN_SHELL_PROGRESS_PROTOCOL_VERSION,
   RELAY_RUN_SHELL_PROGRESS_MAX_TEXT_BYTES,
@@ -381,9 +380,6 @@ export {
   type RelaySshApprovedCopyUploadRequestV1,
   type RelaySshApprovedCopyDownloadRequestV1,
   type RelaySshApprovedRequestValidationResult,
-  parseRelayRunShellGitOperation,
-  type RelayRunShellGitOperation,
-  type RelayRunShellGitOperationValidationResult,
 } from "./protocol";
 export {
   LEGACY_RELAY_USER_FALLBACK,
@@ -652,7 +648,7 @@ export { readTextWindow, type TextWindow, type TextWindowSource } from "./text-w
 export { isSecurityScanProgress, securityScanProgressText, type SecurityScanProgress, type RelaySecurityScanProgressMessage } from "./security-scan-progress";
 
 export { parseRelayLocalExecutionCapability, type RelayLocalExecutionCapability } from "./types";
-export { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES,
+export { parseRelayLocalExecutionBinding, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION, LOCAL_EXECUTION_MAX_IDENTITIES,
   type RelayLocalExecutionBindingV1, type RelayLocalExecutionOwnerV1 } from "./protocol";
 
 export { parseRelayLocalExecutionUncertainty, type RelayLocalExecutionUncertaintyV1 } from "./protocol";
@@ -670,8 +666,6 @@ export { parseRelayHumanTerminalCapability, type RelayHumanTerminalCapability } 
 export { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV3 } from "./protocol";
 
 export { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION, isRelayLocalExecutionSearchAllowed } from "./protocol";
-
-export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch } from "./protocol";
 
 export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV4 } from "./protocol";
 

@@ -17,6 +17,7 @@ import {
 import { agents } from "./agents";
 import { rooms } from "./rooms";
 import { users } from "./users";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
 
 export const CONNECTED_WEB_ACCOUNT_STATUSES = [
   "connecting",
@@ -29,6 +30,24 @@ export const CONNECTED_WEB_ACCOUNT_STATUSES = [
   "error",
 ] as const;
 export type ConnectedWebAccountStatus = (typeof CONNECTED_WEB_ACCOUNT_STATUSES)[number];
+
+export interface ConnectedWebActionRunCostCustody {
+  readonly version: 1;
+  readonly phase: "writer" | "verifier" | "resume_precheck";
+  readonly hostedRun: Readonly<{
+    identity: string;
+    workload: "connected_web_action";
+  }>;
+  readonly browserSession: Readonly<{
+    identity: string;
+    workload: "connected_web_action";
+  }>;
+  readonly attribution: Readonly<{
+    humanUserId: string;
+    roomId: string;
+    agentId: string;
+  }>;
+}
 
 export const CONNECTED_WEB_ACCOUNT_CLEANUP_STATES = [
   "not_required",
@@ -90,6 +109,8 @@ export const connectedWebAccounts = pgTable(
       .default("connecting"),
     /** Opaque server-only provider locator. It is null until a provider creates the profile. */
     profileRef: text("profile_ref"),
+    /** Creating Browser Use account. Null exists only for pre-funding legacy profiles. */
+    profileFundingBinding: jsonb("profile_funding_binding").$type<DurableServiceFundingBinding | null>(),
     lastVerifiedAt: timestamp("last_verified_at", { withTimezone: true }),
     /** Server-only recovery coordinate; never a public browser capability. */
     executionCheckpoint: jsonb("execution_checkpoint").$type<ConnectedWebAccountExecutionCheckpoint | null>(),
@@ -144,6 +165,10 @@ export const connectedWebActionOperations = pgTable(
     status: varchar("status", { length: 32, enum: CONNECTED_WEB_ACTION_OPERATION_STATUSES }).notNull(),
     /** Provider run id only; never a public receipt or client projection. */
     opaqueRunRef: text("opaque_run_ref"),
+    /** Nonsecret phase cost identities committed atomically with opaqueRunRef. */
+    runCostCustody: jsonb("run_cost_custody").$type<ConnectedWebActionRunCostCustody | null>(),
+    /** Creating Browser Use account. Null exists only for legacy action rows. */
+    fundingBinding: jsonb("funding_binding").$type<DurableServiceFundingBinding | null>(),
     /** Safe, bounded postcondition evidence only. */
     receipt: jsonb("receipt"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -159,6 +184,39 @@ export const connectedWebActionOperations = pgTable(
     check("connected_web_action_operations_type", sql`${table.actionType} = 'save_item'`),
     check("connected_web_action_operations_target_nonempty", sql`octet_length(${table.target}) between 1 and 1024`),
     check("connected_web_action_operations_status", sql`${table.status} in ('reserving', 'running', 'verifying', 'completed', 'ambiguous', 'cancelled', 'authentication_required', 'failed')`),
+    check("connected_web_action_operations_run_cost_shape", sql`
+      ${table.runCostCustody} is null or ((
+        jsonb_typeof(${table.runCostCustody}) = 'object'
+        and ${table.runCostCustody} ?& array['version', 'phase', 'hostedRun', 'browserSession', 'attribution']
+        and ${table.runCostCustody} - 'version' - 'phase' - 'hostedRun' - 'browserSession' - 'attribution' = '{}'::jsonb
+        and jsonb_typeof(${table.runCostCustody}->'version') = 'number'
+        and ${table.runCostCustody}->>'version' = '1'
+        and ${table.runCostCustody}->>'phase' in ('writer', 'verifier', 'resume_precheck')
+        and jsonb_typeof(${table.runCostCustody}->'hostedRun') = 'object'
+        and (${table.runCostCustody}->'hostedRun') ?& array['identity', 'workload']
+        and (${table.runCostCustody}->'hostedRun') - 'identity' - 'workload' = '{}'::jsonb
+        and jsonb_typeof(${table.runCostCustody}->'hostedRun'->'identity') = 'string'
+        and jsonb_typeof(${table.runCostCustody}->'hostedRun'->'workload') = 'string'
+        and ${table.runCostCustody}->'hostedRun'->>'workload' = 'connected_web_action'
+        and octet_length(${table.runCostCustody}->'hostedRun'->>'identity') between 1 and 512
+        and jsonb_typeof(${table.runCostCustody}->'browserSession') = 'object'
+        and (${table.runCostCustody}->'browserSession') ?& array['identity', 'workload']
+        and (${table.runCostCustody}->'browserSession') - 'identity' - 'workload' = '{}'::jsonb
+        and jsonb_typeof(${table.runCostCustody}->'browserSession'->'identity') = 'string'
+        and jsonb_typeof(${table.runCostCustody}->'browserSession'->'workload') = 'string'
+        and ${table.runCostCustody}->'browserSession'->>'workload' = 'connected_web_action'
+        and octet_length(${table.runCostCustody}->'browserSession'->>'identity') between 1 and 512
+        and jsonb_typeof(${table.runCostCustody}->'attribution') = 'object'
+        and (${table.runCostCustody}->'attribution') ?& array['humanUserId', 'roomId', 'agentId']
+        and (${table.runCostCustody}->'attribution') - 'humanUserId' - 'roomId' - 'agentId' = '{}'::jsonb
+        and jsonb_typeof(${table.runCostCustody}->'attribution'->'humanUserId') = 'string'
+        and jsonb_typeof(${table.runCostCustody}->'attribution'->'roomId') = 'string'
+        and jsonb_typeof(${table.runCostCustody}->'attribution'->'agentId') = 'string'
+        and octet_length(${table.runCostCustody}->'attribution'->>'humanUserId') between 1 and 512
+        and octet_length(${table.runCostCustody}->'attribution'->>'roomId') between 1 and 512
+        and octet_length(${table.runCostCustody}->'attribution'->>'agentId') between 1 and 512
+      ) is true)
+    `),
     pgPolicy("connected_web_action_operations_product_all", {
       as: "permissive", for: "all", to: nautiloProductRole, using: sql`true`, withCheck: sql`true`,
     }),
@@ -224,6 +282,8 @@ export const connectedWebOperations = pgTable(
     requestDigest: varchar("request_digest", { length: 64 }).notNull(),
     /** Encrypted/opaque original task authority; never a card, log, or model result. */
     sealedIntent: text("sealed_intent").notNull(),
+    /** Creating Browser Use account, persisted before any provider dispatch. */
+    fundingBinding: jsonb("funding_binding").$type<DurableServiceFundingBinding | null>(),
     /** Optional link to the existing external-effect idempotency ledger. */
     actionOperationId: uuid("action_operation_id").references(() => connectedWebActionOperations.id, { onDelete: "restrict" }),
     effectIdempotencyKey: varchar("effect_idempotency_key", { length: 256 }),
@@ -326,8 +386,9 @@ export const connectedWebOperations = pgTable(
         and jsonb_typeof(${table.terminalReadResult}->'page') = 'object'
         and jsonb_typeof(${table.terminalReadResult}->'read') in ('null', 'object')
         and jsonb_typeof(${table.terminalReadResult}->'cost') = 'object'
-        and ${table.terminalReadResult}->'outputs' = '[]'::jsonb
-        and ${table.terminalReadResult}->>'outputsTruncated' = 'false'
+        and jsonb_typeof(${table.terminalReadResult}->'outputs') = 'array'
+        and jsonb_array_length(${table.terminalReadResult}->'outputs') <= 4
+        and jsonb_typeof(${table.terminalReadResult}->'outputsTruncated') = 'boolean'
       )
     `),
     check("connected_web_operations_terminal_read_result_owner", sql`

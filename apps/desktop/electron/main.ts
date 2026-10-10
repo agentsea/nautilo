@@ -70,7 +70,6 @@ import {
   getAcknowledgedLocalExecutionCapabilities,
   readActiveLocalExecution,
   getActiveLocalExecutionGeneration,
-  getLocalExecutionCustodyScope,
   subscribeLocalExecutionChanges,
   setActiveRelay,
   DESKTOP_FILESYSTEM_GRANT_AGENT_SCOPE,
@@ -219,8 +218,8 @@ import {
   WorkstationShellConsentStore,
   type WorkstationShellSubject,
 } from "./workstation-shell-consent-store";
-import { createGitHubCliConnection } from "./github-cli-connection";
-import { createGitHubInstallation, type GitHubInstallation } from "./github-broker/installation";
+import { createAdmittedGitHubCliConnection } from "./github-cli-connection";
+import { createGitHubCliInstallation, type GitHubCliInstallation } from "./github-cli-installation";
 import { probeDesktopGitHubRuntime } from "./github-cli-runtime";
 import {
   createGoogleWorkspaceAuth,
@@ -502,7 +501,7 @@ import { BrowserControlManager } from "./browser-control-manager";
 import { browserControlStateSessionSource } from "./browser-control-state";
 import { BrowserResearchTargetManager } from "./browser-research-target-manager";
 import { resolveDownloadTarget } from "./download-target";
-import { augmentProcessPath } from "./augment-path";
+import { augmentProcessPath, loginShellSpawnEnvBase } from "./augment-path";
 import {
   parseDesktopFilesystemGrant,
   DESKTOP_FILESYSTEM_ACCESS_OPERATIONS,
@@ -524,7 +523,7 @@ import {
 } from "./desktop-filesystem-grants/store";
 import { DesktopFilesystemGrantAuthority } from "./desktop-filesystem-grants/authority";
 import { ActiveWorkstationProfileController } from "./workstation-profiles/active-controller";
-import { developerWorkstationSeedProfile } from "./workstation-profiles/developer-workstation-seed";
+import { developerWorkstationSeedProfile, resolveDeveloperWorkstationSeed } from "./workstation-profiles/developer-workstation-seed";
 import { ElectronCodexConnection } from "./codex-connection";
 import { createElectronCodexProductionHostFactory } from "./codex-production-host";
 import { ElectronClaudeConnectionHost } from "./claude-connection";
@@ -576,8 +575,14 @@ const {
   googleWorkspaceDisconnect,
 } = createGoogleWorkspaceAuth({ resolveGogBin, isGogAuthHealthy });
 
-const githubCliConnection = createGitHubCliConnection({
+const githubCliConnection = createAdmittedGitHubCliConnection({
   openExternal: (url) => shell.openExternal(url).then(() => undefined),
+  getInstallation: () => getGitHubInstallation(),
+  subscribeAuthorityChanges: (listener) => {
+    const unsubscribeSession = serverSessions.onChange(listener);
+    const unsubscribeExecution = subscribeLocalExecutionChanges(() => listener());
+    return () => { unsubscribeSession(); unsubscribeExecution(); };
+  },
 });
 
 function nautiloAppVersion(): string {
@@ -725,31 +730,6 @@ async function currentWorkstationShellSubject(): Promise<WorkstationShellSubject
 const workstationShellHost = createWorkstationShellHost({
   consentStore: workstationShellConsentStore,
   resolveSubject: currentWorkstationShellSubject,
-  requestConsent: async (workspacePath) => {
-    const response = await dialog.showMessageBox({
-      type: "warning",
-      title: "Allow host commands?",
-      message: "Allow Genie to use developer tools on this Mac?",
-      detail:
-        `Current Folder:\n${workspacePath}\n\n` +
-        "Commands run as your signed-in macOS user. They can use installed developer tools " +
-        "and existing CLI credentials (including GitHub), and are not contained by Nautilo's " +
-        "shell sandbox. Command output is returned to Genie and may expose account data.\n\n" +
-        "Routine developer commands will not ask again while this access is active. Critical " +
-        "destruction or elevation still follows Nautilo's normal approval policy.",
-      buttons: [
-        "Always Allow for This Folder",
-        "Allow for This App Session",
-        "Deny",
-      ],
-      defaultId: 2,
-      cancelId: 2,
-      noLink: true,
-    });
-    if (response.response === 0) return "durable";
-    if (response.response === 1) return "session";
-    return null;
-  },
 });
 
 /** Bound fs/path helpers for `validateWorkspacePath` (avoids unbound-method when passed as values). */
@@ -2615,9 +2595,6 @@ function commitCurrentFolderPath(
   assertUsableWorkingFolderPath(p);
   persistCurrentFolderPath(p);
   const currentFolderChanged = currentFolderPath !== p;
-  if (currentFolderPath !== null && currentFolderChanged) {
-    workstationShellHost.deactivate(currentFolderPath);
-  }
   if (currentFolderChanged) {
     // Codex resolves Current Folder only when opening a new thread. Existing
     // threads retain their own cwd and are not Nautilo folder-bound.
@@ -3395,6 +3372,10 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
     // relay advertises the controller's redacted profile snapshot from the
     // SAME store the main process owns (no duplicate profile stores).
     workstationProfileController: activeWorkstationProfileController,
+    getDevelopmentGitHubExecutable: async () => {
+      try { return (await (await getGitHubInstallation()).verify()).executable; }
+      catch { return undefined; } // Ordinary installed tools remain usable without the bundled fallback.
+    },
     // native apply_patch is private-staging only. The process-scoped
     // Desktop mutation runtime is the sole live-file writer and shares the
     // editor's coordinator, V2 journal, locks, recovery and durable outbox.
@@ -3480,7 +3461,6 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
       agentId: preparation.request.operation.routing.agentId,
       turnId: preparation.request.operation.routing.turnId,
     }),
-    runWorkstationShell: (request) => workstationShellHost.execute(request),
     verifyUncontainedHostCommands: verifyUncontainedHostCommandsForRelay,
     // stable disabled-by-default port survives relay replacement and
     // re-pair; readiness remains false until an explicit local enable.
@@ -5205,9 +5185,8 @@ const activeWorkstationProfileController =
     },
   });
 
-// Cutover composition for the admitted connection and private broker provider.
-// Not activated while legacy shell cleanup remains unqualified. No account storage.
-let githubInstallationOwner: { key: string; pending: Promise<GitHubInstallation> } | null = null;
+// Native GitHub CLI installation for the existing Connections flow.
+let githubInstallationOwner: { key: string; pending: Promise<GitHubCliInstallation> } | null = null;
 const githubAccountCustody = {
   getInstallation: getGitHubInstallation,
   retire(): void {
@@ -5215,7 +5194,7 @@ const githubAccountCustody = {
     githubInstallationOwner = null;
   },
 };
-async function getGitHubInstallation(): Promise<GitHubInstallation> {
+async function getGitHubInstallation(): Promise<GitHubCliInstallation> {
   const session = serverSessions.active;
   if (!session?.signedIn) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
   const authGeneration = miniAppRecoveryAuthGeneration;
@@ -5234,28 +5213,8 @@ async function getGitHubInstallation(): Promise<GitHubInstallation> {
   const pending = Promise.resolve().then(() => {
     const runtime = probeDesktopGitHubRuntime({ isPackaged: app.isPackaged });
     if (!runtime.ok || !isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-    return createGitHubInstallation({ executable: runtime.binaryPath, executableSha256: runtime.executableSha256,
-      homeDir: app.getPath("home"), authority: async () => {
-        if (!isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-        const folder = currentFolderPath;
-        const folderRevision = currentFolderRevision;
-        const workspace = genieWorkspaceRoot;
-        if (!workspace) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-        // Retained grant IDs cover processes still draining after reduction;
-        // released historical grants no longer count as writable authority.
-        const listed = await desktopFilesystemGrantStore.list({ userId: binding.humanId, includeHistory: true });
-        const custody = getLocalExecutionCustodyScope();
-        if (!listed.ok || custody === null || !isOwnerCurrent()) throw new Error("GITHUB_INSTALLATION_UNAVAILABLE");
-        const revision = listed.data.revision;
-        return {
-          writableRoots: [...new Set([workspace, ...(folder ? [folder] : []), ...custody.roots,
-            ...listed.data.grants.filter(item => (item.status === "active" || custody.grantIds.includes(item.grant.id))
-              && (item.grant.access.includes("create_modify") || item.grant.access.includes("delete")))
-              .map(item => item.grant.canonicalRoot)])],
-          isCurrent: () => isOwnerCurrent() && desktopFilesystemGrantStore.getRevision() === revision
-            && currentFolderRevision === folderRevision && currentFolderPath === folder && genieWorkspaceRoot === workspace && custody.isCurrent(),
-        };
-      } });
+    return createGitHubCliInstallation({ executable: runtime.binaryPath, executableSha256: runtime.executableSha256,
+      environment: { ...loginShellSpawnEnvBase(), HOME: app.getPath("home") }, isCurrent: isOwnerCurrent });
   });
   const owner = { key, pending };
   githubInstallationOwner = owner;
@@ -5275,6 +5234,7 @@ ipcMain.handle("githubCli:status", async (e) => {
 
 ipcMain.handle("githubCli:connect", async (e) => {
   assertMainWindowSender(e);
+  githubAccountCustody.retire();
   return await githubCliConnection.connect();
 });
 
@@ -5724,6 +5684,10 @@ async function restoreReadyWorkstation(desired: ReadyToWorkDesiredState): Promis
         : "startup_receipt_invalid";
     return readyOwnerResult("workstation_settings", false, reason);
   }
+  const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: protectedReceipt.profileId });
+  if (!stored.ok || resolveDeveloperWorkstationSeed(stored.data.profile).kind === "shipped_upgrade") {
+    return readyOwnerResult("workstation_settings", false, "workstation_profile_update_needed");
+  }
   const local = activeWorkstationProfileController.getActiveSession();
   const server = await getWorkstationServerSessionStatus();
   if (generation !== readyToWorkGeneration) return readyOwnerResult("workstation_settings", false, "authority_changed");
@@ -5766,6 +5730,10 @@ async function observeReadyWorkstation(desired: ReadyToWorkDesiredState): Promis
         ? "startup_receipt_missing"
         : "startup_receipt_invalid";
     return readyOwnerResult("workstation_settings", false, reason);
+  }
+  const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: protectedReceipt.profileId });
+  if (!stored.ok || resolveDeveloperWorkstationSeed(stored.data.profile).kind === "shipped_upgrade") {
+    return readyOwnerResult("workstation_settings", false, "workstation_profile_update_needed");
   }
   const local = activeWorkstationProfileController.getActiveSession();
   if (local && (local.profileId !== protectedReceipt.profileId ||
@@ -6375,7 +6343,15 @@ async function enrollReadyToWork(
       if (!isReadyToWorkStorageProtected(safeStorage)) {
         throw new Error("Ready to work cannot protect its Workstation startup receipt on this Mac");
       }
-      const selectors = await readyToWorkProfileSelectors();
+      let upgradePinVerified = false;
+      const selectors = await readyToWorkProfileSelectors(reviewedProfile, async () => {
+        await verifyReadyEnrollmentPin(session.serverUrl, pin);
+        // Reduce the old authority before replacing its stored configuration;
+        // failed compare-and-swap or activation must leave it disabled.
+        if (activeWorkstationProfileController.getActiveSession() !== null) await disableReadyWorkstationOwner();
+        if (!readyBindingIsCurrent(binding, generation)) throw new Error("Agent access identity changed during profile update");
+        upgradePinVerified = true;
+      });
       if (!selectors.ok) throw new Error(selectors.message);
       if (effectiveTarget === "development" && (!reviewedProfile || selectors.profileId !== reviewedProfile.profileId
         || selectors.profileRevision !== reviewedProfile.profileRevision)) {
@@ -6387,7 +6363,7 @@ async function enrollReadyToWork(
       let canPreserveReceipt = existingReceipt.ok &&
         existingReceipt.profileId === selectors.profileId &&
         existingReceipt.profileRevision === selectors.profileRevision;
-      let pinVerified = false;
+      let pinVerified = upgradePinVerified;
       if (canPreserveReceipt) {
         // Repeat enrollment proves the Human again. An exact live local/server
         // session may preserve its receipt; otherwise try the receipt once so
@@ -7048,6 +7024,7 @@ interface WorkstationProfileSeedDescriptor {
   readonly discoveryProviders: readonly import("@nautilo/workstation-profiles").ProfileDiscoveryProvider[];
   readonly environmentKeys: readonly string[];
   readonly capabilities: readonly WorkstationProfileCapabilityEntry[];
+  readonly userEnvironment?: boolean;
 }
 
 interface WorkstationProfileSummary {
@@ -7097,6 +7074,7 @@ function buildSeedDescriptor(
     discoveryProviders: [...profile.discoveryProviders],
     environmentKeys: [...profile.environmentKeys],
     capabilities: redactProfileCapabilities(profile),
+    ...(profile.capabilities.includes("user_environment") ? { userEnvironment: true } : {}),
   };
 }
 
@@ -7483,7 +7461,7 @@ async function prepareDevelopmentReviewForSender(e: Electron.IpcMainInvokeEvent)
   if (!seed.ok) return profileIpcFailure(seed.code, seed.message);
   const stored = await activeWorkstationProfileController.getProfileStore().get({ profileId: seed.profile.id });
   if (!stored.ok && stored.code !== "profile_not_found") return profileIpcFailure("invalid_request", "Development profile could not be read.");
-  const profile = stored.ok ? stored.data.profile : seed.profile;
+  const profile = resolveDeveloperWorkstationSeed(stored.ok ? stored.data.profile : null).reviewProfile;
   const review = await runSeedDiscoveryReview(profile);
   if (!readyBindingIsCurrent(binding, generation)) return profileIpcFailure("invalid_request", "The selected Desktop identity changed during review.");
   if (!review.ok) return profileIpcFailure(review.code, review.message);
@@ -7901,7 +7879,10 @@ async function disableWorkstationProfileViaServer(input: {
 }
 
 /** Ensure the one shipped Developer Workstation profile exists locally. */
-async function readyToWorkProfileSelectors(): Promise<
+async function readyToWorkProfileSelectors(
+  reviewedProfile?: Readonly<{ profileId: string; profileRevision: number }>,
+  verifyUpgrade?: () => Promise<void>,
+): Promise<
   | Readonly<{ ok: true; profileId: string; profileRevision: number }>
   | Readonly<{ ok: false; code: WorkstationProfileIpcFailureCode; message: string }>
 > {
@@ -7929,6 +7910,19 @@ async function readyToWorkProfileSelectors(): Promise<
         : profileIpcFailureFromStoreCode(stored.code),
       message: "Developer Workstation profile could not be read.",
     };
+  }
+  const resolution = resolveDeveloperWorkstationSeed(stored.data.profile);
+  if (resolution.kind === "shipped_upgrade") {
+    if (!verifyUpgrade || reviewedProfile?.profileId !== resolution.reviewProfile.id
+      || reviewedProfile.profileRevision !== resolution.reviewProfile.revision) {
+      return { ok: false, code: "stale_revision", message: "Review the updated Development profile and confirm with your PIN." };
+    }
+    await verifyUpgrade();
+    const updated = await store.replaceReviewedRevision({ profileId: stored.data.profile.id,
+      expectedRevision: resolution.previousRevision, expectedProfile: stored.data.profile,
+      profile: resolution.reviewProfile });
+    if (!updated.ok) return { ok: false, code: "stale_revision", message: "Development profile changed. Review it again before confirming." };
+    return { ok: true, profileId: updated.data.profile.id, profileRevision: updated.data.profile.revision };
   }
   return {
     ok: true,
@@ -8000,6 +7994,9 @@ async function activateStoredWorkstationProfile(
       );
     }
     const profile = stored.data.profile;
+    if (resolveDeveloperWorkstationSeed(profile).kind === "shipped_upgrade") {
+      return profileIpcFailure("stale_revision", "Review the updated Development profile and confirm with your PIN; the previous startup approval cannot activate it.");
+    }
 
     // 2. Build the relay binding evidence from authoritative main-side
     //    state. The renderer never supplies these.
@@ -15615,7 +15612,6 @@ app.on("before-quit", (event) => {
   cleanupFsWatchers();
   disposeAllTerminals();
   githubCliConnection.cancel();
-  workstationShellHost.dispose();
   void (async () => {
     try {
       await binaryReadSessions.closeAll();

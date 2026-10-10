@@ -105,6 +105,7 @@ function factsRecord(overrides: Record<string, unknown> = {}): Record<string, un
       { path: path.join(BUN_ROOT, "cache"), access: ["read"], sourceProvider: "bun" },
     ],
     environmentKeys: ["BUN_INSTALL"],
+    environmentValues: { BUN_INSTALL: BUN_ROOT },
     capabilities: [
       {
         id: "cap-bun",
@@ -204,6 +205,7 @@ function createFixtureWithProfileStorage(
       let n = 0;
       return () => `pp-${++n}`;
     })(),
+    homeDirectory: path.join(path.sep, "Users", "test"),
   });
   return { controller, authority };
 }
@@ -244,6 +246,7 @@ function createFixture(): ControllerFixture {
       let n = 0;
       return () => `pp-${++n}`;
     })(),
+    homeDirectory: path.join(path.sep, "Users", "test"),
     onActiveProfileChanged: (reason) => {
       changes.push(reason);
     },
@@ -271,6 +274,7 @@ function barrier() {
 async function expectHiddenAuthority(controller: ActiveWorkstationProfileControllerInstance) {
   expect(controller.getActiveSession()).toBeNull();
   expect(controller.getActiveNetworkPolicy()).toBeNull();
+  expect(controller.getExecutionEnvironment()).toBeNull();
   expect(await controller.getProfileSnapshot()).toBeUndefined();
 }
 
@@ -299,6 +303,13 @@ describe("ActiveWorkstationProfileController — activate", () => {
 
     // The session is the active session.
     expect(controller.getActiveSession()?.profileId).toBe("profile-a");
+    expect(controller.getExecutionEnvironment()).toEqual({
+      profileId: "profile-a", profileRevision: 1, protectedPolicyVersion: 7,
+      home: path.join(path.sep, "Users", "test"),
+      environmentValues: { BUN_INSTALL: BUN_ROOT },
+      executables: [{ capabilityId: "cap-bun", executable: BUN_BIN, backend: "sandboxed" }],
+    });
+    expect(Object.isFrozen(controller.getExecutionEnvironment())).toBe(true);
 
     // The compiled grants are live policy-pack overlay authority.
     const ids = await activePolicyPackGrantIds(authority, USER_A);
@@ -306,6 +317,47 @@ describe("ActiveWorkstationProfileController — activate", () => {
 
     // The callback fired once for the activation.
     expect(changes).toEqual(["workstation profile activate"]);
+  });
+
+  test("carries explicit user-environment authority and declared package prefixes locally", async () => {
+    const { controller, profileStore } = createFixture();
+    const base = profileRecord("profile-a");
+    const toolchainCapabilities = (base["toolchainCapabilities"] as Record<string, unknown>[])
+      .map((capability) => ({
+        ...capability,
+        id: "cap-homebrew",
+        operations: ["run", "install"],
+      }));
+    await profileStore.create({
+      profile: validProfile("profile-a", {
+        capabilities: ["background_processes", "mcp_hosts", "user_environment"],
+        toolchainCapabilities,
+      }),
+    });
+
+    const result = await controller.activate({
+      profileId: "profile-a",
+      facts: validFacts({
+        roots: [
+          { path: PARENT_ROOT, access: ["read"], sourceProvider: "homebrew" },
+          { path: BUN_ROOT, access: ["read"], sourceProvider: "homebrew" },
+        ],
+        capabilities: (factsRecord()["capabilities"] as Record<string, unknown>[])
+          .map((capability) => ({
+            ...capability,
+            id: "cap-homebrew",
+            operations: ["run", "install"],
+          })),
+      }),
+      subject: subject(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(controller.getExecutionEnvironment()).toMatchObject({
+      userEnvironment: true,
+      userEnvironmentWritablePaths: [PARENT_ROOT, BUN_ROOT],
+    });
+    expect(Object.isFrozen(controller.getExecutionEnvironment()?.userEnvironmentWritablePaths)).toBe(true);
   });
 
   test("rejects a subject bound to a different instance without mutating state", async () => {

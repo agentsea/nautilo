@@ -4,7 +4,12 @@ import {
   type InsertProviderCostEventInput,
 } from "@nautilo/db";
 
-import { safelyRecordProviderCost } from "../../src/costs/provider-cost-recorder";
+import {
+  safelyRecordProviderCost,
+  beginServerProviderCostAttempt,
+  claimServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+} from "../../src/costs/provider-cost-recorder";
 
 describe("server provider cost provenance", () => {
   test("preserves the admitted personal payer, credential revision, and provider route", async () => {
@@ -164,5 +169,52 @@ describe("server provider cost provenance", () => {
     }, async () => {
       throw new Error("cost ledger unavailable");
     })).resolves.toBeUndefined());
+  });
+});
+
+
+describe("durable server service attempts", () => {
+  const admission = {
+    identity: "conversion:local-operation:submit",
+    userId: "human-a", roomId: "room-a", taskId: "task-a", runId: "run-a", jobId: "job-a",
+    provider: "cloudconvert", operation: "convert",
+    usageFunding: { kind: "personal" as const, humanUserId: "human-a", payerHumanId: "human-a",
+      providerRoute: "cloudconvert", credentialId: "credential-a", credentialRevision: 2 },
+  };
+
+  test("reconstructed settlement addresses the original unknown row and preserves measured credits without dollars", async () => {
+    const rows: InsertProviderCostEventInput[] = [];
+    const save = async (row: InsertProviderCostEventInput) => { rows.push(row); };
+    await beginServerProviderCostAttempt(admission, save);
+    await settleServerProviderCostAttempt({ ...structuredClone(admission), evidenceState: "unknown",
+      attemptOutcome: "succeeded", measuredUnits: 3, unitType: "credits", receiptId: "private-provider-job-id" }, save);
+    expect(rows[0]).toMatchObject({ evidenceState: "unknown", attemptOutcome: "unknown", payerHumanId: "human-a" });
+    expect(rows[1]).toMatchObject({ evidenceState: "unknown", attemptOutcome: "succeeded", measuredUnits: 3,
+      actualCostUsd: null, estimatedCostUsd: null, taskId: "task-a", runId: "run-a", jobId: "job-a" });
+    expect(rows[1]?.idempotencyKey).toBe(rows[0]?.idempotencyKey);
+    expect(rows[1]?.requestReference).toMatch(/^req_[a-f0-9]{12}$/);
+    expect(JSON.stringify(rows)).not.toContain("private-provider-job-id");
+  });
+
+  test("returns the durable inserted-versus-existing claim outcome without changing begin semantics", async () => {
+    const rows: InsertProviderCostEventInput[] = [];
+    const outcomes = ["inserted", "existing"] as const;
+    let call = 0;
+    const claim = async (row: InsertProviderCostEventInput) => {
+      rows.push(row);
+      return outcomes[call++] ?? "existing";
+    };
+
+    expect(await claimServerProviderCostAttempt(admission, claim)).toBe("inserted");
+    expect(await claimServerProviderCostAttempt(admission, claim)).toBe("existing");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ evidenceState: "unknown", attemptOutcome: "unknown" });
+    expect(rows[1]?.idempotencyKey).toBe(rows[0]?.idempotencyKey);
+  });
+
+  test("admission failure prevents dispatch and settlement failure remains available for owner retry", async () => {
+    const unavailable = async () => { throw new Error("ledger unavailable"); };
+    await Promise.resolve(expect(beginServerProviderCostAttempt(admission, unavailable)).rejects.toThrow("ledger unavailable"));
+    await Promise.resolve(expect(settleServerProviderCostAttempt({ ...admission, evidenceState: "unknown", attemptOutcome: "cancelled" }, unavailable)).rejects.toThrow("ledger unavailable"));
   });
 });
