@@ -11,7 +11,8 @@ DURABLE_JOURNAL_FILE="tests/unit/d448-local-file-history-v2.test.ts"
 
 # Real Windows ACL operations start native helpers. Keep their runner budget
 # consistent with windows-unit-gate.ts without changing product deadlines.
-if [[ "${OS:-}" == "Windows_NT" ]]; then
+# Turbo's strict environment hides `OS`, so detect the host through the shell.
+if [[ "${OS:-}" == "Windows_NT" || "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
   TIMEOUT="${BUN_TEST_TIMEOUT_MS:-60000}"
   DURABLE_JOURNAL_TIMEOUT="${BUN_DURABLE_JOURNAL_TEST_TIMEOUT_MS:-60000}"
 fi
