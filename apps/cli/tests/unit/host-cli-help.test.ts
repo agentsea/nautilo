@@ -1,16 +1,31 @@
-import { beforeAll, describe, expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const cliRoot = join(import.meta.dirname, "..", "..");
 const cliDist = join(cliRoot, "dist", "index.js");
+let fixtureHome: string;
+
+beforeEach(() => {
+  fixtureHome = mkdtempSync(join(tmpdir(), "nautilo-host-help-"));
+});
+
+afterEach(() => {
+  rmSync(fixtureHome, { recursive: true, force: true });
+});
 
 function spawnCli(args: readonly string[], environment: NodeJS.ProcessEnv = {}) {
   return spawnSync(process.execPath, [cliDist, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { HOME: process.env["HOME"] ?? "/tmp", ...environment },
+    env: {
+      SystemRoot: process.env["SystemRoot"],
+      HOME: fixtureHome,
+      USERPROFILE: fixtureHome,
+      ...environment,
+    },
   });
 }
 
@@ -81,7 +96,7 @@ describe("packaged host plan parser and help", () => {
     expect(upgradeHelp.status).toBe(0);
     expect(upgradeHelp.stdout).toContain("Safe upgrade: drain -> stop -> consistent backup");
   // This is a packaged-surface contract, not a latency assertion. It starts
-  // six independent CLI processes and can exceed Bun's five-second default
+  // independent CLI processes and can exceed Bun's five-second default
   // while the monorepo pre-push gate is running package suites in parallel.
   // Keep this aligned with the repository's unit-test ceiling: the assertions
   // still fail immediately on incorrect output or a nonzero process exit.

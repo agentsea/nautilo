@@ -185,7 +185,9 @@ function extractMember(tarBytes: Buffer, archive: FetchVendoredBinaryArchive, de
   try {
     const tarPath = join(tmpDir, "artifact.tar.gz");
     writeFileSync(tarPath, tarBytes);
-    const result = spawnSync("tar", ["-xzf", tarPath, "-C", tmpDir], {
+    // GNU tar treats drive-letter archive paths as remote hosts.
+    const result = spawnSync("tar", ["-xzf", basename(tarPath)], {
+      cwd: tmpDir,
       stdio: ["ignore", "pipe", "pipe"],
     });
     if (result.status !== 0) {

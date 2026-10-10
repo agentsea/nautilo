@@ -1,6 +1,6 @@
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { publishPrivateFileAtomically } from "@nautilo/config/private-filesystem";
 
 import { VaultSchemaError } from "./errors.ts";
 import type { VaultDiskEnvelope } from "./disk-types.ts";
@@ -37,26 +37,11 @@ export async function atomicWriteJsonFile(
   payload: unknown,
 ): Promise<void> {
   const serial = `${JSON.stringify(payload)}\n`;
-  const dir = dirname(finalPath);
-  await mkdir(dir, { recursive: true });
-  const base = basename(finalPath);
-  const sibling = join(
-    dir,
-    `${base}.tmp-${String(process.pid)}-${randomBytes(4).toString("hex")}`,
-  );
-  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  const target = resolve(finalPath);
+  await mkdir(dirname(target), { recursive: true });
   try {
-    handle = await open(sibling, "wx", 0o600);
-    await handle.writeFile(serial, { encoding: "utf8" });
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
-    await rename(sibling, finalPath);
+    await publishPrivateFileAtomically(target, Buffer.from(serial));
   } catch {
-    if (handle) {
-      await handle.close().catch(() => {});
-    }
-    await unlink(sibling).catch(() => {});
     throw new VaultSchemaError(`atomic persistence failed (${finalPath})`);
   }
 }

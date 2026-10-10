@@ -1,12 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { allowOtherReadersSync } from "../../src/private-filesystem-fixtures";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -27,6 +26,7 @@ import {
   defaultWorkbenchUrl,
 } from "../../src/instance-defaults";
 import { __resetResolvedInstanceForTests, resolveInstance } from "../../src/resolve-instance";
+import { createPrivateDirectorySync, isPrivateFilesystemPath } from "../../src/private-filesystem";
 import {
   instanceAllocationLockPath,
   withInstanceAllocationLockSync,
@@ -247,26 +247,26 @@ describe("named instance port scan (M071 Phase 2A)", () => {
 
   test("allocation lock is owner-only and fails closed on a stale owner", () => {
     const lockPath = instanceAllocationLockPath(userHomeDir);
-    mkdirSync(lockPath, { mode: 0o700 });
+    createPrivateDirectorySync(lockPath);
     writeFileSync(join(lockPath, "dead-owner-token.json"), `${JSON.stringify({
       pid: 999_999_999,
       token: "dead-owner-token",
       createdAt: new Date(0).toISOString(),
     })}\n`, { mode: 0o600 });
-    expect(statSync(lockPath).mode & 0o077).toBe(0);
+    expect(isPrivateFilesystemPath(lockPath)).toBe(true);
     expect(() => withInstanceAllocationLockSync(userHomeDir, () => undefined, {
       timeoutMs: 0,
     })).toThrow("Timed out waiting");
     expect(existsSync(lockPath)).toBe(true);
 
     rmSync(lockPath, { recursive: true });
-    mkdirSync(lockPath, { mode: 0o700 });
+    createPrivateDirectorySync(lockPath);
     writeFileSync(join(lockPath, "live-owner-token.json"), `${JSON.stringify({
       pid: process.pid,
       token: "live-owner-token",
       createdAt: new Date().toISOString(),
     })}\n`, { mode: 0o600 });
-    chmodSync(lockPath, 0o755);
+    allowOtherReadersSync(lockPath);
     expect(() => withInstanceAllocationLockSync(userHomeDir, () => undefined, {
       timeoutMs: 0,
     })).toThrow("not owner-only");
@@ -299,15 +299,16 @@ describe("named instance port scan (M071 Phase 2A)", () => {
   test("allocation lock rejects directory and claim symlinks", () => {
     const lockPath = instanceAllocationLockPath(userHomeDir);
     const elsewhere = join(userHomeDir, "elsewhere-lock");
-    mkdirSync(elsewhere, { mode: 0o700 });
-    symlinkSync(elsewhere, lockPath);
+    createPrivateDirectorySync(elsewhere);
+    symlinkSync(elsewhere, lockPath, process.platform === "win32" ? "junction" : "dir");
     expect(() => withInstanceAllocationLockSync(userHomeDir, () => undefined, { timeoutMs: 0 }))
       .toThrow("not owner-only");
-    unlinkSync(lockPath);
-    mkdirSync(lockPath, { mode: 0o700 });
+    rmSync(lockPath, { recursive: true });
+    createPrivateDirectorySync(lockPath);
     const externalClaim = join(userHomeDir, "external-claim.json");
     writeFileSync(externalClaim, "{}", { mode: 0o600 });
-    symlinkSync(externalClaim, join(lockPath, "linked-claim-token.json"));
+    symlinkSync(process.platform === "win32" ? elsewhere : externalClaim,
+      join(lockPath, "linked-claim-token.json"), process.platform === "win32" ? "junction" : "file");
     expect(() => withInstanceAllocationLockSync(userHomeDir, () => undefined, { timeoutMs: 0 }))
       .toThrow("claim is invalid");
   });

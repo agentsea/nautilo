@@ -4,8 +4,9 @@
  * This deliberately owns just two names below an existing snapshot root. It
  * does not discover, modify, or prune ordinary developer snapshots.
  */
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
+import { lstat, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   verifyCanonicalDefaultFullBackupDirectory,
   type VerifiedFullBackup,
@@ -89,17 +90,20 @@ async function exists(path: string): Promise<boolean> {
 }
 
 async function ensureOwnerOnlyDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  const details = await stat(path);
-  if (!details.isDirectory() || (details.mode & 0o077) !== 0) {
+  const details = await lstat(path).catch((error: unknown) => {
+    if (isMissing(error)) return null;
+    throw error;
+  });
+  if (details === null) { await ensurePrivateDirectory(path); return; }
+  if (!details.isDirectory() || !await isPrivateFilesystemPathAsync(path)) {
     throw new Error("Checkpoint-maintenance recovery root is not owner-only");
   }
-  await chmod(path, 0o700);
+  await secureFilesystemPath(path);
 }
 
 async function assertOwnedBackupDirectory(path: string, name: string): Promise<void> {
   const details = await lstat(path);
-  if (!details.isDirectory() || details.isSymbolicLink() || (details.mode & 0o077) !== 0) {
+  if (!details.isDirectory() || details.isSymbolicLink() || !await isPrivateFilesystemPathAsync(path)) {
     throw new Error(`Checkpoint-maintenance ${name} backup is not an owner-only directory`);
   }
 }
@@ -299,7 +303,7 @@ async function refreshCheckpointMaintenanceRecoveryBackupUnderLock(
       try {
         await rename(paths.current, paths.previous);
         renamed = true;
-        await chmod(paths.previous, 0o700);
+        await secureFilesystemPath(paths.previous);
         await writeOwnerOnlyJsonAtomically(join(paths.previous, "manifest.json"), {
           ...current.manifest,
           name: CHECKPOINT_MAINTENANCE_PREVIOUS_BACKUP,

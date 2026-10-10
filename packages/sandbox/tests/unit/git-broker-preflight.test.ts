@@ -55,7 +55,7 @@ test("clone accepts only one absent child of current granted canonical Folder", 
     expect(sameGitDirectory(candidate.root)).toBe(true);
     expect(() => validateCloneChild(root, "../escape", [root])).toThrow();
     expect(() => validateCloneChild(root, "project", [])).toThrow();
-    symlinkSync(join(root, "missing"), join(root, "project"));
+    symlinkSync(join(root, "missing"), join(root, "project"), process.platform === "win32" ? "junction" : "dir");
     expect(() => validateCloneChild(root, "project", [root])).toThrow();
     expect(() => validateCloneChild(root, "private", [root], [join(root, "private")])).toThrow();
     expect(() => pinGitDirectory(join(root, "project"))).toThrow();
@@ -188,7 +188,7 @@ describe("rejectEscapingSymlinks", () => {
     initRepo(root);
     const target = resolve(root, "link-target");
     mkdirSync(target, { recursive: true });
-    symlinkSync(target, resolve(root, "link"));
+    symlinkSync(target, resolve(root, "link"), process.platform === "win32" ? "junction" : "dir");
     expect(() => rejectEscapingSymlinks(root, [root])).not.toThrow();
     rmSync(root, { recursive: true, force: true });
   });
@@ -197,7 +197,7 @@ describe("rejectEscapingSymlinks", () => {
     const root = mkTmp("git-preflight-sym-escape-");
     const outside = mkTmp("git-preflight-sym-out-");
     initRepo(root);
-    symlinkSync(outside, resolve(root, "escape"));
+    symlinkSync(outside, resolve(root, "escape"), process.platform === "win32" ? "junction" : "dir");
     expect(() => rejectEscapingSymlinks(root, [root])).toThrow(GitPreflightError);
     expect(() => rejectEscapingSymlinks(root, [root])).toThrow(/escapes granted roots/);
     rmSync(root, { recursive: true, force: true });
@@ -239,6 +239,11 @@ describe("normalizePathspec", () => {
 });
 
 describe("rejectLiveEnvPath", () => {
+  test("native paths retain secret denials and public-template exceptions", () => {
+    expect(() => rejectLiveEnvPath(resolve("repo", ".env"))).toThrow(GitPreflightError);
+    expect(() => rejectLiveEnvPath(resolve("repo", ".env.local"))).toThrow(GitPreflightError);
+    expect(() => rejectLiveEnvPath(resolve("repo", ".env.example"))).not.toThrow();
+  });
   test(".env -> deny-live-env", () => {
     expect(() => rejectLiveEnvPath("/repo/.env")).toThrow(GitPreflightError);
   });
@@ -280,7 +285,7 @@ describe("validateWorktreeTarget", () => {
     const real = resolve(root, "real");
     mkdirSync(real, { recursive: true });
     const link = resolve(root, "link");
-    symlinkSync(real, link);
+    symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
     expect(() => validateWorktreeTarget(link, [root])).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });
   });

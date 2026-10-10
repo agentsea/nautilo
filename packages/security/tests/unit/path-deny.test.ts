@@ -1,5 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { join, normalize } from "node:path";
 import { checkPathAccess, _buildResolvedDenyForTests } from "../../src/path-deny";
 
 describe("checkPathAccess", () => {
@@ -17,7 +19,7 @@ describe("checkPathAccess", () => {
   test("blocks /etc/passwd", () => {
     const result = checkPathAccess("/etc/passwd", "standard");
     expect(result.allowed).toBe(false);
-    expect(result.reason).toContain("/etc/passwd");
+    expect(result.reason).toContain(normalize("/etc/passwd"));
   });
 
   test("blocks /etc/shadow", () => {
@@ -73,26 +75,26 @@ describe("checkPathAccess", () => {
     const linuxDeny = _buildResolvedDenyForTests("linux");
     const home = homedir();
     // None of the DARWIN_HOME_RELATIVE_DENY entries should be present.
-    expect(linuxDeny.some((p) => p.includes(`${home}/Library/Keychains`))).toBe(false);
-    expect(linuxDeny.some((p) => p.includes(`${home}/Library/Cookies`))).toBe(false);
-    expect(linuxDeny.some((p) => p.includes(`${home}/Library/Safari`))).toBe(false);
+    expect(linuxDeny.some((p) => p.includes(join(home, "Library/Keychains")))).toBe(false);
+    expect(linuxDeny.some((p) => p.includes(join(home, "Library/Cookies")))).toBe(false);
+    expect(linuxDeny.some((p) => p.includes(join(home, "Library/Safari")))).toBe(false);
   });
 
   test("M-2: Darwin platform INCLUDES macOS Library/* entries", () => {
     const darwinDeny = _buildResolvedDenyForTests("darwin");
     const home = homedir();
-    expect(darwinDeny.some((p) => p.endsWith("/Library/Keychains"))).toBe(true);
-    expect(darwinDeny.some((p) => p.endsWith("/Library/Cookies"))).toBe(true);
-    expect(darwinDeny.some((p) => p.endsWith("/Library/Safari"))).toBe(true);
-    expect(darwinDeny.some((p) => p.includes(`${home}/Library/Application Support/Google/Chrome`))).toBe(true);
+    expect(darwinDeny.some((p) => p.endsWith(normalize("/Library/Keychains")))).toBe(true);
+    expect(darwinDeny.some((p) => p.endsWith(normalize("/Library/Cookies")))).toBe(true);
+    expect(darwinDeny.some((p) => p.endsWith(normalize("/Library/Safari")))).toBe(true);
+    expect(darwinDeny.some((p) => p.includes(join(home, "Library/Application Support/Google/Chrome")))).toBe(true);
   });
 
   test("M-2: ABSOLUTE_DENY entries are platform-agnostic", () => {
     const linuxDeny = _buildResolvedDenyForTests("linux");
     const darwinDeny = _buildResolvedDenyForTests("darwin");
     // /etc/passwd et al. appear on both platforms.
-    expect(linuxDeny.some((p) => p.endsWith("/etc/passwd"))).toBe(true);
-    expect(darwinDeny.some((p) => p.endsWith("/etc/passwd"))).toBe(true);
+    expect(linuxDeny.some((p) => p.endsWith(normalize("/etc/passwd")))).toBe(true);
+    expect(darwinDeny.some((p) => p.endsWith(normalize("/etc/passwd")))).toBe(true);
   });
 
   // -----------------------------------------------------------------
@@ -137,5 +139,28 @@ describe("checkPathAccess", () => {
   test("G7/FILE-02: ancestor check works regardless of trailing slash", () => {
     expect(checkPathAccess("/etc/", "standard").allowed).toBe(false);
     expect(checkPathAccess("/etc", "standard").allowed).toBe(false);
+  });
+
+  test("native paths protect descendants without blocking a similarly named sibling", () => {
+    expect(checkPathAccess(join(homedir(), ".ssh", "nested", "key"), "standard").allowed).toBe(false);
+    expect(checkPathAccess(join(homedir(), ".ssh-backup-not-protected", "readme"), "standard").allowed).toBe(true);
+  });
+
+  test("a missing descendant below a directory alias still resolves to the protected home", () => {
+    const temporary = mkdtempSync(join(tmpdir(), "path-deny-alias-"));
+    const alias = join(temporary, "home");
+    try {
+      symlinkSync(homedir(), alias, process.platform === "win32" ? "junction" : "dir");
+      expect(checkPathAccess(join(alias, ".ssh", "nautilo-missing-test-child", "key"), "standard").allowed).toBe(false);
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows protected paths remain protected with different case and separators", () => {
+    const native = join(homedir(), ".ssh", "nested", "key");
+    expect(checkPathAccess(native.toUpperCase(), "standard").allowed).toBe(false);
+    expect(checkPathAccess(native.replaceAll("\\", "/"), "standard").allowed).toBe(false);
+    expect(checkPathAccess("~\\.ssh\\nested\\key", "standard").allowed).toBe(false);
   });
 });

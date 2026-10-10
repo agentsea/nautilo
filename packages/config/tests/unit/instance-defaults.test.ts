@@ -83,7 +83,7 @@ describe("getAppsRoot — M182 sibling of artifacts root", () => {
 
   test("NAUTILO_ARTIFACTS_ROOT=/custom/artifacts → /custom/apps", () => {
     withEnv({ NAUTILO_ARTIFACTS_ROOT: "/custom/artifacts" }, () => {
-      expect(getAppsRoot()).toBe("/custom/apps");
+      expect(getAppsRoot()).toBe(join("/custom", "apps"));
     });
   });
 });
@@ -133,8 +133,8 @@ describe("getProfileAvatarsRoot + getServerIconRoot", () => {
 
   test("NAUTILO_MEDIA_ROOT=/custom/media → subdirs under override", () => {
     withEnv({ NAUTILO_MEDIA_ROOT: "/custom/media" }, () => {
-      expect(getProfileAvatarsRoot()).toBe("/custom/media/profile-avatars");
-      expect(getServerIconRoot()).toBe("/custom/media/server-icon");
+      expect(getProfileAvatarsRoot()).toBe(join("/custom/media", "profile-avatars"));
+      expect(getServerIconRoot()).toBe(join("/custom/media", "server-icon"));
     });
   });
 });

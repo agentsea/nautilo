@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rm } from "node:fs/promises";
+import { physicalPathFromStorageUri as storagePath } from "@nautilo/db";
+import { link, mkdir, readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getArtifactsRoot } from "@nautilo/config";
+import { syncDirectory, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import {
   attachArtifactToNamespace,
   db,
@@ -76,15 +78,13 @@ type PersistTemplateDependencies = Readonly<{
  * deterministic claim that every subsequent retry would refuse. */
 export async function writeSlideTemplateBytes(path: string, content: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
+  let created = false;
   try {
-    const handle = await open(temporary, "wx", 0o600);
-    try { await handle.writeFile(content, "utf8"); await handle.sync(); }
-    finally { await handle.close(); }
+    await writePrivateFileExclusive(temporary, new TextEncoder().encode(content));
+    created = true;
     await link(temporary, path);
-    const directory = await open(dirname(path), "r");
-    try { await directory.sync(); }
-    finally { await directory.close(); }
-  } finally { await rm(temporary, { force: true }); }
+    await syncDirectory(dirname(path));
+  } finally { if (created) await rm(temporary, { force: true }); }
 }
 
 const defaultPersistDependencies: PersistTemplateDependencies = {
@@ -116,12 +116,6 @@ export interface SlideTemplateRouteService {
     artifact: ArtifactReconciliationIdentity;
     namespaceIds: string[];
   } | null>;
-}
-
-function storagePath(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const path = storageUri.slice("file://".length);
-  return path.startsWith("/") ? path : null;
 }
 
 export function normalizeTemplateName(value: unknown): string | null {

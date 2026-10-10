@@ -7,8 +7,10 @@ import {
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
+  copyTaskScopeMemoryBinding,
   inspectInitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
+  type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import type {
   ProtectedTaskOccurrence,
@@ -16,22 +18,35 @@ import type {
 } from "@nautilo/runtime";
 import {
   findActorByOwnerId,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from
   "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
+import type {
+  ProtectedTaskRuntimeMemoryPolicy,
+} from "./protected-task-runtime-grant-plan";
 
 type ResolverInput = Readonly<{
   occurrence: ProtectedTaskOccurrence;
   predispatch: ProtectedTaskPredispatchPlan;
   namespaceIds: readonly string[];
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
 
 type ProductContext = Awaited<ReturnType<
   typeof createHumanProductTransactionContext
 >>;
+
+export type ProtectedTaskRuntimeNamespaceAuthorityResolution = Readonly<
+  InitialTaskRuntimeNamespaceAuthority & {
+    policy: ProtectedTaskRuntimeMemoryPolicy;
+  }
+>;
 
 export type ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies =
   Readonly<{
@@ -41,18 +56,13 @@ export type ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies =
     restricted(): PostgresJsBridgeConnection;
     readPolicy(): Promise<Readonly<{
       mode: "plaintext_only" | "shadow_encryption" | "encrypted_only";
+      shadowBehavior: "fallback" | "strict";
       revision: number;
     }>>;
     resolveRequesterHuman(userId: string): Promise<Readonly<{
       id: string;
     }> | null>;
-    resolveRequesterPrivateRoom(
-      userId: string,
-      agentId: string,
-    ): Promise<Readonly<{
-      roomId: string;
-      namespaceId: string;
-    }> | null>;
+    resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
     createProductContext(
       userId: string,
       database: DirectDatabase,
@@ -94,7 +104,9 @@ function executionModeMatchesDefinition(
 export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
   overrides: Partial<ProtectedTaskRuntimeNamespaceAuthorityResolverDependencies>
     = {},
-): (input: ResolverInput) => Promise<InitialTaskRuntimeNamespaceAuthority> {
+): (
+  input: ResolverInput,
+) => Promise<ProtectedTaskRuntimeNamespaceAuthorityResolution> {
   const db = overrides.db ?? getServerDirectDb();
   const crypto = overrides.crypto ?? new LatticeCrypto();
   const serverScope = overrides.serverScope
@@ -107,7 +119,7 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
   const resolveRequesterHuman = overrides.resolveRequesterHuman
     ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom = overrides.resolveRequesterPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext = overrides.createProductContext
     ?? createHumanProductTransactionContext;
   const inspectAuthority = overrides.inspectAuthority
@@ -115,7 +127,11 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
 
   return async (input) => {
     const { occurrence, predispatch } = input;
+    const targetRoomId = predispatch.target.roomId;
     const namespaceIds = Object.freeze([...input.namespaceIds]);
+    const scopeMemory = input.scopeMemory === undefined
+      ? undefined
+      : copyTaskScopeMemoryBinding(input.scopeMemory);
     if (!sameOccurrence(occurrence, predispatch.occurrence)
       || namespaceIds.length < 1
       || !namespaceIds.includes(occurrence.task.contentNamespaceId)
@@ -129,12 +145,17 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
     const requesterUserId = occurrence.task.requestorId;
     const [requesterHuman, sourceRoom, policy] = await Promise.all([
       resolveRequesterHuman(requesterUserId),
-      resolveRequesterPrivateRoom(requesterUserId, occurrence.task.agentId),
+      resolveRequesterPrivateRoom(
+        requesterUserId,
+        occurrence.task.agentId,
+        occurrence.task.contentNamespaceId,
+      ),
       readPolicy(),
     ]);
     if (requesterHuman === null
       || sourceRoom === null
       || sourceRoom.namespaceId !== occurrence.task.contentNamespaceId
+      || policy.mode === "plaintext_only"
       || !executionModeMatchesDefinition(
         occurrence.task.contentRepresentation,
         policy.mode,
@@ -156,7 +177,9 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
       agentId: occurrence.task.agentId,
       contentNamespaceId: occurrence.task.contentNamespaceId,
       sourceRoomId: sourceRoom.roomId,
+      targetRoomId,
       namespaceIds,
+      ...(scopeMemory === undefined ? {} : { scopeMemory }),
       expectedPolicyRevision: policy.revision,
     });
     if (authority === null
@@ -170,6 +193,15 @@ export function createProtectedTaskRuntimeNamespaceAuthorityResolver(
         "Protected Task Runtime Namespace authority changed",
       );
     }
-    return authority;
+    return Object.freeze({
+      sourceRoomId: authority.sourceRoomId,
+      sourceNamespaceId: authority.sourceNamespaceId,
+      facts: authority.facts,
+      policy: Object.freeze({
+        mode: policy.mode,
+        shadowBehavior: policy.shadowBehavior,
+        revision: policy.revision,
+      }),
+    });
   };
 }

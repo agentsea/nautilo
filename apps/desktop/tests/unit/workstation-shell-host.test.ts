@@ -36,7 +36,7 @@ function workspace(): string {
 }
 
 describe("workstation shell host", () => {
-  test("runs in the canonical Current Folder with the real host environment", async () => {
+  test.skipIf(process.platform === "win32")("runs in the canonical Current Folder with the real host environment", async () => {
     const cwd = workspace();
     process.env.NAUTILO_D486_TEST_MARKER = "host-visible";
     const consent: string[] = [];
@@ -113,7 +113,7 @@ describe("workstation shell host", () => {
     expect(storageWrites).toBe(0);
   });
 
-  test("consents once per canonical workspace and supports revocation", async () => {
+  test.skipIf(process.platform === "win32")("consents once per canonical workspace and supports revocation", async () => {
     const cwd = workspace();
     let prompts = 0;
     const host = createWorkstationShellHost({
@@ -133,7 +133,7 @@ describe("workstation shell host", () => {
     expect(prompts).toBe(2);
   });
 
-  test("session consent is invalidated by re-pair, relay drift, or folder replacement", async () => {
+  test.skipIf(process.platform === "win32")("session consent is invalidated by re-pair, relay drift, or folder replacement", async () => {
     const parent = workspace();
     const cwd = join(parent, "project");
     mkdirSync(cwd);
@@ -257,7 +257,7 @@ describe("workstation shell host", () => {
     expect(prompts).toBe(0);
   });
 
-  test("returns one structured result for non-zero exit and timeout", async () => {
+  test.skipIf(process.platform === "win32")("returns one structured result for non-zero exit and timeout", async () => {
     const cwd = workspace();
     const host = createWorkstationShellHost({
       resolveSubject: resolveTestSubject,
@@ -272,7 +272,7 @@ describe("workstation shell host", () => {
     expect(timedOut).toMatchObject({ status: "ok", result: { timedOut: true, cancelled: false } });
   });
 
-  test("preserves ordinary output and bounds large output to head plus tail", async () => {
+  test.skipIf(process.platform === "win32")("preserves ordinary output and bounds large output to head plus tail", async () => {
     const cwd = workspace();
     const host = createWorkstationShellHost({
       resolveSubject: resolveTestSubject,
@@ -350,7 +350,9 @@ describe("workstation shell host", () => {
     expect(calls[0]?.options["cwd"]).toBe(realpathSync(cwd));
     expect(calls[0]?.options["detached"]).toBe(true);
     expect(calls[0]?.options["stdio"]).toEqual(["ignore", "pipe", "pipe"]);
-    expect((calls[0]?.options["env"] as NodeJS.ProcessEnv).PATH).toBe(process.env.PATH);
+    const environment = calls[0]?.options["env"] as NodeJS.ProcessEnv;
+    const pathKey = process.platform === "win32" ? Object.keys(environment).find(key => key.toUpperCase() === "PATH") ?? "PATH" : "PATH";
+    expect(environment[pathKey]).toBe(process.env.PATH);
 
     const badChild = fakeChild();
     const failingHost = createWorkstationShellHost({
@@ -369,7 +371,7 @@ describe("workstation shell host", () => {
     });
   });
 
-  test("isolates progress observer faults without changing the canonical outcome", async () => {
+  test.skipIf(process.platform === "win32")("isolates progress observer faults without changing the canonical outcome", async () => {
     const cwd = workspace();
     const host = createWorkstationShellHost({
       resolveSubject: resolveTestSubject,
@@ -505,7 +507,7 @@ describe("workstation shell host", () => {
     expect(await host.consentStatus(second)).toBe("none");
   });
 
-  test("durable consent survives host restart and is revocable", async () => {
+  test.skipIf(process.platform === "win32")("durable consent survives host restart and is revocable", async () => {
     const cwd = workspace();
     const filePath = join(cwd, "consent.json");
     let prompts = 0;

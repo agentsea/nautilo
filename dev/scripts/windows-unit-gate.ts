@@ -6,6 +6,13 @@ const repositoryRoot = resolve(import.meta.dirname, "../..");
 // Native Windows qualification for local Server and Desktop source builds.
 // POSIX deployment/recovery qualification remains in the full Linux CI gate.
 const packageChecks = [
+  ["packages/config", "test:unit"],
+  ["packages/config-guard", "test:unit"],
+  ["packages/security", "test:unit"],
+  ["packages/relay", "test:unit"],
+  ["packages/vault", "test:unit"],
+  ["packages/operator-secrets", "test:unit"],
+  ["packages/codex-app-server-host", "test:unit"],
   ["packages/api-client", "test:unit"],
   ["packages/db", "test:unit"],
   ["packages/trust", "test:unit"],
@@ -36,6 +43,7 @@ const sourceTests = [
   "bin/nautilo-dev/tests/unit/bootstrap-claim-invite.test.ts",
   "apps/desktop/tests/unit-isolated/relay-sidecar-client.test.ts",
   "packages/server/tests/unit/connected-web-account-direct-browser-harness.test.ts",
+  "packages/server/tests/unit/connected-web-account-operation-direct-recovery.test.ts",
   "packages/server/tests/unit/agent-browser-server-vendor.test.ts",
   "packaging/openconnector/provenance.test.ts",
 ] as const;

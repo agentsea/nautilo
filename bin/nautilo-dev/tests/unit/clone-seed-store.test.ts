@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   CloneSeedBusyError,
   CloneSeedFreshnessError,
@@ -25,7 +26,7 @@ const TIME = "2026-08-03T00:00:00.000Z";
 
 async function makeBackup(root: string, name: string, createdAt = TIME): Promise<VerifiedFullBackup> {
   const dir = join(root, name);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(dir);
   for (const file of ["database.sql.gz", "logto.sql.gz", "dot-env", "home.tar.gz"]) {
     await writeFile(join(dir, file), `${name}:${file}`, { mode: 0o600 });
   }
@@ -90,8 +91,12 @@ describe("canonical clone-seed store", () => {
     expect(readers.every((reader) => reader?.backup.manifest.name === "source-a")).toBe(true);
     const seed = readers[0];
     if (seed === null || seed === undefined) throw new Error("seed missing");
-    expect((await stat(seed.directory)).mode & 0o077).toBe(0);
-    expect((await stat(join(seed.directory, "operation.json"))).mode & 0o077).toBe(0);
+    expect(await isPrivateFilesystemPathAsync(seed.directory)).toBe(true);
+    expect(await isPrivateFilesystemPathAsync(join(seed.directory, "operation.json"))).toBe(true);
+    if (process.platform !== "win32") {
+      expect((await stat(seed.directory)).mode & 0o077).toBe(0);
+      expect((await stat(join(seed.directory, "operation.json"))).mode & 0o077).toBe(0);
+    }
     expect(JSON.parse(await readFile(join(cloneSeedPaths(store).currentPointer), "utf8"))).toMatchObject({ formatVersion: 1 });
   });
 
@@ -198,7 +203,7 @@ describe("canonical clone-seed store", () => {
       generation: () => "seed-abcdefgh",
       now: () => new Date(TIME),
       verify: async (directory) => {
-        if (directory.includes(`${join("generations", "seed-abcdefgh")}/`)) {
+        if (directory.includes(`${join("generations", "seed-abcdefgh")}${sep}`)) {
           throw new Error("final path verification failed");
         }
         return verifyFullBackupDirectory(directory);

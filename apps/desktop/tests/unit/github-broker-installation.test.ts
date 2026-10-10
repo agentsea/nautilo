@@ -36,7 +36,7 @@ describe("GitHub installation custody", () => {
       ["/Applications", { ...normal, directory: false }],
     ] as const) expect(githubInstallationPathModeAllowed(path, info, 501)).toBe(false);
   });
-  test("allows a missing default config for first sign-in with a closed environment", async () => {
+  test.skipIf(process.platform === "win32")("allows a missing default config for first sign-in with a closed environment", async () => {
     const f = await fixture();
     try {
       const installation = f.make();
@@ -54,7 +54,7 @@ describe("GitHub installation custody", () => {
       await fails(installation.verify());
     } finally { await f.cleanup(); }
   });
-  test("replacement by identical bytes cannot repin an admitted inode", async () => {
+  test.skipIf(process.platform === "win32")("replacement by identical bytes cannot repin an admitted inode", async () => {
     const f = await fixture();
     try {
       const installation = f.make();
@@ -65,7 +65,7 @@ describe("GitHub installation custody", () => {
       await fails(installation.verify());
     } finally { await f.cleanup(); }
   });
-  test("rejects content changes and hard-linked executables", async () => {
+  test.skipIf(process.platform === "win32")("rejects content changes and hard-linked executables", async () => {
     for (const attack of ["bytes", "link"] as const) {
       const f = await fixture();
       try {
@@ -76,7 +76,7 @@ describe("GitHub installation custody", () => {
       } finally { await f.cleanup(); }
     }
   });
-  test("rejects both canonical and symlink writable ancestors", async () => {
+  test.skipIf(process.platform === "win32")("rejects both canonical and symlink writable ancestors", async () => {
     for (const alias of [false, true]) {
       const f = await fixture();
       try {
@@ -86,7 +86,7 @@ describe("GitHub installation custody", () => {
       } finally { await f.cleanup(); }
     }
   });
-  test("rejects config symlinks, hard links, writable ancestors and unsafe permissions", async () => {
+  test.skipIf(process.platform === "win32")("rejects config symlinks, hard links, writable ancestors and unsafe permissions", async () => {
     for (const attack of ["symlink", "hardlink", "grant", "permissions"] as const) {
       const f = await fixture();
       try {
@@ -104,7 +104,7 @@ describe("GitHub installation custody", () => {
       } finally { await f.cleanup(); }
     }
   });
-  test("authority revocation invalidates an already verified invocation", async () => {
+  test.skipIf(process.platform === "win32")("authority revocation invalidates an already verified invocation", async () => {
     const f = await fixture();
     try {
       const installation = f.make();
@@ -116,7 +116,7 @@ describe("GitHub installation custody", () => {
   });
 });
 
-test("unsafe authority can be reduced without silently repinning the runtime", async () => {
+test.skipIf(process.platform === "win32")("unsafe authority can be reduced without silently repinning the runtime", async () => {
   const f = await fixture();
   try {
     const installation = f.make();
@@ -131,7 +131,7 @@ test("unsafe authority can be reduced without silently repinning the runtime", a
   } finally { await f.cleanup(); }
 });
 
-test("ordinary Development tool-install roots do not overlap the bundled runtime", async () => {
+test.skipIf(process.platform === "win32")("ordinary Development tool-install roots do not overlap the bundled runtime", async () => {
   const f = await fixture();
   try {
     const homebrew = join(f.root, "homebrew");
@@ -141,7 +141,7 @@ test("ordinary Development tool-install roots do not overlap the bundled runtime
   } finally { await f.cleanup(); }
 });
 
-test("config permission repair preserves the same immutable executable pin", async () => {
+test.skipIf(process.platform === "win32")("config permission repair preserves the same immutable executable pin", async () => {
   const f = await fixture();
   try {
     const installation = f.make(); await installation.verify();

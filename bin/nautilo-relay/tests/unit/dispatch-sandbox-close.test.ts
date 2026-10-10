@@ -13,6 +13,9 @@ import {
 
 import { makeDispatchHandler } from "../../src/index";
 
+// Headless run_shell executes /bin/sh with POSIX process supervision.
+const posixTest = process.platform === "win32" ? test.skip : test;
+
 function mkTmp(prefix: string): string {
   return canonicalize(mkdtempSync(join(tmpdir(), prefix)));
 }
@@ -93,7 +96,7 @@ describe("headless relay sandbox lifecycle", () => {
     }
   });
 
-  test("development fallback preserves the headless warning and single sandboxed result path", async () => {
+  posixTest("development fallback preserves the headless warning and single sandboxed result path", async () => {
     const workspace = mkTmp("relay-bin-development-fallback-");
     const originalError = console.error;
     const warnings: string[] = [];
@@ -123,7 +126,7 @@ describe("headless relay sandbox lifecycle", () => {
     }
   });
 
-  test("closes per-request sandbox after run_shell dispatch", async () => {
+  posixTest("closes per-request sandbox after run_shell dispatch", async () => {
     const workspace = mkTmp("relay-bin-close-shell-");
     const guard = createWorkspaceGuard({ workspaceRoot: workspace });
     let closeCalls = 0;
@@ -140,7 +143,7 @@ describe("headless relay sandbox lifecycle", () => {
     expect(closeCalls).toBe(1);
   }, 15_000);
 
-  test("run_shell cwd follows sandboxProfile.workspace over registered guard root", async () => {
+  posixTest("run_shell cwd follows sandboxProfile.workspace over registered guard root", async () => {
     const registeredRoot = mkTmp("relay-bin-registered-");
     const currentFolder = mkTmp("relay-bin-current-");
     const guard = createWorkspaceGuard({ workspaceRoot: registeredRoot });
@@ -220,7 +223,7 @@ describe("headless relay sandbox lifecycle", () => {
     expect(closeCalls).toBe(1);
   });
 
-  test("run_shell maps sandbox getcwd failures to Current Folder guidance", async () => {
+  posixTest("run_shell maps sandbox getcwd failures to Current Folder guidance", async () => {
     const currentFolder = mkTmp("relay-bin-sandbox-cwd-");
     const guard = createWorkspaceGuard({ workspaceRoot: currentFolder });
     let closeCalls = 0;
@@ -249,7 +252,7 @@ describe("headless relay sandbox lifecycle", () => {
     expect(closeCalls).toBe(1);
   });
 
-  test("run_shell redacts known secrets from successful stdout and stderr", async () => {
+  posixTest("run_shell redacts known secrets from successful stdout and stderr", async () => {
     const workspace = mkTmp("relay-bin-redaction-ok-");
     const secret = "headless_success_secret_123456";
     const previous = process.env["NAUTILO_HEADLESS_TEST_TOKEN"];
@@ -282,7 +285,7 @@ describe("headless relay sandbox lifecycle", () => {
     }
   });
 
-  test("run_shell redacts stderr embedded in nonzero-exit errors", async () => {
+  posixTest("run_shell redacts stderr embedded in nonzero-exit errors", async () => {
     const workspace = mkTmp("relay-bin-redaction-error-");
     const secret = "headless_error_secret_123456";
     const previous = process.env["NAUTILO_HEADLESS_TEST_PASSWORD"];
@@ -312,7 +315,7 @@ describe("headless relay sandbox lifecycle", () => {
     }
   });
 
-  test("run_shell clamps too-small timeouts instead of admitting an immediate kill", async () => {
+  posixTest("run_shell clamps too-small timeouts instead of admitting an immediate kill", async () => {
     const workspace = mkTmp("relay-bin-timeout-floor-");
     try {
       const handler = makeDispatchHandler(
@@ -336,7 +339,7 @@ describe("headless relay sandbox lifecycle", () => {
     }
   });
 
-  test("run_shell forwards Relay cancellation to sandbox process supervision", async () => {
+  posixTest("run_shell forwards Relay cancellation to sandbox process supervision", async () => {
     const workspace = mkTmp("relay-bin-cancel-");
     try {
       const handler = makeDispatchHandler(

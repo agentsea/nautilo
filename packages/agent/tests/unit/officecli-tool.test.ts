@@ -198,7 +198,7 @@ async function installHermeticVendoredOfficeCli(
     throw new Error("unsupported test platform");
   }
   const vendorRoot = join(root, "vendor-officecli");
-  const binaryPath = join(vendorRoot, platformKey, "officecli");
+  const binaryPath = join(vendorRoot, platformKey, process.platform === "win32" ? "officecli.exe" : "officecli");
   await mkdir(dirname(binaryPath), { recursive: true });
   await writeFile(binaryPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   await writeFile(

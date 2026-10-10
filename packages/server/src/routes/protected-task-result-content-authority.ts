@@ -14,17 +14,20 @@ import {
   type TaskContentCoordinateV1,
 } from "@nautilo/lattice-bridge";
 import {
-  inspectInitialTaskRuntimeNamespaceAuthority,
+  inspectTaskContentNamespaceAuthority,
 } from "@nautilo/lattice-bridge/server";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
   findActorByOwnerId,
-  findAgentOwnerPrivateRoom,
 } from "@nautilo/trust";
 
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { createHumanProductTransactionContext } from
   "./human-message-product-store";
+import {
+  createProtectedTaskRequesterPrivateRoomResolver,
+  type ProtectedTaskRequesterPrivateRoomResolver,
+} from "./protected-task-requester-private-room";
 
 type TaskFacts = Readonly<{
   id: string;
@@ -75,18 +78,12 @@ export type ProtectedTaskResultContentAuthorityDependencies = Readonly<{
   resolveRequesterHuman(userId: string): Promise<Readonly<{
     id: string;
   }> | null>;
-  resolveRequesterPrivateRoom(
-    userId: string,
-    agentId: string,
-  ): Promise<Readonly<{
-    roomId: string;
-    namespaceId: string;
-  }> | null>;
+  resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
   createProductContext(
     userId: string,
     database: DirectDatabase,
   ): Promise<ProductContext>;
-  inspectAuthority: typeof inspectInitialTaskRuntimeNamespaceAuthority;
+  inspectAuthority: typeof inspectTaskContentNamespaceAuthority;
 }>;
 
 function sameNullableBytes(
@@ -256,11 +253,11 @@ export function createProtectedTaskResultContentAuthorityResolver(
   const resolveRequesterHuman = overrides.resolveRequesterHuman
     ?? findActorByOwnerId;
   const resolveRequesterPrivateRoom = overrides.resolveRequesterPrivateRoom
-    ?? findAgentOwnerPrivateRoom;
+    ?? createProtectedTaskRequesterPrivateRoomResolver(db);
   const createProductContext = overrides.createProductContext
     ?? createHumanProductTransactionContext;
   const inspectAuthority = overrides.inspectAuthority
-    ?? inspectInitialTaskRuntimeNamespaceAuthority;
+    ?? inspectTaskContentNamespaceAuthority;
 
   if (coordinate.kind !== "run_result"
     || coordinate.contentRevision < 1) {
@@ -279,7 +276,11 @@ export function createProtectedTaskResultContentAuthorityResolver(
 
     const [human, room] = await Promise.all([
       resolveRequesterHuman(task.requestorId),
-      resolveRequesterPrivateRoom(task.requestorId, task.agentId),
+      resolveRequesterPrivateRoom(
+        task.requestorId,
+        task.agentId,
+        task.contentNamespaceId,
+      ),
     ]);
     if (human === null || room === null
       || expected.requesterHumanId !== human.id
@@ -298,7 +299,6 @@ export function createProtectedTaskResultContentAuthorityResolver(
       agentId: task.agentId,
       contentNamespaceId: task.contentNamespaceId,
       sourceRoomId: room.roomId,
-      namespaceIds: Object.freeze([task.contentNamespaceId]),
       expectedPolicyRevision: policy.revision,
     });
     if (inspected === null

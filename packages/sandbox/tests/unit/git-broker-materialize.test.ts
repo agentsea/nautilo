@@ -61,8 +61,17 @@ test("network symlinks require a safe relative graph while legacy parser keeps r
     expect(parsed.entries[1]?.mode).toBe("120000");
     expect(() => parseLsTreeZ(bytes, root)).toThrow(/symlink/);
     await rejects(validateNetworkLinks(parsed, root, async () => Buffer.from("../xx")), /Escaping symlink/);
-    symlinkSync("/outside", join(root, "other"));
+    symlinkSync(resolve(root, "..", "outside"), join(root, "other"), process.platform === "win32" ? "junction" : "dir");
     await rejects(validateNetworkLinks(parsed, root, async () => Buffer.from("other")), /Unsafe existing symlink target/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test.each(["nested/.secret", "nested/credentials", "nested/credentials.json"])("network links reject nested secret target %s", async (target) => {
+  const root = mkTmp("network-secret-link-");
+  try {
+    const bytes = manifest([record("120000", "blob", OID, "link", Buffer.byteLength(target))]);
+    const parsed = parseNetworkManifest(bytes, root, { fileCount: 1, blobBytes: 64, totalBytes: 64 });
+    await rejects(validateNetworkLinks(parsed, root, async () => Buffer.from(target)), /Secret manifest path or symlink target/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -252,23 +261,32 @@ describe("parseLsTreeZ — reject", () => {
 });
 
 describe("writeBlobAtomic + safeMkdirsForFile", () => {
-  test("writes a regular file with mode 0644", () => {
+  test("writes regular file bytes", () => {
     const root = mkTmp("git-materialize-w644-");
     const path = resolve(root, "file.txt");
     writeBlobAtomic(path, Buffer.from("hello\n"), false);
     expect(existsSync(path)).toBe(true);
     expect(readFileSync(path, "utf8")).toBe("hello\n");
-    expect(lstatSync(path).mode & 0o777).toBe(0o644);
+    expect(lstatSync(path).isFile()).toBe(true);
     rmSync(root, { recursive: true, force: true });
   });
 
-  test("writes an executable file with mode 0755", () => {
+  test("writes executable blob bytes", () => {
     const root = mkTmp("git-materialize-w755-");
     const path = resolve(root, "bin", "run.sh");
     safeMkdirsForFile(path, root);
     writeBlobAtomic(path, Buffer.from("#!/bin/sh\n"), true);
-    expect(lstatSync(path).mode & 0o777).toBe(0o755);
+    expect(readFileSync(path, "utf8")).toBe("#!/bin/sh\n");
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test.skipIf(process.platform === "win32").each([false, true])("preserves POSIX mode for executable=%s", (executable) => {
+    const root = mkTmp("git-materialize-mode-");
+    try {
+      const file = resolve(root, "blob");
+      writeBlobAtomic(file, Buffer.from("fixture"), executable);
+      expect(lstatSync(file).mode & 0o777).toBe(executable ? 0o755 : 0o644);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   test("nested directories are created safely", () => {
@@ -294,7 +312,7 @@ describe("writeBlobAtomic + safeMkdirsForFile", () => {
     const real = resolve(root, "real");
     mkdirSync(real, { recursive: true });
     const link = resolve(root, "link");
-    symlinkSync(real, link);
+    symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
     const path = resolve(link, "file.txt");
     expect(() => safeMkdirsForFile(path, root)).toThrow(GitPreflightError);
     rmSync(root, { recursive: true, force: true });

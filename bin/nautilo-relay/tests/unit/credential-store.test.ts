@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, statSync, symlinkSync } from "node:fs";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
+import { mkdtempSync, mkdirSync, rmSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import {
   KeyringRelayCredentialStore,
@@ -54,9 +56,9 @@ describe("standalone Relay credential storage", () => {
 
     expect(second).toEqual(first);
     expect(first.serverUrl).toBe("https://example.test");
-    expect(statSync(join(dataDir, "relay")).mode & 0o777).toBe(0o700);
-    expect(statSync(join(dataDir, "relay", "pairings")).mode & 0o777).toBe(0o700);
-    expect(statSync(relayPairingMetadataPath(dataDir, store.serverUrl)).mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(join(dataDir, "relay"))).toBe(true);
+    expect(await isPrivateFilesystemPathAsync(join(dataDir, "relay", "pairings"))).toBe(true);
+    expect(await isPrivateFilesystemPathAsync(relayPairingMetadataPath(dataDir, store.serverUrl))).toBe(true);
   });
 
   test("keeps the token and authenticated user together in the OS keyring envelope", async () => {
@@ -98,10 +100,11 @@ describe("standalone Relay credential storage", () => {
     expect(failure).toBeInstanceOf(RelayCredentialStorageError);
   });
 
-  test("fails closed when pairing metadata becomes group-readable", async () => {
+  test("fails closed when pairing metadata becomes readable by other users", async () => {
     const { dataDir, store } = subject();
     await store.getOrCreatePairingIdentity();
-    chmodSync(relayPairingMetadataPath(dataDir, store.serverUrl), 0o640);
+    const metadata = relayPairingMetadataPath(dataDir, store.serverUrl);
+    await allowOtherReaders(metadata);
     const failure = await store.load().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(RelayCredentialStorageError);
     expect((failure as Error).message).toContain("unsafe");
@@ -111,10 +114,11 @@ describe("standalone Relay credential storage", () => {
     const { dataDir, store } = subject();
     const target = join(dataDir, "unrelated");
     mkdirSync(target, { recursive: true, mode: 0o755 });
-    symlinkSync(target, join(dataDir, "relay"));
+    const originalMode = statSync(target).mode;
+    symlinkSync(target, join(dataDir, "relay"), process.platform === "win32" ? "junction" : "dir");
 
     const failure = await store.getOrCreatePairingIdentity().catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(RelayCredentialStorageError);
-    expect(statSync(target).mode & 0o777).toBe(0o755);
+    expect(statSync(target).mode).toBe(originalMode);
   });
 });

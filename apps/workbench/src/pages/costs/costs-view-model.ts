@@ -109,6 +109,8 @@ export function formatPercent(part: number, whole: number): string {
 
 const CALL_TYPE_LABELS: Record<string, string> = {
   chat: "Chat",
+  decision: "Decision",
+  deep_research: "Deep research",
   subagent: "Subagents",
   conductor: "Conductor",
   room_stenographer: "Room stenographer",
@@ -159,7 +161,7 @@ export function normalizeAdminCosts(
     },
     byModel: buildModelBarRows(data.byModel),
     byCallType: data.byCallType,
-    byProvider: data.byProvider,
+    byProvider: normalizeProviderCosts(data.byProvider),
     timeSeries: data.timeSeries,
   };
 }
@@ -179,7 +181,26 @@ export function normalizePersonalCosts(
     },
     byModel: buildModelBarRows(data.byModel),
     byCallType: data.byCallType,
-    byProvider: data.byProvider,
+    byProvider: normalizeProviderCosts(data.byProvider),
     timeSeries: data.timeSeries,
   };
+}
+
+function normalizeProviderCosts(
+  rows: Array<{
+    provider: string;
+    operation: string;
+    operations: number;
+    unknownOperations?: number;
+    estimatedCostUsd?: number;
+    actualCostUsd?: number;
+    totalCostUsd: number;
+  }>,
+): NormalizedCostsDashboard["byProvider"] {
+  return rows.map((row) => ({
+    ...row,
+    unknownOperations: row.unknownOperations ?? 0,
+    estimatedCostUsd: row.estimatedCostUsd ?? 0,
+    actualCostUsd: row.actualCostUsd ?? 0,
+  }));
 }

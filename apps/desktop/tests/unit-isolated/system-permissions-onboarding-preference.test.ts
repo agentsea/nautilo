@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   DEFAULT_SYSTEM_PERMISSIONS_ONBOARDING_PREFERENCE,
   loadSystemPermissionsOnboardingPreference,
@@ -81,11 +82,11 @@ describe("system permissions onboarding preference", () => {
       "/Library/Application Support",
       "Nautilo",
       "development",
-    )).toBe("/Library/Application Support/Nautilo/system-permissions-onboarding-development.json");
+    )).toBe(join("/Library/Application Support", "Nautilo", "system-permissions-onboarding-development.json"));
     expect(systemPermissionsOnboardingPreferencePath(
       "/Library/Application Support",
       "Nautilo",
       "packaged",
-    )).toBe("/Library/Application Support/Nautilo/system-permissions-onboarding-packaged.json");
+    )).toBe(join("/Library/Application Support", "Nautilo", "system-permissions-onboarding-packaged.json"));
   });
 });

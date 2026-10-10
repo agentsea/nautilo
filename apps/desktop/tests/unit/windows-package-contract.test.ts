@@ -20,6 +20,15 @@ test("Windows CI is triggered by its host, protocol, and Bun pin", () => {
   }
 });
 
+test("hosted Windows runs the complete repository invariant entry point", () => {
+  const workflow = Bun.YAML.parse(readFileSync(join(repositoryRoot, ".github/workflows/windows-desktop.yml"), "utf8")) as {
+    jobs: Record<string, { steps: { run?: string; if?: unknown }[] }>;
+  };
+  const step = workflow.jobs["windows-x64"]!.steps.find(step => step.run === "bun run test:invariants");
+  expect(step).toBeDefined();
+  expect(step!.if).toBeUndefined();
+});
+
 test("Windows validation retains the portable regression suites for its changed runtime contracts", () => {
   const gate = readFileSync(join(repositoryRoot, "dev/scripts/windows-unit-gate.ts"), "utf8");
   for (const path of [

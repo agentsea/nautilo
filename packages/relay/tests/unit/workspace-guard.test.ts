@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import {
   createWorkspaceGuard,
 } from "../../src/workspace-guard";
@@ -84,14 +84,14 @@ describe("createWorkspaceGuard", () => {
     const realDir = makeRoot();
     const linkDir = join(tmpdir(), `wg-link-${Date.now()}`);
     try {
-      symlinkSync(realDir, linkDir);
+      symlinkSync(realDir, linkDir, process.platform === "win32" ? "junction" : "dir");
       const guard = createWorkspaceGuard({ workspaceRoot: linkDir });
       writeFileSync(join(realDir, "x.txt"), "x");
       // Caller supplies the real path — resolves to the same canonical
       // root as the symlink, must be accepted.
       expect(guard.check(join(realDir, "x.txt")).ok).toBe(true);
     } finally {
-      rmSync(linkDir, { force: true });
+      rmSync(linkDir, { recursive: true, force: true });
       rmSync(realDir, { recursive: true, force: true });
     }
   });
@@ -101,7 +101,20 @@ describe("createWorkspaceGuard", () => {
     const r = guard.check(join(root, "sub", "..", "sub", "file.txt"));
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.resolved).toMatch(/sub\/file\.txt$/);
+      expect(r.resolved.endsWith(join("sub", "file.txt"))).toBe(true);
     }
+  });
+
+  test("a filesystem root includes descendants without losing their first character", () => {
+    const volumeRoot = parse(root).root;
+    const guard = createWorkspaceGuard({ workspaceRoot: volumeRoot });
+    const candidate = join(volumeRoot, "nautilo-missing-root-component", "file.txt");
+    expect(guard.check(candidate)).toEqual({ ok: true, resolved: candidate });
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows roots match path case without accepting sibling prefixes", () => {
+    const guard = createWorkspaceGuard({ workspaceRoot: root });
+    expect(guard.check(join(root.toUpperCase(), "file.txt")).ok).toBe(true);
+    expect(guard.check(join(root + "-sibling", "file.txt")).ok).toBe(false);
   });
 });

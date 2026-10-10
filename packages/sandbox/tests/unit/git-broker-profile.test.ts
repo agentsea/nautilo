@@ -32,8 +32,8 @@ function mkTmp(prefix: string): string {
 function makeIdentity(workTree: string): GitRepositoryIdentity {
   return {
     workTree,
-    gitDir: `${workTree}/.git`,
-    commonDir: `${workTree}/.git`,
+    gitDir: join(workTree, ".git"),
+    commonDir: join(workTree, ".git"),
     isLinkedWorktree: false,
   };
 }
@@ -52,9 +52,9 @@ describe("compileGitBrokerProfile — read-only ops (status/diff)", () => {
     // No narrow worktree write carve-out.
     expect(profile).not.toContain("worktrees/");
     // Governance .git write deny present (from buildSbplProfile).
-    expect(profile).toContain(`(deny file-write* (subpath "${id.gitDir}"))`);
+    expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
     // Repo read present.
-    expect(profile).toContain(`(allow file-read* (subpath "${root}"))`);
+    expect(profile).toContain(`(allow file-read* (subpath ${JSON.stringify(root)}))`);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -67,16 +67,16 @@ describe("compileGitBrokerProfile — read-only ops (status/diff)", () => {
       gitExecutable: GIT,
     });
     expect(profile).not.toContain("worktrees/");
-    expect(profile).toContain(`(deny file-write* (subpath "${id.gitDir}"))`);
+    expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
     rmSync(root, { recursive: true, force: true });
   });
 
   test("linked status reads only the registered common Git metadata outside the worktree", () => {
     const root = mkTmp("d498-prof-linked-status-");
-    const workTree = `${root}/linked`;
-    const primary = `${root}/primary`;
-    const commonDir = `${primary}/.git`;
-    const gitDir = `${commonDir}/worktrees/linked`;
+    const workTree = join(root, "linked");
+    const primary = join(root, "primary");
+    const commonDir = join(primary, ".git");
+    const gitDir = join(commonDir, "worktrees", "linked");
     mkdirSync(workTree, { recursive: true });
     mkdirSync(gitDir, { recursive: true });
     const profile = compileGitBrokerProfile({
@@ -90,19 +90,19 @@ describe("compileGitBrokerProfile — read-only ops (status/diff)", () => {
       gitExecutable: GIT,
     });
     expect(profile).toContain(
-      `(allow file-read* (subpath "${commonDir}"))`,
+      `(allow file-read* (subpath ${JSON.stringify(commonDir)}))`,
     );
     expect(profile).not.toContain(
-      `(allow file-read* (subpath "${primary}"))`,
+      `(allow file-read* (subpath ${JSON.stringify(primary)}))`,
     );
     expect(profile).not.toContain(
-      `(allow file-write* (subpath "${commonDir}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(commonDir)}))`,
     );
     expect(profile).toContain(
-      `(allow file-read-metadata (literal "${primary}"))`,
+      `(allow file-read-metadata (literal ${JSON.stringify(primary)}))`,
     );
     expect(profile).toContain(
-      `(deny file-write* (subpath "${commonDir}"))`,
+      `(deny file-write* (subpath ${JSON.stringify(commonDir)}))`,
     );
     rmSync(root, { recursive: true, force: true });
   });
@@ -126,16 +126,16 @@ describe("compileGitBrokerProfile — worktree ops", () => {
       gitExecutable: GIT,
     });
     const registry = `${id.commonDir}/worktrees`;
-    expect(profile).toContain(`(allow file-read* file-write* (subpath "${registry}"))`);
+    expect(profile).toContain(`(allow file-read* file-write* (subpath ${JSON.stringify(registry)}))`);
     // Target writable (via buildSbplProfile writablePaths — write-only;
     // read is covered by the workspace read allow since the target
     // sits under the repo root).
-    expect(profile).toContain(`(allow file-write* (subpath "${target}"))`);
+    expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(target)}))`);
     // Governance .git deny still present and BEFORE the narrow carve-out
     // (the carve-out is appended after so later-wins re-opens only the
     // narrow registry subdir).
-    const denyIdx = profile.indexOf(`(deny file-write* (subpath "${id.gitDir}"))`);
-    const carveIdx = profile.indexOf(registry);
+    const denyIdx = profile.indexOf(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
+    const carveIdx = profile.indexOf(JSON.stringify(registry));
     expect(denyIdx).toBeGreaterThan(-1);
     expect(carveIdx).toBeGreaterThan(denyIdx);
     rmSync(root, { recursive: true, force: true });
@@ -152,8 +152,8 @@ describe("compileGitBrokerProfile — worktree ops", () => {
       worktreeName: "wt-rm",
       gitExecutable: GIT,
     });
-    expect(profile).toContain(`(allow file-read* file-write* (subpath "${id.commonDir}/worktrees"))`);
-    expect(profile).toContain(`(deny file-write* (subpath "${id.gitDir}"))`);
+    expect(profile).toContain(`(allow file-read* file-write* (subpath ${JSON.stringify(`${id.commonDir}/worktrees`)}))`);
+    expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
     rmSync(root, { recursive: true, force: true });
   });
 
@@ -167,7 +167,7 @@ describe("compileGitBrokerProfile — worktree ops", () => {
       gitExecutable: GIT,
     });
     expect(profile).not.toContain("worktrees");
-    expect(profile).toContain(`(deny file-write* (subpath "${id.gitDir}"))`);
+    expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
     rmSync(root, { recursive: true, force: true });
   });
 });
@@ -184,8 +184,8 @@ describe("compileGitBrokerProfile — plumbing add/commit", () => {
       transactionRoot,
       gitExecutable: GIT,
     });
-    expect(profile).toContain(`(allow file-write* (subpath "${transactionRoot}"))`);
-    expect(profile).toContain(`(deny file-write* (subpath "${id.gitDir}"))`);
+    expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(transactionRoot)}))`);
+    expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
     expect(profile).not.toMatch(/allow file-read\* file-write\* \(subpath "[^"]*\.git/);
     rmSync(root, { recursive: true, force: true });
   });
@@ -202,10 +202,10 @@ describe("compileGitBrokerProfile — plumbing add/commit", () => {
       refName: "refs/heads/main",
       gitExecutable: GIT,
     });
-    expect(profile).toContain(`(allow file-read* file-write* (literal "${id.gitDir}/refs/heads/main.lock"))`);
-    expect(profile).toContain(`(allow file-read* file-write* (literal "${id.gitDir}/HEAD.lock"))`);
-    expect(profile).not.toContain(`(allow file-read* file-write* (subpath "${id.gitDir}/objects"))`);
-    expect(profile).toContain(`(deny file-write* (subpath "${id.gitDir}"))`);
+    expect(profile).toContain(`(allow file-read* file-write* (literal ${JSON.stringify(`${id.gitDir}/refs/heads/main.lock`)}))`);
+    expect(profile).toContain(`(allow file-read* file-write* (literal ${JSON.stringify(`${id.gitDir}/HEAD.lock`)}))`);
+    expect(profile).not.toContain(`(allow file-read* file-write* (subpath ${JSON.stringify(`${id.gitDir}/objects`)}))`);
+    expect(profile).toContain(`(deny file-write* (subpath ${JSON.stringify(id.gitDir)}))`);
     rmSync(root, { recursive: true, force: true });
   });
 });

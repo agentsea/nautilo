@@ -1,5 +1,5 @@
 import { describe, test, expect, spyOn } from "bun:test";
-import { Job } from "../../src/job";
+import { Job, ProtectedTaskJobStartNotOwnedError } from "../../src/job";
 import { assertProtectedTaskJobReferenceV1 } from "../../src/tasks/protected-task-job-reference";
 import type { ServerEvent, JobStatus } from "@nautilo/types";
 import type { JobPublicationPolicy, PersistJobPayload } from "@nautilo/db";
@@ -23,6 +23,26 @@ function trackStatus() {
 
 async function* yieldNothing(): AsyncGenerator<ServerEvent> {
   // completes immediately
+}
+
+const startProtectedTaskJob = async () => "started" as const;
+const settleProtectedTaskJobTerminal = async (
+  _jobId: string,
+  _reference: unknown,
+  requested: "completed" | "failed" | "cancelled",
+) => ({ kind: "transitioned", status: requested } as const);
+
+function protectedReference(suffix: string) {
+  return {
+    kind: "protected_task_run_v1" as const,
+    taskId: "10000000-0000-4000-8000-000000000001",
+    taskRunId: "20000000-0000-4000-8000-000000000002",
+    inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+    resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+    authorizationRequestId: `task-run-authorization:${suffix}`,
+    policyRevision: 11,
+    executionSegment: 1,
+  };
 }
 
 async function* yieldTokens(n: number, laneKey: string): AsyncGenerator<ServerEvent> {
@@ -166,6 +186,8 @@ describe("Job", () => {
         return "job-protected-task";
       },
       updateStatus: async () => {},
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
     });
 
     await job.persist();
@@ -177,7 +199,7 @@ describe("Job", () => {
     });
 
     await job.executeProtectedTask(job.input, undefined, {
-      awaitPublished: async () => true,
+      awaitSettled: async () => true,
     });
     expect(executedMessage).toBe("protected-task-input-sentinel");
   });
@@ -206,15 +228,15 @@ describe("Job", () => {
         executor: yieldNothing,
         persist: async () => `protected-result-${published}`,
         updateStatus: async (_id, status) => { updates.push(status); },
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal,
       });
       await job.persist();
       await job.executeProtectedTask({}, undefined, {
-        awaitPublished: async () => published,
+        awaitSettled: async () => published,
       });
       expect(job.status).toBe(published ? "completed" : "running");
-      expect(updates).toEqual(published
-        ? ["running", "completed"]
-        : ["running"]);
+      expect(updates).toEqual([]);
     }
   });
 
@@ -257,6 +279,8 @@ describe("Job", () => {
           return "unexpected";
         },
         updateStatus: async () => {},
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal,
       });
       expect(job.persist()).rejects.toThrow(
         "Protected Task durable Job reference is invalid",
@@ -265,7 +289,7 @@ describe("Job", () => {
     }
   });
 
-  test("resumed protected Task Jobs require one opaque acceptance binding", () => {
+  test("resumed protected Task Jobs require one exact resume binding", () => {
     const initial = {
       kind: "protected_task_run_v1",
       taskId: "10000000-0000-4000-8000-000000000001",
@@ -282,10 +306,30 @@ describe("Job", () => {
       executionSegment: 2,
       resumeAcceptanceId: "await-reply-acceptance:1",
     })).not.toThrow();
+    expect(() => assertProtectedTaskJobReferenceV1({
+      ...initial,
+      executionSegment: 2,
+      resumeContinuationFingerprint: "A".repeat(43),
+    })).not.toThrow();
     for (const invalid of [
       { ...initial, executionSegment: 2 },
       { ...initial, resumeAcceptanceId: "await-reply-acceptance:1" },
+      { ...initial, resumeContinuationFingerprint: "A".repeat(43) },
       { ...initial, executionSegment: 2, resumeAcceptanceId: "contains spaces" },
+      {
+        ...initial,
+        executionSegment: 2,
+        resumeAcceptanceId: "await-reply-acceptance:1",
+        resumeContinuationFingerprint: "A".repeat(43),
+      },
+      { ...initial, executionSegment: 2, resumeAcceptanceId: undefined },
+      { ...initial, executionSegment: 2, resumeContinuationFingerprint: undefined },
+      { ...initial, executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) },
+      {
+        ...initial,
+        executionSegment: 2,
+        resumeContinuationFingerprint: `${"A".repeat(42)}B`,
+      },
     ]) {
       expect(() => assertProtectedTaskJobReferenceV1(invalid)).toThrow(
         "Protected Task durable Job reference is invalid",
@@ -401,6 +445,8 @@ describe("Job", () => {
         updateStatus: async (...args) => {
           updates.push(args);
         },
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal,
       });
       await job.persist();
       await job.executeProtectedTask(
@@ -418,6 +464,287 @@ describe("Job", () => {
     } finally {
       eventBus.off(listener);
       errorSpy.mockRestore();
+    }
+  });
+
+  test("protected Task late failure adopts durable completion without a false failure event or log", async () => {
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    eventBus.on(listener);
+    try {
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: "task:late-failure",
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: protectedReference("late-failure"),
+        executor: yieldNothing, persist: async () => "protected-late-failure",
+        updateStatus: async () => { throw new Error("generic sink used"); },
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal: async () => ({
+          kind: "existing_terminal", status: "completed",
+        }),
+      });
+      await job.persist();
+      await job.fail(new Error("must-not-log-as-failure"));
+
+      expect(job.status).toBe("completed");
+      const jobEvents = events.filter((event) =>
+        event.type === "job.status" && event.jobId === job.id
+      );
+      expect(jobEvents).toHaveLength(1);
+      expect(jobEvents[0]).toMatchObject({ status: "completed" });
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain("failed");
+    } finally {
+      eventBus.off(listener);
+      errorSpy.mockRestore();
+    }
+  });
+
+  test("protected Task cancellation aborts promptly and adopts durable completion", async () => {
+    const executorEntered = Promise.withResolvers<AbortSignal>();
+    const terminalEntered = Promise.withResolvers<void>();
+    const allowTerminal = Promise.withResolvers<void>();
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    eventBus.on(listener);
+    try {
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: "task:late-cancel",
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: protectedReference("late-cancel"),
+        executor: async function* (_input, _id, _lane, signal) {
+          executorEntered.resolve(signal);
+          await new Promise<void>((resolve) =>
+            signal.addEventListener("abort", () => resolve(), { once: true })
+          );
+          signal.throwIfAborted();
+          yield* [];
+        },
+        persist: async () => "protected-late-cancel",
+        updateStatus: async () => { throw new Error("generic sink used"); },
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal: async () => {
+          terminalEntered.resolve();
+          await allowTerminal.promise;
+          return { kind: "existing_terminal", status: "completed" };
+        },
+      });
+      await job.persist();
+      const execution = job.executeProtectedTask({}, undefined, {
+        awaitSettled: async () => false,
+      });
+      const signal = await executorEntered.promise;
+      const cancellation = job.cancel();
+      await terminalEntered.promise;
+      expect(signal.aborted).toBeTrue();
+      allowTerminal.resolve();
+      await Promise.all([execution, cancellation]);
+
+      expect(job.status).toBe("completed");
+      expect(events.some((event) =>
+        event.type === "job.status"
+        && event.jobId === job.id
+        && event.status === "cancelled"
+      )).toBeFalse();
+    } finally {
+      eventBus.off(listener);
+    }
+  });
+
+  test("protected Task terminal races emit only the durable winner", async () => {
+    const terminalEntered = Promise.withResolvers<void>();
+    const allowTerminal = Promise.withResolvers<void>();
+    const requests: string[] = [];
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    eventBus.on(listener);
+    try {
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: "task:terminal-race",
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: protectedReference("terminal-race"),
+        executor: yieldNothing, persist: async () => "protected-terminal-race",
+        updateStatus: async () => { throw new Error("generic sink used"); },
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal: async (_id, _reference, requested) => {
+          requests.push(requested);
+          terminalEntered.resolve();
+          await allowTerminal.promise;
+          return { kind: "transitioned", status: requested };
+        },
+      });
+      await job.persist();
+      const failure = job.fail(new Error("winner"));
+      await terminalEntered.promise;
+      const cancellation = job.cancel();
+      allowTerminal.resolve();
+      await Promise.all([failure, cancellation]);
+
+      expect(requests).toEqual(["failed"]);
+      expect(job.status).toBe("failed");
+      expect(events.filter((event) =>
+        event.type === "job.status" && event.jobId === job.id
+      )).toHaveLength(1);
+    } finally {
+      eventBus.off(listener);
+    }
+  });
+
+  test("protected Task terminal settlement fails closed when missing or rejected", async () => {
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    eventBus.on(listener);
+    try {
+      for (const disposition of ["missing", "rejected"] as const) {
+        const job = new Job({
+          ownerId: "o1", requestorId: "r1", laneKey: null,
+          type: "foreground", input: {}, durableInputDisposition: "full",
+          durableInputReference: protectedReference(`terminal-${disposition}`),
+          executor: yieldNothing, persist: async () => `protected-${disposition}`,
+          updateStatus: async () => { throw new Error("generic sink used"); },
+          startProtectedTaskJob,
+          ...(disposition === "rejected"
+            ? { settleProtectedTaskJobTerminal: async () => ({ kind: "rejected" as const }) }
+            : {}),
+        });
+        await job.persist();
+        const error = await job.cancel().then(
+          () => undefined,
+          (value: unknown) => value,
+        );
+        expect(error).toBeInstanceOf(Error);
+        expect(job.status).toBe("queued");
+        expect(events.some((event) =>
+          event.type === "job.status" && event.jobId === job.id
+        )).toBeFalse();
+      }
+    } finally {
+      eventBus.off(listener);
+    }
+  });
+
+  test("protected Task terminal settlement replays one lost response and emits once", async () => {
+    let calls = 0;
+    const events: ServerEvent[] = [];
+    const listener = (event: ServerEvent) => events.push(event);
+    eventBus.on(listener);
+    try {
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: null,
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: protectedReference("lost-terminal-response"),
+        executor: yieldNothing, persist: async () => "protected-lost-response",
+        updateStatus: async () => { throw new Error("generic sink used"); },
+        startProtectedTaskJob,
+        settleProtectedTaskJobTerminal: async (_id, _reference, requested) => {
+          calls += 1;
+          if (calls === 1) throw new Error("response lost");
+          return { kind: "existing_terminal", status: requested };
+        },
+      });
+      await job.persist();
+      await job.fail(new Error("terminal failure"));
+      await job.fail(new Error("duplicate observation"));
+
+      expect(calls).toBe(2);
+      expect(job.status).toBe("failed");
+      expect(events.filter((event) =>
+        event.type === "job.status" && event.jobId === job.id
+      )).toHaveLength(1);
+    } finally {
+      eventBus.off(listener);
+    }
+  });
+
+  test("protected Task start rejection and unknown response never execute or persist failure", async () => {
+    const reference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:start-rejection",
+      policyRevision: 9,
+      executionSegment: 1,
+    };
+    for (const disposition of ["rejected", "unknown"] as const) {
+      let executed = 0;
+      const updates: JobStatus[] = [];
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: `task:${reference.taskId}`,
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: reference,
+        executor: async function* () { executed += 1; yield* []; },
+        persist: async () => `protected-start-${disposition}`,
+        updateStatus: async (_id, status) => { updates.push(status); },
+        startProtectedTaskJob: async () => {
+          if (disposition === "unknown") throw new Error("response lost");
+          return "rejected";
+        },
+        settleProtectedTaskJobTerminal,
+      });
+      await job.persist();
+      const error = await job.executeProtectedTask({}).then(
+        () => undefined,
+        (value: unknown) => value,
+      );
+      expect(error).toBeInstanceOf(ProtectedTaskJobStartNotOwnedError);
+      expect((error as ProtectedTaskJobStartNotOwnedError).disposition)
+        .toBe(disposition);
+      expect(executed).toBe(0);
+      expect(updates).toEqual([]);
+      expect(job.status).toBe("queued");
+    }
+  });
+
+  test("protected Task start cannot revive either side of a local cancellation race", async () => {
+    const reference = {
+      kind: "protected_task_run_v1" as const,
+      taskId: "10000000-0000-4000-8000-000000000001",
+      taskRunId: "20000000-0000-4000-8000-000000000002",
+      inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+      resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
+      authorizationRequestId: "task-run-authorization:start-cancel",
+      policyRevision: 9,
+      executionSegment: 1,
+    };
+
+    for (const startResult of ["rejected", "started"] as const) {
+      const startEntered = Promise.withResolvers<void>();
+      const releaseStart = Promise.withResolvers<void>();
+      let executed = 0;
+      const updates: JobStatus[] = [];
+      const job = new Job({
+        ownerId: "o1", requestorId: "r1", laneKey: `task:${reference.taskId}`,
+        type: "foreground", input: {}, durableInputDisposition: "full",
+        durableInputReference: reference,
+        executor: async function* () { executed += 1; yield* []; },
+        persist: async () => `protected-cancel-${startResult}`,
+        updateStatus: async (_id, status) => { updates.push(status); },
+        startProtectedTaskJob: async () => {
+          startEntered.resolve();
+          await releaseStart.promise;
+          return startResult;
+        },
+        settleProtectedTaskJobTerminal,
+      });
+      await job.persist();
+      const execution = job.executeProtectedTask({});
+      await startEntered.promise;
+      await job.cancel();
+      releaseStart.resolve();
+      if (startResult === "rejected") {
+        const error = await execution.then(
+          () => undefined,
+          (value: unknown) => value,
+        );
+        expect(error).toBeInstanceOf(ProtectedTaskJobStartNotOwnedError);
+      } else {
+        await execution;
+      }
+      expect(executed).toBe(0);
+      expect(updates).toEqual([]);
+      expect(job.status).toBe("cancelled");
     }
   });
 

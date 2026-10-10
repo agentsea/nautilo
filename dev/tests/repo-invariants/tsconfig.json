@@ -25,6 +25,7 @@
     "./test-d563-model-attempt-single-owner.test.ts",
     "./test-desktop-filesystem-grant-terminology.test.ts",
     "./test-harness-guard.test.ts",
+    "./test-lifecycle-preload.test.ts",
     "./test-first-party-app-production-install.test.ts",
     "./test-runtime-install-projection.test.ts",
     "./xmldom-security-floor.test.ts"

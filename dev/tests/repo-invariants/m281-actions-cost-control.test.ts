@@ -4,6 +4,7 @@ import { readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { typecheckEnvironment } from "../../scripts/typecheck.ts";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 const workflowsRoot = join(repositoryRoot, ".github/workflows");
@@ -267,8 +268,14 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(typecheck?.env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=5120",
     });
-    expect(rootPackage.scripts.typecheck).toContain(`NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
-    expect(rootPackage.scripts.typecheck).toContain("TURBO_CONCURRENCY=${TURBO_CONCURRENCY:-1}");
+    expect(rootPackage.scripts.typecheck).toBe("bun dev/scripts/typecheck.ts");
+    expect(typecheckEnvironment({})).toMatchObject({
+      NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS,
+      TURBO_CONCURRENCY: "1",
+    });
+    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" }).TURBO_CONCURRENCY).toBe("1");
+    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=1024" }))
+      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS });
     expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
     expect(localGates).toContain('export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"');
   });
@@ -409,6 +416,7 @@ describe("M281 GitHub Actions cost controls", () => {
       "tsconfig.base.json", "patches/dependency.patch",
       "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
       "dev/scripts/test-repo-invariants.ts",
+      "dev/tests/test-lifecycle-preload.ts",
       "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",
       "dev/scripts/prepare-sheets.ts", "dev/scripts/prepare-slides.ts",
       "dev/scripts/vendor-agent-browser.ts", ".github/workflows/windows-desktop.yml",

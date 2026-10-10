@@ -119,13 +119,13 @@ test("canonical metadata stamp detects ref, index and config drift without execu
 });
 test("metadata capture refuses a symlinked ref parent", () => {
   const f = repository(); const outside = join(f.root, "outside"); mkdirSync(outside);
-  rmSync(join(f.identity.gitDir, "refs", "heads"), { recursive: true }); symlinkSync(outside, join(f.identity.gitDir, "refs", "heads"));
+  rmSync(join(f.identity.gitDir, "refs", "heads"), { recursive: true }); symlinkSync(outside, join(f.identity.gitDir, "refs", "heads"), process.platform === "win32" ? "junction" : "dir");
   expect(() => captureNetworkRepository(f.identity, "main")).toThrow("Unsafe ref parent");
 });
 test("network object and ref profiles revoke broader writes before exact allow", () => {
   const f = repository();
   const object = compileGitNetworkObjectProfile({ identity: f.identity, gitExecutable: "/usr/bin/git", objectsPath: "/fixture/private/objects", write: true });
-  expect(object.lastIndexOf("(deny file-write*)")).toBeLessThan(object.lastIndexOf(`(allow file-write* (subpath "${f.identity.commonDir}/objects"))`));
+  expect(object.lastIndexOf("(deny file-write*)")).toBeLessThan(object.lastIndexOf(`(allow file-write* (subpath ${JSON.stringify(join(f.identity.commonDir, "objects"))}))`));
   const ref = compileGitBrokerProfile({ operation: "commit", identity: f.identity, gitExecutable: "/usr/bin/git", networkRef: true, refName: "refs/remotes/nautilo-github/12/main" });
   expect(ref).toContain("(deny file-write*)\n(deny network*)");
   expect(ref.slice(ref.lastIndexOf("(deny file-write*)"))).not.toContain('(subpath');

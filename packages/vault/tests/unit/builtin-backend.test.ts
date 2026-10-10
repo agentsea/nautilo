@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 import { resolveNautiloRuntimePaths, ensureDirectoryTree } from "@nautilo/config";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import type { ConnectionScope } from "@nautilo/types";
 
@@ -91,8 +92,28 @@ describe("@nautilo/vault BuiltinVaultBackend", () => {
       nsScope("n1", "a1"),
     );
 
-    const mode = (await stat(vaultPath)).mode & 0o777;
-    expect(mode & 0o077).toBe(0);
+    expect(isPrivateFilesystemPath(vaultPath)).toBe(true);
+    if (process.platform !== "win32") expect((await stat(vaultPath)).mode & 0o077).toBe(0);
+  });
+
+  test("accepts a relative vault path for persistence and reload", async () => {
+    const local = await mkdtemp(join(process.cwd(), ".nautilo-vault-relative-"));
+    try {
+      const relativeVaultPath = relative(process.cwd(), join(local, "vault", "vault.json"));
+      expect(isAbsolute(relativeVaultPath)).toBe(false);
+      const writer = new Backend({ installId, masterPersistence: persistence, vaultPath: relativeVaultPath });
+      await writer.loadFromDisk();
+      await writer.set({ field: "t", service: "s" }, Buffer.from("relative"), nsScope("n1", "a1"));
+
+      const reader = new Backend({ installId, masterPersistence: persistence, vaultPath: relativeVaultPath });
+      await reader.loadFromDisk();
+      expect(
+        (await reader.get({ field: "t", service: "s" }, nsScope("n1", "a1")))?.toString("utf8"),
+      ).toBe("relative");
+      expect(isPrivateFilesystemPath(join(local, "vault", "vault.json"))).toBe(true);
+    } finally {
+      await rm(local, { recursive: true, force: true });
+    }
   });
 
   test("malformed vault file throws schema error", async () => {

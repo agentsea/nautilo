@@ -415,11 +415,13 @@ function decodeShadowPart(value: string, prefix: string): string {
   return decoded;
 }
 
-function shadowThreadId(threadId: string): string {
+export function encryptedCheckpointShadowThreadId(threadId: string): string {
   return `${SHADOW_THREAD_PREFIX}${encodeShadowPart(threadId)}`;
 }
 
-function shadowCheckpointNs(checkpointNs: string): string {
+export function encryptedCheckpointShadowNamespaceId(
+  checkpointNs: string,
+): string {
   return `${SHADOW_NAMESPACE_PREFIX}${encodeShadowPart(checkpointNs)}`;
 }
 
@@ -605,8 +607,10 @@ function toShadowConfig(config: RunnableConfig): RunnableConfig {
     ...config,
     configurable: {
       ...config.configurable,
-      thread_id: shadowThreadId(logical.threadId),
-      checkpoint_ns: shadowCheckpointNs(logical.checkpointNs),
+      thread_id: encryptedCheckpointShadowThreadId(logical.threadId),
+      checkpoint_ns: encryptedCheckpointShadowNamespaceId(
+        logical.checkpointNs,
+      ),
       ...(logical.checkpointId === undefined
         ? {}
         : { checkpoint_id: logical.checkpointId }),
@@ -1197,6 +1201,11 @@ export type EncryptedCheckpointSaverCloseOutcome =
       error: Error;
     }>;
 
+export type EncryptedCheckpointSaverQuiescence = Readonly<{
+  rejectedOperationCount: number;
+  pendingMaintenanceCount: number;
+}>;
+
 /**
  * Fail-closed encrypted façade around the pinned PostgresSaver.
  *
@@ -1213,6 +1222,9 @@ export class EncryptedCheckpointSaver extends BaseCheckpointSaver {
   readonly #pendingMaintenance = new Map<string, RunnableConfig>();
   readonly #maintenanceOutcomes:
     EncryptedCheckpointMaintenanceOutcome[] = [];
+  #closing = false;
+  #rejectedOperationCount = 0;
+  #quiescing: Promise<EncryptedCheckpointSaverQuiescence> | null = null;
   #ending: Promise<EncryptedCheckpointSaverCloseOutcome> | null = null;
 
   constructor(options: EncryptedCheckpointSaverOptions) {
@@ -1254,39 +1266,46 @@ export class EncryptedCheckpointSaver extends BaseCheckpointSaver {
     ) => Promise<Value>,
     allowWhileEnding = false,
   ): Promise<Value> {
-    if (this.#ending !== null && !allowWhileEnding) {
+    if (this.#closing && !allowWhileEnding) {
       return Promise.reject(
         new Error("encrypted checkpoint saver is closing"),
       );
     }
-    const operationPromise = this.#crypto.executeAuthorizedOperation({
-      operation,
-      scope: this.#scope,
-      execute: async (context) => {
-        assertAuthorizedOperationIsActive(context);
-        const operationStore = this.#operationStoreFactory.create(context);
-        if (
-          !(
-            operationStore.checkpointStore.serde
-            instanceof InlineCheckpointCellSerializer
-          )
-          || (
-            operationStore.checkpointStore as unknown as {
-              options?: { schema?: unknown };
-            }
-          ).options?.schema !== "langchain"
-        ) {
-          throw new Error(
-            "checkpoint operation store violates serializer/schema invariants",
-          );
-        }
-        return execute(context, operationStore);
-      },
-    });
+    // Defer the authority owner so this promise enters the live set before a
+    // synchronous owner callback can reenter quiesce/end.
+    const operationPromise = Promise.resolve().then(() =>
+      this.#crypto.executeAuthorizedOperation({
+        operation,
+        scope: this.#scope,
+        execute: async (context) => {
+          assertAuthorizedOperationIsActive(context);
+          const operationStore = this.#operationStoreFactory.create(context);
+          if (
+            !(
+              operationStore.checkpointStore.serde
+              instanceof InlineCheckpointCellSerializer
+            )
+            || (
+              operationStore.checkpointStore as unknown as {
+                options?: { schema?: unknown };
+              }
+            ).options?.schema !== "langchain"
+          ) {
+            throw new Error(
+              "checkpoint operation store violates serializer/schema invariants",
+            );
+          }
+          return execute(context, operationStore);
+        },
+      })
+    );
     this.#liveOperations.add(operationPromise);
     void operationPromise.then(
       () => this.#liveOperations.delete(operationPromise),
-      () => this.#liveOperations.delete(operationPromise),
+      () => {
+        this.#rejectedOperationCount += 1;
+        this.#liveOperations.delete(operationPromise);
+      },
     );
     return operationPromise;
   }
@@ -1402,7 +1421,7 @@ export class EncryptedCheckpointSaver extends BaseCheckpointSaver {
   async retryPendingMaintenance():
     Promise<readonly EncryptedCheckpointMaintenanceOutcome[]>
   {
-    if (this.#ending !== null) {
+    if (this.#closing) {
       throw new Error("encrypted checkpoint saver is closing");
     }
     const outcomes: EncryptedCheckpointMaintenanceOutcome[] = [];
@@ -1605,7 +1624,7 @@ export class EncryptedCheckpointSaver extends BaseCheckpointSaver {
     // Stored checkpoint decoding retains the strict versioned-cell contract.
     validateCheckpoint(checkpoint, { allowUnversionedValues: true });
     validateNewVersions(checkpoint, newVersions);
-    if (this.#ending !== null) {
+    if (this.#closing) {
       throw new Error("encrypted checkpoint saver is closing");
     }
     const storageConfig = toShadowConfig(config);
@@ -1779,24 +1798,41 @@ export class EncryptedCheckpointSaver extends BaseCheckpointSaver {
       { checkpointStore },
     ) => {
       assertAuthorizedOperationIsActive(context);
-      await checkpointStore.deleteThread(shadowThreadId(threadId));
+      await checkpointStore.deleteThread(
+        encryptedCheckpointShadowThreadId(threadId),
+      );
     });
+  }
+
+  /** Stop new admissions and drain every operation accepted before the gate. */
+  quiesce(): Promise<EncryptedCheckpointSaverQuiescence> {
+    this.#closing = true;
+    this.#quiescing ??= (async () => {
+      while (this.#liveOperations.size > 0) {
+        await Promise.allSettled([...this.#liveOperations]);
+      }
+      return Object.freeze({
+        rejectedOperationCount: this.#rejectedOperationCount,
+        pendingMaintenanceCount: this.#pendingMaintenance.size,
+      });
+    })();
+    return this.#quiescing;
   }
 
   /** Close the separately-owned PostgresSaver/pool when used by integration. */
   async end(): Promise<EncryptedCheckpointSaverCloseOutcome> {
     this.#ending ??= (async () => {
-      await Promise.allSettled([...this.#liveOperations]);
+      const quiescence = await this.quiesce();
       try {
         await this.#operationStoreFactory.end();
         return Object.freeze({
           status: "closed" as const,
-          pendingMaintenanceCount: this.#pendingMaintenance.size,
+          pendingMaintenanceCount: quiescence.pendingMaintenanceCount,
         });
       } catch (cause) {
         return Object.freeze({
           status: "close_failed" as const,
-          pendingMaintenanceCount: this.#pendingMaintenance.size,
+          pendingMaintenanceCount: quiescence.pendingMaintenanceCount,
           error: new Error("encrypted checkpoint saver close failed", {
             cause,
           }),

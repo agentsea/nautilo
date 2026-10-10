@@ -34,6 +34,15 @@ const REQUEST: RelayDesktopFilesystemGrantRequest = {
 };
 
 describe("Desktop-filesystem-grant request protocol", () => {
+  test.each(["/home/alice/project", "C:\\Users\\alice\\project", "\\\\fileserver\\share\\project"])("preserves the remote Desktop path on every server OS: %s", (requestedRoot) => {
+    const request = { ...REQUEST, requestedRoot };
+    expect(parseRelayDesktopFilesystemGrantRequest(request)).toEqual({ ok: true, request });
+  });
+
+  test.each(["C:project", "\\project", "C:/Users/alice/project", "C:\\Users\\alice\\..\\project", "/home/alice/../project"])("refuses noncanonical remote paths: %s", (requestedRoot) => {
+    expect(parseRelayDesktopFilesystemGrantRequest({ ...REQUEST, requestedRoot })).toMatchObject({ ok: false });
+  });
+
   test("uses protocol v28 and parses the strict v1 reference envelope", () => {
     expect(RELAY_PROTOCOL_VERSION).toBe(28);
     expect(DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION).toBe(9);

@@ -13,11 +13,11 @@ const saved: CredentialMetadata = {
 };
 
 const providers: PersonalProviderCatalogEntry[] = [
-  { id: "openai", name: "OpenAI", purpose: "OpenAI text", personalCapabilities: ["chat"], destination: "https://api.openai.com/v1" },
-  { id: "openrouter", name: "OpenRouter", purpose: "Router", personalCapabilities: ["chat"], destination: "https://openrouter.ai/api/v1" },
-  { id: "surplus", name: "Surplus Intelligence", purpose: "Marketplace", personalCapabilities: ["chat"], destination: "https://api.surplus.ai/v1" },
-  { id: "anthropic", name: "Anthropic", purpose: "Anthropic", personalCapabilities: ["chat"], destination: "https://api.anthropic.com/v1" },
-  { id: "tavily", name: "Tavily", purpose: "Search", personalCapabilities: [], destination: null },
+  { id: "openai", name: "OpenAI", purpose: "OpenAI text", personalCapabilities: ["chat", "research"], destination: "https://api.openai.com/v1" },
+  { id: "openrouter", name: "OpenRouter", purpose: "Router", personalCapabilities: ["chat", "research", "decision"], destination: "https://openrouter.ai/api/v1" },
+  { id: "surplus", name: "Surplus Intelligence", purpose: "Marketplace", personalCapabilities: ["chat", "research", "decision"], destination: "https://api.surplus.ai/v1" },
+  { id: "anthropic", name: "Anthropic", purpose: "Anthropic", personalCapabilities: ["chat", "research"], destination: "https://api.anthropic.com/v1" },
+  { id: "tavily", name: "Tavily", purpose: "Search", personalCapabilities: ["research"], destination: null },
 ];
 
 function api(overrides: Record<string, unknown> = {}) {
@@ -194,6 +194,9 @@ describe("PersonalProviderKeysSection", () => {
     const labels = [...view.container.querySelectorAll("label")].map((node) => node.textContent);
     expect(labels.indexOf("Surplus Intelligence")).toBe(labels.indexOf("OpenRouter") + 1);
     expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Chat");
+    expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Research");
+    expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Decisions");
+    expect(view.getByText(/Surplus Decisions also require a pilot-enabled account/)).toBeTruthy();
     expect(view.queryByRole("button", { name: /Gateway key/ })).toBeNull();
     expect(view.queryByText("OpenAI-Compatible Gateway")).toBeNull();
   });
@@ -270,14 +273,14 @@ describe("PersonalProviderKeysSection", () => {
     ];
     const view = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: mock(async () => listResponse(credentials)) })} />);
     expect(await view.findByText("ant-…1234")).toBeTruthy();
-    expect(view.getByLabelText("Anthropic: API key configured")).toBeTruthy();
-    expect(view.getByLabelText("OpenAI: API key not configured")).toBeTruthy();
+    expect(view.getAllByLabelText("Anthropic: API key configured")).toHaveLength(2);
+    expect(view.getAllByLabelText("OpenAI: API key not configured")).toHaveLength(2);
     expect(view.getByTestId("personal-provider-key-coverage").textContent).not.toContain("server-only");
     expect(view.container.textContent).not.toContain("unmasked-secret");
     expect(view.getByRole("button", { name: "Delete legacy server-only key" })).toBeTruthy();
   });
 
-  test("saves a transient secret, clears it, emits refresh, and shows the model CTA only for chat keys", async () => {
+  test("saves a transient secret, clears it, emits refresh, and links each real capability selector", async () => {
     const keyApi = api();
     let changes = 0;
     window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, () => { changes++; }, { once: true });
@@ -296,6 +299,7 @@ describe("PersonalProviderKeysSection", () => {
     fireEvent.click(view.getByRole("button", { name: "Save key" }));
     await waitFor(() => expect(keyApi.putProviderCredential).toHaveBeenCalledWith("tavily", { apiKey: "tvly-personal" }));
     expect(view.queryByRole("link", { name: "Choose a model for your Genie." })).toBeNull();
+    expect(view.getByRole("link", { name: "Configure Research and Decision models." })).toBeTruthy();
   });
 
   test("uses current revisions for replace, validation, and deletion", async () => {

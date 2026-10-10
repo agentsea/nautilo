@@ -6,8 +6,9 @@
  * one live relay before this module receives the private root and dispatch
  * port. Absolute paths never cross the HTTP boundary.
  */
-import * as path from "node:path";
+import { posix as path, win32 } from "node:path";
 import {
+  pathApiForRelayPath,
   type RelayFsDirEntry,
   type RelayFsResult,
   type RelayFsStat,
@@ -69,7 +70,7 @@ export interface HostFileDispatchPort {
 }
 
 function isContainedRelativePath(value: string): boolean {
-  if (value.length > 1024 || value.includes("\0") || path.isAbsolute(value)) return false;
+  if (value.length > 1024 || value.includes("\0") || value.includes("\\") || win32.parse(value).root !== "" || path.isAbsolute(value)) return false;
   const normalized = path.normalize(value || ".");
   return normalized === "." || (normalized !== ".." && !normalized.startsWith(`..${path.sep}`));
 }
@@ -132,7 +133,7 @@ function metadata(relativePath: string, stat: RelayFsStat): HostFileMetadata {
 
 function joinRoot(root: string, relativePath: string): string {
   // `relativePath` has already been validated by normalizeHostFileRelativePath.
-  return relativePath === "" ? root : path.resolve(root, relativePath);
+  return relativePath === "" ? root : pathApiForRelayPath(root).resolve(root, relativePath);
 }
 
 async function ensureLiveRoot(input: {

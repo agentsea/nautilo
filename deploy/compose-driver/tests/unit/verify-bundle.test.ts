@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
 import {
   chmodSync,
   mkdirSync,
@@ -10,8 +11,9 @@ import {
 } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   backupManifestSchema,
@@ -130,6 +132,15 @@ interface BuildBundleOpts {
   envMode?: number;
 }
 
+function setFixturePermissions(path: string, mode: number): void {
+  if (process.platform !== "win32") {
+    chmodSync(path, mode);
+    return;
+  }
+  secureFilesystemPathSync(path);
+  if ((mode & 0o077) !== 0) allowOtherReadersSync(path);
+}
+
 function buildBundle(root: string, opts: BuildBundleOpts = {}): string {
   mkdirSync(root, { recursive: true });
   const contents = {
@@ -225,10 +236,10 @@ function buildBundle(root: string, opts: BuildBundleOpts = {}): string {
   if (integrity) manifest["integrity"] = integrity;
   const manifestPath = join(root, "manifest.json");
   writeFileSync(manifestPath, JSON.stringify(backupManifestSchema.parse(manifest), null, 2));
-  if (opts.bundleMode !== undefined) chmodSync(root, opts.bundleMode);
-  if (opts.manifestMode !== undefined) chmodSync(manifestPath, opts.manifestMode);
+  if (opts.bundleMode !== undefined) setFixturePermissions(root, opts.bundleMode);
+  if (opts.manifestMode !== undefined) setFixturePermissions(manifestPath, opts.manifestMode);
   if (opts.envMode !== undefined && contents.instanceEnv) {
-    chmodSync(join(root, BUNDLE_INTEGRITY_FILES.instanceEnv), opts.envMode);
+    setFixturePermissions(join(root, BUNDLE_INTEGRITY_FILES.instanceEnv), opts.envMode);
   }
   return root;
 }
@@ -257,6 +268,7 @@ describe("nautilo backup verify (D427 Wave 1)", () => {
 
     const report = await driver.verifyBundle(baseProfile, bundle);
 
+    expect(report.checks.filter(check => check.status === "fail")).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.manifestVersion).toBe(2);
     expect(report.provenance).toBeDefined();
@@ -421,6 +433,23 @@ describe("nautilo backup verify (D427 Wave 1)", () => {
         (c) => c.name === "instance.env permissions" && c.status === "fail",
       ),
     ).toBe(true);
+  });
+
+  test.skipIf(process.platform !== "win32").each(["nautilo.sql.gz", "operator/keys/token"])("rejects a private Windows bundle with a readable member: %s", async (member) => {
+    const bundle = mktmp("member-perms-");
+    buildBundle(bundle, { bundleMode: 0o700, manifestMode: 0o600, envMode: 0o600 });
+    const file = join(bundle, member);
+    if (member.startsWith("operator/")) {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, "synthetic private token");
+    }
+    setFixturePermissions(file, 0o644);
+    const report = await verifyBundle(bundle, { exec: realGzipExec() });
+    expect(report.ok).toBe(false);
+    expect(report.provenance).toBeUndefined();
+    expect(report.checks).toContainEqual({
+      name: "bundle member permissions", status: "fail", detail: "a bundle member lacks a private Windows ACL",
+    });
   });
 
   test("missing manifest fails clearly", async () => {

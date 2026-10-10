@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createPairedFilesystemDirectoryAuthority } from "../../electron/paired-filesystem-directory";
 
 const cleanup: string[] = [];
@@ -29,7 +29,7 @@ function fixture() {
   mkdirSync(join(data, "cores"), { recursive: true });
   mkdirSync(join(data, "private"), { recursive: true });
   mkdirSync(join(data, "usr"), { recursive: true });
-  symlinkSync(join(data, "Projects"), join(data, "shortcut"));
+  symlinkSync(join(data, "Projects"), join(data, "shortcut"), process.platform === "win32" ? "junction" : "dir");
   const authority = createPairedFilesystemDirectoryAuthority({
     getHomeDirectory: () => home,
     getLocationCandidates: () => [
@@ -38,7 +38,7 @@ function fixture() {
     ],
     // This fixture makes system and private folders unavailable while allowing
     // broad roots to be browsed (real policy is stricter at final selection).
-    protectedPathPolicy: { check: (candidate) => ({ allowed: !candidate.endsWith("/System") }) },
+    protectedPathPolicy: { check: (candidate) => ({ allowed: basename(candidate) !== "System" }) },
     checkCurrentFolderSanity: (candidate) => ({ ok: candidate !== realpathSync(home) }),
     createLocationId: (() => { let n = 0; return () => `loc_${++n}`; })(),
   });

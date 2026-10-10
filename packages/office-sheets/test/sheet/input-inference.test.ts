@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemStore } from '../../src/store/memory';
 import { Sheet } from '../../src/model/worksheet/sheet';
 
 describe('Sheet.setData input inference', () => {
-  it('normalizes currency value and stores inferred currency format', async () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    ['en-US', '113,300,000'],
+    ['de-DE', '113.300.000'],
+  ])('normalizes currency and renders it in %s', async (locale, expectedNumber) => {
+    vi.stubGlobal('navigator', { language: locale });
     const sheet = new Sheet(new MemStore());
     await sheet.setData({ r: 1, c: 1 }, '₩ 113,300,000');
 
@@ -14,8 +20,8 @@ describe('Sheet.setData input inference', () => {
     });
 
     const displayed = await sheet.toDisplayString({ r: 1, c: 1 });
-    expect(displayed).toContain('113,300,000');
-    expect(displayed).not.toContain('.');
+    expect(displayed).toContain(expectedNumber);
+    expect(displayed).toContain('₩');
   });
 
   it('normalizes percent value and stores percent format', async () => {

@@ -90,14 +90,15 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
     return changes?.subscribeToRoom(boundRoomId, event => controller.ingestEvent(boundRoomId, event));
   }, [controller, changes, boundRoomId]);
   useEffect(() => {
-    if (snapshot && voice?.enabled && voice.roomId === snapshot.binding.roomId && voice.pinnedRoomId !== snapshot.binding.roomId) {
-      voice.enable(snapshot.binding.roomId);
+    const currentVoice = latest.current.voice;
+    if (boundRoomId && currentVoice?.enabled && currentVoice.roomId === boundRoomId && currentVoice.pinnedRoomId !== boundRoomId) {
+      currentVoice.enable(boundRoomId);
     }
-    controller?.updateMedia(voice?.roomId ?? null, voice?.enabled ?? false, voice?.playing ?? false, voice?.canStopTalking ?? false);
-  }, [controller, voice?.roomId, voice?.pinnedRoomId, voice?.enabled, voice?.playing, voice?.canStopTalking, snapshot?.binding.roomId]);
+    controller?.updateMedia(currentVoice?.roomId ?? null, currentVoice?.enabled ?? false, currentVoice?.playing ?? false, currentVoice?.canStopTalking ?? false);
+  }, [controller, voice?.roomId, voice?.pinnedRoomId, voice?.enabled, voice?.playing, voice?.canStopTalking, boundRoomId]);
   useEffect(() => {
-    if (snapshot) controller?.invalidate(snapshot.binding.roomId);
-  }, [controller, tasks, canAttach, snapshot?.binding.roomId]);
+    if (boundRoomId) controller?.invalidate(boundRoomId);
+  }, [controller, tasks, canAttach, boundRoomId]);
   // Identity/capability/transport transitions close the surface. Room selection
   // deliberately is not a dependency: the binding belongs to the companion.
   useEffect(() => { controller?.stop(); }, [controller, viewer, actor, allowed, connection]);
@@ -107,10 +108,15 @@ export function CompanionProvider({ children }: { children: ReactNode }) {
 /** The composer supplies its canonical selection without adding toolbar chrome. */
 export function CompanionTarget({ binding }: { binding: CompanionBinding | null }) {
   const { setTarget } = useContext(CompanionContext);
+  const roomId = binding?.roomId;
+  const agentId = binding?.agentId;
+  const botActorId = binding?.botActorId;
+  const name = binding?.name;
   useEffect(() => {
-    setTarget(binding);
+    setTarget(roomId === undefined || agentId === undefined || botActorId === undefined || name === undefined
+      ? null : { roomId, agentId, botActorId, name });
     return () => setTarget(null);
-  }, [setTarget, binding?.roomId, binding?.agentId, binding?.botActorId, binding?.name]);
+  }, [setTarget, roomId, agentId, botActorId, name]);
   return null;
 }
 

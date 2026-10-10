@@ -1,21 +1,24 @@
 import { rejects } from "node:assert/strict";
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readArtifactRelocationBackup } from "../../src/artifact-relocation-backup.ts";
 import type { BundleVerificationReport } from "../../src/verify-bundle.ts";
 
 const hash = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+// USTAR fixture: ./original contains "original"; ./alias is a symbolic link
+// to original. Reading archive metadata does not require host symlink rights.
+const archiveFixture = Buffer.from(
+  "H4sIAAAAAAACCtPTzy/KTM/MS8xhoBkwAAIzExMwDQTotIGBIRIbLG5uZmTAoGDAQAdQWlySWAS0kmFkAtrH/igYzEBPPzEnM7GYpnYQzP/obEMDM2NjBgUjeiTOEZ7/R8EoGAUjFwAAWwqUywAKAAA=",
+  "base64",
+);
 test("original bundle proof rejects same-size corruption, foreign identity, missing/symlink members and changed archives", async () => {
   const root = await mkdtemp(join(tmpdir(), "relocation-backup-"));
   try {
-    const content = join(root, "content"); await mkdir(content);
-    await writeFile(join(content, "original"), "original"); await symlink("original", join(content, "alias"));
     const archive = join(root, "artifacts.tgz");
-    const child = Bun.spawn(["tar", "-czf", archive, "-C", content, "."], { stdout: "ignore", stderr: "pipe" });
-    await new Response(child.stderr).text(); expect(await child.exited).toBe(0);
+    await writeFile(archive, archiveFixture);
     const archiveBytes = await readFile(archive);
     const manifest = { version: 2, createdAt: "2026-01-01T00:00:00Z", profileName: "fixture", instanceId: "fixture", transport: "local", composeProjectName: "fixture", image: { mode: "registry", repoDigest: "ghcr.io/example/runtime@sha256:" + "a".repeat(64) }, contents: { nautiloDb: true, logtoDb: true, artifacts: true, instanceEnv: true, operatorFiles: false, caddyData: false, caddyConfig: false, localCaCerts: false }, integrity: { artifacts: { sha256: hash(archiveBytes), sizeBytes: archiveBytes.byteLength } } };
     const manifestText = JSON.stringify(manifest); await writeFile(join(root, "manifest.json"), manifestText);

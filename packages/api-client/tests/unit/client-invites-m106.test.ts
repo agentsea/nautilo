@@ -256,6 +256,32 @@ describe("NautiloApiClient invite list + revoke (M106)", () => {
     ]);
   });
 
+  test("getPublicJoinAvailability uses the anonymous strict boolean contract", async () => {
+    const client = new NautiloApiClient(base);
+    client.setToken("session-token-that-must-not-be-sent");
+    let body: unknown = { available: true };
+
+    globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      expect(reqUrl(url)).toBe(`${base}/api/public-join`);
+      expect(init?.method ?? "GET").toBe("GET");
+      expect(new Headers(init?.headers).has("authorization")).toBe(false);
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    expect(await client.getPublicJoinAvailability()).toEqual({ available: true });
+
+    body = { available: false, inviteId: "must-not-be-accepted" };
+    expect(await client.getPublicJoinAvailability().catch((error: unknown) => error))
+      .toBeInstanceOf(Error);
+
+    body = { available: "true" };
+    expect(await client.getPublicJoinAvailability().catch((error: unknown) => error))
+      .toBeInstanceOf(Error);
+  });
+
   test("listMyInvites 401 throws ApiError(401, Authentication required)", async () => {
     const client = new NautiloApiClient(base);
     client.setToken("bad");

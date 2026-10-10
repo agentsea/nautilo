@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   LocalExecutionHistoryStore,
   parseLocalExecutionHistoryRecord,
@@ -189,8 +190,8 @@ describe("encrypted managed execution history", () => {
     for (const plaintext of [value.snapshot.output.data, value.scope.humanUserId, value.owner.conversationId]) {
       expect(bytes.includes(Buffer.from(plaintext))).toBe(false);
     }
-    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(f.directory)).mode & 0o777).toBe(0o700);
+    expect(await isPrivateFilesystemPathAsync(file)).toBe(true);
+    expect(await isPrivateFilesystemPathAsync(f.directory)).toBe(true);
   });
 
   for (const unavailable of ["unavailable", "basic_text"] as const) {
@@ -268,6 +269,57 @@ describe("encrypted managed execution history", () => {
     });
   }
 
+  test.each([1, 2])("a linked leaf at inspection %s is rejected before decryption", async (linkedAt) => {
+    const f = await fixture();
+    await f.store.save(record());
+    const file = await f.archiveFile();
+    const decrypts = f.calls.decrypt;
+    const inspect = fs.lstat;
+    let inspections = 0;
+    // Exercise link rejection without requiring Windows symlink-creation privileges.
+    const observation = spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
+      const info = await inspect(...args);
+      if (args[0] === file && ++inspections >= linkedAt) {
+        return Object.assign(info, { isFile: () => false, isSymbolicLink: () => true });
+      }
+      return info;
+    }) as typeof fs.lstat);
+    try {
+      await expectError(read(f.store), "LOCAL_EXECUTION_HISTORY_UNAVAILABLE");
+      expect(f.calls.decrypt).toBe(decrypts);
+    } finally {
+      observation.mockRestore();
+    }
+  });
+
+  test("a replacement at open is rejected and its descriptor is closed", async () => {
+    const f = await fixture();
+    await f.store.save(record());
+    const file = await f.archiveFile();
+    const retained = path.join(f.root, "retained.sealed");
+    const decrypts = f.calls.decrypt;
+    const open = fs.open;
+    let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
+    const race = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
+      if (args[0] === file) {
+        await fs.rename(file, retained);
+        await fs.copyFile(retained, file);
+        opened = await open(...args);
+        return opened;
+      }
+      return open(...args);
+    });
+    try {
+      await expectError(read(f.store), "LOCAL_EXECUTION_HISTORY_UNAVAILABLE");
+      expect(f.calls.decrypt).toBe(decrypts);
+      expect(opened).toBeDefined();
+      const closed = await opened!.stat().then(() => false, () => true);
+      expect(closed).toBe(true);
+    } finally {
+      race.mockRestore();
+    }
+  });
+
   test("sealed-file symlinks are denied without reading or overwriting their external target", async () => {
     const f = await fixture();
     await f.store.save(record());
@@ -291,7 +343,7 @@ describe("encrypted managed execution history", () => {
     const fileName = path.basename(await f.archiveFile());
     const outside = path.join(f.root, "external-history");
     await fs.rename(f.directory, outside);
-    await fs.symlink(outside, f.directory);
+    await fs.symlink(outside, f.directory, process.platform === "win32" ? "junction" : "dir");
     const before = await fs.readFile(path.join(outside, fileName));
     await expectError(read(f.store), "LOCAL_EXECUTION_HISTORY_UNAVAILABLE");
     await expectError(f.store.save(record()), "LOCAL_EXECUTION_HISTORY_INVALID");

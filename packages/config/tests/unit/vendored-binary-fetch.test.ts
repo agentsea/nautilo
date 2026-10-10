@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   fetchAndVerifyVendoredBinary,
   VendoredBinaryFetchError,
@@ -40,7 +40,9 @@ function makeTarGz(entries: Record<string, Buffer>): Buffer {
     writeFileSync(full, bytes);
   }
   const out = join(tmp(), "a.tar.gz");
-  const r = spawnSync("tar", ["-czf", out, "-C", src, "."], { stdio: ["ignore", "pipe", "pipe"] });
+  const r = spawnSync("tar", ["-czf", basename(out), "-C", src, "."], {
+    cwd: dirname(out), stdio: ["ignore", "pipe", "pipe"],
+  });
   if (r.status !== 0) throw new Error(`tar create failed: ${r.stderr?.toString()}`);
   return readFileSync(out);
 }

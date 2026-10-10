@@ -22,11 +22,12 @@ export interface CurrentFolderSelectionSnapshot {
 }
 
 export interface CurrentFolderAdoptionIdentity {
-  readonly device: number;
-  readonly inode: number;
+  /** Decimal strings preserve native 64-bit identities through relay JSON. */
+  readonly device: string;
+  readonly inode: string;
   /** Detects an inode that was deleted and immediately reused. */
-  readonly changedAtMs: number;
-  readonly createdAtMs: number;
+  readonly changedAtNs: string;
+  readonly createdAtNs: string;
 }
 
 export type CurrentFolderAdoptionPrepareResult =
@@ -125,8 +126,8 @@ function sameIdentity(
 ): boolean {
   return left.device === right.device &&
     left.inode === right.inode &&
-    left.changedAtMs === right.changedAtMs &&
-    left.createdAtMs === right.createdAtMs;
+    left.changedAtNs === right.changedAtNs &&
+    left.createdAtNs === right.createdAtNs;
 }
 
 function sameSelection(
@@ -146,20 +147,18 @@ function isContained(root: string, candidate: string): boolean {
 }
 
 function identityFromStat(stat: {
-  readonly dev: number;
-  readonly ino: number;
-  readonly ctimeMs: number;
-  readonly birthtimeMs: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
+  readonly ctimeNs: bigint;
+  readonly birthtimeNs: bigint;
 }): CurrentFolderAdoptionIdentity | null {
-  return Number.isSafeInteger(stat.dev) && stat.dev >= 0 &&
-    Number.isSafeInteger(stat.ino) && stat.ino >= 0 &&
-    Number.isFinite(stat.ctimeMs) && stat.ctimeMs >= 0 &&
-    Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs >= 0
+  return stat.dev >= 0n && stat.ino >= 0n &&
+    stat.ctimeNs >= 0n && stat.birthtimeNs >= 0n
     ? {
-        device: stat.dev,
-        inode: stat.ino,
-        changedAtMs: stat.ctimeMs,
-        createdAtMs: stat.birthtimeMs,
+        device: stat.dev.toString(),
+        inode: stat.ino.toString(),
+        changedAtNs: stat.ctimeNs.toString(),
+        createdAtNs: stat.birthtimeNs.toString(),
       }
     : null;
 }
@@ -205,7 +204,7 @@ async function resolvePreparedTarget(input: {
       return { ok: false, code: "source_symlink", message: "The requested source is no longer available." };
     }
     canonicalSourceRoot = await fsp.realpath(sourceRoot.path);
-    const sourceStat = await fsp.stat(canonicalSourceRoot);
+    const sourceStat = await fsp.stat(canonicalSourceRoot, { bigint: true });
     if (!sourceStat.isDirectory()) {
       return { ok: false, code: "source_unavailable", message: "The requested source is no longer available." };
     }
@@ -226,7 +225,7 @@ async function resolvePreparedTarget(input: {
     if (!isContained(canonicalSourceRoot, canonicalTarget)) {
       return { ok: false, code: "target_outside_source", message: "The requested folder is outside its authorized source." };
     }
-    const targetStat = await fsp.stat(canonicalTarget);
+    const targetStat = await fsp.stat(canonicalTarget, { bigint: true });
     if (!targetStat.isDirectory()) {
       return { ok: false, code: "target_not_directory", message: "The requested target is not a folder." };
     }

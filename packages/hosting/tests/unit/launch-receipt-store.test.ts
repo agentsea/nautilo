@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 import {
-  chmod,
   mkdir,
   mkdtemp,
   readdir,
   rm,
-  stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import {
   readLaunchReceipt,
@@ -51,6 +51,7 @@ let receiptPath: string;
 
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), "nautilo-launch-receipt-"));
+  await secureFilesystemPath(directory);
   receiptPath = join(directory, "receipt.json");
 });
 
@@ -59,11 +60,30 @@ afterEach(async () => {
 });
 
 describe("launch receipt store", () => {
+  test("accepts relative receipt paths for creation, reading, and updates", async () => {
+    const local = await mkdtemp(join(process.cwd(), ".nautilo-receipt-"));
+    try {
+      await secureFilesystemPath(local);
+      const path = relative(process.cwd(), join(local, "nested", "receipt.json"));
+      await writeLaunchReceipt(path, initial());
+      expect(await readLaunchReceipt(path)).toEqual(initial());
+      const updated = await updateLaunchReceipt(path, { expectedRevision: 0 }, (current) => ({
+        ...current,
+        revision: 1,
+        stage: "authorized",
+        updatedAt: t1,
+      }));
+      expect(await readLaunchReceipt(path)).toEqual(updated);
+    } finally {
+      await rm(local, { recursive: true, force: true });
+    }
+  });
+
   test("creates and reads an owner-only canonical initial receipt", async () => {
     await writeLaunchReceipt(receiptPath, initial());
 
     expect(await readLaunchReceipt(receiptPath)).toEqual(initial());
-    expect((await stat(receiptPath)).mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(receiptPath)).toBe(true);
   });
 
   test("is create-only and rejects noncanonical initial state", async () => {
@@ -104,7 +124,7 @@ describe("launch receipt store", () => {
 
   test("an interruption before rename preserves the last good receipt", async () => {
     await writeLaunchReceipt(receiptPath, initial());
-    let unpublishedMode: number | undefined;
+    let unpublishedPrivate: boolean | undefined;
     const interruption = await rejected(
       updateLaunchReceipt(
         receiptPath,
@@ -116,7 +136,7 @@ describe("launch receipt store", () => {
                 entry.endsWith(".tmp"),
               );
               if (unpublished === undefined) throw new Error("missing durable temp");
-              unpublishedMode = (await stat(join(directory, unpublished))).mode & 0o777;
+              unpublishedPrivate = await isPrivateFilesystemPathAsync(join(directory, unpublished));
               throw new Error("simulated interruption");
             },
           },
@@ -133,7 +153,7 @@ describe("launch receipt store", () => {
       code: "io-failure",
       message: "Launch receipt store failed: io-failure",
     });
-    expect(unpublishedMode).toBe(0o600);
+    expect(unpublishedPrivate).toBe(true);
     expect(interruption).not.toHaveProperty("cause");
 
     expect(await readLaunchReceipt(receiptPath)).toEqual(initial());
@@ -183,7 +203,7 @@ describe("launch receipt store", () => {
 
   test("refuses insecure permissions, symlinks, non-regular targets, and symlink parents", async () => {
     await writeFile(receiptPath, JSON.stringify(initial()), { mode: 0o644 });
-    await chmod(receiptPath, 0o644);
+    await allowOtherReaders(receiptPath);
     expect(await rejected(readLaunchReceipt(receiptPath))).toMatchObject({
       code: "unsafe-permissions",
     });
@@ -208,7 +228,7 @@ describe("launch receipt store", () => {
     const actualParent = join(directory, "real-parent");
     const linkedParent = join(directory, "linked-parent");
     await mkdir(actualParent);
-    await symlink(actualParent, linkedParent);
+    await symlink(actualParent, linkedParent, process.platform === "win32" ? "junction" : "dir");
     expect(
       await rejected(writeLaunchReceipt(join(linkedParent, "receipt.json"), initial())),
     ).toMatchObject({ code: "unsafe-path" });
@@ -217,7 +237,7 @@ describe("launch receipt store", () => {
   test("refuses a receipt directory that is not owner-only", async () => {
     const unsafeParent = join(directory, "shared");
     await mkdir(unsafeParent, { mode: 0o755 });
-    await chmod(unsafeParent, 0o755);
+    await allowOtherReaders(unsafeParent);
     const target = join(unsafeParent, "receipt.json");
 
     expect(await rejected(writeLaunchReceipt(target, initial()))).toMatchObject({

@@ -135,7 +135,7 @@ export async function validateNetworkLinks(manifest: NetworkManifest, targetRoot
       }
     }
     if (parts.some(part => [".git", ".gitmodules"].includes(part.toLowerCase()))) throw new Error("Governance symlink target");
-    rejectNetworkSecrets(normalized);
+    rejectNetworkSecrets(normalized.split(sep).join("/"));
     rejectLiveEnvPath(resolve(targetRoot, normalized.toLowerCase()));
     return normalized;
   };

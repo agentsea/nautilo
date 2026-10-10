@@ -10,6 +10,7 @@ export const SENSITIVE_TABLES = [
   // Server-wide provider admission is owned by the product control plane.
   "server_provider_policy",
   "personal_provider_credentials",
+  "personal_capability_preferences",
   "credentials",
   "recovery_codes",
   "logto_account_security",
@@ -25,6 +26,9 @@ export const SENSITIVE_TABLES = [
   // broad legacy/default grants are reconciled.
   "content_access_operations",
   "protected_task_run_output_bindings",
+  "task_run_message_associations",
+  "protected_task_execution_segment_receipts",
+  "protected_task_continuation_receipts",
   "group_moderation_scopes",
   "moderation_subjects",
   "moderation_restrictions",

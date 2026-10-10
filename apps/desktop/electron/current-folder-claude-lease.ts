@@ -1,4 +1,4 @@
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, type BigIntStats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { FileHandle } from "node:fs/promises";
@@ -54,7 +54,7 @@ export function createCurrentFolderClaudeLeaseProvider(input: Readonly<{
       }
       let identity: Identity | null;
       try {
-        identity = identityOf(await directory.stat());
+        identity = identityOf(await directory.stat({ bigint: true }));
       } catch {
         await closeQuietly(directory);
         return null;
@@ -89,8 +89,8 @@ export function createCurrentFolderClaudeLeaseProvider(input: Readonly<{
           return false;
         }
         try {
-          const currentIdentity = identityOf(await directory.stat());
-          const reopenedIdentity = identityOf(await reopened.stat());
+          const currentIdentity = identityOf(await directory.stat({ bigint: true }));
+          const reopenedIdentity = identityOf(await reopened.stat({ bigint: true }));
           const final = captureSelection(currentFolder);
           return currentIdentity !== null && reopenedIdentity !== null &&
             final !== null && final.path === selection.path && final.revision === selection.revision &&
@@ -106,7 +106,7 @@ export function createCurrentFolderClaudeLeaseProvider(input: Readonly<{
   });
 }
 
-type Identity = Readonly<{ dev: number; ino: number }>;
+type Identity = Readonly<{ dev: bigint; ino: bigint }>;
 
 function captureSelection(getCurrentFolder: () => CurrentFolderSelection | null): CurrentFolderSelection | null {
   try {
@@ -129,10 +129,9 @@ function validPath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && path.isAbsolute(value) && !containsControl(value);
 }
 
-function identityOf(stat: Awaited<ReturnType<FileHandle["stat"]>>): Identity | null {
-  return stat.isDirectory() && Number.isSafeInteger(stat.dev) && stat.dev >= 0 &&
-    Number.isSafeInteger(stat.ino) && stat.ino >= 0
-    ? Object.freeze({ dev: Number(stat.dev), ino: Number(stat.ino) })
+function identityOf(stat: BigIntStats): Identity | null {
+  return stat.isDirectory() && stat.dev >= 0n && stat.ino >= 0n
+    ? Object.freeze({ dev: stat.dev, ino: stat.ino })
     : null;
 }
 

@@ -1,5 +1,7 @@
-import { chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
+import { writeFileAtomic } from "./env-writer";
 import type { ConfigOperationType, SnapshotMeta, TransactionActor } from "./types";
 
 function newSnapshotId(): string {
@@ -13,23 +15,21 @@ export async function createSnapshot(
     operations: Array<{ type: ConfigOperationType; key: string }>;
   },
 ): Promise<string> {
-  await mkdir(snapshotDir, { recursive: true, mode: 0o700 });
-  await chmod(snapshotDir, 0o700);
+  const directory = resolve(snapshotDir);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  secureFilesystemPathSync(directory);
   const id = newSnapshotId();
-  const envFile = join(snapshotDir, `${id}.env`);
-  const metaFile = join(snapshotDir, `${id}.meta.json`);
+  const envFile = join(directory, `${id}.env`);
+  const metaFile = join(directory, `${id}.meta.json`);
   const fullMeta: SnapshotMeta = {
     id,
     timestamp: new Date().toISOString(),
     result: "pending",
     ...meta,
   };
-  await writeFile(envFile, envContent, { encoding: "utf-8", mode: 0o600 });
-  await writeFile(metaFile, JSON.stringify(fullMeta, null, 2), {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
-  await pruneSnapshots(snapshotDir, 20);
+  await writeFileAtomic(envFile, envContent);
+  await writeFileAtomic(metaFile, JSON.stringify(fullMeta, null, 2));
+  await pruneSnapshots(directory, 20);
   return id;
 }
 
@@ -42,11 +42,7 @@ export async function updateSnapshotMeta(
   const raw = await readFile(metaFile, "utf-8");
   const meta = JSON.parse(raw) as SnapshotMeta;
   const next = { ...meta, ...patch };
-  await writeFile(metaFile, JSON.stringify(next, null, 2), {
-    encoding: "utf-8",
-    mode: 0o600,
-  });
-  await chmod(metaFile, 0o600);
+  await writeFileAtomic(metaFile, JSON.stringify(next, null, 2));
 }
 
 export async function readSnapshotEnv(snapshotDir: string, id: string): Promise<string> {

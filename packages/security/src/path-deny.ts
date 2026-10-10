@@ -5,7 +5,7 @@
  * match the deny set regardless of security level (except yolo).
  */
 
-import { resolve, normalize } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, normalize, sep } from "node:path";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolveSecurityLayers, type SecurityLevel } from "./security-config";
@@ -64,11 +64,25 @@ const DARWIN_HOME_RELATIVE_DENY: readonly string[] = [
 ];
 
 function resolveWithRealpath(p: string): string {
-  try {
-    return realpathSync(p);
-  } catch {
-    return normalize(resolve(p));
+  let current = resolve(p);
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      return resolve(realpathSync(current), ...tail);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      const parent = dirname(current);
+      if (parent === current) return normalize(resolve(p));
+      tail.unshift(basename(current));
+      current = parent;
+    }
   }
+}
+
+function resolveDenyPath(p: string): string {
+  try { return resolveWithRealpath(p); }
+  catch { return normalize(resolve(p)); }
 }
 
 function buildResolvedDeny(platform: NodeJS.Platform): string[] {
@@ -76,12 +90,17 @@ function buildResolvedDeny(platform: NodeJS.Platform): string[] {
     ? [...HOME_RELATIVE_DENY, ...DARWIN_HOME_RELATIVE_DENY]
     : HOME_RELATIVE_DENY;
   return [
-    ...ABSOLUTE_DENY.map(resolveWithRealpath),
-    ...homeEntries.map((rel) => resolveWithRealpath(resolve(HOME, rel))),
+    ...ABSOLUTE_DENY.map(resolveDenyPath),
+    ...homeEntries.map((rel) => resolveDenyPath(resolve(HOME, rel))),
   ];
 }
 
 const RESOLVED_DENY = buildResolvedDeny(process.platform);
+
+function containsPath(parent: string, child: string): boolean {
+  const suffix = relative(parent, child);
+  return suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix));
+}
 
 // Exported for unit tests only — allows verifying the platform gate
 // without having to mock `process.platform` globally.
@@ -119,25 +138,24 @@ export function checkPathAccess(
     return { allowed: true };
   }
 
-  const expanded = targetPath.startsWith("~/")
+  const expanded = (targetPath.startsWith("~/") || (process.platform === "win32" && targetPath.startsWith("~\\")))
     ? resolve(HOME, targetPath.slice(2))
     : targetPath === "~"
       ? HOME
       : resolve(targetPath);
-  let normalized = normalize(expanded);
-
-  // Resolve symlinks to prevent bypass via symlink chains
+  let normalized: string;
+  // Resolve the nearest existing ancestor as well as existing targets: writes
+  // to a new file must not bypass a protected directory through an alias.
   try {
-    normalized = realpathSync(normalized);
+    normalized = resolveWithRealpath(expanded);
   } catch {
-    // Path doesn't exist yet (e.g. write_file creating a new file).
-    // Check the normalized path as-is — it's the best we can do.
+    return { allowed: false, reason: "Access denied: path cannot be resolved safely" };
   }
 
   // Equality + descendant check — target IS or is INSIDE a denied
   // directory (legacy behavior; D079 PR-011 motivation).
   for (const denied of RESOLVED_DENY) {
-    if (normalized === denied || normalized.startsWith(denied + "/")) {
+    if (containsPath(denied, normalized)) {
       warn(`[security] Path DENIED: "${targetPath}" resolves to protected path ${denied}`);
       return {
         allowed: false,
@@ -155,12 +173,10 @@ export function checkPathAccess(
   // tree, recursive read) would scan the deny entries — block at the
   // gate rather than rely on the handler\u0027s in-walk filtering.
   //
-  // Special-case for root: `"/" + "/"` is `"//"` which no realistic
-  // path starts with, so we use `"/"` as the prefix when normalized
-  // is the filesystem root. Same logic for any path ending in `/`.
-  const ancestorPrefix = normalized.endsWith("/") ? normalized : normalized + "/";
+  // Native relative-path semantics handle roots, trailing separators, and
+  // Windows drive/case rules without confusing siblings with descendants.
   for (const denied of RESOLVED_DENY) {
-    if (denied.startsWith(ancestorPrefix)) {
+    if (containsPath(normalized, denied)) {
       warn(`[security] Path DENIED: "${targetPath}" is an ancestor of protected path ${denied}`);
       return {
         allowed: false,

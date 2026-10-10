@@ -4,11 +4,14 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { resolveRailwayRecoveryConfig } from "../../src/lib/railway-recovery-config.ts";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 
 let root: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "nautilo-recovery-config-"));
+  await secureFilesystemPath(root);
 });
 
 afterEach(async () => {
@@ -249,13 +252,14 @@ describe("protected Railway recovery config", () => {
     expect(dotSegment).toEqual({ outcome: "failure", code: "railway.maintenance.recovery-config-invalid" });
 
     const linked = join(root, "linked.toml");
-    await symlink(configPath, linked);
+    await symlink(process.platform === "win32" ? root : configPath, linked,
+      process.platform === "win32" ? "junction" : "file");
     expect(await resolveRailwayRecoveryConfig(input(linked))).toEqual({
       outcome: "failure",
       code: "railway.maintenance.recovery-config-unsafe",
     });
 
-    await chmod(configPath, 0o640);
+    await allowOtherReaders(configPath);
     const wrongMode = await resolveRailwayRecoveryConfig(input(configPath));
     expect(wrongMode).toEqual({ outcome: "failure", code: "railway.maintenance.recovery-config-unsafe" });
     expect(JSON.stringify(wrongMode)).not.toContain(configPath);

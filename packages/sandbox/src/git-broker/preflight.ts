@@ -24,7 +24,9 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { isUnderRoot } from "../paths";
+export { isUnderRoot } from "../paths";
 
 import type { GitRepositoryIdentity } from "./types";
 
@@ -229,16 +231,6 @@ export function canonicalizeRepositoryIdentity(
     commonDir,
     isLinkedWorktree: true,
   };
-}
-
-/**
- * True iff `target` is equal to `root` or sits under `root` + sep.
- * Token-boundary check — prevents `/foo` matching `/foobar`.
- */
-export function isUnderRoot(target: string, root: string): boolean {
-  if (target === root) return true;
-  const sep = root.endsWith("/") ? "" : "/";
-  return target.startsWith(root + sep);
 }
 
 /**
@@ -449,7 +441,7 @@ export function normalizePathspec(
  * `.dist` terminal suffix) are allowed as public data.
  */
 export function rejectLiveEnvPath(absPath: string): void {
-  const base = absPath.split(sep).pop() ?? absPath;
+  const base = basename(absPath);
   // Live secret variants: `.env`, `.env.local`, `.env.production`, ...
   // Match `.env` exactly or `.env` followed by a non-empty suffix
   // that is NOT one of the public template terminals.

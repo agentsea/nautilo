@@ -28,7 +28,7 @@ function signature(f: ReturnType<typeof fixture>, change: { adHoc?: boolean; wro
   return { run, calls };
 }
 
-test("strict development file verification accepts only exact executable bytes and never caches drift", () => {
+test.skipIf(process.platform === "win32")("strict development file verification accepts only exact executable bytes and never caches drift", () => {
   const f = fixture();
   expect(verifiedGitHubFileHash(f.binaryPath, f.hash)).toBe(f.hash);
   writeFileSync(f.binaryPath, "changed runtime");
@@ -36,7 +36,7 @@ test("strict development file verification accepts only exact executable bytes a
   expect(verifiedGitHubFileHash(f.binaryPath, "invalid")).toBeNull();
 });
 
-test("symlinks, hardlinks, missing executable permission and writable executable permissions fail closed", () => {
+test.skipIf(process.platform === "win32")("symlinks, hardlinks, missing executable permission and writable executable permissions fail closed", () => {
   const f = fixture();
   chmodSync(f.binaryPath, 0o644); expect(verifiedGitHubFileHash(f.binaryPath, f.hash)).toBeNull();
   chmodSync(f.binaryPath, 0o777); expect(verifiedGitHubFileHash(f.binaryPath, f.hash)).toBeNull();
@@ -47,7 +47,7 @@ test("symlinks, hardlinks, missing executable permission and writable executable
   expect(verifiedGitHubFileHash(f.binaryPath, f.hash)).toBeNull();
 });
 
-test("packaged verification requires the exact app seal and matching certificate-backed nested identity", () => {
+test.skipIf(process.platform === "win32")("packaged verification requires the exact app seal and matching certificate-backed nested identity", () => {
   const f = fixture(); const signed = signature(f);
   expect(verifiedGitHubFileHash(f.binaryPath, "0".repeat(64), f, signed.run)).toBe(f.hash);
   expect(signed.calls.some(args => args.includes("--deep") && args.includes("--strict") && args.at(-1) === f.app)).toBe(true);
@@ -82,7 +82,7 @@ test("generated codesign requirements use inline grammar accepted by the macOS r
   }
 });
 
-test("signature verification cannot authorize bytes changed during attestation", () => {
+test.skipIf(process.platform === "win32")("signature verification cannot authorize bytes changed during attestation", () => {
   const f = fixture(); const signed = signature(f);
   const run = (args: readonly string[]): string => {
     if (args.includes("--deep")) writeFileSync(f.binaryPath, "replacement runtime");

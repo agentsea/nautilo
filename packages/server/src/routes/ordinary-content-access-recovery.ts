@@ -4,6 +4,8 @@ import { z } from "zod";
 import { and, desc, eq, inArray, lt, jobs, sql, type PersistedJobRecord } from "@nautilo/db";
 import {
   defaultPostModelDeps, OrdinaryContentAccessRetryRequiredError, OrdinaryContentAccessRecoveryUnavailableError,
+  readAgentIdForThread, readCausalHumanUserIdForThread, readForegroundFundingForThread,
+  runWithForegroundFundingSession,
   type OrdinaryContentAccessForState, type OrdinaryContentAccessRecoveryCoordinate, type StreamEventProcessor,
 } from "@nautilo/agent";
 import {
@@ -15,6 +17,7 @@ import { currentStrictShadowPolicy } from "../lib/strict-shadow-policy";
 import { requireAgentInvocation, type AssertCanInvokeAgent } from "../lib/agent-invocation-admission";
 import { isMaintenanceDrainError, replyMaintenanceRejection } from "../lib/maintenance-rejection";
 import { resolveContentAccessPreviewKey } from "../content-access/preview-key";
+import { openForegroundChatFundingSession } from "../lib/foreground-chat-funding";
 
 const coordinateSchema = z.object({
   originalJobId: z.uuid(), checkpointId: z.string().min(1), turnId: z.string().min(1),
@@ -83,6 +86,10 @@ export interface OrdinaryContentAccessRecoveryRouteDeps {
   readonly policy?: typeof currentStrictShadowPolicy;
   readonly assertCanInvokeAgent?: AssertCanInvokeAgent;
   readonly processor?: (input: Parameters<typeof createPersistingProcessor>[0]) => StreamEventProcessor;
+  readonly resumeFundingForThread?: typeof readForegroundFundingForThread;
+  readonly resumeAgentIdForThread?: typeof readAgentIdForThread;
+  readonly resumeCausalHumanUserIdForThread?: typeof readCausalHumanUserIdForThread;
+  readonly openForegroundFundingSessionForResume?: typeof openForegroundChatFundingSession;
 }
 
 function publicCoordinate(value: OrdinaryContentAccessRecoveryCoordinate): PublicCoordinate {
@@ -173,7 +180,46 @@ export function ordinaryContentAccessRecoveryRoutes(app: FastifyInstance, deps: 
             ...(detail.kind === "subthread" ? { subthreadRoomId: detail.id } : {}),
             laneKey: job.laneKey, eventBus, humanTurnId: found.turnId, causalHumanUserId: userId,
           });
-          const outcome = await manager.runOrdinaryContentAccessRecovery(found, graphDeps, processor, authority);
+          const runRecovery = () => manager.runOrdinaryContentAccessRecovery(
+            found,
+            graphDeps,
+            processor,
+            authority,
+          );
+          const prior = await (deps.resumeFundingForThread
+            ?? readForegroundFundingForThread)(found.graphThreadId);
+          let outcome: Awaited<ReturnType<typeof runRecovery>>;
+          if (prior === null) {
+            // Legacy and unsupported shared-Room turns have no pinned snapshot.
+            // Explicitly clear any incidental caller scope while preserving their
+            // established server-funded recovery behavior.
+            outcome = await runWithForegroundFundingSession(null, runRecovery);
+          } else {
+            const [fundingAgentId, fundingHumanUserId] = await Promise.all([
+              (deps.resumeAgentIdForThread ?? readAgentIdForThread)(found.graphThreadId),
+              (deps.resumeCausalHumanUserIdForThread
+                ?? readCausalHumanUserIdForThread)(found.graphThreadId),
+            ]);
+            if (fundingAgentId !== found.agentId
+              || fundingHumanUserId !== found.humanUserId) {
+              throw new OrdinaryContentAccessRecoveryUnavailableError();
+            }
+            const funding = await (deps.openForegroundFundingSessionForResume
+              ?? openForegroundChatFundingSession)({
+              humanUserId: fundingHumanUserId,
+              modelId: prior.modelId,
+              roomId: found.roomId,
+              agentId: fundingAgentId,
+              entrypoint: found.executionOwner?.kind === "fork"
+                ? "foreground.fork"
+                : "foreground.main",
+              prior,
+            });
+            if (funding === null) {
+              throw new OrdinaryContentAccessRecoveryUnavailableError();
+            }
+            outcome = await runWithForegroundFundingSession(funding, runRecovery);
+          }
           return reply.send({ outcome });
         }
         return reply.send(method === "GET" ? { recoveries, nextCursor: page.nextCursor } : { outcome: "unavailable" });

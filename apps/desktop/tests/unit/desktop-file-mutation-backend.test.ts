@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -23,6 +23,34 @@ import { withCanonicalPathLocks } from "../../electron/local-file-history/mutati
 const RELAY = "relay-desktop-backend";
 const ACTOR = { kind: "agent" as const, agentId: "agent-desktop-backend" };
 const roots: string[] = [];
+
+test("a failed postimage flush closes its file and preserves the original bytes", async () => {
+  const fx = await fixture();
+  const originalOpen = fs.open;
+  let closed = false;
+  const restores: Array<() => void> = [];
+  const opening = spyOn(fs, "open").mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]).includes(".nautilo-")) {
+      const originalClose = handle.close.bind(handle);
+      const closing = spyOn(handle, "close").mockImplementation(async () => { await originalClose(); closed = true; });
+      const syncing = spyOn(handle, "sync").mockRejectedValue(Object.assign(new Error("flush failed"), { code: "EIO" }));
+      restores.push(() => closing.mockRestore(), () => syncing.mockRestore());
+    }
+    return handle;
+  });
+  try {
+    const error = await fx.adapter.writeFileAtomicConditional!(fx.file, { kind: "bytes", bytes: fx.before }, fx.after)
+      .then(() => null, (error: unknown) => error);
+    expect(error).toMatchObject({ code: "EIO" });
+    expect(closed).toBe(true);
+    expect(await fs.readFile(fx.file)).toEqual(Buffer.from(fx.before));
+    expect((await fs.readdir(fx.workspace)).filter(name => name.includes(".nautilo-"))).toEqual([]);
+  } finally {
+    opening.mockRestore();
+    for (const restore of restores) restore();
+  }
+});
 
 afterEach(async () => {
   await Promise.all(
@@ -168,7 +196,7 @@ describe("DesktopFileMutationBackend", () => {
     const realDirectory = path.join(fx.workspace, "real-parent");
     await fs.mkdir(realDirectory);
     const linkedDirectory = path.join(fx.workspace, "linked-parent");
-    await fs.symlink(realDirectory, linkedDirectory);
+    await fs.symlink(realDirectory, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
     const missing = await fx.adapter.resolveTarget(
       path.join(linkedDirectory, "new.md"),
       { allowMissing: true, rejectFinalSymlink: true },
@@ -176,7 +204,8 @@ describe("DesktopFileMutationBackend", () => {
     expect(missing).toBe(path.join(await fs.realpath(realDirectory), "new.md"));
 
     const sourceLink = path.join(fx.workspace, "source-link.md");
-    await fs.symlink(fx.file, sourceLink);
+    await fs.symlink(process.platform === "win32" ? realDirectory : fx.file, sourceLink,
+      process.platform === "win32" ? "junction" : "file");
     await expect(
       fx.adapter.resolveTarget(sourceLink, {
         allowMissing: false,

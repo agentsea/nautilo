@@ -20,7 +20,9 @@ import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../src/task/
 import { decodeTaskRunResultPayloadV1, encodeTaskRunResultPayloadV1 } from "../../src/task/task-payload-v1.ts";
 import { taskRuntimePreparedResultDigestV1 } from "../../src/task/task-run-result-preparation.ts";
 import {
-  prepareNativeTaskRuntimeRunResult, type PrepareNativeTaskRuntimeRunResultInput,
+  prepareNativeTaskRuntimeRunResult,
+  withNativeTaskNamespaceSource,
+  type PrepareNativeTaskRuntimeRunResultInput,
 } from "../../src/server/task/native-task-run-result-preparation.ts";
 
 import { createPostgresTaskContentCryptoCompletion } from "../../src/server/task/postgres-task-content-crypto-completion.ts";
@@ -389,5 +391,32 @@ describe("native Task Runtime result preparation", () => {
     const swapped = { ...value.evidenceInput, result: { ...value.evidenceInput.result, objectId: "substituted" } };
     await fails(withTaskRuntimeExecutionEvidenceV1({ evidence: swapped, signal: value.base.signal, now: () => NOW,
       execute: (evidence) => prepareNativeTaskRuntimeRunResult({ ...value.base, evidence }) }));
+  });
+
+  test("requires the complete requested Namespace operation grant before loading secrets", async () => {
+    const value = await fixture();
+    const evidenceInput = {
+      ...value.evidenceInput,
+      namespaceRequirements: value.evidenceInput.namespaceRequirements.map(
+        requirement => ({ ...requirement, operations: ["encrypt"] as const }),
+      ),
+    };
+    await Promise.resolve(expect(withTaskRuntimeExecutionEvidenceV1({
+      evidence: evidenceInput,
+      signal: value.base.signal,
+      now: () => NOW,
+      execute: evidence => withNativeTaskNamespaceSource({
+        restricted: value.base.restricted,
+        crypto: value.base.crypto,
+        serverScope: value.base.serverScope,
+        evidence,
+        domains: value.base.domains,
+        namespaceId: NAMESPACE,
+        requiredOperations: ["decrypt", "encrypt"],
+        signal: value.base.signal,
+        assertCurrentTaskAuthority: value.base.assertCurrentTaskAuthority,
+      }, async () => "opened"),
+    })).rejects.toThrow("Namespace grant is unavailable"));
+    expect(value.stages).toEqual([]);
   });
 });

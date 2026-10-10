@@ -238,9 +238,28 @@ export {
   PostgresAgentMemoryProductPort,
 } from "./memory/postgres-agent-memory-product-port.ts";
 export type {
+  AgentMemoryBeforeLocks,
   AgentMemoryPublicationBoundary,
   ProtectedAgentBackgroundMemoryOutputPlanInput,
 } from "./memory/postgres-agent-memory-product-port.ts";
+export {
+  PostgresTaskMemoryReadPort,
+  type ProtectedTaskMemoryReadPort,
+  type TaskMemoryReadBinding,
+  type TaskMemoryReadBoundary,
+} from "./memory/postgres-task-memory-read-port.ts";
+export {
+  copyTaskScopeMemoryBinding,
+  discoverTaskScopeMemoryMetadata,
+  discoverTaskScopeMemoryNamespaceInventory,
+  readCurrentTaskScopeMemoryMetadata,
+  readCurrentTaskScopeMemoryMutationMetadata,
+  readCurrentTaskScopeMemoryNamespaceInventory,
+  type TaskScopeCoordinates,
+  type TaskScopeMemoryBinding,
+  type TaskScopeMemoryMetadata,
+  type TaskScopeMemoryNamespaceInventory,
+} from "./task/task-scope-memory-metadata.ts";
 export {
   PostgresAgentBackgroundMemoryPublicationReconciler,
 } from "./memory/postgres-agent-background-memory-publication-reconciler.ts";
@@ -921,10 +940,14 @@ export {withCurrentStenographerAuthority, matchesCurrentStenographerAuthority, m
   type StenographerRequestAdmission} from "./journal/current-stenographer-authority.ts";
 export { matchesCurrentReflectionAuthority, withCurrentReflectionAuthority } from "./journal/current-reflection-authority.ts";
 export {
+  matchesCurrentTaskRuntimeAuthority,
   withCurrentTaskRuntimeAuthority,
   withCurrentAcceptedTaskRuntimeAuthority,
+  withCurrentAcceptedTaskRuntimeClaimAuthority,
+  withCurrentAcceptedParkedTaskRuntimeAuthority,
   type AcceptedTaskRuntimeAuthorizationV3,
   type CurrentTaskRuntimeAuthority,
+  type ParkedTaskRuntimeJobPersistence,
   type TaskRuntimeAuthoritySubject,
   type TaskRuntimeDomainAuthorityRequirement,
   type TaskRuntimeNamespaceAuthorityRequirement,
@@ -975,10 +998,17 @@ export {PostgresProtectedReflectionMessageMetadata, type ProtectedReflectionMess
 
 export {
   inspectInitialTaskRuntimeNamespaceAuthority,
+  inspectTaskContentNamespaceAuthority,
   withInitialTaskRuntimeRecipientAuthority,
+  withParkedTaskRuntimeNamespaceAuthority,
+  withParkedTaskRuntimeRecipientAuthority,
+  withTaskContentNamespaceAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
+  type ParkedTaskRuntimeExpectedNamespaceParticipants,
+  type TaskContentNamespaceAuthorityInput,
 } from "./task/initial-task-runtime-namespace-authority.ts";
 
 export {
@@ -988,8 +1018,22 @@ export {
 
 export {
   prepareNativeTaskRuntimeRunResult,
+  withNativeTaskNamespaceSource,
+  type NativeTaskNamespaceSourceInput,
   type PrepareNativeTaskRuntimeRunResultInput,
 } from "./task/native-task-run-result-preparation.ts";
+
+export {
+  persistTaskRuntimeAgentObject,
+  type TaskRuntimeAgentObjectPersistenceAuthority,
+  type WithTaskRuntimeAgentObjectPersistenceAuthority,
+} from "./object/postgres-task-runtime-agent-object.ts";
+
+export {
+  reconcilePostgresTaskRunResultPublication,
+  type PostgresTaskRunResultRecoveryInput,
+  type TaskRunResultRecoveryOutcome,
+} from "./task/postgres-task-run-result-recovery.ts";
 
 export {
   createNativeTaskRuntimeCheckpointCellCrypto,
@@ -1001,6 +1045,7 @@ export {
   type NativeTaskMessageAuthority,
   type NativeTaskMessageCoordinates,
   type NativeTaskMessageSnapshot,
+  type NativeTaskNamespaceSource,
   type PrepareNativeTaskMessageInput,
   type PreparedNativeTaskMessage,
 } from "./task/native-task-message-preparation.ts";
@@ -1016,3 +1061,22 @@ export {
   type NativeTaskMessageReadAuthorityV1,
   type NativeTaskMessageReadTargetV1,
 } from "./task/native-task-message-opener.ts";
+
+export {
+  withNativeTaskMemoryEntityCrypto,
+  type NativeTaskMemoryEntityCryptoInput,
+} from "./task/native-task-memory-entity-crypto.ts";
+
+export {
+  adoptLegacyTaskScopeMemoryOrigin,
+  type TaskScopeMemoryOriginAdoptionResult,
+} from "./task/task-scope-memory-origin-adoption.ts";
+
+export {
+  reservePostgresTaskNamespaceMemoryRepairSource,
+  attachPostgresTaskNamespaceMemoryRepair,
+  reservePostgresTaskScopeMemoryRepairSource,
+  attachPostgresTaskScopeMemoryRepair,
+  type TaskNamespaceMemoryRepairSource,
+  type TaskScopeMemoryRepairSource,
+} from "./memory/postgres-foreground-memory-repair.ts";

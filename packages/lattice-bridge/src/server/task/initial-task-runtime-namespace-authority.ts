@@ -7,8 +7,10 @@ import {
   eq,
   roomMembers,
   rooms,
+  sql,
   tasks,
   type PostgresJsBridgeConnection,
+  type ParkedProtectedTaskAdditionalAuthority,
 } from "@nautilo/db";
 import {
   LATTICE_LIMITS,
@@ -32,6 +34,7 @@ import {
 import {
   cryptoTypedDb,
   executeTypedCryptoQuery,
+  readCryptoStorageInteger,
   verifyCryptoPostgresHandle,
 } from "../storage/postgres-lattice-storage.ts";
 
@@ -39,6 +42,28 @@ import type {
   TaskRuntimeDomainAuthorityRequirement,
   TaskRuntimeNamespaceAuthorityRequirement,
 } from "./current-task-runtime-authority.ts";
+import {
+  copyTaskScopeMemoryBinding,
+  readCurrentTaskScopeMemoryNamespaceInventory,
+  type TaskScopeMemoryBinding,
+} from "./task-scope-memory-metadata.ts";
+import {
+  copyParkedTaskRuntimeAuthority,
+  copyParkedTaskRuntimeExpectedNamespaceParticipants,
+  currentParkedTaskRuntimeRoutingFacts,
+  lockCurrentParkedTaskAdditionalAuthority,
+  parkedTaskRuntimeNamespaceParticipantsMatch,
+  withParkedTaskRuntimeRestrictedAuthority,
+  type ParkedTaskRuntimeCurrentRoutingFacts,
+  type ParkedTaskRuntimeExpectedNamespaceParticipants,
+  type ParkedTaskRuntimeLockedRoutingTask,
+} from "./parked-task-runtime-authority.ts";
+import type { CanonicalTranscriptTx } from "@nautilo/trust";
+
+export type {
+  ParkedTaskRuntimeCurrentRoutingFacts,
+  ParkedTaskRuntimeExpectedNamespaceParticipants,
+} from "./parked-task-runtime-authority.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
@@ -57,6 +82,28 @@ export type InitialTaskRuntimeNamespaceAuthority = Readonly<{
   facts: readonly InitialTaskRuntimeNamespaceFact[];
 }>;
 
+type LockedTaskRuntimeRoutingRow = Readonly<{
+  id: string;
+  owner_id: string;
+  requestor_id: string;
+  agent_id: string;
+  calling_room_id: string | null;
+  schedule_kind: "now" | "one_shot" | "cron";
+  preset: string;
+  target_user_ids: unknown;
+  content_namespace_id: string;
+  content_representation: "ordinary" | "dual" | "protected";
+  content_revision: number;
+  crypto_object_id: string | null;
+  crypto_access_revision: number;
+  crypto_required_namespace_fingerprint: Uint8Array | null;
+  use_scope: boolean;
+  scope_id: string | null;
+  target_chat: string;
+  target_room_id: string | null;
+  wide_bring_back: boolean;
+}>;
+
 function inTransaction(
   executor: Pick<PostgresJsBridgeConnection, "query">,
 ): PostgresJsBridgeConnection {
@@ -67,7 +114,7 @@ function inTransaction(
   };
 }
 
-type InitialTaskRuntimeNamespaceInput = Readonly<{
+type TaskNamespaceAuthorityCommonInput = Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
@@ -78,27 +125,70 @@ type InitialTaskRuntimeNamespaceInput = Readonly<{
   agentId: string;
   contentNamespaceId: string;
   sourceRoomId: string;
-  namespaceIds: readonly string[];
   expectedPolicyRevision: number;
 }>;
 
+type InitialTaskRuntimeNamespaceInput = TaskNamespaceAuthorityCommonInput &
+  Readonly<{
+  targetRoomId: string;
+  namespaceIds: readonly string[];
+  scopeMemory?: TaskScopeMemoryBinding;
+}>;
+
+export type TaskContentNamespaceAuthorityInput =
+  TaskNamespaceAuthorityCommonInput;
+
+type TaskRuntimeProductAuthorityInput =
+  | (InitialTaskRuntimeNamespaceInput & Readonly<{
+      purpose: "initial_execution";
+    }>)
+  | (TaskContentNamespaceAuthorityInput & Readonly<{
+      purpose: "content_only";
+      namespaceIds: readonly [string];
+    }>);
+
+function sameIds(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((entry, index) => entry === right[index]);
+}
+
 async function withInitialTaskRuntimeProductAuthority<Value>(
-  input: InitialTaskRuntimeNamespaceInput,
+  input: TaskRuntimeProductAuthorityInput,
   use: (
     restricted: PostgresJsBridgeConnection,
     accessRevisions: readonly number[],
     policyRevision: number,
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
   ) => Promise<Value | null>,
   validateCurrentTaskRun?: (
     product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
+    task: LockedTaskRuntimeRoutingRow,
   ) => Promise<boolean>,
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
 ): Promise<Value | null> {
   // Snapshot caller-owned coordinates before the first asynchronous boundary.
-  const request = Object.freeze({ ...input,
-    namespaceIds: Object.freeze([...input.namespaceIds]),
-  });
-  if ([request.taskId, request.requesterUserId, request.requesterHumanId,
-    request.agentId, request.contentNamespaceId, request.sourceRoomId]
+  const scopeMemory = input.purpose !== "initial_execution"
+    || input.scopeMemory === undefined
+    ? undefined
+    : copyTaskScopeMemoryBinding(input.scopeMemory);
+  const request: TaskRuntimeProductAuthorityInput = input.purpose
+    === "initial_execution"
+    ? Object.freeze({ ...input,
+        namespaceIds: Object.freeze([...input.namespaceIds]),
+        ...(scopeMemory === undefined ? {} : { scopeMemory }),
+      })
+    : Object.freeze({ ...input,
+        namespaceIds: Object.freeze([input.contentNamespaceId] as const),
+      });
+  const coordinateIds = [request.taskId, request.requesterUserId,
+    request.requesterHumanId, request.agentId, request.contentNamespaceId,
+    request.sourceRoomId,
+    ...(request.purpose === "initial_execution"
+      ? [request.targetRoomId]
+      : [])];
+  if (coordinateIds
     .some((value) => !UUID.test(value))
     || !Number.isSafeInteger(request.expectedPolicyRevision)
     || request.expectedPolicyRevision < 0
@@ -117,10 +207,26 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
     const taskRows = await executeTypedConversationProductQuery(product,
       conversationProductTypedDb.select({
         task_id: tasks.id,
+        owner_id: tasks.ownerId,
         requestor_id: tasks.requestorId,
         agent_id: tasks.agentId,
+        calling_room_id: tasks.callingRoomId,
+        schedule_kind: tasks.scheduleKind,
+        preset: tasks.preset,
+        target_user_ids: tasks.targetUserIds,
         content_namespace_id: tasks.contentNamespaceId,
         content_representation: tasks.contentRepresentation,
+        content_revision: tasks.contentRevision,
+        crypto_object_id: tasks.cryptoObjectId,
+        crypto_access_revision: tasks.cryptoAccessRevision,
+        crypto_required_namespace_fingerprint:
+          tasks.cryptoRequiredNamespaceFingerprint,
+        use_scope: tasks.useScope,
+        scope_id: tasks.scopeId,
+        target_chat: tasks.targetChat,
+        target_room_id: tasks.targetRoomId,
+        wide_bring_back: sql<boolean>`(${tasks.metadata} -> 'bringBack') IS DISTINCT FROM 'false'::jsonb`
+          .mapWith(Boolean).as("wide_bring_back"),
       }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2).for("update"));
     const task = taskRows[0];
     if (taskRows.length !== 1 || task === undefined
@@ -128,12 +234,33 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
       || task.requestor_id !== request.requesterUserId
       || task.agent_id !== request.agentId
       || task.content_namespace_id !== request.contentNamespaceId
+      || request.purpose === "initial_execution" && (
+        !["last_in_namespace", "new_in_namespace", "last_dm", "new_dm",
+          "orphan"].includes(task.target_chat)
+        || task.target_room_id !== request.targetRoomId
+        || (task.use_scope !== true && task.use_scope !== false)
+        || (task.use_scope
+          ? task.scope_id === null
+            || request.scopeMemory === undefined
+            || request.scopeMemory.scopeId !== task.scope_id
+            || request.scopeMemory.memoryRoomId
+              !== (task.target_chat === "orphan"
+                ? request.sourceRoomId
+                : task.target_room_id)
+            || request.scopeMemory.readableNamespaceIds.some(
+              namespaceId => !request.namespaceIds.includes(namespaceId),
+            )
+          : request.scopeMemory !== undefined))
       || (task.content_representation !== "protected"
         && task.content_representation !== "dual")) return null;
     // Recipient binding starts before a signed request exists. Hold the exact
     // awaiting TaskRun lock for the entire request-construction callback.
     if (validateCurrentTaskRun !== undefined
-      && !await validateCurrentTaskRun(product)) return null;
+      && !await validateCurrentTaskRun(
+        product,
+        tx,
+        task as LockedTaskRuntimeRoutingRow,
+      )) return null;
     return new PostgresNamespaceProductAuthority(product)
       .withCurrentReadableNamespaceSet({
         subjectUserId: request.requesterUserId,
@@ -184,33 +311,118 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
             try {
               if (entry.namespaceId !== request.namespaceIds[index]
                 || snapshot.namespaceId !== entry.namespaceId
-                || snapshot.subjectHumanId !== request.requesterHumanId) return null;
+                || snapshot.subjectHumanId !== request.requesterHumanId
+                || !parkedTaskRuntimeNamespaceParticipantsMatch(
+                  entry.namespaceId,
+                  snapshot.participantHumanIds,
+                  expectedNamespaceParticipants,
+                )) return null;
               accessRevisions.push(snapshot.accessRevision);
             } finally {
               snapshot.audienceFingerprint.fill(0);
             }
           }
+          if (request.purpose === "initial_execution"
+            && request.scopeMemory !== undefined) {
+            const memoryRoomRows = await executeTypedConversationProductQuery(
+              product,
+              conversationProductTypedDb.select({
+                id: rooms.id,
+                namespace_id: rooms.namespaceId,
+                archived_at: rooms.archivedAt,
+              }).from(rooms).where(eq(
+                rooms.id,
+                request.scopeMemory.memoryRoomId,
+              )).limit(2).for("share"),
+            );
+            const memoryRoom = memoryRoomRows[0];
+            if (memoryRoomRows.length !== 1 || memoryRoom === undefined
+              || memoryRoom.id !== request.scopeMemory.memoryRoomId
+              || memoryRoom.namespace_id
+                !== request.scopeMemory.originWritableNamespaceId
+              || memoryRoom.archived_at !== null) return null;
+
+            // Namespace/source locks precede the Scope SHARE fence. Scope attach
+            // and detach take Scope UPDATE, so this locked inventory remains
+            // fixed through the later restricted Domain work.
+            const currentScopeMemory =
+              await readCurrentTaskScopeMemoryNamespaceInventory({
+                transaction: product,
+                coordinates: {
+                  taskId: task.id,
+                  requesterUserId: task.requestor_id,
+                  agentId: task.agent_id,
+                  scopeId: request.scopeMemory.scopeId,
+                  memoryRoomId: request.scopeMemory.memoryRoomId,
+                  originWritableNamespaceId:
+                    request.scopeMemory.originWritableNamespaceId,
+                },
+                sourceRoomId: request.sourceRoomId,
+                requesterHumanId: request.requesterHumanId,
+              });
+            if (currentScopeMemory === null
+              || currentScopeMemory.scopeId !== request.scopeMemory.scopeId
+              || currentScopeMemory.originWritableNamespaceId
+                !== request.scopeMemory.originWritableNamespaceId
+              || !sameIds(
+                currentScopeMemory.readableNamespaceIds,
+                request.scopeMemory.readableNamespaceIds,
+              )) return null;
+          }
           return request.restricted.transactionOnce(async (restrictedTx) => {
             const restricted = inTransaction(restrictedTx);
             await verifyCryptoPostgresHandle(restricted);
-            return use(restricted, accessRevisions, policy.revision);
+            return use(
+              restricted,
+              accessRevisions,
+              policy.revision,
+              product,
+              tx,
+            );
           }, { isolationLevel: "read committed" });
         },
       });
   }, { isolationLevel: "read committed" });
 }
 
-/** Detached planning facts; never a substitute for operation-time authority. */
-export async function inspectInitialTaskRuntimeNamespaceAuthority(
-  input: InitialTaskRuntimeNamespaceInput,
-): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
-  const request = Object.freeze({
-    ...input,
-    namespaceIds: Object.freeze([...input.namespaceIds]),
-  });
+async function withTaskRuntimeNamespaceAuthority<Value>(
+  input: TaskRuntimeProductAuthorityInput,
+  validateCurrentTaskRun: ((
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
+    task: LockedTaskRuntimeRoutingRow,
+  ) => Promise<boolean>) | undefined,
+  use: (
+    authority: InitialTaskRuntimeNamespaceAuthority,
+    restricted: PostgresJsBridgeConnection,
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
+  ) => Value | Promise<Value>,
+  onNamespaceReadinessUnavailable?: (namespaceId: string) => void,
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
+): Promise<Value | null> {
+  const request: TaskRuntimeProductAuthorityInput = input.purpose
+    === "initial_execution"
+    ? Object.freeze({
+        ...input,
+        namespaceIds: Object.freeze([...input.namespaceIds]),
+        ...(input.scopeMemory === undefined
+          ? {}
+          : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
+      })
+    : Object.freeze({
+        ...input,
+        namespaceIds: Object.freeze([input.contentNamespaceId] as const),
+      });
   return withInitialTaskRuntimeProductAuthority(
     request,
-    async (restricted, accessRevisions, policyRevision) => {
+    async (
+      restricted,
+      accessRevisions,
+      policyRevision,
+      product,
+      transaction,
+    ) => {
       const repository = new PostgresDomainKeyAuthorityRepository(
         restricted, request.crypto, request.serverScope,
       );
@@ -223,7 +435,12 @@ export async function inspectInitialTaskRuntimeNamespaceAuthority(
           const authority = await repository.inspectForegroundNamespaceAuthority({
             namespaceId, keyClass: "ai",
           });
-          if (authority.status !== "ready") return null;
+          if (authority.status !== "ready") {
+            if (authority.reason === "namespace_bundle_unavailable") {
+              onNamespaceReadinessUnavailable?.(namespaceId);
+            }
+            return null;
+          }
           authorities.push(authority);
           if (authority.namespaceId !== namespaceId
             || authority.namespaceAccessRevision !== accessRevisions[index]) return null;
@@ -248,9 +465,11 @@ export async function inspectInitialTaskRuntimeNamespaceAuthority(
           if (heads.length !== 1 || head === undefined
             || head.domain_id !== domainId
             || !(head.head_digest instanceof Uint8Array)) return null;
+          const generation = readCryptoStorageInteger(head, "domain_key_generation");
+          const authorizationRevision = readCryptoStorageInteger(head, "authorization_revision");
           for (const authority of byDomain.get(domainId)!) {
-            if (head.domain_key_generation !== authority.domainKeyGeneration
-              || head.authorization_revision !== authority.domainAuthorizationRevision
+            if (generation !== authority.domainKeyGeneration
+              || authorizationRevision !== authority.domainAuthorizationRevision
               || head.head_digest.length !== authority.domainHeadDigest.length
               || !head.head_digest.every((byte, offset) =>
                 byte === authority.domainHeadDigest[offset])) return null;
@@ -264,9 +483,10 @@ export async function inspectInitialTaskRuntimeNamespaceAuthority(
           expectedDomainEpoch: authority.domainKeyGeneration,
           expectedAuthorizationRevision: authority.domainAuthorizationRevision,
         }));
-        return Object.freeze({ sourceRoomId: request.sourceRoomId,
+        const authority = Object.freeze({ sourceRoomId: request.sourceRoomId,
           sourceNamespaceId: request.contentNamespaceId,
           facts: Object.freeze(facts) });
+        return await use(authority, restricted, product, transaction);
       } finally {
         for (const authority of authorities) {
           authority.namespaceHeadDigest.fill(0);
@@ -278,6 +498,193 @@ export async function inspectInitialTaskRuntimeNamespaceAuthority(
         }
       }
     },
+    validateCurrentTaskRun,
+    expectedNamespaceParticipants,
+  );
+}
+
+function normalizeLockedTaskRuntimeRouting(
+  task: LockedTaskRuntimeRoutingRow,
+): ParkedTaskRuntimeLockedRoutingTask {
+  return Object.freeze({
+    id: task.id,
+    ownerId: task.owner_id,
+    requestorId: task.requestor_id,
+    agentId: task.agent_id,
+    callingRoomId: task.calling_room_id,
+    scheduleKind: task.schedule_kind,
+    contentRepresentation: task.content_representation,
+    contentNamespaceId: task.content_namespace_id,
+    contentRevision: task.content_revision,
+    cryptoObjectId: task.crypto_object_id,
+    cryptoAccessRevision: task.crypto_access_revision,
+    cryptoRequiredNamespaceFingerprint:
+      task.crypto_required_namespace_fingerprint,
+    preset: task.preset,
+    targetUserIds: task.target_user_ids,
+    useScope: task.use_scope,
+    scopeId: task.scope_id,
+    targetChat: task.target_chat,
+    targetRoomId: task.target_room_id,
+    wideBringBack: task.wide_bring_back,
+  });
+}
+
+async function inspectTaskRuntimeNamespaceAuthority(
+  input: TaskRuntimeProductAuthorityInput,
+): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
+  return withTaskRuntimeNamespaceAuthority(
+    input,
+    undefined,
+    authority => authority,
+  );
+}
+
+/** Detached planning facts; never a substitute for operation-time authority. */
+export async function inspectInitialTaskRuntimeNamespaceAuthority(
+  input: InitialTaskRuntimeNamespaceInput,
+): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
+  return inspectTaskRuntimeNamespaceAuthority(Object.freeze({
+    ...input,
+    purpose: "initial_execution" as const,
+  }));
+}
+
+/** Current requester-private Task content authority, independent of Memory. */
+export async function inspectTaskContentNamespaceAuthority(
+  input: TaskContentNamespaceAuthorityInput,
+): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
+  return inspectTaskRuntimeNamespaceAuthority(Object.freeze({
+    ...input,
+    purpose: "content_only" as const,
+    namespaceIds: Object.freeze([input.contentNamespaceId] as const),
+  }));
+}
+
+/**
+ * Current requester-private Task content authority held with caller-supplied
+ * exact product proof. Product mutations remain inside the same canonical
+ * transaction and held Namespace/Domain authority callback.
+ */
+export async function withTaskContentNamespaceAuthority<Value>(
+  input: TaskContentNamespaceAuthorityInput & Readonly<{
+    validateCurrentTaskRun(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      task: LockedTaskRuntimeRoutingRow,
+    ): Promise<boolean>;
+    use(
+      authority: InitialTaskRuntimeNamespaceAuthority,
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const validateCurrentTaskRun = input.validateCurrentTaskRun;
+  const use = input.use;
+  if (typeof validateCurrentTaskRun !== "function"
+    || typeof use !== "function") return null;
+  const {
+    validateCurrentTaskRun: _validateCurrentTaskRun,
+    use: _use,
+    ...coordinates
+  } = input;
+  return withTaskRuntimeNamespaceAuthority(
+    Object.freeze({
+      ...coordinates,
+      purpose: "content_only" as const,
+      namespaceIds: Object.freeze([coordinates.contentNamespaceId] as const),
+    }),
+    validateCurrentTaskRun,
+    (authority, restricted, product, transaction) =>
+      use(authority, product, transaction, restricted),
+  );
+}
+
+/**
+ * Current Namespace and Domain authority held under the exact parked lifecycle
+ * proof. The restricted handle is valid only for the callback lifetime.
+ */
+export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
+  input: InitialTaskRuntimeNamespaceInput & Readonly<{
+    expected: ParkedProtectedTaskAdditionalAuthority;
+    authorizationRequestId: string;
+    validateCurrentRouting(
+      facts: ParkedTaskRuntimeCurrentRoutingFacts,
+    ): boolean | Promise<boolean>;
+    onNamespaceReadinessUnavailable?(namespaceId: string): void;
+    expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
+    use(
+      authority: InitialTaskRuntimeNamespaceAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const use = input.use;
+  const validateCurrentRouting = input.validateCurrentRouting;
+  const onNamespaceReadinessUnavailable =
+    input.onNamespaceReadinessUnavailable;
+  const suppliedNamespaceParticipants = input.expectedNamespaceParticipants;
+  let expectedNamespaceParticipants:
+    ParkedTaskRuntimeExpectedNamespaceParticipants | undefined;
+  if (suppliedNamespaceParticipants !== undefined) {
+    const copied = copyParkedTaskRuntimeExpectedNamespaceParticipants(
+      suppliedNamespaceParticipants,
+    );
+    if (copied === null) return null;
+    expectedNamespaceParticipants = copied;
+  }
+  const namespaceIds = Object.freeze([...input.namespaceIds]);
+  const expected = copyParkedTaskRuntimeAuthority(input.expected);
+  const authorizationRequestId = input.authorizationRequestId;
+  if (typeof use !== "function"
+    || typeof validateCurrentRouting !== "function"
+    || (onNamespaceReadinessUnavailable !== undefined
+      && typeof onNamespaceReadinessUnavailable !== "function")
+    || expectedNamespaceParticipants?.some(value =>
+      !namespaceIds.includes(value.namespaceId)) === true
+    || authorizationRequestId !== expected.authorizationRequestId
+    || input.taskId !== expected.occurrence.task.id
+    || input.requesterUserId !== expected.occurrence.task.requestorId
+    || input.agentId !== expected.occurrence.task.agentId
+    || input.contentNamespaceId
+      !== expected.occurrence.task.contentNamespaceId) return null;
+  const {
+    expected: _expected,
+    authorizationRequestId: _authorizationRequestId,
+    validateCurrentRouting: _validateCurrentRouting,
+    onNamespaceReadinessUnavailable: _onNamespaceReadinessUnavailable,
+    expectedNamespaceParticipants: _expectedNamespaceParticipants,
+    use: _use,
+    ...coordinates
+  } = input;
+  return withTaskRuntimeNamespaceAuthority(
+    Object.freeze({
+      ...coordinates,
+      namespaceIds,
+      purpose: "initial_execution" as const,
+    }),
+    async (_product, transaction, task) => {
+      const current = await lockCurrentParkedTaskAdditionalAuthority({
+        transaction,
+        expected,
+      });
+      if (current === null) return false;
+      const facts = currentParkedTaskRuntimeRoutingFacts({
+        sourceRoomId: coordinates.sourceRoomId,
+        targetRoomId: coordinates.targetRoomId,
+        task: normalizeLockedTaskRuntimeRouting(task),
+        current,
+      });
+      return facts !== null && await validateCurrentRouting(facts);
+    },
+    (authority, restricted) => withParkedTaskRuntimeRestrictedAuthority(
+      restricted,
+      scoped => Promise.resolve(use(authority, scoped)),
+    ),
+    onNamespaceReadinessUnavailable,
+    expectedNamespaceParticipants ?? undefined,
   );
 }
 
@@ -288,7 +695,16 @@ export type InitialTaskRuntimeRecipientAuthority = Readonly<{
   domains: readonly DomainForegroundAuthorityEntry[];
   namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
   policyRevision: number;
+  scopeMemory?: TaskScopeMemoryBinding;
 }>;
+
+type TaskRuntimeRecipientAuthorityInput =
+  InitialTaskRuntimeNamespaceInput & Readonly<{
+    deviceId: string;
+    namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+    domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+    signal?: AbortSignal;
+  }>;
 
 function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceAdmissionAuthority): boolean {
   return left.userId === right.userId && left.humanActorId === right.humanActorId
@@ -301,25 +717,33 @@ function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceA
     && left.signingPublicKey.every((byte, index) => byte === right.signingPublicKey[index]);
 }
 
-/**
- * Awaiting-phase request construction under the same product proof as planning.
- * The callback borrows public authority only; copy public bytes into its request
- * before returning. No key material or transaction handle is lent.
- */
-export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: InitialTaskRuntimeNamespaceInput & Readonly<{
-  deviceId: string;
-  namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
-  domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
-  validateCurrentTaskRun(product: PostgresJsBridgeConnection): Promise<boolean>;
-  signal?: AbortSignal;
-  use(authority: InitialTaskRuntimeRecipientAuthority): Value | Promise<Value>;
-}>): Promise<Value | null> {
+/** Shared awaiting-phase authority pipeline for initial and parked requests. */
+async function withTaskRuntimeRecipientAuthority<Value>(
+  input: TaskRuntimeRecipientAuthorityInput,
+  validateCurrentTaskRun: (
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
+    task: LockedTaskRuntimeRoutingRow,
+  ) => Promise<boolean>,
+  use: (
+    authority: InitialTaskRuntimeRecipientAuthority,
+    restricted: PostgresJsBridgeConnection,
+    request: TaskRuntimeRecipientAuthorityInput,
+  ) => Value | Promise<Value>,
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
+): Promise<Value | null> {
   const namespaces = Object.freeze(input.namespaceRequirements.map((entry) => Object.freeze({
     ...entry, operations: Object.freeze([...entry.operations]),
   })));
   const domains = Object.freeze(input.domainRequirements.map((entry) => Object.freeze({ ...entry })));
-  const request = Object.freeze({ ...input, namespaceIds: Object.freeze([...input.namespaceIds]) });
-  if (typeof request.validateCurrentTaskRun !== "function"
+  const request = Object.freeze({
+    ...input,
+    namespaceIds: Object.freeze([...input.namespaceIds]),
+    ...(input.scopeMemory === undefined
+      ? {}
+      : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
+  });
+  if (typeof validateCurrentTaskRun !== "function"
     || request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
     || namespaces.some((entry, index) => entry.ordinal !== index
       || entry.namespaceId !== request.namespaceIds[index]
@@ -340,7 +764,10 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
     throw new TypeError("Initial Task Runtime recipient requirements are invalid");
   }
   request.signal?.throwIfAborted();
-  return withInitialTaskRuntimeProductAuthority(request, async (restricted, accessRevisions, policyRevision) => {
+  return withInitialTaskRuntimeProductAuthority(Object.freeze({
+    ...request,
+    purpose: "initial_execution" as const,
+  }), async (restricted, accessRevisions, policyRevision) => {
     if (namespaces.some((entry, index) => entry.expectedAccessRevision !== accessRevisions[index])) return null;
     const subject = { userId: request.requesterUserId, humanActorId: request.requesterHumanId, deviceId: request.deviceId };
     const admission = new PostgresDeviceAdmissionRepository(await verifyCryptoPostgresHandle(restricted), request.crypto);
@@ -360,9 +787,11 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       });
       if (inspected.status !== "ready") return null;
       for (const domain of inspected.domains) owned.push(domain.participantDigest, domain.headDigest, domain.activeNamespaceBindingSetDigest);
+      // The native inspector's hostAuthorizationRevision is the device-row
+      // projection revision. Task recipient admission is instead bound to the
+      // group securityRevision re-read below; these counters may differ.
       if (inspected.committerDeviceId !== device.deviceId
         || inspected.committerDeviceSigningGeneration !== device.deviceGeneration
-        || inspected.hostAuthorizationRevision !== device.securityRevision
         || inspected.domains.length !== domains.length
         || inspected.domains.some((domain, index) => domain.domainId !== domains[index]?.domainId
           || domain.domainKeyGeneration !== domains[index]?.expectedEpoch
@@ -389,11 +818,112 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(input: Ini
       retainDevice(lockedDevice);
       if (!sameDevice(device, lockedDevice)) return null;
       request.signal?.throwIfAborted();
-      const value = await request.use(Object.freeze({ sourceRoomId: request.sourceRoomId,
+      const value = await use(Object.freeze({ sourceRoomId: request.sourceRoomId,
         sourceNamespaceId: request.contentNamespaceId, device: Object.freeze(lockedDevice),
-        domains: inspected.domains, namespaceRequirements: namespaces, policyRevision }));
+        domains: inspected.domains, namespaceRequirements: namespaces, policyRevision,
+        ...(request.scopeMemory === undefined
+          ? {}
+          : { scopeMemory: request.scopeMemory }) }), restricted, request);
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
-  }, request.validateCurrentTaskRun);
+  }, validateCurrentTaskRun, expectedNamespaceParticipants);
+}
+
+export async function withInitialTaskRuntimeRecipientAuthority<Value>(
+  input: TaskRuntimeRecipientAuthorityInput & Readonly<{
+    validateCurrentTaskRun(
+      product: PostgresJsBridgeConnection,
+    ): Promise<boolean>;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+    /** Runs after scoped restricted operations drain, before the owner commits. */
+    validateBeforeCommit?(): void | Promise<void>;
+  }>,
+): Promise<Value | null> {
+  const validateCurrentTaskRun = input.validateCurrentTaskRun;
+  const use = input.use;
+  const validateBeforeCommit = input.validateBeforeCommit;
+  if (validateBeforeCommit !== undefined
+    && typeof validateBeforeCommit !== "function") return null;
+  return withTaskRuntimeRecipientAuthority(
+    input,
+    product => validateCurrentTaskRun(product),
+    async (authority, restricted, request) => {
+      const value = await withParkedTaskRuntimeRestrictedAuthority(
+        restricted,
+        scoped => Promise.resolve(Reflect.apply(use, request, [authority, scoped])),
+      );
+      await validateBeforeCommit?.();
+      return value;
+    },
+  );
+}
+
+/**
+ * Continuation recipient construction under the exact parked lifecycle proof.
+ * The proof is locked and re-parsed before any Namespace or crypto authority.
+ */
+export async function withParkedTaskRuntimeRecipientAuthority<Value>(
+  input: TaskRuntimeRecipientAuthorityInput & Readonly<{
+    expected: ParkedProtectedTaskAdditionalAuthority;
+    authorizationRequestId: string;
+    validateCurrentRouting(
+      facts: ParkedTaskRuntimeCurrentRoutingFacts,
+    ): boolean | Promise<boolean>;
+    expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const use = input.use;
+  const validateCurrentRouting = input.validateCurrentRouting;
+  const sourceRoomId = input.sourceRoomId;
+  const targetRoomId = input.targetRoomId;
+  const suppliedNamespaceParticipants = input.expectedNamespaceParticipants;
+  let expectedNamespaceParticipants:
+    ParkedTaskRuntimeExpectedNamespaceParticipants | undefined;
+  if (suppliedNamespaceParticipants !== undefined) {
+    const copied = copyParkedTaskRuntimeExpectedNamespaceParticipants(
+      suppliedNamespaceParticipants,
+    );
+    if (copied === null) return null;
+    expectedNamespaceParticipants = copied;
+  }
+  const expected = copyParkedTaskRuntimeAuthority(input.expected);
+  if (typeof use !== "function" || typeof validateCurrentRouting !== "function"
+    || expectedNamespaceParticipants?.some(value =>
+      !input.namespaceIds.includes(value.namespaceId)) === true
+    || input.authorizationRequestId !== expected.authorizationRequestId
+    || input.taskId !== expected.occurrence.task.id
+    || input.requesterUserId !== expected.occurrence.task.requestorId
+    || input.agentId !== expected.occurrence.task.agentId
+    || input.contentNamespaceId
+      !== expected.occurrence.task.contentNamespaceId) return null;
+  return withTaskRuntimeRecipientAuthority(
+    input,
+    async (_product, transaction, task) => {
+      const current = await lockCurrentParkedTaskAdditionalAuthority({
+        transaction,
+        expected,
+      });
+      if (current === null) return false;
+      const facts = currentParkedTaskRuntimeRoutingFacts({
+        sourceRoomId,
+        targetRoomId,
+        task: normalizeLockedTaskRuntimeRouting(task),
+        current,
+      });
+      return facts !== null && await validateCurrentRouting(facts);
+    },
+    (authority, restricted) => withParkedTaskRuntimeRestrictedAuthority(
+      restricted,
+      scoped => Promise.resolve(use(authority, scoped)),
+    ),
+    expectedNamespaceParticipants,
+  );
 }

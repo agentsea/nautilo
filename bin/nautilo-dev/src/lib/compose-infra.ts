@@ -1,19 +1,16 @@
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
-  mkdirSync,
   readFileSync,
-  renameSync,
-  writeFileSync,
 } from "node:fs";
 import {
   resolveNautiloRootDir,
   resolvedInstanceChildEnv,
   type ResolvedInstance,
 } from "@nautilo/config";
+import { ensurePrivateDirectorySync, publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 import { readConfigEnv } from "./config-env";
 
 /** Monorepo root (directory that contains `infra/compose/`). */
@@ -162,12 +159,9 @@ function buildInstanceEnvWithServiceSecrets(
 
 /** Same-filesystem publication used for every local credential authority file. */
 export function writeProtectedInstanceSecretFile(path: string, contents: string): void {
-  mkdirSync(resolve(path, ".."), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
-  writeFileSync(temporary, contents, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  chmodSync(temporary, 0o600);
-  renameSync(temporary, path);
-  chmodSync(path, 0o600);
+  const destination = resolve(path);
+  ensurePrivateDirectorySync(dirname(destination));
+  publishPrivateFileAtomicallySync(destination, new TextEncoder().encode(contents));
 }
 
 /**
@@ -474,11 +468,7 @@ function persistInfraCryptoDbPassword(
   if (secret.trim() === "" || /[\r\n]/.test(secret)) {
     throw new Error("[instance-secrets] crypto role credential is empty or multiline");
   }
-  mkdirSync(resolve(secretPath, ".."), { recursive: true, mode: 0o700 });
-  const temporary = `${secretPath}.tmp-${process.pid}`;
-  writeFileSync(temporary, `${secret}\n`, { mode: 0o600 });
-  renameSync(temporary, secretPath);
-  chmodSync(secretPath, 0o600);
+  writeProtectedInstanceSecretFile(secretPath, `${secret}\n`);
   return Promise.resolve();
 }
 
@@ -512,12 +502,7 @@ export async function ensureInfraCryptoDbPasswordForInstance(
   if (
     parseEnvValue(instanceEnvRaw, "NAUTILO_CRYPTO_DB_PASSWORD") !== undefined
   ) {
-    const temporary = `${instanceEnvPath}.m231-${process.pid}`;
-    writeFileSync(temporary, stripCryptoPasswordLine(instanceEnvRaw), {
-      mode: 0o600,
-    });
-    renameSync(temporary, instanceEnvPath);
-    chmodSync(instanceEnvPath, 0o600);
+    writeProtectedInstanceSecretFile(instanceEnvPath, stripCryptoPasswordLine(instanceEnvRaw));
   }
   return secret;
 }

@@ -26,7 +26,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -121,7 +121,7 @@ function installedTreeIsComplete(vendorDir: string, packages: readonly SharpDarw
 
 function ensureSafeTarEntries(bytes: Buffer, tarPath: string): void {
   writeFileSync(tarPath, bytes, { mode: 0o600 });
-  const listed = spawnSync("tar", ["-tzf", tarPath], { encoding: "utf8" });
+  const listed = spawnSync("tar", ["-tzf", basename(tarPath)], { cwd: dirname(tarPath), encoding: "utf8" });
   if (listed.status !== 0) throw new Error("npm package tarball cannot be listed safely");
   for (const entry of listed.stdout.split("\n").filter(Boolean)) {
     if (!entry.startsWith("package/") || entry.startsWith("/") || entry.split("/").includes("..")) {
@@ -144,7 +144,7 @@ function extractVerifiedPackage(bytes: Buffer, spec: SharpDarwinPackage, destina
   try {
     const tarPath = join(extraction, "package.tgz");
     ensureSafeTarEntries(bytes, tarPath);
-    const result = spawnSync("tar", ["-xzf", tarPath, "-C", extraction], { encoding: "utf8" });
+    const result = spawnSync("tar", ["-xzf", basename(tarPath)], { cwd: extraction, encoding: "utf8" });
     if (result.status !== 0) throw new Error("npm package tarball cannot be extracted safely");
     const source = join(extraction, "package");
     if (!packageJsonIsExpected(join(source, "package.json"), spec)

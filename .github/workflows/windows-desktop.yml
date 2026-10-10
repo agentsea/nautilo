@@ -24,6 +24,7 @@ on:
       - "dev/scripts/ci-gates.sh"
       - "dev/scripts/tsconfig.json"
       - "dev/tests/repo-invariants/**"
+      - "dev/tests/test-lifecycle-preload.ts"
       - "lefthook.yml"
       - "infra/compose/**"
       - "packages/acp-host/**"
@@ -132,6 +133,10 @@ jobs:
           if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) { throw 'VSWhere is missing' }
           $instancePath = & $vswherePath @vsArgs
           if (-not $instancePath) { throw 'Visual Studio 2026 x64 Spectre libraries are missing' }
+          $gitBashDirectory = 'C:\Program Files\Git\bin'
+          $gitBash = Join-Path $gitBashDirectory 'bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw 'Native Git Bash is missing' }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $gitBashDirectory
 
       - name: Install frozen dependencies
         run: bun install --frozen-lockfile
@@ -156,6 +161,9 @@ jobs:
 
       - name: Test Windows source contracts
         run: bun dev/scripts/windows-unit-gate.ts
+
+      - name: Test repository invariants on Windows
+        run: bun run test:invariants
 
       - name: Typecheck Desktop
         env:

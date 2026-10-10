@@ -1,6 +1,8 @@
 import { reapplyHappyDomGlobals } from "../bun-dom-preload";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { ApiError } from "@nautilo/api-client/browser";
+import { ClassifiedDataOperationError } from "@nautilo/lattice-bridge";
 import type { ReactNode } from "react";
 import type { TaskSummary } from "@nautilo/types";
 import type { ProtectedScheduledTaskProjection } from
@@ -37,6 +39,7 @@ const listProtected = mock(() => {
   return request.promise;
 });
 const createProtectedController = mock(() => controller);
+const refreshTasks = mock(async () => {});
 
 mock.module("../../src/hooks/use-auth", () => ({
   useAuth: () => ({
@@ -56,7 +59,7 @@ mock.module("../../src/contexts/task-state/task-state-context", () => ({
     error: null,
     lastSuccessfulAtMs,
     busyIds: new Set<string>(),
-    refresh: async () => {},
+    refresh: refreshTasks,
     pauseTask: async () => {},
     unpauseTask: async () => {},
     stopTask: async () => {},
@@ -107,6 +110,19 @@ function unavailableRow(id: string): ProtectedScheduledTaskProjection {
   };
 }
 
+function openedRow(id: string): ProtectedScheduledTaskProjection {
+  return {
+    availability: "opened",
+    task: {
+      id,
+      scheduleKind: "cron",
+      status: "pending",
+    } as ProtectedScheduledTaskProjection["task"],
+    prompt: "Private weekly digest",
+    expectedOutput: null,
+  };
+}
+
 describe("useScheduledTasks protected refresh", () => {
   beforeEach(() => {
     reapplyHappyDomGlobals();
@@ -115,6 +131,7 @@ describe("useScheduledTasks protected refresh", () => {
     requests = [];
     listProtected.mockClear();
     createProtectedController.mockClear();
+    refreshTasks.mockClear();
   });
 
   test("rechecks after a successful ordinary refresh and fences the stale read", async () => {
@@ -170,6 +187,75 @@ describe("useScheduledTasks protected refresh", () => {
     expect(view.result.current.tasks).toEqual([task]);
   });
 
+  test("keeps loaded rows visible after a protected refresh failure and retries it", async () => {
+    const view = renderHook(() => useScheduledTasks(), { wrapper: fullWrapper });
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
+
+    const loaded = unavailableRow("loaded-task");
+    requests[0]?.resolve([loaded]);
+    await waitFor(() => expect(view.result.current.protectedTasks).toEqual([loaded]));
+
+    lastSuccessfulAtMs = 100;
+    view.rerender();
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(2));
+    requests[1]?.reject(new ApiError(503, "temporarily unavailable"));
+
+    await waitFor(() => {
+      expect(view.result.current.protectedError).toBe("temporarily unavailable");
+    });
+    expect(view.result.current.protectedTasks).toEqual([loaded]);
+
+    await act(async () => { await view.result.current.refresh(); });
+    expect(refreshTasks).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(3));
+
+    const recovered = unavailableRow("recovered-task");
+    requests[2]?.resolve([recovered]);
+    await waitFor(() => expect(view.result.current.protectedTasks).toEqual([recovered]));
+    expect(view.result.current.protectedError).toBeNull();
+  });
+
+  test("clears decrypted rows when current server authorization is rejected", async () => {
+    const view = renderHook(() => useScheduledTasks(), { wrapper: fullWrapper });
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
+
+    const opened = openedRow("opened-task");
+    requests[0]?.resolve([opened]);
+    await waitFor(() => expect(view.result.current.protectedTasks).toEqual([opened]));
+
+    lastSuccessfulAtMs = 100;
+    view.rerender();
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(2));
+    requests[1]?.reject(new ApiError(403, "Forbidden"));
+
+    await waitFor(() => expect(view.result.current.protectedError).toBe("Forbidden"));
+    expect(view.result.current.protectedTasks).toEqual([]);
+  });
+
+  test("clears decrypted rows when current device custody becomes unavailable", async () => {
+    const view = renderHook(() => useScheduledTasks(), { wrapper: fullWrapper });
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
+
+    const opened = openedRow("opened-task");
+    requests[0]?.resolve([opened]);
+    await waitFor(() => expect(view.result.current.protectedTasks).toEqual([opened]));
+
+    lastSuccessfulAtMs = 100;
+    view.rerender();
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(2));
+    requests[1]?.reject(new ClassifiedDataOperationError(
+      "key_waiting",
+      "Protected Task device custody is unavailable",
+    ));
+
+    await waitFor(() => {
+      expect(view.result.current.protectedError).toBe(
+        "Protected Task device custody is unavailable",
+      );
+    });
+    expect(view.result.current.protectedTasks).toEqual([]);
+  });
+
   test("Plain schedules remain visible after refresh without protected custody", async () => {
     const task = {
       id: "plain-schedule",
@@ -191,8 +277,8 @@ describe("useScheduledTasks protected refresh", () => {
     expect(createProtectedController).not.toHaveBeenCalled();
     expect(listProtected).not.toHaveBeenCalled();
 
-    lastSuccessfulAtMs = 100;
-    view.rerender();
+    await act(async () => { await view.result.current.refresh(); });
+    expect(refreshTasks).toHaveBeenCalledTimes(1);
     expect(view.result.current.tasks).toEqual([task]);
     expect(createProtectedController).not.toHaveBeenCalled();
     expect(listProtected).not.toHaveBeenCalled();

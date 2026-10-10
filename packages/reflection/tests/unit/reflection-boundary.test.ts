@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFile, readdir } from "node:fs/promises";
-import { extname, join, resolve } from "node:path";
+import { extname, join, resolve, sep } from "node:path";
 
 async function filesUnder(root: string): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const nested = await Promise.all(entries.map((entry) => {
+    // Dependency trees are not repository-owned production packages.
+    if (entry.name === "node_modules") return Promise.resolve([]);
     const path = join(root, entry.name);
     return entry.isDirectory() ? filesUnder(path) : Promise.resolve([path]);
   }));
@@ -31,8 +33,8 @@ describe("Reflection Wave 3 boundaries", () => {
     const packagesRoot = resolve(import.meta.dir, "../../..");
     const files = (await filesUnder(packagesRoot)).filter((path) =>
       extname(path) === ".ts"
-      && !path.includes("/tests/")
-      && !path.includes("/packages/reflection/")
+      && !path.includes(`${sep}tests${sep}`)
+      && !path.includes(`${sep}packages${sep}reflection${sep}`)
     );
     const content = await Promise.all(files.map((path) => readFile(path, "utf8")));
     expect(content.join("\n")).not.toContain("graph/in-memory-repository");
@@ -44,7 +46,7 @@ describe("Reflection Wave 3 boundaries", () => {
       path.includes("reflection-candidate-policy")
     );
     expect(candidates.length).toBeGreaterThan(0);
-    expect(candidates.every((path) => path.includes("/packages/reflection/"))).toBe(true);
+    expect(candidates.every((path) => path.includes(`${sep}packages${sep}reflection${sep}`))).toBe(true);
   });
 
   test("keeps the existing Stenographer public surface while limiting new exports", async () => {

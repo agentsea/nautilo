@@ -168,7 +168,7 @@ const ISOLATED_NETWORK_POLICY: import("@nautilo/workstation-profiles").ProfileNe
 function makeSandbox(workspace: string): Sandbox {
   // Envelope-wiring tests need a containment-capable sandbox surface, not a
   // real macOS-only `sandbox-exec` binary. Return a structural fake whose
-  // wrapper runs the requested process directly; live Seatbelt/bubblewrap
+  // wrapper runs a native cwd-reporting child; live Seatbelt/bubblewrap
   // behavior is covered in relay-workstation-shell-binding-sandbox.test.ts.
   return {
     containmentActive: () => true,
@@ -178,7 +178,11 @@ function makeSandbox(workspace: string): Sandbox {
       args: readonly string[],
       cwd: string,
       env: Readonly<Record<string, string>>,
-    ) => ({ program, args: [...args], cwd, env }),
+    ) => {
+      expect(program).toBe("/bin/sh");
+      expect(args).toEqual(["-c", "/bin/pwd"]);
+      return { program: process.execPath, args: ["-e", "process.stdout.write(process.cwd())"], cwd, env };
+    },
     close: () => Promise.resolve(),
   } as unknown as Sandbox;
 }

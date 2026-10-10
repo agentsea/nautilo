@@ -19,7 +19,10 @@ async function installedDependency(root: string, name: string): Promise<string |
     if (basename(directory) !== "node_modules") {
       const candidate = nodeModulesPackagePath(directory, name);
       try {
-        if ((await stat(candidate)).isDirectory()) return await realpath(candidate);
+        // Reused installs can leave empty package directories behind. Node
+        // continues searching ancestors; these are not package identities.
+        if ((await stat(candidate)).isDirectory()
+          && (await stat(join(candidate, "package.json"))).isFile()) return await realpath(candidate);
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }

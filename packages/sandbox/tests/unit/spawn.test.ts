@@ -2,7 +2,7 @@
  * Unit tests for spawnSandboxed(). D060 Phase 1 task 1.8.
  *
  * Tests exercise the wrap+spawn composition against REAL programs
- * (echo, cat, printf, sleep) via the passthrough path — that way we
+ * (native runtime fixtures and POSIX process groups) via the passthrough path — that way we
  * cover the full pipeline (wrap → spawn → stream capture → timeout)
  * without depending on bwrap being installed on the test host.
  *
@@ -44,10 +44,10 @@ function passthroughSandbox(): Sandbox {
 }
 
 describe("spawnSandboxed — happy path (passthrough)", () => {
-  test("/bin/echo returns stdout + exitCode=0", async () => {
+  test("a native child returns stdout + exitCode=0", async () => {
     const sb = passthroughSandbox();
-    const r = await spawnSandboxed(sb, "/bin/echo", ["hello", "world"], {
-      cwd: "/tmp",
+    const r = await spawnSandboxed(sb, process.execPath, ["-e", "process.stdout.write('hello world\\n')"], {
+      cwd: tmpdir(),
     });
     expect(r.stdout).toBe("hello world\n");
     expect(r.stderr).toBe("");
@@ -58,12 +58,11 @@ describe("spawnSandboxed — happy path (passthrough)", () => {
 
   test("stderr captured separately from stdout", async () => {
     const sb = passthroughSandbox();
-    // `sh -c 'echo out; echo err 1>&2'` — classic split-streams pattern.
     const r = await spawnSandboxed(
       sb,
-      "/bin/sh",
-      ["-c", "echo out; echo err 1>&2"],
-      { cwd: "/tmp" },
+      process.execPath,
+      ["-e", "process.stdout.write('out\\n'); process.stderr.write('err\\n')"],
+      { cwd: tmpdir() },
     );
     expect(r.stdout).toBe("out\n");
     expect(r.stderr).toBe("err\n");
@@ -72,8 +71,8 @@ describe("spawnSandboxed — happy path (passthrough)", () => {
 
   test("non-zero exit code surfaces as exitCode (not thrown)", async () => {
     const sb = passthroughSandbox();
-    const r = await spawnSandboxed(sb, "/bin/sh", ["-c", "exit 42"], {
-      cwd: "/tmp",
+    const r = await spawnSandboxed(sb, process.execPath, ["-e", "process.exit(42)"], {
+      cwd: tmpdir(),
     });
     expect(r.exitCode).toBe(42);
     expect(r.timedOut).toBe(false);
@@ -84,8 +83,8 @@ describe("spawnSandboxed — timeout", () => {
   test("subprocess killed after timeoutMs; result.timedOut=true", async () => {
     const sb = passthroughSandbox();
     const start = Date.now();
-    const r = await spawnSandboxed(sb, "/bin/sleep", ["5"], {
-      cwd: "/tmp",
+    const r = await spawnSandboxed(sb, process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
+      cwd: tmpdir(),
       timeoutMs: 100,
     });
     const elapsed = Date.now() - start;
@@ -97,7 +96,7 @@ describe("spawnSandboxed — timeout", () => {
     expect(r.exitCode === null || r.signal !== null).toBe(true);
   });
 
-  test("timeout kills nested children that keep stdio pipes open", async () => {
+  test.skipIf(process.platform === "win32")("timeout kills nested children that keep stdio pipes open", async () => {
     const sb = passthroughSandbox();
     const start = Date.now();
     // printf (not echo) so "partial" is flushed before sleep; kill delay must exceed
@@ -121,7 +120,7 @@ describe("spawnSandboxed — timeout", () => {
 });
 
 describe("spawnSandboxed — shared cancellation and streaming stop", () => {
-  test("enclosing AbortSignal kills the process group without a private deadline", async () => {
+  test.skipIf(process.platform === "win32")("enclosing AbortSignal kills the process group without a private deadline", async () => {
     const sb = passthroughSandbox();
     const controller = new AbortController();
     const run = spawnSandboxed(sb, "/bin/sh", ["-c", "printf ready; sleep 5"], {
@@ -143,10 +142,10 @@ describe("spawnSandboxed — shared cancellation and streaming stop", () => {
     let observed = "";
     const result = await spawnSandboxed(
       sb,
-      "/usr/bin/yes",
-      ["one"],
+      process.execPath,
+      ["-e", "setInterval(() => process.stdout.write('one\\n'), 1)"],
       {
-        cwd: "/tmp",
+        cwd: tmpdir(),
         timeoutMs: null,
         onStdoutChunk: (chunk) => {
           observed += chunk.toString("utf8");
@@ -170,9 +169,9 @@ describe("spawnSandboxed — env taxonomy enforcement", () => {
     const sb = passthroughSandbox();
     const r = await spawnSandboxed(
       sb,
-      "/bin/sh",
-      ["-c", "echo CI=$CI DF=$DEBIAN_FRONTEND"],
-      { cwd: "/tmp" },
+      process.execPath,
+      ["-e", "console.log('CI=' + process.env.CI + ' DF=' + process.env.DEBIAN_FRONTEND)"],
+      { cwd: tmpdir() },
     );
     expect(r.stdout).toBe("CI=true DF=noninteractive\n");
   });
@@ -181,9 +180,9 @@ describe("spawnSandboxed — env taxonomy enforcement", () => {
     const sb = passthroughSandbox();
     const r = await spawnSandboxed(
       sb,
-      "/bin/sh",
-      ["-c", "echo PRELOAD=$LD_PRELOAD"],
-      { cwd: "/tmp", env: { LD_PRELOAD: "/tmp/evil.so" } },
+      process.execPath,
+      ["-e", "console.log('PRELOAD=' + (process.env.LD_PRELOAD ?? ''))"],
+      { cwd: tmpdir(), env: { LD_PRELOAD: "/tmp/evil.so" } },
     );
     // The var was dropped by the sandbox — the child sees empty
     // string (unset var expands to nothing).
@@ -194,9 +193,9 @@ describe("spawnSandboxed — env taxonomy enforcement", () => {
     const sb = passthroughSandbox();
     const r = await spawnSandboxed(
       sb,
-      "/bin/sh",
-      ["-c", "echo MY_VAR=$MY_VAR"],
-      { cwd: "/tmp", env: { MY_VAR: "expected" } },
+      process.execPath,
+      ["-e", "console.log('MY_VAR=' + process.env.MY_VAR)"],
+      { cwd: tmpdir(), env: { MY_VAR: "expected" } },
     );
     expect(r.stdout).toBe("MY_VAR=expected\n");
   });
@@ -208,9 +207,9 @@ describe("spawnSandboxed — stream truncation (D275-D4: bounded head+tail, no d
     // 500 chars of output, inline budget 100 (50 head / 50 tail).
     const r = await spawnSandboxed(
       sb,
-      "/bin/sh",
-      ["-c", "printf 'ABCDEFGHIJ%.0s' $(seq 1 50)"], // 500 bytes, no trailing newline
-      { cwd: "/tmp", maxBytesPerStream: 100 },
+      process.execPath,
+      ["-e", "process.stdout.write('ABCDEFGHIJ'.repeat(50))"],
+      { cwd: tmpdir(), maxBytesPerStream: 100 },
     );
 
     expect(r.stdoutTruncated).toBe(true);
@@ -229,8 +228,8 @@ describe("spawnSandboxed — stream truncation (D275-D4: bounded head+tail, no d
 
   test("under-budget output returns full inline, no truncation", async () => {
     const sb = passthroughSandbox();
-    const r = await spawnSandboxed(sb, "/bin/sh", ["-c", "printf hello"], {
-      cwd: "/tmp",
+    const r = await spawnSandboxed(sb, process.execPath, ["-e", "process.stdout.write('hello')"], {
+      cwd: tmpdir(),
       maxBytesPerStream: 1024,
     });
     expect(r.stdout).toBe("hello");
@@ -241,11 +240,10 @@ describe("spawnSandboxed — stream truncation (D275-D4: bounded head+tail, no d
 describe("spawnSandboxed — error paths", () => {
   test("non-existent program → spawn error rejects the promise", async () => {
     const sb = passthroughSandbox();
-    expect(
-      spawnSandboxed(sb, "/definitely/does/not/exist/binary", [], {
-        cwd: "/tmp",
-      }),
-    ).rejects.toThrow();
+    const failure = await spawnSandboxed(sb, "/definitely/does/not/exist/binary", [], {
+      cwd: tmpdir(),
+    }).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
   });
 });
 
@@ -288,7 +286,7 @@ describe("Sandbox.wrap() — sandbox-exec dispatch shape (cross-platform unit-le
     expect(wrapped.env).not.toBeNull();
   });
 
-  test("prepends resolved python3 bin before toolsBin when toolsBin python3 is a symlink", () => {
+  test.skipIf(process.platform === "win32")("prepends resolved python3 bin before toolsBin when toolsBin python3 is a symlink", () => {
     const tmp = mkTmp("nautilo-mac-python-path-test-");
     const toolsBin = join(tmp, "tools");
     const realBin = join(tmp, "Python.framework", "Versions", "3.11", "bin");

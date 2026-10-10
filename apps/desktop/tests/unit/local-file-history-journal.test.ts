@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import { createGuardedNodeAdapter } from "../../electron/local-file-history/file-adapter.ts";
 import { snapshotFromBytes } from "../../electron/local-file-history/hash.ts";
@@ -135,9 +136,9 @@ test("journal persistence remains private, atomic, and leaves no temporary manif
   await fs.writeFile(file, "after");
   expect(await record(fx, file, "turn-private", "before", "after"))
     .toMatchObject({ ok: true });
-  expect((await fs.stat(fx.journalRoot)).mode & 0o777).toBe(0o700);
+  expect(await isPrivateFilesystemPathAsync(fx.journalRoot)).toBe(true);
   const manifest = path.join(fx.journalRoot, "manifest.json");
-  expect((await fs.stat(manifest)).mode & 0o777).toBe(0o600);
+  expect(await isPrivateFilesystemPathAsync(manifest)).toBe(true);
   expect((await fs.readdir(fx.journalRoot)).some((name) =>
     name.includes(".tmp")
   )).toBe(false);

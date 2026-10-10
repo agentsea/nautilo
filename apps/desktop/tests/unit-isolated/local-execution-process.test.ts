@@ -21,9 +21,15 @@ const { spawnLocalExecutionProcess } = await import("../../electron/local-execut
 
 const prepared = { program: "/bin/sh", args: [], cwd: "/tmp", env: {}, dispose() {} };
 const errno = (code: string) => Object.assign(new Error(code), { code });
-afterEach(() => mock.restore());
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+afterEach(() => {
+  Object.defineProperty(process, "platform", platformDescriptor);
+  mock.restore();
+});
 
 function fixture(responses: readonly (true | string)[], tty = false) {
+  // Both process adapters and signals are fake; exercise their POSIX lifecycle on every host.
+  Object.defineProperty(process, "platform", { ...platformDescriptor, value: "darwin" });
   child = new Child();
   let index = 0;
   const kill = spyOn(process, "kill").mockImplementation(() => {
@@ -37,6 +43,16 @@ function fixture(responses: readonly (true | string)[], tty = false) {
 }
 
 describe("owned process-group cleanup certainty", () => {
+  test("Windows refuses the POSIX adapter before sending a signal", () => {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "win32" });
+    const kill = spyOn(process, "kill").mockImplementation(() => {
+      throw new Error("Windows must not signal a POSIX process group");
+    });
+    expect(() => spawnLocalExecutionProcess(prepared, false, () => {}))
+      .toThrow("LOCAL_EXECUTION_PLATFORM_UNSUPPORTED");
+    expect(kill).not.toHaveBeenCalled();
+  });
+
   test("successful kill and direct absence need no probe", async () => {
     const { owned, kill } = fixture([true, "ESRCH"]);
     owned.terminate();

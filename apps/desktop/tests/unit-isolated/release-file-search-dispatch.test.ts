@@ -17,12 +17,12 @@ test("native file search crosses Agent, registry and release Desktop with a poli
   try {
     // A deterministic native-runtime fixture exercises actual process/output
     // plumbing without depending on a separately installed ripgrep binary.
-    const runtime = join(root, "search-fixture");
+    const runtime = join(root, "search-fixture.cjs");
     const match = JSON.stringify({ type: "match", data: {
       path: { text: "sample.ts" }, lines: { text: "const needle = true;\n" },
       line_number: 1, submatches: [{ match: { text: "needle" }, start: 6, end: 12 }],
     } });
-    await writeFile(runtime, `#!/bin/sh\nprintf '%s\\n' '${match}'\n`, { mode: 0o700 });
+    await writeFile(runtime, `process.stdout.write(${JSON.stringify(`${match}\n`)});\n`);
     await writeFile(join(root, "sample.ts"), "const needle = true;\n");
     let sandboxCalls = 0;
     const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: root }), {
@@ -33,8 +33,14 @@ test("native file search crosses Agent, registry and release Desktop with a poli
         expect(envelope.dataDir).toBe(join(root, "data"));
         expect(envelope.toolsBin).toBe(root);
         // Test backend only; production continues using its enforced backend.
-        return new Sandbox({ config: { mode: "disabled", writablePaths: [], projectPaths: [], passthroughEnv: [] },
+        const sandbox = new Sandbox({ config: { mode: "disabled", writablePaths: [], projectPaths: [], passthroughEnv: [] },
           workspace: root, dataDir: join(root, "data"), toolsBin: root, backend: { kind: "none" } });
+        const wrap = sandbox.wrap.bind(sandbox);
+        sandbox.wrap = (program, args, cwd, env) => {
+          expect(program).toBe(runtime);
+          return wrap(process.execPath, [runtime, ...args], cwd, env);
+        };
+        return sandbox;
       },
       probeRipgrep: async () => ({ ok: true, binaryPath: runtime, version: "fixture" }),
     });

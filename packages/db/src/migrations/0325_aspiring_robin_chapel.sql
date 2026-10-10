@@ -1,0 +1,2 @@
+ALTER TABLE "provider_cost_events" ADD COLUMN "request_reference" varchar(16);--> statement-breakpoint
+ALTER TABLE "provider_cost_events" ADD CONSTRAINT "provider_cost_events_request_reference_check" CHECK ("provider_cost_events"."request_reference" IS NULL OR "provider_cost_events"."request_reference" ~ '^req_[0-9a-f]{12}$');

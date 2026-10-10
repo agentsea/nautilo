@@ -51,6 +51,8 @@ import {
   createToolProviderCostRecorder,
   type ProviderCostRecorder,
 } from "../../usage/provider-cost-recorder";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
+import { getUsageContext } from "../../usage/usage-context";
 
 const CLOUD_FORMAT_MATRIX =
   "CloudConvert routes (when CLOUDCONVERT_API_KEY is set): HTML → PDF/DOCX/ODT/RTF/PNG/JPG/TXT/MD/EPUB/MOBI/AZW3 and more; " +
@@ -487,9 +489,15 @@ function buildCommandArgs(input: ConvertInput, source: ResolvedSource, backend: 
   return base;
 }
 
+function hasPersonalCapabilityFunding(): boolean {
+  const funding = getCapabilityFundingSession();
+  return funding !== undefined && funding.parentFundingKind !== "server";
+}
+
 export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {}) {
   const toolCtx = contextFromUnknown(context);
-  const cloudConfigured = (deps.isCloudConvertConfigured ?? isCloudConvertConfigured)();
+  const cloudConfigured = !hasPersonalCapabilityFunding()
+    && (deps.isCloudConvertConfigured ?? isCloudConvertConfigured)();
   const recordProviderCost = deps.recordProviderCost ?? createToolProviderCostRecorder(
     context as Record<string, unknown> | undefined,
   );
@@ -499,6 +507,8 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
     description: buildConvertToolDescription(cloudConfigured),
     schema: convertSchema,
     func: async (input: ConvertInput) => {
+      const personalFunding = hasPersonalCapabilityFunding()
+        || getUsageContext()?.funding?.kind === "personal";
       const outputFormat = normalizeFormat(input.format);
       const expectedExt = expectedExtensionForFormat(outputFormat);
       if (!pathMatchesOutputFormat(input.destinationPath, outputFormat)) {
@@ -542,6 +552,9 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         });
         if (!backendResult.ok) return `Error: ${backendResult.error}`;
         const { backend } = backendResult;
+        if (personalFunding && backend === "cloud") {
+          return "Error: Cloud conversion is unavailable with personal funding. Use a supported local Markdown → PDF/DOCX conversion.";
+        }
         const unsupported = unsupportedLocalConvertPair(
           {
             kind: "file",
@@ -591,6 +604,9 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
       });
       if (!backendResult.ok) return `Error: ${backendResult.error}`;
       const { backend } = backendResult;
+      if (personalFunding && backend === "cloud") {
+        return "Error: Cloud conversion is unavailable with personal funding. Use a supported local Markdown → PDF/DOCX conversion.";
+      }
 
       const sourceZone =
         source.kind === "file" ? source.sourceZone : input.sourceZone;

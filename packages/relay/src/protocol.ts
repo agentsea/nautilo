@@ -23,7 +23,7 @@ import {
 } from "@nautilo/computer-use-host-protocol";
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
-import * as path from "node:path";
+import { pathApiForRelayPath } from "./relay-path";
 import {
   parseRelayClaudeExecutionCapability,
 } from "./types";
@@ -1540,6 +1540,13 @@ export function parseDesktopAutomationInvocationBinding(
   };
 }
 
+function isCanonicalWirePath(value: string): boolean {
+  // These paths belong to the remote Desktop, not necessarily the server's
+  // OS. Validate the originating syntax without rewriting its identity.
+  const syntax = pathApiForRelayPath(value);
+  return syntax.isAbsolute(value) && syntax.normalize(value) === value;
+}
+
 /**
  * Strict, fail-closed parser for the v1 desktop-filesystem-grant request envelope.
  * The relay calls this at its JSON ingress boundary before exposing the request
@@ -1563,8 +1570,7 @@ export function parseRelayDesktopFilesystemGrantRequest(value: unknown): RelayDe
   }
   if (
     !isNonBlankString(value.requestedRoot) ||
-    !path.isAbsolute(value.requestedRoot) ||
-    path.normalize(value.requestedRoot) !== value.requestedRoot
+    !isCanonicalWirePath(value.requestedRoot)
   ) {
     return { ok: false, error: "Desktop Filesystem Grant request requestedRoot must be a canonical absolute path" };
   }
@@ -1836,8 +1842,7 @@ export function parseRelayWorkstationShellBinding(
   }
   if (
     !isNonBlankString(value["currentFolder"]) ||
-    !path.isAbsolute(value["currentFolder"]) ||
-    path.normalize(value["currentFolder"]) !== value["currentFolder"]
+    !isCanonicalWirePath(value["currentFolder"])
   ) {
     return { ok: false, error: "workstation shell binding currentFolder must be a normalized absolute path" };
   }
@@ -2813,7 +2818,7 @@ export function parseRelayRunShellGitOperation(
     if (!hasOnlyKeys(value, new Set(["operation", "target", "ref"]))) {
       return { ok: false, error: "run_shell git worktree-add admits only `operation`, `target`, and `ref`" };
     }
-    if (!isNonBlankString(value["target"]) || !path.isAbsolute(value["target"])) {
+    if (!isNonBlankString(value["target"]) || !pathApiForRelayPath(value["target"]).isAbsolute(value["target"])) {
       return { ok: false, error: "run_shell git worktree-add `target` must be a non-blank absolute path" };
     }
     if (!isNonBlankString(value["ref"]) || !isBareGitPath(value["ref"])) {
@@ -2825,7 +2830,7 @@ export function parseRelayRunShellGitOperation(
   if (!hasOnlyKeys(value, new Set(["operation", "target"]))) {
     return { ok: false, error: "run_shell git worktree-remove admits only `operation` and `target`" };
   }
-  if (!isNonBlankString(value["target"]) || !path.isAbsolute(value["target"])) {
+  if (!isNonBlankString(value["target"]) || !pathApiForRelayPath(value["target"]).isAbsolute(value["target"])) {
     return { ok: false, error: "run_shell git worktree-remove `target` must be a non-blank absolute path" };
   }
   return { ok: true, operation: { operation: "worktree-remove", target: value["target"] } };
@@ -2863,8 +2868,7 @@ function parseSnapshotEntry(
   if (!isNonBlankString(value.id)) return undefined;
   if (
     !isNonBlankString(value.canonicalRoot) ||
-    !path.isAbsolute(value.canonicalRoot) ||
-    path.normalize(value.canonicalRoot) !== value.canonicalRoot
+    !isCanonicalWirePath(value.canonicalRoot)
   ) {
     return undefined;
   }

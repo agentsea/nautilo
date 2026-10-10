@@ -16,12 +16,6 @@ case "$gate" in
     export TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}"
     if [ "$gate" = unit ]; then
       export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-4}"
-      case "$(uname -s)" in
-        MINGW*|MSYS*)
-          bun dev/scripts/windows-unit-gate.ts
-          exit "$?"
-          ;;
-      esac
     fi
     bash dev/scripts/ci-gates.sh "$gate"
     ;;

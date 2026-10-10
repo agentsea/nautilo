@@ -43,7 +43,7 @@ export function createNodeProcessHost(): ProcessHost {
           stderr: child.stderr,
         },
         exited,
-        sendInterrupt: () => signalGroupAsync(pid, "SIGINT", child.kill.bind(child)),
+        sendInterrupt: () => signalGroupAsync(pid, "SIGINT"),
         signalProcessGroup,
       });
     },
@@ -83,31 +83,17 @@ async function onceDrain(stream: NodeJS.WritableStream): Promise<void> {
 export function signalGroupAsync(
   pid: number,
   signal: NodeJS.Signals,
-  fallback: (signal?: NodeJS.Signals | number) => boolean,
   kill: (pid: number, signal: NodeJS.Signals) => boolean = (target, requestedSignal) => process.kill(target, requestedSignal),
 ): Promise<void> {
-  return Promise.resolve().then(() => signalGroup(pid, signal, fallback, kill));
-}
-
-function signalGroup(
-  pid: number,
-  signal: NodeJS.Signals,
-  fallback: (signal?: NodeJS.Signals | number) => boolean,
-  kill: (pid: number, signal: NodeJS.Signals) => boolean,
-): void {
-  try {
-    // A detached POSIX child starts its own group. The negative pid never
-    // targets the parent host, avoiding cross-profile collateral damage.
-    kill(-pid, signal);
-  } catch (error) {
-    const code = nodeErrorCode(error);
-    if (code === "ESRCH") return;
-    if (process.platform === "win32") {
-      fallback(signal);
-      return;
+  return Promise.resolve().then(() => {
+    try {
+      // The process-tree constructor admits only supported POSIX hosts.
+      // Never turn a denied group signal into a successful root-only signal.
+      kill(-pid, signal);
+    } catch (error) {
+      if (nodeErrorCode(error) !== "ESRCH") throw error;
     }
-    throw error;
-  }
+  });
 }
 
 function nodeErrorCode(error: unknown): string | undefined {

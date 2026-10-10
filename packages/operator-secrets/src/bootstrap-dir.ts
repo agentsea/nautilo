@@ -1,18 +1,14 @@
 import {
-  chmodSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
   statSync,
-  renameSync,
-  writeFileSync,
   utimesSync,
 } from "node:fs";
-import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
+import { ensurePrivateDirectorySync, publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 
 /** Derive `~/.nautilo${suffix}/.bootstrap/` from an instance id ("" → default). */
 export function bootstrapDirForInstance(
@@ -46,13 +42,9 @@ function readSingleLine(path: string): string | null {
   }
 }
 
-function atomicWriteFile(path: string, body: string, mode: number): void {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${randomBytes(8).toString("hex")}.tmp`;
-  writeFileSync(tmp, body, { encoding: "utf-8", mode });
-  chmodSync(tmp, mode);
-  renameSync(tmp, path);
-  chmodSync(path, mode);
+function atomicWriteFile(path: string, body: string): void {
+  ensurePrivateDirectorySync(dirname(path));
+  publishPrivateFileAtomicallySync(path, Buffer.from(body));
 }
 
 /** Read every file in `.bootstrap/`. Missing dir → all-null snapshot. */
@@ -107,17 +99,17 @@ export function readBootstrapDir(dir: string): BootstrapDirSnapshot {
 
 export function writeBootstrapAdminPassword(dir: string, value: string): void {
   const v = value.trim();
-  atomicWriteFile(join(dir, ADMIN_PASSWORD), v, 0o600);
+  atomicWriteFile(join(dir, ADMIN_PASSWORD), v);
 }
 
 export function writeBootstrapAdminPin(dir: string, value: string): void {
   const v = value.trim();
-  atomicWriteFile(join(dir, ADMIN_PIN), v, 0o600);
+  atomicWriteFile(join(dir, ADMIN_PIN), v);
 }
 
 export function writeBootstrapClaimInvite(dir: string, value: string): void {
   const v = value.trim();
-  atomicWriteFile(join(dir, CLAIM_INVITE), v, 0o600);
+  atomicWriteFile(join(dir, CLAIM_INVITE), v);
 }
 
 /** Mark the bootstrap as consumed. Creates `.used` (mode 0600). Idempotent — preserves the FIRST stamp. */
@@ -126,7 +118,7 @@ export function markBootstrapUsed(dir: string, opts?: { now?: Date }): void {
   if (existsSync(usedPath)) return;
   const now = opts?.now ?? new Date();
   const iso = now.toISOString();
-  atomicWriteFile(usedPath, iso, 0o600);
+  atomicWriteFile(usedPath, iso);
   try {
     utimesSync(usedPath, now, now);
   } catch {

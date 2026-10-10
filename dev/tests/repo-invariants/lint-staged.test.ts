@@ -111,7 +111,6 @@ describe("pre-push gate runner", () => {
       write("dev/scripts/ci-gates.sh", `#!/usr/bin/env bash
 printf '%s|%s|%s|%s\\n' "$1" "$TURBO_SCM_BASE" "$TURBO_SCM_HEAD" "$TURBO_CONCURRENCY" >> "$PUSH_GATE_LOG"
 `);
-      write("dev/scripts/windows-unit-gate.ts", 'console.log("Windows unit gate fixture", process.env["TURBO_SCM_BASE"], process.env["TURBO_SCM_HEAD"], process.env["TURBO_CONCURRENCY"]);\n');
       for (const gate of ["lint-eslint", "typecheck", "unit"]) {
         const result = spawnSync("bash", [join(repositoryRoot, "dev/scripts/pre-push-gate.sh"), gate], {
           cwd: fixtureRoot,
@@ -125,15 +124,12 @@ printf '%s|%s|%s|%s\\n' "$1" "$TURBO_SCM_BASE" "$TURBO_SCM_HEAD" "$TURBO_CONCURR
           },
         });
         expect(result.status, result.stderr).toBe(0);
-        if (gate === "unit" && process.platform === "win32") {
-          expect(result.stdout).toContain("Windows unit gate fixture fixture-base HEAD 4");
-        }
       }
       const expected = [
         "lint-eslint|fixture-base|HEAD|",
         "typecheck|fixture-base|HEAD|",
+        "unit|fixture-base|HEAD|4",
       ];
-      if (process.platform !== "win32") expected.push("unit|fixture-base|HEAD|4");
       expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(expected);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });

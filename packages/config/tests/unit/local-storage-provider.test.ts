@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync, symlinkSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { LocalStorageProvider } from "../../src/local-storage-provider";
 import {
   StorageError,
@@ -17,6 +17,17 @@ function makeRoot(): string {
   );
   mkdirSync(path, { recursive: true });
   return path;
+}
+
+function linkToFile(root: string, name: string, target: string): string {
+  if (process.platform === "win32") {
+    // Directory junctions exercise the same realpath boundary without
+    // requiring Developer Mode or an elevated file-symlink privilege.
+    symlinkSync(dirname(target), join(root, name), "junction");
+    return join(name, basename(target));
+  }
+  symlinkSync(target, join(root, name), "file");
+  return name;
 }
 
 describe("LocalStorageProvider — construction", () => {
@@ -97,12 +108,12 @@ describe("LocalStorageProvider — path safety", () => {
     const outside = makeRoot();
     try {
       writeFileSync(join(outside, "secret.txt"), "classified");
-      symlinkSync(join(outside, "secret.txt"), join(root, "escape-link.txt"));
+      const linked = linkToFile(root, "escape-link.txt", join(outside, "secret.txt"));
 
-      await expect(provider.read("escape-link.txt")).rejects.toBeInstanceOf(
+      await expect(provider.read(linked)).rejects.toBeInstanceOf(
         StoragePathTraversalError,
       );
-      await expect(provider.readText("escape-link.txt")).rejects.toBeInstanceOf(
+      await expect(provider.readText(linked)).rejects.toBeInstanceOf(
         StoragePathTraversalError,
       );
     } finally {
@@ -115,10 +126,10 @@ describe("LocalStorageProvider — path safety", () => {
     try {
       const victim = join(outside, "target.txt");
       writeFileSync(victim, "original-content");
-      symlinkSync(victim, join(root, "planted-link.txt"));
+      const linked = linkToFile(root, "planted-link.txt", victim);
 
       await expect(
-        provider.write("planted-link.txt", "ATTACKER-CONTROLLED"),
+        provider.write(linked, "ATTACKER-CONTROLLED"),
       ).rejects.toBeInstanceOf(StoragePathTraversalError);
 
       // Target is untouched.
@@ -134,7 +145,7 @@ describe("LocalStorageProvider — path safety", () => {
   test("write-through-symlink: refuses when an ANCESTOR directory is a link out of zone", async () => {
     const outside = makeRoot();
     try {
-      symlinkSync(outside, join(root, "drafts"));
+      symlinkSync(outside, join(root, "drafts"), process.platform === "win32" ? "junction" : "dir");
 
       await expect(
         provider.write("drafts/new-note.md", "escape"),
@@ -160,10 +171,10 @@ describe("LocalStorageProvider — path safety", () => {
     try {
       const victim = join(outside, "log.txt");
       writeFileSync(victim, "initial\n");
-      symlinkSync(victim, join(root, "log-link.txt"));
+      const linked = linkToFile(root, "log-link.txt", victim);
 
       await expect(
-        provider.append("log-link.txt", "appended"),
+        provider.append(linked, "appended"),
       ).rejects.toBeInstanceOf(StoragePathTraversalError);
 
       const contents = await import("node:fs/promises").then((m) =>

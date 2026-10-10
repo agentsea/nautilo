@@ -1,6 +1,6 @@
-import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { open } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { ensurePrivateDirectory, publishPrivateFileAtomically } from "@nautilo/config/private-filesystem";
 import type { CodexRuntimeDetails } from "./contracts.ts";
 
 const MAX_SNAPSHOT_BYTES = 64 * 1024;
@@ -227,18 +227,9 @@ export class CodexRuntimeMetadataStore {
 
   private async saveNow(details: CodexRuntimeDetails): Promise<void> {
     const value = JSON.stringify(snapshot(details));
-    const directory = dirname(this.file);
-    await mkdir(directory, { recursive: true, mode: 0o700 });
-    const temporary = `${this.file}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(temporary, value, { mode: 0o600, flag: "wx" });
-      await chmod(temporary, 0o600);
-      await rename(temporary, this.file);
-      await chmod(this.file, 0o600);
-    } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
-      throw error;
-    }
+    const destination = resolve(this.file);
+    await ensurePrivateDirectory(dirname(destination));
+    await publishPrivateFileAtomically(destination, new TextEncoder().encode(value));
   }
 
   async load(): Promise<CodexRuntimeSnapshot | null> {

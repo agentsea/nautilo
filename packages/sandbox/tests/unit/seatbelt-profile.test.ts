@@ -160,7 +160,7 @@ describe("BASE_SEATBELT_PROFILE", () => {
       "/sbin",
       "/opt/homebrew",
     ]) {
-      expect(BASE_SEATBELT_PROFILE).toContain(`(subpath "${p}")`);
+      expect(BASE_SEATBELT_PROFILE).toContain(`(subpath ${JSON.stringify(p)})`);
     }
   });
 
@@ -176,7 +176,7 @@ describe("BASE_SEATBELT_PROFILE", () => {
       "/Library",
       "/Library/Developer",
     ]) {
-      expect(BASE_SEATBELT_PROFILE).toContain(`(literal "${p}")`);
+      expect(BASE_SEATBELT_PROFILE).toContain(`(literal ${JSON.stringify(p)})`);
     }
   });
 
@@ -272,17 +272,17 @@ describe("buildSbplProfile — canonical workspace", () => {
     // Workspace allow appears AFTER the base.
     const baseEnd = BASE_SEATBELT_PROFILE.length;
     const workspaceAllowIdx = profile.indexOf(
-      `(allow file-read* (subpath "${raw}"))`,
+      `(allow file-read* (subpath ${JSON.stringify(raw)}))`,
     );
     expect(workspaceAllowIdx).toBeGreaterThanOrEqual(baseEnd);
 
     // Realpath form emitted if it differs from raw.
     if (real !== raw) {
       expect(profile).toContain(
-        `(allow file-read* (subpath "${real}"))`,
+        `(allow file-read* (subpath ${JSON.stringify(real)}))`,
       );
       expect(profile).toContain(
-        `(allow file-write* (subpath "${real}"))`,
+        `(allow file-write* (subpath ${JSON.stringify(real)}))`,
       );
     }
   });
@@ -296,8 +296,8 @@ describe("buildSbplProfile — canonical workspace", () => {
       config: baseConfig(),
     });
 
-    const readIdx = profile.indexOf(`(allow file-read* (subpath "${raw}"))`);
-    const writeIdx = profile.indexOf(`(allow file-write* (subpath "${raw}"))`);
+    const readIdx = profile.indexOf(`(allow file-read* (subpath ${JSON.stringify(raw)}))`);
+    const writeIdx = profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(raw)}))`);
     expect(readIdx).toBeGreaterThan(0);
     expect(writeIdx).toBeGreaterThan(readIdx);
   });
@@ -311,7 +311,7 @@ describe("buildSbplProfile — canonical workspace", () => {
       config: baseConfig(),
     });
     expect(profile).toContain(
-      `(allow file-read-metadata (literal "${raw}"))`,
+      `(allow file-read-metadata (literal ${JSON.stringify(raw)}))`,
     );
   });
 
@@ -354,13 +354,13 @@ describe("buildSbplProfile — governance file denies", () => {
     });
 
     const workspaceAllowIdx = profile.indexOf(
-      `(allow file-write* (subpath "${real}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(real)}))`,
     );
     // If realpath matches raw, use the raw form instead.
     const allowIdx =
       workspaceAllowIdx >= 0
         ? workspaceAllowIdx
-        : profile.indexOf(`(allow file-write* (subpath "${raw}"))`);
+        : profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(raw)}))`);
     expect(allowIdx).toBeGreaterThan(0);
 
     for (const gov of GOVERNANCE_FILES) {
@@ -372,7 +372,7 @@ describe("buildSbplProfile — governance file denies", () => {
       );
       expect(denyReadWriteIdx).toBeGreaterThan(allowIdx);
       // Deny rule specifically names this governance path.
-      expect(profile).toContain(`"${govPath}"`);
+      expect(profile).toContain(JSON.stringify(govPath));
     }
   });
 
@@ -387,7 +387,7 @@ describe("buildSbplProfile — governance file denies", () => {
     });
     const gitPath = join(real, ".git");
     expect(profile).toContain(
-      `(deny file-write* (subpath "${gitPath}"))`,
+      `(deny file-write* (subpath ${JSON.stringify(gitPath)}))`,
     );
   });
 
@@ -401,7 +401,7 @@ describe("buildSbplProfile — governance file denies", () => {
     });
     const path = join(real, ".gitignore");
     expect(profile).toContain(
-      `(deny file-write* (literal "${path}"))`,
+      `(deny file-write* (literal ${JSON.stringify(path)}))`,
     );
   });
 
@@ -423,13 +423,13 @@ describe("buildSbplProfile — governance file denies", () => {
 
     for (const gov of GOVERNANCE_FILES) {
       expect(profile).not.toContain(
-        `(deny file-write* (${gov.isDirectory ? "subpath" : "literal"} "${join(real, gov.path)}"))`,
+        `(deny file-write* (${gov.isDirectory ? "subpath" : "literal"} ${JSON.stringify(join(real, gov.path))}))`,
       );
     }
     expect(profile).toContain(
-      `(deny file-read* file-write* (subpath "${protectedPath}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(protectedPath)}))`,
     );
-    expect(profile).toContain(`^${real}/(.*/)?\\.env[^/]*$`);
+    expect(profile).toContain(`^${escapeRegexForSchemeLiteral(real)}/(.*/)?\\.env[^/]*$`);
   });
 });
 
@@ -550,12 +550,12 @@ describe("buildSbplProfile — secret file regex denies", () => {
     });
 
     const workspaceAllowIdx = profile.indexOf(
-      `(allow file-write* (subpath "${real}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(real)}))`,
     );
     const allowIdx =
       workspaceAllowIdx >= 0
         ? workspaceAllowIdx
-        : profile.indexOf(`(allow file-write* (subpath "${raw}"))`);
+        : profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(raw)}))`);
 
     const firstRegexDenyIdx = profile.indexOf("(deny file-read* file-write* (regex");
     expect(firstRegexDenyIdx).toBeGreaterThan(allowIdx);
@@ -695,7 +695,7 @@ describe("buildSbplProfile — xcrun cache exception (D418 A2)", () => {
     );
     // The regex is anchored to xcrun_db only — never a broad subpath allow
     // on the cache dir, and never a bare `[^/]*` over the whole dir.
-    expect(profile).not.toContain(`(allow file-read* file-write* (subpath "${cacheDir}"))`);
+    expect(profile).not.toContain(`(allow file-read* file-write* (subpath ${JSON.stringify(cacheDir)}))`);
     expect(profile).not.toContain(`(allow file-read* file-write* (subpath "/private/var/folders"))`);
     expect(profile).not.toContain(`(allow file-read* file-write* (subpath "/var"))`);
   });
@@ -739,9 +739,9 @@ describe("buildSbplProfile — xcrun cache exception (D418 A2)", () => {
       xcrunCacheDir: cacheDir,
     });
     const xcrunIdx = profile.indexOf(`/xcrun_db[^/]*$`);
-    const dataDenyIdx = profile.indexOf(`(deny file-read* file-write* (subpath "${dataDir}"))`);
+    const dataDenyIdx = profile.indexOf(`(deny file-read* file-write* (subpath ${JSON.stringify(dataDir)}))`);
     const protectedDenyIdx = profile.indexOf(
-      `(deny file-read* file-write* (subpath "${protectedRoot}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(protectedRoot)}))`,
     );
     expect(xcrunIdx).toBeGreaterThan(0);
     expect(dataDenyIdx).toBeGreaterThan(xcrunIdx);
@@ -769,24 +769,24 @@ describe("buildSbplProfile — dataDir deny", () => {
     });
 
     expect(profile).toContain(
-      `(deny file-read* file-write* (subpath "${dataDir}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(dataDir)}))`,
     );
     if (dataReal !== dataDir) {
       expect(profile).toContain(
-        `(deny file-read* file-write* (subpath "${dataReal}"))`,
+        `(deny file-read* file-write* (subpath ${JSON.stringify(dataReal)}))`,
       );
     }
 
     // Appears AFTER the workspace allow.
     const workspaceAllow = profile.indexOf(
-      `(allow file-write* (subpath "${real}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(real)}))`,
     );
     const allowIdx =
       workspaceAllow >= 0
         ? workspaceAllow
-        : profile.indexOf(`(allow file-write* (subpath "${raw}"))`);
+        : profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(raw)}))`);
     const dataDenyIdx = profile.indexOf(
-      `(deny file-read* file-write* (subpath "${dataDir}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(dataDir)}))`,
     );
     expect(dataDenyIdx).toBeGreaterThan(allowIdx);
   });
@@ -800,7 +800,7 @@ describe("buildSbplProfile — dataDir deny", () => {
       config: baseConfig(),
     });
     expect(profile).toContain(
-      `(deny file-read* file-write* (subpath "${raw}/.nautilo-missing"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(`${raw}/.nautilo-missing`)}))`,
     );
   });
 });
@@ -825,14 +825,14 @@ describe("buildSbplProfile — writable paths", () => {
     });
 
     expect(profile).toContain(
-      `(allow file-read* (subpath "${wrt.raw}"))`,
+      `(allow file-read* (subpath ${JSON.stringify(wrt.raw)}))`,
     );
     expect(profile).toContain(
-      `(allow file-write* (subpath "${wrt.raw}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(wrt.raw)}))`,
     );
     if (wrt.real !== wrt.raw) {
       expect(profile).toContain(
-        `(allow file-read* (subpath "${wrt.real}"))`,
+        `(allow file-read* (subpath ${JSON.stringify(wrt.real)}))`,
       );
     }
   });
@@ -852,7 +852,7 @@ describe("buildSbplProfile — writable paths", () => {
     });
 
     expect(profile).toContain(
-      `(allow file-write* (subpath "${proj.raw}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(proj.raw)}))`,
     );
   });
 
@@ -893,19 +893,19 @@ describe("buildSbplProfile — readOnlyPaths", () => {
     });
 
     expect(profile).toContain(
-      `(allow file-read* (subpath "${ro.raw}"))`,
+      `(allow file-read* (subpath ${JSON.stringify(ro.raw)}))`,
     );
     // The whole point: NO file-write* allow for the read-only path.
     // Broad-read / narrow-write shape from §5.1 of the ship plan.
     expect(profile).not.toContain(
-      `(allow file-write* (subpath "${ro.raw}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(ro.raw)}))`,
     );
     if (ro.real !== ro.raw) {
       expect(profile).toContain(
-        `(allow file-read* (subpath "${ro.real}"))`,
+        `(allow file-read* (subpath ${JSON.stringify(ro.real)}))`,
       );
       expect(profile).not.toContain(
-        `(allow file-write* (subpath "${ro.real}"))`,
+        `(allow file-write* (subpath ${JSON.stringify(ro.real)}))`,
       );
     }
   });
@@ -930,9 +930,9 @@ describe("buildSbplProfile — readOnlyPaths", () => {
       },
     });
 
-    const roIdx = profile.indexOf(`(allow file-read* (subpath "${ro.raw}"))`);
-    const wrtReadIdx = profile.indexOf(`(allow file-read* (subpath "${wrt.raw}"))`);
-    const wrtWriteIdx = profile.indexOf(`(allow file-write* (subpath "${wrt.raw}"))`);
+    const roIdx = profile.indexOf(`(allow file-read* (subpath ${JSON.stringify(ro.raw)}))`);
+    const wrtReadIdx = profile.indexOf(`(allow file-read* (subpath ${JSON.stringify(wrt.raw)}))`);
+    const wrtWriteIdx = profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(wrt.raw)}))`);
 
     expect(roIdx).toBeGreaterThan(-1);
     expect(wrtReadIdx).toBeGreaterThan(-1);
@@ -970,7 +970,7 @@ describe("buildSbplProfile — readOnlyPaths", () => {
     });
     // Profile still starts correctly, has workspace allows, etc.
     expect(profile).toContain("(version 1)");
-    expect(profile).toContain(`(allow file-write* (subpath "${raw}"))`);
+    expect(profile).toContain(`(allow file-write* (subpath ${JSON.stringify(raw)}))`);
   });
 });
 
@@ -991,7 +991,7 @@ describe("buildSbplProfile — git worktree auto-detect", () => {
     // No worktree-specific rules appear — just the governance deny
     // on .git that we emit always.
     expect(profile).toContain(
-      `(deny file-write* (subpath "${join(real, ".git")}"))`,
+      `(deny file-write* (subpath ${JSON.stringify(join(real, ".git"))}))`,
     );
   });
 
@@ -1017,10 +1017,10 @@ describe("buildSbplProfile — git worktree auto-detect", () => {
     // Both the worktree git dir and the main git dir should appear
     // as file-read+write allow.
     expect(profile).toContain(
-      `(allow file-read* file-write* (subpath "${realpathSync(mainWt)}"))`,
+      `(allow file-read* file-write* (subpath ${JSON.stringify(realpathSync(mainWt))}))`,
     );
     expect(profile).toContain(
-      `(allow file-read* file-write* (subpath "${realpathSync(mainGit)}"))`,
+      `(allow file-read* file-write* (subpath ${JSON.stringify(realpathSync(mainGit))}))`,
     );
   });
 
@@ -1055,10 +1055,10 @@ describe("buildSbplProfile — git worktree auto-detect", () => {
 
     // Canonical forms always emitted.
     expect(profile).toContain(
-      `(allow file-read* file-write* (subpath "${mainWtCanonical}"))`,
+      `(allow file-read* file-write* (subpath ${JSON.stringify(mainWtCanonical)}))`,
     );
     expect(profile).toContain(
-      `(allow file-read* file-write* (subpath "${mainGitCanonical}"))`,
+      `(allow file-read* file-write* (subpath ${JSON.stringify(mainGitCanonical)}))`,
     );
 
     // When raw differs from canonical, the raw form must ALSO appear.
@@ -1066,12 +1066,12 @@ describe("buildSbplProfile — git worktree auto-detect", () => {
     // emitted — both outcomes are correct behavior.
     if (mainWt !== mainWtCanonical) {
       expect(profile).toContain(
-        `(allow file-read* file-write* (subpath "${mainWt}"))`,
+        `(allow file-read* file-write* (subpath ${JSON.stringify(mainWt)}))`,
       );
     }
     if (mainGit !== mainGitCanonical) {
       expect(profile).toContain(
-        `(allow file-read* file-write* (subpath "${mainGit}"))`,
+        `(allow file-read* file-write* (subpath ${JSON.stringify(mainGit)}))`,
       );
     }
   });
@@ -1092,11 +1092,11 @@ describe("buildSbplProfile — tools-bin", () => {
       config: baseConfig(),
     });
     expect(profile).toContain(
-      `(allow file-read* (subpath "${tools.raw}"))`,
+      `(allow file-read* (subpath ${JSON.stringify(tools.raw)}))`,
     );
     // NO file-write allow — tools-bin is read-only.
     expect(profile).not.toContain(
-      `(allow file-write* (subpath "${tools.raw}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(tools.raw)}))`,
     );
   });
 
@@ -1132,7 +1132,7 @@ describe("buildSbplProfile — protectedPath denies (D418 3.2.1)", () => {
 
     // Deny rule exists for the protected path.
     expect(profile).toContain(
-      `(deny file-read* file-write* (subpath "${protectedRoot.raw}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(protectedRoot.raw)}))`,
     );
 
     // Deny comes AFTER the workspace write allow — the load-bearing
@@ -1140,11 +1140,11 @@ describe("buildSbplProfile — protectedPath denies (D418 3.2.1)", () => {
     // before the allow would be overridden. Assert against the realpath
     // form when present (the /var → /private/var quirk), else the raw.
     const workspaceAllowIdx =
-      profile.indexOf(`(allow file-write* (subpath "${real}"))`) >= 0
-        ? profile.indexOf(`(allow file-write* (subpath "${real}"))`)
-        : profile.indexOf(`(allow file-write* (subpath "${raw}"))`);
+      profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(real)}))`) >= 0
+        ? profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(real)}))`)
+        : profile.indexOf(`(allow file-write* (subpath ${JSON.stringify(raw)}))`);
     const protectedDenyIdx = profile.indexOf(
-      `(deny file-read* file-write* (subpath "${protectedRoot.raw}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(protectedRoot.raw)}))`,
     );
     expect(workspaceAllowIdx).toBeGreaterThan(0);
     expect(protectedDenyIdx).toBeGreaterThan(workspaceAllowIdx);
@@ -1168,10 +1168,10 @@ describe("buildSbplProfile — protectedPath denies (D418 3.2.1)", () => {
     });
 
     const writableWriteIdx = profile.indexOf(
-      `(allow file-write* (subpath "${writable.raw}"))`,
+      `(allow file-write* (subpath ${JSON.stringify(writable.raw)}))`,
     );
     const denyIdx = profile.indexOf(
-      `(deny file-read* file-write* (subpath "${protectedChild}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(protectedChild)}))`,
     );
     expect(writableWriteIdx).toBeGreaterThan(0);
     expect(denyIdx).toBeGreaterThan(writableWriteIdx);
@@ -1212,10 +1212,10 @@ describe("buildSbplProfile — protectedPath denies (D418 3.2.1)", () => {
       },
     });
     const dataDenyIdx = profile.indexOf(
-      `(deny file-read* file-write* (subpath "${dataDir}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(dataDir)}))`,
     );
     const protectedDenyIdx = profile.indexOf(
-      `(deny file-read* file-write* (subpath "${protectedRoot.raw}"))`,
+      `(deny file-read* file-write* (subpath ${JSON.stringify(protectedRoot.raw)}))`,
     );
     expect(dataDenyIdx).toBeGreaterThan(0);
     expect(protectedDenyIdx).toBeGreaterThan(dataDenyIdx);

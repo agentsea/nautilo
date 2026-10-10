@@ -30,6 +30,23 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     left.every((byte, index) => byte === right[index])
   );
 }
+function nonnegativeSafeCounter(value: unknown): number | null {
+  let normalized: number;
+  if (typeof value === "number") {
+    normalized = value;
+  } else if (typeof value === "bigint") {
+    normalized = value >= 0n && value <= BigInt(Number.MAX_SAFE_INTEGER)
+      ? Number(value)
+      : Number.NaN;
+  } else if (typeof value === "string" && /^(0|[1-9][0-9]*)$/u.test(value)) {
+    normalized = Number(value);
+  } else {
+    return null;
+  }
+  return Number.isSafeInteger(normalized) && normalized >= 0
+    ? normalized
+    : null;
+}
 function exactContext(actual: object, expected: object): boolean {
   const entries = Object.entries(expected);
   if (Object.keys(actual).length !== entries.length) return false;
@@ -181,18 +198,18 @@ export async function withProtectedTaskResultSignerHistory<Value>(
       throw new TypeError("Task result signer device history is unavailable");
     const keys = new Map<string, Uint8Array>();
     for (const row of rows) {
+      const revision = nonnegativeSafeCounter(row.revision);
       if (
         !deviceIds.includes(row.device_id) ||
         keys.has(row.device_id) ||
         (row.state !== "active" && row.state !== "revoked") ||
         row.human_id.length === 0 ||
-        !Number.isSafeInteger(row.revision) ||
-        row.revision < 0 ||
+        revision === null ||
         !(row.signing_public_key instanceof Uint8Array) ||
         row.signing_public_key.length !== 32 ||
         (row.device_id === initial.publication.managerDeviceId &&
           (row.human_id !== initial.publication.managerHumanId ||
-            row.revision < initial.publication.managerAuthorizationRevision))
+            revision < initial.publication.managerAuthorizationRevision))
       ) {
         throw new TypeError("Task result signer device history is invalid");
       }

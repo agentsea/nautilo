@@ -71,7 +71,7 @@ describe("legacy local-history relay rebind", () => {
   test("backs up and atomically rebinds completed whole-history identity", async () => {
     const fx = await fixture("not_published");
     await waitForActionableOutbox(fx.journalRoot);
-    fx.runtime.stopOutboxPump();
+    await fx.runtime.stopOutboxPump();
     const storage = createJournalStorage(fx.journalRoot);
     const actionable = await storage.readManifest();
     if (actionable?.v === 1 || actionable === null) throw new Error("expected current manifest");
@@ -119,7 +119,7 @@ describe("legacy local-history relay rebind", () => {
   test("refuses to transfer actionable outbox work", async () => {
     const fx = await fixture("not_published");
     await waitForActionableOutbox(fx.journalRoot);
-    fx.runtime.stopOutboxPump();
+    await fx.runtime.stopOutboxPump();
     const manifestPath = path.join(fx.journalRoot, "manifest.json");
 
     expect(await rebindLegacyLocalFileHistoryRelay({

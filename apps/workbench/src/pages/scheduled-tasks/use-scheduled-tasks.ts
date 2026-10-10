@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ApiError } from "@nautilo/api-client/browser";
+import { classifyDataOperationFailure } from "@nautilo/lattice-bridge";
 import type { TaskSummary } from "@nautilo/types";
 import { useTaskState } from "../../contexts/task-state/task-state-context";
 import { filterScheduledTasks } from "./scheduled-tasks-view-model";
@@ -21,6 +23,15 @@ function isDormantProtectedTaskRoute(error: unknown): boolean {
   if (error === null || typeof error !== "object" || !("status" in error)) return false;
   const status = (error as { status?: unknown }).status;
   return status === 404 || status === 405 || status === 501;
+}
+
+function isTransientProtectedTaskListError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.status === 408 || error.status === 425 || error.status === 429
+      || error.status >= 500;
+  }
+  const failure = classifyDataOperationFailure(error);
+  return failure === "recoverable_availability";
 }
 
 /**
@@ -56,7 +67,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
     error,
     lastSuccessfulAtMs,
     busyIds,
-    refresh,
+    refresh: refreshTasks,
     pauseTask,
     unpauseTask,
     stopTask,
@@ -95,7 +106,13 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
     loading: boolean;
     error: string | null;
   }>>({ scopeKey: protectedScopeKey, rows: [], loading: false, error: null });
+  const [protectedRefreshGeneration, setProtectedRefreshGeneration] = useState(0);
   const dormantProtectedRouteScopeRef = useRef<string | null>(null);
+
+  const refresh = useCallback(async (): Promise<void> => {
+    setProtectedRefreshGeneration((generation) => generation + 1);
+    await refreshTasks();
+  }, [refreshTasks]);
 
   useEffect(() => {
     setDashboardPollingEnabled(enabled);
@@ -131,18 +148,23 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
       });
     }).catch((cause: unknown) => {
       if (!current) return;
-      if (isDormantProtectedTaskRoute(cause)) {
+      const dormantRoute = isDormantProtectedTaskRoute(cause);
+      if (dormantRoute) {
         dormantProtectedRouteScopeRef.current = protectedScopeKey;
       }
-      setProtectedState({
+      setProtectedState((previous) => ({
         scopeKey: protectedScopeKey,
-        rows: [],
+        rows: !dormantRoute && isTransientProtectedTaskListError(cause)
+          && previous.scopeKey === protectedScopeKey ? previous.rows : [],
         loading: false,
-        error: cause instanceof Error ? cause.message : String(cause),
-      });
+        error: dormantRoute
+          ? null
+          : cause instanceof Error ? cause.message : String(cause),
+      }));
     });
     return () => { current = false; };
-  }, [enabled, lastSuccessfulAtMs, protectedController, protectedScopeKey]);
+  }, [enabled, lastSuccessfulAtMs, protectedController,
+    protectedRefreshGeneration, protectedScopeKey]);
 
   const tasks = useMemo(
     () => filterScheduledTasks(allTasks),

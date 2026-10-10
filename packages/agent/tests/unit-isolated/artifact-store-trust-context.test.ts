@@ -5,6 +5,7 @@
  * `@nautilo/db` mocks from other unit tests do not pollute the module cache.
  */
 import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { physicalPathFromStorageUri } from "../../../db/src/utils/physical-storage-uris.ts";
 
 const FIXTURE_USER = "10000000-0000-4000-8000-000000000001";
 const FIXTURE_AGENT = "20000000-0000-4000-8000-000000000002";
@@ -45,6 +46,7 @@ beforeAll(() => {
   }));
 
   mock.module("@nautilo/db", () => ({
+    physicalPathFromStorageUri,
     agentDb: {},
     attachArtifactToNamespace: async () => {},
     bumpArtifactRevision: async () => bumpArtifactResult,

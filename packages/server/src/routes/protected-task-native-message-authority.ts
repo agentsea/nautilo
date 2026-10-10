@@ -23,7 +23,7 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
+  ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 import type {
   TaskRuntimeBackgroundAuthorizationRequestV1,
@@ -59,7 +59,7 @@ type SignerProjection = Readonly<{
 }>;
 
 export type ProtectedTaskNativeMessageAuthorityInput = Readonly<{
-  occurrence: ProtectedTaskOccurrence;
+  occurrence: ProtectedTaskRunningOccurrence;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   subject: TaskRuntimeAuthoritySubject;
@@ -479,7 +479,10 @@ export function createProtectedTaskNativeMessageAuthorityResolver(
   overrides: Partial<ProtectedTaskNativeMessageAuthorityDependencies> = {},
 ): (expected: NativeTaskMessageAuthority) =>
   Promise<NativeTaskMessageAuthority | null> {
-  if (!Number.isSafeInteger(input.createdAt)
+  if (input.occurrence.run.status !== "running"
+    || typeof input.occurrence.run.jobId !== "string"
+    || input.occurrence.run.jobId.length === 0
+    || !Number.isSafeInteger(input.createdAt)
     || input.createdAt < 0
     || input.serverScope.length === 0
     || !(input.signal instanceof AbortSignal)

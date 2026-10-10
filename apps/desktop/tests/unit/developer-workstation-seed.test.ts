@@ -43,7 +43,7 @@ import {
   developerWorkstationSeedProfile,
 } from "../../electron/workstation-profiles/developer-workstation-seed";
 
-const HOME = nodePath.join(nodePath.sep, "Users", "dev");
+const HOME = nodePath.resolve(nodePath.sep, "Users", "dev");
 const NOW = new Date("2026-07-13T12:00:00.000Z");
 
 describe("Developer Workstation seed — strict parsing", () => {
@@ -143,17 +143,17 @@ describe("Developer Workstation seed — safe root templates", () => {
   test("includes the Homebrew prefixes and cache as top-level roots on darwin", () => {
     const profile = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
     const paths = profile.roots.map((r) => r.path);
-    expect(paths).toContain("/opt/homebrew");
-    expect(paths).toContain("/usr/local");
+    expect(paths).toContain(nodePath.normalize("/opt/homebrew"));
+    expect(paths).toContain(nodePath.normalize("/usr/local"));
     expect(paths).toContain(nodePath.join(HOME, "Library", "Caches", "Homebrew"));
   });
 
   test("uses the Linuxbrew prefix on non-darwin", () => {
     const profile = developerWorkstationSeedProfile({ home: HOME, platform: "linux", now: NOW });
     const paths = profile.roots.map((r) => r.path);
-    expect(paths).toContain("/home/linuxbrew/.linuxbrew");
+    expect(paths).toContain(nodePath.normalize("/home/linuxbrew/.linuxbrew"));
     expect(paths).toContain(nodePath.join(HOME, ".cache", "Homebrew"));
-    expect(paths).not.toContain("/opt/homebrew");
+    expect(paths).not.toContain(nodePath.normalize("/opt/homebrew"));
   });
 
   test("does not bake the Current Folder / monorepo root into the template", () => {
@@ -206,7 +206,7 @@ describe("Developer Workstation seed — toolchain capabilities", () => {
   test("authorizes the JDK parent that contains a discovered java home", () => {
     const profile = developerWorkstationSeedProfile({ home: HOME, platform: "darwin", now: NOW });
     const jdk = profile.toolchainCapabilities.find((c) => c.id === CAP_JDK)!;
-    expect(jdk.roots.map((r) => r.path)).toContain("/Library/Java/JavaVirtualMachines");
+    expect(jdk.roots.map((r) => r.path)).toContain(nodePath.normalize("/Library/Java/JavaVirtualMachines"));
   });
 
   test("the Homebrew capability owns no filesystem root; the prefix is a top-level root", () => {

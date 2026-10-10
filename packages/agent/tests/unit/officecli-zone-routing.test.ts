@@ -2,8 +2,8 @@
  * M206 — `officecli` current/absolute zone routing through typed `local-file`
  * office dispatch (no server staging or fs byte transport).
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
@@ -174,6 +174,11 @@ beforeEach(async () => {
 });
 
 describe("officecli zone routing (M206)", () => {
+  afterEach(async () => {
+    setRelayRegistry(null);
+    await rm(tmpRoot, { recursive: true, force: true });
+  });
+
   test('zone "current" with no relay registry returns desktop OfficeCLI required error', async () => {
     setRelayRegistry(null);
     const tool = createOfficeCliTool(baseCtx(), {

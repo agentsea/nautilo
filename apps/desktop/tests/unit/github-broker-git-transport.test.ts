@@ -111,7 +111,7 @@ async function transportFixture() {
     const transport = createGitHubGitTransport({ runtime, credentials, storage: { admit: async () => ({ directory: storage, isCurrent: () => current }) }, timeoutMs: 1000, maxOutputBytes: 4096, run });
     return { root, storage, source, commands, transport, remote: { repository: "fixture-org/project", repositoryId: 20, accountId: 10, accountLogin: "fixture-user", branch: "main", oid: oldOid }, context: { isCurrent: () => current }, revoke: () => { current = false; }, intervene: (f: typeof intervene) => { intervene = f; }, uncertain: (name: string) => { uncertain = name; }, advertised: (value: string) => { advertisedOid = value; }, counts: () => ({ apiCalls, custodyCalls }) };
 }
-test("typed push snapshots objects before custody, verifies closure and ancestry, and consumes only at final send", async () => {
+test.skipIf(process.platform === "win32")("typed push snapshots objects before custody, verifies closure and ancestry, and consumes only at final send", async () => {
     const f = await transportFixture();
     let approvals = 0;
     f.intervene(command => {
@@ -133,7 +133,7 @@ test("typed push snapshots objects before custody, verifies closure and ancestry
     expect(readdirSync(f.storage)).toEqual([]);
 });
 
-test("fetched callback receives only readonly clean metadata and an existing empty tree, with callback lifetime", async () => {
+test.skipIf(process.platform === "win32")("fetched callback receives only readonly clean metadata and an existing empty tree, with callback lifetime", async () => {
     const f = await transportFixture();
     f.advertised(sourceOid);
     const result = await f.transport.withFetchedObjects({ ...f.context, remote: { ...f.remote, oid: sourceOid } }, async (objects, metadata) => {
@@ -149,14 +149,14 @@ test("fetched callback receives only readonly clean metadata and an existing emp
     expect(existsSync(result)).toBe(false);
     expect(f.commands.some(command => command.args.includes("mktree"))).toBe(true);
 });
-test("source alternates/symlinks are rejected before retrieving any credentials", async () => {
+test.skipIf(process.platform === "win32")("source alternates/symlinks are rejected before retrieving any credentials", async () => {
     const f = await transportFixture();
     mkdirSync(join(f.source, "info"));
     symlinkSync("/dev/null", join(f.source, "info", "alternates"));
     expect(await f.transport.push({ ...f.context, remote: f.remote, sourceObjectsPath: f.source, sourceOid, beforeSend: () => true })).toEqual({ outcome: "rejected", sent: false });
     expect(f.counts().custodyCalls).toBe(0);
 });
-test("uncertain verification cleanup blocks later commands and retains protected scratch", async () => {
+test.skipIf(process.platform === "win32")("uncertain verification cleanup blocks later commands and retains protected scratch", async () => {
     const f = await transportFixture();
     f.uncertain("fsck");
     let approvals = 0;
@@ -165,13 +165,13 @@ test("uncertain verification cleanup blocks later commands and retains protected
     expect(f.counts().custodyCalls).toBe(0);
     expect(readdirSync(f.storage)).toHaveLength(1);
 });
-test("lost cleanup after consumed push is unknown and never retry-classified as unsent", async () => {
+test.skipIf(process.platform === "win32")("lost cleanup after consumed push is unknown and never retry-classified as unsent", async () => {
     const f = await transportFixture();
     f.uncertain("push");
     expect(await f.transport.push({ ...f.context, remote: f.remote, sourceObjectsPath: f.source, sourceOid, beforeSend: () => true })).toEqual({ outcome: "unknown", sent: true });
     expect(readdirSync(f.storage)).toHaveLength(1);
 });
-test("revocation or denied approval before push is rejected without consuming another effect", async () => {
+test.skipIf(process.platform === "win32")("revocation or denied approval before push is rejected without consuming another effect", async () => {
     for (const revoke of [false, true]) {
         const f = await transportFixture();
         let approvals = 0;
@@ -184,7 +184,7 @@ test("revocation or denied approval before push is rejected without consuming an
         expect(approvals).toBe(revoke ? 0 : 1);
     }
 });
-test("fetched objects are callback-local and removed after a current callback returns", async () => {
+test.skipIf(process.platform === "win32")("fetched objects are callback-local and removed after a current callback returns", async () => {
     const f = await transportFixture();
     f.advertised(sourceOid);
     let objects = "";
@@ -193,7 +193,7 @@ test("fetched objects are callback-local and removed after a current callback re
     expect(existsSync(objects)).toBe(false);
     expect(existsSync(f.source)).toBe(true);
 });
-test("account/repo mismatch and post-callback source revocation never release fetched result", async () => {
+test.skipIf(process.platform === "win32")("account/repo mismatch and post-callback source revocation never release fetched result", async () => {
     const f = await transportFixture();
     let called = false;
     await rejects(f.transport.withFetchedObjects({ ...f.context, remote: { ...f.remote, repositoryId: 21 } }, async () => { called = true; }));
@@ -278,7 +278,7 @@ test.skipIf(process.platform !== "darwin")("real Apple Git clean-object push suc
     expect(readdirSync(storage)).toEqual([]);
     expect(existsSync(marker)).toBe(false);
 });
-test("the production private adapter rejects mismatched protocol/host/repository before its only descriptor read", async () => {
+test.skipIf(process.platform === "win32")("the production private adapter rejects mismatched protocol/host/repository before its only descriptor read", async () => {
     const f = await transportFixture();
     let checked = false;
     f.intervene(command => {
@@ -312,6 +312,38 @@ function isFixtureZombie(pid: number, processStat: string): boolean {
     const matched = /^([1-9][0-9]*) \([^\n]*\) Z [0-9]+ [0-9]+ [0-9]+ (?:-?[0-9]+(?: |\n|$))+$/.exec(processStat);
     return matched?.[1] === String(pid);
 }
+function observeFixtureChild(pid: number): { absent: boolean; zombie: boolean; processStat?: string } {
+    let absent = false;
+    try {
+        process.kill(pid, 0);
+    }
+    catch (error) {
+        absent = (error as NodeJS.ErrnoException).code === "ESRCH";
+    }
+    let zombie = false;
+    let processStat: string | undefined;
+    if (!absent && process.platform === "linux") {
+        try {
+            processStat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            zombie = isFixtureZombie(pid, processStat);
+        }
+        catch {
+            // The child may be reaped between the two observations. Require
+            // ESRCH rather than treating a failed read as proof.
+            try { process.kill(pid, 0); }
+            catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
+        }
+    }
+    return { absent, zombie, processStat };
+}
+async function eventuallySettledFixtureChild(pid: number, initial: ReturnType<typeof observeFixtureChild>): Promise<ReturnType<typeof observeFixtureChild>> {
+    let observation = initial;
+    for (let attempt = 0; attempt < 50 && !observation.absent && !observation.zombie; attempt++) {
+        await Bun.sleep(10);
+        observation = observeFixtureChild(pid);
+    }
+    return observation;
+}
 function stopFixtureChild(pid: number | undefined, program: string): boolean {
     if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 1) return false;
     const inspected = spawnSync("/bin/ps", ["-p", String(pid), "-o", "command="], {
@@ -340,7 +372,7 @@ test("fixture zombie proof requires the exact PID and positive kernel zombie sta
     }
 });
 for (const termination of ["abort", "timeout", "leader-exit"] as const)
-    test(`default executor ${termination} settles a pipe-holding child before releasing protected scratch or acquiring credentials`, async () => {
+    test.skipIf(process.platform === "win32")(`default executor ${termination} settles a pipe-holding child before releasing protected scratch or acquiring credentials`, async () => {
         const f = await transportFixture();
         const executable = join(f.root, "fixture-git"), childFile = join(f.root, "child-pid"), childProgram = join(f.root, "fixture-child");
         writeFileSync(childProgram, '#!/bin/sh\n/bin/sleep 30 &\nsleeper=$!\ntrap \'kill "$sleeper" 2>/dev/null; exit\' TERM INT\nwait "$sleeper"\n', { mode: 0o700 });
@@ -370,40 +402,33 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
                 abort.abort();
             expect(await pending).toEqual({ outcome: "rejected", sent: false });
             expect(credentials).toBe(0);
-            let absent = false;
-            try {
-                process.kill(childPid, 0);
+            // Snapshot the production cleanup decision at the return boundary.
+            // A later kernel observation must never upgrade this authority.
+            const retainedAtReturn = readdirSync(f.storage);
+            expect(retainedAtReturn.length).toBeLessThanOrEqual(1);
+            for (const name of retainedAtReturn) {
+                expect(name.startsWith("github-git-")).toBe(true);
+                const info = lstatSync(join(f.storage, name));
+                expect(info.isDirectory() && !info.isSymbolicLink()).toBe(true);
+                expect(info.mode & 0o077).toBe(0);
             }
-            catch (error) {
-                absent = (error as NodeJS.ErrnoException).code === "ESRCH";
-            }
-            let zombie = false;
-            let processStat: string | undefined;
-            if (!absent && process.platform === "linux") {
-                try {
-                    processStat = readFileSync(`/proc/${childPid}/stat`, "utf8");
-                    zombie = isFixtureZombie(childPid, processStat);
-                }
-                catch {
-                    // The child may be reaped between the two observations.
-                    // Require ESRCH rather than treating a failed read as proof.
-                    try { process.kill(childPid, 0); }
-                    catch (error) { absent = (error as NodeJS.ErrnoException).code === "ESRCH"; }
-                }
-            }
+            const initial = observeFixtureChild(childPid);
+            if (!initial.absent && !initial.zombie)
+                expect(retainedAtReturn).toHaveLength(1);
+            const { absent, zombie, processStat } = await eventuallySettledFixtureChild(childPid, initial);
             if (!absent && !zombie) {
                 // Report only this synthetic child's numeric kernel coordinates,
                 // never its command line, environment, or fixture filesystem path.
                 const fields = /^([1-9][0-9]*) \([^\n]*\) ([A-Za-z]) ([0-9]+) ([0-9]+) ([0-9]+) /.exec(processStat ?? "");
-                const scratchCount = readdirSync(f.storage).length;
                 console.error("Fixture child cleanup observation", {
                     platform: process.platform, termination, childPid,
                     observedPid: fields?.[1] ?? null, state: fields?.[2] ?? null,
                     parentPid: fields?.[3] ?? null, processGroup: fields?.[4] ?? null,
-                    sessionId: fields?.[5] ?? null, absent, zombie, credentials, scratchCount,
+                    sessionId: fields?.[5] ?? null, absent, zombie, credentials,
+                    scratchCountAtReturn: retainedAtReturn.length,
                     // The private executor result is not exposed here. Removal
                     // is observable only after its cleanupConfirmed guard wins.
-                    cleanupConfirmedByScratchRemoval: scratchCount === 0,
+                    cleanupConfirmedAtReturnByScratchRemoval: retainedAtReturn.length === 0,
                 });
             }
             expect({ absent, zombie }).not.toEqual({ absent: false, zombie: false });
@@ -412,15 +437,7 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
             // A later child absence probe cannot upgrade an inconclusive
             // close-boundary group probe. Either proven cleanup or protected
             // retained scratch is truthful; never force removal from this test.
-            const retained = readdirSync(f.storage);
-            expect(retained.length).toBeLessThanOrEqual(1);
-            if (zombie) expect(retained.length).toBe(1);
-            for (const name of retained) {
-                expect(name.startsWith("github-git-")).toBe(true);
-                const info = lstatSync(join(f.storage, name));
-                expect(info.isDirectory() && !info.isSymbolicLink()).toBe(true);
-                expect(info.mode & 0o077).toBe(0);
-            }
+            if (zombie) expect(retainedAtReturn).toHaveLength(1);
         }
         finally {
             observer.close();
@@ -428,7 +445,7 @@ for (const termination of ["abort", "timeout", "leader-exit"] as const)
             stopFixtureChild(childPid, childProgram);
         }
     }, 20000);
-test("a multi-chunk object copy retains exact bytes without reopening source paths", async () => {
+test.skipIf(process.platform === "win32")("a multi-chunk object copy retains exact bytes without reopening source paths", async () => {
     const f = await transportFixture();
     const bytes = Buffer.alloc(1024 * 1024 + 17, 0x5a);
     writeFileSync(join(f.source, "aa", "a".repeat(38)), bytes);

@@ -98,6 +98,14 @@ mock.module("../../src/lib/model-funding", () => ({
   withAdmittedPersonalProviderKey: withKey,
 }));
 
+mock.module("../../src/lib/capability-funding", () => ({
+  capabilityFundingBinding: (decision: Record<string, unknown>) => ({
+    kind: decision["kind"], providerRoute: decision["providerRoute"],
+    ...(decision["kind"] === "personal" ? { credentialId: decision["credentialId"], credentialRevision: decision["credentialRevision"] } : {}),
+  }),
+  prepareCapabilityFundingSession: async (humanUserId: string) => ({ humanUserId }),
+}));
+
 const {
   callerHasConfiguredPersonalFunding,
   openForegroundChatFundingSession,
@@ -157,7 +165,7 @@ describe("foreground chat funding admission", () => {
       priorDecision: { kind: "personal", modelId: MODEL, credentialRevision: 4 },
     });
     expect(withKey.mock.calls[0]?.[3]).toMatchObject({ modelId: MODEL });
-    expect(assertInvoke).toHaveBeenCalledTimes(1);
+    expect(assertInvoke).toHaveBeenCalledTimes(2);
   });
 
   test("returns server usage without decrypting personal custody when server-first wins", async () => {
@@ -219,18 +227,33 @@ describe("foreground chat funding admission", () => {
     expect(assertInvoke).not.toHaveBeenCalled();
   });
 
-  test("fresh server authority retains the legacy path when personal funding is disabled or revoked", async () => {
+  test("fresh server authority receives child funding admission even when personal funding is disabled or revoked", async () => {
     switchOn = false;
+    freshFundingKind = "server";
     capabilities = ["use_personal_provider_credentials", "use_server_provider_credentials"];
-    expect(await openForegroundChatFundingSession(input)).toBeNull();
-
+    expect((await openForegroundChatFundingSession(input))?.kind).toBe("server");
     switchOn = true;
     capabilities = ["use_server_provider_credentials"];
-    expect(await openForegroundChatFundingSession(input)).toBeNull();
-
-    expect(resolveFunding).not.toHaveBeenCalled();
+    expect((await openForegroundChatFundingSession(input))?.kind).toBe("server");
     expect(withKey).not.toHaveBeenCalled();
-    expect(assertInvoke).not.toHaveBeenCalled();
+  });
+
+  test("room authority revocation stops a later attempt before key custody or provider dispatch", async () => {
+    const session = await openForegroundChatFundingSession(input);
+    roomOwner = "foreign-human";
+    const dispatch = mock(async () => "unexpected");
+    expect(session!.runAttempt(MODEL, dispatch)).rejects.toMatchObject({ code: "unsupported_workload" });
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(withKey).not.toHaveBeenCalled();
+    expect(resolveFunding).toHaveBeenCalledTimes(1);
+  });
+
+  test("saved personal funding cannot become server spending after switch-off", async () => {
+    const session = await openForegroundChatFundingSession(input);
+    switchOn = false;
+    capabilities = ["use_personal_provider_credentials", "use_server_provider_credentials"];
+    expect(openForegroundChatFundingSession({ ...input, prior: session!.admission! }))
+      .rejects.toMatchObject({ code: "personal_credentials_disabled" });
   });
 
   test("a foreign Genie is rejected before any model funding", async () => {

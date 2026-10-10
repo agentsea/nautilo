@@ -264,6 +264,23 @@ describe("Sandbox — isPathAllowed", () => {
     expect(sb.isPathAllowed(join(tmp2, "file.md"))).toBe(true);
     expect(sb.isPathAllowed(tmp2 + "-sibling")).toBe(false);
   });
+
+  test("rejects parent traversal and relative inputs", () => {
+    const tmp = mkTmp("nautilo-ws-boundary-");
+    const sb = makeWithWorkspace(tmp);
+    expect(sb.isPathAllowed(join(tmp, "..", "outside.md"))).toBe(false);
+    expect(sb.isPathAllowed("notes.md")).toBe(false);
+  });
+
+  test.skipIf(process.platform !== "win32")("accepts native Windows separators and drive case without accepting another drive", () => {
+    const tmp = mkTmp("nautilo-ws-native-");
+    const sb = makeWithWorkspace(tmp);
+    const candidate = join(tmp, "notes.md");
+    expect(sb.isPathAllowed(candidate.replaceAll("\\", "/"))).toBe(true);
+    expect(sb.isPathAllowed(candidate.toUpperCase())).toBe(true);
+    const otherDrive = tmp[0]!.toUpperCase() === "Z" ? "Y" : "Z";
+    expect(sb.isPathAllowed(otherDrive + candidate.slice(1))).toBe(false);
+  });
 });
 
 describe("Sandbox — prompt allowlists", () => {
@@ -290,9 +307,7 @@ describe("Sandbox — prompt allowlists", () => {
     const writes = sb.promptWriteAllowlist();
     expect(writes.length).toBeGreaterThanOrEqual(2);
     // /tmp always present
-    expect(
-      writes.some((p) => p === "/tmp" || p === "/private/tmp" || p.endsWith("/tmp")),
-    ).toBe(true);
+    expect(writes).toContain(canonicalize("/tmp"));
   });
 
   test("refreshProjectPaths extends the prompt allowlist", () => {

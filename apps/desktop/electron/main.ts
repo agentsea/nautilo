@@ -2303,7 +2303,7 @@ function getDesktopDocumentMutationRuntime():
   if (!relayId) {
     if (desktopDocumentMutationRuntime) {
       desktopDocumentMutationRuntimeGeneration += 1;
-      desktopDocumentMutationRuntime.stopOutboxPump();
+      void desktopDocumentMutationRuntime.stopOutboxPump();
       desktopDocumentMutationRuntime = undefined;
       desktopDocumentMutationRuntimeRelayId = undefined;
       invalidatePendingDocumentMutationAcks();
@@ -2319,7 +2319,7 @@ function getDesktopDocumentMutationRuntime():
       desktopDocumentMutationRuntime !== undefined
     ) {
       desktopDocumentMutationRuntimeGeneration += 1;
-      desktopDocumentMutationRuntime?.stopOutboxPump();
+      void desktopDocumentMutationRuntime?.stopOutboxPump();
       desktopDocumentMutationRuntime = undefined;
       desktopDocumentMutationRuntimeRelayId = undefined;
       invalidatePendingDocumentMutationAcks();
@@ -2341,7 +2341,7 @@ function getDesktopDocumentMutationRuntime():
   // new journal; permanently stop the old unref'd pump so it cannot publish
   // or contend with batches under a stale relay identity.
   const generation = ++desktopDocumentMutationRuntimeGeneration;
-  desktopDocumentMutationRuntime?.stopOutboxPump();
+  void desktopDocumentMutationRuntime?.stopOutboxPump();
   invalidatePendingDocumentMutationAcks();
   const journal = new LocalDurableMutationJournal({
     rootDir: localFileHistoryDirPath(),
@@ -15603,7 +15603,7 @@ app.on("before-quit", (event) => {
   isQuitting = true;
   if (quitTeardownStarted) return;
   quitTeardownStarted = true;
-  desktopDocumentMutationRuntime?.stopOutboxPump();
+  void desktopDocumentMutationRuntime?.stopOutboxPump();
   invalidatePendingDocumentMutationAcks();
   clearInterval(binaryReadSessionExpiryTimer);
   disposeBinaryReadSenderBindings();

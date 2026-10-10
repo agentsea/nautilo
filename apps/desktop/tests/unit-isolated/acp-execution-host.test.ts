@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import type {
   RelayAcpClientMessage,
   RelayAcpHostTransport,
@@ -21,6 +22,7 @@ import {
 import { validateAcpInitializeCapabilityTruth } from "../../../../packages/acp-host/src/capability-truth";
 
 const UNSUPPORTED_REQUEST_CAPABILITIES = validateAcpInitializeCapabilityTruth({ protocolVersion: 1, agentCapabilities: {} });
+const executablePath = join(process.cwd(), "hermes");
 
 const socket: RelayAcpSession = {
   relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop-session",
@@ -298,7 +300,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     let nextId = 0;
     const folder = process.cwd();
     const launch: AcpCanonicalLaunchAdmission = {
-      executablePath: "/reviewed/hermes", cwd: folder,
+      executablePath, cwd: folder,
       environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" },
     };
     let runtime: AcpHostRuntime<number> | undefined;
@@ -334,7 +336,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     expect(processes.peers[0]?.error).toBeUndefined();
     expect(processes.peers[0]?.methods).toEqual(["initialize", "session/new", "session/set_mode", "session/prompt"]);
     expect(processes.specs).toEqual([{
-      executablePath: "/reviewed/hermes", args: ["-p", "nautilo-acp", "acp"], cwd: folder,
+      executablePath, args: ["-p", "nautilo-acp", "acp"], cwd: folder,
       env: { ...launch.environment, HERMES_ACP_SKIP_CONFIGURED_MCP: "1" }, shell: false, detached: true,
     }]);
     expect(processes.specs[0]?.env).not.toHaveProperty("OPENAI_API_KEY");
@@ -366,7 +368,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
         terminalFailureDiagnostic: (message) => { diagnostics.push(message); },
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -394,7 +396,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
       {
         now: () => now,
         mintId: () => `id-${++ids}`,
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -466,7 +468,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     // Current Folder selection while it is pending must make this admission stale.
     current = { path: `${folder}/.`, revision: 2 };
     admission.resolve({
-      executablePath: "/reviewed/hermes", cwd: folder,
+      executablePath, cwd: folder,
       environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" },
     });
     await within(start);
@@ -482,7 +484,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     const host = new ElectronHermesAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: ({ resolveLaunch, turnFor }) => {
           runtimes += 1;
           if (runtimes === 1) return {
@@ -538,7 +540,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
         mintId: () => "reused-opaque-id",
         turnClock: clock,
         turnLimits: { absoluteTimeoutMs: 30, silenceTimeoutMs: 5 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: ({ resolveLaunch, turnFor }) => {
           runtimes += 1;
           if (runtimes === 1) return {
@@ -662,7 +664,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     const host = new ElectronHermesAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -695,7 +697,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     const host = new ElectronHermesAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -720,7 +722,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     const host = new ElectronHermesAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -770,7 +772,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     const host = new ElectronHermesAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -809,7 +811,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
         mintId: () => "reused-opaque-id",
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -844,7 +846,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
       {
         turnClock: clock,
         turnLimits: { absoluteTimeoutMs: 15, silenceTimeoutMs: 5 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -907,7 +909,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
       {
         turnClock: clock,
         turnLimits: { absoluteTimeoutMs: 30, silenceTimeoutMs: 5 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -939,7 +941,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
       {
         turnClock: clock,
         turnLimits: { absoluteTimeoutMs: 30, silenceTimeoutMs: 20 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/hermes", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -980,6 +982,7 @@ describe("ElectronHermesAcpExecutionHost", () => {
     let id = 0;
     const host = new ElectronHermesAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 7 }) }, {
       mintId: () => `opaque-${++id}`,
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
     });
     const transport: RelayAcpHostTransport = { send: (message) => { messages.push(message); return true; } };
     host.onRegistered(socket, transport);
@@ -991,13 +994,18 @@ describe("ElectronHermesAcpExecutionHost", () => {
 
   test("fails closed without a Current Folder and caps unconsumed opaque receipts", async () => {
     const messages: RelayAcpClientMessage[] = [];
-    const noFolder = new ElectronHermesAcpExecutionHost({ currentFolder: () => null });
+    const noFolder = new ElectronHermesAcpExecutionHost({ currentFolder: () => null }, {
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
+    });
     noFolder.onRegistered(socket, { send: (message) => { messages.push(message); return true; } });
     await noFolder.onPrepare(prepare("none"));
     expect(messages).toHaveLength(0);
 
     let id = 0;
-    const host = new ElectronHermesAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 1 }) }, { mintId: () => `receipt-${++id}` });
+    const host = new ElectronHermesAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 1 }) }, {
+      mintId: () => `receipt-${++id}`,
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
+    });
     host.onRegistered(socket, { send: (message) => { messages.push(message); return true; } });
     for (let index = 0; index < 33; index += 1) await host.onPrepare(prepare(`request-${index}`));
     expect(messages).toHaveLength(32);

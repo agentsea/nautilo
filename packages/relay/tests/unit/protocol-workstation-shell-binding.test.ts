@@ -32,6 +32,11 @@ const BINDING: RelayWorkstationShellBinding = {
 };
 
 describe("D440 Phase 1 — workstation shell-binding protocol v2", () => {
+  test.each(["/home/alice/project", "C:\\Users\\alice\\project", "\\\\fileserver\\share\\project"])("accepts the Desktop path syntax independently of the server OS: %s", (currentFolder) => {
+    const binding = { ...BINDING, currentFolder };
+    expect(parseRelayWorkstationShellBinding(binding)).toEqual({ ok: true, binding });
+  });
+
   test("parses the strict v2 revision-coherent shell binding", () => {
     expect(RELAY_WORKSTATION_SHELL_BINDING_VERSION).toBe(2);
     expect(RELAY_WORKSTATION_SHELL_BINDING_EXECUTION_CLASS).toBe("profile_bound_sandbox");

@@ -166,7 +166,8 @@ describe("Current Folder sequence export host", () => {
     expect(result).toEqual({ status: "failed", code: "unsupported_source_format" }); expect(probed).toBe(false);
   });
 
-  test("cancellation owns and terminates the FFmpeg metadata probe", async () => {
+  // This real-process fixture relies on POSIX shebang execution.
+  test.skipIf(process.platform === "win32")("cancellation owns and terminates the FFmpeg metadata probe", async () => {
     const value = await fixture(); const fake = path.join(value.root, "fake-ffmpeg"); const started = path.join(value.root, "started");
     await fsp.writeFile(fake, `#!/usr/bin/env node\nconst fs=require("fs");const path=require("path");fs.writeFileSync(path.join(__dirname,"started"),String(process.pid));setInterval(()=>{},1000);\n`); await fsp.chmod(fake, 0o755);
     const controller = new AbortController();

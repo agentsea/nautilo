@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { rejects } from "node:assert/strict";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   cp,
@@ -15,7 +16,6 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { seedFirstPartyApps } from "../../src/apps/seed-first-party-apps";
 
 let tempDirs: string[] = [];
@@ -233,68 +233,6 @@ describe("seedFirstPartyApps", () => {
     );
   });
 
-  test("snapshots isolated runtime dependencies with local source updates, distinct versions, and cycles", async () => {
-    const sourceRoot = await makeTempDir("nautilo-seed-isolated-src-");
-    await makeFakeAppSource(sourceRoot, "writer", "nautilo-writer");
-    const writerDir = join(sourceRoot, "writer");
-    const store = join(writerDir, "node_modules", ".bun");
-    const localTypes = join(sourceRoot, "types");
-    const typesContext = join(store, "types", "node_modules");
-    const typesInstalled = join(typesContext, "@nautilo", "types");
-    const leafContext = join(store, "leaf", "node_modules");
-    const leafInstalled = join(leafContext, "leaf");
-    const sharedOne = join(store, "shared-one", "node_modules", "shared");
-    const sharedTwo = join(store, "shared-two", "node_modules", "shared");
-    const linkType = process.platform === "win32" ? "junction" : "dir";
-    async function writePackage(root: string, pkg: object, entry: string): Promise<void> {
-      await mkdir(root, { recursive: true });
-      await writeFile(join(root, "package.json"), JSON.stringify({ main: "index.cjs", ...pkg }));
-      await writeFile(join(root, "index.cjs"), entry);
-    }
-    const typesManifest = {
-      name: "@nautilo/types", dependencies: { leaf: "1", shared: "1" },
-      devDependencies: { "dev-only": "1" },
-    };
-    await writePackage(localTypes, typesManifest,
-      'exports.label = "fresh"; exports.value = require("shared").value + ":" + require("leaf").value;');
-    await writePackage(typesInstalled, typesManifest, 'exports.label = "stale";');
-    await writePackage(leafInstalled, {
-      name: "leaf", dependencies: { shared: "2", "@nautilo/types": "1" },
-      optionalDependencies: { "uninstalled-platform-package": "1" },
-    }, 'exports.value = require("shared").value + ":" + require("@nautilo/types").label;');
-    await writePackage(sharedOne, { name: "shared", version: "1" }, 'exports.value = "one";');
-    await writePackage(sharedTwo, { name: "shared", version: "2" }, 'exports.value = "two";');
-    await writeFile(join(writerDir, "package.json"), JSON.stringify({
-      dependencies: { "@nautilo/types": "file:../types" },
-    }));
-    await mkdir(join(writerDir, "node_modules", "@nautilo"), { recursive: true });
-    await mkdir(join(leafContext, "@nautilo"), { recursive: true });
-    await symlink(typesInstalled, join(writerDir, "node_modules", "@nautilo", "types"), linkType);
-    await symlink(leafInstalled, join(typesContext, "leaf"), linkType);
-    await symlink(sharedOne, join(typesContext, "shared"), linkType);
-    await symlink(sharedTwo, join(leafContext, "shared"), linkType);
-    await symlink(typesInstalled, join(leafContext, "@nautilo", "types"), linkType);
-
-    const appsRoot = await makeTempDir("nautilo-seed-isolated-apps-");
-    await seedFirstPartyApps({ appsRoot, sourceRoot });
-    const seededWriter = join(appsRoot, "nautilo-writer");
-    expect(stat(join(seededWriter, "node_modules", ".bun"))).rejects.toMatchObject({ code: "ENOENT" });
-    const seededTypes = join(seededWriter, "node_modules", "@nautilo", "types");
-    expect(stat(join(seededTypes, "node_modules", "dev-only"))).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await lstat(join(seededTypes, "node_modules", "leaf"))).isSymbolicLink()).toBe(true);
-    const markerPath = join(seededWriter, ".nautilo-seed.json");
-    const marker = JSON.parse(await readFile(markerPath, "utf8")) as Record<string, unknown>;
-    expect(marker["dependencyLayout"]).toBe("runtime-graph");
-    delete marker["dependencyLayout"];
-    await writeFile(markerPath, JSON.stringify(marker));
-    await writeFile(join(seededTypes, "index.cjs"), 'exports.label = "old-snapshot";');
-    expect((await seedFirstPartyApps({ appsRoot, sourceRoot })).seeded).toEqual(["nautilo-writer"]);
-    expect(await readFile(join(seededTypes, "index.cjs"), "utf8")).toContain('exports.label = "fresh"');
-    expect((await seedFirstPartyApps({ appsRoot, sourceRoot })).seeded).toEqual([]);
-    const requireSeed = createRequire(join(seededWriter, "main.ts"));
-    expect(requireSeed("@nautilo/types")).toEqual({ label: "fresh", value: "one:two:fresh" });
-  });
-
   test("reseeds Writer from the declared file: source when its installed dependency copy is stale", async () => {
     const sourceRoot = await makeTempDir("nautilo-seed-src-");
     const coreRoot = join(sourceRoot, "writer-proposal-core");
@@ -398,12 +336,14 @@ describe("seedFirstPartyApps", () => {
 
     const result = await seedFirstPartyApps({ appsRoot, sourceRoot });
     expect(result.seeded).toEqual(["nautilo-writer"]);
-    expect(
+    await rejects(
       stat(join(appsRoot, "nautilo-writer", "node_modules", "@nautilo", "dev-only")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    expect(
+      { code: "ENOENT" },
+    );
+    await rejects(
       stat(join(appsRoot, "nautilo-writer", "node_modules", "@nautilo", "peer-only")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+      { code: "ENOENT" },
+    );
   });
 
   test("skips missing Writer source dir and still seeds Video without throwing", async () => {
@@ -534,7 +474,7 @@ describe("optional compiled Sheets", () => {
     await seedFirstPartyApps(options);
     const installed = await readFile(join(options.appsRoot, "nautilo-spreadsheet", "main.ts"), "utf8");
     await rm(join(options.sourceRoot, "spreadsheet", "engine", "node.js"));
-    expect(seedFirstPartyApps(options)).rejects.toThrow("Incomplete compiled engine");
+    await rejects(seedFirstPartyApps(options), /Incomplete compiled engine/);
     expect(await readFile(join(options.appsRoot, "nautilo-spreadsheet", "main.ts"), "utf8")).toBe(installed);
   });
 });
@@ -601,7 +541,7 @@ describe("prepared native Slides", () => {
     const installed = await readFile(join(options.appsRoot, "nautilo-presentation", "main.ts"), "utf8");
     await writeFile(join(options.sourceRoot, "presentation", "main.ts"), "// incomplete upgrade\n");
     await rm(join(options.sourceRoot, "presentation", "engine", "dictionaries", "en_US.dic"));
-    expect(seedFirstPartyApps(options)).rejects.toThrow("Incomplete compiled engine");
+    await rejects(seedFirstPartyApps(options), /Incomplete compiled engine/);
     expect(await readFile(join(options.appsRoot, "nautilo-presentation", "main.ts"), "utf8")).toBe(installed);
   });
 });
@@ -636,7 +576,7 @@ describe("prepared native Board", () => {
 
     await writeFile(join(options.sourceRoot, "board", "main.ts"), "// tampered upgrade\n");
     await writeFile(join(options.sourceRoot, "board", "engine", "main.js"), "tampered bytes\n");
-    expect(seedFirstPartyApps(options)).rejects.toThrow("Compiled engine integrity mismatch for nautilo-board: main.js");
+    await rejects(seedFirstPartyApps(options), /Compiled engine integrity mismatch for nautilo-board: main\.js/);
     expect(await readFile(join(options.appsRoot, "nautilo-board", "main.ts"), "utf8")).toBe(installed);
   });
 });

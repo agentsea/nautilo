@@ -1,6 +1,6 @@
 import type { ToolCall } from "@langchain/core/messages/tool";
 import type { NetworkAllowRule } from "@nautilo/config";
-import { dirname, isAbsolute, join, normalize } from "node:path";
+import { pathApiForRelayPath } from "@nautilo/relay";
 
 export interface ApprovalPathContext {
   readonly currentFolder?: string;
@@ -32,7 +32,7 @@ export function approvalToolKey(tc: Pick<ToolCall, "id" | "name" | "args">): str
 export function recordApprovedWritablePath(laneKey: string, path: string): void {
   if (!laneKey || !path) return;
   const existing = writableByLane.get(laneKey) ?? new Set<string>();
-  existing.add(normalize(path));
+  existing.add(pathApiForRelayPath(path).normalize(path));
   writableByLane.set(laneKey, existing);
 }
 
@@ -133,14 +133,15 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 function resolvePathArg(v: unknown, root?: string): string | null {
   const p = stringArg(v);
   if (p === null) return null;
-  if (isAbsolute(p)) return normalize(p);
+  const paths = pathApiForRelayPath(p);
+  if (paths.isAbsolute(p)) return paths.normalize(p);
   if (root === undefined || root.length === 0) return null;
-  return normalize(join(root, p));
+  return pathApiForRelayPath(root).join(root, p);
 }
 
 function writableParentForPathArg(v: unknown, root?: string): string | null {
   const resolved = resolvePathArg(v, root);
-  return resolved === null ? null : dirname(resolved);
+  return resolved === null ? null : pathApiForRelayPath(resolved).dirname(resolved);
 }
 
 function writableParentForZone(
@@ -152,7 +153,7 @@ function writableParentForZone(
   if (zone === "current") return writableParentForPathArg(v, ctx.currentFolder);
   if (zone === "scratch") {
     const scratchRoot =
-      ctx.workspacePath === undefined ? undefined : join(ctx.workspacePath, "scratch");
+      ctx.workspacePath === undefined ? undefined : pathApiForRelayPath(ctx.workspacePath).join(ctx.workspacePath, "scratch");
     return writableParentForPathArg(v, scratchRoot);
   }
   if (zone === "workspace" || zone === "home") {

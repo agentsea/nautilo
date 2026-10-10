@@ -169,7 +169,7 @@ describe("D486 real workstation dispatch", () => {
     mkdirSync(child);
     mkdirSync(protectedChild);
     writeFileSync(join(root, "not-a-directory"), "x");
-    symlinkSync(outside, join(root, "escape"));
+    symlinkSync(outside, join(root, "escape"), process.platform === "win32" ? "junction" : "dir");
     let calls = 0;
     const canonicalProtectedChild = realpathSync(protectedChild);
     const handler = makeDispatchHandler(createWorkspaceGuard({ workspaceRoot: root }), {

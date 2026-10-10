@@ -23,7 +23,7 @@ function fixture(target = "darwin-arm64") {
 }
 
 describe("server browser provisioning", () => {
-  test.each(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"])("provisions missing %s bytes with the canonical vendor script", async (target) => {
+  test.each(["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"])("provisions missing %s bytes with the canonical vendor script", async (target) => {
     const f = fixture(target);
     const [platform, arch] = target.split("-");
     const calls: unknown[] = [];
@@ -68,8 +68,17 @@ describe("server browser provisioning", () => {
     expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "darwin", arch: "arm64",
       spawn: () => { throw new Error("spawn failed"); },
     })).toBe(false);
-    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "win32", arch: "arm64",
+    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "freebsd", arch: "arm64",
       spawn: () => { throw new Error("must not spawn"); },
     })).toBe(false);
+  });
+
+  test.each(["x64", "arm64"])("Windows %s startup skips the unavailable optional browser driver", async (arch) => {
+    const f = fixture();
+    let spawned = false;
+    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "win32", arch,
+      spawn: () => { spawned = true; throw new Error("must not download an unusable driver"); },
+    })).toBe(true);
+    expect(spawned).toBe(false);
   });
 });

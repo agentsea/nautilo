@@ -204,7 +204,7 @@ describe("D525 production media worker", () => {
     expect([...fake.namespaces.values()]).toEqual([[firstClaim.namespaceId]]);
   });
 
-  test("rejects a symlinked final path that escapes the configured artifact root", async () => {
+  test("rejects a linked path that escapes the configured artifact root", async () => {
     const root = await tempRoot();
     const outside = await tempRoot();
     const bytes = mp4Bytes();
@@ -212,8 +212,10 @@ describe("D525 production media worker", () => {
     await fsp.writeFile(outsideFile, bytes);
     const mediaDir = path.join(root, "media");
     await fsp.mkdir(mediaDir);
-    const linked = path.join(mediaDir, "linked.mp4");
-    await fsp.symlink(outsideFile, linked);
+    const alias = path.join(mediaDir, "linked");
+    await fsp.symlink(process.platform === "win32" ? outside : outsideFile, alias,
+      process.platform === "win32" ? "junction" : "file");
+    const linked = process.platform === "win32" ? path.join(alias, "escaped.mp4") : alias;
     const fake = fakeArtifactOperations();
     const custody = createProductionMediaArtifactCustody({ db: {} as never, artifactRoot: root, artifactOperations: fake.operations });
     const error = await captureError(custody.committerFor(claim() as never).commit({

@@ -182,7 +182,11 @@ function directSandbox(envelope: RelaySandboxProfile): Sandbox {
       args: readonly string[],
       cwd: string,
       env: Readonly<Record<string, string>>,
-    ) => ({ program, args: [...args], cwd, env }),
+    ) => {
+      expect(program).toBe("/bin/sh");
+      expect(args).toEqual(["-c", "/bin/pwd"]);
+      return { program: process.execPath, args: ["-e", "process.stdout.write(process.cwd())"], cwd, env };
+    },
     close: async () => {},
   } as unknown as Sandbox;
 }
@@ -219,7 +223,7 @@ describe("D440 authority states", () => {
 
     const result = await handler(request(currentFolder, false));
 
-    expect(result.status).toBe("ok");
+    expect(result).toMatchObject({ status: "ok" });
     expect(captured).toEqual(sandboxProfile(currentFolder));
   });
 
@@ -254,7 +258,7 @@ describe("D440 authority states", () => {
 
     const result = await handler(request(currentFolder, true));
 
-    expect(result.status).toBe("ok");
+    expect(result).toMatchObject({ status: "ok" });
     expect(sandboxConstructed).toBe(true);
   });
 
@@ -302,7 +306,7 @@ describe("D440 authority states", () => {
 
     const result = await handler(request(currentFolder, true));
 
-    expect(result.status).toBe("ok");
+    expect(result).toMatchObject({ status: "ok" });
     expect(captured?.workspace).toBe(currentFolder);
     expect(captured?.config.writablePaths).toContain(currentFolder);
     expect(captured?.config.writablePaths).not.toContain(profileRoot);

@@ -3,6 +3,8 @@ import {
   ElectronHermesAcpReadinessHost,
   HERMES_ACP_CHECK_ARGS,
   HERMES_ACP_VERSION_ARGS,
+  createElectronHermesAcpNativeProbe,
+  resolveReviewedHermesLaunchAdmission,
   type HermesAcpNativeProbe,
 } from "../../electron/acp-readiness-host";
 import type { RelayAcpReadinessCommand, RelayAcpSession } from "@nautilo/relay";
@@ -16,6 +18,20 @@ const scope: RelayAcpSession = {
 };
 
 describe("D452 Electron Hermes readiness host", () => {
+  test.skipIf(process.platform !== "win32")("reports unavailable before native discovery on Windows", async () => {
+    const previousPath = process.env["PATH"];
+    process.env["PATH"] = "";
+    try {
+      expect(await createElectronHermesAcpNativeProbe().run({
+        executableBasename: "hermes", args: HERMES_ACP_VERSION_ARGS,
+        timeoutMs: 3_000, maxOutputBytes: 4_096, shell: false,
+      })).toEqual({ state: "unavailable" });
+      expect(await resolveReviewedHermesLaunchAdmission()).toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"]; else process.env["PATH"] = previousPath;
+    }
+  });
+
   test("runs only the locked probes after exact selection and returns no native evidence", async () => {
     const calls: unknown[] = [];
     const probe: HermesAcpNativeProbe = { run: async (input) => {
@@ -91,7 +107,7 @@ describe("D452 Electron Hermes readiness host", () => {
     expect(replies).toEqual([expect.objectContaining({ state: "unavailable" })]);
   });
 
-  test("uses a fresh allow-listed probe environment and bounded valid PATH entries", async () => {
+  test.skipIf(process.platform === "win32")("uses a fresh allow-listed probe environment and bounded valid PATH entries", async () => {
     const directory = await mkdtemp(join(tmpdir(), "nautilo-hermes-acp-"));
     const executable = join(directory, "hermes");
     const previousPath = process.env["PATH"];
@@ -115,7 +131,7 @@ describe("D452 Electron Hermes readiness host", () => {
     }
   });
 
-  test("rejects a single oversized stdout chunk without retaining it", async () => {
+  test.skipIf(process.platform === "win32")("rejects a single oversized stdout chunk without retaining it", async () => {
     const directory = await mkdtemp(join(tmpdir(), "nautilo-hermes-acp-"));
     const executable = join(directory, "hermes");
     const previousPath = process.env["PATH"];
@@ -134,7 +150,7 @@ describe("D452 Electron Hermes readiness host", () => {
     }
   });
 
-  test("does not search a valid Hermes candidate after the first 32 PATH entries", async () => {
+  test.skipIf(process.platform === "win32")("does not search a valid Hermes candidate after the first 32 PATH entries", async () => {
     const directory = await mkdtemp(join(tmpdir(), "nautilo-hermes-acp-"));
     const executable = join(directory, "hermes");
     const previousPath = process.env["PATH"];
@@ -153,7 +169,7 @@ describe("D452 Electron Hermes readiness host", () => {
     }
   });
 
-  test("terminates a timed-out probe process group before returning", async () => {
+  test.skipIf(process.platform === "win32")("terminates a timed-out probe process group before returning", async () => {
     const directory = await mkdtemp(join(tmpdir(), "nautilo-hermes-acp-"));
     const executable = join(directory, "hermes");
     const marker = join(directory, "pid");

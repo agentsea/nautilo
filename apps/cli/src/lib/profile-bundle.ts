@@ -3,10 +3,11 @@
  * envelope in @nautilo/profile-portability. The profile/avatar/memory JSON
  * envelope itself intentionally has no second implementation here.
  */
-import { chmod, mkdir, rename, stat, unlink, writeFile, readFile } from "node:fs/promises";
+import { lstat, mkdir, rename, stat, unlink, readFile } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { randomUUID, createHash } from "node:crypto";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
+import { isPrivateFilesystemPathAsync, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import {
   canonicalJsonBytes, container, decryptProfileBundleFile, encryptProfileBundleFile,
@@ -39,70 +40,53 @@ function toHex(bytes: Uint8Array): string {
   for (const byte of bytes) result += byte.toString(16).padStart(2, "0");
   return result;
 }
-// Filesystem IO (atomic, 0600) with injectable seams
+// Atomic private-file publication
 // ---------------------------------------------------------------------------
 
 export interface FsWriteDeps {
-  readonly writeFile?: ((path: string, data: string, opts: { mode: number }) => Promise<void>) | undefined;
-  readonly chmod?: ((path: string, mode: number) => Promise<void>) | undefined;
   readonly rename?: ((from: string, to: string) => Promise<void>) | undefined;
-  readonly mkdir?: ((path: string, opts: { recursive: boolean }) => Promise<void>) | undefined;
-  readonly unlink?: ((path: string) => Promise<void>) | undefined;
-  readonly stat?: ((path: string) => Promise<{ mode: number }>) | undefined;
   readonly randomUUID?: (() => string) | undefined;
 }
 
-const MODE_0600 = 0o600;
-
 /**
- * Write the bundle atomically with mode 0600. Refuses to overwrite an existing
- * file whose mode is not 0600 (defense against a too-permissive prior copy).
+ * Write the bundle atomically with owner-only permissions. Refuses to
+ * overwrite an existing non-private file or a symbolic link.
  */
 export async function writeProfileBundleFileAtomically(
   finalPath: string,
   file: ProfileBundleFile,
   deps?: FsWriteDeps,
 ): Promise<void> {
-  const writeFileFn = deps?.writeFile ?? writeFile;
-  const chmodFn = deps?.chmod ?? chmod;
   const renameFn = deps?.rename ?? rename;
-  const mkdirFn = deps?.mkdir ?? mkdir;
-  const unlinkFn = deps?.unlink ?? unlink;
-  const statFn = deps?.stat ?? stat;
   const uuid = deps?.randomUUID ?? randomUUID;
 
-  const dir = dirname(finalPath);
-  await mkdirFn(dir, { recursive: true });
+  const destination = resolve(finalPath);
+  const dir = dirname(destination);
+  await mkdir(dir, { recursive: true });
 
   try {
-    const st = await statFn(finalPath);
-    const mode = st.mode & 0o777;
-    if (mode !== MODE_0600) {
+    const st = await lstat(destination);
+    if (!st.isFile() || !await isPrivateFilesystemPathAsync(destination)
+      || (process.platform !== "win32" && (st.mode & 0o777) !== 0o600)) {
       throw new ProfileBundleFileError(
-        `refusing to overwrite ${finalPath}: file mode is ${mode.toString(8)} (expected 0600)`,
+        `refusing to overwrite ${finalPath}: expected an owner-private regular file`,
       );
     }
   } catch (e) {
-    if (e instanceof ProfileBundleFileError) throw e;
-    /* absent — ok */
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
 
-  const tmp = join(dir, `.${basename(finalPath)}.${process.pid}.${uuid()}.tmp`);
+  const tmp = join(dir, `.${basename(destination)}.${process.pid}.${uuid()}.tmp`);
   const payload = serializeProfileBundleFile(file);
+  let created = false;
   try {
-    await writeFileFn(tmp, payload, { mode: MODE_0600 });
-    await chmodFn(tmp, MODE_0600);
-    await renameFn(tmp, finalPath);
-    await chmodFn(finalPath, MODE_0600);
-  } catch (e) {
-    await unlinkFn(tmp).catch(() => undefined);
-    throw e;
+    await writePrivateFileExclusive(tmp, Buffer.from(payload, "utf8"));
+    created = true;
+    await renameFn(tmp, destination);
+  } catch (error) {
+    if (created) await unlink(tmp).catch(() => undefined);
+    throw error;
   }
-}
-
-function basename(p: string): string {
-  const parts = p.split("/");
-  return parts[parts.length - 1] ?? p;
 }
 
 export interface FsReadDeps {

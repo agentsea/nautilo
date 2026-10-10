@@ -63,6 +63,20 @@ test("a direct local source does not replace a nested different version", async 
   expect(await readFile(join(f.published, "node_modules", "shared", "index.cjs"), "utf8")).toContain("fresh-one");
 });
 
+test.each(["shared", "@scope/shared"])("skips a manifest-less placeholder before the installed ancestor: %s", async (name) => {
+  const f = await fixture();
+  const shared = await f.packageAt("ancestor", name, "1", {}, 'module.exports = "ancestor-value";');
+  const consumer = await f.packageAt("consumer", "consumer", "1", { [name]: "1" }, `module.exports = require(${JSON.stringify(name)});`);
+  await writeFile(join(f.app, "package.json"), JSON.stringify({ dependencies: { consumer: "1" } }));
+  await f.edge(f.app, "consumer", consumer);
+  await mkdir(join(consumer, "node_modules", ...name.split("/")), { recursive: true });
+  await f.edge(f.root, name, shared);
+  const requireSource = createRequire(join(consumer, "index.cjs"));
+  expect(requireSource(name)).toBe("ancestor-value");
+  const requireSeed = await f.publish();
+  expect(requireSeed("consumer")).toBe("ancestor-value");
+});
+
 test.each([false, true])("a cycle preserves package identities and terminates through a directory alias: %s", async (viaAlias) => {
   const f = await fixture(viaAlias);
   const a1 = await f.packageAt("a1", "a", "1", { b: "1" }, 'exports.id = "a1"; exports.next = () => require("b");');

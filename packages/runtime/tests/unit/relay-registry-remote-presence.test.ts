@@ -257,7 +257,7 @@ describe("InMemoryRelayRegistry remote presence snapshots (D458)", () => {
       calls.length = 0;
 
       now += 1;
-      registry.updatePresence("relay-1");
+      expect(registry.updatePresence("relay-1", noop)).toBe(true);
       expect(calls).toEqual([]);
 
       now += 120_001;
@@ -266,6 +266,33 @@ describe("InMemoryRelayRegistry remote presence snapshots (D458)", () => {
       expect(calls[0]).toMatchObject({ relayId: "relay-1", current: null });
       expect(calls[0]?.previous?.pairingGeneration).toBe("generation-1");
       expect(registry.snapshotForUser("alice")).toEqual([]);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("refreshes presence only for the currently registered connection", async () => {
+    const registry = new InMemoryRelayRegistry();
+    const firstSend = () => {};
+    const replacementSend = () => {};
+    const realNow = Date.now;
+    let now = 10_000;
+    Date.now = () => now;
+    try {
+      await registry.register(
+        "relay-1", "alice", desktopCapabilities(), firstSend, 7, "desktop-1", 0, "generation-1",
+      );
+      now += 1_000;
+      await registry.register(
+        "relay-1", "alice", desktopCapabilities(), replacementSend, 7, "desktop-1", 0, "generation-1",
+      );
+
+      now += 1_000;
+      expect(registry.updatePresence("relay-1", firstSend)).toBe(false);
+      expect(registry.snapshotForUser("alice")[0]?.lastSeenAt).toBe(11_000);
+
+      expect(registry.updatePresence("relay-1", replacementSend)).toBe(true);
+      expect(registry.snapshotForUser("alice")[0]?.lastSeenAt).toBe(12_000);
     } finally {
       Date.now = realNow;
     }

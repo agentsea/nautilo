@@ -3,14 +3,14 @@
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
-  mkdirSync,
   openSync,
   readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import { ensurePrivateDirectorySync } from "@nautilo/config/private-filesystem";
 import {
   hasReadyToWorkExactBinding,
   createReadyToWorkDesiredState,
@@ -41,7 +41,7 @@ export type ReadyToWorkStoreFs = Readonly<{
 }>;
 
 const productionFs: ReadyToWorkStoreFs = {
-  mkdirSync,
+  mkdirSync: (directory) => ensurePrivateDirectorySync(resolve(directory)),
   openSync,
   writeFileSync,
   closeSync,

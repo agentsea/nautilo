@@ -4,7 +4,7 @@
 
 import { resolveServerPosture } from "@nautilo/config";
 import { buildRelaySandboxProfile } from "../../relay/sandbox-profile-builder";
-import * as path from "node:path";
+import { pathApiForRelayPath } from "@nautilo/relay";
 import { ToolMessage } from "@langchain/core/messages";
 import {
   parseRelaySearchArgs,
@@ -103,12 +103,15 @@ function resolveReadOnlyCandidatePath(
   if (typeof rawPath !== "string" || rawPath.length === 0) return undefined;
 
   if (zone === "absolute") {
+    const path = pathApiForRelayPath(rawPath);
     if (!path.isAbsolute(rawPath)) return undefined;
     return path.normalize(rawPath);
   }
 
   const currentFolder = ctx.zoneCtx.currentFolder;
-  if (!currentFolder || !path.isAbsolute(currentFolder)) return undefined;
+  if (!currentFolder) return undefined;
+  const path = pathApiForRelayPath(currentFolder);
+  if (!path.isAbsolute(currentFolder)) return undefined;
   return path.resolve(currentFolder, rawPath);
 }
 
@@ -211,11 +214,14 @@ function absoluteLocalCandidate(
 ): string | null {
   if (typeof candidate !== "string" || candidate.length === 0) return null;
   if (zone === "absolute") {
+    const path = pathApiForRelayPath(candidate);
     return path.isAbsolute(candidate) ? path.normalize(candidate) : null;
   }
   if (zone !== "current") return null;
   const currentFolder = ctx.zoneCtx.currentFolder;
-  if (!currentFolder || !path.isAbsolute(currentFolder)) return null;
+  if (!currentFolder) return null;
+  const path = pathApiForRelayPath(currentFolder);
+  if (!path.isAbsolute(currentFolder)) return null;
   return path.resolve(currentFolder, candidate);
 }
 
@@ -242,7 +248,7 @@ export function localMutationGateCandidatePaths(
   if (raw.command === "move" && source) candidates.push(source);
   if (destination) {
     candidates.push(destination);
-    if (source) candidates.push(path.join(destination, path.basename(source)));
+    if (source) candidates.push(pathApiForRelayPath(destination).join(destination, pathApiForRelayPath(source).basename(source)));
   }
   return [...new Set(candidates)];
 }

@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import { OrdinaryContentAccessRetryRequiredError, type OrdinaryContentAccessRecoveryCoordinate } from "@nautilo/agent";
+import {
+  OrdinaryContentAccessRetryRequiredError,
+  type ForegroundChatFundingSession,
+  type ForegroundFundingSnapshot,
+  type OrdinaryContentAccessRecoveryCoordinate,
+} from "@nautilo/agent";
 import { botThreadId } from "@nautilo/runtime";
+import { getForegroundFundingSession } from "../../../agent/src/runtime/foreground-chat-funding";
 import { ordinaryContentAccessRecoveryRoutes, type OrdinaryContentAccessRecoveryRouteDeps } from "../../src/routes/ordinary-content-access-recovery";
 
 const roomId = "10000000-0000-4000-8000-000000000001";
@@ -11,6 +17,22 @@ const agentId = "10000000-0000-4000-8000-000000000004";
 const jobId = "10000000-0000-4000-8000-000000000005";
 const url = `/api/rooms/${roomId}/content-access-recovery`;
 const body = { originalJobId: jobId, checkpointId: "checkpoint", turnId: "turn", toolCallId: "call", agentId };
+const fundingSnapshot: ForegroundFundingSnapshot = {
+  modelId: "anthropic:claude-sonnet-4-6",
+  binding: {
+    kind: "personal",
+    providerRoute: "anthropic",
+    credentialId: "20000000-0000-4000-8000-000000000001",
+    credentialRevision: 3,
+  },
+};
+const restoredFundingSession: ForegroundChatFundingSession = {
+  kind: "personal",
+  recheckAttempt: async () => {},
+  runAttempt: async () => {
+    throw new Error("provider dispatch is outside this route test");
+  },
+};
 const apps: FastifyInstance[] = [];
 afterEach(async () => { await Promise.all(apps.splice(0).map((app) => app.close())); });
 
@@ -32,6 +54,10 @@ function harness(options: { member?: boolean; multiHuman?: boolean; authenticate
   const processor = mock<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["processor"]>>(() => ({ process() {}, flush() {} }));
   const select = mock<OrdinaryContentAccessRecoveryRouteDeps["ordinaryContentAccessForState"]>(() => ({ mode: "plaintext_only" }));
   const forkPage = mock<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["forkPage"]>>(async () => ({ jobs: [], nextCursor: null }));
+  const fundingForThread = mock<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["resumeFundingForThread"]>>(async () => null);
+  const fundingAgentIdForThread = mock<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["resumeAgentIdForThread"]>>(async () => agentId);
+  const fundingHumanUserIdForThread = mock<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["resumeCausalHumanUserIdForThread"]>>(async () => human);
+  const openFunding = mock<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["openForegroundFundingSessionForResume"]>>(async () => restoredFundingSession);
   ordinaryContentAccessRecoveryRoutes(app, {
     ordinaryContentAccessForState: select,
     manager: { discoverOrdinaryContentAccessRecovery: discover, runOrdinaryContentAccessRecovery: run },
@@ -40,9 +66,13 @@ function harness(options: { member?: boolean; multiHuman?: boolean; authenticate
     } as Awaited<ReturnType<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["roomDetail"]>>>),
     latestJob, forkPage, assertCanInvokeAgent: admit,
     policy: async () => ({ mode: options.mode ?? "plaintext_only" } as Awaited<ReturnType<NonNullable<OrdinaryContentAccessRecoveryRouteDeps["policy"]>>>),
-    processor,
+    processor, resumeFundingForThread: fundingForThread,
+    resumeAgentIdForThread: fundingAgentIdForThread,
+    resumeCausalHumanUserIdForThread: fundingHumanUserIdForThread,
+    openForegroundFundingSessionForResume: openFunding,
   });
-  return { app, discover, run, latestJob, forkPage, admit, processor, found, thread, select, observedBodies };
+  return { app, discover, run, latestJob, forkPage, admit, processor, found, thread, select, observedBodies,
+    fundingForThread, fundingAgentIdForThread, fundingHumanUserIdForThread, openFunding };
 }
 
 describe("ordinary content access exact recovery HTTP boundary", () => {
@@ -97,8 +127,17 @@ describe("ordinary content access exact recovery HTTP boundary", () => {
     expect((await f.app.inject({ method: "GET", url })).json<unknown>()).toEqual({ recoveries: [body], nextCursor: "opaque-next" });
     expect(f.discover.mock.calls[0]?.[0]).toMatchObject({ graphThreadId: "fork-exact",
       executionOwner: { kind: "fork", parentThreadId: f.thread, transcriptThreadId: f.thread } });
+    f.fundingForThread.mockResolvedValue(fundingSnapshot);
+    f.run.mockImplementationOnce(async () => {
+      expect(getForegroundFundingSession()).toBe(restoredFundingSession);
+      return "completed";
+    });
     expect((await f.app.inject({ method: "POST", url, payload: body })).json<unknown>()).toEqual({ outcome: "completed" });
     expect(f.processor.mock.calls[0]?.[0].threadId).toBe(f.thread);
+    expect(f.fundingForThread).toHaveBeenCalledWith("fork-exact");
+    expect(f.openFunding).toHaveBeenCalledWith({ humanUserId: human,
+      modelId: fundingSnapshot.modelId, roomId, agentId, entrypoint: "foreground.fork",
+      prior: fundingSnapshot });
     f.discover.mockResolvedValue(null);
     expect((await f.app.inject({ method: "GET", url: `${url}?cursor=opaque-next` })).json<unknown>()).toEqual({ recoveries: [], nextCursor: "opaque-next" });
     expect(f.forkPage.mock.calls.at(-1)?.[3]).toBe("opaque-next");
@@ -116,6 +155,68 @@ describe("ordinary content access exact recovery HTTP boundary", () => {
     expect(f.processor.mock.calls[0]?.[0]).toMatchObject({ threadId: f.thread, ownerId: human,
       humanTurnId: "turn", causalHumanUserId: human, agentId, roomId });
     expect(f.admit.mock.calls[0]?.[0]).toEqual({ humanUserId: human, roomId, agentId, origin: "foreground_resume" });
+    expect(f.fundingForThread).toHaveBeenCalledWith(f.thread);
+    expect(f.openFunding).not.toHaveBeenCalled();
+  });
+
+  test("reopens and installs the checkpoint's pinned payer for direct recovery", async () => {
+    const f = harness();
+    f.fundingForThread.mockResolvedValue(fundingSnapshot);
+    f.run.mockImplementationOnce(async () => {
+      expect(getForegroundFundingSession()).toBe(restoredFundingSession);
+      return "completed";
+    });
+
+    const response = await f.app.inject({ method: "POST", url, payload: body });
+
+    expect(response.json<unknown>()).toEqual({ outcome: "completed" });
+    expect(f.fundingAgentIdForThread).toHaveBeenCalledWith(f.thread);
+    expect(f.fundingHumanUserIdForThread).toHaveBeenCalledWith(f.thread);
+    expect(f.openFunding).toHaveBeenCalledWith({ humanUserId: human,
+      modelId: fundingSnapshot.modelId, roomId, agentId, entrypoint: "foreground.main",
+      prior: fundingSnapshot });
+    expect(f.run).toHaveBeenCalledTimes(1);
+  });
+
+  test.each(["Agent", "Human"] as const)(
+    "fails closed when the funding %s identity no longer matches the checkpoint",
+    async (identity) => {
+      const f = harness();
+      f.fundingForThread.mockResolvedValue(fundingSnapshot);
+      if (identity === "Agent") f.fundingAgentIdForThread.mockResolvedValue(actor);
+      else f.fundingHumanUserIdForThread.mockResolvedValue(actor);
+
+      const response = await f.app.inject({ method: "POST", url, payload: body });
+
+      expect(response.json<unknown>()).toEqual({ outcome: "unavailable" });
+      expect(f.openFunding).not.toHaveBeenCalled();
+      expect(f.run).not.toHaveBeenCalled();
+    },
+  );
+
+  test("fails closed before graph recovery when the pinned payer cannot reopen", async () => {
+    const f = harness();
+    f.fundingForThread.mockResolvedValue(fundingSnapshot);
+    f.openFunding.mockResolvedValue(null);
+
+    const response = await f.app.inject({ method: "POST", url, payload: body });
+
+    expect(response.json<unknown>()).toEqual({ outcome: "unavailable" });
+    expect(f.openFunding).toHaveBeenCalledTimes(1);
+    expect(f.run).not.toHaveBeenCalled();
+  });
+
+  test("keeps payer revalidation failures private and never resumes the graph", async () => {
+    const f = harness();
+    f.fundingForThread.mockResolvedValue(fundingSnapshot);
+    f.openFunding.mockRejectedValue(new Error("private credential revision was revoked"));
+
+    const response = await f.app.inject({ method: "POST", url, payload: body });
+
+    expect(response.statusCode).toBe(503);
+    expect(response.json<unknown>()).toEqual({ error: "content_access_recovery_unavailable" });
+    expect(response.body).not.toContain("credential revision");
+    expect(f.run).not.toHaveBeenCalled();
   });
 
   test("mismatched checkpoint, turn, call, Job and Agent never run", async () => {

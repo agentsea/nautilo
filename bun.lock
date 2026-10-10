@@ -892,6 +892,9 @@
     "packages/hosting": {
       "name": "@nautilo/hosting",
       "version": "0.1.0",
+      "dependencies": {
+        "@nautilo/config": "workspace:*",
+      },
       "devDependencies": {
         "@types/node": "24.10.4",
         "typescript": "5.9.3",
@@ -915,6 +918,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nautilo/api-client": "workspace:*",
+        "@nautilo/config": "workspace:*",
         "@nautilo/db": "workspace:*",
         "@nautilo/lattice-crypto": "workspace:*",
         "@nautilo/logger": "workspace:*",
@@ -1105,6 +1109,7 @@
       "name": "@nautilo/operator-secrets",
       "version": "0.1.0",
       "dependencies": {
+        "@nautilo/config": "workspace:*",
         "@nautilo/config-guard": "workspace:*",
       },
       "devDependencies": {
@@ -1453,6 +1458,7 @@
     "@assistant-ui/react-lexical@0.2.4": "patches/@assistant-ui%2Freact-lexical@0.2.4.patch",
     "@expo/plist@0.8.1": "patches/@expo%2Fplist@0.8.1.patch",
     "@langchain/langgraph@1.2.9": "patches/@langchain%2Flanggraph@1.2.9.patch",
+    "knip@5.88.1": "patches/knip@5.88.1.patch",
   },
   "overrides": {
     "@fastify/busboy": "3.2.1",

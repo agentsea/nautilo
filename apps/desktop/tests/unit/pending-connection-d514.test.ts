@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   createPendingConnectionStore,
   parsePendingConnection,
@@ -62,7 +63,8 @@ describe("D514 pending connection journal", () => {
     store().save(record());
 
     expect(store().load()).toEqual({ disposition: "precommit", pending: record() });
-    expect(fs.statSync(journalPath).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(journalPath)).toBe(true);
+    if (process.platform !== "win32") expect(fs.statSync(journalPath).mode & 0o777).toBe(0o600);
     const bytes = fs.readFileSync(journalPath, "utf-8");
     expect(bytes).not.toContain("token");
     expect(fs.readdirSync(path.dirname(journalPath)).filter((name) => name.includes(".tmp"))).toEqual([]);

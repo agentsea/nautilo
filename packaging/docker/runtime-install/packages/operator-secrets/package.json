@@ -8,6 +8,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
+    "@nautilo/config": "workspace:*",
     "@nautilo/config-guard": "workspace:*"
   }
 }

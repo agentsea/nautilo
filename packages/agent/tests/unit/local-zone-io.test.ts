@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { setRelayRegistry } from "../../src/nodes/tools";
 import { RELAY_PROTOCOL_VERSION } from "@nautilo/relay";
 import {
@@ -13,6 +13,8 @@ import {
 import { LOCAL_HISTORY_INPUT_REQUIRED } from "../../src/tools/file/local-history-routing";
 
 const ownerId = "user-1";
+
+afterEach(() => setRelayRegistry(null));
 
 describe("local-zone-io helpers (M206)", () => {
   test("requireLocalMutationTurnId accepts appOperationId", () => {

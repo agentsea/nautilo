@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 
 import { resolveComposeOwnerMode } from "../../src/lib/compose-owner-mode.ts";
 
 describe("resolveComposeOwnerMode", () => {
-  const defaultOwnerConfigPath = "/protected/deploy.toml";
-  const ownerResultPath = "/safe/owner-result.json";
+  const defaultOwnerConfigPath = resolve("/protected/deploy.toml");
+  const ownerResultPath = resolve("/safe/owner-result.json");
 
   test("interactive absence selects hosted claim regardless of ambient config", () => {
     for (const protectedOwnerConfigPresent of [false, true]) {
@@ -45,16 +46,16 @@ describe("resolveComposeOwnerMode", () => {
       defaultOwnerConfigPath,
       protectedOwnerConfigPresent: false,
       requestedOwnerMode: undefined,
-      requestedOwnerConfigPath: " /protected/cloud-owner.toml ",
-      requestedOwnerResultPath: " /safe/owner-result.json ",
+      requestedOwnerConfigPath: ` ${resolve("/protected/cloud-owner.toml")} `,
+      requestedOwnerResultPath: ` ${ownerResultPath} `,
       redeem: true,
       interactive: false,
       json: false,
     })).toEqual({
       kind: "config",
       ownerMode: "config",
-      ownerConfigPath: "/protected/cloud-owner.toml",
-      ownerResultPath: "/safe/owner-result.json",
+      ownerConfigPath: resolve("/protected/cloud-owner.toml"),
+      ownerResultPath,
     });
   });
 
@@ -115,7 +116,7 @@ describe("resolveComposeOwnerMode", () => {
       defaultOwnerConfigPath,
       protectedOwnerConfigPresent: true,
       requestedOwnerMode: "claim",
-      requestedOwnerConfigPath: "/protected/owner.toml",
+      requestedOwnerConfigPath: resolve("/protected/owner.toml"),
       requestedOwnerResultPath: undefined,
       redeem: true,
       interactive: false,
@@ -158,7 +159,7 @@ describe("resolveComposeOwnerMode", () => {
       defaultOwnerConfigPath,
       protectedOwnerConfigPresent: false,
       requestedOwnerMode: undefined,
-      requestedOwnerConfigPath: "/protected/owner.toml",
+      requestedOwnerConfigPath: resolve("/protected/owner.toml"),
       requestedOwnerResultPath: undefined,
       redeem: true,
       interactive: true,
@@ -206,7 +207,7 @@ describe("resolveComposeOwnerMode", () => {
       defaultOwnerConfigPath,
       protectedOwnerConfigPresent: false,
       requestedOwnerMode: "config",
-      requestedOwnerConfigPath: "/protected/owner.toml",
+      requestedOwnerConfigPath: resolve("/protected/owner.toml"),
       requestedOwnerResultPath: "/safe/../owner-result.json",
       redeem: true,
       interactive: false,

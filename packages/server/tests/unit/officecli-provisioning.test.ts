@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   checkOfficeCliProvisioning,
   detectOfficeCliPlatformKey,
@@ -160,7 +160,7 @@ describe("parseOfficeCliManifest", () => {
 describe("resolveOfficeCliVendorRoot", () => {
   test("defaults to packages/server/vendor/officecli under repoRoot", () => {
     const root = resolveOfficeCliVendorRoot({ repoRoot: "/repo" });
-    expect(root).toBe("/repo/packages/server/vendor/officecli");
+    expect(root).toBe(resolve("/repo", "packages/server/vendor/officecli"));
   });
 
   test("OFFICECLI_VENDOR_ROOT wins", () => {
@@ -168,7 +168,7 @@ describe("resolveOfficeCliVendorRoot", () => {
       repoRoot: "/repo",
       env: { OFFICECLI_VENDOR_ROOT: "/custom/vendor" },
     });
-    expect(root).toBe("/custom/vendor");
+    expect(root).toBe(resolve("/custom/vendor"));
   });
 
   test("relative OFFICECLI_VENDOR_ROOT resolves against repoRoot", () => {
@@ -176,7 +176,7 @@ describe("resolveOfficeCliVendorRoot", () => {
       repoRoot: "/repo",
       env: { OFFICECLI_VENDOR_ROOT: "vendor/officecli" },
     });
-    expect(root).toBe("/repo/vendor/officecli");
+    expect(root).toBe(resolve("/repo", "vendor/officecli"));
   });
 });
 
@@ -188,7 +188,7 @@ describe("resolveVendoredOfficeCliPath", () => {
       platformKey: "darwin-arm64",
       manifest,
     });
-    expect(path).toBe("/vendor/darwin-arm64/officecli");
+    expect(path).toBe(join("/vendor", "darwin-arm64", "officecli"));
   });
 
   test("uses win artifact binaryName", () => {
@@ -198,7 +198,7 @@ describe("resolveVendoredOfficeCliPath", () => {
       platformKey: "win-x64",
       manifest,
     });
-    expect(path).toBe("/vendor/win-x64/officecli.exe");
+    expect(path).toBe(join("/vendor", "win-x64", "officecli.exe"));
   });
 
   // M203 — the binary is no longer committed to git; path resolution must be
@@ -210,7 +210,7 @@ describe("resolveVendoredOfficeCliPath", () => {
       platformKey: "linux-x64",
       manifest,
     });
-    expect(path).toBe("/vendor/linux-x64/officecli");
+    expect(path).toBe(join("/vendor", "linux-x64", "officecli"));
   });
 
   test("throws when platform missing from manifest", () => {

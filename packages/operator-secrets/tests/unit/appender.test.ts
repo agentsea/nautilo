@@ -1,13 +1,16 @@
 import { describe, test, expect } from "bun:test";
-import { mkdtempSync, readFileSync, statSync, writeFileSync, chmodSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appendOperatorSecrets } from "../../src/appender.ts";
 import { parseOperatorSecretsBody } from "../../src/loader.ts";
+import { isPrivateFilesystemPath, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
+import { temporaryDirectory } from "./permissions";
 
 describe("appendOperatorSecrets (§13.3)", () => {
-  test.skipIf(process.platform === "win32")("creates file mode 0600 with header", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nautilo-append-"));
+  test("creates an owner-private file with header", async () => {
+    const dir = temporaryDirectory(join(tmpdir(), "nautilo-append-"));
     const p = join(dir, "secrets.env");
     await appendOperatorSecrets({
       path: p,
@@ -18,12 +21,12 @@ describe("appendOperatorSecrets (§13.3)", () => {
     expect(body).toContain("OPENAI_API_KEY");
     const m = parseOperatorSecretsBody(body);
     expect(m["OPENAI_API_KEY"]).toBe("sk-test-append");
-    const mode = statSync(p).mode & 0o777;
-    expect(mode).toBe(0o600);
+    expect(isPrivateFilesystemPath(p)).toBe(true);
+    if (process.platform !== "win32") expect(statSync(p).mode & 0o777).toBe(0o600);
   });
 
-  test.skipIf(process.platform === "win32")("idempotent replace same key", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nautilo-append-"));
+  test("idempotent replace same key", async () => {
+    const dir = temporaryDirectory(join(tmpdir(), "nautilo-append-"));
     const p = join(dir, "secrets.env");
     await appendOperatorSecrets({
       path: p,
@@ -41,10 +44,10 @@ describe("appendOperatorSecrets (§13.3)", () => {
     expect(m["OPENAI_API_KEY"]).toBe("second");
   });
 
-  test.skipIf(process.platform === "win32")(
+  test(
     "repeated appends with same comment do not accumulate duplicate comment lines",
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), "nautilo-append-"));
+      const dir = temporaryDirectory(join(tmpdir(), "nautilo-append-"));
       const p = join(dir, "secrets.env");
       const entry = {
         key: "NAUTILO_BOOTSTRAP_ADMIN_PASSWORD_D112_SMOKE",
@@ -68,10 +71,10 @@ describe("appendOperatorSecrets (§13.3)", () => {
     },
   );
 
-  test.skipIf(process.platform === "win32")(
+  test(
     "self-heals pre-existing duplicate-comment bloat on next write",
     async () => {
-      const dir = mkdtempSync(join(tmpdir(), "nautilo-append-"));
+      const dir = temporaryDirectory(join(tmpdir(), "nautilo-append-"));
       const p = join(dir, "secrets.env");
       const bloated = [
         "# bootstrap PIN for instance d112-smoke",
@@ -81,8 +84,7 @@ describe("appendOperatorSecrets (§13.3)", () => {
         "NAUTILO_BOOTSTRAP_PIN_D112_SMOKE=000000",
         "",
       ].join("\n");
-      writeFileSync(p, bloated, { mode: 0o600 });
-      chmodSync(p, 0o600);
+      writePrivateFileExclusiveSync(p, Buffer.from(bloated));
       await appendOperatorSecrets({
         path: p,
         entries: [
@@ -103,11 +105,11 @@ describe("appendOperatorSecrets (§13.3)", () => {
     },
   );
 
-  test.skipIf(process.platform === "win32")("refuses append when existing file is 0644", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "nautilo-append-"));
+  test("refuses append when existing file permits other readers", async () => {
+    const dir = temporaryDirectory(join(tmpdir(), "nautilo-append-"));
     const p = join(dir, "secrets.env");
-    writeFileSync(p, "OPENAI_API_KEY=old\n", { mode: 0o644 });
-    chmodSync(p, 0o644);
+    writePrivateFileExclusiveSync(p, Buffer.from("OPENAI_API_KEY=old\n"));
+    allowOtherReadersSync(p);
     // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule's type inference doesn't see through it.
     await expect(
       appendOperatorSecrets({
@@ -115,6 +117,6 @@ describe("appendOperatorSecrets (§13.3)", () => {
         entries: [{ key: "ANTHROPIC_API_KEY", value: "x" }],
         createIfMissing: true,
       }),
-    ).rejects.toThrow(/mode 0600/);
+    ).rejects.toThrow(/mode 0600|owner-only Windows ACL/);
   });
 });

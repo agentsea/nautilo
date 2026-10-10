@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative } from "node:path";
 import { tmpdir } from "node:os";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import type { ProtectedArtifactPreparedPublicationRequestV1 } from "@nautilo/api-client/browser";
 
 import { FilePreparedArtifactCiphertextSidecar } from "../../src/client/artifact/file-prepared-artifact-ciphertext-sidecar.ts";
+import { atomicWritePrivateFile } from "../../src/client/file-vault.ts";
 import {
   createPreparedArtifactMutationJournal,
   type PreparedArtifactCiphertextStagingPort,
@@ -111,7 +113,7 @@ class FakeJournal implements PreparedArtifactMutationJournalPort {
 }
 
 describe("prepared Artifact ciphertext sidecar", () => {
-  test("streams mode-0600 ciphertext, restarts, authenticates, and removes exactly", async () => {
+  test("streams owner-private ciphertext, restarts, authenticates, and removes exactly", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-artifact-sidecar-"));
     const bytes = new TextEncoder().encode("sealed-artifact-ciphertext");
     const store = new FilePreparedArtifactCiphertextSidecar(root);
@@ -140,10 +142,52 @@ describe("prepared Artifact ciphertext sidecar", () => {
 
     const directory = join(root, "protected-artifact-ciphertext-sidecars");
     const blobName = (await readdir(directory)).find((name) => name.endsWith(".blob"))!;
-    expect((await import("node:fs/promises")).stat(join(directory, blobName)).then((value) => value.mode & 0o777))
-      .resolves.toBe(0o600);
+    const blobPath = join(directory, blobName);
+    expect(isPrivateFilesystemPath(blobPath)).toBe(true);
+    if (process.platform !== "win32") expect((await stat(blobPath)).mode & 0o777).toBe(0o600);
     expect(await resumed.removeExact(reference)).toBeTrue();
     expect(await resumed.list()).toEqual([]);
+  });
+
+  test("accepts a relative root directory and relative private file targets", async () => {
+    const local = await mkdtemp(join(process.cwd(), ".nautilo-artifact-sidecar-relative-"));
+    try {
+      const root = relative(process.cwd(), local);
+      expect(isAbsolute(root)).toBe(false);
+      const bytes = new Uint8Array([11, 12, 13, 14]);
+      const store = new FilePreparedArtifactCiphertextSidecar(root);
+      const reference: PreparedArtifactCiphertextSidecarReference = {
+        formatVersion: 1,
+        operationId: "artifact-create:relative",
+        authenticatedRequestDigestBase64url: "B".repeat(43),
+        artifactId: ARTIFACT_ID,
+        blobId: BLOB_ID,
+        blobGeneration: 1,
+        ciphertextLength: bytes.length,
+        ciphertextSha256Base64url: digest(bytes),
+      };
+      expect(await store.put({ reference, ciphertext: chunks(bytes) })).toBe("inserted");
+      let opened = new Uint8Array();
+      await store.withOpened(reference, async (stream) => {
+        const parts: Uint8Array[] = [];
+        for await (const part of stream) parts.push(part.slice());
+        opened = Uint8Array.from(parts.flatMap((part) => [...part]));
+      });
+      expect(opened).toEqual(bytes);
+      const directory = join(local, "protected-artifact-ciphertext-sidecars");
+      expect(isPrivateFilesystemPath(directory)).toBe(true);
+      expect(await store.removeExact(reference)).toBeTrue();
+      expect(await store.list()).toEqual([]);
+
+      const target = relative(process.cwd(), join(local, "nested", "private.json"));
+      expect(isAbsolute(target)).toBe(false);
+      await atomicWritePrivateFile(target, "{\"relative\":true}");
+      await atomicWritePrivateFile(target, "{\"relative\":2}");
+      expect(await readFile(join(local, "nested", "private.json"), "utf8")).toBe("{\"relative\":2}");
+      expect(await readdir(join(local, "nested"))).toEqual(["private.json"]);
+    } finally {
+      await rm(local, { recursive: true, force: true });
+    }
   });
 
   test("rejects underrun, overrun, corruption, and coordinate collision", async () => {

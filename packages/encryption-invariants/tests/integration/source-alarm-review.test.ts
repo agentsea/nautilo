@@ -1,4 +1,7 @@
-import { REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS } from "../../baseline/reviewed-task-foundation-source-alarms";
+import {
+  REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS,
+  SUPERSEDED_TASK_FOUNDATION_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-task-foundation-source-alarms";
 import { REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-09-12-reflection";
 import { REVIEWED_M314_SOURCE_ALARMS } from "../../baseline/reviewed-m314-source-alarms";
 import {
@@ -361,6 +364,9 @@ describe("source alarm review closure", () => {
       .concat(REVIEWED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_ALARMS)
       .concat(REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_SOURCE_ALARMS)
       .concat(REVIEWED_MAIN_2026_09_09_PLATFORM_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_TASK_FOUNDATION_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
       .concat(REVIEWED_M314_SOURCE_ALARMS)
       .filter((review) => !SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS)

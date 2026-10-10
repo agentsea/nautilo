@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
+import { secureFilesystemPath, syncDirectory } from "@nautilo/config/private-filesystem";
 import type { VeniceArtifactCommitProof } from "./venice-lifecycle";
 
 const ALLOWED_MEDIA_MIME_TYPES = ["video/mp4", "audio/mp4", "audio/mpeg"] as const;
@@ -187,16 +188,6 @@ async function removeIfPresent(filePath: string): Promise<void> {
   await fsp.rm(filePath, { force: true }).catch(() => undefined);
 }
 
-/** Persist the directory entry before a durable artifact index can reference it. */
-async function syncDirectory(directory: string): Promise<void> {
-  const handle = await fsp.open(directory, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
-}
-
 /**
  * Stream one generated media result into a server-owned staging file, validate
  * it, atomically finalize it, then let the injected canonical artifact index
@@ -217,6 +208,10 @@ export async function writeStagedMediaArtifact(input: WriteStagedMediaArtifactIn
     try {
       await fsp.mkdir(stagingDirectory, { recursive: true, mode: 0o700 });
       await fsp.mkdir(finalDirectory, { recursive: true, mode: 0o700 });
+      if (process.platform === "win32") {
+        await secureFilesystemPath(stagingDirectory);
+        await secureFilesystemPath(finalDirectory);
+      }
     } catch (error) {
       throw classifyStorageError(error);
     }

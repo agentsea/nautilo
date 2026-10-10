@@ -41,6 +41,11 @@ import { reportBackTaskCancellation } from "./report-back";
 /** The slice of `JobManager` the lifecycle needs (injectable for tests). */
 export interface TaskLifecycleJobManager {
   abortJob(jobId: string, reason?: "pause" | "stop", taskRun?: { taskId: string; taskRunId: string }): boolean;
+  abortProtectedTaskRunAndWait?(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    jobId: string;
+  }>): Promise<Readonly<{ status: "stopped" | "unavailable" }>>;
 }
 
 export interface TaskLifecycleDeps {
@@ -273,7 +278,11 @@ export async function unpauseTask(
 export async function stopTask(
   deps: TaskLifecycleDeps,
   taskId: string,
-  expectedInvocation?: { humanUserId: string; taskRunId: string },
+  expectedInvocation?: {
+    humanUserId: string;
+    taskRunId: string;
+    jobId?: string;
+  },
 ): Promise<TaskLifecycleResult> {
   const { db, jobManager } = deps;
   // The canonical Writer save has already claimed this exact Task proposal.
@@ -310,7 +319,14 @@ export async function stopTask(
       message: "Task review acceptance is being saved and can no longer be stopped.",
     };
   }
+  const protectedContent = task.contentRepresentation === "dual"
+    || task.contentRepresentation === "protected";
   if (!transition.transitioned) {
+    if (protectedContent && transition.outcome === "same_terminal"
+      && task.status === "cancelled") {
+      const observer = deps.observer ?? getTaskObserver();
+      observer?.kick();
+    }
     return {
       ok: true,
       status: task.status,
@@ -331,14 +347,38 @@ export async function stopTask(
   }
   removeTaskReturnBinding(taskId);
   const run = transition.run;
-  if (run) jobManager.abortJob(run.jobId ?? "", "stop", { taskId, taskRunId: run.id });
+  if (protectedContent) {
+    const observer = deps.observer ?? getTaskObserver();
+    observer?.kick();
+  }
+  if (run && protectedContent && expectedInvocation?.jobId !== undefined
+    && jobManager.abortProtectedTaskRunAndWait !== undefined) {
+    try {
+      await jobManager.abortProtectedTaskRunAndWait({
+        taskId,
+        taskRunId: run.id,
+        jobId: expectedInvocation.jobId,
+      });
+    } catch {
+      // The Task/Run/Job terminal transaction is already authoritative. The
+      // quiescence owner aborts locally before its redundant Job persistence,
+      // so a changed publication policy cannot reopen this execution.
+      log(
+        `[task-lifecycle] protected Task process settlement failed task=${taskId} run=${run.id}`,
+      );
+    }
+  } else if (run) {
+    jobManager.abortJob(run.jobId ?? "", "stop", { taskId, taskRunId: run.id });
+  }
 
   emitTaskStatus(taskId, task.ownerId, "cancelled");
-  await (deps.reportBackCancellation ?? reportBackTaskCancellation)(
-    { db },
-    task,
-    run?.id,
-  );
+  if (!protectedContent) {
+    await (deps.reportBackCancellation ?? reportBackTaskCancellation)(
+      { db },
+      task,
+      run?.id,
+    );
+  }
   log(`[task-lifecycle] stopped task=${taskId} run=${run?.id ?? "none"}`);
   return { ok: true, status: "cancelled", message: "Task stopped." };
 }

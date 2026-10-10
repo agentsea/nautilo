@@ -94,6 +94,7 @@ beforeAll(async () => {
     ownerId: OWNER_ID,
     resumeThreadMembershipForUser: async () => true,
     resumeCausalHumanUserIdForThread: async () => OWNER_ID,
+    resumeFundingForThread: async () => null,
     assertCanInvokeAgent: async () => {},
     // D440 exercises approval lifecycle ordering in the ordinary/Fallback
     // path, not the durable Strict-policy decision itself.

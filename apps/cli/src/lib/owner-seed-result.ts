@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { constants, type Stats } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import {
   link,
   lstat,
@@ -17,6 +17,7 @@ import {
 } from "node:path";
 
 import { HANDLE_RE } from "@nautilo/types";
+import { isOwnerControlledFilesystemPath, isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 
 export const OWNER_SEED_RESULT_SCHEMA = "nautilo.owner-seed-result.v1" as const;
 
@@ -39,14 +40,14 @@ export interface OwnerSeedResult {
 export interface OwnerSeedResultFileHandle {
   writeFile(data: string, encoding: BufferEncoding): Promise<void>;
   readFile(): Promise<Buffer>;
-  stat(): Promise<Stats>;
+  stat(options: { bigint: true }): Promise<BigIntStats>;
   chmod(mode: number): Promise<void>;
   sync(): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface OwnerSeedResultFilesystem {
-  lstat(path: string): Promise<Stats>;
+  lstat(path: string): Promise<BigIntStats>;
   realpath(path: string): Promise<string>;
   open(path: string, flags: number, mode?: number): Promise<OwnerSeedResultFileHandle>;
   link(existingPath: string, newPath: string): Promise<void>;
@@ -54,7 +55,7 @@ export interface OwnerSeedResultFilesystem {
 }
 
 const defaultFilesystem: OwnerSeedResultFilesystem = {
-  lstat,
+  lstat: path => lstat(path, { bigint: true }),
   realpath,
   open: (path, flags, mode) => open(path, flags, mode),
   link,
@@ -200,17 +201,18 @@ async function resolveDestination(input: OwnerSeedResultDestinationInput): Promi
   }
   const filesystem = input.filesystem ?? defaultFilesystem;
   const requestedParent = dirname(input.path);
-  let status: Stats;
+  let status: BigIntStats;
   let canonicalParent: string;
   try {
     status = await filesystem.lstat(requestedParent);
     canonicalParent = await filesystem.realpath(requestedParent);
+    if (!await isOwnerControlledFilesystemPath(requestedParent)) throw new Error("Unsafe parent permissions");
   } catch (error) {
     throw new OwnerSeedResultError("unsafe-parent", "Owner seed result parent is unavailable", { cause: error });
   }
   if (status.isSymbolicLink() || !status.isDirectory()
-    || (typeof process.getuid === "function" && status.uid !== process.getuid())
-    || (process.platform !== "win32" && (status.mode & 0o022) !== 0)) {
+    || (typeof process.getuid === "function" && status.uid !== BigInt(process.getuid()))
+    || (process.platform !== "win32" && (status.mode & 0o022n) !== 0n)) {
     throw new OwnerSeedResultError("unsafe-parent", "Owner seed result parent is not operator-safe");
   }
 
@@ -237,16 +239,17 @@ async function resolveDestination(input: OwnerSeedResultDestinationInput): Promi
 
 async function readResolved(destination: ResolvedDestination): Promise<OwnerSeedResult | undefined> {
   const { filesystem, path } = destination;
-  let status: Stats;
+  let status: BigIntStats;
   try {
     status = await filesystem.lstat(path);
+    if (!await isPrivateFilesystemPathAsync(path)) throw new Error("Unsafe result permissions");
   } catch (error) {
     if (errorCode(error) === "ENOENT") return undefined;
     throw new OwnerSeedResultError("result-read-failed", "Owner seed result could not be inspected", { cause: error });
   }
   if (status.isSymbolicLink() || !status.isFile() || status.size > MAX_RESULT_BYTES
-    || (typeof process.getuid === "function" && status.uid !== process.getuid())
-    || (process.platform !== "win32" && (status.mode & 0o777) !== OWNER_FILE_MODE)) {
+    || (typeof process.getuid === "function" && status.uid !== BigInt(process.getuid()))
+    || (process.platform !== "win32" && (status.mode & 0o777n) !== BigInt(OWNER_FILE_MODE))) {
     throw new OwnerSeedResultError("result-read-failed", "Owner seed result is not a safe owner-only file");
   }
 
@@ -255,10 +258,12 @@ async function readResolved(destination: ResolvedDestination): Promise<OwnerSeed
   let handle: OwnerSeedResultFileHandle | undefined;
   try {
     handle = await filesystem.open(path, flags);
-    const openedStatus = await handle.stat();
+    const openedStatus = await handle.stat({ bigint: true });
     if (!openedStatus.isFile() || openedStatus.size > MAX_RESULT_BYTES
-      || (typeof process.getuid === "function" && openedStatus.uid !== process.getuid())
-      || (process.platform !== "win32" && (openedStatus.mode & 0o777) !== OWNER_FILE_MODE)) {
+      || openedStatus.dev !== status.dev || openedStatus.ino !== status.ino
+      || !await isPrivateFilesystemPathAsync(path)
+      || (typeof process.getuid === "function" && openedStatus.uid !== BigInt(process.getuid()))
+      || (process.platform !== "win32" && (openedStatus.mode & 0o777n) !== BigInt(OWNER_FILE_MODE))) {
       throw new Error("opened result is not a safe owner-only file");
     }
     const body = await handle.readFile();
@@ -296,6 +301,9 @@ async function syncDirectory(destination: ResolvedDestination): Promise<void> {
   const handle = await destination.filesystem.open(destination.parent, constants.O_RDONLY);
   try {
     await handle.sync();
+  } catch (error) {
+    // Windows cannot flush a directory handle opened by Node/Bun.
+    if (process.platform !== "win32" || errorCode(error) !== "EPERM") throw error;
   } finally {
     await handle.close();
   }
@@ -317,7 +325,7 @@ export async function durabilizeExistingOwnerSeedResult(
   }
   let handle: OwnerSeedResultFileHandle | undefined;
   try {
-    handle = await destination.filesystem.open(destination.path, constants.O_RDONLY);
+    handle = await destination.filesystem.open(destination.path, process.platform === "win32" ? constants.O_RDWR : constants.O_RDONLY);
     await handle.sync();
   } catch (error) {
     throw new OwnerSeedResultError("result-read-failed", "Owner seed result could not be synchronized", { cause: error });
@@ -361,10 +369,20 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
   const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
     | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
   let temporaryCreated = false;
+  let temporaryIdentity: BigIntStats | undefined;
   let handle: OwnerSeedResultFileHandle | undefined;
+  const assertTemporaryIdentity = async (): Promise<void> => {
+    const named = await destination.filesystem.lstat(temporary);
+    if (temporaryIdentity === undefined || named.dev !== temporaryIdentity.dev || named.ino !== temporaryIdentity.ino) {
+      throw new Error("Temporary result was replaced");
+    }
+  };
   try {
     handle = await destination.filesystem.open(temporary, flags, OWNER_FILE_MODE);
     temporaryCreated = true;
+    temporaryIdentity = await handle.stat({ bigint: true });
+    if (process.platform === "win32") await secureFilesystemPath(temporary);
+    await assertTemporaryIdentity();
     await handle.writeFile(body, "utf8");
     await handle.chmod(OWNER_FILE_MODE);
     await handle.sync();
@@ -372,6 +390,7 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
     handle = undefined;
 
     try {
+      await assertTemporaryIdentity();
       await destination.filesystem.link(temporary, destination.path);
     } catch (error) {
       if (errorCode(error) !== "EEXIST") throw error;
@@ -379,6 +398,7 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
       if (raced === undefined || !sameResult(raced, result)) {
         throw new OwnerSeedResultError("destination-exists", "Owner seed result destination already exists");
       }
+      await assertTemporaryIdentity();
       await destination.filesystem.unlink(temporary);
       temporaryCreated = false;
       await syncDirectory(destination);
@@ -386,6 +406,7 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
     }
 
     await syncDirectory(destination);
+    await assertTemporaryIdentity();
     await destination.filesystem.unlink(temporary);
     temporaryCreated = false;
     await syncDirectory(destination);
@@ -393,7 +414,7 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
   } catch (error) {
     await handle?.close().catch(() => undefined);
     if (temporaryCreated) {
-      await destination.filesystem.unlink(temporary).catch(() => undefined);
+      await assertTemporaryIdentity().then(() => destination.filesystem.unlink(temporary)).catch(() => undefined);
     }
     if (error instanceof OwnerSeedResultError) throw error;
     throw new OwnerSeedResultError("result-publish-failed", "Owner seed result publication failed", { cause: error });

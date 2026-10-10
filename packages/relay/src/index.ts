@@ -1,3 +1,4 @@
+export { isRelayPathWithinRoot, pathApiForRelayPath } from "./relay-path";
 export type {
   RelayCapabilities,
   ToolPolicy,

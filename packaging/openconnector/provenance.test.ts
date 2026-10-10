@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 type Manifest = {
   schemaVersion: number;
@@ -46,6 +48,37 @@ describe("OpenConnector derivative provenance", () => {
     const entrypoint = readFileSync(join(root, "entrypoint.sh"), "utf8");
     expect(entrypoint).toContain("OOMOL_CONNECT_ENCRYPTION_KEY_FILE");
     expect(dockerfile).not.toContain("ENV OOMOL_CONNECT_ENCRYPTION_KEY=");
+  });
+
+  test("a core.autocrlf checkout preserves the pinned patch and valid diff syntax", () => {
+    const temporary = mkdtempSync(join(tmpdir(), "openconnector-checkout-"));
+    const source = join(temporary, "source");
+    const checkout = join(temporary, "checkout");
+    const globalConfig = join(temporary, "gitconfig");
+    writeFileSync(globalConfig, "");
+    const env = {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith("GIT_"))),
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: globalConfig,
+    };
+    function git(cwd: string, args: string[]): void {
+      const result = spawnSync("git", args, { cwd, env, encoding: "utf8" });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    try {
+      mkdirSync(join(source, "packaging/openconnector"), { recursive: true });
+      writeFileSync(join(source, ".gitattributes"), readFileSync(join(root, "../../.gitattributes")));
+      writeFileSync(join(source, "packaging/openconnector/nautilo.patch"), patch);
+      git(source, ["init", "--quiet"]);
+      git(source, ["-c", "core.autocrlf=false", "add", "."]);
+      git(source, ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--quiet", "-m", "Fixture"]);
+      git(temporary, ["clone", "--quiet", "--config", "core.autocrlf=true", source, checkout]);
+      const checkedOutPatch = readFileSync(join(checkout, "packaging/openconnector/nautilo.patch"));
+      expect(createHash("sha256").update(checkedOutPatch).digest("hex")).toBe(manifest.nautiloPatchSha256);
+      git(checkout, ["apply", "--numstat", "packaging/openconnector/nautilo.patch"]);
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   });
 
   test("is owned by the loopback-only, restartable Compose service", () => {

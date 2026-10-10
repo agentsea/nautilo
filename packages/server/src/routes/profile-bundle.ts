@@ -1,7 +1,8 @@
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
+import { physicalPathFromStorageUri as absPathFromStorageUri } from "@nautilo/db";
 import { mkdir, rm, writeFile, rename, unlink } from "node:fs/promises";
 import { existsSync, readFileSync, createWriteStream, readdirSync } from "node:fs";
-import { join, resolve, relative, sep } from "node:path";
+import { isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { error as logError } from "@nautilo/logger";
@@ -1280,14 +1281,6 @@ async function defaultListTargetPrivateMemoryFingerprints(
 // tests inject curated values so the contract is unit-testable with no DB.
 // ---------------------------------------------------------------------------
 
-/** Resolve a `file://<abs>` storage URI to an absolute filesystem path. */
-function absPathFromStorageUri(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const rest = storageUri.slice("file://".length);
-  if (!rest.startsWith("/")) return null;
-  return rest;
-}
-
 /** Read an artifact's bytes from its `storage_uri` and SHA-256 them. */
 function readArtifactBytesAndHash(storageUri: string): {
   bytes: Buffer;
@@ -1781,9 +1774,9 @@ export async function reconcileArtifactJournal(
   // without touching the FS.
   const inBounds = (r: ArtifactJournalRecord): boolean => {
     const abs = deps.absPathFromStorageUri(r.storageUri);
-    if (abs === null) return false;
+    if (abs === null || !isAbsolute(abs)) return false;
     const rel = relative(root, resolve(abs));
-    return rel !== "" && !rel.startsWith(`..${sep}`) && rel !== "..";
+    return rel !== "" && !isAbsolute(rel) && !rel.startsWith(`..${sep}`) && rel !== "..";
   };
   const wellFormed = records.filter(inBounds);
   const malformed = records.filter((r) => !inBounds(r));
@@ -1794,8 +1787,13 @@ export async function reconcileArtifactJournal(
         `planToken=${r.planToken} artifactId=${r.artifactId} ` +
         `(storageUri not a file:// path inside the artifacts root)`,
     );
-    await deps.journal.quarantine(r.planToken, r.artifactId, "malformed").catch(() => {});
-    quarantined += 1;
+    try {
+      await deps.journal.quarantine(r.planToken, r.artifactId, "malformed");
+      quarantined += 1;
+    } catch {
+      failed += 1;
+      deps.log(`[profile-bundle] reconcile: failed to quarantine artifactId=${r.artifactId}; left retryable`);
+    }
   }
 
   let existsMap: ReadonlyMap<string, boolean> = new Map();

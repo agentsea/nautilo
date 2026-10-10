@@ -22,10 +22,14 @@ import {
 } from "@nautilo/relay";
 import type { BrowserResearchExecutionPort, BrowserResearchSnapshotInspectionExecutionResult } from "./browser-research-execution";
 import {
+  beginToolProviderCostAttempt,
   createToolProviderCostRecorder,
+  openProviderCostAttempt,
+  providerToolEstimateReceipt,
+  type ProviderCostReceipt,
   type ProviderCostRecorder,
 } from "../../usage/provider-cost-recorder";
-import { estimateProviderToolCostUsd } from "@nautilo/db";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 
 export interface ReadWebpageOptions {
   maxContentLength?: number;
@@ -34,6 +38,10 @@ export interface ReadWebpageOptions {
   fetchImpl?: typeof fetch | undefined;
   recordProviderCost?: ProviderCostRecorder | undefined;
   beforeTavilyDispatch?: (() => Promise<void>) | undefined;
+  runTavilyAttempt?: (<T>(callback: (input: {
+    apiKey: string;
+    recordProviderCost: ProviderCostRecorder;
+  }) => Promise<T>) => Promise<T>) | undefined;
 }
 
 export interface ReadWebpageFetchOptions {
@@ -67,6 +75,19 @@ type RoutineCookieConsentAction =
 
 /** Stable, bounded reason for a successful Browser transition from Tavily. */
 export type TavilyReadFallbackReason = "tavily_empty" | "tavily_unconfigured" | "tavily_failed";
+
+const TAVILY_LOCAL_FALLBACK_CODES = new Set([
+  "personal_credentials_disabled", "personal_credentials_forbidden", "personal_credential_missing",
+  "server_credentials_forbidden", "provider_credentials_missing", "personal_credential_stale",
+  "personal_credential_unavailable", "personal_provider_unavailable", "unsupported_provider",
+  "unsupported_workload", "funding_interrupted_uncertain",
+]);
+
+function allowsLocalTavilyFallback(error: unknown): boolean {
+  return Boolean(error && typeof error === "object"
+    && typeof (error as { code?: unknown }).code === "string"
+    && TAVILY_LOCAL_FALLBACK_CODES.has((error as { code: string }).code));
+}
 
 export interface ReadWebpageResult {
   url: string;
@@ -284,12 +305,38 @@ export function buildReadWebpageFetcher(
       };
     }
 
+    if (options.runTavilyAttempt) {
+      try {
+        return await options.runTavilyAttempt(({ apiKey: admittedApiKey, recordProviderCost: admittedRecorder }) =>
+          buildReadWebpageFetcher({ ...options, apiKey: admittedApiKey,
+            recordProviderCost: admittedRecorder, beforeTavilyDispatch: undefined,
+            runTavilyAttempt: undefined })(url, requestOptions));
+      } catch (error) {
+        if (!allowsLocalTavilyFallback(error)) throw error;
+        return { url, status: 0, content: "", preview: "", contentLength: 0,
+          error: "Tavily extraction is unavailable for this request.", errorCode: "read_failed" };
+      }
+    }
+
     if (apiKey) await beforeTavilyDispatch?.();
 
+    let costAttempt: ProviderCostRecorder | undefined;
+    let costAttemptSettled = false;
+    const settleCostAttempt = async (receipt: Omit<ProviderCostReceipt, "provider" | "operation">) => {
+      if (!costAttempt || costAttemptSettled) return;
+      costAttemptSettled = true;
+      await costAttempt({ provider: "tavily", operation: "extract", ...receipt });
+    };
+    let responseReceived = false;
+    let timedOut = false;
     try {
       if (!apiKey) {
         throw new Error("TAVILY_API_KEY environment variable is required");
       }
+      costAttempt = await openProviderCostAttempt(recordProviderCost, {
+        provider: "tavily",
+        operation: "extract",
+      });
 
       let response: TavilyExtractResponse;
       let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -314,15 +361,24 @@ export function buildReadWebpageFetcher(
           new Promise<never>((_, reject) => {
             timeout = setTimeout(
               () => {
+                timedOut = true;
                 controller.abort();
                 reject(new Error(`Tavily extract timed out after ${timeoutMs}ms`));
               },
               timeoutMs,
             );
           }),
-        ]);
+          ]);
+        responseReceived = true;
         if (!upstream.ok) {
-          throw new Error(`Tavily extract failed: HTTP ${upstream.status}`);
+          await settleCostAttempt({ evidenceState: "unknown", attemptOutcome: "failed",
+            failureCode: "provider_http_error" });
+          warn(`[read_webpage] Tavily extract failed: HTTP ${upstream.status}`);
+          return {
+            url, status: 0, content: "", preview: "", contentLength: 0,
+            error: "This page could not be read. Try again or choose another source.",
+            errorCode: "read_failed",
+          };
         }
         response = (await upstream.json()) as TavilyExtractResponse;
       } finally {
@@ -330,7 +386,16 @@ export function buildReadWebpageFetcher(
         requestOptions.signal?.removeEventListener("abort", abortFromParent);
       }
 
+      const costEvidence = providerToolEstimateReceipt(
+        "tavily:credit",
+        response.usage?.credits,
+        1,
+        "credit",
+      );
+
       if (Array.isArray(response.failedResults) && response.failedResults.some((f) => f.url === url)) {
+        await settleCostAttempt({ receiptId: response.request_id ?? null, ...costEvidence,
+          attemptOutcome: "failed", failureCode: "provider_result_failed" });
         warn("[read_webpage] Tavily extract reported a per-URL failure");
         return {
           url, status: 0, content: "", preview: "", contentLength: 0,
@@ -346,6 +411,8 @@ export function buildReadWebpageFetcher(
           ? result.rawContent
           : undefined;
       if (!rawContent) {
+        await settleCostAttempt({ receiptId: response.request_id ?? null, ...costEvidence,
+          attemptOutcome: "failed", failureCode: "empty_provider_result" });
         return {
           url, status: 404, content: "", preview: "", contentLength: 0,
           error: "This page returned no readable content. Try another URL or source.",
@@ -353,16 +420,8 @@ export function buildReadWebpageFetcher(
         };
       }
 
-      const estimatedCostUsd = estimateProviderToolCostUsd("tavily:credit", response.usage?.credits ?? 1);
-      if (recordProviderCost && estimatedCostUsd) {
-        await recordProviderCost({
-          provider: "tavily",
-          operation: "extract",
-          receiptId: response.request_id ?? null,
-          estimatedCostUsd,
-          evidenceState: "estimated",
-        });
-      }
+      await settleCostAttempt({ receiptId: response.request_id ?? null, ...costEvidence,
+        attemptOutcome: "succeeded" });
 
       const totalContentLength = rawContent.length;
       const truncated = totalContentLength > maxContentLength;
@@ -377,7 +436,16 @@ export function buildReadWebpageFetcher(
         truncated,
       };
     } catch (error) {
-      if (requestOptions.signal?.aborted) {
+      const cancelled = requestOptions.signal?.aborted === true;
+      await settleCostAttempt({
+        evidenceState: "unknown",
+        attemptOutcome: cancelled ? "cancelled" : timedOut ? "interrupted" : responseReceived ? "failed" : "unknown",
+        failureCode: cancelled
+          ? "request_cancelled"
+          : timedOut ? "provider_timeout"
+            : responseReceived ? "invalid_provider_response" : "provider_transport_unknown",
+      });
+      if (cancelled) {
         return {
           url, status: 0, content: "", preview: "", contentLength: 0,
           error: "Reading this page was cancelled. Try again when ready.",
@@ -547,7 +615,7 @@ function formatConsentRecoveryScreenshot(result: BrowserResearchConsentRecoveryR
 /** Tavily-primary page reader with an exact paired-Desktop browser fallback. */
 export function buildAutoReadWebpageFetcher(options: AutoReadWebpageOptions = {}) {
   const tavily = buildReadWebpageFetcher(options);
-  const tavilyApiKey = options.apiKey ?? process.env["TAVILY_API_KEY"];
+  const tavilyApiKey = options.runTavilyAttempt ? "request-local" : options.apiKey ?? process.env["TAVILY_API_KEY"];
   return async (url: string, requestOptions: AutoReadWebpageRequestOptions = {}): Promise<ReadWebpageResult> => {
     if (options.provider === "duckduckgo_html") {
       if (isBlockedWebUrl(url)) {
@@ -633,8 +701,28 @@ export function createReadWebpageTool(context?: ToolContext): DynamicStructuredT
   const humanUserId = causalHumanForExecution(
     typeof context?.["causalHumanUserId"] === "string" ? context["causalHumanUserId"] : "",
   );
-  const beforeTavilyDispatch = () => assertCanUseServerProviderCredentials(humanUserId, "read_webpage_extract");
-  const fetchPage = buildAutoReadWebpageFetcher({ browserResearchExecutionPort, provider, recordProviderCost, beforeTavilyDispatch });
+  const createPageFetcher = (maxContentLength?: number) => {
+    const capabilityFunding = getCapabilityFundingSession();
+    const runTavilyAttempt = capabilityFunding ? async <T>(callback: (input: {
+      apiKey: string; recordProviderCost: ProviderCostRecorder;
+    }) => Promise<T>): Promise<T> => {
+      const service = await capabilityFunding.openService("tavily");
+      return service.runAttempt(async ({ apiKey, usageFunding }) => {
+        const attemptRecorder = await beginToolProviderCostAttempt(context,
+          { provider: "tavily", operation: "extract", usageFunding });
+        return callback({ apiKey, recordProviderCost: attemptRecorder });
+      });
+    } : undefined;
+    const beforeTavilyDispatch = capabilityFunding
+      ? undefined
+      : () => assertCanUseServerProviderCredentials(humanUserId, "read_webpage_extract");
+    return buildAutoReadWebpageFetcher({
+      ...(maxContentLength === undefined ? {} : { maxContentLength }),
+      browserResearchExecutionPort, provider, recordProviderCost,
+      ...(beforeTavilyDispatch ? { beforeTavilyDispatch } : {}),
+      ...(runTavilyAttempt ? { runTavilyAttempt } : {}),
+    });
+  };
 
   return new DynamicStructuredTool({
     name: "read_webpage",
@@ -791,9 +879,7 @@ Returns actual extracted page content, not only a search snippet. A one-shot ext
           errorCode: "read_failed",
         }, "");
       }
-      const res = maxContentLength
-        ? await buildAutoReadWebpageFetcher({ maxContentLength, browserResearchExecutionPort, provider, recordProviderCost, beforeTavilyDispatch })(url, consentActions ? { consentActions } : {})
-        : await fetchPage(url, consentActions ? { consentActions } : {});
+      const res = await createPageFetcher(maxContentLength)(url, consentActions ? { consentActions } : {});
       return formatReadWebpageToolResponse(res, url);
     },
   });

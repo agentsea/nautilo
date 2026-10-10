@@ -263,7 +263,8 @@ describe("startInVmTestService — platform dispatch", () => {
   });
 });
 
-describe("macOS Relay restart shell lifecycle", () => {
+// Executes POSIX shell scripts and a shebang-based launchctl fixture.
+describe.skipIf(process.platform === "win32")("macOS Relay restart shell lifecycle", () => {
   let root: string;
   let command: string;
   let probe: string;

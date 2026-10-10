@@ -200,7 +200,7 @@ const ISOLATED_NETWORK_POLICY: import("@nautilo/workstation-profiles").ProfileNe
 function makeSandbox(workspace: string): Sandbox {
   // Envelope-wiring tests need a containment-capable sandbox surface, not a
   // real macOS-only `sandbox-exec` binary. Return a structural fake whose
-  // wrapper runs the requested process directly; real Seatbelt/bubblewrap
+  // wrapper runs a native fixture process; real Seatbelt/bubblewrap
   // behavior is covered by the live protected-shell tests below.
   return {
     containmentActive: () => true,
@@ -210,7 +210,17 @@ function makeSandbox(workspace: string): Sandbox {
       args: readonly string[],
       cwd: string,
       env: Readonly<Record<string, string>>,
-    ) => ({ program, args: [...args], cwd, env }),
+    ) => {
+      expect(program).toBe("/bin/sh");
+      expect(args).toHaveLength(2);
+      expect(args[0]).toBe("-c");
+      const command = args[1];
+      expect(["/bin/pwd", "printf '%s' \"$GH_TOKEN\""]).toContain(command);
+      const script = command === "/bin/pwd"
+        ? "process.stdout.write(process.cwd())"
+        : "process.stdout.write(process.env.GH_TOKEN ?? '')";
+      return { program: process.execPath, args: ["-e", script], cwd, env };
+    },
     close: () => Promise.resolve(),
   } as unknown as Sandbox;
 }
@@ -1048,7 +1058,7 @@ describe("makeDispatchHandler envelope augmentation", () => {
 
   test("non-Full-Mode (no binding) ⇒ envelope is byte-for-byte baseline (no augmentation)", async () => {
     const guard = createWorkspaceGuard({ workspaceRoot: mkTmp("relay-dispatch-baseline-guard-") });
-    const baseline = baseEnvelope("/tmp");
+    const baseline = baseEnvelope(mkTmp("relay-dispatch-baseline-cwd-"));
 
     let captured: RelaySandboxProfile | undefined;
     let allowedWorkspaceGovernanceWrites = true;

@@ -9,8 +9,12 @@
  * in `@nautilo/profile-portability` (covered in container.test.ts).
  */
 
-import { describe, test, expect } from "bun:test";
+import { afterEach, describe, test, expect } from "bun:test";
 import { createHash } from "node:crypto";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   serializeArtifactStream,
   deserializeArtifactStream,
@@ -26,6 +30,7 @@ import {
   StreamingArtifactStageSink,
   type ArtifactStageClient,
   type ProfileBundleArtifactStageResult,
+  writeProfileBundleFileAtomically,
 } from "../../src/lib/profile-bundle";
 import { container, type semantic } from "@nautilo/profile-portability";
 
@@ -663,6 +668,67 @@ describe("v1 avatar-only bundle read/write compatibility", () => {
     };
     expect(() => parseProfileBundleFile(JSON.stringify(file))).toThrow(/unsupported formatVersion/);
   });
+});
+
+describe("profile bundle filesystem publication", () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  });
+
+  async function fixture() {
+    const root = await mkdtemp(join(tmpdir(), "nautilo-bundle-publication-"));
+    roots.push(root);
+    const file = await encryptProfileBundleFile({
+      records: [{ recordKind: "identity", name: "Aria", handleIntent: null }],
+      bundleId: "source-genie-001",
+      avatarBytes: null,
+      avatarMedia: null,
+      passphrase: PASSPHRASE,
+      argon2id: testArgon2id,
+    });
+    return { root, file };
+  }
+
+  test("writes and replaces a private bundle through native and relative paths", async () => {
+    const { root, file } = await fixture();
+    const destination = join(root, "profile café.json");
+    await writeProfileBundleFileAtomically(destination, file);
+    expect(await isPrivateFilesystemPathAsync(destination)).toBe(true);
+    const payload = await readFile(destination, "utf8");
+    expect(payload).toBe(serializeProfileBundleFile(file));
+    expect((await decryptProfileBundleFile(parseProfileBundleFile(payload), PASSPHRASE, testArgon2id)).records).toHaveLength(1);
+    await writeProfileBundleFileAtomically(relative(process.cwd(), destination), file);
+    expect(await readFile(destination, "utf8")).toBe(payload);
+    expect(await isPrivateFilesystemPathAsync(destination)).toBe(true);
+    expect(await readdir(root)).toEqual(["profile café.json"]);
+  }, 15_000);
+
+  test("a temporary-file collision preserves the existing file", async () => {
+    const { root, file } = await fixture();
+    const destination = join(root, "profile.json");
+    const temporary = join(root, `.profile.json.${process.pid}.collision.tmp`);
+    await writeFile(temporary, "unrelated bytes");
+    const error = await expectReject(writeProfileBundleFileAtomically(destination, file, {
+      randomUUID: () => "collision",
+    }));
+    expect(error).toMatchObject({ code: "EEXIST" });
+    expect(await readFile(temporary, "utf8")).toBe("unrelated bytes");
+    expect(await readdir(root)).toEqual([`.profile.json.${process.pid}.collision.tmp`]);
+  }, 15_000);
+
+  test("failed publication preserves the previous bundle and removes only its own temporary file", async () => {
+    const { root, file } = await fixture();
+    const destination = join(root, "profile.json");
+    await writeProfileBundleFileAtomically(destination, file);
+    const previous = await readFile(destination, "utf8");
+    const error = await expectReject(writeProfileBundleFileAtomically(destination, file, {
+      rename: async () => { throw Object.assign(new Error("publication refused"), { code: "EACCES" }); },
+    }));
+    expect(error).toMatchObject({ code: "EACCES" });
+    expect(await readFile(destination, "utf8")).toBe(previous);
+    expect(await readdir(root)).toEqual(["profile.json"]);
+  }, 15_000);
 });
 
 describe("StreamingArtifactStageSink (D425 Wave 3 streaming slice)", () => {

@@ -1,6 +1,7 @@
 import { existsSync, lstatSync, realpathSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import { KEY_REGISTRY } from "@nautilo/config-guard";
 
 /** Keys in operator secrets files: `^[A-Z][A-Z0-9_]*$` (§13.2). */
@@ -49,7 +50,10 @@ function formatMode(octal: number): string {
 }
 
 export function assertFileMode600(resolvedPath: string, label: string): void {
-  if (process.platform === "win32") return;
+  if (process.platform === "win32") {
+    if (!isPrivateFilesystemPath(resolvedPath)) throw new Error(`${label} must have an owner-only Windows ACL: ${resolvedPath}`);
+    return;
+  }
   const st = statSync(resolvedPath);
   const mode = st.mode & 0o777;
   if (mode !== 0o600) {
@@ -82,15 +86,11 @@ function assertSymlinkPolicyForOperatorSecrets(args: {
   resolvedRealPath: string;
   homeDir?: string | undefined;
 }): void {
-  if (process.platform === "win32") return;
   const homeResolved = resolve(args.homeDir ?? homedir());
   const targetResolved = resolve(args.resolvedRealPath);
-  const sep = "/";
-  const homeNorm = homeResolved;
-  const targetNorm = targetResolved;
+  const suffix = relative(homeResolved, targetResolved);
   if (
-    targetNorm !== homeNorm &&
-    !targetNorm.startsWith(homeNorm.endsWith(sep) ? homeNorm : `${homeNorm}${sep}`)
+    suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)
   ) {
     throw new Error(
       `operator secrets symlink target must be inside HOME (${homeResolved}); refusing: ${args.path} → ${args.resolvedRealPath}`,

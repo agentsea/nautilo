@@ -206,6 +206,24 @@ describe("recoverable ordinary invitation codes", () => {
     expect(joined.statusCode).toBe(302);
     expect(joined.headers.location).toBe(`/join/continue?invite=${created.token}`);
 
+    const availability = await fixture.app.inject({ method: "GET", url: "/api/public-join" });
+    expect(availability.statusCode).toBe(200);
+    expect(availability.headers["cache-control"]).toBe("no-store");
+    expect(availability.json<{ available: boolean }>()).toEqual({ available: true });
+
+    await fixture.db.update(invites).set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(invites.id, created.id));
+    expect((await fixture.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    await fixture.db.update(invites).set({ expiresAt: null, maxUses: 1, usedCount: 1 })
+      .where(eq(invites.id, created.id));
+    expect((await fixture.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
+    await fixture.db.update(invites).set({ maxUses: null, usedCount: 0 })
+      .where(eq(invites.id, created.id));
+    expect((await fixture.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: true });
+
     const revoked = await authedInject(fixture.app, {
       method: "DELETE", url: `/api/invites/${created.id}`, bearer: ownerBearer,
     });
@@ -213,10 +231,14 @@ describe("recoverable ordinary invitation codes", () => {
     const unavailable = await fixture.app.inject({ method: "GET", url: "/join" });
     expect(unavailable.statusCode).toBe(302);
     expect(unavailable.headers.location).toBe("/join/continue");
+    expect((await fixture.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
     const cleared = await authedInject(fixture.app, {
       method: "PUT", url: "/api/admin/public-join", bearer: ownerBearer,
       payload: { inviteId: null, revision: selectedState.revision },
     });
     expect(cleared.statusCode).toBe(200);
+    expect((await fixture.app.inject({ method: "GET", url: "/api/public-join" })).json<{ available: boolean }>())
+      .toEqual({ available: false });
   });
 });

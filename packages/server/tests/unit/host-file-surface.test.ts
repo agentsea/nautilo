@@ -71,10 +71,25 @@ describe("D458 host file surface", () => {
     expect(normalizeHostFileRelativePath("")).toBe("");
     expect(normalizeHostFileRelativePath("/Users/alice/secret")).toBeNull();
     expect(normalizeHostFileRelativePath("../../secret")).toBeNull();
+    for (const input of ["..\\secret", "C:/secret", "C:secret", "\\\\server\\share\\secret"]) {
+      expect(normalizeHostFileRelativePath(input)).toBeNull();
+    }
     const cursor = encodeHostFileCursor("notes.md");
     expect(cursor).not.toBeNull();
     expect(decodeHostFileCursor(cursor!)).toBe("notes.md");
     expect(decodeHostFileCursor("not a cursor")).toBeNull();
+  });
+
+  test.each([
+    ["/Users/alice/root", "/Users/alice/root/nested/files"],
+    ["C:\\Users\\alice\\root", "C:\\Users\\alice\\root\\nested\\files"],
+    ["\\\\server\\share\\root", "\\\\server\\share\\root\\nested\\files"],
+  ])("dispatches child paths in the remote root's syntax: %s", async (root, target) => {
+    const dispatch = dispatcher();
+    await listHostFiles({ dispatch, relayId: "relay", root, relativePath: "nested/files",
+      afterName: undefined, limit: 10, includeHidden: false, query: "" });
+    expect(dispatch.calls.map(call => call.path)).toEqual([root, target]);
+    expect(dispatch.calls.every(call => call.allowedRoots[0] === root)).toBe(true);
   });
 
   test("pages sorted safe child entries and sends exactly one root to every relay call", async () => {

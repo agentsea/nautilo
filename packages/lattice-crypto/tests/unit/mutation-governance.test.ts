@@ -154,7 +154,7 @@ describe("M229 mutation governance", () => {
       fileURLToPath(new URL("../..", import.meta.url)),
     );
     expect(parsed.scopes).toHaveLength(30);
-    expect(eligible).toHaveLength(130);
+    expect(eligible).toHaveLength(132);
     expect(parsed.scopes.filter((scope) =>
       scope.name.startsWith("background-")
     ).map((scope) => ({
@@ -192,6 +192,8 @@ describe("M229 mutation governance", () => {
         "src/background/task-runtime-execution-evidence-v1.ts",
         "src/object/task-runtime-result-preparation-v1.ts",
         "src/object/task-runtime-checkpoint-namespace-v1.ts",
+        "src/object/task-runtime-agent-access-manifest-set-v1.ts",
+        "src/object/task-runtime-agent-storage-coordinator-v1.ts",
       ],
     }, {
       name: "background-work-manifest",
@@ -216,7 +218,7 @@ describe("M229 mutation governance", () => {
       name: "storage-adapter-support",
       targets: ["src/storage/v2-adapter-support.ts"],
     }, {
-      command: "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts",
+      command: "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts",
       name: "storage-record-policy",
       targets: ["src/storage/v2-record-policy.ts"],
     }]);

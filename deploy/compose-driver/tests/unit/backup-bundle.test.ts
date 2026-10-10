@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import {
   backupManifestSchema,
@@ -220,15 +221,20 @@ describe("backup full bundle", () => {
       }
       return { code: 0, stdout: "", stderr: "" };
     });
-    const localExec = makeFakeExec();
+    const localExec = makeFakeExec((call) => {
+      if (call.cmd !== "tar") return { code: 0, stdout: "", stderr: "" };
+      const result = spawnSync(call.cmd, call.args, { cwd: call.opts.cwd, encoding: "utf8" });
+      return { code: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+    });
     const bundlePath = join(home, "bundle");
     const driver = new ComposeDriver(
       makeDeps({ exec: exec.exec, localExec: localExec.exec }),
     );
 
-    const out = await driver.backup(baseProfile, { toPath: bundlePath });
+    const out = await driver.backup(baseProfile, { toPath: bundlePath, tarball: true });
 
     expect(out).toBe(bundlePath);
+    expect(existsSync(`${bundlePath}.tgz`)).toBe(true);
     const shell = localExec.calls.map(commandText).join("\n");
     expect(shell).toContain("pg_dump -U postgres nautilo");
     expect(shell).toContain("pg_dump -U postgres logto_nautilo");
@@ -361,9 +367,7 @@ describe("backup full bundle", () => {
       if (call.cmd === "rsync" && call.args[0] === "--version") {
         return { code: 0, stdout: "rsync  version 3.2.7  protocol version 31\n", stderr: "" };
       }
-      if (call.cmd === "rsync") {
-        chmodSync(bundlePath, 0o755);
-      }
+      if (call.cmd === "rsync") allowOtherReadersSync(bundlePath);
       return { code: 0, stdout: "", stderr: "" };
     });
     const driver = new ComposeDriver(
@@ -377,6 +381,8 @@ describe("backup full bundle", () => {
     await driver.backup(remoteProfile, { toPath: bundlePath });
 
     const remoteCommands = exec.calls.map(commandText).join("\n");
+    const staging = exec.calls.find((call) => call.cmd === "mkdir");
+    expect(staging?.args).toEqual(["-m", "700", "/opt/nautilo-prod/.backup-staging-20260519T123456Z"]);
     expect(remoteCommands).toContain("/opt/nautilo-prod/.backup-staging-");
     expect(remoteCommands).toContain("pg_dump -U postgres nautilo");
     expect(remoteCommands).toContain("pg_dump -U postgres logto_nautilo");
@@ -400,7 +406,27 @@ describe("backup full bundle", () => {
       true,
     );
     expect(exec.calls.some((c) => c.cmd === "rm" && c.args[0] === "-rf")).toBe(true);
-    expect(statSync(bundlePath).mode & 0o777).toBe(0o700);
+    expect(await isPrivateFilesystemPathAsync(bundlePath)).toBe(true);
+  });
+
+  test("remote staging collision aborts before copying data or deleting the existing directory", async () => {
+    const exec = makeFakeExec((call) => {
+      if (call.cmd === "df") return { code: 0, stdout: "Avail\n999999\n", stderr: "" };
+      if (call.cmd === "mkdir") return { code: 1, stdout: "", stderr: "File exists" };
+      return { code: 0, stdout: "0\n", stderr: "" };
+    });
+    const localExec = makeFakeExec();
+    const bundlePath = join(home, "collision-bundle");
+    const driver = new ComposeDriver(makeDeps({
+      exec: exec.exec,
+      localExec: localExec.exec,
+      resolveInstanceRootDir: () => "/opt/nautilo-prod",
+    }));
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun `expect().rejects`
+    await expect(driver.backup(remoteProfile, { toPath: bundlePath })).rejects.toThrow("remote staging mkdir failed");
+    expect(exec.calls.some((call) => call.cmd === "cp" || call.cmd === "rm" || commandText(call).includes("pg_dump"))).toBe(false);
+    expect(localExec.calls.some((call) => call.cmd === "rsync")).toBe(false);
+    expect(existsSync(join(bundlePath, "manifest.json"))).toBe(false);
   });
 
   test("macOS rsync 2.6.9 omits --append-verify but keeps --partial (resumable)", async () => {

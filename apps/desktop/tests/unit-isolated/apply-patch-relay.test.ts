@@ -96,8 +96,8 @@ test("apply_patch accepts only the live Current Folder and rejects stale or prot
   try {
     await fs.mkdir(safeTarget);
     await fs.mkdir(protectedTarget);
-    symlinkSync(safeTarget, safeAlias, "dir");
-    symlinkSync(protectedTarget, protectedAlias, "dir");
+    symlinkSync(safeTarget, safeAlias, process.platform === "win32" ? "junction" : "dir");
+    symlinkSync(protectedTarget, protectedAlias, process.platform === "win32" ? "junction" : "dir");
     const canonicalProtectedTarget = await fs.realpath(protectedTarget);
 
     const protectedPathPolicy = buildProtectedPathPolicy({

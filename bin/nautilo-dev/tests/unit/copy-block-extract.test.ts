@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { afterAll, beforeAll, describe, test, expect } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,11 +23,12 @@ import { inspectSnapshotTables } from "../../src/lib/snapshots";
  */
 describe("COPY-block extraction — line-anchored, not substring", () => {
   const tmpRoot = mkdtempSync(join(tmpdir(), "nautilo-copyblock-test-"));
-  const envBeforeHome = process.env["HOME"];
-  const envBeforeInstance = process.env["NAUTILO_INSTANCE_ID"];
+  const environmentBefore = new Map<string, string | undefined>();
 
-  try {
+  beforeAll(() => {
+    for (const key of ["HOME", "USERPROFILE", "NAUTILO_HOME", "NAUTILO_INSTANCE_ID"]) environmentBefore.set(key, process.env[key]);
     process.env["HOME"] = tmpRoot;
+    process.env["USERPROFILE"] = tmpRoot;
     delete process.env["NAUTILO_HOME"];
     delete process.env["NAUTILO_INSTANCE_ID"];
 
@@ -58,8 +59,9 @@ describe("COPY-block extraction — line-anchored, not substring", () => {
       join(snapDir, "meta.json"),
       JSON.stringify({ name: "copy-block-regression" }),
     );
+  });
 
-    test("inspectSnapshotTables only recognises line-start COPY headers", async () => {
+  test("inspectSnapshotTables only recognises line-start COPY headers", async () => {
       const tables = await inspectSnapshotTables("copy-block-regression");
       const names = tables.map((t) => t.table);
       expect(names).toContain("session_messages");
@@ -70,15 +72,11 @@ describe("COPY-block extraction — line-anchored, not substring", () => {
 
       const users = tables.find((t) => t.table === "users");
       expect(users!.rowCount).toBe(2);
-    });
-  } finally {
-    // afterAll-style cleanup outside bun test hooks:
-    process.on("exit", () => {
-      if (envBeforeHome === undefined) delete process.env["HOME"];
-      else process.env["HOME"] = envBeforeHome;
-      if (envBeforeInstance === undefined) delete process.env["NAUTILO_INSTANCE_ID"];
-      else process.env["NAUTILO_INSTANCE_ID"] = envBeforeInstance;
-      rmSync(tmpRoot, { recursive: true, force: true });
-    });
-  }
+  });
+  afterAll(() => {
+    for (const [key, value] of environmentBefore) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
 });

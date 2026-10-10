@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join, resolve } from "node:path";
 
 import {
   createWorkspaceGuard,
@@ -48,31 +49,35 @@ describe("headless relay Hue dispatch", () => {
   });
 
   test("resolves OpenHue override, tools bin, then PATH in order", () => {
+    const customBinary = resolve("custom", "openhue");
+    const tools = resolve("tools");
+    const resolvedTools = resolve("resolved-tools");
+    const missingTools = resolve("missing-tools");
     expect(
       resolveOpenHueBinary(
         {
-          NAUTILO_OPENHUE_BIN: "/custom/openhue",
-          NAUTILO_TOOLS_BIN: "/tools",
+          NAUTILO_OPENHUE_BIN: customBinary,
+          NAUTILO_TOOLS_BIN: tools,
         },
-        "/resolved-tools",
+        resolvedTools,
         () => false,
       ),
-    ).toBe("/custom/openhue");
+    ).toBe(customBinary);
     expect(
       resolveOpenHueBinary(
-        { NAUTILO_TOOLS_BIN: "/tools" },
-        "/resolved-tools",
-        (candidate) => candidate === "/tools/openhue",
+        { NAUTILO_TOOLS_BIN: tools },
+        resolvedTools,
+        (candidate) => candidate === join(tools, "openhue"),
       ),
-    ).toBe("/tools/openhue");
+    ).toBe(join(tools, "openhue"));
     expect(
       resolveOpenHueBinary(
-        { NAUTILO_TOOLS_BIN: "/missing-tools" },
-        "/resolved-tools",
-        (candidate) => candidate === "/resolved-tools/openhue",
+        { NAUTILO_TOOLS_BIN: missingTools },
+        resolvedTools,
+        (candidate) => candidate === join(resolvedTools, "openhue"),
       ),
-    ).toBe("/resolved-tools/openhue");
-    expect(resolveOpenHueBinary({}, "/resolved-tools", () => false)).toBe(
+    ).toBe(join(resolvedTools, "openhue"));
+    expect(resolveOpenHueBinary({}, resolvedTools, () => false)).toBe(
       "openhue",
     );
     expect(resolveOpenHueBinary({}, "")).toBe("openhue");

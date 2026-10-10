@@ -30,7 +30,7 @@ async function fixture() {
     }) as typeof fetch };
   return { dir, options, installationOptions, invocations, requests };
 }
-test("custody selects exact validated executable and never projects an inherited credential", async () => {
+test.skipIf(process.platform === "win32")("custody selects exact validated executable and never projects an inherited credential", async () => {
   const f = await fixture(); const provider = createGitHubCredentialProvider(f.options);
   const result = await provider.withClient(undefined, client => client.request("GET", "/user"));
   expect(result).toEqual({ status: 200, data: { id: 10, login: "fixture-user" } });
@@ -42,7 +42,7 @@ test("custody selects exact validated executable and never projects an inherited
   expect(f.requests[0]!.url).toBe("https://api.github.com/user"); expect(f.requests[0]!.input!.redirect).toBe("error");
   expect((f.requests[0]!.input!.headers as Record<string, string>)["X-GitHub-Api-Version"]).toBe("2022-11-28");
 });
-test("binary drift, symlink and project executable fail before credential retrieval", async () => {
+test.skipIf(process.platform === "win32")("binary drift, symlink and project executable fail before credential retrieval", async () => {
   const f = await fixture();
   for (const installation of [createGitHubInstallation({ ...f.installationOptions, executableSha256: "0".repeat(64) }),
     createGitHubInstallation({ ...f.installationOptions, authority: async () => ({ writableRoots: [f.dir], isCurrent: () => true }) })]) {
@@ -57,7 +57,7 @@ test("binary drift, symlink and project executable fail before credential retrie
   await rejects(createGitHubCredentialProvider({ ...f.options, installation: createGitHubInstallation({ ...f.installationOptions, executable: child, authority: async () => ({ writableRoots: [f.dir], isCurrent: () => true }) }) }).withClient(undefined, client => client.request("GET", "/user")), "GITHUB_ACCOUNT_UNAVAILABLE");
   expect(f.invocations).toHaveLength(0);
 });
-test("private client rejects arbitrary destinations, endpoints and post-callback reuse", async () => {
+test.skipIf(process.platform === "win32")("private client rejects arbitrary destinations, endpoints and post-callback reuse", async () => {
   const f = await fixture(); const provider = createGitHubCredentialProvider(f.options); let old!: GitHubApiClient;
   await provider.withClient(undefined, async client => {
     old = client;
@@ -69,7 +69,7 @@ test("private client rejects arbitrary destinations, endpoints and post-callback
   });
   await rejects(old.request("GET", "/user"), "GITHUB_REQUEST_UNAVAILABLE"); expect(f.requests).toHaveLength(0);
 });
-test("response budget, redirect and transport errors expose only fixed safe errors", async () => {
+test.skipIf(process.platform === "win32")("response budget, redirect and transport errors expose only fixed safe errors", async () => {
   const f = await fixture();
   const transports = [
     (async () => new Response(JSON.stringify({ value: "x".repeat(2048) }))) as typeof fetch,
@@ -86,7 +86,14 @@ test("aborted custody never starts credential process or HTTP", async () => {
   expect(f.invocations).toHaveLength(0); expect(f.requests).toHaveLength(0);
 });
 
-test("PR custody allows only exact fixed create endpoint and encoded validated branch GET", async () => {
+test.skipIf(process.platform !== "win32")("Windows rejects POSIX GitHub custody before credential or network access", async () => {
+  const f = await fixture();
+  await rejects(createGitHubCredentialProvider(f.options).withClient(undefined, client => client.request("GET", "/user")), "GITHUB_ACCOUNT_UNAVAILABLE");
+  expect(f.invocations).toHaveLength(0);
+  expect(f.requests).toHaveLength(0);
+});
+
+test.skipIf(process.platform === "win32")("PR custody allows only exact fixed create endpoint and encoded validated branch GET", async () => {
   const f = await fixture(); const provider = createGitHubCredentialProvider(f.options);
   await provider.withClient(undefined, async client => {
     await client.request("GET", "/repos/fixture-user/fork/git/ref/heads/feature%2Ftopic");
@@ -101,7 +108,7 @@ test("PR custody allows only exact fixed create endpoint and encoded validated b
   expect(JSON.parse(f.requests[1]!.input!.body as string)).toEqual({ title: "Reviewed", body: "Full body", head: "fixture-user:feature/topic", head_repo: "fork", base: "main", draft: false, maintainer_can_modify: false });
 });
 
-test("retirement during token retrieval releases no client or HTTP authority", async () => {
+test.skipIf(process.platform === "win32")("retirement during token retrieval releases no client or HTTP authority", async () => {
   const f = await fixture();
   let retrieved!: () => void;
   const barrier = new Promise<void>(resolve => { retrieved = resolve; });
@@ -120,7 +127,7 @@ test("retirement during token retrieval releases no client or HTTP authority", a
   expect(f.requests).toHaveLength(0);
 });
 
-test("a private retained client rechecks executable and authority before another request", async () => {
+test.skipIf(process.platform === "win32")("a private retained client rechecks executable and authority before another request", async () => {
   const f = await fixture();
   await createGitHubCredentialProvider(f.options).withClient(undefined, async client => {
     await client.request("GET", "/user");
@@ -131,7 +138,7 @@ test("a private retained client rechecks executable and authority before another
 });
 
 
-test("private Git credential response writes once to an unlinked fd and expires with custody", async () => {
+test.skipIf(process.platform === "win32")("private Git credential response writes once to an unlinked fd and expires with custody", async () => {
   const f = await fixture(); const provider = createGitHubCredentialProvider(f.options);
   const path = join(f.dir, "private-response"); let writer!: (descriptor: number) => Promise<void>;
   writeFileSync(path, "", {mode:0o600}); const descriptor = openSync(path, "r+"); unlinkSync(path);
@@ -144,7 +151,7 @@ test("private Git credential response writes once to an unlinked fd and expires 
     await rejects(writer(descriptor), "GITHUB_REQUEST_UNAVAILABLE"); expect(f.requests).toHaveLength(0);
   } finally { closeSync(descriptor); }
 });
-test("Git custody refuses named/shared descriptors and revoked private authority", async () => {
+test.skipIf(process.platform === "win32")("Git custody refuses named/shared descriptors and revoked private authority", async () => {
   const f = await fixture(); const path = join(f.dir, "response"); writeFileSync(path, "", {mode:0o600}); const descriptor = openSync(path, "r+");
   try {
     await createGitHubCredentialProvider(f.options).withGitClient(undefined, async client => {

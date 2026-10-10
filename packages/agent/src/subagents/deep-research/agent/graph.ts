@@ -34,6 +34,7 @@ function createClarifyWithUserNode(cfg: Configuration) {
       const model = await createModel(cfg.research_model, cfg, {
         maxTokens: cfg.research_model_max_tokens,
         messages: [{ role: "user", content: prompt }],
+        fundingLane: "research",
       });
       const resp: unknown = await invokeWithRetry<BaseMessageLike, unknown>(model, [{ role: "user", content: prompt }] as BaseMessageLike[], {
         label: "clarify.invoke",
@@ -133,7 +134,7 @@ export function createFinalReportGenerationNode(cfg: Configuration) {
       });
       const messages: BaseMessageLike[] = [{ role: "user", content: prompt }];
       const model = await createModel(cfg.final_report_model, cfg, {
-        maxTokens: cfg.final_report_model_max_tokens, messages,
+        maxTokens: cfg.final_report_model_max_tokens, messages, fundingLane: "finalReport",
       });
       const resp = await model.invoke(messages, { ...config });
       config?.signal?.throwIfAborted();

@@ -87,6 +87,89 @@ describe("encryption data operation owner", () => {
     },
   );
 
+  test.each([
+    [
+      { mode: "plaintext_only", shadowBehavior: "fallback" } as const,
+      "ordinary",
+    ],
+    [
+      { mode: "shadow_encryption", shadowBehavior: "fallback" } as const,
+      "fallback",
+    ],
+    [
+      { mode: "shadow_encryption", shadowBehavior: "strict" } as const,
+      "protected",
+    ],
+    [
+      { mode: "encrypted_only", shadowBehavior: "fallback" } as const,
+      "protected",
+    ],
+  ])(
+    "selects read metadata for policy %j through %s",
+    async (policy, expected) => {
+      const calls: string[] = [];
+      const select = (kind: string) => async (
+        context: Readonly<{ revalidationToken: number }>,
+      ) => {
+        calls.push(`${kind}:${context.revalidationToken}`);
+        return kind;
+      };
+      const result = await owner({ policy, revalidationToken: 31 }, calls)
+        .selectReadMetadata({
+          ordinary: select("ordinary"),
+          fallback: select("fallback"),
+          protected: select("protected"),
+        });
+      expect(result).toBe(expected);
+      expect(calls).toEqual([
+        "resolve",
+        "revalidate:31",
+        `${expected}:31`,
+        "revalidate:31",
+      ]);
+    },
+  );
+
+  test("keeps metadata selection and scoped body loading on one policy generation", async () => {
+    const calls: string[] = [];
+    const result = await owner({
+      policy: { mode: "shadow_encryption", shadowBehavior: "fallback" },
+      revalidationToken: 41,
+    }, calls).selectReadMetadata({
+      fallback: async (context) => {
+        calls.push(`metadata:${context.revalidationToken}`);
+        return context.read({
+          protected: async () => {
+            calls.push("protected");
+            return "body";
+          },
+          ordinary: async () => {
+            calls.push("ordinary");
+            return "ordinary body";
+          },
+          consumeOrdinary: value => value,
+          consumeProtected: value => value,
+        });
+      },
+    });
+
+    expect(result).toEqual({
+      representation: "protected",
+      value: "body",
+      revalidationToken: 41,
+    });
+    expect(calls).toEqual([
+      "resolve",
+      "revalidate:41",
+      "metadata:41",
+      "revalidate:41",
+      "protected",
+      "revalidate:41",
+      "revalidate:41",
+      "revalidate:41",
+    ]);
+  });
+
   test("Plain never instantiates protected custody and Full never loads ordinary", async () => {
     const plainCalls: string[] = [];
     await owner(
@@ -213,6 +296,18 @@ describe("encryption data operation owner", () => {
       })
       .catch((caught: unknown) => caught);
     expect(error).toMatchObject({ failureClass: "unsupported" });
+
+    const metadataError = await owner(
+      {
+        policy: { mode: "shadow_encryption", shadowBehavior: "fallback" },
+        revalidationToken: 5,
+      },
+      [],
+    ).selectReadMetadata({
+      ordinary: async () => "ordinary",
+      protected: async () => "protected",
+    }).catch((caught: unknown) => caught);
+    expect(metadataError).toMatchObject({ failureClass: "unsupported" });
   });
 
   test("a generation change cancels before any confidential loader runs", async () => {
