@@ -322,7 +322,8 @@ describe("discoverWorkstationFacts — safety contract", () => {
     expect(seams.envCalls).not.toContain("USER");
   });
 
-  test("generic core tools ignore user-home candidates and canonical targets outside sandbox system roots", async () => {
+  // The sandbox system roots are POSIX paths; the host path rules decide containment.
+  test.skipIf(process.platform === "win32")("generic core tools ignore user-home candidates and canonical targets outside sandbox system roots", async () => {
     const profile = darwinSeed();
     const unsupportedNode = nodePath.join(HOME, ".local", "bin", "node");
     const escapedNode = nodePath.join(HOME, ".nvm", "bin", "node");
