@@ -69,7 +69,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "bun run build && bun test --max-concurrency=1",
-    "test:unit": "bun run build && bun test --max-concurrency=1 tests/unit tests/lint",
+    "test:unit": "bash scripts/run-unit.sh",
     "test:integration": "bun run build && bun test --max-concurrency=1 tests/integration",
     "prepublishOnly": "bun run build && bun test"
   }

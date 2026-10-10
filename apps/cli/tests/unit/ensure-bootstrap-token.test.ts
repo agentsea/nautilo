@@ -65,7 +65,7 @@ describe("ensureBootstrapToken", () => {
     expect(
       readFileSync(envPath, "utf8").match(/NAUTILO_BOOTSTRAP_TOKEN=/g)?.length,
     ).toBe(1);
-  }, 60_000); // Windows ACL operations start helper processes for each private path.
+  });
 
   test("replaces existing NAUTILO_BOOTSTRAP_TOKEN line when bootstrap-tokens file is missing", () => {
     const instanceRoot = localInstanceRootDir(fakeHome, remoteProfile.instance_id);
@@ -85,7 +85,7 @@ describe("ensureBootstrapToken", () => {
     expect(body.match(/NAUTILO_BOOTSTRAP_TOKEN=/g)?.length).toBe(1);
     expect(readBootstrapToken(remoteProfile.name, { home: fakeHome })).toBe(token);
     expect(existsSync(bootstrapTokenPath(remoteProfile.name, fakeHome))).toBe(true);
-  }, 60_000);
+  });
 
   test("restores instance.env after the instance root is recreated", () => {
     const first = ensureBootstrapToken(remoteProfile, fakeHome);
@@ -101,5 +101,5 @@ describe("ensureBootstrapToken", () => {
     );
     expect(readFileSync(envPath, "utf8").match(/NAUTILO_BOOTSTRAP_TOKEN=/g)?.length).toBe(1);
     expect(isPrivateFilesystemPath(envPath)).toBe(true);
-  }, 60_000);
+  });
 });
