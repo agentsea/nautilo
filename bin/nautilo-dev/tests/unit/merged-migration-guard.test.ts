@@ -134,7 +134,7 @@ describe("isRecordedMainMergeMigration", () => {
       `${multipleParents.incomingSha}\n${multipleParents.baseSha}\n`,
     );
     expect(isRecordedMainMergeMigration(multipleParents.migrationPath, multipleParents.root)).toBe(false);
-  });
+  }, 60_000); // Three Git fixtures start about thirty Git processes; Windows process creation is slow under load.
 
   test("rejects an absent or mismatching approval in the incoming parent", () => {
     const absent = createMergeFixture({
