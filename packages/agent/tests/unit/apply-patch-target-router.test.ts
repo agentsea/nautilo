@@ -125,6 +125,11 @@ describe("D448 trusted apply_patch target router", () => {
     setLiveReviewWriteGuard(null);
   });
 
+  test("preserves a Windows Current Folder on the server", () => {
+    const target = selectApplyPatchTarget(currentContext({ currentFolder: "C:\\repo", focusedResources: [] }), { relayRegistry: registry() }, "current");
+    expect(target).toMatchObject({ ok: true, context: { root: "C:\\repo", relayId: "relay-1" } });
+  });
+
   test("an explicit Current Folder selector resolves only the trusted relay-pinned Current Folder", () => {
     const target = selectApplyPatchTarget(currentContext({ memoryAccessEnvelope: workspaceEnvelope() }), { relayRegistry: registry() }, "current");
     expect(target).toEqual({

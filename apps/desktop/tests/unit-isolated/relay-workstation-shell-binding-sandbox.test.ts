@@ -1007,7 +1007,8 @@ describe("retired Desktop agent shell dispatch", () => {
 
 
 describe("trusted user environment command policy", () => {
-  test("HOME credentials are admitted only by local Development authority while internal state stays masked", () => {
+  // The Darwin policy needs a POSIX home; a Windows temporary directory cannot express one.
+  test.skipIf(process.platform === "win32")("HOME credentials are admitted only by local Development authority while internal state stays masked", () => {
     const home = mkTmp("trusted-user-home-");
     const policy = buildProtectedPathPolicy({ homeDir: home, platform: "darwin", nautiloRoots: {
       privateRoot: join(home, ".nautilo", "private"), dataRoot: join(home, ".nautilo", "data"),

@@ -1,12 +1,11 @@
 import { randomBytes } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { ensurePrivateDirectorySync, secureFilesystemPathSync, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
 
 import { getValueFromEntries, parseEnvFile } from "@nautilo/config-guard";
 
@@ -442,9 +441,10 @@ export function ensureBootstrapToken(
 
   const instanceRoot = localInstanceRootDir(home, profile.instance_id);
   const envPath = join(instanceRoot, "instance.env");
-  mkdirSync(instanceRoot, { recursive: true, mode: 0o700 });
-  chmodSync(instanceRoot, 0o700);
-  const body = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
+  ensurePrivateDirectorySync(instanceRoot);
+  const existingEnv = existsSync(envPath);
+  if (existingEnv) secureFilesystemPathSync(envPath);
+  const body = existingEnv ? readFileSync(envPath, "utf8") : "";
   const lines = body.split(/\r?\n/);
   let replaced = false;
   for (let i = 0; i < lines.length; i++) {
@@ -458,8 +458,9 @@ export function ensureBootstrapToken(
     if (body.length > 0 && !body.endsWith("\n")) lines.push("");
     lines.push(`NAUTILO_BOOTSTRAP_TOKEN=${token}`, "");
   }
-  writeFileSync(envPath, lines.join("\n"), { encoding: "utf8", mode: 0o600 });
-  chmodSync(envPath, 0o600);
+  const updated = lines.join("\n");
+  if (existingEnv) writeFileSync(envPath, updated, { encoding: "utf8" });
+  else writePrivateFileExclusiveSync(envPath, Buffer.from(updated, "utf8"));
   return token;
 }
 

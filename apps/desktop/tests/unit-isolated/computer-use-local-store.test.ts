@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join, resolve } from "node:path";
 import {
   createComputerUseLocalStorage,
   type ComputerUseLocalFileSystem,
@@ -278,15 +279,18 @@ describe("D516 Electron-local Computer use state", () => {
       rename: async (from, to) => { calls.push(`rename ${from} ${to}`); files.set(to, files.get(from)!); files.delete(from); },
       rm: async () => undefined,
     };
-    const storage = createComputerUseLocalStorage("/safe/local-state.json", { fs, randomHex: () => "fixed" });
+    const directory = resolve("/safe");
+    const filePath = join(directory, "local-state.json");
+    const temporary = join(directory, ".local-state.json.fixed.tmp");
+    const storage = createComputerUseLocalStorage(filePath, { fs, randomHex: () => "fixed" });
     await storage.writeAtomic("state");
     expect(calls).toEqual([
-      "mkdir /safe 700",
-      "chmod /safe 700",
-      "write /safe/.local-state.json.fixed.tmp 600",
-      "chmod /safe/.local-state.json.fixed.tmp 600",
-      "rename /safe/.local-state.json.fixed.tmp /safe/local-state.json",
-      "chmod /safe/local-state.json 600",
+      `mkdir ${directory} 700`,
+      `chmod ${directory} 700`,
+      `write ${temporary} 600`,
+      `chmod ${temporary} 600`,
+      `rename ${temporary} ${filePath}`,
+      `chmod ${filePath} 600`,
     ]);
     expect(await storage.read()).toBe("state");
   });

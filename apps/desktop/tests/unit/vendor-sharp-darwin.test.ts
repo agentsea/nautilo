@@ -26,8 +26,8 @@ function tarballFor(spec: SharpDarwinPackage): Buffer {
       writeFileSync(target, Buffer.from(`${spec.name}:${spec.version}`));
     }
     const archive = join(root, "package.tgz");
-    const result = spawnSync("tar", ["-czf", archive, "package"], { cwd: root });
-    if (result.status !== 0) throw new Error("could not create Sharp vendor fixture tarball");
+    const result = spawnSync("tar", ["-czf", "package.tgz", "package"], { cwd: root });
+    if (result.status !== 0) throw new Error(`could not create Sharp vendor fixture tarball: ${result.error?.message ?? result.stderr.toString()}`);
     return readFileSync(archive);
   } finally {
     rmSync(root, { recursive: true, force: true });

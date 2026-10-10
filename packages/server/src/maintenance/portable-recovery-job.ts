@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import {
   LOGTO_TENANT_PASSWORD_RESYNC_SQL,
   buildAgentRoleGrantsSql,
@@ -232,8 +232,8 @@ function childEnvironment(authority: ReturnType<typeof parsePostgresUrl>, pgpass
 }
 
 async function withPgpass<T>(fs: PortableRecoveryFilesystem, authority: ReturnType<typeof parsePostgresUrl>, action: (path: string) => Promise<T>): Promise<T> {
-  const directory = await fs.mkdtemp(join(tmpdir(), "nautilo-recovery-pgpass-"));
-  const path = join(directory, "pgpass");
+  const directory = await fs.mkdtemp(posix.join(tmpdir(), "nautilo-recovery-pgpass-"));
+  const path = posix.join(directory, "pgpass");
   try {
     await fs.writeFile(path, pgpassLine(authority), 0o600);
     await fs.chmod(path, 0o600);
@@ -310,8 +310,8 @@ async function* dumpSource(input: { readonly fs: PortableRecoveryFilesystem; rea
   const authority = parsePostgresUrl(input.databaseUrl);
   // Keep the pgpass file alive until pg_dump has exited, including while the
   // container writer exercises streaming backpressure.
-  const directory = await input.fs.mkdtemp(join(tmpdir(), "nautilo-recovery-pgpass-"));
-  const pgpass = join(directory, "pgpass");
+  const directory = await input.fs.mkdtemp(posix.join(tmpdir(), "nautilo-recovery-pgpass-"));
+  const pgpass = posix.join(directory, "pgpass");
   try {
     await input.fs.writeFile(pgpass, pgpassLine(authority), 0o600);
     await input.fs.chmod(pgpass, 0o600);
@@ -342,14 +342,14 @@ async function assertSafeTree(fs: PortableRecoveryFilesystem, root: string): Pro
     if (node.isSymbolicLink || node.isSocket || node.isBlockDevice || node.isCharacterDevice || node.isFIFO || (!node.isDirectory && !node.isFile)) fail("UNSAFE_VOLUME", "portable recovery volume contains an unsafe entry");
     if (node.isDirectory) for (const name of await fs.readdir(path)) {
       if (!safeArchiveName(name)) fail("UNSAFE_VOLUME", "portable recovery volume contains an unsafe entry");
-      await walk(join(path, name));
+      await walk(posix.join(path, name));
     }
   };
   await walk(root);
 }
 
 async function* tarSource(input: { readonly fs: PortableRecoveryFilesystem; readonly runner: PortableRecoveryProcessRunner; readonly root: string; readonly name: PortableRecoveryRootName }): AsyncIterable<Uint8Array> {
-  const absolute = join(input.root, input.name);
+  const absolute = posix.join(input.root, input.name);
   await assertSafeTree(input.fs, absolute);
   const exists = await input.fs.exists(absolute);
   const args = exists
@@ -387,7 +387,7 @@ async function sourcePersonalProviderCustody(
   injected: string | undefined,
 ): Promise<string | undefined> {
   if (injected !== undefined) return canonicalCustody(injected);
-  const path = join(fs.root, "config", "instance.env");
+  const path = posix.join(fs.root, "config", "instance.env");
   if (!(await fs.exists(path))) return undefined;
   try {
     const body = new TextDecoder("utf-8", { fatal: true }).decode(await fs.readFile(path));
@@ -428,8 +428,8 @@ async function restorePersonalProviderCustody(
   if (injected !== undefined && canonicalCustody(injected) !== recovered) {
     fail("VERIFICATION_FAILED", "portable recovery injected custody does not match the recovery bundle");
   }
-  const configRoot = join(fs.root, "config");
-  const target = join(configRoot, "instance.env");
+  const configRoot = posix.join(fs.root, "config");
+  const target = posix.join(configRoot, "instance.env");
   let before = "";
   if (await fs.exists(target)) {
     try { before = new TextDecoder("utf-8", { fatal: true }).decode(await fs.readFile(target)); }
@@ -449,7 +449,7 @@ async function restorePersonalProviderCustody(
   await fs.mkdir(configRoot, 0o700);
   await fs.chmod(configRoot, 0o700);
   const body = `${before}${before.length === 0 || before.endsWith("\n") ? "" : "\n"}${PERSONAL_PROVIDER_CUSTODY_ENV}=${recovered}\n`;
-  const next = join(configRoot, ".personal-provider-custody.next");
+  const next = posix.join(configRoot, ".personal-provider-custody.next");
   await fs.writeFile(next, new TextEncoder().encode(body), 0o600);
   await fs.chmod(next, 0o600);
   await fs.syncFile(next);
@@ -458,7 +458,7 @@ async function restorePersonalProviderCustody(
 }
 
 function stagingPath(fs: PortableRecoveryFilesystem, operationId: string): string {
-  return join(fs.root, ".portable-recovery", operationId);
+  return posix.join(fs.root, ".portable-recovery", operationId);
 }
 
 function stageMarker(identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Uint8Array {
@@ -473,7 +473,7 @@ function stageMarker(identity: PortableRecoveryObjectIdentity, descriptor: Porta
 }
 
 function successMarkerPath(fs: PortableRecoveryFilesystem, identity: PortableRecoveryObjectIdentity): string {
-  return join(fs.root, ".portable-recovery-success", identity.operationId, `${identity.objectId}.json`);
+  return posix.join(fs.root, ".portable-recovery-success", identity.operationId, `${identity.objectId}.json`);
 }
 
 function successMarker(identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Uint8Array {
@@ -497,8 +497,8 @@ async function hasMatchingSuccessMarker(fs: PortableRecoveryFilesystem, identity
 
 async function writeSuccessMarker(fs: PortableRecoveryFilesystem, identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Promise<void> {
   const path = successMarkerPath(fs, identity);
-  const operationDirectory = dirname(path);
-  const rootDirectory = dirname(operationDirectory);
+  const operationDirectory = posix.dirname(path);
+  const rootDirectory = posix.dirname(operationDirectory);
   await fs.mkdir(rootDirectory, 0o700);
   await fs.chmod(rootDirectory, 0o700);
   await fs.syncDirectory(fs.root);
@@ -522,11 +522,11 @@ function assertDescriptorAuthority(identity: PortableRecoveryObjectIdentity, env
 }
 
 async function hasMatchingStage(fs: PortableRecoveryFilesystem, path: string, identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Promise<boolean> {
-  if (!(await fs.exists(join(path, "verified.json")))) return false;
+  if (!(await fs.exists(posix.join(path, "verified.json")))) return false;
   // The sixth custody member is optional so a stage created from a legacy
   // five-member bundle remains resumable by a newer image.
-  for (const name of PORTABLE_RECOVERY_MEMBERS.slice(0, -1)) if (!(await fs.exists(join(path, name)))) return false;
-  const actual = await fs.readFile(join(path, "verified.json"));
+  for (const name of PORTABLE_RECOVERY_MEMBERS.slice(0, -1)) if (!(await fs.exists(posix.join(path, name)))) return false;
+  const actual = await fs.readFile(posix.join(path, "verified.json"));
   const expected = stageMarker(identity, descriptor);
   if (actual.byteLength !== expected.byteLength) return false;
   return actual.every((byte, index) => byte === expected[index]);
@@ -535,7 +535,7 @@ async function hasMatchingStage(fs: PortableRecoveryFilesystem, path: string, id
 async function assertFresh(input: RunPortableRecoveryJobInput): Promise<void> {
   for (const database of ["app", "logto"] as const) await input.assertFreshTarget.assertFresh({ database, root: input.fs.root });
   for (const root of ROOTS) {
-    const target = join(input.fs.root, root);
+    const target = posix.join(input.fs.root, root);
     if (await input.fs.exists(target)) {
       const node = await input.fs.lstat(target);
       if (!node.isDirectory || node.isSymbolicLink) fail("PRECONDITION_FAILED", "portable recovery target is not fresh");
@@ -814,7 +814,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
   if (stable.direction === "export") {
     // Validate every volume root before opening the remote upload. This keeps
     // unsafe source topology from becoming a partial object-store operation.
-    for (const root of ROOTS) await assertSafeTree(stable.fs, join(stable.fs.root, root));
+    for (const root of ROOTS) await assertSafeTree(stable.fs, posix.join(stable.fs.root, root));
     const credentialEvidence = await readSourcePersonalProviderCredentialEvidence({
       fs: stable.fs,
       runner: stable.runner,
@@ -845,7 +845,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
   }
 
   const base = stagingPath(stable.fs, stable.operationId);
-  const staging = join(base, stable.objectId);
+  const staging = posix.join(base, stable.objectId);
   let verified = false;
   let discardStaging = false;
   try {
@@ -883,12 +883,12 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
         || descriptor.objectId !== observedDescriptor.objectId
       )) fail("VERIFICATION_FAILED", "portable recovery descriptor changed during recovery preflight");
       if (await stable.fs.exists(staging)) await stable.fs.remove(staging);
-      await stable.fs.mkdir(dirname(base), 0o700);
-      await stable.fs.chmod(dirname(base), 0o700);
+      await stable.fs.mkdir(posix.dirname(base), 0o700);
+      await stable.fs.chmod(posix.dirname(base), 0o700);
       await stable.fs.syncDirectory(stable.fs.root);
       await stable.fs.mkdir(base, 0o700);
       await stable.fs.chmod(base, 0o700);
-      await stable.fs.syncDirectory(dirname(base));
+      await stable.fs.syncDirectory(posix.dirname(base));
       await stable.fs.mkdir(staging, 0o700);
       await stable.fs.syncDirectory(base);
       discardStaging = true;
@@ -897,7 +897,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     await stable.fs.chmod(staging, 0o700);
     const memberPaths = new Map<PortableRecoveryMemberName, string>();
     for (const name of PORTABLE_RECOVERY_MEMBERS) {
-      const path = join(staging, name);
+      const path = posix.join(staging, name);
       memberPaths.set(name, path);
       if (!resume) {
         await stable.fs.writeFile(path, new Uint8Array(), 0o600);
@@ -907,14 +907,14 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     if (!resume) {
       await readPortableRecovery({ source: download!.body, key: stable.environment.key, expectedReceipt: { ciphertextSha256: descriptor.ciphertextSha256, ciphertextBytes: descriptor.ciphertextBytes }, onChunk: async ({ member, plaintext }) => { await stable.fs.appendFile(memberPaths.get(member)!, plaintext); } });
       for (const path of memberPaths.values()) await stable.fs.syncFile(path);
-      const markerNext = join(staging, "verified.json.next");
+      const markerNext = posix.join(staging, "verified.json.next");
       await stable.fs.writeFile(markerNext, stageMarker(identity, descriptor), 0o600);
       await stable.fs.chmod(markerNext, 0o600);
       await stable.fs.syncFile(markerNext);
-      await stable.fs.rename(markerNext, join(staging, "verified.json"));
+      await stable.fs.rename(markerNext, posix.join(staging, "verified.json"));
       await stable.fs.syncDirectory(staging);
     }
-    const appRestoreListPath = join(staging, "app-postgres.list");
+    const appRestoreListPath = posix.join(staging, "app-postgres.list");
     const credentialEvidence = await prepareAppRestoreList({ fs: stable.fs, runner: stable.runner, dumpPath: memberPaths.get("app-postgres.dump")!, listPath: appRestoreListPath });
     await restorePersonalProviderCustody(
       stable.fs,
@@ -934,25 +934,25 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     // authority, so normalize every resume back to exact empty targets and a
     // clean extraction tree before attempting promotion again.
     if (resume) for (const root of ROOTS) {
-      const target = join(stable.fs.root, root);
+      const target = posix.join(stable.fs.root, root);
       if (await stable.fs.exists(target)) await stable.fs.remove(target);
       await stable.fs.mkdir(target, 0o700);
     }
-    const rootsStaging = join(staging, "roots");
+    const rootsStaging = posix.join(staging, "roots");
     if (await stable.fs.exists(rootsStaging)) await stable.fs.remove(rootsStaging);
     await stable.fs.mkdir(rootsStaging, 0o700);
     const promoted: PortableRecoveryRootName[] = [];
     try {
       for (const root of ROOTS) {
-        const extracted = join(staging, "roots", root);
+        const extracted = posix.join(staging, "roots", root);
         await validateAndExtractTar({ fs: stable.fs, runner: stable.runner, archivePath: memberPaths.get(`${root}.tar` as PortableRecoveryMemberName)!, destination: extracted, root });
         // An absent source root is represented by the deterministic empty tar;
         // materialize a real empty root so promotion remains exact.
-        await stable.fs.mkdir(join(extracted, root), 0o700);
+        await stable.fs.mkdir(posix.join(extracted, root), 0o700);
       }
       for (const root of ROOTS) {
-        const contentRoot = join(staging, "roots", root, root);
-        const target = join(stable.fs.root, root);
+        const contentRoot = posix.join(staging, "roots", root, root);
+        const target = posix.join(stable.fs.root, root);
         if (await stable.fs.exists(target)) await stable.fs.removeEmptyDirectory(target);
         await stable.fs.rename(contentRoot, target);
         promoted.push(root);
@@ -962,13 +962,13 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
       // in reverse order, then recreate the prior empty targets. This leaves
       // a retryable all-empty target, never a mixed root set.
       for (const root of [...promoted].reverse()) {
-        const target = join(stable.fs.root, root);
-        await stable.fs.rename(target, join(staging, "roots", root, root));
+        const target = posix.join(stable.fs.root, root);
+        await stable.fs.rename(target, posix.join(staging, "roots", root, root));
         await stable.fs.mkdir(target, 0o700);
       }
       fail("PROMOTION_FAILED", "portable recovery promotion failed; staging was retained for recovery");
     }
-    for (const root of ROOTS) await stable.fs.syncDirectory(join(stable.fs.root, root));
+    for (const root of ROOTS) await stable.fs.syncDirectory(posix.join(stable.fs.root, root));
     await stable.fs.syncDirectory(stable.fs.root);
     await writeSuccessMarker(stable.fs, identity, descriptor);
     await stable.fs.remove(staging);

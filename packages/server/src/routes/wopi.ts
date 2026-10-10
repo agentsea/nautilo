@@ -37,6 +37,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { physicalPathFromStorageUri as absPathFromStorageUri } from "@nautilo/db";
 import { createReadStream } from "node:fs";
 import { stat as fsStat, writeFile as fsWriteFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
@@ -260,13 +261,6 @@ export function __resetWopiLockStoreForTests(): void {
 /** Test-only hook: clear the autosave throttle between unit tests. */
 export function __resetWopiAutosaveThrottleForTests(): void {
   autosaveThrottle.clear();
-}
-
-function absPathFromStorageUri(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const rest = storageUri.slice("file://".length);
-  if (!rest.startsWith("/")) return null;
-  return rest;
 }
 
 /**

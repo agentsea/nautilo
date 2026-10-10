@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import {
   CANONICAL_RUNTIME_IMAGE_REPOSITORY,
@@ -93,20 +94,19 @@ function parseTrustRoot(value: unknown): QualificationTrustRoot | null {
 }
 
 async function readOwnerOnlyJson(path: string): Promise<unknown> {
-  const status = await lstat(path);
+  const status = await lstat(path, { bigint: true });
   if (status.isSymbolicLink() || !status.isFile() ||
-    (typeof process.getuid === "function" && status.uid !== process.getuid()) ||
-    (process.platform !== "win32" && (status.mode & 0o077) !== 0) ||
+    !await isPrivateFilesystemPathAsync(path) ||
     status.size > MAX_RELEASE_ARTIFACT_BYTES) throw new Error("unsafe-release-artifact");
   const flags = process.platform === "win32"
     ? constants.O_RDONLY
     : constants.O_RDONLY | constants.O_NOFOLLOW;
   const handle = await open(path, flags);
   try {
-    const opened = await handle.stat();
+    const opened = await handle.stat({ bigint: true });
     if (!opened.isFile() ||
-      (typeof process.getuid === "function" && opened.uid !== process.getuid()) ||
-      (process.platform !== "win32" && (opened.mode & 0o077) !== 0) ||
+      opened.ino !== status.ino || opened.dev !== status.dev ||
+      !await isPrivateFilesystemPathAsync(path) ||
       opened.size > MAX_RELEASE_ARTIFACT_BYTES) {
       throw new Error("unsafe-release-artifact");
     }

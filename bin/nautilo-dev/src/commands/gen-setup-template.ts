@@ -2,12 +2,13 @@
  * Dev-only fixture generator for `nautilo setup` smoke tests (not shipped in @nautilo/cli).
  */
 import { createHash, randomBytes, randomInt } from "node:crypto";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { stringify } from "smol-toml";
 import { getKeyDefinition, KEY_REGISTRY } from "@nautilo/config-guard";
 import { SetupTemplateV1 } from "@nautilo/api-client";
+import { publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 import {
   bootstrapAdminPasswordKey,
   bootstrapPinKey,
@@ -245,8 +246,8 @@ export async function genSetupTemplateCmd(args: {
     throw new Error(`parent directory does not exist: ${parent}`);
   }
 
-  writeFileSync(args.out, `${toml}\n`, { mode: 0o600 });
-  process.stderr.write(`[gen-setup-template] wrote ${args.out} (mode 0600)\n`);
+  publishPrivateFileAtomicallySync(args.out, new TextEncoder().encode(`${toml}\n`));
+  process.stderr.write(`[gen-setup-template] wrote ${args.out} (private permissions)\n`);
   if (useSecretsFile && (generatedPassword !== undefined || generatedPin !== undefined)) {
     const n = (generatedPassword !== undefined ? 1 : 0) + (generatedPin !== undefined ? 1 : 0);
     process.stderr.write(

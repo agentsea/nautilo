@@ -15,6 +15,12 @@ import { describe, test, expect } from "bun:test";
 import { validateArtifactsRootEnv } from "../../src/instance-defaults";
 
 describe("validateArtifactsRootEnv — D136-P2 boot-time validation", () => {
+  test.skipIf(process.platform !== "win32")("rejects parent traversal with either Windows separator", () => {
+    expect(validateArtifactsRootEnv("C:\\nautilo\\..\\artifacts").ok).toBe(false);
+    expect(validateArtifactsRootEnv("C:/nautilo/../artifacts").ok).toBe(false);
+    expect(validateArtifactsRootEnv("C:\\nautilo/../artifacts").ok).toBe(false);
+  });
+
   test("unset → ok with source=default", () => {
     const r = validateArtifactsRootEnv(undefined);
     expect(r.ok).toBe(true);

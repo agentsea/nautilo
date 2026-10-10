@@ -11,7 +11,7 @@ describe("M314 forward public Message authority migration", () => {
     const generated = finalizeM314ParticipantSetMigration("-- Custom SQL migration file, put your code below! --");
     expect(finalizeM314ParticipantSetMigration(generated)).toBe(generated);
     expect(() => finalizeM314ParticipantSetMigration("CREATE TABLE unrelated(id int);")).toThrow("fresh Drizzle-generated custom migration");
-    expect(readFileSync(new URL("../../src/migrations/0272_m314_participant_set_authority.sql", import.meta.url), "utf8")).toBe(generated);
+    expect(readFileSync(new URL("../../src/migrations/0272_m314_participant_set_authority.sql", import.meta.url), "utf8").replaceAll("\r\n", "\n")).toBe(generated);
     expect(generated).toContain('cardinality("participants") < 1');
     expect(generated).not.toContain('cardinality("participants") >');
     expect(generated).toContain('"previous_bytes" >= "participant_bytes"');
@@ -40,7 +40,7 @@ describe("M314 forward public Message authority migration", () => {
     const generated = finalizeM314PublicRoomMessageAuthorityMigration(
       "-- Custom SQL migration file, put your code below! --",
     );
-    expect(readFileSync(new URL("../../src/migrations/0271_m314_public_room_message_authority.sql", import.meta.url), "utf8")).toBe(generated);
+    expect(readFileSync(new URL("../../src/migrations/0271_m314_public_room_message_authority.sql", import.meta.url), "utf8").replaceAll("\r\n", "\n")).toBe(generated);
     expect(generated).toContain("source_room.kind IN ('private', 'group', 'open')");
     expect(generated).toContain("authority_room.kind IN ('private', 'group', 'open')");
     expect(generated).toContain("authority_room.namespace_id = source_room.namespace_id");

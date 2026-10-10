@@ -1,0 +1,2 @@
+[test]
+preload = ["../../dev/tests/test-lifecycle-preload.ts"]

@@ -1,0 +1,4 @@
+# Preserve migration hashes, patch digests, and shell scripts on Windows.
+*.sql text eol=lf
+*.sh text eol=lf
+*.patch text eol=lf

@@ -167,7 +167,9 @@ function parseCli(argv: string[]): CliOptions {
     process.env.SMOKE_UNPACKAGED === "1" ||
     argv.includes("--unpackaged");
   const opts: CliOptions = {
-    appPath: unpackaged ? "dist/main.js" : "release/mac-arm64/Nautilo.app",
+    appPath: unpackaged
+      ? process.env.SMOKE_MAIN_JS?.trim() || "dist/main.js"
+      : process.env.SMOKE_APP_PATH?.trim() || "release/mac-arm64/Nautilo.app",
     unpackaged,
     portsMatrix: false,
     cdp: true,

@@ -9,6 +9,7 @@ import {
   nodeModulesPackagePath,
 } from "./app-registry";
 import { invalidateInstalledAppRegistry } from "./installed-app-registry";
+import { snapshotRuntimeDependencies } from "./runtime-dependency-snapshot";
 
 const SEED_MARKER_FILE = ".nautilo-seed.json";
 
@@ -94,6 +95,17 @@ function isEnoent(err: unknown): boolean {
   return (err as NodeJS.ErrnoException).code === "ENOENT";
 }
 
+function hasRuntimeDependencyLayout(contents: string): boolean {
+  try {
+    const marker: unknown = JSON.parse(contents);
+    return typeof marker === "object" && marker !== null && !Array.isArray(marker)
+      && "dependencyLayout" in marker && marker.dependencyLayout === "runtime-graph";
+  } catch (error) {
+    if (error instanceof SyntaxError) return false;
+    throw error;
+  }
+}
+
 async function createTemporarySibling(appsRoot: string, appId: string, purpose: string): Promise<string> {
   const path = await mkdtemp(join(appsRoot, `.${appId}.${purpose}-`));
   // `mkdtemp` creates the directory, while `cp(..., { errorOnExist: true })`
@@ -107,7 +119,7 @@ async function stageSeed(
   appsRoot: string,
   appId: string,
   copyDirectory: typeof cp,
-): Promise<{ stagingRoot: string; sourceHash: string }> {
+): Promise<{ stagingRoot: string; sourceHash: string; dependencyLayout: "runtime-graph" | undefined }> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_STAGING_COPY_ATTEMPTS; attempt += 1) {
     const stagingRoot = await createTemporarySibling(appsRoot, appId, "seed");
@@ -115,6 +127,8 @@ async function stageSeed(
       // Re-read the source identity for each whole-tree attempt. An ENOENT can
       // occur while a package manager is transiently replacing a nested file.
       const sourceHash = await computeAppSourceHash(sourceDir);
+      const isolatedDependencies = await pathExists(join(sourceDir, "node_modules", ".bun"));
+      const sourceNodeModules = join(sourceDir, "node_modules");
       // Dereference local dependency links before moving the app outside the
       // monorepo. The seeded app must retain its owned engine, compiled assets
       // and transitive dependencies at self-contained paths.
@@ -122,21 +136,28 @@ async function stageSeed(
         recursive: true,
         errorOnExist: true,
         dereference: true,
+        // Isolated stores contain junctions with sibling dependency contexts.
+        // Snapshot their runtime closure instead of copying cache/dev trees.
+        filter: isolatedDependencies ? (path) => path !== sourceNodeModules : undefined,
       });
       // A first-party app's app-local `file:` install is only a package-manager
       // cache. Overlay the declared sources so a stale physical node_modules
       // copy cannot omit newly added files. This mirrors the server-image
       // Docker overlays while keeping the installed seed self-contained.
       const localDependencies = await collectLocalFileDependencySources(sourceDir);
-      for (const dependency of localDependencies) {
-        const destination = nodeModulesPackagePath(stagingRoot, dependency.name);
-        await rm(destination, { recursive: true, force: true });
-        await mkdir(dirname(destination), { recursive: true });
-        await cp(dependency.root, destination, {
-          recursive: true,
-          errorOnExist: true,
-          dereference: true,
-        });
+      if (isolatedDependencies) {
+        await snapshotRuntimeDependencies(sourceDir, stagingRoot, join(appsRoot, appId), localDependencies);
+      } else {
+        for (const dependency of localDependencies) {
+          const destination = nodeModulesPackagePath(stagingRoot, dependency.name);
+          await rm(destination, { recursive: true, force: true });
+          await mkdir(dirname(destination), { recursive: true });
+          await cp(dependency.root, destination, {
+            recursive: true,
+            errorOnExist: true,
+            dereference: true,
+          });
+        }
       }
       // `cp` resolves only once its recursive work has completed. Re-stat the
       // staged root and source identity before swapping. Do not hash the staged
@@ -147,7 +168,7 @@ async function stageSeed(
       if (currentSourceHash !== sourceHash) {
         throw new Error(`source changed while staging ${appId}`);
       }
-      return { stagingRoot, sourceHash };
+      return { stagingRoot, sourceHash, dependencyLayout: isolatedDependencies ? "runtime-graph" : undefined };
     } catch (err) {
       lastError = err;
       await rm(stagingRoot, { recursive: true, force: true });
@@ -251,9 +272,18 @@ export async function seedFirstPartyApps(
       shouldCopy = true;
     }
 
+    if (!shouldCopy && await pathExists(join(sourceDir, "node_modules", ".bun"))) {
+      try {
+        const contents = await readFile(join(destRoot, SEED_MARKER_FILE), "utf8");
+        shouldCopy = !hasRuntimeDependencyLayout(contents);
+      } catch (err) {
+        if (!isEnoent(err)) throw err;
+        shouldCopy = true;
+      }
+    }
     if (!shouldCopy) continue;
 
-    const { stagingRoot, sourceHash: stagedSourceHash } = await stageSeed(
+    const { stagingRoot, sourceHash: stagedSourceHash, dependencyLayout } = await stageSeed(
       sourceDir,
       appsRoot,
       entry.appId,
@@ -268,6 +298,7 @@ export async function seedFirstPartyApps(
             appId: entry.appId,
             initialVersion: entry.initialVersion,
             sourceHash: stagedSourceHash,
+            dependencyLayout,
           },
           null,
           2,

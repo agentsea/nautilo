@@ -1,0 +1,201 @@
+name: Windows Desktop validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/windows-desktop.yml"
+      - "apps/desktop/**"
+      - "apps/cli/**"
+      - "apps/workbench/**"
+      - "bin/nautilo-dev/**"
+      - "bin/nautilo-local/**"
+      - "bin/nautilo-relay/**"
+      - "bin/nautilo-server/**"
+      - ".bun-version"
+      - ".gitattributes"
+      - "dev/scripts/install-first-party-apps.ts"
+      - "dev/scripts/fix-node-pty-perms.ts"
+      - "dev/scripts/prepare-*.ts"
+      - "dev/scripts/vendor-agent-browser.ts"
+      - "dev/scripts/windows-unit-gate.ts"
+      - "dev/scripts/test-repo-invariants.ts"
+      - "dev/scripts/pre-push-gate.sh"
+      - "dev/scripts/ci-gates.sh"
+      - "dev/scripts/tsconfig.json"
+      - "dev/tests/repo-invariants/**"
+      - "dev/tests/test-lifecycle-preload.ts"
+      - "lefthook.yml"
+      - "infra/compose/**"
+      - "packages/acp-host/**"
+      - "packages/agent/**"
+      - "packages/api-client/**"
+      - "packages/attachments/**"
+      - "packages/browser-document-viewer/**"
+      - "packages/catalog/**"
+      - "packages/claude-agent-sdk-host/**"
+      - "packages/cli-auth/**"
+      - "packages/cloudconvert/**"
+      - "packages/codex-app-server/**"
+      - "packages/codex-app-server-host/**"
+      - "packages/computer-use-contracts/**"
+      - "packages/computer-use-host/**"
+      - "packages/computer-use-host-protocol/**"
+      - "packages/config/**"
+      - "packages/config-guard/**"
+      - "packages/db/**"
+      - "packages/deploy-config/**"
+      - "packages/desktop-filesystem-grants/**"
+      - "packages/document-mutations/**"
+      - "packages/encryption-invariants/**"
+      - "packages/event-feed/**"
+      - "packages/first-party-apps/**"
+      - "packages/fonts/**"
+      - "packages/generated-media-ui/**"
+      - "packages/genie-customization-ui/**"
+      - "packages/instance-discovery/**"
+      - "packages/lattice-bridge/**"
+      - "packages/lattice-crypto/**"
+      - "packages/loffice/**"
+      - "packages/logger/**"
+      - "packages/mcp-client/**"
+      - "packages/message-invariants/**"
+      - "packages/model-capabilities/**"
+      - "packages/office-board/**"
+      - "packages/office-core/**"
+      - "packages/office-docs/**"
+      - "packages/office-sheets/**"
+      - "packages/office-slides/**"
+      - "packages/operator-secrets/**"
+      - "packages/profile-portability/**"
+      - "packages/realtime-client/**"
+      - "packages/reflection/**"
+      - "packages/reflection-bridge/**"
+      - "packages/relay/**"
+      - "packages/runtime/**"
+      - "packages/sandbox/**"
+      - "packages/security/**"
+      - "packages/server/**"
+      - "packages/trust/**"
+      - "packages/types/**"
+      - "packages/vault/**"
+      - "packages/voice/**"
+      - "packages/voice-catalog-ui/**"
+      - "packages/workbench-components/**"
+      - "packages/workstation-profiles/**"
+      - "packages/writer-proposal-core/**"
+      - "packaging/openconnector/**"
+      - "package.json"
+      - "bun.lock"
+      - "bunfig.toml"
+      - "tsconfig*.json"
+      - "turbo.json"
+      - "patches/**"
+      - "scripts/stack309-ios-simulator-input-helper.test.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-x64:
+    name: Windows x64 install, package, and boot
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version: '1.3.11'
+
+      - name: Verify pinned tools and native compiler
+        run: |
+          if ((bun --version).Trim() -ne '1.3.11') { throw 'Wrong Bun version' }
+          if (-not ((node --version).Trim() -match '^v24\.')) { throw 'Node 24 is required' }
+          $vswherePath = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $componentId = 'Microsoft.VisualStudio.Component.VC.Runtimes.x86.x64.Spectre'
+          $versionRange = '[18.0,19.0)'
+          $vsArgs = @('-products', '*', '-version', $versionRange, '-requires', $componentId, '-property', 'installationPath')
+          if (-not (Test-Path -LiteralPath $vswherePath -PathType Leaf)) { throw 'VSWhere is missing' }
+          $instancePath = & $vswherePath @vsArgs
+          if (-not $instancePath) { throw 'Visual Studio 2026 x64 Spectre libraries are missing' }
+          $gitBashDirectory = 'C:\Program Files\Git\bin'
+          $gitBash = Join-Path $gitBashDirectory 'bash.exe'
+          if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw 'Native Git Bash is missing' }
+          Add-Content -LiteralPath $env:GITHUB_PATH -Value $gitBashDirectory
+
+      - name: Install frozen dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Install Writer development dependencies
+        run: bun install --cwd packages/first-party-apps/writer --frozen-lockfile --omit=peer --linker=isolated
+
+      - name: Install Video development dependencies
+        run: bun install --cwd packages/first-party-apps/video --frozen-lockfile --omit=peer --linker=isolated
+
+      - name: Typecheck Writer
+        run: bun run --cwd packages/first-party-apps/writer typecheck
+
+      - name: Typecheck Video
+        run: bun run --cwd packages/first-party-apps/video typecheck
+
+      - name: Build Writer
+        run: bun run --cwd packages/first-party-apps/writer build
+
+      - name: Build Video
+        run: bun run --cwd packages/first-party-apps/video build
+
+      - name: Test Windows source contracts
+        run: bun dev/scripts/windows-unit-gate.ts
+
+      - name: Test repository invariants on Windows
+        run: bun run test:invariants
+
+      - name: Typecheck Desktop
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: bun run --cwd apps/desktop typecheck
+
+      - name: Typecheck development tools
+        run: bun run --cwd bin/nautilo-dev typecheck
+
+      - name: Typecheck database
+        run: bun run --cwd packages/db typecheck
+
+      - name: Typecheck server
+        env:
+          NODE_OPTIONS: --max-old-space-size=5120
+        run: bun run --cwd packages/server typecheck
+
+      - name: Build Windows Desktop installer
+        env:
+          CI: 'true'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: bun run --cwd apps/desktop package:win
+
+      - name: Verify packaged Relay Host launch
+        run: |
+          $appRoot = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked'
+          $env:NAUTILO_PACKAGED_RESOURCES = Join-Path $appRoot 'resources'
+          bun test apps/desktop/tests/unit-isolated/packaged-relay-host.test.ts
+
+      - name: Smoke-test packaged Desktop boot
+        run: |
+          $appPath = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked\Nautilo.exe'
+          if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw 'Packaged Nautilo.exe is missing' }
+          $env:SMOKE_APP_PATH = $appPath
+          bun run --cwd apps/desktop smoke

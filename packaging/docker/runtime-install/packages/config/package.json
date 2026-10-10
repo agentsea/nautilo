@@ -8,6 +8,8 @@
     ".": "./src/index.ts",
     "./design-tokens": "./src/design-tokens.ts",
     "./instance-id": "./src/instance-id.ts",
+    "./private-filesystem": "./src/private-filesystem.ts",
+    "./private-filesystem-fixtures": "./src/private-filesystem-fixtures.ts",
     "./vendored-binary": "./src/vendored-binary.ts",
     "./vendored-binary-fetch": "./src/vendored-binary-fetch.ts",
     "./federated-id-pure": "./src/federated-id-pure.ts",

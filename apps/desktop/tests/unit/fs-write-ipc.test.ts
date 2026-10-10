@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { sha256Hex } from "../../electron/fs-write";
 import {
   createCompatibilityFileExclusively,
@@ -178,12 +178,12 @@ describe("fs:writeFile IPC wiring", () => {
     try {
       const canonicalRoot = await fs.realpath(root);
       const linkedParent = join(root, "linked");
-      await fs.symlink(outside, linkedParent, "dir");
+      await fs.symlink(outside, linkedParent, process.platform === "win32" ? "junction" : "dir");
       expect(createCompatibilityFileExclusively(
         join(linkedParent, "escape.md"),
         Buffer.from("blocked"),
         (candidate) => {
-          if (candidate !== canonicalRoot && !candidate.startsWith(`${canonicalRoot}/`)) {
+          if (candidate !== canonicalRoot && !candidate.startsWith(`${canonicalRoot}${sep}`)) {
             throw new Error("outside root");
           }
         },
@@ -204,7 +204,7 @@ describe("fs:writeFile IPC wiring", () => {
         target,
         Buffer.from("nested\n"),
         (candidate) => {
-          if (candidate !== canonicalRoot && !candidate.startsWith(`${canonicalRoot}/`)) {
+          if (candidate !== canonicalRoot && !candidate.startsWith(`${canonicalRoot}${sep}`)) {
             throw new Error("outside root");
           }
         },

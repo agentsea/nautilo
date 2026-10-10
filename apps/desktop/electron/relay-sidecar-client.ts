@@ -99,7 +99,7 @@ export function resolveDesktopRelayHostLaunch(options: {
   const architecture = options.architecture ?? process.arch;
   const resources = options.isPackaged ? options.resourcesPath! : dirname(options.devVendorRoot);
   const hostRoot = options.isPackaged ? join(resources, "tools-relay-host") : options.devVendorRoot;
-  const runtime = resolve(resources, "bun", architecture, "bun");
+  const runtime = resolve(resources, "bun", architecture, process.platform === "win32" ? "bun.exe" : "bun");
   const script = resolve(hostRoot, "nautilo-relay-host.js");
   const manifestPath = resolve(hostRoot, "manifest.json");
   try {

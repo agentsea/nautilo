@@ -72,6 +72,24 @@ describe("standalone dependency evidence", () => {
         archiveSha256: "b".repeat(64),
       });
       expect(absoluteEvidence).toEqual(evidence);
+      const cliDirectory = join(root, "apps/cli");
+      const fromCliDirectory = createStandaloneDependencyEvidence({
+        metafileBytes: Buffer.from(JSON.stringify({
+          inputs: {
+            "../../node_modules/example/index.js": {},
+            "../../packages/config/src/index.ts": {},
+            "src/index.ts": {},
+          },
+          outputs: { "dist/nautilo": {} },
+        })),
+        monorepoRoot: root,
+        compilerWorkingDirectory: cliDirectory,
+        source: "a".repeat(40),
+        platform: "darwin-arm64",
+        version: "1.2.3",
+        archiveSha256: "b".repeat(64),
+      });
+      expect(fromCliDirectory).toEqual(evidence);
 
       const overriddenEvidence = createStandaloneDependencyEvidence({
         metafileBytes,
@@ -97,7 +115,8 @@ describe("standalone dependency evidence", () => {
     }
   });
 
-  test("fails closed for external dependencies without declared licenses", () => {
+  test.each(["node_modules/unlicensed", "apps/cli/node_modules/unlicensed"])(
+    "fails closed for external dependencies without declared licenses (%s)", (dependency) => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-dependency-license-"));
     try {
       writeFileSync(join(root, "LICENSE"), "MIT fixture\n");
@@ -105,14 +124,14 @@ describe("standalone dependency evidence", () => {
         name: "@nautilo/cli", version: "1.2.3", license: "MIT",
       }));
       write(join(root, "apps/cli/src/index.ts"), "export {};\n");
-      write(join(root, "node_modules/unlicensed/package.json"), JSON.stringify({
+      write(join(root, dependency, "package.json"), JSON.stringify({
         name: "unlicensed", version: "1.0.0",
       }));
-      write(join(root, "node_modules/unlicensed/index.js"), "module.exports = {};\n");
+      write(join(root, dependency, "index.js"), "module.exports = {};\n");
       const metafileBytes = Buffer.from(JSON.stringify({
         inputs: {
           "apps/cli/src/index.ts": {},
-          "node_modules/unlicensed/index.js": {},
+          [`${dependency}/index.js`]: {},
         },
         outputs: { "dist/nautilo": {} },
       }));
@@ -126,6 +145,29 @@ describe("standalone dependency evidence", () => {
       })).toThrow(/external dependency has no declared license/);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a sibling sharing the repository prefix as input or compiler directory", () => {
+    const fixture = mkdtempSync(join(tmpdir(), "nautilo-evidence-boundary-"));
+    try {
+      const root = join(fixture, "repo");
+      const sibling = join(fixture, "repo-other");
+      write(join(root, "index.ts"), "export {};\n");
+      write(join(sibling, "index.ts"), "export {};\n");
+      const input = {
+        metafileBytes: Buffer.from(JSON.stringify({ inputs: { "../repo-other/index.ts": {} }, outputs: { "out": {} } })),
+        monorepoRoot: root,
+        source: "a".repeat(40),
+        platform: "darwin-arm64",
+        version: "1.2.3",
+        archiveSha256: "b".repeat(64),
+      };
+      expect(() => createStandaloneDependencyEvidence(input)).toThrow(/input escaped the monorepo/);
+      expect(() => createStandaloneDependencyEvidence({ ...input, compilerWorkingDirectory: sibling }))
+        .toThrow(/working directory must be inside the monorepo/);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
     }
   });
 });

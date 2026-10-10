@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 import {
   CLOUDFLARE_API_BASE,
@@ -526,7 +527,7 @@ describe("Cloudflare R2 OAuth feasibility probe", () => {
 
   test("qualification script refuses to run without the exact live-confirmation fence", async () => {
     const child = Bun.spawn(["bun", "scripts/qualify-cloudflare-r2-oauth.ts"], {
-      cwd: new URL("../..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("../..", import.meta.url)),
       env: { PATH: process.env["PATH"] ?? "" },
       stdout: "pipe",
       stderr: "pipe",

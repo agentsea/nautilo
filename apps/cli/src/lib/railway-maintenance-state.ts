@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants } from "node:fs";
-import { link, lstat, mkdir, open, readdir, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import { constants, type BigIntStats, type Stats } from "node:fs";
+import { link, lstat, open, readdir, unlink } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { isIP } from "node:net";
+import { createPrivateDirectory, isOwnedFilesystemPathAsync, isPrivateFilesystemPathAsync, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 import {
   parseMaintenanceReceipt,
@@ -1046,20 +1047,24 @@ function redacted(error: unknown): RailwayMaintenanceStateStoreError {
 function assertPaths(root: string, path: string): void {
   if (!isAbsolute(root) || resolve(root) !== root || !isAbsolute(path) || resolve(path) !== path
     || path.length > 4096 || root.length > 4096 || dirname(path) !== root
-    || !SAFE_ID.test(basename(path)) || !path.startsWith(`${root}${sep}`)) throw new RailwayMaintenanceStateStoreError("unsafe-path");
+    || !SAFE_ID.test(basename(path))) throw new RailwayMaintenanceStateStoreError("unsafe-path");
 }
-function assertOwned(status: Awaited<ReturnType<typeof lstat>>): void {
-  if (process.platform === "win32") return;
+async function assertOwned(status: Stats | BigIntStats, path: string): Promise<void> {
+  if (process.platform === "win32") {
+    if (await isPrivateFilesystemPathAsync(path)) return;
+    if (!await isOwnedFilesystemPathAsync(path)) throw new RailwayMaintenanceStateStoreError("unsafe-owner");
+    throw new RailwayMaintenanceStateStoreError("unsafe-permissions");
+  }
   if ((Number(status.mode) & 0o777) !== (status.isDirectory() ? DIRECTORY_MODE : FILE_MODE)) throw new RailwayMaintenanceStateStoreError("unsafe-permissions");
   const uid = process.getuid?.();
-  if (uid !== undefined && status.uid !== uid) throw new RailwayMaintenanceStateStoreError("unsafe-owner");
+  if (uid !== undefined && Number(status.uid) !== uid) throw new RailwayMaintenanceStateStoreError("unsafe-owner");
 }
 async function ownedDirectory(path: string, create: boolean): Promise<boolean> {
-  if (create) { try { await mkdir(path, { mode: DIRECTORY_MODE }); } catch (error) { if (!isCode(error, "EEXIST")) throw error; } }
+  if (create) { try { await createPrivateDirectory(path); } catch (error) { if (!isCode(error, "EEXIST")) throw error; } }
   let status;
   try { status = await lstat(path); } catch (error) { if (!create && isCode(error, "ENOENT")) return false; throw error; }
   if (status.isSymbolicLink() || !status.isDirectory()) throw new RailwayMaintenanceStateStoreError("unsafe-path");
-  assertOwned(status); return true;
+  await assertOwned(status, path); return true;
 }
 
 async function storeDirectory(root: string, path: string, create: boolean): Promise<boolean> {
@@ -1073,8 +1078,11 @@ function revisionName(revision: number): string {
   return `revision-${String(revision).padStart(10, "0")}.json`;
 }
 async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try { await handle.sync(); } finally { await handle.close(); }
+  const handle = await open(path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
+  try {
+    try { await handle.sync(); }
+    catch (error) { if (process.platform !== "win32" || !isCode(error, "EPERM")) throw error; }
+  } finally { await handle.close(); }
 }
 
 async function inventory(path: string): Promise<readonly { revision: number; path: string }[]> {
@@ -1084,7 +1092,7 @@ async function inventory(path: string): Promise<readonly { revision: number; pat
   for (const entry of entries) {
     const final = REVISION_FILE.exec(entry.name); const temp = TEMP_FILE.exec(entry.name);
     if (final === null && temp === null) throw new RailwayMaintenanceStateStoreError("unsafe-path");
-    const itemPath = `${path}/${entry.name}`; let status;
+    const itemPath = join(path, entry.name); let status;
     try { status = await lstat(itemPath); } catch (error) {
       // A concurrent publisher may remove its private temp after readdir. Final
       // revisions are immutable, so disappearance is safe only for temp files.
@@ -1092,7 +1100,7 @@ async function inventory(path: string): Promise<readonly { revision: number; pat
       throw error;
     }
     if (status.isSymbolicLink() || !status.isFile()) throw new RailwayMaintenanceStateStoreError("unsafe-path");
-    assertOwned(status); if (status.size > MAX_BYTES) throw new RailwayMaintenanceStateStoreError("state-too-large");
+    await assertOwned(status, itemPath); if (status.size > MAX_BYTES) throw new RailwayMaintenanceStateStoreError("state-too-large");
     if (final !== null) revisions.push({ revision: Number(final[1]), path: itemPath });
   }
   revisions.sort((a, b) => a.revision - b.revision);
@@ -1102,14 +1110,14 @@ async function inventory(path: string): Promise<readonly { revision: number; pat
 }
 
 async function readOne(path: string, revision: number): Promise<RailwayMaintenanceState> {
-  const before = await lstat(path);
+  const before = await lstat(path, { bigint: true });
   if (before.isSymbolicLink() || !before.isFile()) throw new RailwayMaintenanceStateStoreError("unsafe-path");
-  assertOwned(before); if (before.size > MAX_BYTES) throw new RailwayMaintenanceStateStoreError("state-too-large");
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  await assertOwned(before, path); if (before.size > MAX_BYTES) throw new RailwayMaintenanceStateStoreError("state-too-large");
+  const handle = await open(path, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
   try {
-    const status = await handle.stat();
+    const status = await handle.stat({ bigint: true });
     if (status.dev !== before.dev || status.ino !== before.ino || !status.isFile()) throw new RailwayMaintenanceStateStoreError("unsafe-path");
-    assertOwned(status); if (status.size > MAX_BYTES) throw new RailwayMaintenanceStateStoreError("state-too-large");
+    await assertOwned(status, path); if (status.size > MAX_BYTES) throw new RailwayMaintenanceStateStoreError("state-too-large");
     const payload = await handle.readFile(); const bytes = payload.toString("utf8");
     if (SECRET_BYTES.test(bytes)) throw new RailwayMaintenanceStateStoreError("invalid-state");
     let value: unknown; try { value = JSON.parse(bytes); } catch { throw new RailwayMaintenanceStateStoreError("invalid-json"); }
@@ -1136,12 +1144,13 @@ export async function readRailwayMaintenanceState(root: string, path: string): P
 }
 
 async function publish(path: string, state: RailwayMaintenanceState, options: WriteRailwayMaintenanceStateOptions): Promise<void> {
-  const finalPath = `${path}/${revisionName(state.revision)}`;
-  const temporary = `${path}/.${revisionName(state.revision).slice(0, -5)}.${String(process.pid)}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, "wx", FILE_MODE); let closed = false; let published = false;
+  const finalPath = join(path, revisionName(state.revision));
+  const temporary = join(path, `.${revisionName(state.revision).slice(0, -5)}.${String(process.pid)}.${randomUUID()}.tmp`);
+  let created = false; let published = false;
   try {
     const bytes = serialized(state); if (bytes === undefined) throw new RailwayMaintenanceStateStoreError("invalid-state");
-    await handle.writeFile(`${bytes}\n`, "utf8"); await handle.chmod(FILE_MODE); await handle.sync(); await handle.close(); closed = true;
+    await writePrivateFileExclusive(temporary, Buffer.from(`${bytes}\n`, "utf8"));
+    created = true;
     await options.hooks?.afterTempSync?.();
     try { await link(temporary, finalPath); } catch (error) { if (isCode(error, "EEXIST")) throw new RailwayMaintenanceStateStoreError("revision-conflict"); throw error; }
     published = true; await options.hooks?.afterPublish?.(); await syncDirectory(path); await options.hooks?.afterDirectorySync?.();
@@ -1150,8 +1159,7 @@ async function publish(path: string, state: RailwayMaintenanceState, options: Wr
     if (error instanceof RailwayMaintenanceStateStoreError) throw error;
     throw new RailwayMaintenanceStateStoreError(published ? "publish-unknown" : "io-failure");
   } finally {
-    if (!closed) try { await handle.close(); } catch { /* preserve primary */ }
-    if (!published) try { await unlink(temporary); } catch { /* kill-shaped orphan */ }
+    if (created && !published) try { await unlink(temporary); } catch { /* kill-shaped orphan */ }
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { lstat, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import type { ChildIdentity, HostTimer } from "@nautilo/codex-app-server-host/internal";
 import {
   createElectronCodexProductionHostFactory,
@@ -60,12 +61,14 @@ describe("production Electron Codex host factory", () => {
     const parent = await mkdtemp(join(tmpdir(), "nautilo-codex-production-"));
     const paths = pathsUnder(parent);
     try {
+      await secureFilesystemPath(parent);
       await prepareSecureCodexDirectories({ ...paths, currentUid: process.getuid?.() ?? -1 });
       for (const directory of Object.values(paths)) {
         const info = await lstat(directory);
         expect(info.isDirectory()).toBeTrue();
         expect(info.isSymbolicLink()).toBeFalse();
-        expect(info.mode & 0o077).toBe(0);
+        expect(await isPrivateFilesystemPathAsync(directory)).toBe(true);
+        if (process.platform !== "win32") expect(info.mode & 0o077).toBe(0);
       }
     } finally {
       await rm(parent, { recursive: true, force: true });
@@ -77,7 +80,8 @@ describe("production Electron Codex host factory", () => {
     const target = await mkdtemp(join(tmpdir(), "nautilo-codex-target-"));
     const paths = pathsUnder(parent);
     try {
-      await symlink(target, paths.codexHostDirPath);
+      await secureFilesystemPath(parent);
+      await symlink(target, paths.codexHostDirPath, process.platform === "win32" ? "junction" : "dir");
       await expect(prepareSecureCodexDirectories({ ...paths, currentUid: process.getuid?.() ?? -1 }))
         .rejects.toThrow("unsafe_codex_host_directory");
     } finally {

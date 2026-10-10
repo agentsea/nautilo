@@ -7,7 +7,7 @@
  * and on-disk effects remain assertions for the pinned native extraction.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { describe, expect, test } from "bun:test";
 import {
   applyPatchChildExecutionReportSchema,
@@ -42,7 +42,7 @@ function readJson(relativePath: string): unknown {
 function collectFixtureFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
     const path = join(directory, entry.name);
-    return entry.isDirectory() ? collectFixtureFiles(path) : [relative(FIXTURE_ROOT, path)];
+    return entry.isDirectory() ? collectFixtureFiles(path) : [relative(FIXTURE_ROOT, path).split(sep).join("/")];
   });
 }
 

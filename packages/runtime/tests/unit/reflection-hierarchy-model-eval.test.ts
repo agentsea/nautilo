@@ -3,6 +3,7 @@ import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AIMessage } from "@langchain/core/messages";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import type { EvaluationChatModel } from "@nautilo/agent/model-evaluation";
 import {
   createExactHierarchyModelInvoker,
@@ -94,7 +95,8 @@ describe("explicit hierarchy model benchmark boundary", () => {
     const path = await writeTransientBenchmarkReport(input);
     expect(path).not.toContain("secret-looking-model-name");
     expect(await readFile(path, "utf8")).toBe(input.report);
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(path)).toBe(true);
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
     let rejected = false;
     try {
       await writeTransientBenchmarkReport(input);

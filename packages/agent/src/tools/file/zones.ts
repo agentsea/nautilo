@@ -23,6 +23,7 @@
 import * as path from "node:path";
 import { realpath } from "node:fs/promises";
 import { getArtifactsRoot } from "@nautilo/config";
+import { isRelayPathWithinRoot, pathApiForRelayPath } from "@nautilo/relay";
 
 export type FsZone =
   | "workspace"
@@ -118,13 +119,14 @@ export function resolveZone(
   }
 
   if (effectiveZone === "absolute") {
-    if (!path.isAbsolute(rawPath)) {
+    const paths = pathApiForRelayPath(rawPath);
+    if (!paths.isAbsolute(rawPath)) {
       return {
         ok: false,
         reason: `zone="absolute" requires an absolute path (got ${rawPath.slice(0, 80)})`,
       };
     }
-    const normalized = path.normalize(rawPath);
+    const normalized = paths.normalize(rawPath);
     return { ok: true, resolved: normalized, resolvedZone: "absolute" };
   }
 
@@ -145,7 +147,8 @@ export function resolveZone(
     };
   }
 
-  if (!path.isAbsolute(root)) {
+  const paths = pathApiForRelayPath(root);
+  if (!paths.isAbsolute(root)) {
     return {
       ok: false,
       reason: `zone root is not absolute (${root}) — boot-order bug`,
@@ -156,7 +159,7 @@ export function resolveZone(
   // reject. It's unambiguous intent-mismatch — they meant
   // zone="absolute" but typed the wrong zone. Better to surface the
   // bug than silently ignore the zone argument.
-  if (path.isAbsolute(rawPath)) {
+  if (paths.isAbsolute(rawPath) || pathApiForRelayPath(rawPath).isAbsolute(rawPath)) {
     return {
       ok: false,
       reason: `zone="${zone}" expects a relative path (got absolute ${rawPath.slice(0, 80)}); use zone="absolute" for absolute paths`,
@@ -165,17 +168,14 @@ export function resolveZone(
 
   // Join with the optional prefix (scratch alias) first so path-
   // traversal is checked against the full joined result.
-  const joined = path.join(root, effectivePathPrefix, rawPath);
-  const resolved = path.normalize(joined);
+  const joined = paths.join(root, effectivePathPrefix, rawPath);
+  const resolved = paths.normalize(joined);
 
   // Under-root check: after normalization, the resolved path must
   // still start with the root. This catches `..`-based traversal
   // attempts that cancel out (e.g. `foo/../../../etc/passwd`).
-  const rootNormalized = path.normalize(root);
-  const rootWithSep = rootNormalized.endsWith(path.sep)
-    ? rootNormalized
-    : rootNormalized + path.sep;
-  if (resolved !== rootNormalized && !resolved.startsWith(rootWithSep)) {
+  const rootNormalized = paths.normalize(root);
+  if (!isRelayPathWithinRoot(rootNormalized, resolved)) {
     return {
       ok: false,
       reason: `resolved path escapes zone root (${resolved} not under ${rootNormalized})`,

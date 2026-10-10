@@ -5,6 +5,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 import { payloadByteCount, snapshotFromBytes } from "./hash.ts";
 import {
@@ -551,6 +552,7 @@ function buildTempPath(targetPath: string): string {
 async function writeFileRestricted(filePath: string, bytes: Uint8Array): Promise<void> {
   const handle = await fs.open(filePath, "w", FILE_MODE);
   try {
+    if (process.platform === "win32") await secureFilesystemPath(filePath);
     await handle.writeFile(bytes);
     await handle.sync();
   } finally {
@@ -580,8 +582,14 @@ async function writeAtomicJson(
 ): Promise<void> {
   const tmpPath = buildTempPath(filePath);
   const body = Buffer.from(JSON.stringify(value), "utf8");
+  let created = false;
   try {
-    const handle = await fs.open(tmpPath, "w", FILE_MODE);
+    if (process.platform === "win32") {
+      await writePrivateFileExclusive(tmpPath, Buffer.alloc(0));
+      created = true;
+    }
+    const handle = await fs.open(tmpPath, process.platform === "win32" ? "r+" : "wx", FILE_MODE);
+    created = true;
     try {
       await options.onManifestAtomicWriteBoundary?.("temp_opened");
       await handle.writeFile(body);
@@ -593,13 +601,15 @@ async function writeAtomicJson(
     }
     await fs.rename(tmpPath, filePath);
     await options.onManifestAtomicWriteBoundary?.("manifest_renamed");
-    await fs.chmod(filePath, FILE_MODE);
+    // Windows retains the private DACL assigned to the temporary file.
+    // Do not rewrite that DACL after publication while readers can hold it.
+    if (process.platform !== "win32") await fs.chmod(filePath, FILE_MODE);
     await options.onManifestAtomicWriteBoundary?.("manifest_mode_restored");
     await syncDirectory(path.dirname(filePath));
     await options.onManifestAtomicWriteBoundary?.("directory_synced");
   } catch (err) {
     try {
-      await fs.rm(tmpPath, { force: true });
+      if (created) await fs.rm(tmpPath, { force: true });
     } catch {
       /* ignore */
     }
@@ -617,16 +627,16 @@ export function createJournalStorage(
   async function entryDir(entryId: string): Promise<string> {
     const dir = path.join(payloadsRoot, entryId);
     await fs.mkdir(dir, { recursive: true, mode: DIR_MODE });
-    await fs.chmod(dir, DIR_MODE);
+    await secureFilesystemPath(dir);
     return dir;
   }
 
   return {
     async ensureRoot() {
       await fs.mkdir(rootDir, { recursive: true, mode: DIR_MODE });
-      await fs.chmod(rootDir, DIR_MODE);
+      await secureFilesystemPath(rootDir);
       await fs.mkdir(payloadsRoot, { recursive: true, mode: DIR_MODE });
-      await fs.chmod(payloadsRoot, DIR_MODE);
+      await secureFilesystemPath(payloadsRoot);
     },
 
     async readManifest() {
@@ -774,7 +784,7 @@ export function createJournalStorage(
       for (const [index, pair] of states.entries()) {
         const itemRoot = path.join(operationRoot, String(index));
         await fs.mkdir(itemRoot, { recursive: true, mode: DIR_MODE });
-        await fs.chmod(itemRoot, DIR_MODE);
+        await secureFilesystemPath(itemRoot);
 
         async function persistState(
           label: "before" | "after",

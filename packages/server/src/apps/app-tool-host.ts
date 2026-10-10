@@ -2,7 +2,8 @@ import * as fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { join } from "node:path";
+import { pathApiForRelayPath } from "@nautilo/relay";
 import {
   createWorkspaceBinaryArtifact,
   createFileMutationRequestId,
@@ -259,8 +260,9 @@ async function rejectOpenLiveReviewWrite(
     return;
   }
   const relativePath = "relativePath" in target ? target.relativePath : target.path;
-  const candidatePath = resolve(context.currentFolder, relativePath);
-  if (!isAbsolute(candidatePath)) return;
+  const relayPath = pathApiForRelayPath(context.currentFolder);
+  const candidatePath = relayPath.resolve(context.currentFolder, relativePath);
+  if (!relayPath.isAbsolute(candidatePath)) return;
   const relayHint = resolveFocusedRelayHintForPath({
     path: relativePath,
     zone: "current",

@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
-import { readdir } from "node:fs/promises";
+import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import { createMaintenanceReceipt } from "@nautilo/hosting";
 import {
@@ -241,7 +242,16 @@ function candidateBinding(
 
 export async function discoverRailwayMaintenanceStates(root: string): Promise<readonly RailwayMaintenanceState[]> {
   let entries;
-  try { entries = await readdir(root, { withFileTypes: true }); } catch { return []; }
+  try {
+    const status = await lstat(root);
+    if (status.isSymbolicLink() || !status.isDirectory() || !await isPrivateFilesystemPathAsync(root)) {
+      throw new Error("Railway maintenance discovery failed");
+    }
+    entries = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return [];
+    throw new Error("Railway maintenance discovery failed");
+  }
   if (entries.length > 1024) throw new Error("Railway maintenance discovery failed");
   const found: RailwayMaintenanceState[] = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ProtectedPathPolicy } from "@nautilo/security";
 import type { SecurityScanToolResult, SecurityScanTrustedContext } from "@nautilo/types";
@@ -70,7 +70,7 @@ describe("D560 Desktop security research coordinator", () => {
     const data = await mkdtemp(join(tmpdir(), "scan-data-"));
     try {
       await writeFile(join(root, "restricted.ts"), "export const restricted = true;\n");
-      const { coordinator } = await coordinatorFor(root, data, {}, (path) => !path.endsWith("/restricted.ts"));
+      const { coordinator } = await coordinatorFor(root, data, {}, (path) => basename(path) !== "restricted.ts");
       const scanId = startedScanId(await coordinator.dispatch(start("deep_research", "start", root)));
       expect(await coordinator.dispatch({ expectedCurrentFolder: root, trustedContext: trusted("restricted-citation"), operation: {
         version: "security-scan-v1", operation: "record", scanId, action: "append", fileCitations: [{ relativePath: "restricted.ts", startLine: 1, endLine: 1 }],
@@ -87,7 +87,7 @@ describe("D560 Desktop security research coordinator", () => {
       const repo = join(root, "repo");
       await mkdir(repo);
       await writeFile(join(repo, "auth.ts"), "export const ok = true;\n");
-      await symlink(outside, join(root, "escape"));
+      await symlink(outside, join(root, "escape"), process.platform === "win32" ? "junction" : "dir");
       const scanned: string[] = [];
       const { coordinator } = await coordinatorFor(root, data, {
         resolveGitleaks: async () => ({ state: "ready", internalPath: "/managed/gitleaks" }),
@@ -112,7 +112,7 @@ describe("D560 Desktop security research coordinator", () => {
       const results = await coordinator.dispatch({ operation: { version: "security-scan-v1", operation: "results", scanId: startedScanId(result), category: "all" }, trustedContext: trusted("results"), expectedCurrentFolder: root });
       expect(results).toMatchObject({ ok: true, operation: "results", result: { observations: [{ relativePath: "repo/auth.ts" }] } });
       await rm(repo, { recursive: true });
-      await symlink(outside, repo);
+      await symlink(outside, repo, process.platform === "win32" ? "junction" : "dir");
       expect(await coordinator.dispatch({ operation: { version: "security-scan-v1", operation: "status", scanId: startedScanId(result) }, trustedContext: trusted("status"), expectedCurrentFolder: root })).toMatchObject({ ok: false, error: { code: "root_revoked" } });
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -150,7 +150,10 @@ describe("D560 Desktop security research coordinator", () => {
       const source = Buffer.from("const secret = 'do-not-leak';\r\nexport const safe = true;\r\n", "utf8");
       await writeFile(join(root, "safe.ts"), source);
       await writeFile(join(outside, "outside.ts"), "const escaped = true;\n");
-      await symlink(join(outside, "outside.ts"), join(root, "escape.ts"));
+      const escapedPath = process.platform === "win32" ? "escape/outside.ts" : "escape.ts";
+      await symlink(process.platform === "win32" ? outside : join(outside, "outside.ts"),
+        join(root, process.platform === "win32" ? "escape" : "escape.ts"),
+        process.platform === "win32" ? "junction" : "file");
       const { coordinator } = await coordinatorFor(root, data);
       const opened = await coordinator.dispatch(start("deep_research", "tool-deep", root));
       expect(opened).toMatchObject({ ok: true, result: { state: "active", phase: "researching" } });
@@ -216,7 +219,7 @@ describe("D560 Desktop security research coordinator", () => {
         operation: {
           version: "security-scan-v1", operation: "record", scanId, action: "append",
           entry: { kind: "evidence", summary: "This should never be admitted.", evidenceRefs: [] },
-          fileCitations: [{ relativePath: "escape.ts", startLine: 1, endLine: 1 }],
+          fileCitations: [{ relativePath: escapedPath, startLine: 1, endLine: 1 }],
         },
         trustedContext: trusted("tool-escape"), expectedCurrentFolder: root,
       });

@@ -528,8 +528,8 @@ export class DesktopDocumentMutationRuntime {
     }
   }
 
-  /** Main-process shutdown/test seam; durable pending batches remain intact. */
-  stopOutboxPump(): void {
+  /** Fence new work immediately; callers can await owned journal I/O before cleanup. */
+  stopOutboxPump(): Promise<void> {
     this.outboxPumpStopped = true;
     if (this.outboxPumpTimer !== undefined) {
       clearTimeout(this.outboxPumpTimer);
@@ -537,6 +537,7 @@ export class DesktopDocumentMutationRuntime {
       this.outboxPumpTimerAt = undefined;
     }
     this.outboxPumpRequested = false;
+    return this.outboxPumpRunning ?? Promise.resolve();
   }
 
   /**

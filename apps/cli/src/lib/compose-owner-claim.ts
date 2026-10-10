@@ -1,4 +1,5 @@
 import type { ComposeDriverProfile } from "@nautilo/compose-driver";
+import { homedir } from "node:os";
 import {
   advanceComposeOwnerStage,
   prepareComposeOwnerStage,
@@ -159,8 +160,8 @@ function exactOriginPolicy(expected: string): OwnerClaimTargetTransportPolicy {
 }
 
 function homeDirectory(): string {
-  const home = process.env["HOME"]?.trim();
-  if (!home) throw new Error("HOME is not set; owner claim custody is unavailable");
+  const home = process.env["HOME"]?.trim() || homedir();
+  if (!home) throw new Error("User home is unavailable; owner claim custody is unavailable");
   return home;
 }
 

@@ -1,11 +1,12 @@
 import "../bun-dom-preload";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 let reloadCount = 0;
 
 mock.module(
-  new URL("../../../../assets/brand/nautilo-logo_v1_logo_only_transparent.png?inline", import.meta.url).pathname + "?inline",
+  fileURLToPath(new URL("../../../../assets/brand/nautilo-logo_v1_logo_only_transparent.png?inline", import.meta.url)) + "?inline",
   () => ({ default: "data:image/png;base64,nautilo-brand-mark" }),
 );
 

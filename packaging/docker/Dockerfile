@@ -85,6 +85,7 @@ COPY patches/@oomol-lab%2Fconnector@1.1.0.patch \
      patches/@oomol-lab%2Fconnector@1.1.0.patch
 COPY patches/@langchain%2Flanggraph@1.2.9.patch \
      patches/@langchain%2Flanggraph@1.2.9.patch
+COPY patches/knip@5.88.1.patch patches/knip@5.88.1.patch
 COPY apps/cli/package.json                       apps/cli/package.json
 COPY apps/desktop/package.json                   apps/desktop/package.json
 COPY apps/mobile/package.json                    apps/mobile/package.json

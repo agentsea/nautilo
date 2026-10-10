@@ -1,11 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { rejects } from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPathAsync, secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
 import {
   clearCliSession,
   compareCliSessionProfileNames,
+  CliSessionFileModeError,
   CliSessionSecurityError,
   cliSessionPath,
   loadCliSession,
@@ -41,16 +46,19 @@ function sessionRow(handle: string) {
 describe("cli-session per-profile + migration (M108 1.1)", () => {
   let dir: string;
   let prevInstance: string | undefined;
+  let prevOverride: string | undefined;
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "nautilo-cli-session-profile-"));
+    prevOverride = process.env["NAUTILO_HOME_OVERRIDE"];
     process.env["NAUTILO_HOME_OVERRIDE"] = dir;
     prevInstance = process.env["NAUTILO_INSTANCE_ID"];
     delete process.env["NAUTILO_INSTANCE_ID"];
   });
 
   afterEach(() => {
-    delete process.env["NAUTILO_HOME_OVERRIDE"];
+    if (prevOverride === undefined) delete process.env["NAUTILO_HOME_OVERRIDE"];
+    else process.env["NAUTILO_HOME_OVERRIDE"] = prevOverride;
     if (prevInstance !== undefined) {
       process.env["NAUTILO_INSTANCE_ID"] = prevInstance;
     } else {
@@ -75,11 +83,10 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     );
   });
 
-  test("saveCliSession + loadCliSession round-trip per profile with mode 0600", async () => {
+  test("saveCliSession + loadCliSession round-trip per profile with private permissions", async () => {
     const row = sessionRow("alpha");
     await saveCliSession(row, { profile: "alpha" });
-    const st = await stat(join(rootDir(), "sessions", "alpha.json"));
-    expect(st.mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(join(rootDir(), "sessions", "alpha.json"))).toBe(true);
     const loaded = await loadCliSession({ profile: "alpha" });
     expect(loaded?.handle).toBe("alpha");
   });
@@ -111,7 +118,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     const legacyPath = join(r, "cli-session.json");
     const payload = JSON.stringify(sessionRow("mig"), null, 2);
     writeFileSync(legacyPath, `${payload}\n`, { mode: 0o600 });
-    chmodSync(legacyPath, 0o600);
+    secureFilesystemPathSync(legacyPath);
 
     expect(await migrateLegacySessionFile("default")).toBe(true);
     expect(await migrateLegacySessionFile("default")).toBe(false);
@@ -120,8 +127,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(() => readFileSync(legacyPath, "utf-8")).toThrow();
     expect(readFileSync(`${legacyPath}.bak`, "utf-8")).toContain('"handle": "mig"');
     expect(readFileSync(target, "utf-8")).toContain('"handle": "mig"');
-    const st = await stat(target);
-    expect(st.mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(target)).toBe(true);
   });
 
   test("migrateLegacySessionFile: false when target profile file exists", async () => {
@@ -139,7 +145,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
       `${JSON.stringify(sessionRow("leg"), null, 2)}\n`,
       { mode: 0o600 },
     );
-    chmodSync(join(r, "cli-session.json"), 0o600);
+    secureFilesystemPathSync(join(r, "cli-session.json"));
 
     expect(await migrateLegacySessionFile("default")).toBe(false);
     expect(readFileSync(join(r, "cli-session.json"), "utf-8")).toContain("leg");
@@ -160,7 +166,7 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
       `${JSON.stringify(sessionRow("leg"), null, 2)}\n`,
       { mode: 0o600 },
     );
-    chmodSync(join(r, "cli-session.json"), 0o600);
+    secureFilesystemPathSync(join(r, "cli-session.json"));
 
     expect(await migrateLegacySessionFile("default")).toBe(false);
     expect(readFileSync(join(r, "cli-session.json"), "utf-8")).toContain("leg");
@@ -181,35 +187,39 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect((await loadCliSession({ profile }))?.handle).toBe("unicode");
   });
 
-  test("hardens an owned historical sessions directory instead of rejecting it", async () => {
+  test("restricts an owned historical sessions directory before writing", async () => {
     const r = rootDir();
     const sessions = join(r, "sessions");
     await mkdir(sessions, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
-    chmodSync(sessions, 0o755);
+    allowOtherReadersSync(sessions);
     await saveCliSession(sessionRow("hardened"), { profile: "prod" });
-    expect((await stat(sessions)).mode & 0o777).toBe(0o700);
+    expect(await isPrivateFilesystemPathAsync(sessions)).toBe(true);
   });
 
   test("rejects a symlinked sessions parent during load", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
-    symlinkSync("/tmp", join(r, "sessions"));
-    expect(loadCliSession({ profile: "prod" })).rejects.toBeInstanceOf(CliSessionSecurityError);
+    const outside = join(dir, "outside");
+    await mkdir(outside);
+    symlinkSync(outside, join(r, "sessions"), process.platform === "win32" ? "junction" : "dir");
+    await rejects(loadCliSession({ profile: "prod" }), CliSessionSecurityError);
   });
 
   test("refuses a symlinked session file", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
-    symlinkSync("/tmp/not-a-session", join(r, "cli-session.json"));
-    expect(loadCliSession()).rejects.toBeInstanceOf(CliSessionSecurityError);
+    const outside = join(dir, "outside");
+    await mkdir(outside);
+    symlinkSync(outside, join(r, "cli-session.json"), process.platform === "win32" ? "junction" : "dir");
+    await rejects(loadCliSession(), CliSessionSecurityError);
   });
 
   test("clear removes an owned regular session even when its mode is insecure", async () => {
     await saveCliSession(sessionRow("clear-mode"));
-    chmodSync(cliSessionPath(), 0o644);
+    allowOtherReadersSync(cliSessionPath());
     await clearCliSession();
     expect(existsSync(cliSessionPath())).toBe(false);
   });
@@ -219,19 +229,21 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
     writeFileSync(cliSessionPath(), "{ malformed", { mode: 0o600 });
-    chmodSync(cliSessionPath(), 0o600);
-    expect(loadCliSession()).rejects.toBeInstanceOf(CliSessionSecurityError);
+    secureFilesystemPathSync(cliSessionPath());
+    await rejects(loadCliSession(), CliSessionSecurityError);
     writeFileSync(cliSessionPath(), "{}", { mode: 0o600 });
-    chmodSync(cliSessionPath(), 0o600);
-    expect(loadCliSession()).rejects.toBeInstanceOf(CliSessionSecurityError);
+    secureFilesystemPathSync(cliSessionPath());
+    await rejects(loadCliSession(), CliSessionSecurityError);
   });
 
   test("accepts an owned legacy root with compatible non-0700 mode", async () => {
     const r = rootDir();
     await mkdir(r, { recursive: true, mode: 0o700 });
-    chmodSync(r, 0o755);
+    allowOtherReadersSync(r);
+    expect(await isPrivateFilesystemPathAsync(r)).toBe(false);
     await saveCliSession(sessionRow("root-compatible"));
     expect((await loadCliSession())?.handle).toBe("root-compatible");
+    expect(await isPrivateFilesystemPathAsync(r)).toBe(false);
   });
 
   test("fails closed instead of racing to reclaim a dead-owner lock", async () => {
@@ -240,8 +252,8 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     chmodSync(r, 0o700);
     const lock = join(r, "cli-session.json.lock");
     writeFileSync(lock, JSON.stringify({ pid: 999_999_999, nonce: "dead", createdAt: 1 }), { mode: 0o600 });
-    chmodSync(lock, 0o600);
-    expect(saveCliSession(sessionRow("blocked"))).rejects.toBeDefined();
+    secureFilesystemPathSync(lock);
+    await rejects(saveCliSession(sessionRow("blocked")));
     expect(readFileSync(lock, "utf8")).toContain('"dead"');
   });
 
@@ -251,8 +263,8 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     chmodSync(r, 0o700);
     const lock = join(r, "cli-session.json.lock");
     writeFileSync(lock, JSON.stringify({ pid: process.pid, nonce: "live", createdAt: Date.now() }), { mode: 0o600 });
-    chmodSync(lock, 0o600);
-    expect(saveCliSession(sessionRow("blocked"))).rejects.toBeDefined();
+    secureFilesystemPathSync(lock);
+    await rejects(saveCliSession(sessionRow("blocked")));
     expect(readFileSync(lock, "utf8")).toContain('"live"');
   });
 
@@ -296,10 +308,10 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     await mkdir(r, { recursive: true, mode: 0o700 });
     chmodSync(r, 0o700);
     writeFileSync(join(r, "cli-session.json"), JSON.stringify(sessionRow("legacy")), { mode: 0o600 });
-    chmodSync(join(r, "cli-session.json"), 0o600);
+    secureFilesystemPathSync(join(r, "cli-session.json"));
     writeFileSync(join(r, "cli-session.json.bak"), "existing", { mode: 0o600 });
-    chmodSync(join(r, "cli-session.json.bak"), 0o600);
-    expect(migrateLegacySessionFile("prod")).rejects.toBeInstanceOf(CliSessionSecurityError);
+    secureFilesystemPathSync(join(r, "cli-session.json.bak"));
+    await rejects(migrateLegacySessionFile("prod"), CliSessionSecurityError);
   });
 
   test("serializes a concurrent legacy save and migration without clobbering either session", async () => {
@@ -317,5 +329,49 @@ describe("cli-session per-profile + migration (M108 1.1)", () => {
     expect(legacy?.handle === "legacy-after" || profiled?.handle === "legacy-after").toBe(true);
     expect(existsSync(join(r, "cli-session.json.lock"))).toBe(false);
     expect(existsSync(join(r, "sessions", "prod.json.lock"))).toBe(false);
+  });
+
+  test("two processes publish complete sessions without leaving lock files", async () => {
+    const profile = "shared";
+    await saveCliSession(sessionRow("parent"), { profile });
+    const moduleUrl = new URL("../../src/cli-session-store.ts", import.meta.url).href;
+    const handles = ["writer-a", "writer-b"];
+    const children = handles.map((handle) => {
+      const script = `const { saveCliSession } = await import(${JSON.stringify(moduleUrl)});
+await saveCliSession(${JSON.stringify(sessionRow(handle))}, { profile: ${JSON.stringify(profile)} });`;
+      return spawn(process.execPath, ["--eval", script], {
+        env: process.env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      });
+    });
+    try {
+      const outcomes = await Promise.all(children.map((child) => new Promise<{ code: number | null; error: string }>((resolve) => {
+        let error = "";
+        child.stdout?.resume();
+        child.stderr?.on("data", (chunk: Buffer) => { error += chunk.toString("utf8"); });
+        child.on("error", (failure) => { error += failure.message; });
+        child.on("close", (code) => resolve({ code, error }));
+      })));
+      for (const outcome of outcomes) expect(outcome.code, outcome.error).toBe(0);
+      const saved = await loadCliSession({ profile });
+      if (saved === null) throw new Error("Concurrent writers left no readable CLI session");
+      expect(handles).toContain(saved.handle);
+      expect(await isPrivateFilesystemPathAsync(cliSessionPath({ profile }))).toBe(true);
+      expect(await readdir(join(rootDir(), "sessions"))).toEqual(["shared.json"]);
+    } finally {
+      for (const child of children) {
+        if (child.exitCode === null && child.signalCode === null) child.kill();
+      }
+    }
+  }, 15_000);
+
+  test("refuses public credentials without changing their bytes or permissions", async () => {
+    await mkdir(rootDir(), { recursive: true });
+    const contents = JSON.stringify(sessionRow("blocked"));
+    writeFileSync(cliSessionPath(), contents, { mode: 0o600 });
+    allowOtherReadersSync(cliSessionPath());
+    const result = await loadCliSession().catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(CliSessionFileModeError);
+    expect(await isPrivateFilesystemPathAsync(cliSessionPath())).toBe(false);
+    expect(readFileSync(cliSessionPath(), "utf8")).toBe(contents);
   });
 });

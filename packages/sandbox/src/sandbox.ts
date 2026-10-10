@@ -7,7 +7,7 @@
 import { log, warn } from "@nautilo/logger";
 
 import { buildBubblewrap } from "./bubblewrap";
-import { canonicalize, pushUniquePath } from "./paths";
+import { canonicalize, isUnderRoot, pushUniquePath } from "./paths";
 import { buildPassthrough } from "./passthrough";
 import { buildSandboxExec } from "./seatbelt";
 import {
@@ -518,16 +518,4 @@ function describeBackend(backend: SandboxBackend): string {
     case "none":
       return "none";
   }
-}
-
-/**
- * True if `candidate` is equal to `root` OR starts with `root` + a
- * path separator. Token-boundary check (H-012) — prevents the
- * "/foo" matches "/foobar" class of bug. Callers canonicalize both
- * sides before reaching this helper.
- */
-function isUnderRoot(candidate: string, root: string): boolean {
-  if (candidate === root) return true;
-  const sep = root.endsWith("/") ? "" : "/";
-  return candidate.startsWith(root + sep);
 }

@@ -1,20 +1,18 @@
 import { existsSync } from "node:fs";
 import {
-  chmod,
   copyFile,
-  mkdir,
   readFile,
   rename,
   rm,
-  writeFile,
 } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   resolveInstance,
   resolveInstanceUncached,
   resolveNautiloStorageRoot,
 } from "@nautilo/config";
+import { createPrivateDirectory, ensurePrivateDirectory, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import {
   resolveSnapshotDir,
   resolveSnapshotsDir,
@@ -134,12 +132,12 @@ function collectRowAnchors(
   return anchors;
 }
 
-function archiveNautiloHome(root: string, outputPath: string): void {
+export function archiveNautiloHome(root: string, outputPath: string): void {
   const result = spawnSync(
     "tar",
     [
       "czf",
-      outputPath,
+      basename(outputPath),
       "--exclude=dev-snapshots",
       "--exclude=emergency-backups",
       "--exclude=instance.env",
@@ -156,10 +154,10 @@ function archiveNautiloHome(root: string, outputPath: string): void {
       "--exclude=clone-operation.json",
       "--exclude=.protected-instance",
       "-C",
-      root,
+      resolve(root),
       ".",
     ],
-    { encoding: "utf8" },
+    { cwd: dirname(outputPath), encoding: "utf8" },
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -212,10 +210,9 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
     throw new Error(`A full development backup requires instance.env at ${envPath}`);
   }
 
-  await mkdir(snapshotsDir, { recursive: true, mode: 0o700 });
-  await chmod(snapshotsDir, 0o700);
+  await ensurePrivateDirectory(snapshotsDir);
   const stagingDir = join(snapshotsDir, `.${name}.staging-${process.pid}-${Date.now()}`);
-  await mkdir(stagingDir, { mode: 0o700 });
+  await createPrivateDirectory(stagingDir);
 
   const mode = options.mode ?? "dump";
   const databaseFile = mode === "dump" ? "database.sql.gz" : "basebackup.tar.gz";
@@ -259,7 +256,7 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
           });
         } else {
           pgBaseBackupTarGzip(databasePath);
-          await chmod(databasePath, 0o600);
+          await secureFilesystemPath(databasePath);
         }
 
         log("  Dumping complete Logto database...");
@@ -270,9 +267,9 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
         });
 
         await copyFile(envPath, envDest);
-        await chmod(envDest, 0o600);
+        await secureFilesystemPath(envDest);
         archiveNautiloHome(sourceRoot, homePath);
-        await chmod(homePath, 0o600);
+        await secureFilesystemPath(homePath);
 
         const finalDatabaseLedger = readDatabaseMigrationLedger(
           c.legacyPostgres,
@@ -340,9 +337,9 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
           .split(/\r?\n/)
           .filter((line) => line.trim() && !line.trim().startsWith("#") && line.includes("="))
           .length;
-        await writeFile(
+        await writePrivateFileExclusive(
           join(stagingDir, "meta.json"),
-          `${JSON.stringify(
+          new TextEncoder().encode(`${JSON.stringify(
             {
               name,
               createdAt,
@@ -357,8 +354,7 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
             },
             null,
             2,
-          )}\n`,
-          { encoding: "utf8", mode: 0o600 },
+          )}\n`),
         );
 
         // The manifest is the backup commit record and is written last.
@@ -367,7 +363,7 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
     );
 
     await rename(stagingDir, finalDir);
-    await chmod(finalDir, 0o700);
+    await secureFilesystemPath(finalDir);
     const manifest = JSON.parse(
       await readFile(join(finalDir, "manifest.json"), "utf8"),
     ) as DevFullBackupManifestV2;

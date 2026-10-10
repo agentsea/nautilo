@@ -43,9 +43,9 @@ import {
   type WorkstationDiscoveryExec,
 } from "../../electron/workstation-profiles/discovery";
 
-const HOME = nodePath.join(nodePath.sep, "Users", "dev");
+const HOME = nodePath.resolve(nodePath.sep, "Users", "dev");
 const NOW = new Date("2026-07-13T12:00:00.000Z");
-const JDK_HOME = "/Library/Java/JavaVirtualMachines/temurin-17/Contents/Home";
+const JDK_HOME = nodePath.resolve("/Library/Java/JavaVirtualMachines/temurin-17/Contents/Home");
 const ANDROID_SDK = nodePath.join(HOME, "Library", "Android", "sdk");
 
 interface FakeSeams {
@@ -57,13 +57,21 @@ interface FakeSeams {
   readonly envCalls: string[];
 }
 
+function canonicalExecKey(key: string): string {
+  const separator = key.indexOf("\u0000");
+  if (separator < 0) throw new Error("Invalid executable fixture key");
+  const executable = key.slice(0, separator);
+  return (nodePath.isAbsolute(executable) ? nodePath.resolve(executable) : executable) + key.slice(separator);
+}
+
 function createFakeSeams(options: {
   existing?: readonly string[];
   execResponses?: ReadonlyMap<string, string>;
   env?: Record<string, string>;
 }): FakeSeams {
-  const existing = new Set(options.existing ?? []);
-  const execResponses = options.execResponses ?? new Map();
+  const existing = new Set((options.existing ?? []).map(value => nodePath.resolve(value)));
+  const execResponses = new Map([...(options.execResponses ?? new Map<string, string>())]
+    .map(([key, value]) => [canonicalExecKey(key), value]));
   const env = options.env ?? {};
   const execCalls: Array<{ file: string; args: readonly string[] }> = [];
   const envCalls: string[] = [];
@@ -73,7 +81,7 @@ function createFakeSeams(options: {
     envCalls,
     fs: {
       async access(path: string) {
-        if (existing.has(path)) return;
+        if (existing.has(nodePath.resolve(path))) return;
         const err = new Error(`ENOENT: ${path}`) as NodeJS.ErrnoException;
         err.code = "ENOENT";
         throw err;
@@ -81,7 +89,7 @@ function createFakeSeams(options: {
     },
     exec: ((file: string, args: readonly string[]) => {
       execCalls.push({ file, args: [...args] });
-      const key = `${file}\u0000${JSON.stringify([...args])}`;
+      const key = canonicalExecKey(`${file}\u0000${JSON.stringify([...args])}`);
       const stdout = execResponses.get(key);
       if (stdout === undefined) {
         throw new Error(`no fake response for ${file} ${JSON.stringify([...args])}`);
@@ -215,7 +223,7 @@ describe("discoverWorkstationFacts — fully installed darwin host", () => {
       clock: () => NOW,
     });
     const topPaths = facts.roots.map((r) => r.path);
-    expect(topPaths).toContain("/opt/homebrew");
+    expect(topPaths).toContain(nodePath.resolve("/opt/homebrew"));
     expect(topPaths).toContain(nodePath.join(HOME, "Library", "Caches", "Homebrew"));
     for (const root of facts.roots) {
       expect(root.sourceProvider).toBe("homebrew");
@@ -314,7 +322,8 @@ describe("discoverWorkstationFacts — safety contract", () => {
     expect(seams.envCalls).not.toContain("USER");
   });
 
-  test("generic core tools ignore user-home candidates and canonical targets outside sandbox system roots", async () => {
+  // The sandbox system roots are POSIX paths; the host path rules decide containment.
+  test.skipIf(process.platform === "win32")("generic core tools ignore user-home candidates and canonical targets outside sandbox system roots", async () => {
     const profile = darwinSeed();
     const unsupportedNode = nodePath.join(HOME, ".local", "bin", "node");
     const escapedNode = nodePath.join(HOME, ".nvm", "bin", "node");
@@ -402,7 +411,7 @@ describe("discoverWorkstationFacts — missing tools are review rows, not errors
 describe("discoverWorkstationFacts — out-of-profile paths are surfaced, not asserted as facts", () => {
   test("a Homebrew prefix outside the seed root templates is dropped + noted", async () => {
     const profile = darwinSeed();
-    const customPrefix = nodePath.join(nodePath.sep, "custom", "brew");
+    const customPrefix = nodePath.resolve(nodePath.sep, "custom", "brew");
     // Brew is found at the well-known Apple Silicon path, but `--prefix`
     // reports a custom prefix outside the seed's root templates. The cache
     // remains within the seed, so it is kept; the custom prefix is dropped.
@@ -702,7 +711,7 @@ describe("discoverWorkstationFacts — custom-but-authorized layouts (existing_c
     // parent, so the discovered root is kept (not dropped) with origin
     // `existing_config`.
     const profile = darwinSeed();
-    const customJdkHome = nodePath.join(
+    const customJdkHome = nodePath.resolve(
       "/Library/Java/JavaVirtualMachines",
       "corretto-21",
       "Contents",

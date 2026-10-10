@@ -72,7 +72,10 @@ test("Development rejects unapproved environment values", () => {
   }, { trustedToolsBin: "/fixture/tools", canonicalize: (value) => value })).toThrow("LOCAL_EXECUTION_ENVIRONMENT_VALUE_DENIED");
 });
 
-test("trusted Development projects the native user environment and keeps installed PATH precedence", () => {
+// These fixtures assume POSIX PATH delimiters and a POSIX filesystem root.
+const posixEnvironmentTest = process.platform === "win32" ? test.skip : test;
+
+posixEnvironmentTest("trusted Development projects the native user environment and keeps installed PATH precedence", () => {
   const prepared = prepareDevelopmentExecutionEnvironment({
     profileId: "developer",
     profileRevision: 3,
@@ -154,7 +157,7 @@ test("legacy Development ignores user-environment inputs without explicit capabi
   expect(prepared.userEnvironmentWritablePaths).toBeUndefined();
 });
 
-test("native runtime paths admit owned custom temp and runtime directories without exposing Linux host tmp", async () => {
+posixEnvironmentTest("native runtime paths admit owned custom temp and runtime directories without exposing Linux host tmp", async () => {
   const { developmentRuntimeWritablePaths } = await import("../../electron/local-execution-environment");
   const root = realpathSync(mkdtempSync(join(tmpdir(), "development-runtime-paths-")));
   try {

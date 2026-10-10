@@ -134,7 +134,27 @@ function writeInstanceJsonAtomic(rootDir: string, data: InstanceJsonParse): void
   const target = readInstanceJsonPath(rootDir);
   const tmp = `${target}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  renameSync(tmp, target);
+  replaceFile(tmp, target);
+}
+
+// Windows refuses to replace a file while a scanner or indexer briefly holds
+// it open. The retry is bounded to about one second of waiting in total.
+const WINDOWS_REPLACE_ATTEMPTS = 6;
+const WINDOWS_REPLACE_INITIAL_WAIT_MS = 20;
+
+function replaceFile(from: string, to: string): void {
+  let wait = WINDOWS_REPLACE_INITIAL_WAIT_MS;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || attempt >= WINDOWS_REPLACE_ATTEMPTS || (code !== "EPERM" && code !== "EBUSY")) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+      wait *= 2;
+    }
+  }
 }
 
 /**

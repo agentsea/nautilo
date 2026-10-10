@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 const dispatcher = join(repositoryRoot, "dev/scripts/lint-staged.sh");
+const pathKey = Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ?? "PATH";
 
 function write(relativePath: string, contents: string): void {
   const target = join(fixtureRoot, relativePath);
@@ -16,9 +17,16 @@ function write(relativePath: string, contents: string): void {
 let fixtureRoot = "";
 
 describe("lint-staged dispatcher", () => {
-  test("groups explicit root, package, and Mobile paths without splitting spaces", () => {
-    fixtureRoot = mkdtempSync(join(tmpdir(), "nautilo lint staged "));
+  test.each([false, true])("groups paths without splitting spaces through a directory alias: %s", (viaAlias) => {
+    const temporaryRoot = realpathSync(mkdtempSync(join(tmpdir(), "nautilo lint staged ")));
+    fixtureRoot = temporaryRoot;
     try {
+      if (viaAlias) {
+        const target = join(temporaryRoot, "target");
+        mkdirSync(target);
+        fixtureRoot = join(temporaryRoot, "alias");
+        symlinkSync(target, fixtureRoot, process.platform === "win32" ? "junction" : "dir");
+      }
       const bin = join(fixtureRoot, "bin");
       const log = join(fixtureRoot, "invocations.log");
       mkdirSync(bin);
@@ -29,7 +37,7 @@ describe("lint-staged dispatcher", () => {
       write("packages/example/src/second file.test.ts", "export {};\n");
       write("apps/mobile/src/screen with spaces.test.tsx", "export {};\n");
       const bunx = join(bin, "bunx");
-      writeFileSync(bunx, "#!/bin/sh\nprintf '[%s]' \"$PWD\" >> \"$LINT_STAGED_LOG\"\nprintf '<%s>' \"$@\" >> \"$LINT_STAGED_LOG\"\nprintf '\\n' >> \"$LINT_STAGED_LOG\"\n");
+      writeFileSync(bunx, "#!/bin/sh\nprintf '[%s]' \"$(node -p 'process.cwd()')\" >> \"$LINT_STAGED_LOG\"\nprintf '<%s>' \"$@\" >> \"$LINT_STAGED_LOG\"\nprintf '\\n' >> \"$LINT_STAGED_LOG\"\n");
       chmodSync(bunx, 0o755);
 
       const result = spawnSync(
@@ -48,24 +56,25 @@ describe("lint-staged dispatcher", () => {
             ...process.env,
             LINT_STAGED_REPO_ROOT: fixtureRoot,
             LINT_STAGED_LOG: log,
-            PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+            [pathKey]: `${bin}${delimiter}${process.env[pathKey] ?? ""}`,
           },
         },
       );
 
       expect(result.status, result.stderr).toBe(0);
+      const canonicalRoot = realpathSync(fixtureRoot);
       expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([
-        `[${fixtureRoot}]<eslint><--fix><--><root fixture.ts>`,
-        `[${join(fixtureRoot, "packages/example")}]<eslint><--fix><--><src/file with spaces.test.ts><src/second file.test.ts>`,
-        `[${join(fixtureRoot, "apps/mobile")}]<expo><lint><--fix><src/screen with spaces.test.tsx>`,
+        `[${canonicalRoot}]<eslint><--fix><--><root fixture.ts>`,
+        `[${join(canonicalRoot, "packages/example")}]<eslint><--fix><--><src/file with spaces.test.ts><src/second file.test.ts>`,
+        `[${join(canonicalRoot, "apps/mobile")}]<expo><lint><--fix><src/screen with spaces.test.tsx>`,
       ]);
     } finally {
-      rmSync(fixtureRoot, { recursive: true, force: true });
+      rmSync(temporaryRoot, { recursive: true, force: true });
     }
   });
 
   test("rejects a path outside the repository before launching a linter", () => {
-    fixtureRoot = mkdtempSync(join(tmpdir(), "nautilo lint staged "));
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "nautilo lint staged ")));
     try {
       const bin = join(fixtureRoot, "bin");
       const log = join(fixtureRoot, "invocations.log");
@@ -81,13 +90,47 @@ describe("lint-staged dispatcher", () => {
           ...process.env,
           LINT_STAGED_REPO_ROOT: fixtureRoot,
           LINT_STAGED_LOG: log,
-          PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+          [pathKey]: `${bin}${delimiter}${process.env[pathKey] ?? ""}`,
         },
       });
 
       expect(result.status).toBe(2);
       expect(result.stderr).toContain("refusing non-repository path");
       expect(existsSync(log)).toBe(false);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("pre-push gate runner", () => {
+  test("executes the requested gates with their comparison refs and unit concurrency", () => {
+    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "nautilo push gates ")));
+    try {
+      const log = join(fixtureRoot, "gates.log");
+      write("dev/scripts/ci-gates.sh", `#!/usr/bin/env bash
+printf '%s|%s|%s|%s\\n' "$1" "$TURBO_SCM_BASE" "$TURBO_SCM_HEAD" "$TURBO_CONCURRENCY" >> "$PUSH_GATE_LOG"
+`);
+      for (const gate of ["lint-eslint", "typecheck", "unit"]) {
+        const result = spawnSync("bash", [join(repositoryRoot, "dev/scripts/pre-push-gate.sh"), gate], {
+          cwd: fixtureRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PUSH_GATE_LOG: log,
+            TURBO_SCM_BASE: "fixture-base",
+            TURBO_SCM_HEAD: "",
+            TURBO_CONCURRENCY: "",
+          },
+        });
+        expect(result.status, result.stderr).toBe(0);
+      }
+      const expected = [
+        "lint-eslint|fixture-base|HEAD|",
+        "typecheck|fixture-base|HEAD|",
+        "unit|fixture-base|HEAD|4",
+      ];
+      expect(readFileSync(log, "utf8").trim().split("\n")).toEqual(expected);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }

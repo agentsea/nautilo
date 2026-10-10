@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, realpath } from "node:fs/promises";
+import { lstat, mkdir, realpath } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import type { AppServerClientFactory, HostClock, HostTimer } from "@nautilo/codex-app-server-host/internal";
 import { NodeCodexAppServerClientFactory } from "@nautilo/codex-app-server-host/node";
 import {
@@ -208,11 +209,12 @@ export async function prepareSecureCodexDirectories(input: SecureCodexDirectorie
 async function assertPrivateDirectory(path: string, uid: number, allowRepair: boolean): Promise<string> {
   let info = await lstat(path);
   if (!info.isDirectory() || info.isSymbolicLink() || (uid >= 0 && info.uid !== uid)) throw new Error("unsafe_codex_host_directory");
-  if ((info.mode & 0o077) !== 0) {
+  if (!await isPrivateFilesystemPathAsync(path)) {
     if (!allowRepair) throw new Error("insecure_codex_host_parent");
-    await chmod(path, 0o700);
+    try { await secureFilesystemPath(path); }
+    catch { throw new Error("unsafe_codex_host_directory"); }
     info = await lstat(path);
-    if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) !== 0 || (uid >= 0 && info.uid !== uid)) throw new Error("unsafe_codex_host_directory");
+    if (!info.isDirectory() || info.isSymbolicLink() || !await isPrivateFilesystemPathAsync(path) || (uid >= 0 && info.uid !== uid)) throw new Error("unsafe_codex_host_directory");
   }
   // `lstat` above rejects a leaf symlink. macOS may canonicalize a trusted
   // volume prefix (for example /var -> /private/var), so compare descendants

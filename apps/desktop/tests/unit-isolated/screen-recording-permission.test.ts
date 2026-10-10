@@ -21,11 +21,11 @@ describe("D516 host-owned Screen Recording request helper", () => {
     expect(resolveScreenRecordingPermissionHelper({
       platform: "darwin", isPackaged: true, resourcesPath: "/Applications/Nautilo.app/Contents/Resources",
       devVendorRoot: "/repo/apps/desktop/vendor", exists,
-    })).toBe("/Applications/Nautilo.app/Contents/Resources/tools-permissions/nautilo-screen-recording-permission");
+    })).toBe(join("/Applications/Nautilo.app/Contents/Resources", "tools-permissions", "nautilo-screen-recording-permission"));
     expect(resolveScreenRecordingPermissionHelper({
       platform: "darwin", isPackaged: false, resourcesPath: null,
       devVendorRoot: "/repo/apps/desktop/vendor", exists,
-    })).toBe("/repo/apps/desktop/vendor/screen-recording-permission/nautilo-screen-recording-permission");
+    })).toBe(join("/repo/apps/desktop/vendor", "screen-recording-permission", "nautilo-screen-recording-permission"));
     expect(resolveScreenRecordingPermissionHelper({
       platform: "darwin", isPackaged: true, resourcesPath: "relative",
       devVendorRoot: "/repo/apps/desktop/vendor", exists,

@@ -1,8 +1,25 @@
 import * as fs from "node:fs/promises";
 import { constants } from "node:fs";
-import * as path from "node:path";
+import { resolve } from "node:path";
 import { videoMetadataFromSummary } from "./ffmpeg-media-metadata";
 import { runFfmpegSummary } from "./ffmpeg-summary";
+
+/** Reject a linked leaf and bind the opened descriptor to the observed regular file. */
+export async function openMediaFileNoFollow(sourcePath: string): Promise<fs.FileHandle | null> {
+  const entry = await fs.lstat(sourcePath, { bigint: true });
+  if (!entry.isFile() || entry.isSymbolicLink()) return null;
+  const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+  const handle = await fs.open(sourcePath, constants.O_RDONLY | noFollow);
+  let accepted = false;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino || opened.size !== entry.size) return null;
+    accepted = true;
+    return handle;
+  } finally {
+    if (!accepted) await handle.close();
+  }
+}
 
 /** One-descriptor, fixed-memory copy of a canonical file; growth cannot extend the initial byte budget. */
 export async function copyMediaSnapshot(sourcePath: string, destinationPath: string, options: { signal?: AbortSignal } = {}): Promise<boolean> {
@@ -10,13 +27,11 @@ export async function copyMediaSnapshot(sourcePath: string, destinationPath: str
   let destination: Awaited<ReturnType<typeof fs.open>> | undefined;
   let copied = false;
   try {
-    if (options.signal?.aborted || await fs.realpath(sourcePath) !== path.resolve(sourcePath)) return false;
-    const entry = await fs.lstat(sourcePath);
-    if (!entry.isFile() || !Number.isSafeInteger(entry.size) || entry.size <= 0) return false;
-    source = await fs.open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (options.signal?.aborted || await fs.realpath(sourcePath) !== resolve(sourcePath)) return false;
+    source = await openMediaFileNoFollow(sourcePath) ?? undefined;
+    if (!source) return false;
     const before = await source.stat();
-    if (!before.isFile() || before.dev !== entry.dev || before.ino !== entry.ino || before.size !== entry.size ||
-        await fs.realpath(sourcePath) !== path.resolve(sourcePath)) return false;
+    if (!Number.isSafeInteger(before.size) || before.size <= 0 || await fs.realpath(sourcePath) !== resolve(sourcePath)) return false;
     destination = await fs.open(destinationPath, "wx", 0o600);
     // IO chunk size, not a media admission ceiling: the full file is streamed.
     const buffer = Buffer.alloc(Math.min(before.size, 256 * 1024));
@@ -47,7 +62,8 @@ export async function copyMediaSnapshot(sourcePath: string, destinationPath: str
 /** Read one native-picked regular file without allowing growth to bypass the caller's byte envelope. */
 export async function readPickedMediaFile(sourcePath: string, maxBytes: number): Promise<Buffer | null> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) return null;
-  const handle = await fs.open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await openMediaFileNoFollow(sourcePath);
+  if (!handle) return null;
   try {
     const before = await handle.stat();
     if (!before.isFile() || before.size <= 0 || before.size > maxBytes) return null;

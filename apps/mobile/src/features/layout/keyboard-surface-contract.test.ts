@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
 const sourceRoot = resolve(import.meta.dir, "../..");
 
@@ -90,7 +90,7 @@ function productionTsxFiles(directory: string): string[] {
 function filesRenderingInputs(): string[] {
   return productionTsxFiles(sourceRoot)
     .filter((file) => /<(?:[A-Za-z]+)?TextInput\b/.test(readFileSync(file, "utf8")))
-    .map((file) => relative(sourceRoot, file))
+    .map((file) => relative(sourceRoot, file).split(sep).join("/"))
     .sort();
 }
 

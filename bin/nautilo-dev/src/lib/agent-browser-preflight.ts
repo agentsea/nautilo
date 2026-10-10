@@ -16,6 +16,11 @@ export async function ensureServerAgentBrowserProvisioned(
 ): Promise<boolean> {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
+  if (platform === "win32") {
+    process.stderr.write("[server:start] direct browser control is unavailable on Windows; private directory containment requires POSIX ownership\n");
+    // This optional driver must not block the rest of the local server.
+    return true;
+  }
   if ((platform !== "darwin" && platform !== "linux") || (arch !== "arm64" && arch !== "x64")) {
     process.stderr.write(`[server:start] agent-browser: unsupported host ${platform}/${arch}\n`);
     return false;

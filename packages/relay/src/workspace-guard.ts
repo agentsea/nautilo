@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
  * Shared path-safety for relay dispatch handlers.
@@ -69,7 +69,7 @@ function canonicalise(path: string): string {
     while (!existsSync(current)) {
       const parent = dirname(current);
       if (parent === current) return abs; // nothing exists on this branch
-      tail.unshift(current.slice(parent.length + 1));
+      tail.unshift(basename(current));
       current = parent;
     }
     try {
@@ -106,8 +106,10 @@ export function createWorkspaceGuard(
     const abs = isAbsolute(candidate) ? candidate : resolve(candidate);
     const resolved = canonicalise(abs);
     for (const root of unique) {
-      if (resolved === root) return { ok: true, resolved };
-      if (resolved.startsWith(root + sep)) return { ok: true, resolved };
+      const suffix = relative(root, resolved);
+      if (suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix))) {
+        return { ok: true, resolved };
+      }
     }
     return {
       ok: false,

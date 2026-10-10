@@ -907,8 +907,8 @@ export function createLocalShellWorkspaceAuthorityResolver(
         readonly filesystemIdentity: DesktopFilesystemGrantFilesystemIdentity;
         /** Keeps the selected inode alive so an unlinked root cannot reuse it. */
         readonly pinnedDescriptor: number;
-        readonly device: number;
-        readonly inode: number;
+        readonly device: bigint;
+        readonly inode: bigint;
       }
     | undefined;
 
@@ -916,11 +916,10 @@ export function createLocalShellWorkspaceAuthorityResolver(
     let descriptor: number | undefined;
     try {
       descriptor = fsSync.openSync(canonicalRoot, fsSync.constants.O_RDONLY);
-      const stat = fsSync.fstatSync(descriptor);
+      const stat = fsSync.fstatSync(descriptor, { bigint: true });
       if (
         !stat.isDirectory() ||
-        !Number.isSafeInteger(stat.dev) || stat.dev < 0 ||
-        !Number.isSafeInteger(stat.ino) || stat.ino < 0
+        stat.dev < 0n || stat.ino < 0n
       ) {
         fsSync.closeSync(descriptor);
         return undefined;
@@ -938,8 +937,8 @@ export function createLocalShellWorkspaceAuthorityResolver(
     baseline: NonNullable<typeof currentFolderBaseline>,
   ): boolean => {
     try {
-      const pinned = fsSync.fstatSync(baseline.pinnedDescriptor);
-      const live = fsSync.statSync(baseline.canonicalRoot);
+      const pinned = fsSync.fstatSync(baseline.pinnedDescriptor, { bigint: true });
+      const live = fsSync.statSync(baseline.canonicalRoot, { bigint: true });
       return pinned.isDirectory() &&
         live.isDirectory() &&
         pinned.dev === baseline.device &&

@@ -5,6 +5,26 @@ import * as path from "node:path";
 import { createCurrentFolderClaudeLeaseProvider } from "../../electron/current-folder-claude-lease";
 
 describe("Current Folder Claude lease", () => {
+  test("retains exact directory IDs beyond JavaScript's safe integer range", async () => {
+    let inode = 2n ** 53n;
+    const provider = createCurrentFolderClaudeLeaseProvider({
+      currentFolder: () => ({ path: "/folder", revision: 1 }),
+      filesystem: {
+        realpath: async value => value,
+        open: async () => {
+          const captured = inode;
+          return { stat: async () => ({ isDirectory: () => true, dev: 1n, ino: captured }), close: async () => undefined } as never;
+        },
+      },
+    });
+    const lease = await provider.acquire();
+    expect(lease).not.toBeNull();
+    expect(await lease!.validate()).toBe(true);
+    inode += 1n;
+    expect(await lease!.validate()).toBe(false);
+    await lease!.close();
+  });
+
   test("pins the selected revision and directory identity until close", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "nautilo-claude-lease-"));
     let selection: { path: string; revision: number } | null = { path: root, revision: 4 };
@@ -39,7 +59,7 @@ describe("Current Folder Claude lease", () => {
 
   test("takes a final selection snapshot after delayed identity I/O", async () => {
     let selection: { path: string; revision: number } | null = { path: "/folder", revision: 1 };
-    const stat = () => ({ isDirectory: () => true, dev: 1, ino: 2 });
+    const stat = () => ({ isDirectory: () => true, dev: 1n, ino: 2n });
     let opens = 0;
     const provider = createCurrentFolderClaudeLeaseProvider({
       currentFolder: () => selection,

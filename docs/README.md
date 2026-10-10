@@ -9,7 +9,8 @@ Looking for installation, administration, or everyday use? Start at
 - **Running a server:** [Administrator guide](https://nautilo.ai/docs/operator),
   including [deployment choices](https://nautilo.ai/docs/operator/choose-a-deployment).
 - **Changing the code:** [Developer guide](https://nautilo.ai/docs/build) and
-  this repository's [contribution guide](../CONTRIBUTING.md).
+  this repository's [contribution guide](../CONTRIBUTING.md). Windows contributors
+  should also read the [local evaluation boundary](windows-local-evaluation.md).
 
 This directory is for contributors. It explains source-level contracts,
 component ownership, maintenance, and testing. Read it alongside the code in

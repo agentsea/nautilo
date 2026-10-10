@@ -470,7 +470,8 @@ describe("D418 task 3.1.3b — revalidateWorkstationShellBinding (pure)", () => 
     }
   });
 
-  test("Task grant capture does not stale a foreground binding, while foreground revocation still denies", async () => {
+  // The fixture roots are POSIX paths; the Desktop grant store normalizes with native path rules.
+  test.skipIf(process.platform === "win32")("Task grant capture does not stale a foreground binding, while foreground revocation still denies", async () => {
     const grants = realGrantAuthority();
     const foregroundGrant = grant("grant-1").grant;
     expect(await grants.addEphemeral({ grant: foregroundGrant })).toMatchObject({ ok: true });

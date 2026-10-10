@@ -100,12 +100,6 @@ mac:
       filter:
         - "nautilo-computer-use-host"
         - "manifest.json"
-    # Electron consumes Relay only through this private child process.
-    - from: vendor/relay-host
-      to: tools-relay-host
-      filter:
-        - "nautilo-relay-host.js"
-        - "manifest.json"
     # source-owned universal helper used only to invoke the host-owned
     # CGRequestScreenCaptureAccess API. It is never downloaded at runtime.
     - from: vendor/screen-recording-permission
@@ -195,6 +189,12 @@ files:
 # picks the right subdir at runtime via process.arch. Size impact:
 # ~60 MB per architecture on top of the Electron base.
 extraResources:
+  # The Relay Host is platform-neutral JavaScript consumed by bundled Bun.
+  - from: vendor/relay-host
+    to: tools-relay-host
+    filter:
+      - "nautilo-relay-host.js"
+      - "manifest.json"
   # Keep the canonical notices outside ASAR without weakening runtime exclusions.
   - from: ../../THIRD_PARTY_NOTICES.md
     to: legal/THIRD_PARTY_NOTICES.md

@@ -5,6 +5,7 @@ import {
   lockWorkspaceArtifactForCurrentRoomAuthority,
   listWorkspaceRoomDocumentHistory,
   reduceWorkspaceDocumentHistoryLineage,
+  physicalPathFromStorageUri,
   type Artifact,
   type WorkspaceDocumentHistoryRecord,
 } from "@nautilo/db";
@@ -56,8 +57,9 @@ const validSize = (size: number | null): size is number =>
 /** Same text-document boundary as editor saves; never truncate a snapshot. */
 async function readExactContent(storageUri: string, size: number): Promise<Uint8Array> {
   // Canonical storage URIs contain raw absolute paths, including literal #/%.
-  if (!storageUri.startsWith("file:///")) throw new Error("Unsupported retained storage");
-  const handle = await open(storageUri.slice("file://".length), "r");
+  const path = physicalPathFromStorageUri(storageUri);
+  if (path === null) throw new Error("Unsupported retained storage");
+  const handle = await open(path, "r");
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.size !== size || !validSize(size)) throw new Error("Invalid retained size");

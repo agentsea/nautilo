@@ -4,7 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, posix } from "node:path";
+import { basename, dirname, join, posix, resolve } from "node:path";
+import { ensurePrivateDirectory, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import {
   __resetResolvedInstanceForTests,
@@ -4716,8 +4717,7 @@ export class ComposeDriver {
       }
 
       const bundlePath = requestedBundlePath;
-      await nodeFs.mkdir(bundlePath, { recursive: true, mode: 0o700 });
-      await nodeFs.chmod(bundlePath, 0o700);
+      await ensurePrivateDirectory(resolve(bundlePath));
       this.deps.log(
         `backup: warning: ${bundlePath} contains plaintext secrets (instance.env, Logto DB, bootstrap tokens, cert private keys). Keep it encrypted or access-restricted.`,
       );
@@ -4734,7 +4734,9 @@ export class ComposeDriver {
       const stagedMode = isRemote && !streamMode;
       const localRoot = this.deps.resolveLocalInstanceRootDir(profile);
       const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-      const remoteStagingDir = join(instanceRootDir, `.backup-staging-${stamp}`);
+      const joinInstancePath = (...parts: string[]) => isRemote ? posix.join(...parts) : join(...parts);
+      const joinStagePath = (...parts: string[]) => stagedMode ? posix.join(...parts) : join(...parts);
+      const remoteStagingDir = posix.join(instanceRootDir, `.backup-staging-${stamp}`);
       const stageDir = stagedMode ? remoteStagingDir : bundlePath;
       const volumeStageDir = stagedMode ? remoteStagingDir : bundlePath;
       const dockerEnv = dockerEnvForProfile(profile);
@@ -4762,7 +4764,7 @@ export class ComposeDriver {
         exec: ExecFn,
         cmd: string,
         args: string[],
-        execOpts: { env?: NodeJS.ProcessEnv; stdio?: "inherit" | "pipe" },
+        execOpts: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: "inherit" | "pipe" },
       ): Promise<ExecResult> => {
         this.deps.log(`backup: → ${label}: ${cmd} ${args.join(" ")}`);
         const started = this.deps.now().getTime();
@@ -4919,7 +4921,7 @@ export class ComposeDriver {
           "remote staging mkdir",
           this.deps.exec,
           "mkdir",
-          ["-p", remoteStagingDir],
+          ["-m", "700", remoteStagingDir],
           { stdio: "pipe" },
         );
       }
@@ -4944,7 +4946,7 @@ export class ComposeDriver {
       // topology that produced the captured data and image. A capture failure
       // aborts the backup rather than producing a falsely complete bundle.
       if (isRemote) {
-        const remoteTemplatePath = join(instanceRootDir, "docker-compose.yml");
+        const remoteTemplatePath = posix.join(instanceRootDir, "docker-compose.yml");
         const capturedTemplatePath = join(bundlePath, "docker-compose.yml");
         if (streamMode) {
           const captured = await runChecked(
@@ -4962,7 +4964,7 @@ export class ComposeDriver {
             "remote compose template capture",
             this.deps.exec,
             "cp",
-            [remoteTemplatePath, join(stageDir, "docker-compose.yml")],
+            [remoteTemplatePath, joinStagePath(stageDir, "docker-compose.yml")],
             { stdio: "pipe" },
           );
         }
@@ -4976,13 +4978,13 @@ export class ComposeDriver {
       await runDumpWithValidation(
         "nautilo DB dump",
         `${this.dbExecPrefix({ staged: stagedMode, projectName, service: "app-postgres", composePrefix })}pg_dump -U postgres nautilo`,
-        join(stageDir, "nautilo.sql.gz"),
+        joinStagePath(stageDir, "nautilo.sql.gz"),
       );
       contents.nautiloDb = true;
       await runDumpWithValidation(
         "logto DB dump",
         `${this.dbExecPrefix({ staged: stagedMode, projectName, service: "logto-postgres", composePrefix })}pg_dump -U postgres logto_nautilo`,
-        join(stageDir, "logto_nautilo.sql.gz"),
+        joinStagePath(stageDir, "logto_nautilo.sql.gz"),
       );
       contents.logtoDb = true;
 
@@ -5031,13 +5033,13 @@ export class ComposeDriver {
         );
       }
 
-      const certsPath = join(instanceRootDir, "certs");
+      const certsPath = joinInstancePath(instanceRootDir, "certs");
       if (isRemote) {
         const testCerts = await this.deps.exec("test", ["-d", certsPath], { stdio: "pipe" });
         if (testCerts.code === 0) {
           contents.localCaCerts = await runPipeline(
             "local CA certs tar",
-            `tar czf ${shellQuote(join(stageDir, "certs.tgz"))} -C ${shellQuote(certsPath)} .`,
+            `tar czf ${shellQuote(joinStagePath(stageDir, "certs.tgz"))} -C ${shellQuote(certsPath)} .`,
           );
         }
       } else if (existsSync(certsPath)) {
@@ -5047,7 +5049,7 @@ export class ComposeDriver {
         );
       }
 
-      const instanceEnvPath = canonicalInstanceEnvPath(instanceRootDir);
+      const instanceEnvPath = joinInstancePath(instanceRootDir, RUNTIME_CONFIG_DIR_NAME, "instance.env");
       if (isRemote) {
         const testEnv = await this.deps.exec("test", ["-f", instanceEnvPath], { stdio: "pipe" });
         if (testEnv.code === 0) {
@@ -5055,7 +5057,7 @@ export class ComposeDriver {
             "remote instance.env copy",
             this.deps.exec,
             "cp",
-            [instanceEnvPath, join(stageDir, "instance.env")],
+            [instanceEnvPath, joinStagePath(stageDir, "instance.env")],
             { stdio: "pipe" },
           );
           contents.instanceEnv = true;
@@ -5108,10 +5110,8 @@ export class ComposeDriver {
           ],
           { stdio: "inherit" },
         );
-        // rsync preserves the remote staging directory's mode, which is
-        // commonly 0755. The bundle contains plaintext credentials, so
-        // reassert the local confidentiality boundary after transfer.
-        await nodeFs.chmod(bundlePath, 0o700);
+        // Reassert the native local ACL after rsync applies remote metadata.
+        await secureFilesystemPath(resolve(bundlePath));
         await runChecked(
           "remote staging cleanup",
           this.deps.exec,
@@ -5237,12 +5237,13 @@ export class ComposeDriver {
       );
 
       if (opts?.tarball === true) {
+        const tarballPath = resolve(`${bundlePath}.tgz`);
         await runChecked(
           "bundle tarball",
           this.deps.localExec,
           "tar",
-          ["czf", `${bundlePath}.tgz`, "-C", bundlePath, "."],
-          { stdio: "inherit" },
+          ["czf", basename(tarballPath), "-C", resolve(bundlePath), "."],
+          { cwd: dirname(tarballPath), stdio: "inherit" },
         );
       }
 
@@ -7506,7 +7507,7 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
   ): Promise<RemoteDeploymentManifest> {
     const remoteRoot = this.deps.resolveInstanceRootDir(profile);
-    const manifestPath = join(remoteRoot, "deployment-manifest.json");
+    const manifestPath = posix.join(remoteRoot, "deployment-manifest.json");
     const instanceId = (profile.instance_id ?? "").trim();
     const expectedProjectName = composeProjectName(profile);
     const hint = this.remoteManifestMissingHint(profile, remoteRoot);

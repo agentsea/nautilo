@@ -213,7 +213,7 @@ export function validateMediaStorageRootEnv(
       reason: `NAUTILO_MEDIA_ROOT must be an absolute path (got "${trimmed}")`,
     };
   }
-  const segments = trimmed.split(path.sep);
+  const segments = trimmed.split(process.platform === "win32" ? /[\\/]/u : "/");
   if (segments.some((s) => s === "..")) {
     return {
       ok: false,
@@ -246,7 +246,7 @@ export function validateArtifactsRootEnv(
   // contains `..` is technically resolvable, but it's a strong signal
   // the operator copy-pasted from a relative context and meant
   // something else. Fail closed.
-  const segments = trimmed.split(path.sep);
+  const segments = trimmed.split(process.platform === "win32" ? /[\\/]/u : "/");
   if (segments.some((s) => s === "..")) {
     return {
       ok: false,

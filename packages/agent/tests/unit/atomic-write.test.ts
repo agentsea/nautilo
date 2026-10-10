@@ -78,7 +78,12 @@ describe("writeAtomic", () => {
     await writeAtomic(target, "x", { mode: 0o600 });
     const stat = await fsp.stat(target);
      
-    expect(stat.mode & 0o777).toBe(0o600);
+    if (process.platform === "win32") {
+      const { isPrivateFilesystemPathAsync } = await import("@nautilo/config/private-filesystem");
+      expect(await isPrivateFilesystemPathAsync(target)).toBe(true);
+    } else {
+      expect(stat.mode & 0o777).toBe(0o600);
+    }
   });
 
   test("leaves no .tmp residue on success", async () => {

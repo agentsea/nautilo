@@ -5,6 +5,7 @@
  */
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import {
   clearRelayToken,
   retireRelayToken,
@@ -171,7 +172,7 @@ function relayFile(serverUrl: string): string {
     .update(normalizeServerUrl(serverUrl))
     .digest("hex")
     .slice(0, 32);
-  return `/user-data/relay-token-${scope}.json`;
+  return join("/user-data", `relay-token-${scope}.json`);
 }
 
 function fakeOk(body: unknown): typeof fetch {
@@ -439,7 +440,7 @@ describe("retireRelayToken (D514)", () => {
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const INSTALLATION_ID_FILE = "/user-data/installation-id.json";
+const INSTALLATION_ID_FILE = join("/user-data", "installation-id.json");
 
 function capturePairBody(): {
   fetchImpl: typeof fetch;

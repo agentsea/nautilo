@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import { fileURLToPath } from "node:url";
 
 let happyWindow: Window;
 let TerminalControlConsentDialog: (typeof import("../../src/components/terminal-control-consent-dialog"))["TerminalControlConsentDialog"];
@@ -91,7 +92,7 @@ describe("terminal co-driving consent", () => {
 
   test("surface keeps legacy transfers separate from scoped consent without optimistic controller state", async () => {
     const source = await Bun.file(
-      new URL("../../src/apps/terminal-surface.tsx", import.meta.url).pathname,
+      fileURLToPath(new URL("../../src/apps/terminal-surface.tsx", import.meta.url)),
     ).text();
 
     expect(source).toContain("if (sandboxed || (!api.grantHumanControl && agentControlConsented))");
@@ -108,7 +109,7 @@ describe("terminal co-driving consent", () => {
 
   test("hidden requests inspect metadata, retain the request through confirmation, and clear only on deny or cancel", async () => {
     const source = await Bun.file(
-      new URL("../../src/layouts/workbench-shell.tsx", import.meta.url).pathname,
+      fileURLToPath(new URL("../../src/layouts/workbench-shell.tsx", import.meta.url)),
     ).text();
 
     expect(source).toContain("const session = (await api.list()).find");
@@ -123,7 +124,7 @@ describe("terminal co-driving consent", () => {
 
   test("visible request cancellation clears only after the user cancels the consent dialog", async () => {
     const source = await Bun.file(
-      new URL("../../src/apps/terminal-surface.tsx", import.meta.url).pathname,
+      fileURLToPath(new URL("../../src/apps/terminal-surface.tsx", import.meta.url)),
     ).text();
 
     expect(source).toContain("const clearsRequest = consentForRequest;");

@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import type { MaintenanceReceipt } from "@nautilo/hosting";
 import { RAILWAY_LOGTO_BOOTSTRAP_PORT } from "@nautilo/railway-hosting";
 import type {
@@ -35,6 +36,10 @@ const secret = "request-memory-secret-that-must-never-persist";
 // suite runs many packages concurrently, so leave enough headroom for contended
 // fsyncs while keeping a bounded per-scenario timeout.
 const RESTORED_TARGET_SCENARIO_TIMEOUT_MS = 30_000;
+const roots: string[] = [];
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
 
 function topology(): RailwayTopology {
   const service = (name: RailwayTopology["finalServices"][number]["name"], fill: string, variables: RailwayTopology["finalServices"][number]["variables"] = []) => ({
@@ -259,6 +264,8 @@ class Provider implements RailwayReconcileExecutorTransport {
 
 async function fixture(provider = new Provider(), handoffStatus = 200) {
   const root = await mkdtemp(join(tmpdir(), "nautilo-restored-runner-"));
+  roots.push(root);
+  await secureFilesystemPath(root);
   const path = join(root, "maintenance-1");
   await writeRailwayMaintenanceState(root, path, initialState());
   const calls: string[] = [];

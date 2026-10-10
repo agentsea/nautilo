@@ -203,6 +203,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nautilo/api-client": "workspace:*",
+        "@nautilo/config": "workspace:*",
         "@nautilo/db": "workspace:*",
         "@nautilo/lattice-crypto": "workspace:*",
         "@nautilo/logger": "workspace:*",
@@ -285,6 +286,7 @@
       "name": "@nautilo/operator-secrets",
       "version": "0.1.0",
       "dependencies": {
+        "@nautilo/config": "workspace:*",
         "@nautilo/config-guard": "workspace:*",
       },
     },

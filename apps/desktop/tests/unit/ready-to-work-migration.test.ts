@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { createReadyToWorkDesiredState, readyToWorkRememberedKey, type ReadyToWorkBinding } from "../../electron/ready-to-work-contract";
 import { ReadyToWorkStore, type ReadyToWorkStoreFs } from "../../electron/ready-to-work-store";
@@ -48,8 +49,10 @@ test("v1 remains operational until explicit opt-in; fresh proof is OS-protected 
   expect(fs.readFileSync(f.receiptPath).includes(Buffer.from(proof.receipt))).toBe(false);
   const bytes = fs.readFileSync(f.desiredPath, "utf8");
   expect(bytes).not.toContain("attempt-a"); expect(bytes).not.toContain("revision-a");
-  expect(fs.statSync(f.desiredPath).mode & 0o777).toBe(0o600);
-  expect(fs.statSync(f.receiptPath).mode & 0o777).toBe(0o600);
+  for (const file of [f.desiredPath, f.receiptPath]) {
+    expect(isPrivateFilesystemPath(file)).toBe(true);
+    if (process.platform !== "win32") expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  }
 });
 
 test("keyed choices survive transport rotation and keep Humans, origins and fingerprints separate", () => {
@@ -221,8 +224,11 @@ test("temporary filename collision never removes an unowned existing file", () =
 });
 
 test("legacy future format and unknown symlink target are preserved", () => {
-  const f = fixture(); const future = JSON.stringify({ version: 9, data: "unknown" }); const target = path.join(f.root, "future.json"); fs.writeFileSync(target, future); fs.symlinkSync(target, f.legacy);
-  expect(() => f.enroll()).toThrow("UNSUPPORTED");
+  const f = fixture(); const future = JSON.stringify({ version: 9, data: "unknown" }); const target = path.join(f.root, "future.json"); fs.writeFileSync(target, future);
+  fs.symlinkSync(process.platform === "win32" ? f.root : target, f.legacy, process.platform === "win32" ? "junction" : "file");
+  const linkedFile = process.platform === "win32" ? path.join(f.legacy, "future.json") : f.legacy;
+  const desired = new ReadyToWorkStore({ filePath: linkedFile, rememberedFilePath: f.desiredPath });
+  expect(() => saveRememberedReadyToWork({ desired, receipt: f.receipt, selection: createReadyToWorkDesiredState(first, selection), proof, isCurrent: () => true })).toThrow("UNSUPPORTED");
   expect(fs.lstatSync(f.legacy).isSymbolicLink()).toBe(true); expect(fs.readFileSync(target, "utf8")).toBe(future);
 });
 

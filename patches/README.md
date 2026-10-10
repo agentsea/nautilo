@@ -1,5 +1,16 @@
 # Dependency patch maintenance
 
+## Knip 5.88.1 explicit Bun test files
+
+`knip@5.88.1.patch` keeps existing file arguments in Bun test commands as
+file entries. The unpatched plugin appends directory globs to them and can
+abort Windows scans with `ENOTDIR`. Directory and glob arguments retain
+their existing behavior.
+
+Remove this patch when the pinned Knip release handles explicit Bun test
+files and `dev/tests/repo-invariants/knip-bun-file-entry.test.ts` passes
+without it.
+
 ## LangGraph 1.2.9 checkpoint promise ownership
 
 `@langchain%2Flanggraph@1.2.9.patch` applies to both distributed ESM and CJS

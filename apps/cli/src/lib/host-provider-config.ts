@@ -1,8 +1,9 @@
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { resolveNautiloRootDir } from "@nautilo/config";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   getValueFromEntries,
   KEY_REGISTRY,
@@ -57,11 +58,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function ownerOnlyRegularFile(status: Awaited<ReturnType<typeof lstat>>): boolean {
+async function ownerOnlyRegularFile(path: string, status: BigIntStats): Promise<boolean> {
   return !status.isSymbolicLink()
     && status.isFile()
-    && (typeof process.getuid !== "function" || status.uid === process.getuid())
-    && (process.platform === "win32" || (Number(status.mode) & 0o077) === 0);
+    && (process.platform === "win32"
+      ? await isPrivateFilesystemPathAsync(path)
+      : typeof process.getuid === "function" && status.uid === BigInt(process.getuid())
+        && (status.mode & 0o077n) === 0n);
 }
 
 /**
@@ -71,14 +74,14 @@ function ownerOnlyRegularFile(status: Awaited<ReturnType<typeof lstat>>): boolea
 async function readSafeFile(path: string): Promise<SafeFileRead> {
   let initial;
   try {
-    initial = await lstat(path);
+    initial = await lstat(path, { bigint: true });
+    if (!await ownerOnlyRegularFile(path, initial)) {
+      return { outcome: "failure", code: "railway.plan.provider-config-unsafe" };
+    }
   } catch (error) {
     return missing(error)
       ? { outcome: "missing" }
       : { outcome: "failure", code: "railway.plan.provider-config-unreadable" };
-  }
-  if (!ownerOnlyRegularFile(initial)) {
-    return { outcome: "failure", code: "railway.plan.provider-config-unsafe" };
   }
   if (initial.size > MAX_PROVIDER_CONFIG_BYTES) {
     return { outcome: "failure", code: "railway.plan.provider-config-too-large" };
@@ -88,8 +91,8 @@ async function readSafeFile(path: string): Promise<SafeFileRead> {
   try {
     const flags = constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
     handle = await open(path, flags);
-    const opened = await handle.stat();
-    if (!ownerOnlyRegularFile(opened) || opened.dev !== initial.dev || opened.ino !== initial.ino) {
+    const opened = await handle.stat({ bigint: true });
+    if (!await ownerOnlyRegularFile(path, opened) || opened.dev !== initial.dev || opened.ino !== initial.ino) {
       return { outcome: "failure", code: "railway.plan.provider-config-unsafe" };
     }
     if (opened.size > MAX_PROVIDER_CONFIG_BYTES) {

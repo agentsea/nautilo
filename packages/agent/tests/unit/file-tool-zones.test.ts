@@ -30,6 +30,15 @@ const CTX_NO_CURRENT: ZoneContext = {
 };
 
 describe("resolveZone — happy paths", () => {
+  test.each(["C:\\repo", "\\\\server\\share\\repo"])("preserves the remote Windows root %s", root => {
+    const context = { workspaceRoot: root, currentFolder: root };
+    expect(resolveZone({ zone: "current", path: "src\\file.ts" }, context))
+      .toEqual({ ok: true, resolved: `${root}\\src\\file.ts`, resolvedZone: "current" });
+    expect(resolveZone({ zone: "current", path: "..\\outside" }, context).ok).toBe(false);
+    expect(resolveZone({ zone: "current", path: "D:\\outside" }, context).ok).toBe(false);
+    expect(resolveZone({ zone: "current", path: "..cache\\file.ts" }, context).ok).toBe(true);
+  });
+
   test("workspace + relative path joins under root", () => {
     const r = resolveZone({ path: "drafts/q3.md", zone: "workspace" }, CTX_FULL);
     expect(r.ok).toBe(true);

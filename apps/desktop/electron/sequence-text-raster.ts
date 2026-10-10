@@ -1,4 +1,5 @@
 import * as fsp from "node:fs/promises";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import { renderTextCompositionHtml } from "../../../packages/first-party-apps/video/src/text-composition.ts";
 
 export type SequenceTextRasterInput = Readonly<{
@@ -135,6 +136,7 @@ export async function rasterizeSequenceText(
     const handle = await (dependencies.openFile ?? fsp.open)(input.outputPath, "wx", 0o600);
     createdOutput = true;
     try {
+      if (process.platform === "win32") await secureFilesystemPath(input.outputPath);
       if (input.signal?.aborted) throw cancelled();
       await handle.writeFile(png);
       if (input.signal?.aborted) throw cancelled();

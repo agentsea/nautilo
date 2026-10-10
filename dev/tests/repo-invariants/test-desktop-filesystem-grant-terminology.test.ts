@@ -15,7 +15,7 @@ function files(root: string): string[] {
   return readdirSync(absolute, { withFileTypes: true }).flatMap((entry) => {
     if (ignored.has(entry.name)) return [];
     if (entry.name.endsWith(".tsbuildinfo")) return [];
-    const child = join(root, entry.name);
+    const child = join(root, entry.name).replaceAll("\\", "/");
     return entry.isDirectory() ? files(child) : [child];
   });
 }

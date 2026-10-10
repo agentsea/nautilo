@@ -12,7 +12,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../../..");
 const DOCKERFILE_PATH = join(REPO_ROOT, "packaging/docker/Dockerfile");
@@ -543,7 +543,7 @@ describe("Dockerfile stage shape", () => {
     const installIndex = deps.body.indexOf("bun dev/scripts/install-first-party-apps.ts");
     for (const [name, spec] of Object.entries(pkg.dependencies ?? {})) {
       if (!spec.startsWith("file:")) continue;
-      const source = relative(REPO_ROOT, resolve(VIDEO_APP_PACKAGE_JSON, "..", spec.slice(5)));
+      const source = relative(REPO_ROOT, resolve(VIDEO_APP_PACKAGE_JSON, "..", spec.slice(5))).split(sep).join("/");
       const materializeIndex = deps.body.indexOf(`COPY ${source} ${source}`);
       expect(materializeIndex).toBeGreaterThanOrEqual(0);
       expect(materializeIndex).toBeLessThan(installIndex);
@@ -1043,7 +1043,7 @@ function collectWriterFileDependencies(): WriterFileDependency[] {
     for (const [packageName, spec] of Object.entries(section)) {
       if (!spec.startsWith("file:")) continue;
       const resolvedSource = resolve(writerDir, spec.slice("file:".length));
-      const sourceRepoPath = relative(REPO_ROOT, resolvedSource);
+      const sourceRepoPath = relative(REPO_ROOT, resolvedSource).split(sep).join("/");
       fileDeps.set(packageName, {
         packageName,
         sourceRepoPath,

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCurrentFolderAdoptionAuthority } from "../../electron/current-folder-adoption";
@@ -64,6 +65,14 @@ describe("Current Folder agent adoption authority", () => {
     expect(JSON.stringify(prepared)).not.toContain(f.target);
     if (!prepared.ok) throw new Error("preparation failed");
 
+    const targetStat = await stat(f.target, { bigint: true });
+    expect(prepared.targetIdentity).toEqual({
+      device: targetStat.dev.toString(),
+      inode: targetStat.ino.toString(),
+      changedAtNs: targetStat.ctimeNs.toString(),
+      createdAtNs: targetStat.birthtimeNs.toString(),
+    });
+
     const committed = await f.authority.commit({ preparationId: prepared.preparationId, approved: true });
     expect(committed).toEqual({ ok: true, label: "nautilo", currentFolderRevision: 4 });
     expect(f.committed).toBe(realpathSync(f.target));
@@ -95,7 +104,7 @@ describe("Current Folder agent adoption authority", () => {
     mkdirSync(join(f.workspace, "projects", "file-parent"), { recursive: true });
     writeFileSync(join(f.workspace, "projects", "file-parent", "not-a-folder"), "x");
     mkdirSync(join(f.workspace, "protected"));
-    symlinkSync(join(f.workspace, "projects", "nautilo"), join(f.workspace, "projects", "linked"));
+    symlinkSync(join(f.workspace, "projects", "nautilo"), join(f.workspace, "projects", "linked"), process.platform === "win32" ? "junction" : "dir");
 
     await expect(f.authority.prepare({ sourceRootKind: "workspace", relativePath: "projects/linked" })).resolves.toMatchObject({ ok: false, code: "target_symlink" });
     await expect(f.authority.prepare({ sourceRootKind: "workspace", relativePath: "projects/missing" })).resolves.toMatchObject({ ok: false, code: "target_missing" });
@@ -151,13 +160,13 @@ describe("Current Folder agent adoption authority", () => {
     const symlinked = await f.authority.prepare({ sourceRootKind: "workspace", relativePath: "projects/nautilo" });
     if (!symlinked.ok) throw new Error("preparation failed");
     rmSync(f.target, { recursive: true });
-    symlinkSync(f.current, f.target);
+    symlinkSync(f.current, f.target, process.platform === "win32" ? "junction" : "dir");
     await expect(f.authority.commit({ preparationId: symlinked.preparationId, approved: true })).resolves.toMatchObject({
       ok: false,
       code: "target_symlink",
     });
 
-    rmSync(f.target, { force: true });
+    rmSync(f.target, { recursive: true, force: true });
     mkdirSync(f.target);
     let protectedTarget = false;
     const protectedAfterPrepare = createCurrentFolderAdoptionAuthority({

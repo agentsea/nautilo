@@ -887,3 +887,27 @@ index 9afc1c4c870a0ffb78e45f832c13c828bb734f1e..c2daaeac7bf1ea04c96e1669b5683b2b
  const runLimit = readPositiveIntegerEnv("OOMOL_CONNECT_RUN_LIMIT", DEFAULT_RUN_LIMIT);
  const databaseUrl = optionalEnv("OOMOL_CONNECT_DATABASE_URL");
  const databasePoolMax = readPositiveIntegerEnv("OOMOL_CONNECT_DATABASE_POOL_MAX", 10);
+diff --git a/web/provider-icons-plugin.ts b/web/provider-icons-plugin.ts
+--- a/web/provider-icons-plugin.ts
++++ b/web/provider-icons-plugin.ts
+@@ -3,2 +3,2 @@
+-const catalogUrl = "https://oomol.com/en/apps/catalog.json";
++const catalogUrl = "https://connector.oomol.com/public/v1/apps";
+ const publicModuleId = "virtual:oomol-provider-icons";
+@@ -12,3 +12,3 @@
+ interface CatalogPayload {
+-  items?: unknown;
++  data?: unknown;
+ }
+@@ -47,4 +47,4 @@
+   const payload = (await response.json()) as CatalogPayload;
+-  if (!Array.isArray(payload.items)) {
+-    throw new Error("Could not load OOMOL provider icons: catalog.items is not an array");
++  if (!Array.isArray(payload.data)) {
++    throw new Error("Could not load OOMOL provider icons: catalog.data is not an array");
+   }
+@@ -52,3 +52,3 @@
+   const iconUrls: Record<string, string> = {};
+-  for (const item of payload.items as CatalogItem[]) {
++  for (const item of payload.data as CatalogItem[]) {
+     if (typeof item.service === "string" && typeof item.iconUrl === "string" && item.iconUrl.trim()) {

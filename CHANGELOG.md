@@ -7,6 +7,100 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Windows x64 source builds produce a Desktop installer with bundled Bun and
+  the private Relay Host for connecting to a Nautilo server.
+  ACP-backed local agents remain unavailable on Windows until process-tree
+  containment is supported.
+- New first-owner claim files include a copyable claim URL while retaining the
+  single-use code. Existing code-only files remain redeemable through the
+  server's `/claim` page. Owner-claim setup resolves the native user home when
+  the Unix `HOME` environment variable is absent.
+- Desktop smoke commands read their app path from the environment on Windows,
+  so contributor checks can exercise a packaged `.exe`. Connection smoke
+  tests use a recognized private operator-state directory on Windows and POSIX.
+- Windows source installs use Bun's isolated linker for first-party apps,
+  allowing Writer and Video dependencies to install without elevation. Seeded
+  app copies preserve resolved package versions and dependency cycles.
+- Contributor scripts and tests convert file URLs to native filesystem paths,
+  including Windows drive letters and encoded characters.
+- Vendor archive extraction and Sharp staging use local archive names with Windows tar and
+  Git Bash tar, avoiding remote-host interpretation of drive letters.
+  Backup creation, restore, cloning, and archive verification use the same
+  local-path handling.
+- SQL migrations and shell scripts retain LF line endings in Windows checkouts,
+  preserving migration hashes and native Git Bash execution.
+- Contributor Git hooks execute their affected checks on Windows, and repository
+  invariants compare portable paths without changing their ownership rules.
+- The pinned Knip checker recognizes explicit Bun test files on Windows.
+- Windows repository invariant files run in separate Bun processes to avoid
+  a crash in the combined test run.
+- Database role repair rolls back the complete SQL batch if any statement fails.
+- First-party app seeding rebuilds isolated dependencies when seed metadata is
+  invalid, while still reporting filesystem errors.
+- First-party dependency snapshots skip empty package placeholders and resolve
+  valid ancestor packages in reused installations.
+- OpenConnector patches retain LF bytes in CRLF checkouts, preserving their
+  pinned digest and patch syntax.
+- Windows pre-push checks retain affected workspace selection. Hosted Windows
+  checks also execute every repository invariant suite.
+- The root typecheck command runs on Windows and retains package filters and
+  the selected concurrency setting.
+- Windows server startup explicitly defers direct Connected Website browser
+  control until its private-directory containment is supported.
+- Native path checks preserve protected directories, workspace boundaries,
+  and mini-app build paths on Windows. Relay messages retain the originating
+  Desktop's Windows, UNC, or POSIX path syntax independently of the server OS.
+  Patch targets, file-grant selection, approval paths, focused documents, and
+  the remote file browser use the same syntax.
+- Media reads verify regular file entries and stable file identities on
+  Windows before returning bytes.
+- Current Folder leases, folder adoption, and shell authority retain exact
+  64-bit filesystem identities. Large NTFS directory IDs no longer fail
+  admission because of numeric rounding.
+- Generated media staging and private atomic writes apply Windows ACLs before
+  writing data.
+- Workspace artifact readers and clone rebinding accept native Windows paths
+  in the repository's physical storage pointers.
+- Artifact recovery reports failed quarantine attempts instead of counting
+  them as successful.
+- Storage path validation recognizes both Windows separators, and migrated
+  storage directories use directory junctions on Windows.
+- Private Vault files, encrypted Artifact files, runtime metadata, security
+  research records, operator secrets, configuration snapshots, local backups,
+  CLI sessions, headless Relay pairing metadata, bootstrap tokens and profile
+  bundles, deployment checkpoints,
+  development operation records,
+  and instance-allocation locks use
+  Windows owner/ACL checks instead of Unix permission bits. New private files
+  and lock directories receive their ACL at creation. Artifact and checkpoint
+  publication handles Windows directory-sync limits while still rejecting file-sync and
+  directory-access failures.
+- Credential handoffs use Windows ACL checks and verify the reserved file
+  identity before publication or cleanup.
+- Desktop history files and rendered text frames receive private Windows ACLs
+  before content is written. Encrypted execution history retains file flushes
+  while handling Windows directory-flush limitations, and rejects linked or
+  replaced archive files before decryption.
+- Local document mutations synchronize staged bytes before atomic replacement.
+- Deployment checkpoint storage rejects ancestor-directory links and keeps
+  filesystem failures distinct from an empty state directory.
+- Provider and recovery configuration readers apply native Windows
+  file-ownership and ACL checks. Local release evidence uses the same checks.
+- Local backup verification checks Windows ACLs and accepts CRLF output from
+  the system tar reader. Backup creation preserves private local ACLs and
+  uses Linux paths for remote staging and configuration files. Remote staging
+  directories are created privately and reject existing directories.
+- Owner recovery files and artifact-relocation plans use Windows ACLs and
+  retain exclusive publication. Recovery reads verify the opened file identity.
+- Standalone CLI dependency evidence uses native paths and distinguishes
+  external packages from workspaces on Windows.
+- Moderation audit retries can synchronize existing logs on Windows after a
+  lost checkpoint.
+- OfficeCLI discovery uses the native executable name and rejects directories
+  on the search path.
+- Windows tests retain an event-loop reference while each test runs, allowing
+  unref timers and test timeouts to settle instead of leaving a busy test process.
+
 - Separate Genie tool calls keep their own arguments, results, and history even
   when a model provider reuses call IDs. Approval resumes and repeated delivery
   continue to use the original invocation identity.

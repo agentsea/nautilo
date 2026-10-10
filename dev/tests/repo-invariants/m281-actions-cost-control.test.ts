@@ -3,6 +3,8 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { typecheckEnvironment } from "../../scripts/typecheck.ts";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 const workflowsRoot = join(repositoryRoot, ".github/workflows");
@@ -63,15 +65,10 @@ const gitLocalEnvironmentNames = [
   "GIT_WORK_TREE",
 ] as const;
 
-function withoutGitLocalEnvironment(
-  command: string,
-  args: string[],
-): string[] {
-  return [
-    ...gitLocalEnvironmentNames.flatMap((name) => ["-u", name]),
-    command,
-    ...args,
-  ];
+function withoutGitLocalEnvironment(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of gitLocalEnvironmentNames) delete env[name];
+  return env;
 }
 
 async function spawnText(
@@ -85,6 +82,7 @@ async function spawnText(
   try {
     const child = Bun.spawn([command, ...args], {
       cwd: options.cwd ?? process.cwd(),
+      env: withoutGitLocalEnvironment(),
       stdout: Bun.file(stdoutPath),
       stderr: Bun.file(stderrPath),
     });
@@ -100,7 +98,7 @@ async function spawnText(
 }
 
 async function git(cwd: string, ...args: string[]): Promise<string> {
-  const result = await spawnText("env", withoutGitLocalEnvironment("git", args), { cwd });
+  const result = await spawnText("git", args, { cwd });
   expect(
     result.status,
     `git ${args.join(" ")} failed:\n${result.stderr}`,
@@ -161,7 +159,7 @@ async function workspacePathsFor(rootName: string): Promise<string[]> {
       };
       if (!manifest.name) continue;
       manifests.set(manifest.name, {
-        path: dirname(manifestPath),
+        path: dirname(manifestPath).replaceAll("\\", "/"),
         dependencies: [
           ...Object.keys(manifest.dependencies ?? {}),
           ...Object.keys(manifest.devDependencies ?? {}),
@@ -207,7 +205,7 @@ async function firstPartyRuntimeWorkspacePaths(): Promise<string[]> {
         relative(
           repositoryRoot,
           resolve(repositoryRoot, dirname(manifestPath), specifier.slice(5)),
-        ),
+        ).replaceAll("\\", "/"),
       );
     }
   }
@@ -270,8 +268,14 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(typecheck?.env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=5120",
     });
-    expect(rootPackage.scripts.typecheck).toContain(`NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
-    expect(rootPackage.scripts.typecheck).toContain("TURBO_CONCURRENCY=${TURBO_CONCURRENCY:-1}");
+    expect(rootPackage.scripts.typecheck).toBe("bun dev/scripts/typecheck.ts");
+    expect(typecheckEnvironment({})).toMatchObject({
+      NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS,
+      TURBO_CONCURRENCY: "1",
+    });
+    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" }).TURBO_CONCURRENCY).toBe("1");
+    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=1024" }))
+      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS });
     expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
     expect(localGates).toContain('export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"');
   });
@@ -393,6 +397,32 @@ describe("M281 GitHub Actions cost controls", () => {
       expect(supplyPaths).toContain(required);
     }
     expect(supply.on.schedule).toEqual([{ cron: "0 4 * * 1" }]);
+  });
+
+  test("Windows validation covers its transitive workspaces and root build inputs", async () => {
+    const windows = await workflow("windows-desktop.yml");
+    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(eventConfig(windows.on.pull_request).branches).toEqual(["main"]);
+    const paths = eventPaths(windows.on.pull_request);
+    for (const name of [
+      "@nautilo/desktop", "@nautilo/workbench", "@nautilo/server",
+      "@nautilo/dev-tools", "@nautilo/relay-bin", "@nautilo/server-bin",
+    ]) {
+      expectPathsCover(paths, await workspacePathsFor(name));
+    }
+    expectPathsCover(paths, await firstPartyRuntimeWorkspacePaths());
+    for (const file of [
+      "package.json", "bun.lock", "bunfig.toml", ".bun-version", ".gitattributes", "turbo.json",
+      "tsconfig.base.json", "patches/dependency.patch",
+      "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
+      "dev/scripts/test-repo-invariants.ts",
+      "dev/tests/test-lifecycle-preload.ts",
+      "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",
+      "dev/scripts/prepare-sheets.ts", "dev/scripts/prepare-slides.ts",
+      "dev/scripts/vendor-agent-browser.ts", ".github/workflows/windows-desktop.yml",
+    ]) {
+      expect(paths.some((pattern) => new Bun.Glob(pattern).match(file)), `Windows workflow must cover ${file}`).toBe(true);
+    }
   });
 
   test("every Actions Bun cache is versioned and architecture-safe", async () => {
@@ -575,27 +605,28 @@ describe("M281 GitHub Actions cost controls", () => {
       const baseSha = await git(seed, "rev-parse", "HEAD");
       writeFileSync(join(seed, "fixture.txt"), "head\n");
       await git(seed, "commit", "-am", "head");
-      await git(seed, "remote", "add", "origin", `file://${remote}`);
+      const remoteUrl = pathToFileURL(remote).href;
+      await git(seed, "remote", "add", "origin", remoteUrl);
       await git(seed, "push", "origin", "HEAD:main");
-      await git(fixtureRoot, "clone", "--depth=1", "--branch", "main", `file://${remote}`, shallow);
+      await git(fixtureRoot, "clone", "--depth=1", "--branch", "main", remoteUrl, shallow);
 
       expect(
         (await spawnText(
-          "env",
-          withoutGitLocalEnvironment("git", [
+          "git",
+          [
             "cat-file",
             "-e",
             `${baseSha}^{commit}`,
-          ]),
+          ],
           { cwd: shallow },
         )).status,
       ).not.toBe(0);
       const fetchResult = await spawnText(
-        "env",
-        withoutGitLocalEnvironment("bash", [
-          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh"),
+        "bash",
+        [
+          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh").replaceAll("\\", "/"),
           baseSha,
-        ]),
+        ],
         { cwd: shallow },
       );
       if (fetchResult.status !== 0) {
@@ -603,24 +634,23 @@ describe("M281 GitHub Actions cost controls", () => {
           `Exact-base fetch failed (status ${String(fetchResult.status)}):\n${fetchResult.stderr}`,
         );
       }
-      expect(
-        (await spawnText(
-          "env",
-          withoutGitLocalEnvironment("git", [
+      const fetchedBase = await spawnText(
+          "git",
+          [
             "cat-file",
             "-e",
             `${baseSha}^{commit}`,
-          ]),
+          ],
           { cwd: shallow },
-        )).status,
-      ).toBe(0);
+        );
+      expect(fetchedBase.status, fetchedBase.stderr + fetchResult.stdout + fetchResult.stderr).toBe(0);
 
       const missingResult = await spawnText(
-        "env",
-        withoutGitLocalEnvironment("bash", [
-          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh"),
+        "bash",
+        [
+          join(repositoryRoot, "dev/scripts/ensure-ci-base.sh").replaceAll("\\", "/"),
           "0".repeat(40),
-        ]),
+        ],
         { cwd: shallow },
       );
       expect(missingResult.status).not.toBe(0);

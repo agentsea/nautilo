@@ -44,7 +44,9 @@ describe("ensureDesktopOpenHueProvisioned", () => {
     if (repoRoot !== undefined) rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  test("cache hit: returns true and does not spawn for a version-stamped executable", () => {
+  // This preflight owns the pinned Darwin-universal binary. NTFS cannot
+  // represent the POSIX execute-bit fixtures; Windows must refuse that cache.
+  test.skipIf(process.platform === "win32")("cache hit: returns true and does not spawn for a version-stamped executable", () => {
     repoRoot = mkdtempSync(join(tmpdir(), "desktop-openhue-preflight-"));
     writeManifest(repoRoot);
     writeFreshVendor(repoRoot);
@@ -54,7 +56,7 @@ describe("ensureDesktopOpenHueProvisioned", () => {
     expect(calls).toHaveLength(0);
   });
 
-  test("provisions the desktop vendor script when the stamp is stale", () => {
+  test.skipIf(process.platform === "win32")("provisions the desktop vendor script when the stamp is stale", () => {
     repoRoot = mkdtempSync(join(tmpdir(), "desktop-openhue-preflight-"));
     writeManifest(repoRoot);
     writeFreshVendor(repoRoot, "0.23");
@@ -69,7 +71,7 @@ describe("ensureDesktopOpenHueProvisioned", () => {
     });
   });
 
-  test("provisions when the binary is missing or not executable", () => {
+  test.skipIf(process.platform === "win32")("provisions when the binary is missing or not executable", () => {
     repoRoot = mkdtempSync(join(tmpdir(), "desktop-openhue-preflight-"));
     writeManifest(repoRoot);
     const vendorDir = join(repoRoot, "apps/desktop/vendor/openhue");
@@ -79,6 +81,15 @@ describe("ensureDesktopOpenHueProvisioned", () => {
     const calls: SpawnCall[] = [];
 
     expect(ensureDesktopOpenHueProvisioned(repoRoot, { spawn: successfulVendorSpawn(repoRoot, calls) })).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  test.skipIf(process.platform !== "win32")("does not admit the POSIX vendor cache as a Windows executable", () => {
+    repoRoot = mkdtempSync(join(tmpdir(), "desktop-openhue-preflight-"));
+    writeManifest(repoRoot);
+    writeFreshVendor(repoRoot);
+    const calls: SpawnCall[] = [];
+    expect(ensureDesktopOpenHueProvisioned(repoRoot, { spawn: successfulVendorSpawn(repoRoot, calls) })).toBe(false);
     expect(calls).toHaveLength(1);
   });
 

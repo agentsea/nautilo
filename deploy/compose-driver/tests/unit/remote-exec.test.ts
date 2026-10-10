@@ -1,8 +1,7 @@
-import { describe, expect, test } from "bun:test";
-import { homedir, tmpdir } from "node:os";
+import { describe, expect, spyOn, test } from "bun:test";
+import { homedir } from "node:os";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import * as childProcess from "node:child_process";
 
 import {
   buildSshHostKeyArgs,
@@ -79,14 +78,21 @@ test("a signal-terminated private-input process cannot report success", async ()
 });
 
 test("SSH execution forwards private stdin while its real child argv contains only the remote command", async () => {
-  const root = mkdtempSync(join(tmpdir(), "restore-private-stdin-"));
   const secret = "synthetic-ssh-restore-secret-'$()\n";
+  const originalSpawn = childProcess.spawn;
+  const script = `const input = await Bun.stdin.text();
+console.log(JSON.stringify({ digest: new Bun.CryptoHasher("sha256").update(input).digest("hex"), argv: process.argv }));`;
+  // Replace only the executable at the process boundary. Arguments, stdin,
+  // stream handling and completion still pass through a real native child.
+  const spawnFixture = ((command: string, args: readonly string[] = [], options: childProcess.SpawnOptions = {}) => {
+    expect(command).toBe("ssh");
+    return originalSpawn(process.execPath, ["-e", script, "--", ...args], options);
+  }) as typeof childProcess.spawn;
+  const spawn = spyOn(childProcess, "spawn").mockImplementation(spawnFixture);
   try {
-    writeFileSync(join(root, "ssh"), `#!${process.execPath}\nconst input = await Bun.stdin.text();
-console.log(JSON.stringify({ digest: new Bun.CryptoHasher("sha256").update(input).digest("hex"), argv: process.argv }));\n`, { mode: 0o700 });
     const exec = createRemoteExec(remoteProfile);
     const result = await exec("sh", ["-c", "psql -X -v ON_ERROR_STOP=1 -f -"], {
-      stdio: "pipe", stdin: secret, env: { ...process.env, PATH: `${root}:${process.env["PATH"] ?? ""}`, DOCKER_HOST: "" },
+      stdio: "pipe", stdin: secret, env: { ...process.env, DOCKER_HOST: "" },
     });
     expect(result.code).toBe(0);
     const observed = JSON.parse(result.stdout) as { digest: string; argv: string[] };
@@ -94,7 +100,7 @@ console.log(JSON.stringify({ digest: new Bun.CryptoHasher("sha256").update(input
     expect(observed.argv.join(" ")).toContain("psql -X -v ON_ERROR_STOP=1 -f -");
     expect(result.stdout).not.toContain(secret);
     expect(result.stderr).toBe("");
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { spawn.mockRestore(); }
 });
 
 describe("expandTilde", () => {

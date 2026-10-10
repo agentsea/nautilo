@@ -15,11 +15,11 @@ describe("runtime paths", () => {
       userHomeDir: "/Users/tester",
     });
 
-    expect(paths.rootDir).toBe("/Users/tester/.nautilo");
-    expect(paths.sessionStateFile).toBe("/Users/tester/.nautilo/session.json");
-    expect(paths.homeRootDir).toBe("/Users/tester/.nautilo/home");
-    expect(paths.workspaceDir).toBe("/Users/tester/.nautilo/home/workspace");
-    expect(paths.exportsDir).toBe("/Users/tester/.nautilo/home/exports");
+    expect(paths.rootDir).toBe(normalize("/Users/tester/.nautilo"));
+    expect(paths.sessionStateFile).toBe(normalize("/Users/tester/.nautilo/session.json"));
+    expect(paths.homeRootDir).toBe(normalize("/Users/tester/.nautilo/home"));
+    expect(paths.workspaceDir).toBe(normalize("/Users/tester/.nautilo/home/workspace"));
+    expect(paths.exportsDir).toBe(normalize("/Users/tester/.nautilo/home/exports"));
   });
 
   test("zones are siblings of home/ (D049 layout)", () => {
@@ -30,20 +30,20 @@ describe("runtime paths", () => {
     });
 
     // scratch is NOT under home/ — it's a sibling
-    expect(paths.scratchDir).toBe("/Users/tester/.nautilo/scratch");
+    expect(paths.scratchDir).toBe(normalize("/Users/tester/.nautilo/scratch"));
     expect(paths.scratchDir.startsWith(paths.homeRootDir)).toBe(false);
 
     // zone roots
-    expect(paths.dataDir).toBe("/Users/tester/.nautilo/data");
-    expect(paths.vaultDir).toBe("/Users/tester/.nautilo/vault");
+    expect(paths.dataDir).toBe(normalize("/Users/tester/.nautilo/data"));
+    expect(paths.vaultDir).toBe(normalize("/Users/tester/.nautilo/vault"));
 
     // data sub-paths
-    expect(paths.dbDataDir).toBe("/Users/tester/.nautilo/data/db");
-    expect(paths.embeddingsDir).toBe("/Users/tester/.nautilo/data/embeddings");
+    expect(paths.dbDataDir).toBe(normalize("/Users/tester/.nautilo/data/db"));
+    expect(paths.embeddingsDir).toBe(normalize("/Users/tester/.nautilo/data/embeddings"));
     expect(paths.voiceCacheDir).toBe(
-      "/Users/tester/.nautilo/data/voice-previews",
+      normalize("/Users/tester/.nautilo/data/voice-previews"),
     );
-    expect(paths.audioCacheDir).toBe("/Users/tester/.nautilo/data/audio");
+    expect(paths.audioCacheDir).toBe(normalize("/Users/tester/.nautilo/data/audio"));
 
     // no inboxDir field (post-pivot)
     expect("inboxDir" in paths).toBe(false);
@@ -58,7 +58,7 @@ describe("runtime paths", () => {
       userHomeDir: "/Users/tester",
     });
 
-    expect(paths.vaultDir).toBe("/abs/vault");
+    expect(paths.vaultDir).toBe(normalize("/abs/vault"));
   });
 
   test("NAUTILO_HOME is ignored (M071 — instance layout only)", () => {
@@ -68,8 +68,8 @@ describe("runtime paths", () => {
       userHomeDir: "/Users/tester",
     });
 
-    expect(paths.rootDir).toBe("/Users/tester/.nautilo");
-    expect(paths.sessionStateFile).toBe("/Users/tester/.nautilo/session.json");
+    expect(paths.rootDir).toBe(normalize("/Users/tester/.nautilo"));
+    expect(paths.sessionStateFile).toBe(normalize("/Users/tester/.nautilo/session.json"));
   });
 
   test("expands tilde paths safely relative to ~/.nautilo root", () => {
@@ -82,11 +82,11 @@ describe("runtime paths", () => {
       userHomeDir: "/Users/tester",
     });
 
-    expect(paths.rootDir).toBe("/Users/tester/.nautilo");
+    expect(paths.rootDir).toBe(normalize("/Users/tester/.nautilo"));
     expect(paths.sessionStateFile).toBe(
-      "/Users/tester/Library/Application Support/Nautilo/session.json",
+      normalize("/Users/tester/Library/Application Support/Nautilo/session.json"),
     );
-    expect(paths.exportsDir).toBe("/Users/tester/Documents/Nautilo Exports");
+    expect(paths.exportsDir).toBe(normalize("/Users/tester/Documents/Nautilo Exports"));
   });
 
   test("NAUTILO_INSTANCE_ID=beta resolves to ~/.nautilo-beta", () => {

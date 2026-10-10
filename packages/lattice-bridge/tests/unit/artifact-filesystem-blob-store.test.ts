@@ -16,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import { ensurePrivateDirectorySync, isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import { seededRng } from "@nautilo/lattice-crypto/testing";
 
 import {
@@ -50,6 +51,43 @@ function chunks(...values: Uint8Array[]): AsyncIterable<Uint8Array> {
 }
 
 describe("filesystem encrypted Artifact blob store", () => {
+  test.each(["file sync", "directory open", "directory sync"])("propagates a real %s failure", async (operation) => {
+    await withRoot(async (root) => {
+      const failure = Object.assign(new Error(operation), {
+        code: operation === "directory sync" ? "EIO" : "EPERM",
+      });
+      const handles = new Set<Awaited<ReturnType<typeof open>>>();
+      const filesystem: ArtifactBlobFilesystemV1 = {
+        mkdir, chmod, link, unlink, lstat,
+        async listBounded(path, limit) { return (await readdir(path)).slice(0, limit); },
+        async open(path, flags, mode) {
+          const directory = path === root;
+          if (directory && operation === "directory open") throw failure;
+          const handle = await open(path, flags, mode);
+          handles.add(handle);
+          const close = handle.close.bind(handle);
+          handle.close = async () => { await close(); handles.delete(handle); };
+          if ((directory && operation === "directory sync") || (!directory && flags === "wx" && operation === "file sync")) {
+            handle.sync = async () => { throw failure; };
+          }
+          return handle;
+        },
+      };
+      const store = createFilesystemEncryptedArtifactBlobStoreV1({ rootDirectory: root, filesystem });
+      const observedError = await store.publish({
+        crypto: new LatticeCrypto(seededRng(0x2618)),
+        artifactId: ARTIFACT_ID,
+        blobId: BLOB_ID,
+        blobGeneration: 1,
+        plaintextLength: 1,
+        blobDek: DEK,
+        plaintext: chunks(new Uint8Array([1])),
+      }).then(() => undefined, (error: unknown) => error);
+      expect(observedError).toBe(failure);
+      expect(handles.size).toBe(0);
+    });
+  });
+
   test("publishes an already-encrypted canonical stream without receiving its DEK", async () => {
     await withRoot(async (root) => {
       const sourceRoot = join(root, "source");
@@ -81,6 +119,12 @@ describe("filesystem encrypted Artifact blob store", () => {
         ciphertext: chunks(ciphertext.subarray(0, 5), ciphertext.subarray(5)),
       });
       expect(published).toEqual({ status: "published", reference: prepared.reference });
+      for (const directory of [sourceRoot, targetRoot]) {
+        const path = join(directory, `${BLOB_ID}.artifact-blob-v1`);
+        expect(isPrivateFilesystemPath(directory)).toBe(true);
+        expect(isPrivateFilesystemPath(path)).toBe(true);
+        if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+      }
       expect((await readFile(join(targetRoot, `${BLOB_ID}.artifact-blob-v1`)))
         .includes(Buffer.from("client-only plaintext canary"))).toBeFalse();
       expect(await target.publishCiphertext({
@@ -99,7 +143,7 @@ describe("filesystem encrypted Artifact blob store", () => {
     await withRoot(async (root) => {
       const requestedReadLengths: number[] = [];
       const filesystem: ArtifactBlobFilesystemV1 = {
-        mkdir,
+        async mkdir(path) { ensurePrivateDirectorySync(path); },
         chmod,
         link,
         unlink,
@@ -149,7 +193,8 @@ describe("filesystem encrypted Artifact blob store", () => {
       const names = await readdir(root);
       expect(names).toEqual([`${BLOB_ID}.artifact-blob-v1`]);
       const path = join(root, names[0]!);
-      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect(isPrivateFilesystemPath(path)).toBe(true);
+      if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
       const ciphertext = await readFile(path);
       expect(ciphertext.includes(Buffer.from("canary-plaintext"))).toBeFalse();
 

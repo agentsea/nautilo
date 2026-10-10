@@ -115,6 +115,25 @@ describe("live-local-document-authority path helpers", () => {
     expect(isPathContainedInAllowedRoots(CANONICAL, [CURRENT])).toBe(true);
     expect(isPathContainedInAllowedRoots(CANONICAL, ["/Users/alice/other"])).toBe(false);
   });
+
+  test("resolves paths in the remote device's syntax on every server platform", () => {
+    expect(resolveLiveCurrentFileCanonicalPath("C:\\Users\\alice\\project", RELATIVE)).toBe("C:\\Users\\alice\\project\\docs\\report.html");
+    expect(resolveLiveCurrentFileCanonicalPath("\\\\host\\share\\project", RELATIVE)).toBe("\\\\host\\share\\project\\docs\\report.html");
+    expect(resolveLiveCurrentFileCanonicalPath(CURRENT, RELATIVE)).toBe(CANONICAL);
+  });
+
+  test.each([
+    ["/docs/report.html", "/", true],
+    ["/Project/report.html", "/project", false],
+    ["C:\\Project\\report.html", "c:\\project", true],
+    ["C:\\Project-other\\report.html", "C:\\Project", false],
+    ["D:\\Project\\report.html", "C:\\Project", false],
+    ["\\\\host\\share\\project\\report.html", "\\\\host\\share\\project", true],
+    ["\\\\host\\other\\project\\report.html", "\\\\host\\share\\project", false],
+    ["/project/report.html", "C:\\project", false],
+  ] as const)("checks remote path boundaries for %s within %s", (target, root, allowed) => {
+    expect(isPathContainedInRoot(target, root)).toBe(allowed);
+  });
 });
 
 describe("LiveLocalDocumentAuthority issue", () => {

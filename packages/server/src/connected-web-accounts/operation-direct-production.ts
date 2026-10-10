@@ -9,7 +9,7 @@ import type {
 } from "../browser-use/browser-use-cloud";
 import { navigateBrowserUseCdpPage, resolveBrowserUseCdpWebSocketUrl } from "./cdp-navigator";
 import { createServerDirectBrowserDirectoryAuthority } from "./direct-browser-directory-authority";
-import { createServerDirectBrowserHarness, resolveServerVendoredAgentBrowserBinary } from "./direct-browser-harness";
+import { createServerDirectBrowserHarness, DirectBrowserHarnessError, resolveServerVendoredAgentBrowserBinary } from "./direct-browser-harness";
 import { DirectBrowserRouter } from "./direct-browser-router";
 import { ConnectedWebOperationDirectRuntime } from "./operation-direct-runtime";
 import { recoverDirectConnectedWebOperation, recoverDirectConnectedWebOperations } from "./operation-direct-recovery";
@@ -50,6 +50,9 @@ function secretContext(operation: { readonly id: string; readonly ownerUserId: s
 export function createConnectedWebOperationDirectProductionRuntime(
   options: ConnectedWebOperationDirectProductionOptions,
 ): ConnectedWebOperationDirectRuntime {
+  // The directory authority requires POSIX ownership and private modes. A
+  // Windows binary alone cannot provide that containment contract.
+  if (process.platform === "win32") throw new DirectBrowserHarnessError("unavailable");
   const directories = createServerDirectBrowserDirectoryAuthority({
     rootDirectory: directBrowserPrivateRoot(options.instanceIdentity),
     instanceIdentity: options.instanceIdentity,

@@ -1,18 +1,13 @@
 import {
-  chmodSync,
-  mkdirSync,
-  openSync,
   readFileSync,
   readdirSync,
   rmdirSync,
   lstatSync,
   unlinkSync,
-  writeFileSync,
-  closeSync,
-  fsyncSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { createPrivateDirectorySync, isPrivateFilesystemPath, writePrivateFileExclusiveSync } from "./private-filesystem";
 
 const LOCK_DIRECTORY = ".nautilo-instance-allocation.lock";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -77,29 +72,49 @@ function parseOwner(raw: string): AllocationLockOwner | null {
   }
 }
 
-function assertOwnerOnlyLockDirectory(lockPath: string): void {
+/**
+ * Contenders poll a held lock. Its native permission check starts a helper
+ * process on Windows, so a lock identity (inode and change time of the
+ * directory and its claim) is verified once per acquisition attempt; a new
+ * owner or a permission change produces a new identity.
+ */
+function assertOwnerOnlyLockDirectory(lockPath: string, verified: Set<string>): void {
   try {
-    const details = lstatSync(lockPath);
-    if (!details.isDirectory() || (details.mode & 0o077) !== 0) {
+    const details = lstatSync(lockPath, { bigint: true });
+    if (!details.isDirectory()) {
       throw new Error(`Nautilo instance allocation lock is not owner-only: ${lockPath}`);
     }
     const entries = readdirSync(lockPath);
     if (entries.length > 1) {
       throw new Error(`Nautilo instance allocation lock has multiple claims: ${lockPath}`);
     }
+    let identity = `${details.ino}:${details.ctimeNs}`;
+    let claim: string | undefined;
     if (entries.length === 1) {
       const name = entries[0] as string;
       const token = name.endsWith(".json") ? name.slice(0, -5) : "";
       if (!SAFE_TOKEN.test(token)) {
         throw new Error(`Nautilo instance allocation lock has an unsafe claim: ${lockPath}`);
       }
-      const claim = join(lockPath, name);
-      const claimDetails = lstatSync(claim);
+      claim = join(lockPath, name);
+      const claimDetails = lstatSync(claim, { bigint: true });
+      if (!claimDetails.isFile()) {
+        throw new Error(`Nautilo instance allocation lock claim is invalid: ${claim}`);
+      }
+      identity += `:${name}:${claimDetails.ino}:${claimDetails.ctimeNs}`;
       const owner = parseOwner(readFileSync(claim, "utf8"));
-      if (!claimDetails.isFile() || (claimDetails.mode & 0o077) !== 0 || owner?.token !== token) {
+      if (owner?.token !== token) {
         throw new Error(`Nautilo instance allocation lock claim is invalid: ${claim}`);
       }
     }
+    if (verified.has(identity)) return;
+    if (!isPrivateFilesystemPath(lockPath)) {
+      throw new Error(`Nautilo instance allocation lock is not owner-only: ${lockPath}`);
+    }
+    if (claim !== undefined && !isPrivateFilesystemPath(claim)) {
+      throw new Error(`Nautilo instance allocation lock claim is invalid: ${claim}`);
+    }
+    verified.add(identity);
   } catch (error) {
     if (isCode(error, "ENOENT")) return;
     throw error;
@@ -108,23 +123,16 @@ function assertOwnerOnlyLockDirectory(lockPath: string): void {
 
 function tryAcquire(lockPath: string, owner: AllocationLockOwner): boolean {
   try {
-    mkdirSync(lockPath, { mode: 0o700 });
+    createPrivateDirectorySync(lockPath);
   } catch (error) {
     if (isCode(error, "EEXIST")) return false;
     throw error;
   }
-  chmodSync(lockPath, 0o700);
   const path = claimFile(lockPath, owner.token);
-  let fd: number | null = null;
   try {
-    fd = openSync(path, "wx", 0o600);
-    writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = null;
+    writePrivateFileExclusiveSync(path, Buffer.from(`${JSON.stringify(owner)}\n`));
     return true;
   } catch (error) {
-    if (fd !== null) closeSync(fd);
     try { unlinkSync(path); } catch { /* keep original acquisition error */ }
     try { rmdirSync(lockPath); } catch { /* keep original acquisition error */ }
     throw error;
@@ -174,6 +182,7 @@ export function withInstanceAllocationLockSync<T>(
   const token = (options.token ?? randomUUID)();
   if (!SAFE_TOKEN.test(token)) throw new Error("Unsafe Nautilo instance allocation lock token");
   const deadline = now() + timeoutMs;
+  const verified = new Set<string>();
   for (;;) {
     const owner = { pid: process.pid, token, createdAt: new Date(now()).toISOString() };
     if (tryAcquire(lockPath, owner)) {
@@ -184,7 +193,7 @@ export function withInstanceAllocationLockSync<T>(
         release(lockPath, token);
       }
     }
-    assertOwnerOnlyLockDirectory(lockPath);
+    assertOwnerOnlyLockDirectory(lockPath, verified);
     options.contended?.();
     if (now() >= deadline) throw new InstanceAllocationBusyError(lockPath);
     waitSynchronously(Math.min(pollMs, Math.max(0, deadline - now())));

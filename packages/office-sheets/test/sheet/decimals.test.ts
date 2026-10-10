@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { MemStore } from '../../src/store/memory';
 import { Sheet } from '../../src/model/worksheet/sheet';
 import { formatValue } from '../../src/model/worksheet/format';
 
 describe('Sheet.Decimals', () => {
+  afterEach(() => vi.unstubAllGlobals());
   it('should leave an empty cell unstyled after increase then decrease', async () => {
     const sheet = new Sheet(new MemStore());
     sheet.selectStart({ r: 1, c: 1 });
@@ -40,6 +41,7 @@ describe('Sheet.Decimals', () => {
   });
 
   it('should return a decimal cell to its own precision', async () => {
+    vi.stubGlobal('navigator', { language: 'en-US' });
     const sheet = new Sheet(new MemStore());
     await sheet.setData({ r: 1, c: 1 }, '12.5');
     sheet.selectStart({ r: 1, c: 1 });
@@ -76,6 +78,7 @@ describe('Sheet.Decimals', () => {
   });
 
   it('should round trip in the decrease-then-increase order', async () => {
+    vi.stubGlobal('navigator', { language: 'en-US' });
     const sheet = new Sheet(new MemStore());
     await sheet.setData({ r: 1, c: 1 }, '12.5');
     sheet.selectStart({ r: 1, c: 1 });
@@ -89,6 +92,17 @@ describe('Sheet.Decimals', () => {
     await sheet.changeDecimals(1);
     expect(await sheet.getStyle({ r: 1, c: 1 })).toBeUndefined();
     expect(await sheet.toDisplayString({ r: 1, c: 1 })).toBe('12.5');
+  });
+
+  it('should keep a localized decimal separator the unset would change', async () => {
+    vi.stubGlobal('navigator', { language: 'de-DE' });
+    const sheet = new Sheet(new MemStore());
+    await sheet.setData({ r: 1, c: 1 }, '12.5');
+    sheet.selectStart({ r: 1, c: 1 });
+    await sheet.changeDecimals(-1);
+    await sheet.changeDecimals(1);
+    expect(await sheet.getStyle({ r: 1, c: 1 })).toEqual({ dp: 1, nf: 'number' });
+    expect(await sheet.toDisplayString({ r: 1, c: 1 })).toBe('12,5');
   });
 
   it('should keep the grouping separators the step would flatten', async () => {

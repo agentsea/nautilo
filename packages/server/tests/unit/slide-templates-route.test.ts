@@ -2,6 +2,7 @@ import { writeSlideTemplateBytes } from "../../src/lib/slide-template-service";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Artifact } from "@nautilo/db";
@@ -438,6 +439,7 @@ test("private template byte publication is complete and exclusive", async () => 
   try {
     const path = join(root, TEMPLATE_ID);
     await writeSlideTemplateBytes(path, CONTENT);
+    expect(await isPrivateFilesystemPathAsync(path)).toBe(true);
     expect(await readFile(path, "utf8")).toBe(CONTENT);
     expect(await readdir(root)).toEqual([TEMPLATE_ID]);
     expect(await writeSlideTemplateBytes(path, "conflicting bytes").then(() => "unexpected success", () => "refused")).toBe("refused");

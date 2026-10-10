@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 
 import { CLI_PUBLIC_RELEASE_ORIGIN, CLI_RELEASE_TRUSTED_PUBLIC_KEYS, CLI_STABLE_MANIFEST_URL } from "./cli-release-trust.ts";
 
@@ -173,11 +173,11 @@ function compareVersions(left: string, right: string): number {
   return 0;
 }
 function verifyArchiveListing(archive: string, expectedRoot: string): void {
-  const result = Bun.spawnSync(["tar", "-tzf", archive], { stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawnSync(["tar", "-tzf", basename(archive)], { cwd: dirname(archive), stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error("CLI release archive cannot be listed.");
   const entries = new TextDecoder().decode(result.stdout).trim().split("\n").filter(Boolean);
   if (entries.length === 0 || entries.some((entry) => !entry.startsWith(`${expectedRoot}/`) || entry.startsWith("/") || entry.split("/").includes("..") || entry.includes("\\"))) throw new Error("CLI release archive contains an unsafe path.");
-  const verbose = Bun.spawnSync(["tar", "-tvzf", archive], { stdout: "pipe", stderr: "pipe" });
+  const verbose = Bun.spawnSync(["tar", "-tvzf", basename(archive)], { cwd: dirname(archive), stdout: "pipe", stderr: "pipe" });
   if (verbose.exitCode !== 0 || new TextDecoder().decode(verbose.stdout).trim().split("\n").filter(Boolean).some((line) => !["-", "d"].includes(line[0] ?? ""))) throw new Error("CLI release archive contains a link or special file.");
 }
 
@@ -188,9 +188,10 @@ export async function installStableCliRelease(input: {
   platform?: CliReleasePlatform;
   fetchArchive?: (target: CliReleaseTarget["archive"]) => Promise<Buffer>;
 } = {}): Promise<{ version: string; previousVersion: string | null; changed: boolean }> {
+  const targetPlatform = input.platform ?? platform();
   const roots = input.roots ?? defaultCliInstallRoots();
   const signed = input.manifest ?? await fetchStableCliRelease();
-  const target = signed.manifest.targets.find((entry) => entry.platform === (input.platform ?? platform()));
+  const target = signed.manifest.targets.find((entry) => entry.platform === targetPlatform);
   if (target === undefined) throw new Error("CLI release has no artifact for this Mac.");
   const prior = currentVersion(roots);
   if (prior !== null && compareVersions(signed.manifest.version, prior) < 0 && input.allowDowngrade !== true) throw new Error("CLI update refuses a downgrade; use rollback for the previous installed release.");
@@ -207,7 +208,7 @@ export async function installStableCliRelease(input: {
     const bundleName = `nautilo-cli-${signed.manifest.version}-${target.platform}`;
     verifyArchiveListing(archive, bundleName);
     const extracted = join(work, "extracted"); mkdirSync(extracted, { mode: 0o700 });
-    const untar = Bun.spawnSync(["tar", "-xzf", archive, "-C", extracted], { stdout: "pipe", stderr: "pipe" });
+    const untar = Bun.spawnSync(["tar", "-xzf", basename(archive), "-C", basename(extracted)], { cwd: work, stdout: "pipe", stderr: "pipe" });
     if (untar.exitCode !== 0) throw new Error("CLI release archive cannot be extracted.");
     const bundle = join(extracted, bundleName);
     const binary = join(bundle, "bin", "nautilo");

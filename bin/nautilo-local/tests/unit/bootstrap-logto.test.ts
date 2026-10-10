@@ -12,7 +12,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ACCOUNT_CENTER_ENABLE_PATCH_BODY,
@@ -417,7 +417,7 @@ describe("formatBootstrapBanner", () => {
     expect(out).toContain("http://localhost:3302");
     expect(out).toContain("nautilo-admin");
     expect(out).toContain("/home/me/.nautilo/instance.env");
-    expect(out).toContain("/home/me/.nautilo/logto-admin.txt");
+    expect(out).toContain(join("/home/me/.nautilo", "logto-admin.txt"));
     expect(out).not.toContain("abc123def456");
   });
 

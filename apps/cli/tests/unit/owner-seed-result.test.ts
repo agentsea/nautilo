@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { constants, type Stats } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import {
-  chmod,
   link,
   lstat,
   mkdir,
   mkdtemp,
   open,
   readFile,
+  rename,
   realpath,
   rm,
   symlink,
@@ -16,6 +16,8 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReaders, allowOtherWriters } from "@nautilo/config/private-filesystem-fixtures";
 
 import {
   OWNER_SEED_RESULT_SCHEMA,
@@ -44,6 +46,7 @@ let outputPath: string;
 
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), "owner-seed-result-")));
+  await secureFilesystemPath(root);
   outputDirectory = join(root, "operator-results");
   outputPath = join(outputDirectory, "owner.json");
   await mkdir(outputDirectory, { mode: 0o700 });
@@ -82,7 +85,7 @@ function nativeFilesystem(onBoundary?: (boundary: string) => Promise<void>): Own
   const boundary = onBoundary ?? (() => Promise.resolve());
   let parentOpenCount = 0;
   return {
-    lstat: (path): Promise<Stats> => lstat(path),
+    lstat: (path): Promise<BigIntStats> => lstat(path, { bigint: true }),
     realpath,
     open: async (path, flags, mode): Promise<OwnerSeedResultFileHandle> => {
       const handle = await open(path, flags, mode);
@@ -103,14 +106,14 @@ function nativeFilesystem(onBoundary?: (boundary: string) => Promise<void>): Own
           await boundary(`write-${kind}`);
         },
         readFile: async () => handle.readFile(),
-        stat: async () => handle.stat(),
+        stat: async () => handle.stat({ bigint: true }),
         chmod: async (fileMode) => {
           await handle.chmod(fileMode);
           await boundary(`chmod-${kind}`);
         },
         sync: async () => {
-          await handle.sync();
-          await boundary(`sync-${kind}`);
+          try { await handle.sync(); }
+          finally { await boundary(`sync-${kind}`); }
         },
         close: async () => {
           await handle.close();
@@ -153,7 +156,7 @@ describe("owner seed result destination preflight", () => {
 
     const unsafe = join(root, "unsafe");
     await mkdir(unsafe, { mode: 0o777 });
-    await chmod(unsafe, 0o777);
+    await allowOtherWriters(unsafe);
     await expectOwnerRejection(
       preflightOwnerSeedResultDestination({ path: join(unsafe, "owner.json") }),
       "unsafe-parent",
@@ -165,12 +168,20 @@ describe("owner seed result destination preflight", () => {
     );
   });
 
+  test("permits another reader of the parent without exposing recovery codes", async () => {
+    await allowOtherReaders(outputDirectory);
+    expect(await preflightOwnerSeedResultDestination({ path: outputPath })).toEqual({ kind: "available", path: outputPath });
+    await publishOwnerSeedResult({ path: outputPath, result });
+    expect(await isPrivateFilesystemPathAsync(outputPath)).toBe(true);
+  });
+
   test("rejects symlink targets and observes an existing valid result", async () => {
     const elsewhere = join(root, "elsewhere.json");
     await writeFile(elsewhere, `${JSON.stringify(result)}\n`, { mode: 0o600 });
-    await symlink(elsewhere, outputPath);
+    await symlink(process.platform === "win32" ? root : elsewhere, outputPath,
+      process.platform === "win32" ? "junction" : "file");
     await expectOwnerRejection(readOwnerSeedResult({ path: outputPath }), "result-read-failed");
-    await unlink(outputPath);
+    await rm(outputPath, { recursive: process.platform === "win32" });
 
     await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
     expect(await preflightOwnerSeedResultDestination({ path: outputPath })).toEqual({
@@ -183,22 +194,11 @@ describe("owner seed result destination preflight", () => {
   test("revalidates the opened result handle instead of trusting lstat", async () => {
     await writeFile(outputPath, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
     const filesystem = nativeFilesystem();
+    const other = join(outputDirectory, "other.json");
+    await writeFile(other, `${JSON.stringify(result)}\n`, { mode: 0o600 });
     const openNative = filesystem.open.bind(filesystem);
     filesystem.open = async (path, flags, mode) => {
-      const handle = await openNative(path, flags, mode);
-      if (path !== outputPath) return handle;
-      return {
-        ...handle,
-        stat: async () => {
-          const status = await handle.stat();
-          return new Proxy(status, {
-            get(target, property) {
-              if (property === "mode") return (target.mode & ~0o777) | 0o644;
-              return Reflect.get(target, property, target) as unknown;
-            },
-          });
-        },
-      };
+      return openNative(path === outputPath ? other : path, flags, mode);
     };
     await expectOwnerRejection(
       readOwnerSeedResult({ path: outputPath, filesystem }),
@@ -208,6 +208,18 @@ describe("owner seed result destination preflight", () => {
 });
 
 describe("owner seed result durable publication", () => {
+  test("preserves a replaced temporary file without publishing it", async () => {
+    const temporary = join(outputDirectory, ".owner.json.tmp-replaced");
+    const filesystem = nativeFilesystem(async event => {
+      if (event !== "close-temporary") return;
+      await rename(temporary, join(outputDirectory, "retained.json"));
+      await writeFile(temporary, "unrelated file", { mode: 0o600 });
+    });
+    await expectOwnerRejection(publishOwnerSeedResult({ path: outputPath, result, temporarySuffix: () => "replaced", filesystem }), "result-publish-failed");
+    expect(await readFile(temporary, "utf8")).toBe("unrelated file");
+    expect(await readOwnerSeedResult({ path: outputPath })).toBeUndefined();
+  });
+
   test("publishes mode 0600, fsyncs, and reads the exact result", async () => {
     const boundaries: string[] = [];
     expect(await publishOwnerSeedResult({
@@ -220,7 +232,7 @@ describe("owner seed result durable publication", () => {
       }),
     })).toEqual({ kind: "published", path: outputPath, result });
 
-    expect((await lstat(outputPath)).mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(outputPath)).toBe(true);
     expect(JSON.parse(await readFile(outputPath, "utf8"))).toEqual(result);
     expect(boundaries).toEqual([
       "open-temporary",

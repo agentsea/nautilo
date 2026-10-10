@@ -168,6 +168,7 @@ describe("formatClaimInviteFile", () => {
       {
         redeemInput: "inv_abc",
         token: "inv_abc",
+        serverUrl: "http://localhost:3001",
       },
       "2026-05-04T12:00:00.000Z",
     );
@@ -175,8 +176,8 @@ describe("formatClaimInviteFile", () => {
     expect(out).toContain("# Created: 2026-05-04T12:00:00.000Z");
     expect(out).toContain("redeem_input: inv_abc");
     expect(out).toContain("token: inv_abc");
-    expect(out).toContain("open the redeem_input URL");
-    expect(out).toContain("Workbench or the Desktop app");
+    expect(out).toContain("redeem_url: http://localhost:3001/claim#claim=inv_abc");
+    expect(out).toContain("redeem_input is a code, not a URL");
   });
 });
 
@@ -434,6 +435,7 @@ describe("bootstrapClaimInvite", () => {
       expect(writes[0]?.path).toBe(target);
       expect(writes[0]?.body).toContain(`token: ${expectedToken}`);
       expect(writes[0]?.body).toContain(`redeem_input: ${r.outcome.redeemInput}`);
+      expect(writes[0]?.body).toContain(`redeem_url: http://localhost:3001/claim#claim=${expectedToken}`);
       expect(order).toEqual(["write", "insert"]);
       expect(existsSync(r.outcome.bootstrapClaimInvitePath)).toBe(true);
       expect(readFileSync(r.outcome.bootstrapClaimInvitePath, "utf8").trim()).toBe(expectedToken);

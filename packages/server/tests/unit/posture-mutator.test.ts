@@ -12,7 +12,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -161,9 +161,10 @@ describe("createPostureMutator", () => {
 
   test("sidecar write failure aborts the chain (no broadcast, no config update)", async () => {
     // Audit writes, then sidecar fails → in-memory config + broadcast
-    // must NOT fire. Point sidecarPath at an unwritable path; audit
-    // log goes to a writable tmpfile.
-    const unwritableSidecar = "/this-path-does-not-exist/nope/posture.json";
+    // must NOT fire. A regular file cannot become the sidecar's parent.
+    const blockedParent = join(tmp, "not-a-directory");
+    writeFileSync(blockedParent, "fixture");
+    const unwritableSidecar = join(blockedParent, "posture.json");
     const mutator = createPostureMutator({
       auditLogPath,
       sidecarPath: unwritableSidecar,
@@ -193,7 +194,9 @@ describe("createPostureMutator", () => {
     // If the audit write fails, config update must NOT happen. Force
     // a write failure by pointing at an unwritable path and confirm
     // the posture remains unchanged.
-    const unwritable = "/this-path-does-not-exist/and-cannot-be-created/log";
+    const blockedParent = join(tmp, "not-a-directory");
+    writeFileSync(blockedParent, "fixture");
+    const unwritable = join(blockedParent, "audit.log");
     const mutator = createPostureMutator({
       auditLogPath: unwritable,
       sidecarPath,

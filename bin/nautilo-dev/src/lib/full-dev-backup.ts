@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { chmod, readFile, readdir, stat, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { lstat, readFile, readdir } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { validateNautiloInstanceIdValue } from "@nautilo/config";
+import { isPrivateFilesystemPathAsync, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import type { MigrationLineageEntry } from "./migration-lineage";
 
 export const FULL_DEV_BACKUP_FORMAT_VERSION = 2 as const;
@@ -209,10 +210,10 @@ export async function describeBackupArtifact(
   file: string,
 ): Promise<BackupArtifact> {
   if (!SAFE_FILE_RE.test(file)) throw new Error(`Unsafe backup artifact name: ${file}`);
-  const path = join(dir, file);
-  const details = await stat(path);
+  const path = resolve(dir, file);
+  const details = await lstat(path);
   if (!details.isFile()) throw new Error(`Backup artifact is not a file: ${file}`);
-  await chmod(path, 0o600);
+  await secureFilesystemPath(path);
   return {
     file,
     bytes: details.size,
@@ -223,7 +224,7 @@ export async function describeBackupArtifact(
 function artifactPathWithin(dir: string, artifact: BackupArtifact): string {
   const root = resolve(dir);
   const path = resolve(dir, artifact.file);
-  if (path === root || !path.startsWith(`${root}/`)) {
+  if (path === root || dirname(path) !== root) {
     throw new Error(`Backup artifact escapes its directory: ${artifact.file}`);
   }
   return path;
@@ -267,13 +268,18 @@ export async function verifyFullBackupDirectory(
   policy: FullBackupEligibilityPolicy = "named-clone",
 ): Promise<VerifiedFullBackup> {
   const manifestPath = join(dir, FULL_DEV_BACKUP_MANIFEST);
+  const dirDetails = await lstat(dir);
+  if (!dirDetails.isDirectory() || !await isPrivateFilesystemPathAsync(resolve(dir))) {
+    throw new Error(`Backup directory is not owner-only: ${dir}`);
+  }
+  const manifestDetails = await lstat(manifestPath);
+  if (!manifestDetails.isFile()) throw new Error("Backup manifest is not a regular file");
+  if (!await isPrivateFilesystemPathAsync(resolve(manifestPath))) {
+    throw new Error("Backup manifest permissions are not owner-only");
+  }
   const manifest = parseFullBackupManifest(
     JSON.parse(await readFile(manifestPath, "utf8")) as unknown,
   );
-  const dirDetails = await stat(dir);
-  if (!dirDetails.isDirectory() || (dirDetails.mode & 0o077) !== 0) {
-    throw new Error(`Backup directory is not owner-only: ${dir}`);
-  }
   if (
     manifest.name !== basename(dir) ||
     validateNautiloInstanceIdValue(manifest.sourceInstanceId) !== null
@@ -288,14 +294,18 @@ export async function verifyFullBackupDirectory(
   }
   for (const artifact of Object.values(manifest.artifacts)) {
     const path = artifactPathWithin(dir, artifact);
-    const details = await stat(path);
+    const details = await lstat(path);
     if (
       !details.isFile() ||
-      details.size !== artifact.bytes ||
-      (details.mode & 0o077) !== 0 ||
-      (details.mode & 0o400) === 0
+      details.size !== artifact.bytes
     ) {
       throw new Error(`Backup artifact size mismatch: ${artifact.file}`);
+    }
+    if (
+      !await isPrivateFilesystemPathAsync(path) ||
+      (process.platform !== "win32" && (details.mode & 0o400) === 0)
+    ) {
+      throw new Error(`Backup artifact permissions are not owner-only: ${artifact.file}`);
     }
     if ((await sha256File(path)) !== artifact.sha256) {
       throw new Error(`Backup artifact hash mismatch: ${artifact.file}`);
@@ -316,13 +326,8 @@ export async function writeManifestFile(
   dir: string,
   manifest: DevFullBackupManifestV2,
 ): Promise<void> {
-  const path = join(dir, FULL_DEV_BACKUP_MANIFEST);
-  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-    flag: "wx",
-  });
-  await chmod(path, 0o600);
+  const path = resolve(dir, FULL_DEV_BACKUP_MANIFEST);
+  await writePrivateFileExclusive(path, new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`));
 }
 
 export async function discoverVerifiedFullBackups(

@@ -3,7 +3,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import { createMaintenanceReceipt, type MaintenanceReceipt } from "@nautilo/hosting";
 import type { RailwayWholeManifestUpgradeCheckpoint } from "@nautilo/railway-hosting";
 
@@ -11,6 +12,16 @@ import { createRailwayPostUpgradeSourceState, readRailwayMaintenanceState, updat
 import { runRailwayUpgradeFromState, type RailwayUpgradeActivationStageContext, type RailwayUpgradeExportStageContext, type RailwayUpgradeRestoreStageContext, type RailwayUpgradeStageAdapters } from "../../src/lib/railway-upgrade-runner";
 
 const now = "2026-08-12T08:00:00.000Z";
+const roots: string[] = [];
+afterEach(async () => {
+  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+});
+async function privateRoot(prefix: string): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  roots.push(root);
+  await secureFilesystemPath(root);
+  return root;
+}
 const operationId = "maintenance-1";
 const digest = "a".repeat(64);
 const image = (name: string) => `registry.example.test/${name}@sha256:${digest}`;
@@ -221,14 +232,14 @@ function adapters(events: string[], fallback = false, transientVerification = fa
   };
 }
 async function fixture(fallback = false, transient = false) {
-  const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-")); const path = join(root, "maintenance"); await writeRailwayMaintenanceState(root, path, initial());
+  const root = await privateRoot("nautilo-upgrade-runner-"); const path = join(root, "maintenance"); await writeRailwayMaintenanceState(root, path, initial());
   const events: string[] = []; const stages = adapters(events, fallback, transient, (context) => persistActivationProof(context, root, path));
   const run = () => runRailwayUpgradeFromState({ stateRoot: root, statePath: path, operationId, authorityGenerationId: "authority-1", adapters: stages, now: () => now });
   return { root, path, events, run };
 }
 describe("Railway upgrade coordinator", () => {
   test("resumes an in-progress provider backup before portable export", async () => {
-    const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-")); const path = join(root, "maintenance");
+    const root = await privateRoot("nautilo-upgrade-runner-"); const path = join(root, "maintenance");
     const value = initial();
     await writeRailwayMaintenanceState(root, path, { ...value, maintenanceReceipt: {
       ...value.maintenanceReceipt,
@@ -254,7 +265,7 @@ describe("Railway upgrade coordinator", () => {
   });
 
   test("durably reports and retains a redacted terminal stage failure without re-running effects", async () => {
-    const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-terminal-")); const path = join(root, "maintenance");
+    const root = await privateRoot("nautilo-upgrade-runner-terminal-"); const path = join(root, "maintenance");
     try {
       await writeRailwayMaintenanceState(root, path, initial()); const events: string[] = []; const stages = adapters(events);
       const terminalStages: RailwayUpgradeStageAdapters = { ...stages,
@@ -268,7 +279,7 @@ describe("Railway upgrade coordinator", () => {
   });
 
   test("does not accept adapter completion without reloaded durable proof", async () => {
-    const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-fake-")); const path = join(root, "maintenance");
+    const root = await privateRoot("nautilo-upgrade-runner-fake-"); const path = join(root, "maintenance");
     try {
       await writeRailwayMaintenanceState(root, path, initial());
       const complete = async () => ({ outcome: "complete" as const });
@@ -281,7 +292,7 @@ describe("Railway upgrade coordinator", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   test("resumes a started portable export to durable completion before cleanup", async () => {
-    const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-export-resume-")); const path = join(root, "maintenance");
+    const root = await privateRoot("nautilo-upgrade-runner-export-resume-"); const path = join(root, "maintenance");
     try {
       const receipt = receiptAtStage("portable-export");
       const incompleteReceipt: MaintenanceReceipt = {
@@ -304,7 +315,7 @@ describe("Railway upgrade coordinator", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   }, 15_000);
   test("repairs a legacy terminalized descriptor observation only through exact export proof", async () => {
-    const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-export-observation-repair-")); const path = join(root, "maintenance");
+    const root = await privateRoot("nautilo-upgrade-runner-export-observation-repair-"); const path = join(root, "maintenance");
     try {
       const providerReceipt = receiptAtStage("portable-export");
       const pendingWorkflow = providerReceipt.providerWorkflows!.map((workflow) => workflow.operation === "export-portable"
@@ -386,7 +397,7 @@ describe("Railway upgrade coordinator", () => {
       expect(state?.maintenanceReceipt.stage).toBe("migration"); expect(state?.restoreTargetState).toBeUndefined(); expect(value.events).not.toContain("prepare-restore");
     } finally { await rm(value.root, { recursive: true, force: true }); } });
   test("fresh resume retains the fallback cause and never reruns effects after terminal target preparation", async () => {
-    const root = await mkdtemp(join(tmpdir(), "nautilo-upgrade-runner-preparation-terminal-")); const path = join(root, "maintenance");
+    const root = await privateRoot("nautilo-upgrade-runner-preparation-terminal-"); const path = join(root, "maintenance");
     try {
       await writeRailwayMaintenanceState(root, path, verifiedSourceState("migration"));
       const firstEvents: string[] = []; const first = adapters(firstEvents);

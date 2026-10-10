@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type {
   DocumentCommitPlan,
   DocumentIdentity,
@@ -1640,7 +1641,7 @@ describe("D448 coordinator lifecycle and recovery truth", () => {
         entrypoint,
         `
           import { buildAtomicDocumentMutationEventBatch } from ${JSON.stringify(
-            new URL("../../src/committed-events.ts", import.meta.url).pathname,
+            fileURLToPath(new URL("../../src/committed-events.ts", import.meta.url)),
           )};
 
           if (globalThis.Bun !== undefined) {

@@ -39,7 +39,7 @@ describe("structured SSH copy confinement", () => {
       await fs.mkdir(path.join(fixture.root, "result"));
       const download = await resolveStructuredSshCopyPath({ operation: "copy-download", workspaceRoot: fixture.root, localPath: "result/output.tar" });
       expect(download).toMatchObject({ ok: true, path: path.join(await fs.realpath(fixture.root), "result", "output.tar") });
-      await fs.symlink(outside, path.join(fixture.root, "escape"));
+      await fs.symlink(outside, path.join(fixture.root, "escape"), process.platform === "win32" ? "junction" : "dir");
       await expect(resolveStructuredSshCopyPath({ operation: "copy-download", workspaceRoot: fixture.root, localPath: "escape/output.tar" })).resolves.toEqual({ ok: false });
     } finally { await Promise.all([fixture.cleanup(), fs.rm(outside, { recursive: true, force: true })]); }
   });

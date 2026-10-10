@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   asBinaryReadSessionResult,
   BinaryReadSessionError,
@@ -19,7 +19,7 @@ async function makeRoot(): Promise<string> {
 function managerFor(root: string, overrides: Partial<ConstructorParameters<typeof BinaryReadSessionManager>[0]> = {}) {
   return new BinaryReadSessionManager({
     assertPathInAllowedRoot: (candidate) => {
-      if (candidate !== root && !candidate.startsWith(`${root}/`)) {
+      if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
         throw new Error("outside allowed root");
       }
     },
@@ -138,17 +138,18 @@ describe("BinaryReadSessionManager (D431)", () => {
     await expectCode(manager.open(2, second), "session_limit");
     await manager.close(1, opened.id);
     expect((await manager.open(2, third)).id).toEqual(expect.any(String));
+    await manager.closeAll();
   });
 
   test("rejects a file version change and expires idle sessions without retaining handles", async () => {
     const root = await makeRoot();
     const target = join(root, "changing.pptx");
-    const replacement = join(root, "replacement.pptx");
     await fs.writeFile(target, "abcdefgh");
     const manager = managerFor(root);
     const opened = await manager.open(3, target);
-    await fs.writeFile(replacement, "ijklmnop");
-    await fs.rename(replacement, target);
+    await fs.writeFile(target, "ijklmnop");
+    const changedTime = new Date(Date.now() + 1000);
+    await fs.utimes(target, changedTime, changedTime);
     await expectCode(manager.read(3, opened.id, 0), "mutated");
     expect(manager.activeSessionCount).toBe(0);
 
@@ -159,5 +160,31 @@ describe("BinaryReadSessionManager (D431)", () => {
     await expectCode(expiring.read(3, idle.id, 0), "expired");
     expect(expiring.activeSessionCount).toBe(0);
     await expiring.closeAll();
+  });
+
+  test("same-size replacement is either blocked by Windows or invalidates the read session", async () => {
+    const root = await makeRoot();
+    const target = join(root, "original.pptx");
+    const replacement = join(root, "replacement.pptx");
+    await fs.writeFile(target, "abcdefgh");
+    const manager = managerFor(root);
+    const opened = await manager.open(3, target);
+    await fs.writeFile(replacement, "ijklmnop");
+    const replacementError = await fs.rename(replacement, target).then(() => null, (error: NodeJS.ErrnoException) => error);
+    if (replacementError) {
+      // Pinned Bun's Windows handle can prevent the replacement itself.
+      expect(process.platform).toBe("win32");
+      expect(replacementError.code).toBe("EPERM");
+      expect(await fs.readFile(target, "utf8")).toBe("abcdefgh");
+      const read = await asBinaryReadSessionResult(() => manager.read(3, opened.id, 0));
+      // An unsuccessful rename may still update Windows metadata. The
+      // session must either return original bytes or reject that version.
+      if (read.ok) expect(Buffer.from(read.data.bytes).toString()).toBe("abcd");
+      else expect(read.error.code).toBe("mutated");
+      await manager.closeAll();
+    } else {
+      await expectCode(manager.read(3, opened.id, 0), "mutated");
+    }
+    expect(manager.activeSessionCount).toBe(0);
   });
 });

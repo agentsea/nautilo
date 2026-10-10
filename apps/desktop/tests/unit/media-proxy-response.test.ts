@@ -26,6 +26,14 @@ describe("Desktop staged media byte responses", () => {
     expect(await response.text()).toBe("0123456789");
   });
 
+  test("serves a regular staged file through an existing parent alias", async () => {
+    const alias = join(root, "parent-alias");
+    await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
+    const response = await mediaProxyResponse({ ...source, outputPath: join(alias, "video.mp4") }, request());
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("0123456789");
+  });
+
   test.each([
     ["bytes=2-5", "2345", "bytes 2-5/10"],
     ["bytes=7-", "789", "bytes 7-9/10"],
@@ -59,8 +67,10 @@ describe("Desktop staged media byte responses", () => {
   });
 
   test("refuses revoked, changed, absent, directory, and symlink sources", async () => {
-    const link = join(root, "link.mp4");
-    await symlink(source.outputPath, link);
+    const linkEntry = join(root, "link");
+    await symlink(process.platform === "win32" ? root : source.outputPath, linkEntry,
+      process.platform === "win32" ? "junction" : "file");
+    const link = linkEntry;
     for (const rejected of [
       { ...source, isAuthorityCurrent: () => false },
       { ...source, sizeBytes: 11 },

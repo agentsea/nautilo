@@ -70,21 +70,27 @@ function defaultAtomicWriter(path: string, contents: string): void {
 export type ClaimInviteFileInput = {
   redeemInput: string;
   token: string;
+  serverUrl?: string;
 };
 
 export function formatClaimInviteFile(input: ClaimInviteFileInput, isoStamp: string): string {
+  const redeemUrl = input.serverUrl
+    ? `${input.serverUrl.replace(/\/+$/u, "")}/claim#claim=${encodeURIComponent(input.redeemInput)}`
+    : null;
   return [
     "# Nautilo bootstrap claim invite",
     `# Created: ${isoStamp}`,
     "# Single-shot. Whoever redeems first becomes the server owner.",
     `redeem_input: ${input.redeemInput}`,
     `token: ${input.token}`,
+    ...(redeemUrl === null ? [] : [`redeem_url: ${redeemUrl}`]),
     "",
-    "# Redeem from Workbench or the Desktop app:",
-    "#   open the redeem_input URL above",
+    "# redeem_input is a code, not a URL.",
+    "# Open redeem_url in a browser on the server PC when it is present.",
+    "# Otherwise open <server URL>/claim#claim=<redeem_input value>.",
     "#",
-    "# Safe to delete after first successful redemption (the row is",
-    "# auto-marked used in the DB).",
+    "# After first redemption, the row is marked used in the DB.",
+    "# Keep this file private while it exists.",
     "",
   ].join("\n");
 }
@@ -100,8 +106,8 @@ export type ClaimInviteBannerInput = {
 
 export function formatClaimInviteBanner(input: ClaimInviteBannerInput): string {
   const headline = input.reprint
-    ? "Nautilo bootstrap claim invite — STILL UNREDEEMED — SAVE THIS LINK"
-    : "Nautilo bootstrap claim invite — SAVE THIS LINK";
+    ? "Nautilo bootstrap claim invite — STILL UNREDEEMED — SAVE THIS CODE"
+    : "Nautilo bootstrap claim invite — SAVE THIS CODE";
   return [
     "========================================================",
     headline,
@@ -112,7 +118,7 @@ export function formatClaimInviteBanner(input: ClaimInviteBannerInput): string {
     ...(input.bootstrapClaimInvitePath
       ? [`  Bootstrap dir : ${input.bootstrapClaimInvitePath}`]
       : []),
-    "  Redeem       : open the redeem input in Workbench or the Desktop app",
+    "  Redeem       : open <server URL>/claim#claim=<code> on the server PC",
     "",
     "========================================================",
     "",
@@ -280,7 +286,7 @@ export async function bootstrapClaimInvite(
     const redeemInput = token;
 
     const contents = formatClaimInviteFile(
-      { redeemInput, token },
+      { redeemInput, token, serverUrl: (deps.resolvePublicInviteBaseUrl ?? resolveDefaultPublicInviteBaseUrl)() },
       isoStamp(),
     );
     writeFile(targetPath, contents);

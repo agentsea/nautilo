@@ -1,9 +1,10 @@
 /** Disposable PostgreSQL test-only exact resource ownership. Never prunes Docker or removes images. */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { ensurePrivateDirectorySync, isPrivateFilesystemPath, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
 
 const JOURNAL_VERSION = 1 as const;
 const RUN_RE = /^disposable-accept-[a-z0-9]{12}$/;
@@ -105,15 +106,13 @@ function assertOwnedPaths(path: string, journal: DisposablePostgresResourceJourn
 
 function writeOwnerOnly(path: string, journal: DisposablePostgresResourceJournal, initial = false): void {
   assertOwnedPaths(path, journal);
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  chmodSync(dirname(path), 0o700);
+  ensurePrivateDirectorySync(dirname(path));
   if (lstatSync(dirname(path)).isSymbolicLink()) throw new Error("Disposable PostgreSQL journal parent may not be a symlink");
   if (existsSync(path) && (lstatSync(path).isSymbolicLink() || !lstatSync(path).isFile())) {
     throw new Error("Disposable PostgreSQL journal target is not a regular file");
   }
   const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(journal, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  chmodSync(temporary, 0o600);
+  writePrivateFileExclusiveSync(temporary, new TextEncoder().encode(`${JSON.stringify(journal, null, 2)}\n`));
   try {
     if (initial) {
       // Hard-link publication is atomic and fails rather than following or replacing a raced target.
@@ -130,7 +129,7 @@ function writeOwnerOnly(path: string, journal: DisposablePostgresResourceJournal
 
 export function readDisposablePostgresResourceJournal(path: string): DisposablePostgresResourceJournal {
   const details = lstatSync(path);
-  if (!details.isFile() || details.isSymbolicLink() || (details.mode & 0o077) !== 0) throw new Error("Disposable PostgreSQL journal is not an owner-only regular file");
+  if (!details.isFile() || details.isSymbolicLink() || !isPrivateFilesystemPath(path)) throw new Error("Disposable PostgreSQL journal is not an owner-only regular file");
   const value = JSON.parse(readFileSync(path, "utf8")) as DisposablePostgresResourceJournal;
   if (value.version !== JOURNAL_VERSION || value.ownerPid < 1 || value.measurements.beforeOwnedDockerBytes !== 0 ||
       value.measurements.beforeOwnedFilesystemBytes !== 0) {
@@ -165,8 +164,7 @@ export function createDisposablePostgresResourceJournal(runId: string): Disposab
   };
   writeOwnerOnly(expected.journalPath, journal, true);
   // The published journal owns this exact path before the path is created.
-  mkdirSync(expected.resources.filesRoot, { recursive: true, mode: 0o700 });
-  chmodSync(expected.resources.filesRoot, 0o700);
+  ensurePrivateDirectorySync(expected.resources.filesRoot);
   return journal;
 }
 

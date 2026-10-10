@@ -4,9 +4,10 @@
  * grant. Current Folder is selected only from the trusted turn binding and is
  * pinned to a focused desktop relay; Workspace is logical/DB-backed only.
  */
-import * as path from "node:path";
 import {
   APPLY_PATCH_PROTOCOL_VERSION,
+  isRelayPathWithinRoot,
+  pathApiForRelayPath,
   type RelayLocalApplyPatchRequest,
   type RelayLocalApplyPatchResult,
   type RelaySandboxProfile,
@@ -63,15 +64,14 @@ function failure(
 }
 
 function canonicalAbsolute(value: string): string | null {
+  const path = pathApiForRelayPath(value);
   if (!value || !path.isAbsolute(value) || value.includes("\0")) return null;
   const normalized = path.normalize(value);
   return normalized !== value ? null : normalized;
 }
 
 function within(root: string, candidate: string): boolean {
-  return root === path.parse(root).root
-    ? candidate.startsWith(root)
-    : candidate === root || candidate.startsWith(`${root}${path.sep}`);
+  return isRelayPathWithinRoot(root, candidate);
 }
 
 /**
@@ -220,6 +220,7 @@ function currentFolderApplyPatchCandidatePaths(
   preflight: ApplyPatchPreflightSummary,
 ): readonly string[] {
   const paths = new Set<string>();
+  const path = pathApiForRelayPath(root);
   for (const operation of preflight.operations) {
     if (operation.operation === "move") paths.add(path.resolve(root, operation.fromPath));
     paths.add(path.resolve(root, operation.path));

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { physicalPathFromStorageUri as storagePathFromUri } from "@nautilo/db";
 import { readFile } from "node:fs/promises";
 import {
   findArtifactByInternalIdForNamespaces,
@@ -30,12 +31,6 @@ export type ResolveHumanEditLeaseTargetResult =
 
 function sha256Hex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-function storagePathFromUri(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const candidate = storageUri.slice("file://".length);
-  return candidate.startsWith("/") ? candidate : null;
 }
 
 /**

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { parse as parseToml } from "smol-toml";
 import { spawnSync } from "node:child_process";
 import { SetupTemplateV1 } from "@nautilo/api-client";
+import { ensurePrivateDirectorySync, isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 const devEntry = join(import.meta.dirname, "..", "..", "src", "index.ts");
 const cliDist = join(import.meta.dirname, "..", "..", "..", "..", "apps", "cli", "dist", "index.js");
@@ -24,7 +25,7 @@ describe("gen-setup-template", () => {
     const r = spawnSync("bun", [devEntry, "gen-setup-template", "--instance", inst, "--randomize-genie", "--seed", "42", "--provider", "openai=env:OPENAI_API_KEY", "--out", out], {
       encoding: "utf8",
       cwd: join(import.meta.dirname, "..", ".."),
-      env: { ...process.env, HOME: home },
+      env: { ...process.env, HOME: home, USERPROFILE: home },
       stdio: ["ignore", "pipe", "pipe"],
     });
     expect(r.status).toBe(0);
@@ -48,6 +49,9 @@ describe("gen-setup-template", () => {
     const bootstrapDir = join(home, `.nautilo-${inst}`, ".bootstrap");
     expect(existsSync(join(bootstrapDir, "admin-password"))).toBe(true);
     expect(existsSync(join(bootstrapDir, "admin-pin"))).toBe(true);
+    expect(isPrivateFilesystemPath(join(bootstrapDir, "admin-password"))).toBe(true);
+    expect(isPrivateFilesystemPath(join(bootstrapDir, "admin-pin"))).toBe(true);
+    expect(isPrivateFilesystemPath(out)).toBe(true);
     if (process.platform !== "win32") {
       expect(statSync(join(bootstrapDir, "admin-password")).mode & 0o777).toBe(0o600);
       expect(statSync(join(bootstrapDir, "admin-pin")).mode & 0o777).toBe(0o600);
@@ -84,7 +88,7 @@ describe("gen-setup-template", () => {
         {
           encoding: "utf8",
           cwd: join(import.meta.dirname, "..", ".."),
-          env: { ...process.env, HOME: home },
+          env: { ...process.env, HOME: home, USERPROFILE: home },
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
@@ -104,7 +108,7 @@ describe("gen-setup-template", () => {
       "redeem_input: inv_test_all_xyz\n",
     );
     const secretsDir = join(home, ".config", "nautilo");
-    mkdirSync(secretsDir, { recursive: true });
+    ensurePrivateDirectorySync(secretsDir);
     const secretsPath = join(secretsDir, "secrets.env");
     writeFileSync(
       secretsPath,
@@ -133,7 +137,7 @@ describe("gen-setup-template", () => {
       {
         encoding: "utf8",
         cwd: join(import.meta.dirname, "..", ".."),
-        env: { ...process.env, HOME: home },
+        env: { ...process.env, HOME: home, USERPROFILE: home },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -161,7 +165,7 @@ describe("gen-setup-template", () => {
       "redeem_input: inv_test_dedupe_xyz\n",
     );
     const secretsDir = join(home, ".config", "nautilo");
-    mkdirSync(secretsDir, { recursive: true });
+    ensurePrivateDirectorySync(secretsDir);
     writeFileSync(
       join(secretsDir, "secrets.env"),
       "OPENAI_API_KEY=sk-fake\nANTHROPIC_API_KEY=sk-ant-api03-fake\n",
@@ -185,7 +189,7 @@ describe("gen-setup-template", () => {
       {
         encoding: "utf8",
         cwd: join(import.meta.dirname, "..", ".."),
-        env: { ...process.env, HOME: home },
+        env: { ...process.env, HOME: home, USERPROFILE: home },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
@@ -208,7 +212,7 @@ describe("gen-setup-template", () => {
       {
         encoding: "utf8",
         cwd: join(import.meta.dirname, "..", ".."),
-        env: { ...process.env, HOME: home },
+        env: { ...process.env, HOME: home, USERPROFILE: home },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );

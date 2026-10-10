@@ -243,7 +243,18 @@ export function createGuardedNodeAdapter(
     await fs.mkdir(dir, { recursive: true });
     const token = randomBytes(8).toString("hex");
     const tempPath = path.join(dir, `.${path.basename(resolved)}.nautilo-${token}.tmp`);
-    await fs.writeFile(tempPath, bytes, { flag: "wx" });
+    const handle = await fs.open(tempPath, "wx");
+    try {
+      try {
+        await handle.writeFile(bytes);
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
     return tempPath;
   }
 

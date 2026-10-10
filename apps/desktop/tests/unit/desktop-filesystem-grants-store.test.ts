@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import type { DesktopFilesystemGrant } from "@nautilo/desktop-filesystem-grants";
 import { DesktopFilesystemGrantStore } from "../../electron/desktop-filesystem-grants/store";
+import { createDesktopFilesystemGrantStorage } from "../../electron/desktop-filesystem-grants/storage";
 
 const INSTANCE = "desktop-test";
 const USER_A = "user-a";
@@ -15,7 +17,7 @@ function grant(id: string, userId = USER_A, overrides: Partial<DesktopFilesystem
   return {
     schemaVersion: 1,
     id,
-    canonicalRoot: "/Users/test/workspace",
+    canonicalRoot: path.resolve("/Users/test/workspace"),
     access: ["read"],
     origin: "user_picker",
     lifetime: "durable",
@@ -397,9 +399,24 @@ describe("DesktopFilesystemGrantStore", () => {
   test("creates restrictive parent and file modes", async () => {
     await withStore(async ({ filePath, store }) => {
       await store.create({ userId: USER_A, grant: grant("permissions") });
-      expect((await fs.stat(path.dirname(filePath))).mode & 0o777).toBe(0o700);
-      expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
+      expect(isPrivateFilesystemPath(path.dirname(filePath))).toBe(true);
+      expect(isPrivateFilesystemPath(filePath)).toBe(true);
+      if (process.platform !== "win32") {
+        expect((await fs.stat(path.dirname(filePath))).mode & 0o777).toBe(0o700);
+        expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600);
+      }
       expect((await fs.readdir(path.dirname(filePath))).some((name) => name.includes(".tmp"))).toBe(false);
+    });
+  });
+
+  test("does not overwrite or remove a colliding temporary file", async () => {
+    await withStore(async ({ filePath }) => {
+      const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.collision.tmp`);
+      await fs.writeFile(temporary, "existing bytes");
+      const storage = createDesktopFilesystemGrantStorage(filePath, undefined, { randomHex: () => "collision" });
+      const error = await storage.writeAtomic("new bytes").then(() => null, (failure: unknown) => failure);
+      expect(error).toMatchObject({ code: "EEXIST" });
+      expect(await fs.readFile(temporary, "utf8")).toBe("existing bytes");
     });
   });
 });

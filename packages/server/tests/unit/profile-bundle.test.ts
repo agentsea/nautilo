@@ -5,7 +5,7 @@
  */
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -41,6 +41,7 @@ import type { AvatarRef, EmbeddingWithProvenanceV1 } from "@nautilo/types";
 import {
   fingerprintPrivateMemoryRecord,
   HandleCollisionError,
+  physicalPathFromStorageUri,
   type PrivateMemoryRecord,
 } from "@nautilo/db";
 import { ArtifactWriteDeniedError } from "@nautilo/trust";
@@ -2852,14 +2853,6 @@ describe("D425 Wave 3 — POST /import/commit (privateArtifacts finalization)", 
 // blob GC.
 // ---------------------------------------------------------------------------
 
-/** Resolve a `file://<abs>` URI to an absolute path (mirrors the route helper). */
-function absPathFromStorageUriForTest(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const rest = storageUri.slice("file://".length);
-  if (!rest.startsWith("/")) return null;
-  return rest;
-}
-
 /** Build reconcile deps for a test. Durable bytes live under `artifactsRoot`. */
 function makeReconcileDeps(opts: {
   artifactsRoot: string;
@@ -2881,12 +2874,12 @@ function makeReconcileDeps(opts: {
     },
     deleteArtifactBlob: async (storageUri) => {
       if (opts.deleteThrows) throw opts.deleteThrows;
-      const abs = absPathFromStorageUriForTest(storageUri);
+      const abs = physicalPathFromStorageUri(storageUri);
       if (abs) rmSync(abs, { force: true });
       deletedUris.push(storageUri);
     },
     artifactsRoot: () => opts.artifactsRoot,
-    absPathFromStorageUri: absPathFromStorageUriForTest,
+    absPathFromStorageUri: physicalPathFromStorageUri,
     log: (msg) => {
       logs.push(msg);
     },
@@ -2912,6 +2905,43 @@ function randomUUIDStr(): string {
 }
 
 describe("D425 Wave 3 — reconcileArtifactJournal (crash-window recovery)", () => {
+  test("a failed quarantine remains retryable and is not counted as success", async () => {
+    const artifactsRoot = mkdtempSync(join(tmpdir(), "pb-recon-quarantine-"));
+    try {
+      const { deps, deletedUris } = makeReconcileDeps({ artifactsRoot });
+      const plan = randomUUIDStr();
+      const artifact = randomUUIDStr();
+      await deps.journal.prepare(plan, artifact, "https://invalid.example/artifact", new Date(0));
+      const result = await reconcileArtifactJournal({
+        ...deps,
+        journal: { ...deps.journal, quarantine: async () => { throw new Error("fixture quarantine failure"); } },
+      });
+      expect(result).toEqual({ retained: 0, cleaned: 0, quarantined: 0, failed: 1 });
+      expect(deps.journal.list()).toHaveLength(1);
+      expect(deletedUris).toEqual([]);
+    } finally { rmSync(artifactsRoot, { recursive: true, force: true }); }
+  });
+
+  test.skipIf(process.platform !== "win32")("quarantines paths outside the artifact volume before any deletion", async () => {
+    const artifactsRoot = mkdtempSync(join(tmpdir(), "pb-recon-volume-"));
+    try {
+      const otherDrive = win32.parse(artifactsRoot).root[0]?.toUpperCase() === "C" ? "D" : "C";
+      for (const outside of [`${otherDrive}:\\outside\\artifact.bin`, "\\\\unrelated-host\\share\\artifact.bin"]) {
+        const { deps, deletedUris } = makeReconcileDeps({ artifactsRoot });
+        const plan = randomUUIDStr();
+        const artifact = randomUUIDStr();
+        await deps.journal.prepare(plan, artifact, `file://${outside}`, new Date(0));
+        await deps.journal.finalize(plan, artifact);
+        const result = await reconcileArtifactJournal({
+          ...deps,
+          deleteArtifactBlob: async (uri) => { deletedUris.push(uri); },
+        });
+        expect(result).toEqual({ retained: 0, cleaned: 0, quarantined: 1, failed: 0 });
+        expect(deletedUris).toEqual([]);
+      }
+    } finally { rmSync(artifactsRoot, { recursive: true, force: true }); }
+  });
+
   test("pre-commit crash record (finalized, no DB row) is cleaned and unlinks bytes", async () => {
     const artifactsRoot = mkdtempSync(join(tmpdir(), "pb-recon-root-pre-"));
     try {

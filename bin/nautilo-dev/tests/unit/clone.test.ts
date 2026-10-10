@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse, resolve, sep } from "node:path";
 import type { ResolvedInstance } from "@nautilo/config";
 import { buildEventFeedReaderRoleSql } from "../../../../packages/db/src/utils/event-feed-role";
 import type {
@@ -207,30 +207,19 @@ describe("development clone guards", () => {
   });
 
   test("rebinds only delimiter-safe physical file URI prefixes", () => {
-    expect(rebindCloneFileUriValue(
-      "file:///private/source/.nautilo",
-      "/private/source/.nautilo",
-      "/private/target/.nautilo-tau",
-    )).toBe("file:///private/target/.nautilo-tau");
-    expect(rebindCloneFileUriValue(
-      "file:///private/source/.nautilo/artifacts/a",
-      "/private/source/.nautilo",
-      "/private/target/.nautilo-tau",
-    )).toBe("file:///private/target/.nautilo-tau/artifacts/a");
-    expect(rebindCloneFileUriValue(
-      "file:///private/source/.nautilo-other/artifacts/a",
-      "/private/source/.nautilo",
-      "/private/target/.nautilo-tau",
-    )).toBe("file:///private/source/.nautilo-other/artifacts/a");
-    expect(rebindCloneFileUriValue(
-      "s3://bucket/artifact",
-      "/private/source/.nautilo",
-      "/private/target/.nautilo-tau",
-    )).toBe("s3://bucket/artifact");
-    const sql = buildCloneFileUriRebindSql(
-      "/private/source's-root/.nautilo",
-      "/private/target/.nautilo-tau",
-    );
+    const sourceRoot = resolve("/private/source/.nautilo");
+    const targetRoot = resolve("/private/target/.nautilo-tau");
+    expect(rebindCloneFileUriValue(`file://${sourceRoot}`, sourceRoot, targetRoot)).toBe(`file://${targetRoot}`);
+    expect(rebindCloneFileUriValue(`file://${join(sourceRoot, "artifacts", "a")}`, sourceRoot, targetRoot))
+      .toBe(`file://${join(targetRoot, "artifacts", "a")}`);
+    const sibling = `file://${join(`${sourceRoot}-other`, "artifacts", "a")}`;
+    expect(rebindCloneFileUriValue(sibling, sourceRoot, targetRoot)).toBe(sibling);
+    expect(rebindCloneFileUriValue("s3://bucket/artifact", sourceRoot, targetRoot)).toBe("s3://bucket/artifact");
+    const quotedRoot = resolve("/private/source's-root/.nautilo");
+    const sql = buildCloneFileUriRebindSql(quotedRoot, targetRoot);
+    const escapedSource = `file://${quotedRoot}`.replaceAll("\\", "\\\\").replaceAll("'", "''");
+    const escapedTarget = `file://${targetRoot}`.replaceAll("\\", "\\\\");
+    const escapePrefix = process.platform === "win32" ? "E" : "";
     for (const [table, column] of [
       ["artifacts", "storage_uri"],
       ["message_attachments", "storage_uri"],
@@ -242,21 +231,21 @@ describe("development clone guards", () => {
       expect(sql.updateSql).toContain(`SET "${column}" =`);
       expect(sql.verifySql).toContain(`FROM public."${table}"`);
     }
-    expect(sql.updateSql).toContain("file:///private/source''s-root/.nautilo");
-    expect(sql.updateSql).toContain("file:///private/target/.nautilo-tau");
-    expect(sql.updateSql).toContain('"storage_uri" = \'file:///private/source\'\'s-root/.nautilo\' OR');
+    expect(sql.updateSql).toContain(escapedSource);
+    expect(sql.updateSql).toContain(escapedTarget);
+    expect(sql.updateSql).toContain(`"storage_uri" = ${escapePrefix}'${escapedSource}' OR`);
     expect(sql.updateSql).toContain("substr(\"storage_uri\", char_length(");
-    expect(sql.updateSql).toContain("+ 1, 1) = '/'");
+    expect(sql.updateSql).toContain(`+ 1, 1) = ${escapePrefix}'${sep === "\\" ? "\\\\" : sep}'`);
     expect(sql.updateSql).not.toMatch(/SET\s+"?path"?\s*=/i);
     expect(sql.verifySql).toContain("cloned_physical_uris");
     expect(sql.verifySql).toContain("left(uri, char_length('file://')) = 'file://'");
-    expect(sql.verifySql).toContain("uri = 'file:///private/target/.nautilo-tau' OR");
-    expect(sql.updateSql).not.toContain("file:///private/source''s-root/.nautilo-other");
+    expect(sql.verifySql).toContain(`uri = ${escapePrefix}'${escapedTarget}' OR`);
+    expect(sql.updateSql).not.toContain(`${escapedSource}-other`);
     for (const roots of [
-      ["relative", "/private/target"],
-      ["/", "/private/target"],
-      ["/private/same", "/private/same"],
-      ["/private/source\nunsafe", "/private/target"],
+      ["relative", targetRoot],
+      [parse(sourceRoot).root, targetRoot],
+      [sourceRoot, sourceRoot],
+      [`${sourceRoot}\nunsafe`, targetRoot],
     ] as const) {
       expect(() => buildCloneFileUriRebindSql(roots[0], roots[1])).toThrow();
     }

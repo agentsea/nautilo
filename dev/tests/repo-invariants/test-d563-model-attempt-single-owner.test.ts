@@ -131,7 +131,7 @@ describe("D563 model-attempt timer ownership", () => {
   test("keeps the canonical supervisor as the sole implementation owner", () => {
     const owners = sourceFiles(join(REPOSITORY_ROOT, "packages/agent/src/utils"))
       .filter((absolute) => sourceFacts(relative(REPOSITORY_ROOT, absolute), readFileSync(absolute, "utf8")).supervisorClasses > 0)
-      .map((absolute) => relative(REPOSITORY_ROOT, absolute));
+      .map((absolute) => relative(REPOSITORY_ROOT, absolute).replaceAll("\\", "/"));
     expect(owners).toEqual([CANONICAL_OWNER]);
     expect(ownershipViolations(checkedSources())).toEqual([]);
   });

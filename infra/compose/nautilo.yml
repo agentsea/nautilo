@@ -120,7 +120,7 @@ services:
   # Host exposure is loopback-only; the browser can complete OAuth callbacks,
   # while LAN peers cannot reach OpenConnector's administrator API directly.
   openconnector:
-    image: nautilo/openconnector:1.4.1-nautilo.1
+    image: nautilo/openconnector:1.4.1-nautilo.2
     build:
       context: ../..
       dockerfile: packaging/openconnector/Dockerfile

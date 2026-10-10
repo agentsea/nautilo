@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertDesktopLicensePayload, vendorPinnedBunLicense } from "../../scripts/desktop-license-payload";
+import { recordBunRuntimeCache } from "../../scripts/bun-vendor-cache";
 
 const desktopRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const canonicalNotice = readFileSync(resolve(desktopRoot, "../../THIRD_PARTY_NOTICES.md"));
@@ -29,7 +30,7 @@ function validResources(): string {
 function copiedSource(): { root: string; desktop: string } {
   const root = temporaryRoot();
   const desktop = join(root, "apps/desktop");
-  for (const file of ["scripts/desktop-license-payload.ts", "scripts/vendor-bun.ts", "licenses/bun/LICENSE.txt", "licenses/bun/manifest.json"]) {
+  for (const file of ["scripts/desktop-license-payload.ts", "scripts/vendor-bun.ts", "scripts/bun-vendor-cache.ts", "licenses/bun/LICENSE.txt", "licenses/bun/manifest.json"]) {
     mkdirSync(dirname(join(desktop, file)), { recursive: true });
     copyFileSync(join(desktopRoot, file), join(desktop, file));
   }
@@ -79,20 +80,22 @@ describe("Desktop license payload", () => {
   test("cached Bun binaries still repair an old license stub with network disabled", () => {
     const { root, desktop } = copiedSource();
     const vendor = join(desktop, "vendor/bun");
-    for (const arch of ["arm64", "x64"]) {
-      mkdirSync(join(vendor, arch), { recursive: true });
-      writeFileSync(join(vendor, arch, "bun"), "cached binary fixture");
-      truncateSync(join(vendor, arch, "bun"), 1_000_000);
+    const binaries = (process.platform === "win32" ? ["x64/bun.exe"] : ["arm64/bun", "x64/bun"])
+      .map((path) => join(vendor, path));
+    for (const binary of binaries) {
+      mkdirSync(dirname(binary), { recursive: true });
+      writeFileSync(binary, "cached binary fixture");
+      truncateSync(binary, 1_000_000);
+      recordBunRuntimeCache(binary, "1.3.11");
     }
-    writeFileSync(join(vendor, ".version"), "1.3.11");
     writeFileSync(join(vendor, "LICENSE-bun.txt"), "old stub");
-    const before = readFileSync(join(vendor, "arm64/bun"));
+    const before = binaries.map((binary) => readFileSync(binary));
     writeFileSync(join(root, "deny-network.ts"), 'globalThis.fetch = () => { throw new Error("unexpected network request"); };\n');
     const result = spawnSync(process.execPath, ["--preload", join(root, "deny-network.ts"), join(desktop, "scripts/vendor-bun.ts")], { cwd: root, env: {}, encoding: "utf8" });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("cache hit");
     expect(readFileSync(join(vendor, "LICENSE-bun.txt")).equals(upstreamLicense)).toBe(true);
-    expect(readFileSync(join(vendor, "arm64/bun")).equals(before)).toBe(true);
+    expect(binaries.map((binary) => readFileSync(binary))).toEqual(before);
   });
 
   test("electron-builder copies both notices despite the application Markdown exclusion", async () => {

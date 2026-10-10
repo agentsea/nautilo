@@ -16,7 +16,7 @@ function spawnCli(args: string[]) {
   return spawnSync(process.execPath, [cliDist, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, HOME: isolatedHome },
+    env: { ...process.env, HOME: isolatedHome, USERPROFILE: isolatedHome },
   });
 }
 
@@ -27,7 +27,7 @@ function spawnCliAsync(
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliDist, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, HOME: isolatedHome, ...envOverrides },
+      env: { ...process.env, HOME: isolatedHome, USERPROFILE: isolatedHome, ...envOverrides },
     });
     const out: Buffer[] = [];
     const err: Buffer[] = [];

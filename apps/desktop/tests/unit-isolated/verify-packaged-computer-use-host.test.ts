@@ -19,7 +19,7 @@ describe("packaged Computer Use Host verifier", () => {
     await mkdir(join(entrypoint, ".."), { recursive: true });
     await mkdir(resourceDirectory, { recursive: true });
     await writeFile(entrypoint, "host");
-    await symlink(actual, alias);
+    await symlink(actual, alias, process.platform === "win32" ? "junction" : "dir");
 
     expect(await launchIsInManagedStorage({
       runtimeRoot: join(alias, "runtime"),

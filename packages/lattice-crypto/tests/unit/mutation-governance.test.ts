@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import {
   existsSync,
   mkdirSync,
@@ -89,7 +90,7 @@ describe("M229 mutation governance", () => {
           "}));",
         ].join("\n"),
       ],
-      cwd: new URL("../..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("../..", import.meta.url)),
       env,
       stderr: "pipe",
       stdout: "pipe",
@@ -124,7 +125,7 @@ describe("M229 mutation governance", () => {
       "inline Stryker suppression is forbidden: src/example.ts:1",
     );
 
-    const packageRoot = new URL("../..", import.meta.url).pathname;
+    const packageRoot = fileURLToPath(new URL("../..", import.meta.url));
     const packageSources = derivePackageTypeScriptSourceInventory(packageRoot)
       .map((path) => ({
         path,
@@ -150,7 +151,7 @@ describe("M229 mutation governance", () => {
         existsSync(new URL(`../../${path}`, import.meta.url)),
     });
     const eligible = deriveMutationSourceInventory(
-      new URL("../..", import.meta.url).pathname,
+      fileURLToPath(new URL("../..", import.meta.url)),
     );
     expect(parsed.scopes).toHaveLength(30);
     expect(eligible).toHaveLength(132);

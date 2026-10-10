@@ -32,9 +32,13 @@ describe("Nautilo structured SSH connection catalog", () => {
   test("makes malformed, symlinked, and overflow profile sources truthful without leaking paths", async () => {
     const malformed = fixture(); writeFileSync(join(malformed.profiles, "alpha.toml"), 'transport = "remote"\n[ssh]\nuser = "root"\n', { mode: 0o600 });
     await expect(resolveNautiloSshConnection("alpha", { homeDirectory: malformed.home })).resolves.toMatchObject({ ok: false, code: "connection_catalog_malformed", phase: "profile_catalog", complete: false, retrySafe: true, stateChanged: false, recovery: "repair_profile" });
-    const linked = fixture(); const outside = join(linked.home, "outside.toml"); writeFileSync(outside, profile(), { mode: 0o600 }); symlinkSync(outside, join(linked.profiles, "alpha.toml"));
+    const linked = fixture(); const outside = join(linked.home, "outside.toml");
+    if (process.platform === "win32") mkdirSync(outside);
+    else writeFileSync(outside, profile(), { mode: 0o600 });
+    const linkType = process.platform === "win32" ? "junction" : "file";
+    symlinkSync(outside, join(linked.profiles, "alpha.toml"), linkType);
     await expect(resolveNautiloSshConnection("alpha", { homeDirectory: linked.home })).resolves.toMatchObject({ ok: false, code: "connection_catalog_unreadable", phase: "profile_catalog", complete: false, retrySafe: true, stateChanged: false, recovery: "repair_profile" });
-    const unrelatedBroken = fixture(); writeFileSync(join(unrelatedBroken.profiles, "alpha.toml"), profile(), { mode: 0o600 }); symlinkSync(outside, join(unrelatedBroken.profiles, "other.toml"));
+    const unrelatedBroken = fixture(); writeFileSync(join(unrelatedBroken.profiles, "alpha.toml"), profile(), { mode: 0o600 }); symlinkSync(outside, join(unrelatedBroken.profiles, "other.toml"), linkType);
     const unsafe = await resolveNautiloSshConnection("alpha", { homeDirectory: unrelatedBroken.home });
     expect(unsafe).toMatchObject({ ok: false, code: "connection_catalog_unreadable", observed: { profileFiles: 2 }, complete: false });
     expect(JSON.stringify(unsafe)).not.toContain("outside.toml");

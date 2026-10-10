@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
+import { writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import { resolve } from "node:path";
 import {
   createEvaluationModel,
@@ -95,7 +96,7 @@ export async function writeTransientBenchmarkReport(input: {
   if (!/^[A-Za-z0-9-]{1,80}$/u.test(nonce)) throw new Error("invalid_output_nonce");
   await mkdir(input.directory, { recursive: true, mode: 0o700 });
   const path = resolve(input.directory, `benchmark-${digest}-${nonce}.json`);
-  await writeFile(path, input.report, { encoding: "utf8", mode: 0o600, flag: "wx" });
+  await writePrivateFileExclusive(path, Buffer.from(input.report));
   return path;
 }
 

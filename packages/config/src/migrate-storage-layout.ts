@@ -127,7 +127,7 @@ async function createBackCompatSymlink(
 ): Promise<void> {
   if (await pathExists(oldPath)) return;
   try {
-    await symlink(newPath, oldPath);
+    await symlink(newPath, oldPath, process.platform === "win32" ? "junction" : "dir");
     log(`[storage] compat symlink ${label}: ${oldPath} → ${newPath}`);
   } catch (err) {
     warn(
