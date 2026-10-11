@@ -11,7 +11,8 @@ const fixture = read("fixtures/chromium-unavailable-fixes-2026-10-05.json") as {
 };
 const advisories = new Set(fixture.architectures["linux/amd64"].map(tuple => tuple[1]));
 const decisions = (read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] })
-  .exceptions.filter(entry => advisories.has(entry.advisoryId));
+  .exceptions.filter(entry => fixture.architectures["linux/amd64"].some(tuple =>
+    tuple[1] === entry.advisoryId && tuple[2] === entry.packageName && tuple[3] === entry.installedVersion && tuple[4] === entry.severity));
 const digest = `sha256:${"a".repeat(64)}`;
 const evaluatedAt = "2026-10-05T10:40:00Z";
 
