@@ -1,4 +1,4 @@
-/** One-shot D557 reconciliation over the existing feature owners. */
+/** One-shot Ready to work reconciliation over the existing feature owners. */
 
 import {
   READY_TO_WORK_COMPONENT_IDS,
@@ -30,7 +30,7 @@ export interface ReadyToWorkCoordinatorOwners {
   disableCodingConnection(): Promise<void>;
 }
 
-/** Serializes only D557 mutations/reconciliation; renderer acknowledgements bypass it. */
+/** Serializes only Ready to work mutations/reconciliation; renderer acknowledgements bypass it. */
 export class ReadyToWorkOperationQueue {
   private tail: Promise<void> = Promise.resolve();
 
@@ -73,7 +73,7 @@ export async function commitReadyOwnerEnable(input: Readonly<{
   return true;
 }
 
-/** A freshly minted D516 receipt survives only if its provider is still live. */
+/** A freshly minted Computer Use receipt survives only if its provider is still live. */
 export async function commitReadyComputerUseEnable(input: Readonly<{
   providerReady: () => boolean | Promise<boolean>;
   disable: () => Promise<void>;
@@ -177,6 +177,8 @@ export class ReadyToWorkCoordinator {
     desired: ReadyToWorkDesiredState;
     trigger: ReconcileTrigger;
     isCurrent: () => boolean | Promise<boolean>;
+    /** Restore ancillary choices without touching independent Development authority. */
+    componentsOnly?: boolean;
   }>): Promise<ReadyToWorkAggregateStatus> {
     const key = attemptKey(input.desired);
     if (input.trigger === "startup" && this.startupAttemptKey === key) return this.snapshot;
@@ -221,8 +223,10 @@ export class ReadyToWorkCoordinator {
       if (input.desired.components.voice) observed.voice = failed("voice", "authority_changed");
       if (input.desired.components.auto_approve) observed.auto_approve = failed("auto_approve", "authority_changed");
     }
-    await run("workstation", () => this.owners.restoreWorkstation(input.desired),
-      () => this.owners.disableWorkstation());
+    if (!input.componentsOnly) {
+      await run("workstation", () => this.owners.restoreWorkstation(input.desired),
+        () => this.owners.disableWorkstation());
+    }
     await run("computer_use", () => this.owners.observeComputerUse(input.desired),
       () => this.owners.disableComputerUse());
     await run("coding_connection", () => this.owners.restoreCodingConnection(input.desired, input.isCurrent),
