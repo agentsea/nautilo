@@ -167,19 +167,19 @@ test("production component Off preserves Development and fences only component o
 const reconcileStart = main.indexOf("async function reconcileReadyToWorkNow(");
 const reconcileEnd = main.indexOf("function enabledReadyCodingHarnessStatuses(", reconcileStart);
 const reconcileCode = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice(reconcileStart, reconcileEnd));
-test("production component Restore passes only four choices to the existing coordinator and never migrates Development", async () => {
+test("production component Restore preserves selection identity while excluding Development restoration", async () => {
   let reconciled: typeof desired | null = null;
   const deps = { readyToWorkGeneration: 0, readyToWorkCoordinatorBinding: null, createReadyToWorkDesiredState,
     readyRemembered: { loadFor: () => desired, mayMigrate: () => { throw new Error("must not migrate"); } },
     readyToWorkPersistence: { mayRestore: (explicit: boolean) => { expect(explicit).toBe(false); return true; }, attention: () => null },
     readyToWorkActiveBindingMatches: async () => true,
-    readyToWorkCoordinator: { reconcile: async (input: { desired: typeof desired; isCurrent(): Promise<boolean> }) => {
-      expect(await input.isCurrent()).toBe(true); reconciled = input.desired; return {};
+    readyToWorkCoordinator: { reconcile: async (input: { desired: typeof desired; componentsOnly: boolean; isCurrent(): Promise<boolean> }) => {
+      expect(await input.isCurrent()).toBe(true); expect(input.componentsOnly).toBe(true); reconciled = input.desired; return {};
     } }, refreshReadyToWorkStatus: async (value: typeof desired) => value,
   };
   const reconcile = runInNewContext(`${reconcileCode}; reconcileReadyToWorkNow`, deps) as (...args: unknown[]) => Promise<unknown>;
   expect(await reconcile(binding, "explicit_restore", 0, true)).toEqual(desired);
-  expect(reconciled).toMatchObject({ components: { ...components, workstation: false } });
+  expect(reconciled).toEqual(desired);
 });
 
 test("changed reviewed profile selectors refuse Development before any owner activation or write", async () => {

@@ -101,6 +101,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Windows tests retain an event-loop reference while each test runs, allowing
   unref timers and test timeouts to settle instead of leaving a busy test process.
 
+- Existing Development profiles can open the updated scope review and PIN dialog
+  after a Desktop upgrade. Activation still requires consent to the exact reviewed
+  revision and rejects stale or changed profiles. The Agent access popup links
+  directly to Workstation access and Ready to work settings.
+  Ready to work preserves confirmed Voice and Auto-approve status while
+  Development remains independently enabled.
+
 - Separate Genie tool calls keep their own arguments, results, and history even
   when a model provider reuses call IDs. Approval resumes and repeated delivery
   continue to use the original invocation identity.
