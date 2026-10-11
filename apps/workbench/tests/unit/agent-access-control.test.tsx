@@ -246,6 +246,8 @@ test("opening the compact control checks current Full Mac status before repeatin
   const trigger = await view.findByRole("button", { name: "Agent access: Basic" });
   const pending = deferred<AgentAccessStatus>(); f.get(() => pending.promise);
   fireEvent.click(trigger);
+  expect(view.getByRole("link", { name: "Workstation access settings" }).getAttribute("href")).toBe("/settings#workstation-access");
+  expect(view.getByRole("link", { name: "Ready to work settings" }).getAttribute("href")).toBe("/settings#startup");
   await view.findByText("Temporary Full Mac access · Checking…");
   expect(view.queryByText("Temporary Full Mac access · Active for this app session")).toBeNull();
   await act(async () => { pending.resolve({ ...basic, fullMac: { state: "unconfirmed", eligible: false } }); });

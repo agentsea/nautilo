@@ -170,6 +170,10 @@ export function AgentAccessControl({ readyToWork = desktopAPI?.readyToWork,
       </div>
     </details>
     {access.error || fullMacError || reviewError ? <p role="alert" className="text-xs text-error">{reviewError ?? fullMacError ?? access.error}</p> : null}
+    {compact && <nav aria-label="Agent access settings" className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2 text-xs text-primary">
+      <a href="/settings#workstation-access">Workstation access settings</a>
+      <a href="/settings#startup">Ready to work settings</a>
+    </nav>}
   </div>;
   return <>
     {compact ? <>

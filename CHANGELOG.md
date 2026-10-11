@@ -9,7 +9,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed
-  revision and rejects stale or changed profiles.
+  revision and rejects stale or changed profiles. The Agent access popup links
+  directly to Workstation access and Ready to work settings.
 
 - Separate Genie tool calls keep their own arguments, results, and history even
   when a model provider reuses call IDs. Approval resumes and repeated delivery
