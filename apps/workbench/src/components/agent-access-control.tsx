@@ -112,9 +112,9 @@ export function AgentAccessControl({ readyToWork = desktopAPI?.readyToWork,
       if (!stored.ok) throw new Error("Profile unavailable");
       const reviewed = await workstationProfiles.prepareActivation();
       if (!current()) return;
-      if (!reviewed.ok || !reviewed.data.scope || reviewed.data.seed.id !== stored.data.profile.id
-        || reviewed.data.seed.revision !== stored.data.profile.revision
-        || reviewed.data.seed.protectedPolicyVersion !== stored.data.profile.protectedPolicyVersion) throw new Error("Profile changed during review");
+      // Desktop may review a shipped upgrade before persisting it with PIN consent.
+      // Activation revalidates the exact reviewed revision; the stored revision can be older.
+      if (!reviewed.ok || !reviewed.data.scope || reviewed.data.seed.id !== stored.data.profile.id) throw new Error("Profile review unavailable");
       setDevelopmentReview(reviewed.data); setOpen(false); setPinAction("development");
     } catch {
       if (current()) setReviewError("Development scope could not be reviewed. Check the profile and try again.");

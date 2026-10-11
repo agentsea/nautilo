@@ -206,8 +206,24 @@ test("legacy and custom profiles without user-environment authority make no nati
   expect(view.queryByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeNull();
 });
 
-test("a profile changed between materialization and review cannot reach PIN or activation", async () => {
-  const f = fixture(); const changed = { ...profiles, prepareActivation: async () => ({ ok: true as const, data: { ...reviewed, seed: { ...reviewed.seed, revision: 4 } } }) };
+test.each([1, 2])("a stored revision %i can review and approve the shipped Development upgrade", async (revision) => {
+  const f = fixture();
+  const upgrading = { ...profiles, materializeSeedProfile: async () => {
+    const stored = await profiles.materializeSeedProfile();
+    if (!stored.ok) throw new Error("Invalid test profile");
+    return { ...stored, data: { ...stored.data, profile: { ...stored.data.profile, revision } } };
+  } };
+  const view = render(<AccessControl readyToWork={f.api} workstationProfiles={upgrading} />);
+  await view.findByText("Commands ready."); fireEvent.click(view.getByRole("radio", { name: "Development" }));
+  await view.findByText("Development tools · revision 3");
+  expect(view.getByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeTruthy();
+  expect(f.choices).toHaveLength(0);
+  await verifyPin(view);
+  expect(f.choices).toEqual([{ choice: "development", pin: "123456", profileId: "development", profileRevision: 3 }]);
+});
+
+test("a different profile returned by review cannot reach PIN or activation", async () => {
+  const f = fixture(); const changed = { ...profiles, prepareActivation: async () => ({ ok: true as const, data: { ...reviewed, seed: { ...reviewed.seed, id: "another-profile" } } }) };
   const view = render(<AccessControl readyToWork={f.api} workstationProfiles={changed} />);
   await view.findByText("Commands ready."); fireEvent.click(view.getByRole("radio", { name: "Development" }));
   await view.findByText("Development scope could not be reviewed. Check the profile and try again.");
