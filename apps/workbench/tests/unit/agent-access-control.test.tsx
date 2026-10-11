@@ -206,8 +206,24 @@ test("legacy and custom profiles without user-environment authority make no nati
   expect(view.queryByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeNull();
 });
 
-test("a profile changed between materialization and review cannot reach PIN or activation", async () => {
-  const f = fixture(); const changed = { ...profiles, prepareActivation: async () => ({ ok: true as const, data: { ...reviewed, seed: { ...reviewed.seed, revision: 4 } } }) };
+test.each([1, 2])("a stored revision %i can review and approve the shipped Development upgrade", async (revision) => {
+  const f = fixture();
+  const upgrading = { ...profiles, materializeSeedProfile: async () => {
+    const stored = await profiles.materializeSeedProfile();
+    if (!stored.ok) throw new Error("Invalid test profile");
+    return { ...stored, data: { ...stored.data, profile: { ...stored.data.profile, revision } } };
+  } };
+  const view = render(<AccessControl readyToWork={f.api} workstationProfiles={upgrading} />);
+  await view.findByText("Commands ready."); fireEvent.click(view.getByRole("radio", { name: "Development" }));
+  await view.findByText("Development tools · revision 3");
+  expect(view.getByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeTruthy();
+  expect(f.choices).toHaveLength(0);
+  await verifyPin(view);
+  expect(f.choices).toEqual([{ choice: "development", pin: "123456", profileId: "development", profileRevision: 3 }]);
+});
+
+test("a different profile returned by review cannot reach PIN or activation", async () => {
+  const f = fixture(); const changed = { ...profiles, prepareActivation: async () => ({ ok: true as const, data: { ...reviewed, seed: { ...reviewed.seed, id: "another-profile" } } }) };
   const view = render(<AccessControl readyToWork={f.api} workstationProfiles={changed} />);
   await view.findByText("Commands ready."); fireEvent.click(view.getByRole("radio", { name: "Development" }));
   await view.findByText("Development scope could not be reviewed. Check the profile and try again.");
@@ -230,6 +246,8 @@ test("opening the compact control checks current Full Mac status before repeatin
   const trigger = await view.findByRole("button", { name: "Agent access: Basic" });
   const pending = deferred<AgentAccessStatus>(); f.get(() => pending.promise);
   fireEvent.click(trigger);
+  expect(view.getByRole("link", { name: "Workstation access settings" }).getAttribute("href")).toBe("/settings#workstation-access");
+  expect(view.getByRole("link", { name: "Ready to work settings" }).getAttribute("href")).toBe("/settings#startup");
   await view.findByText("Temporary Full Mac access · Checking…");
   expect(view.queryByText("Temporary Full Mac access · Active for this app session")).toBeNull();
   await act(async () => { pending.resolve({ ...basic, fullMac: { state: "unconfirmed", eligible: false } }); });

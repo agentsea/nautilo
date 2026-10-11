@@ -6028,7 +6028,10 @@ async function reconcileReadyToWorkNow(
   if (!mayRestore) return await refreshReadyToWorkStatus(desired, generation);
   readyToWorkCoordinatorBinding = binding;
   const status = await readyToWorkCoordinator.reconcile({
-    desired: componentsOnly ? createReadyToWorkDesiredState(binding, { ...desired.components, workstation: false }) : desired,
+    // Preserve the saved selection key so the subsequent observation retains
+    // confirmed renderer owners. Scope restoration without rewriting intent.
+    desired,
+    componentsOnly,
     trigger,
     isCurrent: async () => {
       if (readyToWorkPersistence.attention()) return false;
