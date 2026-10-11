@@ -153,12 +153,13 @@ export class ReadyToWorkCoordinator {
     desired: ReadyToWorkDesiredState,
     observed: Partial<Record<ReadyToWorkComponentId, OwnerResult>>,
   ): ReadyToWorkAggregateStatus {
-    const key = `${attemptKey(desired)}\0${READY_TO_WORK_COMPONENT_IDS
-      .map((id) => desired.components[id] ? "1" : "0").join("")}`;
+    const key = attemptKey(desired);
     const merged: Partial<Record<ReadyToWorkComponentId, OwnerResult>> = {};
+    // Independent choices retain their observations only under the exact same
+    // Human and connection. An Off observation discards that owner's old state.
     if (this.snapshotKey === key) {
       for (const component of this.snapshot.components) {
-        if (component.state !== "off_by_choice" && component.repairTarget !== null) {
+        if (desired.components[component.id] && component.state !== "off_by_choice" && component.repairTarget !== null) {
           merged[component.id] = {
             state: component.state,
             reason: component.reason,
@@ -188,8 +189,7 @@ export class ReadyToWorkCoordinator {
       for (const id of READY_TO_WORK_COMPONENT_IDS) {
         if (input.desired.components[id]) observed[id] = failed(id, "authority_changed");
       }
-      this.snapshotKey = `${key}\0${READY_TO_WORK_COMPONENT_IDS
-        .map((id) => input.desired.components[id] ? "1" : "0").join("")}`;
+      this.snapshotKey = key;
       this.snapshot = readyToWorkAggregateStatus(input.desired, observed);
       return this.snapshot;
     }
@@ -239,8 +239,7 @@ export class ReadyToWorkCoordinator {
         }
       }
     }
-    this.snapshotKey = `${key}\0${READY_TO_WORK_COMPONENT_IDS
-      .map((id) => input.desired.components[id] ? "1" : "0").join("")}`;
+    this.snapshotKey = key;
     this.snapshot = readyToWorkAggregateStatus(input.desired, observed);
     return this.snapshot;
   }

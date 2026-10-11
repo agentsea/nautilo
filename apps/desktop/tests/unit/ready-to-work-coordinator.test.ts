@@ -49,6 +49,13 @@ describe("Ready-to-work coordinator", () => {
     for (const id of ["voice", "auto_approve", "workstation"]) {
       expect(status.components.find(component => component.id === id)).toMatchObject({ state: "ready", reason: null });
     }
+    const basic = createReadyToWorkDesiredState(binding, { ...desired.components, workstation: false });
+    const basicStatus = coordinator.observe(basic, {});
+    expect(basicStatus.components.find(component => component.id === "auto_approve")?.state).toBe("ready");
+    expect(basicStatus.components.find(component => component.id === "workstation")?.state).toBe("off_by_choice");
+    // Re-selecting an owner cannot revive the observation from before Off.
+    expect(coordinator.observe(desired, {}).components.find(component => component.id === "workstation")?.state)
+      .toBe("needs_attention");
     const changed = createReadyToWorkDesiredState({ ...binding, humanId: "another-human" }, desired.components);
     expect(coordinator.observe(changed, {}).components.find(component => component.id === "auto_approve"))
       .toMatchObject({ state: "needs_attention" });
