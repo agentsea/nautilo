@@ -251,7 +251,9 @@ test("mixed Task discovery advances only through the earliest source and never s
   signing.privateKey.fill(0);
 });
 
-test("accepts an exact signed Task Runtime response and wakes awaiting work", async () => {
+test.each(["task.dispatch", "task.cancel_result"] as const)("accepts exact signed %s response and wakes awaiting work", async workKind => {
+  const operations = workKind === "task.cancel_result"
+    ? ["encrypt"] as const : ["decrypt", "encrypt"] as const;
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -277,13 +279,13 @@ test("accepts an exact signed Task Runtime response and wakes awaiting work", as
     recipientKind: "runtime", recipientPrincipalId: "nautilo_task_runtime",
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: 1, recipientKeyId: "recipient:task",
-    operations: ["decrypt", "encrypt"], issuedAt: now,
+    operations, issuedAt: now,
     deadlineAt: now + 60_000, maximumSecretBytes: 4_096,
     domains: [domain],
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId, workId: "run:task",
-    workKind: "task.dispatch", workPurpose: "task.dispatch",
+    workKind, workPurpose: workKind,
     recipientGeneration: 1, episodeId: plan.sessionId,
     sourceRoomId: plan.roomId, recipientKeyId: plan.recipientKeyId,
     recipientPublicKey: recipient.publicKey, authorizationPlan: plan,
@@ -317,7 +319,7 @@ test("accepts an exact signed Task Runtime response and wakes awaiting work", as
     purpose: request.workPurpose, expectedPolicyRevision: plan.policyRevision,
     authoritySet: {namespaceRequirements: [{ordinal: 0,
       namespaceId: "namespace:task", domainId: domain.domainId,
-      operations: ["decrypt", "encrypt"], expectedAccessRevision: 1,
+      operations, expectedAccessRevision: 1,
       expectedPolicyRevision: plan.policyRevision}],
       domainRequirements: [{ordinal: 0, domainId: domain.domainId,
         expectedEpoch: domain.domainKeyGeneration,

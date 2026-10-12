@@ -48,8 +48,13 @@ import {
   classifyProtectedTaskMetadataV1,
 } from "@nautilo/types";
 import {
+  and, eq, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
   createDirectDb,
   prepareProtectedTaskCancellationOutput,
+  settleProtectedTaskCancellationOutput,
+  listProtectedTaskCancellationOutputCandidates,
+  type ProtectedTaskCancellationOutputCandidate,
+  type ProtectedTaskCancellationOutputDiscoveryCursor,
 } from "@nautilo/db";
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 
@@ -544,6 +549,37 @@ describe.serial("Postgres protected Task content repository", () => {
          WHERE task_run_id = $1`,
         [cancelledRunId],
       );
+      let signalAuthorityObserved!: () => void;
+      let releaseAuthority!: () => void;
+      const authorityObserved = new Promise<void>(resolve => { signalAuthorityObserved = resolve; });
+      const authorityRelease = new Promise<void>(resolve => { releaseAuthority = resolve; });
+      let claimLive = true;
+      let reservationAssertions = 0;
+      const guardedRepository = createDormantTaskContentShadowRepository({
+        product: new PostgresTaskContentProductStore(productHandle, async () => {
+          signalAuthorityObserved();
+          await authorityRelease;
+          return authority;
+        }, coordinate => {
+          expect(coordinate).toEqual(cancelledResult);
+          reservationAssertions += 1;
+          if (!claimLive) throw new Error("Cancellation claim expired while waiting for reservation");
+        }),
+        crypto: completion,
+      });
+      const delayedReservation = guardedRepository.reserveRevision(cancellationReservation)
+        .then(() => null, (error: unknown) => error);
+      await authorityObserved;
+      claimLive = false;
+      releaseAuthority();
+      expect(await delayedReservation).toBeInstanceOf(Error);
+      expect(reservationAssertions).toBe(1);
+      const delayedRows = await directDb.select({ sequence: taskRunResultCryptoRevisions.sequence })
+        .from(taskRunResultCryptoRevisions).where(and(
+          eq(taskRunResultCryptoRevisions.taskRunId, cancelledRunId),
+          eq(taskRunResultCryptoRevisions.resultRevision, 2),
+        ));
+      expect(delayedRows).toHaveLength(0);
       expect(await repository.reserveRevision(cancellationReservation))
         .toMatchObject({ status: "reserved", coordinate: cancelledResult });
       expect(await repository.reserveRevision(cancellationReservation))
@@ -683,6 +719,49 @@ describe.serial("Postgres protected Task content repository", () => {
         "UPDATE jobs SET input = $2::jsonb WHERE id = $1",
         [preparedCancellationJobId, preparedCancellationJobInput],
       );
+      const discovered: ProtectedTaskCancellationOutputCandidate[] = [];
+      let cancellationCursor: ProtectedTaskCancellationOutputDiscoveryCursor | undefined;
+      do {
+        const page = await listProtectedTaskCancellationOutputCandidates(directDb, {
+          limit: 1, throughTime: stoppedAt,
+          ...(cancellationCursor === undefined ? {} : { cursor: cancellationCursor }),
+        });
+        discovered.push(...page.candidates);
+        cancellationCursor = page.next ?? undefined;
+      } while (cancellationCursor !== undefined);
+      expect(discovered.find(candidate => candidate.taskRunId === cancelledRunId))
+        .toMatchObject({ taskId, taskRunId: cancelledRunId, jobId: null,
+          bindingState: "cancellation", resultState: "mapped" });
+      expect(discovered.find(candidate => candidate.taskRunId === preparedCancellationRunId))
+        .toMatchObject({ taskId, taskRunId: preparedCancellationRunId,
+          jobId: preparedCancellationJobId, bindingState: "missing", resultState: "unmapped" });
+      expect(discovered.filter(candidate => candidate.taskRunId === runId)).toEqual([]);
+      let settlementProofs = 0;
+      expect(await settleProtectedTaskCancellationOutput(directDb,
+        { taskId, taskRunId: cancelledRunId }, async proof => {
+          settlementProofs += 1;
+          expect(proof.intent).toMatchObject({ taskId, taskRunId: cancelledRunId,
+            resultRevision: 2, terminalAt: stoppedAt });
+          return false;
+        })).toMatchObject({ status: "rejected", reason: "not_ready" });
+      const [unsettled] = await directDb.select({
+        resultAttachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+        completedAt: protectedTaskRunOutputBindings.completedAt,
+      }).from(protectedTaskRunOutputBindings)
+        .where(eq(protectedTaskRunOutputBindings.taskRunId, cancelledRunId));
+      expect(unsettled).toEqual({ resultAttachedAt: null, completedAt: null });
+      expect(await settleProtectedTaskCancellationOutput(directDb,
+        { taskId, taskRunId: cancelledRunId }, async proof => {
+          settlementProofs += 1;
+          expect(proof.requesterHumanId).toBe(authority.requesterHumanId);
+          return true;
+        })).toMatchObject({ status: "completed", binding: {
+          resultAttachedAt: stoppedAt, completedAt: stoppedAt,
+        } });
+      expect(await settleProtectedTaskCancellationOutput(directDb,
+        { taskId, taskRunId: cancelledRunId }, async () => true))
+        .toMatchObject({ status: "exact_replay" });
+      expect(settlementProofs).toBe(2);
       const preparedCancellation = await prepareProtectedTaskCancellationOutput(
         directDb,
         {

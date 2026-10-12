@@ -1003,6 +1003,7 @@ export {
   withParkedTaskRuntimeNamespaceAuthority,
   withParkedTaskRuntimeRecipientAuthority,
   withTaskContentNamespaceAuthority,
+  withTaskContentRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,

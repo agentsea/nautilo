@@ -1,7 +1,13 @@
 import {
   and,
+  asc,
   eq,
+  gt,
+  inArray,
+  isNotNull,
   isNull,
+  lte,
+  or,
   sql,
 } from "drizzle-orm";
 
@@ -40,6 +46,26 @@ const OPAQUE_CHECKPOINT_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const CONTINUATION_FINGERPRINT = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 
 export const PROTECTED_TASK_CANCELLED_RESULT = "Task cancelled" as const;
+
+export type ProtectedTaskCancellationOutputDiscoveryCursor = Readonly<{
+  throughTime: Date;
+  terminalAt: Date;
+  taskRunId: string;
+}>;
+
+export type ProtectedTaskCancellationOutputCandidate = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  jobId: string | null;
+  terminalAt: Date;
+  bindingState: "missing" | "execution" | "cancellation";
+  resultState: "unmapped" | "mapped";
+}>;
+
+export type ProtectedTaskCancellationOutputDiscoveryPage = Readonly<{
+  candidates: readonly ProtectedTaskCancellationOutputCandidate[];
+  next: ProtectedTaskCancellationOutputDiscoveryCursor | null;
+}>;
 
 export type ProtectedTaskCancellationOutputAuthority = Readonly<{
   taskId: string;
@@ -104,6 +130,32 @@ export type PublishProtectedTaskCancellationProductResult =
       status: "rejected";
       reason: "authority_changed" | "conflict" | "not_found";
     }>;
+
+export type ProtectedTaskCancellationOutputSettlementProof = Readonly<{
+  intent: ProtectedTaskCancellationOutputIntent;
+  requesterHumanId: string;
+  authorityFingerprint: Uint8Array;
+  cryptoAccessRevision: number;
+  requiredNamespaceFingerprint: Uint8Array;
+}>;
+
+export type SettleProtectedTaskCancellationOutputResult =
+  | Readonly<{
+      status: "completed" | "exact_replay";
+      binding: ProtectedTaskRunOutputBinding;
+    }>
+  | Readonly<{
+      status: "rejected";
+      reason:
+        | "authority_changed"
+        | "conflict"
+        | "not_found"
+        | "not_ready";
+    }>;
+
+type SettleCancellationAuthorization = (
+  proof: ProtectedTaskCancellationOutputSettlementProof,
+) => Promise<boolean>;
 
 type AssertCurrentCancellationAuthority = (
   transaction: ProtectedTaskCancellationProductTransaction,
@@ -309,6 +361,15 @@ function productRejected(
   return Object.freeze({ status: "rejected" as const, reason });
 }
 
+function settlementRejected(
+  reason: Extract<
+    SettleProtectedTaskCancellationOutputResult,
+    { status: "rejected" }
+  >["reason"],
+): SettleProtectedTaskCancellationOutputResult {
+  return Object.freeze({ status: "rejected" as const, reason });
+}
+
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
   let difference = 0;
@@ -473,6 +534,198 @@ function noPublishedOutput(binding: ProtectedTaskRunOutputBinding): boolean {
     && binding.wakeJobId === null
     && binding.wakeScheduledAt === null
     && binding.completedAt === null;
+}
+
+/**
+ * Discover a finite page of stopped protected occurrences whose fixed
+ * cancellation result still needs publication. The time cutoff bounds one
+ * traversal; the locked prepare owner remains responsible for exact identity,
+ * authority settlement, and current-policy validation.
+ */
+export async function listProtectedTaskCancellationOutputCandidates(
+  db: DirectDatabase,
+  input: Readonly<{
+    limit: number;
+    throughTime: Date;
+    cursor?: ProtectedTaskCancellationOutputDiscoveryCursor;
+  }>,
+): Promise<ProtectedTaskCancellationOutputDiscoveryPage> {
+  if (
+    !Number.isSafeInteger(input.limit)
+    || input.limit < 0
+    || !Number.isSafeInteger(input.limit + 1)
+    || !(input.throughTime instanceof Date)
+    || !Number.isFinite(input.throughTime.getTime())
+  ) {
+    throw new TypeError("Protected Task cancellation discovery page is malformed");
+  }
+  if (input.cursor && (
+    !(input.cursor.throughTime instanceof Date)
+    || !Number.isFinite(input.cursor.throughTime.getTime())
+    || input.cursor.throughTime.getTime() !== input.throughTime.getTime()
+    || !(input.cursor.terminalAt instanceof Date)
+    || !Number.isFinite(input.cursor.terminalAt.getTime())
+    || input.cursor.terminalAt.getTime() > input.throughTime.getTime()
+    || !CANONICAL_UUID.test(input.cursor.taskRunId)
+  )) {
+    throw new TypeError("Protected Task cancellation discovery cursor is malformed");
+  }
+  const limit = input.limit;
+  const throughTime = new Date(input.throughTime.getTime());
+  const cursor = input.cursor
+    ? Object.freeze({
+        throughTime: new Date(input.cursor.throughTime.getTime()),
+        terminalAt: new Date(input.cursor.terminalAt.getTime()),
+        taskRunId: input.cursor.taskRunId,
+      })
+    : undefined;
+  if (limit === 0) {
+    return Object.freeze({ candidates: Object.freeze([]), next: null });
+  }
+
+  const binding = protectedTaskRunOutputBindings;
+  const exactCancellationBinding = and(
+    eq(binding.resultRevision, 2),
+    sql`${binding.resultOperationId}
+      = 'task-run-cancelled-result:' || ${taskRuns.id}::text`,
+    eq(binding.resultTerminalAt, taskRuns.completedAt),
+    isNull(binding.completedAt),
+  );
+  const noOutputReceipts = and(
+    isNull(binding.resultAttachedAt),
+    isNull(binding.messageId),
+    isNull(binding.messagePublishedAt),
+    isNull(binding.wakeJobId),
+    isNull(binding.wakeScheduledAt),
+  );
+  const unfinishedUnmappedBinding = or(
+    isNull(binding.taskRunId),
+    and(
+      sql`${binding.bindingId} = 'task-run-output:' || ${taskRuns.id}::text`,
+      gt(binding.acceptedPolicyRevision, 0),
+      noOutputReceipts,
+      or(
+        and(
+          eq(binding.resultRevision, 1),
+          sql`${binding.resultOperationId}
+            = 'task-run-result:' || ${taskRuns.id}::text`,
+          isNull(binding.resultTerminalAt),
+        ),
+        exactCancellationBinding,
+      ),
+    ),
+  );
+  const pristineUnmappedResult = and(
+    isNull(taskRuns.resultText),
+    isNull(taskRuns.lastError),
+    eq(taskRuns.resultRepresentation, "ordinary"),
+    isNull(taskRuns.resultContentNamespaceId),
+    eq(taskRuns.resultRevision, 0),
+    isNull(taskRuns.resultCryptoObjectId),
+    eq(taskRuns.resultCryptoAccessRevision, 0),
+    isNull(taskRuns.resultCryptoRequiredNamespaceFingerprint),
+    eq(taskRuns.resultCryptoMappingState, "unmapped"),
+    unfinishedUnmappedBinding,
+  );
+  const mappedCancellationResult = and(
+    eq(taskRuns.resultRepresentation, tasks.contentRepresentation),
+    eq(taskRuns.resultContentNamespaceId, tasks.contentNamespaceId),
+    eq(taskRuns.resultRevision, 2),
+    isNotNull(taskRuns.resultCryptoObjectId),
+    eq(taskRuns.resultCryptoObjectId, binding.resultObjectId),
+    isNotNull(taskRuns.resultCryptoRequiredNamespaceFingerprint),
+    sql`octet_length(${taskRuns.resultCryptoRequiredNamespaceFingerprint}) = 32`,
+    eq(taskRuns.resultCryptoMappingState, "verified"),
+    isNull(taskRuns.lastError),
+    or(
+      and(
+        eq(tasks.contentRepresentation, "protected"),
+        isNull(taskRuns.resultText),
+      ),
+      and(
+        eq(tasks.contentRepresentation, "dual"),
+        eq(taskRuns.resultText, PROTECTED_TASK_CANCELLED_RESULT),
+      ),
+    ),
+    sql`${binding.bindingId} = 'task-run-output:' || ${taskRuns.id}::text`,
+    gt(binding.acceptedPolicyRevision, 0),
+    exactCancellationBinding,
+  );
+  const rows = await db.select({
+    taskId: tasks.id,
+    taskRunId: taskRuns.id,
+    jobId: taskRuns.jobId,
+    terminalAt: taskRuns.completedAt,
+    bindingRevision: binding.resultRevision,
+    resultRevision: taskRuns.resultRevision,
+  }).from(tasks)
+    .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
+    .leftJoin(binding, eq(binding.taskRunId, taskRuns.id))
+    .where(and(
+      eq(tasks.status, "cancelled"),
+      eq(taskRuns.status, "cancelled"),
+      isNotNull(tasks.cancelledAt),
+      isNotNull(taskRuns.completedAt),
+      eq(taskRuns.completedAt, tasks.cancelledAt),
+      lte(taskRuns.completedAt, throughTime),
+      eq(tasks.ownerId, tasks.requestorId),
+      inArray(tasks.contentRepresentation, ["protected", "dual"]),
+      isNotNull(tasks.contentNamespaceId),
+      isNotNull(tasks.cryptoObjectId),
+      isNotNull(tasks.cryptoRequiredNamespaceFingerprint),
+      sql`octet_length(${tasks.cryptoRequiredNamespaceFingerprint}) = 32`,
+      eq(tasks.cryptoMappingState, "verified"),
+      isNull(tasks.lastError),
+      or(
+        eq(tasks.contentRepresentation, "dual"),
+        and(
+          eq(tasks.contentRepresentation, "protected"),
+          eq(tasks.prompt, ""),
+          isNull(tasks.expectedOutput),
+        ),
+      ),
+      or(pristineUnmappedResult, mappedCancellationResult),
+      cursor ? or(
+        gt(taskRuns.completedAt, cursor.terminalAt),
+        and(
+          eq(taskRuns.completedAt, cursor.terminalAt),
+          gt(taskRuns.id, cursor.taskRunId),
+        ),
+      ) : undefined,
+    ))
+    .orderBy(asc(taskRuns.completedAt), asc(taskRuns.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const pageRows = rows.slice(0, limit);
+  const candidates = Object.freeze(pageRows.map((row) => {
+    if (row.terminalAt === null) throw new TypeError("Cancelled TaskRun has no terminal time");
+    return Object.freeze({
+    taskId: row.taskId,
+    taskRunId: row.taskRunId,
+    jobId: row.jobId,
+    terminalAt: new Date(row.terminalAt.getTime()),
+    bindingState: row.bindingRevision === null
+      ? "missing" as const
+      : row.bindingRevision === 1
+        ? "execution" as const
+        : "cancellation" as const,
+    resultState: row.resultRevision === 0
+      ? "unmapped" as const
+      : "mapped" as const,
+    });
+  }));
+  const last = candidates.at(-1);
+  return Object.freeze({
+    candidates,
+    next: hasMore && last
+      ? Object.freeze({
+          throughTime: new Date(throughTime.getTime()),
+          terminalAt: new Date(last.terminalAt.getTime()),
+          taskRunId: last.taskRunId,
+        })
+      : null,
+  });
 }
 
 /**
@@ -880,7 +1133,7 @@ function cancellationRunState(
  * starts execution or changes Task/TaskRun lifecycle state.
  */
 export async function publishProtectedTaskCancellationProduct(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "transaction">,
   input: Readonly<{
     intent: ProtectedTaskCancellationOutputIntent;
     prepared: ProtectedTaskCancellationProductPrepared;
@@ -1036,4 +1289,241 @@ export async function publishProtectedTaskCancellationProduct(
     }
     throw error;
   }
+}
+
+function exactCancellationSettlementReceipts(
+  binding: ProtectedTaskRunOutputBinding,
+  terminalAt: Date,
+): boolean {
+  const resultAttachedAt = binding.resultAttachedAt?.getTime() ?? null;
+  const messagePublishedAt = binding.messagePublishedAt?.getTime() ?? null;
+  const wakeScheduledAt = binding.wakeScheduledAt?.getTime() ?? null;
+  const completedAt = binding.completedAt?.getTime() ?? null;
+  const terminalTime = terminalAt.getTime();
+  const hasMessage = binding.messageId !== null
+    && messagePublishedAt !== null;
+  const hasWake = binding.wakeJobId !== null
+    && wakeScheduledAt !== null;
+  if (
+    (binding.messageId === null) !== (messagePublishedAt === null)
+    || (binding.wakeJobId === null) !== (wakeScheduledAt === null)
+    || resultAttachedAt !== null && resultAttachedAt !== terminalTime
+    || binding.acceptedAt.getTime() > terminalTime
+    || messagePublishedAt !== null && messagePublishedAt < terminalTime
+    || wakeScheduledAt !== null && wakeScheduledAt < terminalTime
+    || resultAttachedAt === null
+      && (hasMessage || hasWake || completedAt !== null)
+  ) return false;
+
+  switch (binding.deliveryMode) {
+    case "none":
+      return !hasMessage && !hasWake
+        && (completedAt === null || completedAt === terminalTime);
+    case "raw":
+      return !hasWake
+        && (hasMessage
+          ? completedAt === messagePublishedAt
+          : completedAt === null);
+    case "wake":
+      return !hasMessage
+        && (hasWake
+          ? completedAt === wakeScheduledAt
+          : completedAt === null);
+    case "raw_and_wake":
+      return (!hasWake || hasMessage)
+        && (hasWake
+          ? completedAt === wakeScheduledAt
+            && messagePublishedAt !== null
+            && wakeScheduledAt >= messagePublishedAt
+          : completedAt === null);
+  }
+}
+
+/**
+ * Close authorization settlement for an exact mapped cancellation result.
+ * The held callback owns the durable authorization CAS; this transaction owns
+ * only the result attachment and no-delivery completion receipts.
+ */
+export async function settleProtectedTaskCancellationOutput(
+  db: Pick<DirectDatabase, "transaction">,
+  input: Readonly<{ taskId: string; taskRunId: string }>,
+  settleAuthorization: SettleCancellationAuthorization,
+): Promise<SettleProtectedTaskCancellationOutputResult> {
+  if (
+    !CANONICAL_UUID.test(input.taskId)
+    || !CANONICAL_UUID.test(input.taskRunId)
+    || typeof settleAuthorization !== "function"
+  ) throw new TypeError("Protected Task cancellation settlement is malformed");
+
+  return db.transaction(async (tx) => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server"))
+      .limit(1).for("share");
+    const [task] = await tx.select(cancellationTaskProjection).from(tasks)
+      .where(eq(tasks.id, input.taskId)).limit(1).for("update");
+    if (!task) return settlementRejected("not_found");
+    const [run] = await tx.select(cancellationRunProjection).from(taskRuns)
+      .where(and(
+        eq(taskRuns.id, input.taskRunId),
+        eq(taskRuns.taskId, input.taskId),
+      )).limit(1).for("update");
+    if (!run) return settlementRejected("not_found");
+    const [binding] = await tx.select().from(protectedTaskRunOutputBindings)
+      .where(eq(protectedTaskRunOutputBindings.taskRunId, input.taskRunId))
+      .limit(1).for("update");
+    if (!binding) return settlementRejected("not_found");
+
+    if (
+      task.status !== "cancelled"
+      || task.cancelledAt === null
+      || run.status !== "cancelled"
+      || run.completedAt === null
+      || run.completedAt.getTime() !== task.cancelledAt.getTime()
+      || (task.contentRepresentation !== "protected"
+        && task.contentRepresentation !== "dual")
+      || task.contentNamespaceId === null
+      || binding.resultRevision !== 2
+      || binding.acceptedPolicyRevision < 1
+    ) return settlementRejected("conflict");
+
+    const intent = cancellationIntent(
+      task,
+      run,
+      binding.acceptedPolicyRevision,
+    );
+    if (
+      !policy
+      || policy.revision !== intent.policyRevision
+      || policy.mode !== (intent.representation === "dual"
+        ? "shadow_encryption"
+        : "encrypted_only")
+    ) return settlementRejected("authority_changed");
+
+    const [definition] = await tx.select(cancellationDefinitionProjection)
+      .from(taskDefinitionCryptoRevisions)
+      .where(and(
+        eq(taskDefinitionCryptoRevisions.taskId, input.taskId),
+        eq(
+          taskDefinitionCryptoRevisions.contentRevision,
+          task.contentRevision,
+        ),
+      )).limit(1).for("share");
+    const [reservation] = await tx.select(cancellationResultProjection)
+      .from(taskRunResultCryptoRevisions)
+      .where(and(
+        eq(taskRunResultCryptoRevisions.taskId, input.taskId),
+        eq(taskRunResultCryptoRevisions.taskRunId, input.taskRunId),
+        eq(taskRunResultCryptoRevisions.resultRevision, 2),
+        eq(
+          taskRunResultCryptoRevisions.operationId,
+          intent.resultOperationId,
+        ),
+      )).limit(1).for("update");
+    if (!reservation) return settlementRejected("not_ready");
+    const [requesterHuman] = await tx.select({ id: actors.id }).from(actors)
+      .where(and(
+        eq(actors.id, reservation.requesterHumanId),
+        eq(actors.kind, "user"),
+        eq(actors.ownerId, intent.requesterUserId),
+      )).limit(1).for("share");
+
+    const exactReservation = reservation.taskId === intent.taskId
+      && reservation.taskRunId === intent.taskRunId
+      && reservation.contentNamespaceId === intent.contentNamespaceId
+      && reservation.anchorNamespaceId === intent.contentNamespaceId
+      && reservation.resultRevision === 2
+      && reservation.operationId === intent.resultOperationId
+      && reservation.requestDigest.length === 32
+      && reservation.authorityFingerprint.length === 32
+      && reservation.cryptoObjectId === intent.resultObjectId
+      && reservation.representation === intent.representation
+      && reservation.payloadVersion === 1
+      && reservation.cryptoAccessRevision === 0
+      && task.cryptoRequiredNamespaceFingerprint !== null
+      && sameBytes(
+        reservation.requiredNamespaceFingerprint,
+        task.cryptoRequiredNamespaceFingerprint,
+      )
+      && reservation.completion === "complete"
+      && reservation.disposition === "mapped"
+      && reservation.failureCode === null;
+    const destinationNamespaceId = task.callingRoomId === null
+      ? null
+      : binding.destinationNamespaceId;
+    if (
+      !exactCancellationDefinition(task, definition, intent)
+      || !exactCancellationBinding(binding, intent)
+      || !exactReservation
+      || requesterHuman === undefined
+      || cancellationRunState(run, reservation, intent) !== "mapped"
+      || !exactDestination(task, binding, destinationNamespaceId)
+      || task.callingRoomId !== null && destinationNamespaceId === null
+      || !exactCancellationSettlementReceipts(binding, intent.terminalAt)
+    ) return settlementRejected("conflict");
+
+    const proof = Object.freeze({
+      intent: Object.freeze({
+        ...intent,
+        terminalAt: new Date(intent.terminalAt.getTime()),
+      }),
+      requesterHumanId: reservation.requesterHumanId,
+      authorityFingerprint: reservation.authorityFingerprint.slice(),
+      cryptoAccessRevision: reservation.cryptoAccessRevision,
+      requiredNamespaceFingerprint:
+        reservation.requiredNamespaceFingerprint.slice(),
+    });
+    if (!await settleAuthorization(proof)) {
+      return settlementRejected("not_ready");
+    }
+
+    const attachResult = binding.resultAttachedAt === null;
+    const completeNoDelivery = binding.deliveryMode === "none"
+      && binding.completedAt === null;
+    if (!attachResult && !completeNoDelivery) {
+      return Object.freeze({ status: "exact_replay" as const, binding });
+    }
+    const [updated] = await tx.update(protectedTaskRunOutputBindings).set({
+      ...(attachResult
+        ? { resultAttachedAt: new Date(intent.terminalAt.getTime()) }
+        : {}),
+      ...(completeNoDelivery
+        ? { completedAt: new Date(intent.terminalAt.getTime()) }
+        : {}),
+    }).where(and(
+      eq(protectedTaskRunOutputBindings.taskRunId, intent.taskRunId),
+      eq(protectedTaskRunOutputBindings.bindingId, binding.bindingId),
+      eq(protectedTaskRunOutputBindings.resultRevision, 2),
+      eq(
+        protectedTaskRunOutputBindings.resultOperationId,
+        intent.resultOperationId,
+      ),
+      eq(
+        protectedTaskRunOutputBindings.resultObjectId,
+        intent.resultObjectId,
+      ),
+      eq(
+        protectedTaskRunOutputBindings.acceptedPolicyRevision,
+        intent.policyRevision,
+      ),
+      eq(protectedTaskRunOutputBindings.resultTerminalAt, intent.terminalAt),
+      attachResult
+        ? isNull(protectedTaskRunOutputBindings.resultAttachedAt)
+        : eq(
+            protectedTaskRunOutputBindings.resultAttachedAt,
+            binding.resultAttachedAt!,
+          ),
+      completeNoDelivery
+        ? isNull(protectedTaskRunOutputBindings.completedAt)
+        : binding.completedAt === null
+          ? isNull(protectedTaskRunOutputBindings.completedAt)
+          : eq(
+              protectedTaskRunOutputBindings.completedAt,
+              binding.completedAt,
+            ),
+    )).returning();
+    if (!updated) {
+      throw new Error("Protected Task cancellation settlement lost its binding");
+    }
+    return Object.freeze({ status: "completed" as const, binding: updated });
+  });
 }

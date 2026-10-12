@@ -18,6 +18,7 @@ import type {
   ProtectedTaskOccurrence,
   TaskRuntimeRecipientRequestPlan,
 } from "@nautilo/runtime";
+import type { ProtectedTaskCancellationOutputIntent } from "@nautilo/db";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -87,12 +88,56 @@ function sameDomains(
 export function createProtectedTaskRuntimeRecipientRequestPlan(
   input: ProtectedTaskRuntimeRecipientRequestPlanInput,
 ): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
-  const { occurrence, initialRecord } = input;
+  if (input.occurrence.run.taskId !== input.occurrence.task.id) {
+    throw new TypeError("Protected Task recipient occurrence is not exact");
+  }
+  return createRecipientRequestPlan({
+    ...input,
+    workId: input.occurrence.run.id,
+    requesterUserId: input.occurrence.task.requestorId,
+    cancellation: false,
+  });
+}
+
+/** A stopped result receives its own request; it never becomes an occurrence. */
+export function createProtectedTaskCancellationRecipientRequestPlan(
+  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+    intent: ProtectedTaskCancellationOutputIntent;
+  }>,
+): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
+  const { intent, initialRecord, authority } = input;
+  const namespace = authority.namespaces[0];
+  if (intent.taskStatus !== "cancelled" || intent.runStatus !== "cancelled"
+    || intent.resultRevision !== 2
+    || intent.policyRevision !== authority.policyRevision
+    || initialRecord.snapshot.namespaceId !== intent.contentNamespaceId
+    || authority.namespaces.length !== 1 || authority.domains.length !== 1
+    || namespace?.namespaceId !== intent.contentNamespaceId
+    || namespace.domainId !== authority.domains[0]?.domainId
+    || namespace.operations.length !== 1 || namespace.operations[0] !== "encrypt") {
+    throw new TypeError("Protected Task cancellation recipient authority is not exact");
+  }
+  return createRecipientRequestPlan({
+    ...input,
+    workId: intent.taskRunId,
+    requesterUserId: intent.requesterUserId,
+    cancellation: true,
+  });
+}
+
+function createRecipientRequestPlan(
+  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+    workId: string;
+    requesterUserId: string;
+    cancellation: boolean;
+  }>,
+): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
+  const { initialRecord, workId, requesterUserId } = input;
   const crypto = input.crypto;
   const requestId = initialRecord.snapshot.requestId;
   const workKind = initialRecord.workKind;
-  const workId = occurrence.run.id;
-  const requesterUserId = occurrence.task.requestorId;
+  const cancellation = input.cancellation;
+  const recipientPrefix = cancellation ? "task-cancellation-runtime" : "task-runtime";
   const sourceRoomId = input.sourceRoomId;
   const policyRevision = input.authority.policyRevision;
   const createdAt = input.createdAt;
@@ -104,16 +149,22 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
   const domains = Object.freeze(input.authority.domains.map(value =>
     Object.freeze({ ...value })));
 
+  if (workKind !== "task.execute" && workKind !== "task.approval_resume"
+    && workKind !== "task.await_reply_resume" && workKind !== "task.cancel_result") {
+    workIdentityHash.fill(0);
+    throw new TypeError("Protected Task recipient work kind is invalid");
+  }
+
   if (typeof crypto.hash !== "function"
     || !UUID.test(sourceRoomId)
     || !Number.isSafeInteger(createdAt) || createdAt < 0
     || !Number.isSafeInteger(recipientTtlMs) || recipientTtlMs < 1
     || recipientTtlMs > DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2
-    || (workKind !== "task.execute" && workKind !== "task.approval_resume"
-      && workKind !== "task.await_reply_resume")
+    || (cancellation ? workKind !== "task.cancel_result"
+      : workKind !== "task.execute" && workKind !== "task.approval_resume"
+        && workKind !== "task.await_reply_resume")
     || initialRecord.purpose !== workKind
     || initialRecord.snapshot.workId !== workId
-    || occurrence.run.taskId !== occurrence.task.id
     || initialRecord.expectedPolicyRevision !== policyRevision
     || !Number.isSafeInteger(policyRevision) || policyRevision < 1
     || idempotencyKey.length === 0
@@ -144,7 +195,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
       }
       return Object.freeze({
         recipientKeyId:
-          `task-runtime:${workId}:${record.snapshot.recipientGeneration}`,
+          `${recipientPrefix}:${workId}:${record.snapshot.recipientGeneration}`,
         expiresAt,
       });
     },
@@ -161,7 +212,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
         || attempt.workId !== workId
         || attempt.recipientGeneration !== record.snapshot.recipientGeneration
         || attempt.recipientKeyId
-          !== `task-runtime:${workId}:${attempt.recipientGeneration}`
+          !== `${recipientPrefix}:${workId}:${attempt.recipientGeneration}`
         || binding.userId !== requesterUserId
         || current.device.userId !== binding.userId
         || current.device.humanActorId !== binding.humanActorId
@@ -198,7 +249,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
         recipientAuthorizationRevision: authorizationRevision(0),
         recipientRuntimeGeneration: attempt.recipientGeneration,
         recipientKeyId: attempt.recipientKeyId,
-        operations: ["decrypt", "encrypt"],
+        operations: cancellation ? ["encrypt"] : ["decrypt", "encrypt"],
         issuedAt,
         deadlineAt: attempt.expiresAt,
         maximumSecretBytes: DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,

@@ -1,4 +1,5 @@
 import { log } from "@nautilo/logger";
+import { createProtectedTaskCancellationComposition } from "./protected-task-cancellation-composition";
 import { createDedicatedEncryptedCheckpointPool } from "@nautilo/agent";
 import { createProtectedTaskRuntimeParkedContinuation } from "./protected-task-runtime-parked-continuation";
 import { createProtectedTaskParkedAuthorizationSettlement } from "./protected-task-parked-authorization-settlement";
@@ -30,6 +31,7 @@ import {
   type DirectDatabase,
   type PostgresJsBridgeConnection,
   type ProtectedTaskRunOutputRecoveryCursor,
+  type ProtectedTaskCancellationOutputDiscoveryCursor,
 } from "@nautilo/db";
 import {
   LatticeCrypto,
@@ -291,6 +293,12 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     db: input.db, repository, recipients: input.recipients, now,
   });
   let cancellationCursor: ProtectedTaskCancellationRecoveryCursor | undefined;
+  const cancellationOutput = createProtectedTaskCancellationComposition({
+    db: input.db, restricted, crypto, owner: input.owner, serverScope,
+    recipients: input.recipients,
+    recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
+  });
+  let cancellationOutputCursor: ProtectedTaskCancellationOutputDiscoveryCursor | undefined;
   const unmapped = dependencies.unmappedResultRecovery({
     db: input.db,
     restricted,
@@ -485,6 +493,13 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       if (cancelled.failures > 0) {
         log("[task-observer] protected cancellation recovery deferred code=PROTECTED_STOP_RECOVERY_RETRY");
       }
+      const stoppedOutputs = await cancellationOutput.recoverPage({
+        limit, ...(cancellationOutputCursor === undefined ? {} : { after: cancellationOutputCursor }),
+      });
+      cancellationOutputCursor = stoppedOutputs.next;
+      if (stoppedOutputs.failures > 0) {
+        log("[task-observer] protected cancellation output deferred code=PROTECTED_STOP_OUTPUT_RETRY");
+      }
       const publications = await published.recoverPage({
         limit,
         ...(publishedCursor === undefined ? {} : { after: publishedCursor }),
@@ -504,13 +519,16 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     jobManager: input.jobManager,
     kick: input.kick,
   });
+  const deviceHooks = (record: Parameters<DeviceHooks["isTaskRecipientActive"]>[0]) =>
+    record.workKind === "task.cancel_result" ? cancellationOutput
+      : isInitialRequest(record) ? hooks : parkedHooks;
   return Object.freeze({
     coordinator,
-    bindTaskRecipient: operation => (isInitialRequest(operation.record) ? hooks : parkedHooks)
+    bindTaskRecipient: operation => deviceHooks(operation.record)
       .bindTaskRecipient(operation),
-    withTaskAuthority: operation => (isInitialRequest(operation.record) ? hooks : parkedHooks)
+    withTaskAuthority: operation => deviceHooks(operation.record)
       .withTaskAuthority(operation),
-    isTaskRecipientActive: record => (isInitialRequest(record) ? hooks : parkedHooks)
+    isTaskRecipientActive: record => deviceHooks(record)
       .isTaskRecipientActive(record),
     wakeProtectedTask: () => coordinator.authorizationAccepted(),
   });

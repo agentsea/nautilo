@@ -346,10 +346,12 @@ function sameAuthorityResolutionLifecycle(
 export class PostgresTaskContentProductStore implements TaskContentProductStorePort {
   readonly #handle: ConversationProductPostgresHandle;
   readonly #resolveCurrentAuthority: ResolveCurrentTaskContentAuthority;
+  readonly #assertReservationCurrent: ((coordinate: TaskContentCoordinateV1) => void | Promise<void>) | undefined;
 
   constructor(
     handle: ConversationProductPostgresHandle,
     resolveCurrentAuthority: ResolveCurrentTaskContentAuthority,
+    assertReservationCurrent?: (coordinate: TaskContentCoordinateV1) => void | Promise<void>,
   ) {
     assertVerifiedConversationProductPostgresHandle(handle);
     if (handle.role !== "nautilo") {
@@ -360,6 +362,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     }
     this.#handle = handle;
     this.#resolveCurrentAuthority = resolveCurrentAuthority;
+    this.#assertReservationCurrent = assertReservationCurrent;
   }
 
   async reserveRevision(
@@ -406,6 +409,9 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         || !await this.#predecessorIsCurrent(transaction, input, requesterOwnerId, authority.expectedPolicyRevision)) {
         return { status: "stale" };
       }
+      // A leased publisher must recheck after acquiring the product locks.
+      // Recovery uses these same locks when proving that no reservation exists.
+      await this.#assertReservationCurrent?.(Object.freeze({ ...input.coordinate }));
       const inserted = await this.#insertLifecycle(transaction, input);
       if (inserted === null) return { status: "conflict" };
       const lifecycle = lifecycleFromRow(input.coordinate.kind, inserted);

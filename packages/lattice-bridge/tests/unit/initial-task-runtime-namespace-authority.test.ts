@@ -16,7 +16,7 @@ import {
   type ProtectedTaskExecutionContinuationProof,
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority, withParkedTaskRuntimeRecipientAuthority, withTaskContentNamespaceAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
+import { inspectInitialTaskRuntimeNamespaceAuthority, inspectTaskContentNamespaceAuthority, withInitialTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority, withParkedTaskRuntimeRecipientAuthority, withTaskContentNamespaceAuthority, withTaskContentRecipientAuthority } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 
 import { PostgresDeviceAdmissionRepository, type CurrentDeviceAdmissionAuthority } from "../../src/server/device/postgres-device-admission-repository.ts";
 
@@ -1451,4 +1451,47 @@ describe("parked Task Runtime recipient authority", () => {
       }
     }
   });
+});
+
+
+describe("cancellation content recipient authority", () => {
+  for (const scenario of ["ready", "device_missing", "policy_changed", "domain_changed"] as const) {
+    test(`holds encrypt-only content authority: ${scenario}`, async () => {
+      const { input, events } = fixture((stage, rows) => {
+        if (["candidates", "room-locks", "targets", "namespace-locks", "domain-locks", "recipient"].includes(stage)) rows = rows.slice(0, 1);
+        if (stage === "target-members") rows = rows.filter(row => row["room_id"] === ROOMS[0]);
+        if (stage === "task") rows = rows.map(row => ({ ...row,
+          crypto_object_id: null, content_revision: 0, use_scope: true,
+          scope_id: null, target_chat: "unavailable", target_room_id: null }));
+        if (scenario === "policy_changed" && stage === "policy") rows = rows.map(row => ({ ...row, revision: 8 }));
+        if (scenario === "domain_changed" && stage === "namespace") rows = rows.map(row => ({ ...row, domain_id: DOMAINS[1] }));
+        return rows;
+      });
+      const admission = spyOn(PostgresDeviceAdmissionRepository.prototype, "currentAuthorityForDelegation")
+        .mockImplementation(async () => {
+          events.push("admission");
+          return scenario === "device_missing" ? null : device();
+        });
+      try {
+        const exact = recipientInput(input);
+        const result = await withTaskContentRecipientAuthority({ ...input,
+          deviceId: DEVICE,
+          namespaceRequirements: [{ ...exact.namespaceRequirements[0]!, operations: ["encrypt"] }],
+          domainRequirements: exact.domainRequirements.slice(0, 1),
+          validateCurrentTaskRun: async () => { events.push("stopped-proof"); return true; },
+          use: current => {
+            expect(current.namespaceRequirements[0]!.operations).toEqual(["encrypt"]);
+            expect(current.domains).toHaveLength(1);
+            return "bound";
+          },
+        });
+        expect(result).toBe(scenario === "ready" ? "bound" : null);
+        if (scenario === "ready") {
+          expect(events.indexOf("stopped-proof")).toBeLessThan(events.indexOf("admission"));
+          expect(events.indexOf("admission")).toBeLessThan(events.indexOf("namespace-locks"));
+          expect(events.indexOf("namespace-locks")).toBeLessThan(events.indexOf("domain-locks"));
+        }
+      } finally { admission.mockRestore(); }
+    });
+  }
 });

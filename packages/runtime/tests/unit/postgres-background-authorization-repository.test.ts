@@ -31,6 +31,7 @@ import {
   buildAcceptedBackgroundAuthorizationResponse,
   buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
+  buildUnclaimedTaskCancellationAuthorityReplacement,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -274,6 +275,29 @@ function taskRuntimeRecipientCandidate(input: Readonly<{
     },
     workIdentityHash: new Uint8Array(32).fill(input.updatedAt - START + 10),
     idempotencyKey: `idempotency_${input.requestId}`,
+  };
+}
+
+function taskRuntimeSettlementRecord(
+  ordinal: number,
+  workKind:
+    | "task.execute"
+    | "task.dispatch"
+    | "task.approval_resume"
+    | "task.await_reply_resume"
+    | "task.cancel_result",
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const record = initialTaskRuntimeV3();
+  return {
+    ...record,
+    snapshot: {
+      ...record.snapshot,
+      requestId: `runtime_settlement_${ordinal}`,
+    },
+    workIdentityHash: new Uint8Array(32).fill(ordinal + 20),
+    idempotencyKey: `runtime_settlement_idempotency_${ordinal}`,
+    workKind,
+    purpose: workKind,
   };
 }
 
@@ -1826,6 +1850,206 @@ describe("Postgres background authorization repository", () => {
     expect((failure as Error).message).toContain("must be bounded");
   });
 
+  test("Task Runtime execution settlement locks the complete work inventory and accepts zero rows", async () => {
+    const postgres = await setup([[]]);
+    expect(await postgres.repository.settleTaskRuntimeExecutionAuthorities({
+      workId: "10000000-0000-4000-8000-000000000999",
+      namespaceId: "namespace_a",
+      now: START + 10,
+    })).toEqual({
+      status: "settled",
+      transitioned: 0,
+      alreadyTerminal: 0,
+      recipients: [],
+    });
+    expect(postgres.connection.transactions).toBe(1);
+    const statement = normalizedSql(postgres.connection.statements[1]);
+    const parameters = postgres.connection.parameters[1] ?? [];
+    expect(statement).toContain("WORK_ID =");
+    expect(statement).toContain("WORK_KIND IN");
+    expect(statement).toContain("ORDER BY BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS.REQUEST_ID ASC");
+    expect(statement).toContain("FOR UPDATE");
+    expect(statement).not.toContain("FORMAT_VERSION =");
+    expect(statement).not.toContain("CREDENTIAL_SUBJECT_KIND =");
+    for (const kind of [
+      "task.execute",
+      "task.dispatch",
+      "task.approval_resume",
+      "task.await_reply_resume",
+    ]) expect(parameters).toContain(kind);
+    expect(parameters).not.toContain("task.cancel_result");
+  });
+
+  test("Task Runtime execution settlement cancels an active request and replays a terminal request", async () => {
+    const active = taskRuntimeSettlementRecord(1, "task.dispatch");
+    const cancelled = {
+      ...active,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        active.snapshot,
+        "cancelled",
+        START + 10,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 10,
+    } satisfies BackgroundAuthorizationTaskRuntimeRecordV3;
+    const postgres = await setup([
+      [recordRow(active)],
+      taskRuntimeDomainRows(active),
+      namespaceRows(active),
+      [recordRow(active)],
+      taskRuntimeDomainRows(active),
+      namespaceRows(active),
+      [recordRow(cancelled)],
+    ]);
+    expect(await postgres.repository.settleTaskRuntimeExecutionAuthorities({
+      workId: active.snapshot.workId,
+      namespaceId: active.snapshot.namespaceId,
+      now: START + 10,
+    })).toEqual({
+      status: "settled",
+      transitioned: 1,
+      alreadyTerminal: 0,
+      recipients: [{
+        requestId: active.snapshot.requestId,
+        recipientGeneration: active.snapshot.recipientGeneration,
+      }],
+    });
+    expect(postgres.connection.statements.some((statement) =>
+      normalizedSql(statement).startsWith(
+        "UPDATE BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS",
+      )
+    )).toBeTrue();
+
+    const replay = await setup([
+      [recordRow(cancelled)],
+      taskRuntimeDomainRows(cancelled),
+      namespaceRows(cancelled),
+    ]);
+    expect(await replay.repository.settleTaskRuntimeExecutionAuthorities({
+      workId: active.snapshot.workId,
+      namespaceId: active.snapshot.namespaceId,
+      now: START + 11,
+    })).toEqual({
+      status: "settled",
+      transitioned: 0,
+      alreadyTerminal: 1,
+      recipients: [{
+        requestId: active.snapshot.requestId,
+        recipientGeneration: active.snapshot.recipientGeneration,
+      }],
+    });
+    expect(replay.connection.statements.some((statement) =>
+      normalizedSql(statement).startsWith("UPDATE")
+    )).toBeFalse();
+  });
+
+  test.each(["namespace", "identity"] as const)(
+    "Task Runtime execution settlement prevalidates every row before mutation (%s conflict)",
+    async conflictKind => {
+      const valid = taskRuntimeSettlementRecord(1, "task.execute");
+      const second = taskRuntimeSettlementRecord(2, "task.approval_resume");
+      const conflicting = conflictKind === "namespace"
+        ? {
+          ...second,
+          snapshot: { ...second.snapshot, namespaceId: "namespace_other" },
+          domainId: "domain_other",
+          authoritySet: {
+            namespaceRequirements: [{
+              ...second.authoritySet.namespaceRequirements[0]!,
+              namespaceId: "namespace_other",
+              domainId: "domain_other",
+            }],
+            domainRequirements: [{
+              ...second.authoritySet.domainRequirements[0]!,
+              domainId: "domain_other",
+            }],
+          },
+        } satisfies BackgroundAuthorizationTaskRuntimeRecordV3
+        : {
+          ...initialV2(),
+          snapshot: {
+            ...initialV2().snapshot,
+            requestId: second.snapshot.requestId,
+            workId: second.snapshot.workId,
+          },
+          workIdentityHash: second.workIdentityHash,
+          idempotencyKey: second.idempotencyKey,
+          workKind: "task.approval_resume" as const,
+          purpose: "task.approval_resume" as const,
+        };
+      const conflictDomains = conflictKind === "namespace"
+        ? taskRuntimeDomainRows(
+          conflicting as BackgroundAuthorizationTaskRuntimeRecordV3,
+        )
+        : domainRows(conflicting as BackgroundAuthorizationAgentRecordV2);
+      const postgres = await setup([
+        [recordRow(valid), recordRow(conflicting)],
+        [
+          ...taskRuntimeDomainRows(valid),
+          ...conflictDomains,
+        ],
+        [
+          ...namespaceRows(valid),
+          ...namespaceRows(conflicting as
+            | BackgroundAuthorizationTaskRuntimeRecordV3
+            | BackgroundAuthorizationAgentRecordV2),
+        ],
+      ]);
+      expect(await postgres.repository.settleTaskRuntimeExecutionAuthorities({
+        workId: valid.snapshot.workId,
+        namespaceId: valid.snapshot.namespaceId,
+        now: START + 10,
+      })).toEqual({ status: "conflict", recipients: [] });
+      expect(postgres.connection.statements.some((statement) =>
+        normalizedSql(statement).startsWith("UPDATE")
+      )).toBeFalse();
+      expect(postgres.connection.transactionFailures).toBe(0);
+    },
+  );
+
+  test("Task Runtime execution settlement rolls back when a locked update unexpectedly loses its CAS", async () => {
+    const first = taskRuntimeSettlementRecord(1, "task.execute");
+    const second = taskRuntimeSettlementRecord(2, "task.await_reply_resume");
+    const firstCancelled = {
+      ...first,
+      snapshot: cancelBackgroundAuthorizationRequest(
+        first.snapshot,
+        "cancelled",
+        START + 10,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      finishedAt: START + 10,
+    } satisfies BackgroundAuthorizationTaskRuntimeRecordV3;
+    const postgres = await setup([
+      [recordRow(first), recordRow(second)],
+      [...taskRuntimeDomainRows(first), ...taskRuntimeDomainRows(second)],
+      [...namespaceRows(first), ...namespaceRows(second)],
+      [recordRow(first)],
+      taskRuntimeDomainRows(first),
+      namespaceRows(first),
+      [recordRow(firstCancelled)],
+      [recordRow(second)],
+      taskRuntimeDomainRows(second),
+      namespaceRows(second),
+      [],
+      [recordRow(second)],
+      taskRuntimeDomainRows(second),
+      namespaceRows(second),
+    ]);
+    const failure = await postgres.repository
+      .settleTaskRuntimeExecutionAuthorities({
+        workId: first.snapshot.workId,
+        namespaceId: first.snapshot.namespaceId,
+        now: START + 10,
+      }).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("changed during settlement");
+    expect(postgres.connection.transactionFailures).toBe(1);
+    expect(postgres.connection.statements.filter((statement) =>
+      normalizedSql(statement).startsWith(
+        "UPDATE BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS",
+      )
+    )).toHaveLength(2);
+  });
+
   test("signer evidence has no standalone repository write operation", async () => {
     const postgres = await setup([]);
     expect("appendProcessorSignerEvidence" in postgres.repository).toBeFalse();
@@ -2071,4 +2295,41 @@ test("obsolete request retirement preserves signer history while fencing its unc
     [recordRow(expected)], [recordRow(retired)]]);
   expect(await f.repository.cancelUnconsumedProcessorRequest({expected, now: START + 1, reason: "superseded"})).toBe(true);
   expect(f.connection.statements.some(sql => normalizedSql(sql).startsWith("DELETE"))).toBe(false);
+});
+
+
+test("replaces cancellation authority with one locked revision CAS and an atomic authority-set rewrite", async () => {
+  const fixture = initialTaskRuntimeV3();
+  const expected: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...fixture,
+    snapshot: { ...fixture.snapshot, requestId: `task-run-cancellation-result-authorization:${fixture.snapshot.workId}` },
+    idempotencyKey: `task-cancellation:${"a".repeat(64)}`,
+    workKind: "task.cancel_result", purpose: "task.cancel_result",
+    authoritySet: {
+      namespaceRequirements: [{ ...fixture.authoritySet.namespaceRequirements[0]!, operations: ["encrypt"] }],
+      domainRequirements: [fixture.authoritySet.domainRequirements[0]!],
+    } };
+  const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...expected,
+    workIdentityHash: new Uint8Array(32).fill(0x7a), expectedDomainEpoch: expected.expectedDomainEpoch + 1,
+    authoritySet: { ...expected.authoritySet, domainRequirements: [{ ...expected.authoritySet.domainRequirements[0]!,
+      expectedEpoch: expected.expectedDomainEpoch + 1 }] } };
+  const next = buildUnclaimedTaskCancellationAuthorityReplacement({ expected, replacement, now: START + 2 });
+  const value = await setup([
+    [recordRow(expected)], taskRuntimeDomainRows(expected), namespaceRows(expected),
+    [recordRow(next)], [], [], [], [], taskRuntimeDomainRows(next), namespaceRows(next),
+  ]);
+  expect(await value.repository.replaceUnclaimedTaskCancellationAuthority({ expected, replacement, now: START + 2 }))
+    .toEqual({ status: "replaced", record: next });
+  expect(value.connection.transactions).toBe(1);
+  const statements = value.connection.statements.map(normalizedSql);
+  const lock = statements.findIndex(statement => statement.includes("FOR UPDATE"));
+  const update = statements.findIndex(statement => statement.startsWith("UPDATE BACKGROUND_CRYPTO_AUTHORIZATION_REQUESTS"));
+  expect(lock).toBeGreaterThanOrEqual(0);
+  expect(update).toBeGreaterThan(lock);
+  expect(statements[update]).toContain("REQUEST_REVISION");
+  expect(statements.some(statement => statement.startsWith("DELETE FROM BACKGROUND_CRYPTO_AUTHORIZATION_NAMESPACE_REQUIREMENTS"))).toBe(true);
+  expect(statements.some(statement => statement.startsWith("INSERT INTO BACKGROUND_CRYPTO_AUTHORIZATION_DOMAIN_REQUIREMENTS"))).toBe(true);
+  const stale = await setup([[recordRow(next)], taskRuntimeDomainRows(next), namespaceRows(next)]);
+  expect(await stale.repository.replaceUnclaimedTaskCancellationAuthority({ expected, replacement, now: START + 3 }))
+    .toMatchObject({ status: "stale", current: next });
+  expect(stale.connection.statements.map(normalizedSql).some(statement => statement.startsWith("UPDATE"))).toBe(false);
 });

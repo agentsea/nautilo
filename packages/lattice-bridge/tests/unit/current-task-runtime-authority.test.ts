@@ -251,7 +251,7 @@ function hex(value: Uint8Array): string {
     .join("");
 }
 
-async function fixture(continuation = false) {
+async function fixture(continuation = false, cancellation = false) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -285,7 +285,7 @@ async function fixture(continuation = false) {
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: 1,
     recipientKeyId: "task-recipient",
-    operations: ["decrypt", "encrypt"],
+    operations: cancellation ? ["encrypt"] : ["decrypt", "encrypt"],
     issuedAt: NOW,
     deadlineAt: NOW + 60_000,
     maximumSecretBytes: 4_096,
@@ -294,8 +294,8 @@ async function fixture(continuation = false) {
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId,
     workId: continuation ? RUN : "task-run",
-    workKind: continuation ? "task.execute" : "task.dispatch",
-    workPurpose: continuation ? "task.execute" : "task.dispatch",
+    workKind: cancellation ? "task.cancel_result" : continuation ? "task.execute" : "task.dispatch",
+    workPurpose: cancellation ? "task.cancel_result" : continuation ? "task.execute" : "task.dispatch",
     recipientGeneration: plan.recipientRuntimeGeneration,
     episodeId: plan.sessionId,
     sourceRoomId: plan.roomId,
@@ -322,7 +322,7 @@ async function fixture(continuation = false) {
     ordinal: 0,
     namespaceId: NAMESPACE,
     domainId: DOMAIN,
-    operations: ["decrypt", "encrypt"],
+    operations: cancellation ? ["encrypt"] : ["decrypt", "encrypt"],
     expectedAccessRevision: 9,
     expectedPolicyRevision: plan.policyRevision,
   }];
@@ -640,6 +640,43 @@ function restrictedAuthority(
 }
 
 describe("current Task Runtime authority", () => {
+  test("cancellation grants are exactly one encrypt-only Namespace and Domain", async () => {
+    const value = await fixture(false, true);
+    const input = {
+      request: value.request, plan: value.plan,
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      admission: value.admission, device: value.device,
+      namespaces: value.namespaceRequirements,
+      domainRequirements: value.domainRequirements,
+      domains: [value.domain], policyRevision: 7, now: NOW,
+    };
+    expect(matchesCurrentTaskRuntimeAuthority(input)).toBe(true);
+    for (const request of [
+      { ...value.request, workKind: "task.execute" as const },
+      { ...value.request, workPurpose: "task.execute" as const },
+    ]) expect(matchesCurrentTaskRuntimeAuthority({ ...input, request })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input,
+      plan: { ...value.plan, operations: ["decrypt", "encrypt"] },
+    })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input,
+      namespaces: [{ ...value.namespaceRequirements[0]!, operations: ["decrypt", "encrypt"] }],
+    })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input,
+      namespaces: [{ ...value.namespaceRequirements[0]!, domainId: "other-domain" }],
+    })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input,
+      policyRevision: 8,
+    })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input,
+      device: { ...value.device, securityRevision: 7 },
+    })).toBe(false);
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input, now: value.request.deadlineAt })).toBe(false);
+    const execution = await fixture();
+    expect(matchesCurrentTaskRuntimeAuthority({ ...input,
+      request: execution.request,
+    })).toBe(false);
+  });
+
   test("matches only the exact live device, policy and Domain authority", async () => {
     const value = await fixture();
     const input = {
@@ -1354,6 +1391,37 @@ describe("current Task Runtime authority", () => {
     expect(accepted).toBe("accepted");
     expect(acceptedEvents.indexOf("domain-lock"))
       .toBeLessThan(acceptedEvents.indexOf("device-authority"));
+  });
+
+  test("accepted cancellation proves a current signing device and scoped claim lease", async () => {
+    for (const scenario of ["ready", "revoked", "revised", "expired", "lease_expired"] as const) {
+      const value = await fixture(false, true);
+      const events: string[] = [];
+      const { runner } = productAuthority(value, events);
+      let used = false;
+      let finished = false;
+      const operation = withCurrentAcceptedTaskRuntimeClaimAuthority({
+        runner, restricted: restrictedAuthority(value, {
+          revoked: scenario === "revoked", securityRevision: scenario === "revised" ? 7 : 6,
+        }), crypto: value.crypto, serverScope: "https://nautilo.example",
+        subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+        accepted: value.accepted, now: () => scenario === "expired" ? NOW + 60_000 : NOW + 1,
+        validateCurrentProduct: async () => true,
+        validateBeforeCommit: () => {
+          finished = true;
+          if (scenario === "lease_expired") throw new Error("Claim expired");
+        },
+        use: async (authority: CurrentTaskRuntimeAuthority) => {
+          used = true;
+          expect(authority.plan.operations).toEqual(["encrypt"]);
+          return "settled";
+        },
+      } as unknown as Parameters<typeof withCurrentAcceptedTaskRuntimeClaimAuthority>[0]);
+      if (scenario === "lease_expired") expect(await operation.catch((error: unknown) => error)).toEqual(new Error("Claim expired"));
+      else expect(await operation).toBe(scenario === "ready" ? "settled" : null);
+      expect(used).toBe(scenario === "ready" || scenario === "lease_expired");
+      expect(finished).toBe(used);
+    }
   });
 
   test("fails closed for revoked, revised, rekeyed, or invalidly signed issuers", async () => {

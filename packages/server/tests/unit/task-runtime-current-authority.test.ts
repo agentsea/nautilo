@@ -302,7 +302,7 @@ describe("current protected Task Runtime authority adapter", () => {
           const product = {} as never;
           if (!await input.validateCurrentProduct(product)) return null;
           events.push("namespace");
-          const value = await input.use(f.authority, product, restricted);
+          const value = await input.use(f.authority, product, restricted, {} as never);
           await input.validateBeforeCommit();
           return value;
         } finally {

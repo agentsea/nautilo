@@ -354,6 +354,8 @@ export function createPostgresTaskContentRepositoryV1<ProductResult>(input: Read
   product: Readonly<{
     handle: ConversationProductPostgresHandle;
     resolveCurrentAuthority: ResolveCurrentTaskContentAuthority;
+    /** Called under product predecessor locks immediately before a new reservation. */
+    assertReservationCurrent?: (coordinate: TaskContentCoordinateV1) => void | Promise<void>;
   }>;
   crypto: PostgresCryptoCompletionInput;
   content: DurableTaskContentPortsV1<ProductResult>;
@@ -361,6 +363,7 @@ export function createPostgresTaskContentRepositoryV1<ProductResult>(input: Read
   const product = new PostgresTaskContentProductStore(
     input.product.handle,
     input.product.resolveCurrentAuthority,
+    input.product.assertReservationCurrent,
   );
   const crypto = createPostgresTaskContentCryptoCompletion(input.crypto);
   return bindDurableTaskContentRepositoryV1({

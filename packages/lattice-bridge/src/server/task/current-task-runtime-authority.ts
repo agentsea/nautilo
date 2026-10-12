@@ -242,9 +242,19 @@ function matchesCurrentTaskRuntimeAuthorityWithoutAdmission(input: Readonly<{
     && plan.recipientKind === "runtime"
     && plan.recipientPrincipalId === "nautilo_task_runtime"
     && plan.recipientAuthorizationRevision === 0
-    && plan.operations.length === 2
-    && plan.operations[0] === "decrypt"
-    && plan.operations[1] === "encrypt"
+    && (request.workKind === "task.cancel_result"
+      || request.workPurpose === "task.cancel_result"
+      ? request.workKind === "task.cancel_result"
+        && request.workPurpose === "task.cancel_result"
+        && plan.operations.length === 1
+        && plan.operations[0] === "encrypt"
+        && namespaces.length === 1
+        && domainRequirements.length === 1
+        && namespaces[0]!.operations.length === 1
+        && namespaces[0]!.operations[0] === "encrypt"
+      : plan.operations.length === 2
+        && plan.operations[0] === "decrypt"
+        && plan.operations[1] === "encrypt")
     && requirementsAreCanonical(namespaces, domainRequirements)
     && namespaces.every((requirement) =>
       requirement.expectedPolicyRevision === input.policyRevision
@@ -336,6 +346,7 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
   domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+  validateCurrentProduct?(product: PostgresJsBridgeConnection): boolean | Promise<boolean>;
   now(): number;
   signal?: AbortSignal;
   use(
@@ -379,6 +390,8 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
         || namespaces.some((requirement) =>
           requirement.expectedPolicyRevision !== policy.revision)) return null;
       const product = inTransaction(executor);
+      if (input.validateCurrentProduct !== undefined
+        && !await input.validateCurrentProduct(product)) return null;
       return new PostgresNamespaceProductAuthority(product)
         .withCurrentReadableNamespaceSet({
           subjectUserId: input.subject.userId,
@@ -638,6 +651,7 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
       restricted: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): Promise<Value>;
   }>
   | Readonly<{
@@ -865,6 +879,9 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
                 {
                   authorizationBytes,
                   now: input.now(),
+                  expectedOperations: request.workKind === "task.cancel_result"
+                    && request.workPurpose === "task.cancel_result"
+                    ? ["encrypt"] : ["decrypt", "encrypt"],
                   current: {
                     authorizationId: plan.authorizationId,
                     policyRevision: policy.revision,
@@ -903,7 +920,7 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
                 result = authorityUse.scopedRestricted
                   ? await withParkedTaskRuntimeRestrictedAuthority(
                     restricted,
-                    scoped => authorityUse.use(authority, product, scoped),
+                    scoped => authorityUse.use(authority, product, scoped, tx),
                   )
                   : await authorityUse.use(authority, product, restricted);
                 if (authorityUse.scopedRestricted) {
@@ -993,6 +1010,7 @@ export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
       restricted: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): Promise<Value>;
     validateBeforeCommit(): void | Promise<void>;
   }>,
@@ -1002,10 +1020,11 @@ export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
     scopedRestricted: true,
     validateCurrentProduct: input.validateCurrentProduct,
     validateBeforeCommit: input.validateBeforeCommit,
-    use: (authority, product, restricted) => input.use(
+    use: (authority, product, restricted, transaction) => input.use(
       authority,
       product,
       restricted,
+      transaction,
     ),
   });
 }

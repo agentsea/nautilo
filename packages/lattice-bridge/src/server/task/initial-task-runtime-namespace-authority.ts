@@ -719,7 +719,7 @@ function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceA
 
 /** Shared awaiting-phase authority pipeline for initial and parked requests. */
 async function withTaskRuntimeRecipientAuthority<Value>(
-  input: TaskRuntimeRecipientAuthorityInput,
+  input: Omit<TaskRuntimeRecipientAuthorityInput, "targetRoomId"> & Readonly<{ targetRoomId?: string }>,
   validateCurrentTaskRun: (
     product: PostgresJsBridgeConnection,
     transaction: CanonicalTranscriptTx,
@@ -728,9 +728,12 @@ async function withTaskRuntimeRecipientAuthority<Value>(
   use: (
     authority: InitialTaskRuntimeRecipientAuthority,
     restricted: PostgresJsBridgeConnection,
-    request: TaskRuntimeRecipientAuthorityInput,
+    request: Omit<TaskRuntimeRecipientAuthorityInput, "targetRoomId"> & Readonly<{ targetRoomId?: string }>,
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
   ) => Value | Promise<Value>,
   expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
+  contentOnly = false,
 ): Promise<Value | null> {
   const namespaces = Object.freeze(input.namespaceRequirements.map((entry) => Object.freeze({
     ...entry, operations: Object.freeze([...entry.operations]),
@@ -744,12 +747,16 @@ async function withTaskRuntimeRecipientAuthority<Value>(
       : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
   });
   if (typeof validateCurrentTaskRun !== "function"
+    || (contentOnly && (namespaces.length !== 1 || domains.length !== 1
+      || namespaces[0]?.namespaceId !== request.contentNamespaceId
+      || namespaces[0]?.operations.length !== 1
+      || namespaces[0]?.operations[0] !== "encrypt"))
     || request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
     || namespaces.some((entry, index) => entry.ordinal !== index
       || entry.namespaceId !== request.namespaceIds[index]
       || !Number.isSafeInteger(entry.expectedAccessRevision) || entry.expectedAccessRevision < 0
       || entry.expectedPolicyRevision !== request.expectedPolicyRevision
-      || (entry.namespaceId === request.contentNamespaceId
+      || (!contentOnly && entry.namespaceId === request.contentNamespaceId
         && (entry.operations.length !== 2 || entry.operations[0] !== "decrypt" || entry.operations[1] !== "encrypt"))
       || entry.operations.length < 1 || entry.operations.length > 2
       || entry.operations.some((operation, ordinal) => (operation !== "decrypt" && operation !== "encrypt")
@@ -764,10 +771,13 @@ async function withTaskRuntimeRecipientAuthority<Value>(
     throw new TypeError("Initial Task Runtime recipient requirements are invalid");
   }
   request.signal?.throwIfAborted();
-  return withInitialTaskRuntimeProductAuthority(Object.freeze({
-    ...request,
-    purpose: "initial_execution" as const,
-  }), async (restricted, accessRevisions, policyRevision) => {
+  const productInput: TaskRuntimeProductAuthorityInput = contentOnly
+    ? Object.freeze({ ...request, purpose: "content_only" as const,
+        namespaceIds: Object.freeze([request.contentNamespaceId] as const) })
+    : Object.freeze({ ...request, purpose: "initial_execution" as const,
+        targetRoomId: request.targetRoomId! });
+  return withInitialTaskRuntimeProductAuthority(productInput,
+    async (restricted, accessRevisions, policyRevision, product, transaction) => {
     if (namespaces.some((entry, index) => entry.expectedAccessRevision !== accessRevisions[index])) return null;
     const subject = { userId: request.requesterUserId, humanActorId: request.requesterHumanId, deviceId: request.deviceId };
     const admission = new PostgresDeviceAdmissionRepository(await verifyCryptoPostgresHandle(restricted), request.crypto);
@@ -823,11 +833,48 @@ async function withTaskRuntimeRecipientAuthority<Value>(
         domains: inspected.domains, namespaceRequirements: namespaces, policyRevision,
         ...(request.scopeMemory === undefined
           ? {}
-          : { scopeMemory: request.scopeMemory }) }), restricted, request);
+          : { scopeMemory: request.scopeMemory }) }), restricted, request, product, transaction);
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
   }, validateCurrentTaskRun, expectedNamespaceParticipants);
+}
+
+/** Encrypt-only recipient authority for a stopped Task's fixed cancellation result. */
+export async function withTaskContentRecipientAuthority<Value>(
+  input: TaskContentNamespaceAuthorityInput & Readonly<{
+    deviceId: string;
+    namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+    domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+    signal?: AbortSignal;
+    validateCurrentTaskRun(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+    ): Promise<boolean>;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+    ): Value | Promise<Value>;
+    validateBeforeCommit?(): void | Promise<void>;
+  }>,
+): Promise<Value | null> {
+  const use = input.use;
+  const validate = input.validateCurrentTaskRun;
+  const beforeCommit = input.validateBeforeCommit;
+  return withTaskRuntimeRecipientAuthority(
+    { ...input, namespaceIds: [input.contentNamespaceId] },
+    (product, transaction) => validate(product, transaction),
+    async (authority, restricted, _request, product, transaction) => {
+      const result = await withParkedTaskRuntimeRestrictedAuthority(restricted,
+        scoped => Promise.resolve(use(authority, scoped, product, transaction)));
+      await beforeCommit?.();
+      return result;
+    },
+    undefined,
+    true,
+  );
 }
 
 export async function withInitialTaskRuntimeRecipientAuthority<Value>(

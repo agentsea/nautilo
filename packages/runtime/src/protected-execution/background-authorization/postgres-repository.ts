@@ -42,6 +42,8 @@ import {
   assertBackgroundAuthorizationCasSuccessor,
   buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
+  buildUnclaimedTaskCancellationAuthorityReplacement,
+  type BackgroundAuthorizationTaskCancellationReplacementRepository,
   assertUnstartedProcessorSupersession,
   isExactProcessorSupersessionCancellation,
   sameProcessorSupersessionPlan,
@@ -50,6 +52,7 @@ import {
   buildAcceptedBackgroundAuthorizationResponse,
   isBackgroundAuthorizationResponseReplay,
   parseBackgroundAuthorizationRecord,
+  planTaskRuntimeExecutionAuthoritySettlement,
   parseProcessorSignerAuthorizationEvidence,
   sameBackgroundAuthorizationRecord,
   sameProcessorSignerAuthorizationEvidence,
@@ -71,6 +74,8 @@ import {
   type BackgroundAuthorizationTaskRuntimeCancellationCursor,
   type BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
   type BackgroundAuthorizationTaskRuntimeCancellationPage,
+  type BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository,
+  type BackgroundAuthorizationTaskRuntimeExecutionSettlementResult,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedDeviceResponse,
@@ -584,7 +589,9 @@ function rowToEvidence(row: Row): ProcessorSignerAuthorizationEvidence {
 export class PostgresBackgroundAuthorizationRepository
   implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
     BackgroundAuthorizationTaskRuntimeDeferralRepository,
-    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository {
+    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
+    BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository,
+    BackgroundAuthorizationTaskCancellationReplacementRepository {
   constructor(private readonly handle: CryptoPostgresHandle) {
     assertVerifiedCryptoPostgresHandle(handle);
   }
@@ -836,6 +843,21 @@ export class PostgresBackgroundAuthorizationRepository
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskRuntimeAuthorityReplacement);
+  }
+
+  replaceUnclaimedTaskCancellationAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskCancellationAuthorityReplacement);
+  }
+
+  #replaceUnclaimedAuthority(
+    input: Parameters<typeof buildUnclaimedTaskRuntimeAuthorityReplacement>[0],
+    build: typeof buildUnclaimedTaskRuntimeAuthorityReplacement,
+  ): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
     const expected = parseBackgroundAuthorizationRecord(input.expected);
     const replacement = parseBackgroundAuthorizationRecord(input.replacement);
     return withVerifiedCryptoPostgresTransaction<
@@ -864,7 +886,7 @@ export class PostgresBackgroundAuthorizationRepository
         || row.transform_commit_output_count !== null
         || row.transform_committed_at !== null
       ) return { status: "stale", current };
-      const next = buildUnclaimedTaskRuntimeAuthorityReplacement({
+      const next = build({
         expected: expected as BackgroundAuthorizationTaskRuntimeRecordV3,
         replacement: replacement as BackgroundAuthorizationTaskRuntimeRecordV3,
         now: input.now,
@@ -1665,6 +1687,50 @@ export class PostgresBackgroundAuthorizationRepository
       continuation: rawRows.length === input.limit && lastRow !== undefined
         ? taskRuntimeCancellationCursorFromRow(lastRow)
         : null,
+    });
+  }
+
+  async settleTaskRuntimeExecutionAuthorities(input: Readonly<{
+    readonly workId: string;
+    readonly namespaceId: string;
+    readonly now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeExecutionSettlementResult> {
+    // Validate even the zero-row case before opening the transaction.
+    planTaskRuntimeExecutionAuthoritySettlement({ ...input, records: [] });
+    return withVerifiedCryptoPostgresTransaction(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table).where(and(
+          eq(table.workId, input.workId),
+          inArray(table.workKind, [
+            "task.execute",
+            "task.dispatch",
+            "task.approval_resume",
+            "task.await_reply_resume",
+          ]),
+        )).orderBy(asc(table.requestId)).for("update"),
+      );
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const records = await repository.#recordsFromRows(rows as readonly Row[]);
+      const plan = planTaskRuntimeExecutionAuthoritySettlement({
+        ...input,
+        records,
+      });
+      if (plan.result.status === "conflict") return plan.result;
+      for (const next of plan.updates) {
+        const updated = await repository.compareAndSwapInternal({
+          expectedRequestRevision: next.snapshot.requestRevision - 1,
+          next,
+        }, false);
+        if (updated.status !== "updated") {
+          // Rows are locked and fully validated before the first mutation. A
+          // lost CAS indicates an integrity failure; throwing rolls back every
+          // transition instead of returning a partially settled inventory.
+          throw new Error("Task Runtime authority changed during settlement");
+        }
+      }
+      return plan.result;
     });
   }
 
