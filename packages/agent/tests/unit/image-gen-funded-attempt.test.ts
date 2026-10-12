@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   runFundedDirectImageAttempt,
+  DirectImageAttemptError,
   type GenerateImagesArgs,
   type GenerateImagesResult,
 } from "../../src/image-gen";
@@ -97,5 +98,44 @@ describe("funded direct image attempts", () => {
 
     expect((error as Error).message).toBe("ledger unavailable");
     expect(invokes).toBe(0);
+  });
+
+  test.each([
+    {
+      name: "deterministic provider refusal",
+      error: new DirectImageAttemptError("refused", "failed", "provider_refused"),
+      attemptOutcome: "failed",
+      failureCode: "provider_refused",
+    },
+    {
+      name: "transport uncertainty",
+      error: new DirectImageAttemptError("transport lost", "unknown", "provider_transport_unknown"),
+      attemptOutcome: "unknown",
+      failureCode: "provider_transport_unknown",
+    },
+  ])("records $name without inventing monetary evidence", async ({
+    error, attemptOutcome, failureCode,
+  }) => {
+    const receipts: ProviderCostReceipt[] = [];
+    await runFundedDirectImageAttempt({
+      canonicalModelId: "openai:gpt-image-2",
+      provider: "openai",
+      usageFunding: funding,
+      args,
+      invoke: () => Promise.reject(error),
+      beginProviderCostAttempt: async () => Object.assign(
+        async (receipt: ProviderCostReceipt) => { receipts.push(receipt); },
+        { attemptStarted: true as const },
+      ),
+    }).catch(() => undefined);
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      attemptOutcome,
+      failureCode,
+      evidenceState: "unknown",
+      actualCostUsd: null,
+    });
+    expect(receipts[0]).not.toHaveProperty("estimatedCostUsd");
   });
 });

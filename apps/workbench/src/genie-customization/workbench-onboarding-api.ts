@@ -4,7 +4,12 @@ import {
   type AgentProfileMutation,
   type AgentProfileResponse,
   type AvatarRef,
+  type VoiceFundingRecovery,
+  voiceFundingFailureMessage,
 } from "@nautilo/types";
+import {
+  VoiceFundingApiError,
+} from "@nautilo/api-client/browser";
 import type {
   AvatarSelectionTarget,
   IpcResult,
@@ -39,6 +44,7 @@ export type WorkbenchOnboardingApiOptions = {
   startAt: OnboardingStartAt | null;
   onComplete: () => Promise<void> | void;
   onCancel: () => void;
+  onOpenVoiceFundingRecovery: (recovery: VoiceFundingRecovery) => void;
 };
 
 export type WorkbenchOnboardingApi = {
@@ -62,6 +68,13 @@ async function asResult<T>(operation: () => Promise<T>): Promise<IpcResult<T>> {
   try {
     return { ok: true, data: await operation() };
   } catch (error) {
+    if (error instanceof VoiceFundingApiError) {
+      return {
+        ok: false,
+        error: voiceFundingFailureMessage(error.recovery),
+        recovery: error.recovery,
+      };
+    }
     return { ok: false, error: safeError(error) };
   }
 }
@@ -146,6 +159,10 @@ export function createWorkbenchOnboardingApi(
     cancel: () => {
       abortOperations();
       options.onCancel();
+      return Promise.resolve();
+    },
+    openVoiceFundingRecovery: (recovery) => {
+      options.onOpenVoiceFundingRecovery(recovery);
       return Promise.resolve();
     },
     loadExistingProfile: () => {

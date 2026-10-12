@@ -5,10 +5,13 @@
  * default DB-backed provider catalog cache or open pools at boot/request time.
  */
 import { existsSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { getServerSpeechModel } from "@nautilo/agent";
+import { ATTACHMENT_POLICY } from "@nautilo/attachments";
 import { voicePreviewPathForCustomText } from "@nautilo/voice";
 import type { ViewerRole } from "@nautilo/types";
 import type { VoiceCatalogPersistentCache, VoiceRouteDeps } from "../../src/routes/voices";
@@ -16,6 +19,7 @@ import type { VoiceServiceFunding } from "../../src/realtime/voice-service-fundi
 import type { ServerProviderCostAttemptAdmission, ServerProviderCostReceipt } from "../../src/costs/provider-cost-recorder";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { providerAccountFingerprint } from "../../src/lib/provider-catalog-cache";
+import { ModelFundingError } from "../../src/lib/model-funding";
 import {
   FakeVoiceCatalogCache,
   multilingualOnlyVoice,
@@ -66,6 +70,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function inputUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.toString();
+  return input.url;
+}
+
 function parseVoiceHydrationBody(body: string): VoiceHydrationBody {
   const parsed: unknown = JSON.parse(body);
   if (
@@ -100,6 +110,7 @@ mock.module("@nautilo/db", () => ({
 }));
 
 const {
+  cleanupGeneratedVoicePreviewCache,
   clearSharedCatalogCacheForTests,
   filterAndNormalizeSharedCatalog,
   voiceRoutes,
@@ -346,6 +357,70 @@ describe("voice catalog routes", () => {
       else delete process.env["ELEVENLABS_API_KEY"];
     }
   });
+
+  test.each([undefined, "false"])(
+    "GET /api/voices bounds streamed provider metadata with content-length %s",
+    async (contentLength) => {
+      const previousKey = process.env["ELEVENLABS_API_KEY"];
+      let cancelled = false;
+      try {
+        process.env["ELEVENLABS_API_KEY"] = "bounded-hydration-key";
+        globalThis.fetch = Object.assign(async () => new Response(new ReadableStream<Uint8Array>({
+          pull(controller) { controller.enqueue(new Uint8Array(600_000)); },
+          cancel() { cancelled = true; },
+        }), {
+          status: 200,
+          headers: contentLength === undefined ? {} : { "content-length": contentLength },
+        }), { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+        const app = createVoicesRouteApp(null, { viewerRole: "owner" });
+
+        const res = await app.inject({ method: "GET", url: "/api/voices", remoteAddress: "127.0.0.1" });
+
+        expect(res.statusCode).toBe(502);
+        expect(cancelled).toBe(true);
+        expect(JSON.parse(res.body)).toMatchObject({ error: "Failed to load voices." });
+        expect(res.body).not.toContain("too_large");
+      } finally {
+        if (previousKey !== undefined) process.env["ELEVENLABS_API_KEY"] = previousKey;
+        else delete process.env["ELEVENLABS_API_KEY"];
+      }
+    },
+  );
+
+  test.each(["models", "shared-voices"] as const)(
+    "GET /api/voices/catalog bounds streamed %s metadata and cancels the provider body",
+    async (oversizedEndpoint) => {
+      const previousKey = process.env["ELEVENLABS_API_KEY"];
+      let cancelled = false;
+      try {
+        process.env["ELEVENLABS_API_KEY"] = `bounded-${oversizedEndpoint}-key`;
+        globalThis.fetch = Object.assign(async (input: Parameters<typeof fetch>[0]) => {
+          const url = inputUrl(input);
+          if (url.includes(oversizedEndpoint)) {
+            return new Response(new ReadableStream<Uint8Array>({
+              pull(controller) { controller.enqueue(new Uint8Array(600_000)); },
+              cancel() { cancelled = true; },
+            }), { status: 200, headers: { "content-length": "unknown" } });
+          }
+          if (url.includes("/v1/models")) {
+            return Response.json([{ can_do_text_to_speech: true, languages: [{ language_id: "en" }] }]);
+          }
+          return Response.json({ voices: [], has_more: false, total_count: 0 });
+        }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+        const app = createVoicesRouteApp(null);
+
+        const res = await app.inject({ method: "GET", url: "/api/voices/catalog", remoteAddress: "127.0.0.1" });
+
+        expect(res.statusCode).toBe(502);
+        expect(cancelled).toBe(true);
+        expect(JSON.parse(res.body)).toMatchObject({ error: "Failed to load voice catalog." });
+        expect(res.body).not.toContain("too_large");
+      } finally {
+        if (previousKey !== undefined) process.env["ELEVENLABS_API_KEY"] = previousKey;
+        else delete process.env["ELEVENLABS_API_KEY"];
+      }
+    },
+  );
 
   test("GET /api/voices denies provider hydration before dispatch without server funding", async () => {
     const previousKey = process.env["ELEVENLABS_API_KEY"];
@@ -1261,6 +1336,105 @@ describe("voice catalog routes", () => {
     }
   });
 
+  test("preview rejects text over 500 characters before funding admission or provider dispatch", async () => {
+    let admissions = 0;
+    let providerCalls = 0;
+    const funding: VoiceServiceFunding = {
+      admit: async () => {
+        admissions += 1;
+        throw new Error("must not admit");
+      },
+      run: async () => { throw new Error("must not run"); },
+    };
+    globalThis.fetch = Object.assign(async () => {
+      providerCalls += 1;
+      return new Response("must not dispatch", { status: 500 });
+    }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+    const app = createVoicesRouteApp(null, { funding });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/voices/PreviewLengthVoice/preview",
+      remoteAddress: "127.0.0.1",
+      payload: { text: "x".repeat(501) },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toMatchObject({ errorCode: "preview_text_too_long" });
+    expect(admissions).toBe(0);
+    expect(providerCalls).toBe(0);
+  });
+
+  test("voice funding failures keep a stable repair destination and do not dispatch", async () => {
+    let providerCalls = 0;
+    const funding: VoiceServiceFunding = {
+      admit: async () => { throw new ModelFundingError("personal_credential_stale"); },
+      run: async () => { throw new Error("must not run"); },
+    };
+    globalThis.fetch = Object.assign(async () => {
+      providerCalls += 1;
+      return new Response("must not dispatch", { status: 500 });
+    }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+    const app = createVoicesRouteApp(null, { funding });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/voices/PreviewFundingVoice/preview",
+      remoteAddress: "127.0.0.1",
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(JSON.parse(response.body)).toEqual({
+      error: "The saved voice provider credential changed.",
+      errorCode: "personal_credential_stale",
+      repairAction: "replace_provider_credential",
+      href: "/settings#personal-provider-keys",
+    });
+    expect(providerCalls).toBe(0);
+  });
+
+  test.each([
+    [
+      "owner",
+      "provider_credentials_missing",
+      "configure_server_provider_credentials",
+      "/admin#provider-credentials",
+    ],
+    [
+      "member",
+      "provider_credentials_missing",
+      "contact_operator",
+      "/settings#personal-provider-keys",
+    ],
+    [
+      "member",
+      "unsupported_provider",
+      "choose_supported_speech_model",
+      "/settings#capability-models",
+    ],
+  ] as const)(
+    "voice funding repair for %s and %s uses a real settings destination",
+    async (viewerRole, code, repairAction, href) => {
+      const funding: VoiceServiceFunding = {
+        admit: async () => { throw new ModelFundingError(code); },
+        run: async () => { throw new Error("must not run"); },
+      };
+      const app = createVoicesRouteApp(null, { viewerRole, funding });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/voices/PreviewRepairVoice/preview",
+        remoteAddress: "127.0.0.1",
+      });
+
+      expect(JSON.parse(response.body)).toMatchObject({
+        errorCode: code,
+        repairAction,
+        href,
+      });
+    },
+  );
+
   test("preview cost attempts preserve an accepted first part when a later part fails", async () => {
     const previousKey = process.env["ELEVENLABS_API_KEY"];
     const settled: ServerProviderCostReceipt[] = [];
@@ -1353,6 +1527,50 @@ describe("voice catalog routes", () => {
     }
   });
 
+  test("preview bounds aggregate audio across parts and cancels an oversized streamed part", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    const settled: ServerProviderCostReceipt[] = [];
+    let providerCalls = 0;
+    let cancelled = false;
+    try {
+      process.env["ELEVENLABS_API_KEY"] = "preview-aggregate-limit-key";
+      const baseModel = getServerSpeechModel("elevenlabs:eleven_v3", process.env);
+      const model = { ...baseModel, speech: { ...baseModel.speech, maxInputCharacters: 1 } };
+      globalThis.fetch = Object.assign(async () => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          return new Response(new Uint8Array(ATTACHMENT_POLICY.maxAudioBytes - 1), { status: 200 });
+        }
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) { controller.enqueue(new Uint8Array(2)); },
+          cancel() { cancelled = true; },
+        }), { status: 200, headers: { "content-length": "unknown" } });
+      }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+      const app = createVoicesRouteApp(null, {
+        resolveSpeechModel: async () => model,
+        beginCost: async () => {},
+        settleCost: async receipt => { settled.push(receipt); },
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/voices/PreviewAggregateLimitVoice/preview",
+        remoteAddress: "127.0.0.1",
+        payload: { text: "ab" },
+      });
+
+      expect(response.statusCode).toBe(502);
+      expect(providerCalls).toBe(2);
+      expect(cancelled).toBe(true);
+      expect(response.body).toBe('{"error":"Voice preview failed."}');
+      expect(settled.map(receipt => receipt.attemptOutcome)).toEqual(["succeeded", "failed"]);
+      expect(settled.every(receipt => receipt.evidenceState === "estimated")).toBe(true);
+    } finally {
+      if (previousKey === undefined) delete process.env["ELEVENLABS_API_KEY"];
+      else process.env["ELEVENLABS_API_KEY"] = previousKey;
+    }
+  });
+
   test("preview delivery succeeds when post-provider cost settlement fails", async () => {
     const previousKey = process.env["ELEVENLABS_API_KEY"];
     const voiceId = "PreviewSettlementFailureVoice";
@@ -1397,10 +1615,66 @@ describe("voice catalog routes", () => {
     }
   });
 
+  test("preview cleanup does not remove a path while its generation is active", async () => {
+    const previousKey = process.env["ELEVENLABS_API_KEY"];
+    const key = "preview-active-writer-key";
+    const voiceId = "PreviewActiveWriterVoice";
+    const text = "active preview writer";
+    const model = getServerSpeechModel("elevenlabs:eleven_v3", { ELEVENLABS_API_KEY: key });
+    const previewPath = voicePreviewPathForCustomText(voiceId, JSON.stringify([
+      "speech-preview-v2",
+      providerAccountFingerprint(key),
+      model.id,
+      model.providerModelId,
+      model.speech.transport,
+      "mp3_44100_128",
+      { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 },
+      text,
+    ]));
+    let markStarted!: () => void;
+    let finishProvider!: () => void;
+    const started = new Promise<void>(resolve => { markStarted = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProvider = resolve; });
+    try {
+      process.env["ELEVENLABS_API_KEY"] = key;
+      await mkdir(dirname(previewPath), { recursive: true });
+      await unlink(previewPath).catch(() => {});
+      globalThis.fetch = Object.assign(async () => {
+        markStarted();
+        await providerGate;
+        return new Response(Buffer.from("finished-preview"), { status: 200 });
+      }, { preconnect: realFetch.preconnect.bind(realFetch) }) as typeof fetch;
+      const app = createVoicesRouteApp(null, { resolveSpeechModel: async () => model });
+
+      const request = app.inject({
+        method: "POST",
+        url: `/api/voices/${voiceId}/preview`,
+        remoteAddress: "127.0.0.1",
+        payload: { text },
+      });
+      await started;
+      await writeFile(previewPath, "in-progress-placeholder");
+      await utimes(previewPath, new Date(0), new Date(0));
+
+      await cleanupGeneratedVoicePreviewCache(dirname(previewPath));
+      expect(existsSync(previewPath)).toBe(true);
+
+      finishProvider();
+      const response = await request;
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toBe("finished-preview");
+    } finally {
+      finishProvider();
+      await unlink(previewPath).catch(() => {});
+      if (previousKey === undefined) delete process.env["ELEVENLABS_API_KEY"];
+      else process.env["ELEVENLABS_API_KEY"] = previousKey;
+    }
+  });
+
   test("POST /api/voices/:voiceId/preview serves authenticated users, contains no provider secret, and remains throttled", async () => {
     const previousKey = process.env["ELEVENLABS_API_KEY"];
     const voiceId = "PreviewThrottleVoice";
-    const text = "A synthetic preview sentence. ".repeat(100).trim();
+    const text = "A synthetic preview sentence. ".repeat(10).trim();
     const identity = JSON.stringify(["speech-preview-v2", providerAccountFingerprint("test-provider-secret"), "elevenlabs:eleven_v3_conversational", "eleven_v3_conversational", "elevenlabs-dialogue-http", "mp3_44100_128", { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 }, text]);
     const previewPath = voicePreviewPathForCustomText(voiceId, identity);
     const providerRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
@@ -1450,7 +1724,7 @@ describe("voice catalog routes", () => {
       expect(providerRequests[0]?.url).toBe(
         "https://api.elevenlabs.io/v1/text-to-dialogue/stream?output_format=mp3_44100_128",
       );
-      expect(providerRequests.length).toBeGreaterThan(1);
+      expect(providerRequests.length).toBeGreaterThanOrEqual(1);
       const spoken = providerRequests.flatMap(request => {
         expect(request.body["model_id"]).toBe("eleven_v3_conversational");
         const inputs = request.body["inputs"] as { text: string; voice_id: string }[];
@@ -1482,6 +1756,39 @@ describe("voice catalog routes", () => {
       if (existsSync(previewPath)) await unlink(previewPath);
       if (previousKey !== undefined) process.env["ELEVENLABS_API_KEY"] = previousKey;
       else delete process.env["ELEVENLABS_API_KEY"];
+    }
+  });
+
+  test("generated preview cleanup removes only old canonical files and bounds the remainder", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "nautilo-voice-preview-cleanup-"));
+    const externalTarget = join(directory, "external-target.mp3");
+    const unrelated = join(directory, "keep-me.mp3");
+    try {
+      await writeFile(externalTarget, "external");
+      await writeFile(unrelated, "unrelated");
+      const oldGenerated = join(directory, `OldVoice_t_${"a".repeat(24)}.mp3`);
+      await writeFile(oldGenerated, "old");
+      await utimes(oldGenerated, new Date(0), new Date(0));
+      await symlink(externalTarget, join(directory, `LinkVoice_t_${"b".repeat(24)}.mp3`));
+
+      const writes: Promise<void>[] = [];
+      for (let index = 0; index < 1_002; index += 1) {
+        const hash = index.toString(16).padStart(24, "0");
+        writes.push(writeFile(join(directory, `BoundVoice_t_${hash}.mp3`), String(index)));
+      }
+      await Promise.all(writes);
+
+      await cleanupGeneratedVoicePreviewCache(directory);
+
+      const names = await readdir(directory);
+      expect(names).toContain("external-target.mp3");
+      expect(names).toContain("keep-me.mp3");
+      expect(names).toContain(`LinkVoice_t_${"b".repeat(24)}.mp3`);
+      expect(names).not.toContain(`OldVoice_t_${"a".repeat(24)}.mp3`);
+      expect(names.filter(name => /^BoundVoice_t_[0-9a-f]{24}\.mp3$/.test(name))).toHaveLength(1_000);
+      expect(await Bun.file(externalTarget).text()).toBe("external");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
     }
   });
 });

@@ -10,6 +10,7 @@ import {
   sanitizeVeniceProviderCode,
   type MediaGenerationFailure,
 } from "./errors";
+import { readBoundedMediaJson } from "../providers/media-response";
 
 /**
  * Venice's paid media API is deliberately a separate lifecycle from its quote
@@ -255,7 +256,7 @@ function safeNumber(value: unknown): number | undefined {
 async function safeErrorDetails(response: Response): Promise<{ code?: string; creditsRefunded?: boolean }> {
   let body: unknown;
   try {
-    body = await response.json();
+    body = await readBoundedMediaJson(response as unknown as Parameters<typeof readBoundedMediaJson>[0]);
   } catch {
     return {};
   }
@@ -268,9 +269,9 @@ async function safeErrorDetails(response: Response): Promise<{ code?: string; cr
   };
 }
 
-async function jsonBody(response: { json(): Promise<unknown> }): Promise<unknown> {
+async function jsonBody(response: unknown): Promise<unknown> {
   try {
-    return await response.json();
+    return await readBoundedMediaJson(response as Parameters<typeof readBoundedMediaJson>[0]);
   } catch {
     return undefined;
   }

@@ -18,6 +18,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { SharedVoiceCatalogModal } from "@nautilo/voice-catalog-ui";
+import type { VoiceFundingRecovery } from "@nautilo/types";
 import { isGenieRecustomizeSession } from "../hooks/useWizardState";
 import type {
   CatalogVoice,
@@ -43,6 +44,7 @@ export interface VoiceCatalogState {
   loading: boolean;
   curated: CuratedVoice[];
   error: string | null;
+  recovery: VoiceFundingRecovery | null;
   elevenLabsConfigured: boolean;
 }
 
@@ -66,6 +68,13 @@ export function canUseVoiceProvider(catalog: VoiceCatalogState): boolean {
 }
 
 const VOICE_UNAVAILABLE_COPY = "Voice is unavailable right now. You can continue without voice.";
+
+class VoiceResponseFailure extends Error {
+  constructor(message: string, readonly recovery: VoiceFundingRecovery | null) {
+    super(message);
+    this.name = "VoiceResponseFailure";
+  }
+}
 
 function unavailableCopy(viewState: VoiceViewState, hasExistingVoice: boolean): string {
   const retainNote = hasExistingVoice ? " Your current voice will stay unchanged." : "";
@@ -163,6 +172,7 @@ export function VoiceScreen({
     loading: true,
     curated: [],
     error: null,
+    recovery: null,
     elevenLabsConfigured: false,
   });
   const isRecustomize = isGenieRecustomizeSession(state);
@@ -172,6 +182,7 @@ export function VoiceScreen({
   );
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewRecovery, setPreviewRecovery] = useState<VoiceFundingRecovery | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioObjectUrlRef = useRef<string | null>(null);
   const [catalogOpen, setCatalogOpen] = useState(false);
@@ -183,12 +194,13 @@ export function VoiceScreen({
   } | null>(null);
 
   const loadVoices = useCallback(async () => {
-    setCatalog((current) => ({ ...current, loading: true, error: null }));
+    setCatalog((current) => ({ ...current, loading: true, error: null, recovery: null }));
     if (!api) {
       setCatalog({
         loading: false,
         curated: [],
         error: VOICE_UNAVAILABLE_COPY,
+        recovery: null,
         elevenLabsConfigured: false,
       });
       dispatch({ type: "SET_VOICE_CAPABILITY", capability: "runtime-unavailable" });
@@ -202,6 +214,7 @@ export function VoiceScreen({
           loading: false,
           curated: res.data.curated.map(normalizeCuratedItem),
           error: null,
+          recovery: null,
           elevenLabsConfigured: res.data.elevenLabsConfigured,
         });
         dispatch({ type: "SET_VOICE_CAPABILITY", capability });
@@ -209,7 +222,8 @@ export function VoiceScreen({
         setCatalog({
           loading: false,
           curated: [],
-          error: VOICE_UNAVAILABLE_COPY,
+          error: res.error,
+          recovery: res.recovery ?? null,
           elevenLabsConfigured: false,
         });
         dispatch({ type: "SET_VOICE_CAPABILITY", capability: "runtime-unavailable" });
@@ -219,6 +233,7 @@ export function VoiceScreen({
         loading: false,
         curated: [],
         error: VOICE_UNAVAILABLE_COPY,
+        recovery: null,
         elevenLabsConfigured: false,
       });
       dispatch({ type: "SET_VOICE_CAPABILITY", capability: "runtime-unavailable" });
@@ -265,6 +280,7 @@ export function VoiceScreen({
       audioObjectUrlRef.current = null;
     }
     setPreviewError(null);
+    setPreviewRecovery(null);
     setPlayingId(voiceId);
     void (async () => {
       try {
@@ -295,11 +311,15 @@ export function VoiceScreen({
     })();
   }, []);
 
-  const markRuntimeUnavailable = useCallback(() => {
+  const markRuntimeUnavailable = useCallback((
+    error = VOICE_UNAVAILABLE_COPY,
+    recovery: VoiceFundingRecovery | null = null,
+  ) => {
     setCatalog((current) => ({
       ...current,
       loading: false,
-      error: VOICE_UNAVAILABLE_COPY,
+      error,
+      recovery,
     }));
     setCatalogOpen(false);
     dispatch({ type: "SET_VOICE_CAPABILITY", capability: "runtime-unavailable" });
@@ -314,6 +334,7 @@ export function VoiceScreen({
       if (!providerAvailable) return;
       audioRef.current?.pause();
       setPreviewError(null);
+      setPreviewRecovery(null);
       setPlayingId(voice.voiceId);
       let failure: string | null = null;
 
@@ -337,9 +358,10 @@ export function VoiceScreen({
           if (res.ok) {
             audioUrl = res.data.audioUrl;
           } else {
-            failure = "Could not load this voice preview.";
+            failure = res.error;
             setPreviewError(failure);
-            markRuntimeUnavailable();
+            setPreviewRecovery(res.recovery ?? null);
+            markRuntimeUnavailable(res.error, res.recovery ?? null);
           }
         } catch {
           failure = "Could not load this voice preview.";
@@ -412,6 +434,9 @@ export function VoiceScreen({
   }, [dispatch]);
 
   const canContinue = providerAvailable && state.voiceSelection !== null;
+  const openRecovery = useCallback((recovery: VoiceFundingRecovery) => {
+    void api?.openVoiceFundingRecovery?.(recovery);
+  }, [api]);
   const showCurrent =
     providerAvailable && isRecustomize && state.voiceSelection && !showPicker;
   const selectedVoiceIsCurated =
@@ -439,7 +464,14 @@ export function VoiceScreen({
           <div style={styles.unavailable}>{unavailableCopy(viewState, hasExistingVoice)}</div>
         )}
         {viewState === "runtime-unavailable" && (
-          <div style={styles.unavailable}>{unavailableCopy(viewState, hasExistingVoice)}</div>
+          <div style={styles.unavailable}>
+            {catalog.error ?? unavailableCopy(viewState, hasExistingVoice)}
+            {catalog.recovery && api?.openVoiceFundingRecovery ? (
+              <button type="button" onClick={() => openRecovery(catalog.recovery!)} style={styles.linkButton}>
+                Open voice settings
+              </button>
+            ) : null}
+          </div>
         )}
 
         {showCurrent && state.voiceSelection && (
@@ -482,7 +514,12 @@ export function VoiceScreen({
         )}
 
         {showCurrent && previewError && (
-          <div style={styles.previewError}>{previewError}</div>
+          <div style={styles.previewError}>
+            {previewError}
+            {previewRecovery && api?.openVoiceFundingRecovery ? (
+              <button type="button" onClick={() => openRecovery(previewRecovery)} style={styles.linkButton}>Open voice settings</button>
+            ) : null}
+          </div>
         )}
 
         {providerAvailable && showPicker && (
@@ -549,7 +586,12 @@ export function VoiceScreen({
               })}
             </div>
 
-            {previewError && <div style={styles.previewError}>{previewError}</div>}
+            {previewError && <div style={styles.previewError}>
+              {previewError}
+              {previewRecovery && api?.openVoiceFundingRecovery ? (
+                <button type="button" onClick={() => openRecovery(previewRecovery)} style={styles.linkButton}>Open voice settings</button>
+              ) : null}
+            </div>}
 
             <div style={styles.escapeHatch}>
               <span style={styles.escapePrompt}>Want another voice or language?</span>
@@ -577,13 +619,13 @@ export function VoiceScreen({
           try {
             const response = await api.listVoiceCatalog(query);
             if (response.ok) return response.data;
-            markRuntimeUnavailable();
-            throw new Error(VOICE_UNAVAILABLE_COPY);
+            markRuntimeUnavailable(response.error, response.recovery ?? null);
+            throw new VoiceResponseFailure(response.error, response.recovery ?? null);
           } catch (error) {
-            if (!(error instanceof Error) || error.message !== VOICE_UNAVAILABLE_COPY) {
+            if (!(error instanceof VoiceResponseFailure)) {
               markRuntimeUnavailable();
             }
-            throw new Error(VOICE_UNAVAILABLE_COPY);
+            throw error;
           }
         }}
         previewVoice={async (voice, source) => {
@@ -596,17 +638,18 @@ export function VoiceScreen({
               text: samplePhraseForLanguage(voice.language),
             });
             if (response.ok) return response.data.audioUrl;
-            markRuntimeUnavailable();
-            throw new Error("Could not load this voice preview.");
+            markRuntimeUnavailable(response.error, response.recovery ?? null);
+            throw new VoiceResponseFailure(response.error, response.recovery ?? null);
           } catch (error) {
-            if (!(error instanceof Error) || error.message !== "Could not load this voice preview.") {
+            if (!(error instanceof VoiceResponseFailure)) {
               markRuntimeUnavailable();
             }
-            throw new Error("Could not load this voice preview.");
+            throw error;
           }
         }}
         assignVoice={(voice) => handleUseCatalogVoice(voice)}
         generatedSampleLabel={() => ({ label: "Generate Genie sample" })}
+        {...(api?.openVoiceFundingRecovery ? { onOpenFundingRecovery: openRecovery } : {})}
         />
       )}
 

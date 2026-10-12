@@ -92,24 +92,22 @@ function isTranscriptionProvider(value: unknown): value is TranscriptionProvider
 
 async function fileSizeOrFailure(absPath: string): Promise<
   | { ok: true; sizeBytes: number }
-  | { ok: false; message: string }
+  | { ok: false; code: "file_open_failed" | "path_is_directory" | "file_stat_failed" }
 > {
   let handle: Awaited<ReturnType<typeof open>>;
   try {
     handle = await open(absPath, "r");
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+  } catch {
+    return { ok: false, code: "file_open_failed" };
   }
   try {
     const st = await handle.stat();
     if (st.isDirectory()) {
-      return { ok: false, message: "path is a directory" };
+      return { ok: false, code: "path_is_directory" };
     }
     return { ok: true, sizeBytes: st.size };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, message };
+  } catch {
+    return { ok: false, code: "file_stat_failed" };
   } finally {
     await handle.close().catch(() => {});
   }
@@ -170,7 +168,7 @@ export function createTranscribeAudioTool(
         service = await capability.openService(providerId);
       } catch (error) {
         if (!admissionUnavailable(error)) {
-          throw error instanceof Error ? error : new Error(String(error));
+          throw error instanceof Error ? error : new Error("transcription_funding_unavailable");
         }
         lastAdmissionError = error;
         continue;
@@ -231,7 +229,7 @@ export function createTranscribeAudioTool(
 
       const fileMeta = await fileSizeOrFailure(resolved.physicalPath);
       if (!fileMeta.ok) {
-        return `Error: workspace audio artifact not found or unreadable (${fileMeta.message})`;
+        return `Error: workspace audio artifact not found or unreadable (${fileMeta.code})`;
       }
 
       const envelope: AttachmentEnvelope = {

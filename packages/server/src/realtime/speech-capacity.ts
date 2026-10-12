@@ -4,8 +4,8 @@ export class SpeechCapacity {
   private limit = 2;
   private readonly waiting: Array<{ signal: AbortSignal; grant: () => void; cancel: () => void }> = [];
 
-  // Two is ElevenLabs' documented Free-plan HTTP concurrency. Successful
-  // responses advertise the current account's maximum, which replaces it.
+  // Start cautiously until a successful response advertises the paid
+  // account's current maximum, which replaces this initial limit.
   observeMaximum(value: string | null): void {
     if (!value || !/^\d+$/.test(value)) return;
     const limit = Number(value);
@@ -73,11 +73,7 @@ export class SpeechCapacityPool {
   forAccount(accountKey: string): SpeechCapacity {
     const now = this.now();
     for (const [key, entry] of this.accounts) {
-      if (
-        key !== accountKey &&
-        now - entry.lastUsedAt >= this.idleTtlMs &&
-        entry.capacity.isIdle()
-      ) {
+      if (now - entry.lastUsedAt >= this.idleTtlMs && entry.capacity.isIdle()) {
         this.accounts.delete(key);
       }
     }

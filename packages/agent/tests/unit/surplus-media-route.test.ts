@@ -161,7 +161,13 @@ describe("findSurplusMediaModel", () => {
     expect(await check("venice:gpt-image-2", "image",
       row("venice-gpt-image-2", "image", ["prompt"], ["image"]))).toBe(false);
     expect(await check("venice:gpt-image-2", "image",
+      row("venice-gpt-image-2", "image", ["prompt", "model", "response_format"], ["image"]))).toBe(false);
+    expect(await check("venice:gpt-image-2", "image",
+      row("venice-gpt-image-2", "image", ["prompt", "model", "n"], ["image"]))).toBe(false);
+    expect(await check("venice:gpt-image-2", "image",
       row("venice-gpt-image-2", "image", ["prompt", "model"], []))).toBe(false);
+    expect(await check("venice:gpt-image-2", "image",
+      row("venice-gpt-image-2", "image", ["prompt", "model", "n", "response_format"], ["image"]))).toBe(false);
 
     const videoParameters = ["async", "text-to-video", "artifact"];
     expect(await check("venice:seedance-2-5-text-to-video-basic", "video",

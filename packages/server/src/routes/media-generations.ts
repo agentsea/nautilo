@@ -13,12 +13,14 @@ import {
 import {
   findArtifactByInternalIdForNamespaces,
   findMediaGeneration,
+  requestMediaGenerationCancellation,
   type Artifact,
   type MediaGeneration,
   type MediaGenerationScope,
 } from "@nautilo/db";
 import {
   envelopeReadableNamespaces,
+  getUserCapabilities,
   isScopeMemoryEnvelope,
 } from "@nautilo/trust";
 import { getServerDirectDb } from "../lib/server-direct-db";
@@ -40,6 +42,10 @@ export interface MediaGenerationsRouteService {
     internalId: string;
     readableNamespaceIds: string[];
   }) => Promise<Artifact | null>;
+  readonly requestCancellation?: (
+    scope: AuthorizedMediaScope & { readonly receiptId: string; readonly expectedRevision: number },
+  ) => Promise<MediaGeneration | null>;
+  readonly getCapabilities?: typeof getUserCapabilities;
 }
 
 function isReadyArtifactState(state: MediaGeneration["state"]): boolean {
@@ -78,6 +84,7 @@ function safeTimingSeconds(value: number | null): number | undefined {
 export function projectMediaGenerationStatusSource(
   row: MediaGeneration,
   artifact: Artifact | null,
+  cancellationAuthorized = false,
 ): MediaGenerationStatusSourceV1 | null {
   // A receipt is only ready to render when its artifact has crossed the same
   // authenticated Artifact boundary the rest of Workbench uses. Do not invent
@@ -121,6 +128,9 @@ export function projectMediaGenerationStatusSource(
         };
       })()
     : undefined;
+  const hasExactCancellationBinding = row.provider === "surplus" && row.fundingBinding?.provider === "surplus" &&
+    row.fundingBinding.humanUserId === row.ownerId &&
+    row.fundingBinding.credentialFingerprint === row.providerAccountFingerprint;
   return {
     receiptId: row.receiptId,
     revision: row.revision,
@@ -129,6 +139,9 @@ export function projectMediaGenerationStatusSource(
     state: row.state,
     settings: row.safeSnapshot.normalizedSettings,
     cleanupState: row.cleanupState,
+    canCancel: cancellationAuthorized && hasExactCancellationBinding && row.providerQueueId !== null &&
+      (row.state === "queued" || row.state === "retrieving") && row.cancellationRequestedAt === null,
+    cancellationRequested: row.cancellationRequestedAt !== null,
     ...(progress ? { progress } : {}),
     ...(artifactProjection ? { artifact: artifactProjection } : {}),
     ...(failure ? { failure } : {}),
@@ -146,6 +159,9 @@ export function mediaGenerationsRoutes(
     findMediaGeneration(getServerDirectDb(), scope, receiptId));
   const readArtifact = service.findArtifactByInternalIdForNamespaces ??
     findArtifactByInternalIdForNamespaces;
+  const cancelGeneration = service.requestCancellation ?? ((input) =>
+    requestMediaGenerationCancellation(getServerDirectDb(), input));
+  const resolveCapabilities = service.getCapabilities ?? getUserCapabilities;
 
   app.get("/api/media-generations/:receiptId", async (request, reply) => {
     const { receiptId } = request.params as { receiptId?: string };
@@ -188,13 +204,67 @@ export function mediaGenerationsRoutes(
             readableNamespaceIds: envelopeReadableNamespaces(env),
           })
         : null;
-      const source = projectMediaGenerationStatusSource(row, artifact);
+      const cancellationAuthorized = (await resolveCapabilities(request.sessionUserId).catch((): string[] => []))
+        .includes("use_media_generation");
+      const source = projectMediaGenerationStatusSource(row, artifact, cancellationAuthorized);
       // A durable ready row is not client-readable until its Workspace
       // artifact is currently readable. Hide both artifact and receipt shape.
       if (!source) return reply.code(404).send({ error: "Not found" });
       return reply.send(mapMediaGenerationStatusV1(source));
     } catch {
       return reply.code(503).send({ error: "Media generation status is temporarily unavailable" });
+    }
+  });
+
+  app.post("/api/media-generations/:receiptId/cancel", async (request, reply) => {
+    const { receiptId } = request.params as { receiptId?: string };
+    const body = request.body as Record<string, unknown> | null;
+    if (typeof receiptId !== "string" || !RECEIPT_ID.test(receiptId)) {
+      return reply.code(400).send({ error: "Malformed media generation receipt" });
+    }
+    if (!body || Array.isArray(body) || Object.keys(body).length !== 2 ||
+        typeof body["roomId"] !== "string" || !UUID.test(body["roomId"]) ||
+        !Number.isSafeInteger(body["expectedRevision"]) || Number(body["expectedRevision"]) < 0) {
+      return reply.code(400).send({ error: "Malformed media generation cancellation" });
+    }
+    const roomId = body["roomId"];
+    const expectedRevision = Number(body["expectedRevision"]);
+    const env = request.memoryEnvelope;
+    if (!request.sessionUserId || !env) return reply.code(401).send({ error: "Authentication required" });
+    if (isScopeMemoryEnvelope(env)) return reply.code(501).send({ error: SCOPE_REJECTION_MESSAGE });
+    if (!env.agentId) return reply.code(403).send({ error: "Authorized Room context required" });
+    if (request.sessionUserId !== env.ownerId || env.roomId !== roomId) {
+      return reply.code(404).send({ error: "Not found" });
+    }
+    const namespaceId = env.writableNamespaces.length === 1 ? env.writableNamespaces[0] : undefined;
+    if (!namespaceId) return reply.code(404).send({ error: "Not found" });
+    const scope = { ownerId: env.ownerId, roomId: env.roomId, namespaceId };
+    try {
+      if (!(await resolveCapabilities(request.sessionUserId)).includes("use_media_generation")) {
+        return reply.code(403).send({ error: "Media generation capability required" });
+      }
+      let row = await cancelGeneration({ ...scope, receiptId, expectedRevision });
+      if (!row) {
+        row = await readGeneration(scope, receiptId);
+        if (!row) return reply.code(404).send({ error: "Not found" });
+        // A lost HTTP response may be retried with the original revision after
+        // the intent or later polling already advanced the row. The persisted
+        // intent makes that exact scoped operation idempotently complete.
+        if (row.cancellationRequestedAt === null) {
+          return reply.code(409).send({ error: "Media generation cancellation is no longer available" });
+        }
+      }
+      const artifact = row.artifactInternalId
+        ? await readArtifact({
+            internalId: row.artifactInternalId,
+            readableNamespaceIds: envelopeReadableNamespaces(env),
+          })
+        : null;
+      const source = projectMediaGenerationStatusSource(row, artifact, true);
+      if (!source) return reply.code(409).send({ error: "Media generation cancellation is no longer available" });
+      return reply.send(mapMediaGenerationStatusV1(source));
+    } catch {
+      return reply.code(503).send({ error: "Media generation cancellation is temporarily unavailable" });
     }
   });
 }

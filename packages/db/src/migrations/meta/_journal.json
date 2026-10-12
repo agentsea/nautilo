@@ -2381,6 +2381,13 @@
       "when": 1791563213652,
       "tag": "0339_media_generation_funding_binding_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 340,
+      "version": "7",
+      "when": 1791822943496,
+      "tag": "0340_omniscient_norman_osborn",
+      "breakpoints": true
     }
   ]
 }

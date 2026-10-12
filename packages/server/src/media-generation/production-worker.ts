@@ -24,6 +24,7 @@ import {
 import { getArtifactsRoot } from "@nautilo/config";
 import {
   attachArtifactToNamespace,
+  acknowledgeClaimedMediaGenerationCancellation,
   claimDueMediaGenerations,
   claimDueMediaGenerationCompletionWakes,
   completeClaimedMediaGenerationCleanup,
@@ -65,6 +66,8 @@ import { settleServerProviderCostAttempt } from "../costs/provider-cost-recorder
 
 const DEFAULT_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH = 4;
+const VENICE_DELIVERY_HOSTS_ENV = "NAUTILO_VENICE_MEDIA_SIGNED_DELIVERY_HOSTS";
+const SURPLUS_DELIVERY_HOSTS_ENV = "NAUTILO_SURPLUS_MEDIA_SIGNED_DELIVERY_HOSTS";
 
 type MediaCompletionWakeJobManager = Pick<typeof jobManager, "createSystemForegroundJob">;
 
@@ -183,6 +186,7 @@ export function createProductionMediaGenerationWorkerRepository(
     claimDue: (input) => claimDueMediaGenerations(db, input),
     readClaimed: (input) => readClaimedMediaGeneration(db, input),
     renew: (input) => renewMediaGenerationClaim(db, input),
+    acknowledgeCancellation: (input) => acknowledgeClaimedMediaGenerationCancellation(db, input),
     transition: (input) => transitionClaimedMediaGeneration(db, input),
     reschedule: (input) => rescheduleClaimedMediaGeneration(db, input),
     rescheduleCleanup: (input) => rescheduleClaimedMediaGenerationCleanup(db, input),
@@ -473,7 +477,14 @@ export interface InstallProductionMediaGenerationWorkerOptions {
   readonly workerId?: string;
   readonly schedulerFactory?: typeof createMediaGenerationWorkerScheduler;
   readonly runFunding?: typeof runWithDurableServiceFunding;
-  readonly signedDeliveryAllowedHosts?: readonly string[];
+  readonly veniceSignedDeliveryAllowedHosts?: readonly string[];
+  readonly surplusSignedDeliveryAllowedHosts?: readonly string[];
+}
+
+function signedDeliveryHostsFromEnvironment(name: typeof VENICE_DELIVERY_HOSTS_ENV | typeof SURPLUS_DELIVERY_HOSTS_ENV): readonly string[] {
+  const configured = process.env[name]?.trim();
+  if (!configured) return [];
+  return [...new Set(configured.split(",").map((host) => host.trim().toLowerCase()).filter(Boolean))];
 }
 
 function usdFromMicros(value: number): string {
@@ -532,18 +543,29 @@ export function installProductionMediaGenerationWorker(
       ? new SurplusMediaLifecycleAdapter({
           apiKey,
           ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-          signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
+          signedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ??
+            signedDeliveryHostsFromEnvironment(SURPLUS_DELIVERY_HOSTS_ENV),
         })
       : new VeniceMediaLifecycleAdapter({
           apiKey,
           ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-          signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
+          signedDeliveryAllowedHosts: options.veniceSignedDeliveryAllowedHosts ??
+            signedDeliveryHostsFromEnvironment(VENICE_DELIVERY_HOSTS_ENV),
         });
     return Promise.resolve({
       retrieve: (input: Parameters<VeniceMediaLifecycleAdapter["retrieve"]>[0]) =>
         run((apiKey) => adapter(apiKey).retrieve(input)),
       downloadSignedDelivery: (input: Parameters<VeniceMediaLifecycleAdapter["downloadSignedDelivery"]>[0]) =>
         run((apiKey) => adapter(apiKey).downloadSignedDelivery(input)),
+      ...(claim.provider === "surplus" ? {
+        cancel: (input: Parameters<SurplusMediaLifecycleAdapter["cancel"]>[0]) =>
+          run((apiKey) => new SurplusMediaLifecycleAdapter({
+            apiKey,
+            ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+            signedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ??
+              signedDeliveryHostsFromEnvironment(SURPLUS_DELIVERY_HOSTS_ENV),
+          }).cancel(input)),
+      } : {}),
       complete: (input: Parameters<VeniceMediaLifecycleAdapter["complete"]>[0]) =>
         run((apiKey) => adapter(apiKey).complete(input)),
     });

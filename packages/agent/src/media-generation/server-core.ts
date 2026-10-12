@@ -416,7 +416,8 @@ function deterministicRefusal(
       failure.code === "VENICE_AUTHENTICATION" ||
       failure.code === "VENICE_BILLING" ||
       failure.code === "VENICE_ACCESS" ||
-      failure.code === "SURPLUS_AUTHENTICATION") {
+      failure.code === "SURPLUS_AUTHENTICATION" ||
+      failure.code === "MEDIA_AUTHORITY_CHANGED") {
     return { state: "needs_action", safeFailure };
   }
   return null;

@@ -1485,3 +1485,5 @@ export { installConversionRuntime, uninstallConversionRuntime, type ConversionRu
 export { SurplusMediaLifecycleAdapter, resolveSurplusMediaRoute, SURPLUS_MEDIA_ROUTES } from "./media-generation/surplus-lifecycle";
 
 export { resolveSurplusImageRoute } from "./image-gen/surplus";
+
+export { readBoundedMediaJson, readBoundedMediaBytes, MediaResponseReadError, MAX_MEDIA_METADATA_JSON_BYTES, MAX_IMAGE_RESPONSE_JSON_BYTES } from "./providers/media-response";

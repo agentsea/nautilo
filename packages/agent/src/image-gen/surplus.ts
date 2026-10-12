@@ -7,6 +7,14 @@ import {
   isSafeSurplusDirectFallback,
   readSurplusWireReceipt,
 } from "../providers/surplus-transport";
+import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
+import { deriveSurplusMediaModelId } from "../providers/surplus-media-route";
+import {
+  MAX_IMAGE_RESPONSE_JSON_BYTES,
+  MediaResponseReadError,
+  readBoundedMediaJson,
+} from "../providers/media-response";
+import { assertImageOutputBounds, decodeBoundedImageBase64 } from "./bounds";
 
 const SURPLUS_IMAGE_ROOT = "https://api.surplusintelligence.ai";
 
@@ -21,22 +29,23 @@ export interface QualifiedSurplusImageRoute {
   readonly privacy: "marketplace-unpinned";
 }
 
-const ROUTES = Object.freeze({
-  "venice:gpt-image-2": Object.freeze({
-    modelId: "venice:gpt-image-2",
-    surplusModelId: "venice-gpt-image-2",
-    operations: Object.freeze(["generate"] as const),
+export function resolveSurplusImageRoute(
+  modelId: string,
+): QualifiedSurplusImageRoute | null {
+  const entry = getActiveModelCatalogSync().catalog.entries.find((candidate) => candidate.id === modelId);
+  const surplusModelId = deriveSurplusMediaModelId(modelId);
+  if (!entry || !("generation" in entry) || entry.generation?.family !== "image" || !surplusModelId) {
+    return null;
+  }
+  return {
+    modelId,
+    surplusModelId,
+    operations: ["generate"],
     maxReferenceImages: 0,
     supportsMasks: false,
     exactSize: false,
     privacy: "marketplace-unpinned",
-  }),
-} satisfies Record<string, QualifiedSurplusImageRoute>);
-
-export function resolveSurplusImageRoute(
-  modelId: string,
-): QualifiedSurplusImageRoute | null {
-  return ROUTES[modelId as keyof typeof ROUTES] ?? null;
+  };
 }
 
 export class SurplusImageAttemptError extends Error {
@@ -136,14 +145,6 @@ function adaptedRequiredParameters(
     .filter((parameter) => parameter !== "" && sentParameters.has(parameter));
 }
 
-function parseFailurePayload(text: string): unknown {
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
 function isSafeDirectFallbackResponse(
   payload: unknown,
   status: number,
@@ -236,10 +237,16 @@ export async function generateImagesSurplus(
     await response.body?.cancel().catch(() => undefined);
     throw error;
   }
-  const text = await response.text().catch(() => "");
   if (!response.ok) {
+    let payload: unknown;
+    try {
+      payload = await readBoundedMediaJson(response);
+    } catch (error) {
+      if (!(error instanceof MediaResponseReadError)) throw error;
+      payload = undefined;
+    }
     const directFallbackSafe = isSafeDirectFallbackResponse(
-      parseFailurePayload(text),
+      payload,
       response.status,
       receipt,
     );
@@ -252,6 +259,7 @@ export async function generateImagesSurplus(
     );
   }
   if (receipt.truncated) {
+    await response.body?.cancel().catch(() => undefined);
     throw new SurplusImageAttemptError(
       "Surplus reported a truncated image result; the paid request was not retried.",
       "failed",
@@ -264,6 +272,7 @@ export async function generateImagesSurplus(
     new Set(Object.keys(body)),
   );
   if (adaptedRequired.length > 0) {
+    await response.body?.cancel().catch(() => undefined);
     throw new SurplusImageAttemptError(
       `Surplus changed required image parameter${adaptedRequired.length === 1 ? "" : "s"} (${adaptedRequired.join(", ")}); the paid result was not published and was not retried.`,
       "failed",
@@ -273,12 +282,15 @@ export async function generateImagesSurplus(
   }
   let parsed: { data?: Array<{ b64_json?: unknown }> };
   try {
-    parsed = JSON.parse(text) as typeof parsed;
-  } catch {
+    parsed = await readBoundedMediaJson(response, MAX_IMAGE_RESPONSE_JSON_BYTES) as typeof parsed;
+  } catch (error) {
+    if (!(error instanceof MediaResponseReadError)) throw error;
     throw new SurplusImageAttemptError(
-      "Surplus image generation returned invalid JSON; the request was not retried.",
+      error.reason === "too_large"
+        ? "Surplus image generation returned an oversized result; the request was not retried."
+        : "Surplus image generation returned invalid JSON; the request was not retried.",
       "unknown",
-      "invalid_provider_response",
+      error.reason === "too_large" ? "provider_response_too_large" : "invalid_provider_response",
       receipt,
     );
   }
@@ -291,7 +303,17 @@ export async function generateImagesSurplus(
         receipt,
       );
     }
-    const decoded = Buffer.from(item.b64_json, "base64");
+    let decoded: Buffer;
+    try {
+      decoded = decodeBoundedImageBase64(item.b64_json, "Surplus");
+    } catch {
+      throw new SurplusImageAttemptError(
+        "Surplus image generation returned invalid or oversized image data; the request was not retried.",
+        "unknown",
+        "invalid_provider_response",
+        receipt,
+      );
+    }
     if (!isPng(decoded)) {
       throw new SurplusImageAttemptError(
         "Surplus image generation returned an unqualified output format; the request was not retried.",
@@ -308,6 +330,16 @@ export async function generateImagesSurplus(
       "Surplus image generation returned an incomplete result; the request was not retried.",
       "unknown",
       "invalid_provider_response",
+      receipt,
+    );
+  }
+  try {
+    assertImageOutputBounds(bytes, "Surplus");
+  } catch {
+    throw new SurplusImageAttemptError(
+      "Surplus image generation returned more image data than the supported limit; the request was not retried.",
+      "unknown",
+      "provider_output_too_large",
       receipt,
     );
   }

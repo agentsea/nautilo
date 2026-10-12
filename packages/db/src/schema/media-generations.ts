@@ -43,7 +43,7 @@ export type MediaGenerationCleanupState = (typeof MEDIA_GENERATION_CLEANUP_STATE
 /** Safe, presentation-ready failure only: never a provider body, prompt, or URL. */
 export interface MediaGenerationSafeFailure {
   readonly code: string;
-  readonly phase: "quote" | "queue" | "retrieve" | "download" | "save" | "cleanup" | "reconcile";
+  readonly phase: "quote" | "queue" | "cancel" | "retrieve" | "download" | "save" | "cleanup" | "reconcile";
   readonly retrySafe: boolean;
   readonly stateChanged: boolean;
   readonly completionCertainty: "not_started" | "accepted" | "unknown" | "complete";
@@ -129,6 +129,10 @@ export const mediaGenerations = pgTable(
     fundingBinding: jsonb("funding_binding").$type<DurableServiceFundingBinding>(),
     /** Protected server-only queue coordinate. It is deliberately absent from public projections. */
     providerQueueId: text("provider_queue_id"),
+    /** Human cancellation intent for the accepted provider job; never evidence of a refund or terminal state. */
+    cancellationRequestedAt: timestamp("cancellation_requested_at", { withTimezone: true }),
+    /** The provider accepted a best-effort DELETE. Polling still owns the real terminal outcome and fee. */
+    cancellationProviderAcknowledgedAt: timestamp("cancellation_provider_acknowledged_at", { withTimezone: true }),
     /** DB-minted queue-admission fence; never accepted from a tool caller. */
     admissionToken: uuid("admission_token"),
     admissionStartedAt: timestamp("admission_started_at", { withTimezone: true }),
@@ -218,6 +222,15 @@ export const mediaGenerations = pgTable(
       and (${table.state} <> 'admitting' or (${table.admissionToken} is not null and ${table.providerQueueId} is null))
       and (${table.state} not in ('queued', 'retrieving', 'saving', 'ready') or (${table.admissionToken} is not null and ${table.providerQueueId} is not null))
       and (${table.state} <> 'unknown' or ${table.admissionToken} is not null)
+    `),
+    check("media_generations_cancellation_shape", sql`
+      (${table.cancellationProviderAcknowledgedAt} is null or ${table.cancellationRequestedAt} is not null)
+      and (${table.cancellationRequestedAt} is null or (
+        ${table.provider} = 'surplus'
+        and ${table.providerQueueId} is not null
+        and ${table.acceptedAt} is not null
+      ))
+      and (${table.cancellationProviderAcknowledgedAt} is null or ${table.cancellationProviderAcknowledgedAt} >= ${table.cancellationRequestedAt})
     `),
     check("media_generations_safe_json", sql`
       jsonb_typeof(${table.safeSnapshot}) = 'object'

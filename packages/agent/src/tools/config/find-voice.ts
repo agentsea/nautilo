@@ -22,6 +22,7 @@ import {
   getCapabilityFundingSession,
   type CapabilityFundingSession,
 } from "../../runtime/capability-funding";
+import { readBoundedMediaJson } from "../../providers/media-response";
 
 /** Curated slug → primary language subtag (matches server catalog metadata). */
 const CURATED_VOICE_LANGUAGE: Record<string, string> = {
@@ -51,6 +52,47 @@ const DEFAULT_BROWSE_LIMIT = 12;
 const MAX_BROWSE_LIMIT = 15;
 const MAX_SHARED_PAGES = 4;
 const SHARED_PAGE_SIZE = 30;
+const VOICE_FUNDING_FAILURE_CODES = new Set([
+  "personal_credentials_disabled",
+  "personal_credentials_forbidden",
+  "personal_credential_missing",
+  "server_credentials_forbidden",
+  "provider_credentials_missing",
+  "personal_credential_stale",
+  "personal_credential_unavailable",
+  "funding_source_changed",
+  "unsupported_workload",
+  "unsupported_provider",
+]);
+
+class VoiceCatalogRequestError extends Error {
+  constructor(readonly status: number | null) {
+    super(status === null
+      ? "Voice catalog request failed."
+      : `Voice catalog request failed (HTTP ${status}).`);
+    this.name = "VoiceCatalogRequestError";
+  }
+}
+
+function stableFundingFailureCode(error: unknown): string | null {
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return typeof code === "string" && VOICE_FUNDING_FAILURE_CODES.has(code) ? code : null;
+}
+
+function voiceCatalogWarning(error: unknown): string {
+  if (error instanceof VoiceCatalogRequestError) {
+    return error.status === null
+      ? "Voice catalog request failed; showing curated voices only."
+      : `Voice catalog request failed (HTTP ${error.status}); showing curated voices only.`;
+  }
+  const fundingCode = stableFundingFailureCode(error);
+  if (fundingCode) {
+    return `Voice funding is unavailable (${fundingCode}); showing curated voices only.`;
+  }
+  return "Voice catalog request failed; showing curated voices only.";
+}
 
 export type ElevenLabsSharedVoiceRaw = {
   voice_id: string;
@@ -339,19 +381,44 @@ async function fetchSharedVoicesPage(
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
-  const res = await fetch(url.toString(), {
-    headers: { "xi-api-key": apiKey },
-    ...(signal ? { signal } : {}),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`ElevenLabs shared-voices ${res.status}: ${body.slice(0, 200)}`);
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: { "xi-api-key": apiKey },
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new VoiceCatalogRequestError(null);
   }
-  const data = (await res.json()) as {
-    voices?: ElevenLabsSharedVoiceRaw[];
-    has_more?: boolean;
-  };
-  return { voices: data.voices ?? [], hasMore: data.has_more ?? false };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new VoiceCatalogRequestError(res.status);
+  }
+  let data: unknown;
+  try {
+    data = await readBoundedMediaJson(res);
+  } catch {
+    throw new VoiceCatalogRequestError(null);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new VoiceCatalogRequestError(null);
+  }
+  const voices = (data as Record<string, unknown>)["voices"];
+  const hasMore = (data as Record<string, unknown>)["has_more"];
+  if (!Array.isArray(voices) || (hasMore !== undefined && typeof hasMore !== "boolean")) {
+    throw new VoiceCatalogRequestError(null);
+  }
+  if (!voices.every((voice): voice is ElevenLabsSharedVoiceRaw => (
+    Boolean(voice)
+    && typeof voice === "object"
+    && !Array.isArray(voice)
+    && typeof (voice as Record<string, unknown>)["voice_id"] === "string"
+    && typeof (voice as Record<string, unknown>)["name"] === "string"
+  ))) {
+    throw new VoiceCatalogRequestError(null);
+  }
+  return { voices, hasMore: hasMore ?? false };
 }
 
 async function fetchSharedCatalog(
@@ -435,8 +502,8 @@ export async function discoverVoices(
       consideredCount = remote.consideredCount + curatedCatalogVoices().length;
     } catch (e) {
       if (signal?.aborted) throw e;
-      const msg = e instanceof Error ? e.message : String(e);
-      warnings.push(`ElevenLabs catalog fetch failed (${msg}); showing curated voices only.`);
+      if (stableFundingFailureCode(e)) configured = false;
+      warnings.push(voiceCatalogWarning(e));
     }
   } else {
     const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
@@ -453,8 +520,7 @@ export async function discoverVoices(
         consideredCount = remote.consideredCount + curatedCatalogVoices().length;
       } catch (e) {
         if (signal?.aborted) throw e;
-        const msg = e instanceof Error ? e.message : String(e);
-        warnings.push(`ElevenLabs catalog fetch failed (${msg}); showing curated voices only.`);
+        warnings.push(voiceCatalogWarning(e));
       }
     } else {
       warnings.push("ElevenLabs credentials are not configured; curated defaults only.");
@@ -534,12 +600,11 @@ After the user listens via audition_voices, lock in with manage_voices add.`,
       } catch (e) {
         if (config?.signal?.aborted) throw e;
         if (e instanceof ServerProviderCredentialsDeniedError) throw e;
-        const msg = e instanceof Error ? e.message : String(e);
         return JSON.stringify({
           candidates: [],
           consideredCount: 0,
           elevenLabsConfigured: false,
-          error: `find_voice failed: ${msg}`,
+          error: "find_voice failed: voice discovery is unavailable",
         } satisfies FindVoiceToolResult);
       }
     },

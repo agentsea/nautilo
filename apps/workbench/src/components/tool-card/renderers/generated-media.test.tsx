@@ -15,6 +15,9 @@ const apiStub = {
   }] })),
   getWorkspaceArtifactBytes: mock(async () => new Blob(["video bytes"], { type: "video/mp4" })),
   getMediaGenerationStatus: mock(async (_receiptId: string, _opts: { roomId: string; signal?: AbortSignal }) => queuedStatus()),
+  cancelMediaGeneration: mock(async (_receiptId: string, _opts: { roomId: string; expectedRevision: number; signal?: AbortSignal }) => ({
+    ...queuedStatus(2), canCancel: false, cancellationRequested: true,
+  })),
 };
 const requestOpenFile = mock(() => true);
 let activeRoomId: string | null = "room-1";
@@ -105,6 +108,10 @@ beforeEach(() => {
   apiStub.getWorkspaceArtifactBytes.mockClear();
   apiStub.getMediaGenerationStatus.mockClear();
   apiStub.getMediaGenerationStatus.mockImplementation(async () => queuedStatus());
+  apiStub.cancelMediaGeneration.mockClear();
+  apiStub.cancelMediaGeneration.mockImplementation(async () => ({
+    ...queuedStatus(2), canCancel: false, cancellationRequested: true,
+  }));
   activeRoomId = "room-1";
   ambientProps.length = 0;
   Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
@@ -140,6 +147,76 @@ async function rerender(resultText: string): Promise<void> {
 }
 
 describe("generatedMediaRenderer", () => {
+  test("cancels only a server-authorized receipt revision and suppresses duplicate clicks", async () => {
+    apiStub.getMediaGenerationStatus.mockImplementation(async () => ({ ...queuedStatus(7), canCancel: true }));
+    apiStub.cancelMediaGeneration.mockImplementation(async () => ({
+      ...queuedStatus(8), canCancel: false, cancellationRequested: true,
+    }));
+    await render(JSON.stringify({ ...readyEnvelope, state: "queued", artifact: undefined }));
+    const button = Array.from(container!.querySelectorAll("button")).find(node => node.textContent === "Cancel generation");
+    expect(Boolean(button)).toBe(true);
+    await act(async () => { button!.click(); button!.click(); });
+    expect(apiStub.cancelMediaGeneration).toHaveBeenCalledTimes(1);
+    expect(apiStub.cancelMediaGeneration).toHaveBeenCalledWith(readyEnvelope.receiptId, {
+      roomId: "room-1", expectedRevision: 7, signal: expect.any(AbortSignal),
+    });
+    expect(container!.textContent).toContain("Cancellation requested.");
+    expect(container!.textContent).toContain("Generation may still complete");
+    expect(Array.from(container!.querySelectorAll("button")).some(node => node.textContent === "Cancel generation")).toBe(false);
+  });
+
+  test("a cancellation completion race still displays the owned artifact", async () => {
+    apiStub.getMediaGenerationStatus.mockImplementation(async () => ({ ...queuedStatus(7), canCancel: true }));
+    apiStub.cancelMediaGeneration.mockImplementation(async () => ({
+      ...readyStatus(8), canCancel: false, cancellationRequested: true,
+    }));
+    await render(JSON.stringify({ ...readyEnvelope, state: "queued", artifact: undefined }));
+    const button = Array.from(container!.querySelectorAll("button")).find(node => node.textContent === "Cancel generation");
+    await act(async () => { button!.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(apiStub.cancelMediaGeneration).toHaveBeenCalledTimes(1);
+    expect(Boolean(container!.querySelector('[data-testid="generated-media-video"]'))).toBe(true);
+    expect(container!.textContent).not.toContain("Cancellation requested.");
+  });
+
+  test("a lost cancellation response is reconciled with GET without repeating the action", async () => {
+    apiStub.getMediaGenerationStatus
+      .mockImplementationOnce(async () => ({ ...queuedStatus(7), canCancel: true }))
+      .mockImplementationOnce(async () => ({ ...queuedStatus(8), canCancel: false, cancellationRequested: true }));
+    apiStub.cancelMediaGeneration.mockRejectedValueOnce(new Error("sensitive-provider-body"));
+    await render(JSON.stringify({ ...readyEnvelope, state: "queued", artifact: undefined }));
+    const button = Array.from(container!.querySelectorAll("button")).find(node => node.textContent === "Cancel generation");
+    await act(async () => { button!.click(); });
+    expect(apiStub.cancelMediaGeneration).toHaveBeenCalledTimes(1);
+    expect(apiStub.getMediaGenerationStatus).toHaveBeenCalledTimes(2);
+    expect(container!.textContent).toContain("Cancellation requested.");
+    expect(container!.textContent).not.toContain("sensitive-provider-body");
+  });
+
+  test("a late cancellation response cannot affect a replacement Room", async () => {
+    const pending = deferred<ReturnType<typeof queuedStatus> & { canCancel: boolean; cancellationRequested: boolean }>();
+    apiStub.getMediaGenerationStatus
+      .mockImplementationOnce(async () => ({ ...queuedStatus(7), canCancel: true }))
+      .mockImplementationOnce(async () => ({ ...queuedStatus(10), canCancel: false }));
+    apiStub.cancelMediaGeneration.mockImplementationOnce(() => pending.promise);
+    const result = JSON.stringify({ ...readyEnvelope, state: "queued", artifact: undefined });
+    await render(result);
+    const button = Array.from(container!.querySelectorAll("button")).find(node => node.textContent === "Cancel generation");
+    await act(async () => { button!.click(); });
+    activeRoomId = "room-2";
+    await rerender(result);
+    await act(async () => { pending.resolve({ ...queuedStatus(8), canCancel: false, cancellationRequested: true }); });
+    expect(apiStub.cancelMediaGeneration.mock.calls[0]![1].signal!.aborted).toBe(true);
+    expect(container!.textContent).not.toContain("Cancellation requested.");
+    expect(apiStub.cancelMediaGeneration).toHaveBeenCalledTimes(1);
+  });
+
+  test("older servers without cancellation flags expose no mutation control", async () => {
+    await render(JSON.stringify({ ...readyEnvelope, state: "queued", artifact: undefined }));
+    expect(Array.from(container!.querySelectorAll("button")).some(node => node.textContent === "Cancel generation")).toBe(false);
+    expect(apiStub.cancelMediaGeneration).not.toHaveBeenCalled();
+  });
+
   test("auto-expands and plays only authenticated Workspace bytes", async () => {
     await render(JSON.stringify(readyEnvelope));
     expect(container?.querySelector('[data-testid="generated-media-expanded"]')).not.toBeNull();
@@ -413,9 +490,9 @@ describe("generatedMediaRenderer", () => {
     activeRoomId = null;
     const active = { ...readyEnvelope, artifact: undefined };
     await render(JSON.stringify({ ...active, queueStarted: null, state: "submitting" }));
-    expect(container?.textContent).toContain("Submitted to Venice. Awaiting acknowledgement");
+    expect(container?.textContent).toContain("Submitted. Awaiting acknowledgement");
     await rerender(JSON.stringify({ ...active, state: "queued" }));
-    expect(container?.textContent).toContain("Submitted to Venice. Checking progress…");
+    expect(container?.textContent).toContain("Submitted. Checking progress…");
     await rerender(JSON.stringify({ ...active, state: "generating" }));
     expect(container?.textContent).toContain("Generation is active.");
     await rerender(JSON.stringify({ ...active, state: "downloading" }));
@@ -433,7 +510,7 @@ describe("generatedMediaRenderer", () => {
       progress: { elapsedSeconds: 146, estimatedSeconds: 145 },
     }));
     expect(container?.textContent).toContain(
-      "This run is taking longer than typical, but Venice still reports it active.",
+      "This run is taking longer than typical, but the provider still reports it active.",
     );
   });
 
@@ -456,7 +533,7 @@ describe("generatedMediaRenderer", () => {
       .find((button) => button.textContent === "Show progress");
     expect(show).toBeTruthy();
     await act(async () => { show!.dispatchEvent(new window.MouseEvent("click", { bubbles: true })); });
-    expect(container?.textContent).toContain("Submitted to Venice. Checking progress…");
+    expect(container?.textContent).toContain("Submitted. Checking progress…");
     expect(container?.querySelector('[data-testid="generated-media-ambient"]')).not.toBeNull();
   });
 

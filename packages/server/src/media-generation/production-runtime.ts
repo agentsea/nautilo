@@ -9,6 +9,7 @@ import {
   createMediaGenerationServerCore,
   resolveSurplusMediaRoute,
   sanitizeVeniceProviderCode,
+  readBoundedMediaJson,
   setMediaGenerationApprovalRuntime,
   type ExactMediaGenerationQuotePort,
   type MediaGenerationFailure,
@@ -43,7 +44,7 @@ import {
 } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { providerAccountFingerprint } from "../lib/provider-catalog-cache";
-import { openMediaFunding } from "../lib/media-funding";
+import { MEDIA_PRESPEND_TIMEOUT_MS, openMediaFunding } from "../lib/media-funding";
 import { runWithDurableServiceFunding } from "../lib/service-funding";
 import {
   beginServerProviderCostAttempt,
@@ -58,12 +59,11 @@ import {
 } from "./reference-request";
 
 const MAX_POSTGRES_INTEGER = 2_147_483_647;
-const DELIVERY_HOSTS_ENV = "NAUTILO_VENICE_MEDIA_SIGNED_DELIVERY_HOSTS";
+const VENICE_DELIVERY_HOSTS_ENV = "NAUTILO_VENICE_MEDIA_SIGNED_DELIVERY_HOSTS";
+const SURPLUS_DELIVERY_HOSTS_ENV = "NAUTILO_SURPLUS_MEDIA_SIGNED_DELIVERY_HOSTS";
 const DEFAULT_QUOTE_MAX_ATTEMPTS = 3;
-const DEFAULT_QUOTE_ATTEMPT_TIMEOUT_MS = 30_000;
 const MAX_QUOTE_RETRY_DELAY_MS = 2_000;
 const RETRYABLE_QUOTE_STATUSES = new Set([429, 500, 502, 503, 504]);
-const SURPLUS_MARKET_ESTIMATE_TIMEOUT_MS = 10_000;
 
 export type VeniceQuoteDiagnostic = Readonly<{
   outcome: "retrying" | "failed";
@@ -250,7 +250,7 @@ function quoteRequestId(response: Response): string | undefined {
 async function quoteProviderCode(response: Response): Promise<string | undefined> {
   let body: unknown;
   try {
-    body = await response.json();
+    body = await readBoundedMediaJson(response);
   } catch {
     return undefined;
   }
@@ -302,7 +302,7 @@ export function createExactVeniceMediaQuotePort(input: {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > DEFAULT_QUOTE_MAX_ATTEMPTS) {
     throw new Error(`Venice media quote maxAttempts must be between 1 and ${DEFAULT_QUOTE_MAX_ATTEMPTS}`);
   }
-  const attemptTimeoutMs = input.attemptTimeoutMs ?? DEFAULT_QUOTE_ATTEMPT_TIMEOUT_MS;
+  const attemptTimeoutMs = input.attemptTimeoutMs ?? MEDIA_PRESPEND_TIMEOUT_MS;
   if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1 || attemptTimeoutMs > 60_000) {
     throw new Error("Venice media quote attemptTimeoutMs must be between 1 and 60000");
   }
@@ -377,7 +377,7 @@ export function createExactVeniceMediaQuotePort(input: {
         const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
         let body: unknown;
         try {
-          body = contentType === "application/json" ? await response.json() : undefined;
+          body = contentType === "application/json" ? await readBoundedMediaJson(response) : undefined;
           const amountUsdMicros = exactQuoteMicros(body);
           clearTimeout(timeout);
           return { amountUsdMicros };
@@ -410,7 +410,7 @@ function createSurplusMediaEstimatePort(input: {
   readonly attemptTimeoutMs?: number;
 } = {}) {
   const fetchImpl = input.fetchImpl ?? globalThis.fetch;
-  const attemptTimeoutMs = input.attemptTimeoutMs ?? SURPLUS_MARKET_ESTIMATE_TIMEOUT_MS;
+  const attemptTimeoutMs = input.attemptTimeoutMs ?? MEDIA_PRESPEND_TIMEOUT_MS;
   if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1 || attemptTimeoutMs > 60_000) {
     throw new Error("Surplus media estimate timeout must be between 1 and 60000ms");
   }
@@ -432,7 +432,7 @@ function createSurplusMediaEstimatePort(input: {
         if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
           throw new Error("marketplace media estimate unavailable");
         }
-        body = await response.json();
+        body = await readBoundedMediaJson(response);
       } finally {
         clearTimeout(timeout);
       }
@@ -456,8 +456,8 @@ function createSurplusMediaEstimatePort(input: {
   };
 }
 
-function signedDeliveryHostsFromEnvironment(): readonly string[] {
-  const configured = process.env[DELIVERY_HOSTS_ENV]?.trim();
+function signedDeliveryHostsFromEnvironment(name: typeof VENICE_DELIVERY_HOSTS_ENV | typeof SURPLUS_DELIVERY_HOSTS_ENV): readonly string[] {
+  const configured = process.env[name]?.trim();
   if (!configured) return [];
   return [...new Set(configured.split(",").map((host) => host.trim().toLowerCase()).filter(Boolean))];
 }
@@ -467,7 +467,8 @@ export interface CreateProductionMediaGenerationRuntimeOptions {
   readonly apiKey?: string;
   readonly db?: DirectDatabase;
   readonly fetchImpl?: VeniceMediaFetch;
-  readonly signedDeliveryAllowedHosts?: readonly string[];
+  readonly veniceSignedDeliveryAllowedHosts?: readonly string[];
+  readonly surplusSignedDeliveryAllowedHosts?: readonly string[];
   /** Focused test seam; production always uses the proof-bound DB functions. */
   readonly dbOperations?: MediaGenerationDbOperations;
   readonly openFunding?: typeof openMediaFunding;
@@ -588,6 +589,21 @@ export function createProductionMediaGenerationRuntime(
     async queueVeniceMediaGeneration(proof, actor) {
       try {
         return await withFunding(proof.fundingBinding, "spend", async ({ apiKey, usageFunding }) => {
+          const assertCurrentQueueAuthority = async () => {
+            try {
+              const current = await resolveMediaGenerationWritableScope(db, actor, options.getCapabilities);
+              if (current.ownerId !== proof.ownerId || current.roomId !== proof.roomId ||
+                  current.namespaceId !== proof.namespaceId) throw new Error("media authority changed");
+            } catch {
+              throw new VeniceMediaLifecycleError(proof.receiptId, {
+                code: "MEDIA_AUTHORITY_CHANGED", phase: "admission", retrySafe: false,
+                stateChanged: false, completionCertainty: "not_started", chargeCertainty: "not_charged",
+                recoveryActions: ["review_access"],
+                message: "Media generation authority changed before dispatch. No provider request was sent.",
+              });
+            }
+          };
+          await assertCurrentQueueAuthority();
           await beginCostAttempt({
             identity: `media-generation:${proof.receiptId}`,
             usageFunding,
@@ -602,17 +618,20 @@ export function createProductionMediaGenerationRuntime(
             ? new SurplusMediaLifecycleAdapter({
                 apiKey,
                 ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-                signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
+                signedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ?? [],
               })
             : new VeniceMediaLifecycleAdapter({
                 apiKey,
                 ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-                signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
+                signedDeliveryAllowedHosts: options.veniceSignedDeliveryAllowedHosts ?? [],
                 resolveReferenceMediaUrls: async (approved) => resolveApprovedReferenceMediaUrls(
                   db, approved, undefined, await resolveMediaReferenceNamespaces(approved, actor),
                 ),
               });
           try {
+            // Cost persistence is asynchronous too: recheck immediately before
+            // the provider operation, after both funding and accounting opened.
+            await assertCurrentQueueAuthority();
             const accepted = await lifecycle.queueVeniceMediaGeneration(proof);
             if (proof.provider === "venice" && accepted.signedDeliveryUrl !== undefined) {
               throw new VeniceMediaLifecycleError(proof.receiptId, {
@@ -642,6 +661,10 @@ export function createProductionMediaGenerationRuntime(
                 evidenceState: "unknown",
                 attemptOutcome: error.failure.completionCertainty === "not_started" ? "failed" : "unknown",
                 failureCode: error.failure.code.toLowerCase(),
+              }).catch(() => {
+                // Accounting storage failure cannot change the provider outcome
+                // or make an uncertain paid dispatch safe to submit again.
+                warn("[media-generation] admission cost settlement unavailable; provider outcome preserved");
               });
             }
             throw error;
@@ -685,7 +708,8 @@ export interface InstallProductionMediaGenerationRuntimeOptions {
   readonly resolveKey?: () => string | null;
   readonly db?: DirectDatabase;
   readonly fetchImpl?: VeniceMediaFetch;
-  readonly signedDeliveryAllowedHosts?: readonly string[];
+  readonly veniceSignedDeliveryAllowedHosts?: readonly string[];
+  readonly surplusSignedDeliveryAllowedHosts?: readonly string[];
   readonly dbOperations?: MediaGenerationDbOperations;
   readonly openFunding?: typeof openMediaFunding;
   readonly runFunding?: typeof runWithDurableServiceFunding;
@@ -712,7 +736,10 @@ export function installProductionMediaGenerationRuntime(
     ...(options.beginCostAttempt ? { beginCostAttempt: options.beginCostAttempt } : {}),
     ...(options.settleCostAttempt ? { settleCostAttempt: options.settleCostAttempt } : {}),
     ...(options.getCapabilities ? { getCapabilities: options.getCapabilities } : {}),
-    signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? signedDeliveryHostsFromEnvironment(),
+    veniceSignedDeliveryAllowedHosts: options.veniceSignedDeliveryAllowedHosts ??
+      signedDeliveryHostsFromEnvironment(VENICE_DELIVERY_HOSTS_ENV),
+    surplusSignedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ??
+      signedDeliveryHostsFromEnvironment(SURPLUS_DELIVERY_HOSTS_ENV),
   }));
   return true;
 }

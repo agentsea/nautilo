@@ -118,11 +118,10 @@ The tool-card loads a preview only when the Human requests it; lock in with mana
       } catch (e) {
         if (config?.signal?.aborted) throw e;
         if (e instanceof ServerProviderCredentialsDeniedError) throw e;
-        const msg = e instanceof Error ? e.message : String(e);
         return JSON.stringify({
           slate: [],
           consideredCount: 0,
-          error: `audition_voices failed: ${msg}`,
+          error: "audition_voices failed: voice discovery is unavailable",
         } satisfies AuditionVoicesToolResult);
       }
     },

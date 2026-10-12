@@ -9,6 +9,7 @@ import {
   type VeniceMediaFetch,
   type VeniceRetrieveResult,
 } from "./venice-lifecycle";
+import { readBoundedMediaJson } from "../providers/media-response";
 
 const SURPLUS_API_BASE = "https://api.surplusintelligence.ai";
 const SURPLUS_API_HOST = "api.surplusintelligence.ai";
@@ -120,7 +121,7 @@ function failure(input: Partial<MediaGenerationFailure> & Pick<MediaGenerationFa
   });
 }
 
-function statusFailure(receiptId: string, status: number, phase: "admission" | "retrieve" | "download") {
+function statusFailure(receiptId: string, status: number, phase: "admission" | "cancel" | "retrieve" | "download") {
   if (status === 401 || status === 403) {
     return new VeniceMediaLifecycleError(receiptId, failure({
       code: "SURPLUS_AUTHENTICATION",
@@ -160,13 +161,13 @@ function statusFailure(receiptId: string, status: number, phase: "admission" | "
 }
 
 async function json(response: Response): Promise<unknown> {
-  try { return await response.json(); } catch { return undefined; }
+  try { return await readBoundedMediaJson(response); } catch { return undefined; }
 }
 
 function exactMicros(value: unknown): number | undefined {
-  if (typeof value !== "string" || !/^\d{1,16}$/u.test(value)) return undefined;
+  if (typeof value !== "string" || !/^\d+$/u.test(value)) return undefined;
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 function validateArtifactUrl(value: string, jobId: string, allowedHosts: readonly string[]): string | undefined {
@@ -178,7 +179,7 @@ function validateArtifactUrl(value: string, jobId: string, allowedHosts: readonl
       (url.port && url.port !== "443") || !allowed.has(host)) return undefined;
   if (host === SURPLUS_API_HOST &&
       url.pathname !== `/v1/media/artifacts/${encodeURIComponent(jobId)}/0`) return undefined;
-  if (host === SURPLUS_ARTIFACT_HOST &&
+  if (host !== SURPLUS_API_HOST &&
       !url.pathname.split("/").includes(encodeURIComponent(jobId))) return undefined;
   return url.toString();
 }
@@ -334,6 +335,37 @@ export class SurplusMediaLifecycleAdapter {
       state: "signed_delivery", receiptId: input.accepted.receiptId, signedDeliveryUrl,
       ...(actualCostUsdMicros === undefined ? {} : { actualCostUsdMicros }),
     });
+  }
+
+  /** Best-effort provider cancellation. Polling remains the only terminal authority. */
+  async cancel(input: { readonly accepted: VeniceAcceptedMediaWork }): Promise<void> {
+    const facts = routeFacts(input.accepted.model);
+    if (!facts || facts.kind !== input.accepted.kind) {
+      throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
+        code: "SURPLUS_MEDIA_ROUTE_UNSUPPORTED", phase: "cancel", retrySafe: false,
+        completionCertainty: "accepted", chargeCertainty: "unknown", recoveryActions: ["contact_support"],
+        message: "The marketplace receipt no longer matches a supported media route.",
+      }));
+    }
+    let response: Response;
+    try {
+      response = await this.fetchImpl(
+        generationEndpoint(facts.kind, input.accepted.providerQueueId),
+        { method: "DELETE", redirect: "error", headers: this.authHeaders() },
+      );
+    } catch {
+      throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
+        code: "SURPLUS_CANCEL_RETRY", phase: "cancel", retrySafe: true,
+        completionCertainty: "accepted", chargeCertainty: "unknown", recoveryActions: ["wait"],
+        message: "Marketplace cancellation is temporarily unavailable; the existing job remains under observation.",
+      }));
+    }
+    await response.body?.cancel().catch(() => undefined);
+    // A completed job can answer 404/409 while cancellation loses the race.
+    // Persist the attempted cancellation and let the authenticated status poll
+    // decide whether it cancelled, failed, expired, or succeeded.
+    if (response.ok || response.status === 404 || response.status === 409) return;
+    throw statusFailure(input.accepted.receiptId, response.status, "cancel");
   }
 
   async downloadSignedDelivery(input: { readonly accepted: VeniceAcceptedMediaWork; readonly signedDeliveryUrl: string }): Promise<VeniceBinaryResult> {

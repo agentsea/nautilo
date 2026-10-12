@@ -7,6 +7,7 @@ import {
 } from "../usage/provider-cost-recorder";
 import type { UsageFundingProvenance } from "../usage/usage-context";
 import type { GenerateImagesArgs, GenerateImagesResult } from "./types";
+import { DirectImageAttemptError } from "./errors";
 
 function operationFor(args: GenerateImagesArgs): "image_generation" | "image_edit" {
   return (args.references?.length ?? 0) > 0 ? "image_edit" : "image_generation";
@@ -40,13 +41,14 @@ async function settleDirectImageAttempt(
     });
     return;
   }
+  const typed = input.error instanceof DirectImageAttemptError ? input.error : null;
   await recorder({
     provider: input.provider,
     operation: input.operation,
     actualCostUsd: null,
     evidenceState: "unknown",
-    attemptOutcome: "unknown",
-    failureCode: "outcome_unknown",
+    attemptOutcome: typed?.attemptOutcome ?? "unknown",
+    failureCode: typed?.failureCode ?? "outcome_unknown",
   });
 }
 

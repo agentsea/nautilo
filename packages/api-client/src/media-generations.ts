@@ -111,7 +111,7 @@ const artifactSchema = z.object({
 const failureSchema = z.object({
   code: z.string().min(1).max(128).regex(/^[A-Z][A-Z0-9_]*$/u),
   message: safeStatusMessageSchema,
-  phase: z.enum(["quote", "queue", "retrieve", "download", "save", "cleanup", "reconcile"]),
+  phase: z.enum(["quote", "queue", "cancel", "retrieve", "download", "save", "cleanup", "reconcile"]),
   retrySafe: z.boolean(),
   stateChanged: z.boolean(),
   completionCertainty: z.enum(["not_started", "accepted", "unknown", "complete"]),
@@ -153,6 +153,9 @@ export const mediaGenerationStatusDtoV1Schema = z.object({
   state: mediaGenerationStateSchema,
   modelId: modelIdSchema,
   settings: normalizedSettingsSchema,
+  /** Additive defaults preserve parsing of status responses from older servers. */
+  canCancel: z.boolean().optional().default(false),
+  cancellationRequested: z.boolean().optional().default(false),
   progress: progressSchema.optional(),
   artifact: artifactSchema.optional(),
   failure: failureSchema.optional(),
@@ -381,6 +384,8 @@ export interface MediaGenerationStatusSourceV1 {
   readonly settings: z.input<typeof normalizedSettingsSchema>;
   /** Durable local cleanup state; only `ready` + pending is card-visible. */
   readonly cleanupState: "pending" | "completed";
+  readonly canCancel?: boolean;
+  readonly cancellationRequested?: boolean;
   /** Optional server-calculated, safe timing evidence. */
   readonly progress?: z.input<typeof progressSchema> | undefined;
   readonly artifact?: z.input<typeof artifactSchema> | undefined;
@@ -445,6 +450,8 @@ export function mapMediaGenerationStatusV1(
     state,
     modelId: source.modelId,
     settings: source.settings,
+    canCancel: source.canCancel === true,
+    cancellationRequested: source.cancellationRequested === true,
     ...(progress ? { progress } : {}),
     ...((state === "ready" || state === "cleanup-pending") && source.artifact ? { artifact: source.artifact } : {}),
     ...((state === "needs-action" || state === "failed" || state === "unknown") && source.failure

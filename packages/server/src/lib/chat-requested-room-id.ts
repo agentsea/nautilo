@@ -11,6 +11,19 @@ export function extractRequestedRoomIdFromUrl(rawUrl: string): string | undefine
   return undefined;
 }
 
+/** POST routes whose request body carries the Room used to narrow bearer authority. */
+export function acceptsRequestedRoomIdFromBody(method: string, routePath: string): boolean {
+  return method === "POST" && (
+    routePath === "/api/chat"
+    || routePath === "/api/file/invoke-direct"
+    || routePath === "/api/apps/:appId/video-host-attestation"
+    || routePath === "/api/video-generations/prepare"
+    || routePath === "/api/video-generations/:takeId/submit"
+    || routePath === "/api/media-generations/:receiptId/cancel"
+    || routePath === "/api/rooms/:roomId/messages"
+  );
+}
+
 /** Routes whose bearer envelope is deliberately narrowed by `?roomId=`. */
 export function acceptsRequestedRoomIdFromUrl(
   method: string,

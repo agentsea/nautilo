@@ -182,6 +182,63 @@ describe("Surplus durable media lifecycle", () => {
     expect(calls).toBe(1);
   });
 
+  test("bounds admission metadata before parsing it", async () => {
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      fetchImpl: async () => new Response(JSON.stringify({
+        id: "market-job", kind: "music", status: "queued", padding: "x".repeat(1_048_576),
+      }), { status: 202, headers: { "content-type": "application/json" } }),
+    });
+    try {
+      await lifecycle.queueVeniceMediaGeneration(await surplusProof());
+      throw new Error("expected bounded admission failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VeniceMediaLifecycleError);
+      expect((error as VeniceMediaLifecycleError).failure).toMatchObject({
+        code: "SURPLUS_ADMISSION_UNKNOWN", completionCertainty: "unknown",
+      });
+    }
+  });
+
+  test("sends one exact best-effort DELETE and keeps polling through a successful completion", async () => {
+    const seen: Array<{ url: string; method?: string; authorization?: string }> = [];
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      fetchImpl: async (url, init) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        seen.push({
+          url: String(url),
+          ...(init?.method ? { method: init.method } : {}),
+          ...(headers?.["Authorization"] ? { authorization: headers["Authorization"] } : {}),
+        });
+        if (init?.method === "DELETE") return new Response(null, { status: 204 });
+        return new Response(JSON.stringify({
+          id: "market-job", kind: "music", status: "succeeded",
+          results: [{ artifact_index: 0, content_type: "audio/mpeg" }],
+          usage: { buyer_cost_usdc: "105600", settlement_status: "captured" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const accepted = { receiptId, model: "minimax-music-v26" as const, kind: "music" as const, providerQueueId: "market-job" };
+
+    await lifecycle.cancel({ accepted });
+    expect(await lifecycle.retrieve({ accepted, attempt: 1 })).toMatchObject({
+      state: "signed_delivery", actualCostUsdMicros: 105_600,
+    });
+    expect(seen).toEqual([
+      {
+        url: "https://api.surplusintelligence.ai/v1/music/generations/market-job",
+        method: "DELETE",
+        authorization: "Bearer surplus-secret",
+      },
+      {
+        url: "https://api.surplusintelligence.ai/v1/music/generations/market-job",
+        method: "GET",
+        authorization: "Bearer surplus-secret",
+      },
+    ]);
+  });
+
   test("captures the final buyer micro-charge and authenticates only the marketplace artifact hop", async () => {
     const seen: Array<{ url: string; authorization?: string }> = [];
     const lifecycle = new SurplusMediaLifecycleAdapter({
@@ -260,6 +317,56 @@ describe("Surplus durable media lifecycle", () => {
     }
   });
 
+  test("requires the exact job path on operator-allowed delivery hosts", async () => {
+    const seen: string[] = [];
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      signedDeliveryAllowedHosts: ["delivery.example"],
+      fetchImpl: async (url) => {
+        seen.push(String(url));
+        return new Response(null, { status: 302, headers: {
+          location: "https://delivery.example/media/other-job/0/audio.mp3",
+        } });
+      },
+    });
+    try {
+      await lifecycle.downloadSignedDelivery({
+        accepted: { receiptId, model: "minimax-music-v26", kind: "music", providerQueueId: "market-job" },
+        signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0",
+      });
+      throw new Error("expected wrong-job redirect rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VeniceMediaLifecycleError);
+      expect((error as VeniceMediaLifecycleError).failure.code).toBe("SURPLUS_DELIVERY_UNSAFE");
+    }
+    expect(seen).toEqual(["https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0"]);
+  });
+
+  test("allows four total delivery fetches and rejects a fourth redirect", async () => {
+    const seen: string[] = [];
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      signedDeliveryAllowedHosts: ["delivery.example"],
+      fetchImpl: async (url) => {
+        seen.push(String(url));
+        return new Response(null, { status: 302, headers: {
+          location: `https://delivery.example/media/market-job/${seen.length}/audio.mp3`,
+        } });
+      },
+    });
+    try {
+      await lifecycle.downloadSignedDelivery({
+        accepted: { receiptId, model: "minimax-music-v26", kind: "music", providerQueueId: "market-job" },
+        signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0",
+      });
+      throw new Error("expected redirect limit rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VeniceMediaLifecycleError);
+      expect((error as VeniceMediaLifecycleError).failure.code).toBe("SURPLUS_DELIVERY_UNSAFE");
+    }
+    expect(seen).toHaveLength(4);
+  });
+
   test("retrieves video from the video job endpoint and requires its exact output contract", async () => {
     const urls: string[] = [];
     const lifecycle = new SurplusMediaLifecycleAdapter({
@@ -331,6 +438,33 @@ describe("Surplus durable media lifecycle", () => {
         chargeCertainty: "charged_or_committed",
       });
       expect((error as VeniceMediaLifecycleError).actualCostUsdMicros).toBe(2_400);
+    }
+  });
+
+  test("accepts only nonnegative digit-only safe-integer settlement micros", async () => {
+    const values = [
+      ["9007199254740991", 9_007_199_254_740_991],
+      ["9007199254740992", undefined],
+      ["+2400", undefined],
+      ["24.00", undefined],
+      ["2e3", undefined],
+    ] as const;
+    for (const [buyerCost, expected] of values) {
+      const lifecycle = new SurplusMediaLifecycleAdapter({
+        apiKey: "surplus-secret",
+        fetchImpl: async () => new Response(JSON.stringify({
+          id: "market-job", kind: "music", status: "succeeded",
+          results: [{ artifact_index: 0, content_type: "audio/mpeg" }],
+          usage: { buyer_cost_usdc: buyerCost, settlement_status: "captured" },
+        }), { status: 200, headers: { "content-type": "application/json" } }),
+      });
+      const retrieved = await lifecycle.retrieve({
+        accepted: { receiptId, model: "minimax-music-v26", kind: "music", providerQueueId: "market-job" },
+        attempt: 1,
+      });
+      expect(retrieved.state).toBe("signed_delivery");
+      if (retrieved.state !== "signed_delivery") throw new Error("expected signed delivery");
+      expect(retrieved.actualCostUsdMicros).toBe(expected);
     }
   });
 });

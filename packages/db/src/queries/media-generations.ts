@@ -85,6 +85,8 @@ export interface ClaimedMediaGeneration {
   readonly fundingBinding: DurableServiceFundingBinding | null;
   /** Server-only provider coordinate. Never project this into a card or tool result. */
   readonly providerQueueId: string | null;
+  readonly cancellationRequestedAt: Date | null;
+  readonly cancellationProviderAcknowledgedAt: Date | null;
   readonly quotedUsdMicros: number;
   readonly actualUsdMicros: number | null;
   /** Last validated provider timing, needed to keep elapsed display monotonic across worker restarts. */
@@ -118,6 +120,8 @@ const claimedMediaGenerationColumns = {
   providerAccountFingerprint: mediaGenerations.providerAccountFingerprint,
   fundingBinding: mediaGenerations.fundingBinding,
   providerQueueId: mediaGenerations.providerQueueId,
+  cancellationRequestedAt: mediaGenerations.cancellationRequestedAt,
+  cancellationProviderAcknowledgedAt: mediaGenerations.cancellationProviderAcknowledgedAt,
   quotedUsdMicros: mediaGenerations.quotedUsdMicros,
   actualUsdMicros: mediaGenerations.actualUsdMicros,
   providerExecutionSeconds: mediaGenerations.providerExecutionSeconds,
@@ -480,6 +484,36 @@ export async function findMediaGeneration(
 }
 
 /**
+ * Persist one Human's best-effort cancellation intent for an already accepted
+ * Surplus job. The revision bump and lease release fence any in-flight worker
+ * before it can enter `saving`; provider completion remains authoritative.
+ */
+export async function requestMediaGenerationCancellation(
+  db: DirectDatabase,
+  input: MediaGenerationScope & { readonly receiptId: string; readonly expectedRevision: number },
+): Promise<MediaGeneration | null> {
+  assertScope(input); assertNonempty(input.receiptId, "receiptId"); assertRevision(input.expectedRevision);
+  const now = new Date();
+  const [row] = await db.update(mediaGenerations).set({
+    cancellationRequestedAt: now,
+    nextAttemptAt: now,
+    revision: input.expectedRevision + 1,
+    claimOwner: null,
+    claimExpiresAt: null,
+    updatedAt: now,
+  }).where(and(
+    scopeWhere(input, input.receiptId),
+    eq(mediaGenerations.revision, input.expectedRevision),
+    eq(mediaGenerations.provider, "surplus"),
+    isNotNull(mediaGenerations.providerQueueId),
+    isNotNull(mediaGenerations.fundingBinding),
+    isNull(mediaGenerations.cancellationRequestedAt),
+    inArray(mediaGenerations.state, ["queued", "retrieving"]),
+  )).returning();
+  return row ?? null;
+}
+
+/**
  * Durably fence provider admission before any network dispatch. The random
  * proof is minted here, never supplied by a tool/model caller.
  */
@@ -704,6 +738,33 @@ export async function renewMediaGenerationClaim(
     revision: input.expectedRevision + 1,
     updatedAt: now,
   }).where(claimedWhere(input, now)).returning(claimedMediaGenerationColumns);
+  return row as ClaimedMediaGeneration | undefined ?? null;
+}
+
+/** Record only the provider's best-effort DELETE acknowledgement, never a terminal outcome. */
+export async function acknowledgeClaimedMediaGenerationCancellation(
+  db: DirectDatabase,
+  input: MediaGenerationScope & {
+    readonly receiptId: string;
+    readonly workerId: string;
+    readonly expectedRevision: number;
+    readonly state: "queued" | "retrieving";
+    readonly now: Date;
+  },
+): Promise<ClaimedMediaGeneration | null> {
+  assertClaimInput(input);
+  const now = assertSafeTimestamp(input.now, "cancellation acknowledgement time");
+  const [row] = await db.update(mediaGenerations).set({
+    cancellationProviderAcknowledgedAt: now,
+    revision: input.expectedRevision + 1,
+    updatedAt: now,
+  }).where(and(
+    claimedWhere(input, now),
+    eq(mediaGenerations.provider, "surplus"),
+    isNotNull(mediaGenerations.providerQueueId),
+    isNotNull(mediaGenerations.cancellationRequestedAt),
+    isNull(mediaGenerations.cancellationProviderAcknowledgedAt),
+  )).returning(claimedMediaGenerationColumns);
   return row as ClaimedMediaGeneration | undefined ?? null;
 }
 

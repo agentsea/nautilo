@@ -11,6 +11,7 @@ import type {
   CatalogResponse as SharedCatalogResponse,
   CatalogVerifiedLanguage as SharedCatalogVerifiedLanguage,
   CatalogVoice as SharedCatalogVoice,
+  VoiceFundingRecovery,
 } from "@nautilo/types";
 
 /**
@@ -200,7 +201,7 @@ export interface ProfileSnapshot {
  */
 export type IpcResult<T> =
   | { ok: true; data: T }
-  | { ok: false; error: string };
+  | { ok: false; error: string; recovery?: VoiceFundingRecovery };
 
 /**
  * Full onboarding IPC API surface. Every API-proxy channel
@@ -222,6 +223,9 @@ export interface OnboardingAPI {
   getServerUrl: () => Promise<string>;
   complete: () => Promise<void>;
   cancel: () => Promise<void>;
+  /** Open one server-verified voice funding repair destination without
+   * navigating the in-progress wizard itself. */
+  openVoiceFundingRecovery?: (recovery: VoiceFundingRecovery) => Promise<void>;
 
   // ── Hydration channels (called once at wizard mount) ───────────
   /** Returns the existing profile snapshot if one is already

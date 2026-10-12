@@ -5,6 +5,7 @@ import {
   type VoiceCatalogAssignRole,
 } from "@nautilo/voice-catalog-ui";
 import { apiClient } from "../../lib/api";
+import { useNavigate } from "react-router-dom";
 
 const ENGLISH_SAMPLE_FALLBACK_COPY =
   "No translated Genie sample yet; using English.";
@@ -41,6 +42,7 @@ export function VoiceCatalogModal({
   defaultAssignRole,
   title = "Browse voices and languages",
 }: VoiceCatalogModalProps) {
+  const navigate = useNavigate();
   return (
     <SharedVoiceCatalogModal
       open={open}
@@ -49,6 +51,7 @@ export function VoiceCatalogModal({
       initialLanguage={initialLanguage}
       defaultAssignRole={defaultAssignRole}
       onClose={onClose}
+      onOpenFundingRecovery={(recovery) => { void navigate(recovery.href); }}
       loadCatalog={(query) => apiClient.listVoiceCatalog(query)}
       previewVoice={async (voice, source) => {
         const phrase = samplePhrase(voice);

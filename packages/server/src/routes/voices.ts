@@ -1,10 +1,11 @@
-import { getServerSpeechModel, resolveFundedSpeechModel, estimateSpeechCostUsd, type SpeechModel, type UsageFundingProvenance } from "@nautilo/agent";
+import { getServerSpeechModel, resolveFundedSpeechModel, estimateSpeechCostUsd, readBoundedMediaBytes, readBoundedMediaJson, type SpeechModel, type UsageFundingProvenance } from "@nautilo/agent";
+import { ATTACHMENT_POLICY } from "@nautilo/attachments";
 import { dialogueSpeechResponse } from "../realtime/dialogue-speech";
 import { splitSpeechText } from "../realtime/speech-text";
 import { randomUUID } from "node:crypto";
-import { createReadStream, existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { createReadStream } from "node:fs";
+import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { requestAllowsOwnerOrLoopback } from "../lib/request-trust";
 import {
   createDbProviderCatalogCache,
@@ -14,7 +15,7 @@ import {
 import {
   ELEVENLABS_CURATED_VOICE_IDS,
   curatedVoiceDisplayNameForId,
-  fetchElevenLabsCatalog,
+  normalizeElevenLabsLabels,
   voicePreviewPathForCustomText,
   type VoiceCatalogEntry,
 } from "@nautilo/voice";
@@ -35,6 +36,7 @@ import {
   type VoiceServiceFunding,
 } from "../realtime/voice-service-funding";
 import { createCapabilityFundingSession } from "../lib/capability-funding";
+import { ModelFundingError, type ModelFundingErrorCode } from "../lib/model-funding";
 
 /** Featured customization floor — six voices spanning EN / ES / FR / DE / JA. */
 const FEATURED_CUSTOMIZATION_VOICE_IDS: Record<string, string> = {
@@ -82,7 +84,159 @@ function voiceProviderUnavailableMessage(): string {
     ? "Managed voice service is unavailable"
     : "Voice provider credentials are not available";
 }
-import type { FastifyInstance } from "fastify";
+
+type VoiceFundingFailureProjection = Readonly<{
+  status: number;
+  body: {
+    error: string;
+    errorCode: ModelFundingErrorCode;
+    repairAction: string;
+    href: string;
+  };
+}>;
+
+function canManageServerVoiceCredentials(role: ViewerRole | undefined): boolean {
+  return role === "owner" || role === "admin";
+}
+
+function policyViewerRole(role: string | undefined): ViewerRole | undefined {
+  switch (role) {
+    case "owner":
+    case "admin":
+    case "superuser":
+    case "member":
+    case "contributor":
+    case "community":
+    case "guest":
+    case "anonymous":
+    case "stranger":
+      return role;
+    default:
+      return undefined;
+  }
+}
+
+function voiceFundingFailureProjection(
+  error: ModelFundingError,
+  actorRole?: ViewerRole,
+): VoiceFundingFailureProjection {
+  switch (error.code) {
+    case "personal_credentials_disabled":
+      return {
+        status: 403,
+        body: {
+          error: "Personal voice funding is disabled.",
+          errorCode: error.code,
+          repairAction: "contact_operator",
+          href: "/settings#personal-provider-keys",
+        },
+      };
+    case "personal_credentials_forbidden":
+    case "server_credentials_forbidden":
+      return {
+        status: 403,
+        body: {
+          error: "Voice funding is not permitted for this account.",
+          errorCode: error.code,
+          repairAction: "contact_operator",
+          href: "/settings#personal-provider-keys",
+        },
+      };
+    case "personal_credential_missing":
+      return {
+        status: 409,
+        body: {
+          error: "Voice provider credentials are not configured.",
+          errorCode: error.code,
+          repairAction: "configure_provider_credentials",
+          href: "/settings#personal-provider-keys",
+        },
+      };
+    case "provider_credentials_missing": {
+      const providerAdmin = canManageServerVoiceCredentials(actorRole);
+      return {
+        status: 409,
+        body: {
+          error: "Voice provider credentials are not configured.",
+          errorCode: error.code,
+          repairAction: providerAdmin
+            ? "configure_server_provider_credentials"
+            : "contact_operator",
+          href: providerAdmin
+            ? "/admin#provider-credentials"
+            : "/settings#personal-provider-keys",
+        },
+      };
+    }
+    case "personal_credential_stale":
+      return {
+        status: 409,
+        body: {
+          error: "The saved voice provider credential changed.",
+          errorCode: error.code,
+          repairAction: "replace_provider_credential",
+          href: "/settings#personal-provider-keys",
+        },
+      };
+    case "personal_credential_unavailable":
+      return {
+        status: 503,
+        body: {
+          error: "The saved voice provider credential is unavailable.",
+          errorCode: error.code,
+          repairAction: "repair_provider_credential",
+          href: "/settings#personal-provider-keys",
+        },
+      };
+    case "funding_source_changed":
+      return {
+        status: 409,
+        body: {
+          error: "Voice funding changed before the request completed.",
+          errorCode: error.code,
+          repairAction: "retry_voice_operation",
+          href: "/settings#personal-provider-keys",
+        },
+      };
+    case "unsupported_provider":
+    case "unsupported_workload":
+      return {
+        status: 422,
+        body: {
+          error: "The selected speech model cannot use voice funding.",
+          errorCode: error.code,
+          repairAction: "choose_supported_speech_model",
+          href: "/settings#capability-models",
+        },
+      };
+  }
+}
+
+function isMissingVoiceCredential(error: unknown): boolean {
+  return error instanceof ModelFundingError &&
+    (error.code === "personal_credential_missing" || error.code === "provider_credentials_missing");
+}
+
+async function isRegularPreviewFile(path: string): Promise<boolean> {
+  if (!GENERATED_PREVIEW_BASENAME.test(basename(path))) return false;
+  try {
+    const stat = await lstat(path);
+    return stat.isFile() && !stat.isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+async function writePreviewAtomically(path: string, bytes: Buffer): Promise<void> {
+  const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
+    await rename(temporary, path);
+  } finally {
+    await unlink(temporary).catch(() => {});
+  }
+}
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
   CatalogLanguageGroup,
   CatalogQuery,
@@ -90,6 +244,7 @@ import type {
   CatalogVerifiedLanguage,
   CatalogVoice,
   VoiceCustomizationHydrationResponse,
+  ViewerRole,
 } from "@nautilo/types";
 
 const CATALOG_TTL_MS = 15 * 60 * 1000;
@@ -108,6 +263,10 @@ const VOICE_CATALOG_CACHE_PROVIDER = "elevenlabs";
 const VOICE_CATALOG_CACHE_SCHEMA_VERSION = "voice-reference-languages-v5";
 const PREVIEW_RATE_WINDOW_MS = 60_000;
 const PREVIEW_RATE_MAX = 20;
+const MAX_PREVIEW_TEXT_CHARACTERS = 500;
+const GENERATED_PREVIEW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const GENERATED_PREVIEW_MAX_FILES = 1_000;
+const GENERATED_PREVIEW_BASENAME = /^[A-Za-z0-9]{4,64}_t_[0-9a-f]{24}\.mp3$/;
 
 /**
  * Versioned audition line for preview cache invalidation.
@@ -181,6 +340,106 @@ const languageGroupRefreshInflight = new Map<string, Promise<void>>();
 const providerLanguageCache = new Map<string, ElevenLabsModelLanguageCache>();
 const providerLanguageInflight = new Map<string, Promise<Set<string>>>();
 const previewTimestamps = new Map<string, number[]>();
+const activePreviewPaths = new Map<string, number>();
+const previewDeletionInflight = new Map<string, Promise<boolean>>();
+
+function retainPreviewPath(path: string): () => void {
+  activePreviewPaths.set(path, (activePreviewPaths.get(path) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (activePreviewPaths.get(path) ?? 1) - 1;
+    if (remaining <= 0) activePreviewPaths.delete(path);
+    else activePreviewPaths.set(path, remaining);
+  };
+}
+
+function sendPreviewStream(
+  reply: FastifyReply,
+  path: string,
+): FastifyReply {
+  const release = retainPreviewPath(path);
+  const stream = createReadStream(path);
+  stream.once("close", release);
+  stream.once("error", release);
+  return reply.send(stream);
+}
+
+type GeneratedPreviewCandidate = Readonly<{
+  path: string;
+  mtimeMs: number;
+  size: number;
+  dev: number;
+  ino: number;
+}>;
+
+async function unlinkUnchangedGeneratedPreview(candidate: GeneratedPreviewCandidate): Promise<boolean> {
+  if (activePreviewPaths.has(candidate.path)) return false;
+  try {
+    const current = await lstat(candidate.path);
+    if (
+      !current.isFile() || current.isSymbolicLink() ||
+      current.dev !== candidate.dev || current.ino !== candidate.ino ||
+      current.size !== candidate.size || current.mtimeMs !== candidate.mtimeMs ||
+      activePreviewPaths.has(candidate.path)
+    ) return false;
+    const deletion = unlink(candidate.path).then(() => true, () => false);
+    previewDeletionInflight.set(candidate.path, deletion);
+    try {
+      return await deletion;
+    } finally {
+      if (previewDeletionInflight.get(candidate.path) === deletion) {
+        previewDeletionInflight.delete(candidate.path);
+      }
+    }
+  } catch {
+    return false;
+  }
+}
+
+/** Bounded cleanup for files created by the custom voice-preview cache only. */
+export async function cleanupGeneratedVoicePreviewCache(
+  directory: string,
+  now = Date.now(),
+): Promise<void> {
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  const candidates: GeneratedPreviewCandidate[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !GENERATED_PREVIEW_BASENAME.test(entry.name)) continue;
+    const path = join(directory, entry.name);
+    try {
+      const stat = await lstat(path);
+      if (!stat.isFile() || stat.isSymbolicLink()) continue;
+      candidates.push({ path, mtimeMs: stat.mtimeMs, size: stat.size, dev: stat.dev, ino: stat.ino });
+    } catch {
+      // A concurrent writer or cleanup may have moved the entry already.
+    }
+  }
+
+  candidates.sort((a, b) => a.mtimeMs - b.mtimeMs || a.path.localeCompare(b.path));
+  const removed = new Set<string>();
+  for (const candidate of candidates) {
+    if (now - candidate.mtimeMs <= GENERATED_PREVIEW_MAX_AGE_MS) continue;
+    if (await unlinkUnchangedGeneratedPreview(candidate)) removed.add(candidate.path);
+  }
+
+  let remaining = candidates.length - removed.size;
+  for (const candidate of candidates) {
+    if (remaining <= GENERATED_PREVIEW_MAX_FILES) break;
+    if (removed.has(candidate.path)) continue;
+    if (await unlinkUnchangedGeneratedPreview(candidate)) {
+      removed.add(candidate.path);
+      remaining -= 1;
+    }
+  }
+}
 
 type VoiceProviderAccount = Readonly<{
   fingerprint: string;
@@ -577,18 +836,29 @@ async function fetchSharedVoicesPage(
     ...(account.signal ? { signal: account.signal } : {}),
   }));
   if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`ElevenLabs shared-voices ${res.status}: ${body.slice(0, 200)}`);
+    await res.body?.cancel().catch(() => {});
+    throw new Error(`ElevenLabs shared-voices request failed (HTTP ${res.status})`);
   }
-  const data = (await res.json()) as {
-    voices?: ElevenLabsSharedVoiceRaw[];
-    has_more?: boolean;
-    total_count?: number;
-  };
+  const data = await readBoundedMediaJson(res);
+  if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid shared voice metadata");
+  const record = data as Record<string, unknown>;
+  if (!Array.isArray(record["voices"])) throw new Error("Invalid shared voice metadata");
+  const voices = record["voices"];
+  if (!voices.every((voice): voice is ElevenLabsSharedVoiceRaw => (
+    Boolean(voice)
+    && typeof voice === "object"
+    && !Array.isArray(voice)
+    && typeof (voice as Record<string, unknown>)["voice_id"] === "string"
+    && typeof (voice as Record<string, unknown>)["name"] === "string"
+  ))) throw new Error("Invalid shared voice metadata");
+  const hasMore = record["has_more"];
+  const totalCount = record["total_count"];
+  if (hasMore !== undefined && typeof hasMore !== "boolean") throw new Error("Invalid shared voice metadata");
+  if (totalCount !== undefined && (!Number.isSafeInteger(totalCount) || (totalCount as number) < 0)) throw new Error("Invalid shared voice metadata");
   return {
-    voices: data.voices ?? [],
-    hasMore: data.has_more ?? false,
-    totalCount: data.total_count ?? 0,
+    voices,
+    hasMore: hasMore ?? false,
+    totalCount: typeof totalCount === "number" ? totalCount : 0,
   };
 }
 
@@ -613,7 +883,10 @@ async function fetchProviderLanguages(
       await res.body?.cancel();
       throw new Error(`ElevenLabs models ${res.status}`);
     }
-    const models = (await res.json()) as ElevenLabsModelRaw[];
+    const models = await readBoundedMediaJson(res);
+    if (!Array.isArray(models) || !models.every((model): model is ElevenLabsModelRaw => (
+      Boolean(model) && typeof model === "object" && !Array.isArray(model)
+    ))) throw new Error("Invalid ElevenLabs models metadata");
     // These are discovery categories, not a selected-model capability claim.
     // Provider reference samples can use other models; generated auditions use
     // the exact server model and expose unsupported combinations truthfully.
@@ -1069,6 +1342,7 @@ async function synthesizePreviewMp3(
   }>,
 ): Promise<Buffer> {
   const buffers: Buffer[] = [];
+  let totalBytes = 0;
   for (const part of splitSpeechText(text, model.speech.maxInputCharacters)) {
     let admission: ServerProviderCostAttemptAdmission | undefined;
     let attemptBegun = false;
@@ -1111,7 +1385,10 @@ async function synthesizePreviewMp3(
           await res.body?.cancel();
           throw new Error("Speech preview provider unavailable");
         }
-        const bytes = Buffer.from(await res.arrayBuffer());
+        const remainingBytes = ATTACHMENT_POLICY.maxAudioBytes - totalBytes;
+        if (remainingBytes < 1) throw new Error("Speech preview response too large");
+        const bytes = Buffer.from(await readBoundedMediaBytes(res, remainingBytes));
+        totalBytes += bytes.byteLength;
         completed = true;
         return bytes;
       });
@@ -1181,7 +1458,13 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     const signal = requestAbortSignal(request, reply);
     let account: VoiceProviderAccount | null = null;
     try { account = await resolveAccount(request.sessionUserId, "voice_catalog_hydration", signal); }
-    catch { /* Missing or unavailable credentials are a steady-state hydration result. */ }
+    catch (error) {
+      if (error instanceof ModelFundingError && !isMissingVoiceCredential(error)) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send(projection.body);
+      }
+      // Missing credentials remain a steady-state hydration result.
+    }
 
     // remote customization needs the guided curated floor and an
     // optional-voice capability, but must never enumerate provider-account
@@ -1219,7 +1502,33 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     }
 
     try {
-      const entries = await account.run(({ apiKey }) => fetchElevenLabsCatalog(apiKey));
+      const entries = await account.run(async ({ apiKey }) => {
+        const res = await fetch("https://api.elevenlabs.io/v1/voices", {
+          headers: { "xi-api-key": apiKey },
+          ...(account.signal ? { signal: account.signal } : {}),
+        });
+        if (!res.ok) {
+          await res.body?.cancel().catch(() => {});
+          throw new Error(`ElevenLabs voices request failed (HTTP ${res.status})`);
+        }
+        const data = await readBoundedMediaJson(res);
+        if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid voice metadata");
+        const voices = (data as Record<string, unknown>)["voices"];
+        if (!Array.isArray(voices)) throw new Error("Invalid voice metadata");
+        return voices.map((voice): VoiceCatalogEntry => {
+          if (!voice || typeof voice !== "object" || Array.isArray(voice)) throw new Error("Invalid voice metadata");
+          const row = voice as Record<string, unknown>;
+          if (typeof row["voice_id"] !== "string" || typeof row["name"] !== "string") throw new Error("Invalid voice metadata");
+          if (row["labels"] !== undefined && (!row["labels"] || typeof row["labels"] !== "object" || Array.isArray(row["labels"]))) throw new Error("Invalid voice metadata");
+          if (row["description"] !== undefined && row["description"] !== null && typeof row["description"] !== "string") throw new Error("Invalid voice metadata");
+          return {
+            voiceId: row["voice_id"],
+            name: row["name"],
+            labels: normalizeElevenLabsLabels(row["labels"] as Record<string, unknown> | undefined),
+            description: row["description"] ?? null,
+          };
+        });
+      });
       catalogCache.set(account.fingerprint, { entries, expiresAt: now + CATALOG_TTL_MS, cachedAt: now });
       const response: VoiceCustomizationHydrationResponse = {
         curated,
@@ -1231,6 +1540,10 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     } catch (error) {
       if (error instanceof ServerProviderCredentialsDeniedError) {
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
+      }
+      if (error instanceof ModelFundingError) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send(projection.body);
       }
       return reply.code(502).send({
         curated,
@@ -1255,7 +1568,21 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     const signal = requestAbortSignal(request, reply);
     let account: VoiceProviderAccount;
     try { account = await resolveAccount(request.sessionUserId, "voice_catalog", signal); }
-    catch {
+    catch (error) {
+      if (error instanceof ModelFundingError) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send({
+          ...projection.body,
+          voices: [] as CatalogVoice[],
+          languageGroups: [] as CatalogLanguageGroup[],
+          page: 0,
+          pageSize: DEFAULT_CATALOG_PAGE_SIZE,
+          hasMore: false,
+          totalCount: 0,
+          elevenLabsConfigured: false,
+          cachedAt: null,
+        });
+      }
       return reply.code(400).send({
         error: voiceProviderUnavailableMessage(),
         voices: [] as CatalogVoice[],
@@ -1304,6 +1631,20 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
       if (error instanceof ServerProviderCredentialsDeniedError) {
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
       }
+      if (error instanceof ModelFundingError) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send({
+          ...projection.body,
+          voices: [] as CatalogVoice[],
+          languageGroups: [] as CatalogLanguageGroup[],
+          page: normalizeCatalogPage(upstreamParams["page"]),
+          pageSize: normalizeCatalogPageSize(upstreamParams["page_size"]),
+          hasMore: false,
+          totalCount: 0,
+          elevenLabsConfigured: true,
+          cachedAt: null,
+        });
+      }
       return reply.code(502).send({
         // Provider responses can include account-specific diagnostics. This
         // route is available to every authenticated non-guest user, so do
@@ -1335,10 +1676,28 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
       return reply.code(400).send({ error: "Invalid voice id" });
     }
 
+    const body = request.body;
+    const raw =
+      typeof body === "object" && body !== null && "text" in body ?
+        (body as { text?: unknown }).text
+      : undefined;
+    if (typeof raw === "string" && raw.length > MAX_PREVIEW_TEXT_CHARACTERS) {
+      return reply.code(400).send({
+        error: `Voice preview text must be ${MAX_PREVIEW_TEXT_CHARACTERS} characters or fewer.`,
+        errorCode: "preview_text_too_long",
+      });
+    }
+    const customText = typeof raw === "string" ? raw.trim() : "";
+    const textToSpeak = customText.length > 0 ? customText : AUDITION_SCRIPT_V2;
+
     const signal = requestAbortSignal(request, reply);
     let account: VoiceProviderAccount;
     try { account = await resolveAccount(request.sessionUserId, "voice_preview", signal); }
-    catch {
+    catch (error) {
+      if (error instanceof ModelFundingError) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send(projection.body);
+      }
       return reply.code(400).send({ error: voiceProviderUnavailableMessage() });
     }
 
@@ -1348,26 +1707,25 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
         .send({ error: "Too many preview requests; try again in a minute." });
     }
 
-    const body = request.body;
-    const raw =
-      typeof body === "object" && body !== null && "text" in body ?
-        (body as { text?: unknown }).text
-      : undefined;
-    const customText = typeof raw === "string" ? raw.trim() : "";
-    const textToSpeak =
-      customText.length > 0 ? customText : AUDITION_SCRIPT_V2;
     let model: SpeechModel;
     try { model = await resolveSpeechModel(request.sessionUserId); }
-    catch { return reply.code(503).send({ error: "The server speech model is unavailable." }); }
-    const path = previewFilePathForCustom(voiceId, JSON.stringify(["speech-preview-v2", account.fingerprint, model.id, model.providerModelId, model.speech.transport, "mp3_44100_128", VOICE_SETTINGS, textToSpeak]));
-
-    if (existsSync(path)) {
-      reply.header("Content-Type", "audio/mpeg");
-      reply.header("Cache-Control", "private, no-store");
-      return reply.send(createReadStream(path));
+    catch (error) {
+      if (error instanceof ModelFundingError) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send(projection.body);
+      }
+      return reply.code(503).send({ error: "The server speech model is unavailable." });
     }
+    const path = previewFilePathForCustom(voiceId, JSON.stringify(["speech-preview-v2", account.fingerprint, model.id, model.providerModelId, model.speech.transport, "mp3_44100_128", VOICE_SETTINGS, textToSpeak]));
+    const releaseWriter = retainPreviewPath(path);
 
     try {
+      await previewDeletionInflight.get(path);
+      if (await isRegularPreviewFile(path)) {
+        reply.header("Content-Type", "audio/mpeg");
+        reply.header("Cache-Control", "private, no-store");
+        return sendPreviewStream(reply, path);
+      }
       // Ensure the parent directory exists. Both previewFilePath and
       // previewFilePathForCustom return paths under data/voice-previews/
       // which ensureDirectoryTree() creates on boot — the mkdir is
@@ -1378,18 +1736,25 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
         begin: beginCost,
         settle: settleCost,
       });
-      await writeFile(path, buf);
+      await writePreviewAtomically(path, buf);
+      await cleanupGeneratedVoicePreviewCache(dirname(path)).catch(() => {});
       reply.header("Content-Type", "audio/mpeg");
       reply.header("Cache-Control", "private, no-store");
-      return reply.send(createReadStream(path));
+      return sendPreviewStream(reply, path);
     } catch (error) {
       if (error instanceof ServerProviderCredentialsDeniedError) {
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
+      }
+      if (error instanceof ModelFundingError) {
+        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        return reply.code(projection.status).send(projection.body);
       }
       // Preview is deliberately callable by ordinary users. Keep provider
       // error detail server-side so an upstream diagnostic cannot expose a
       // configured key or account information through this proxy.
       return reply.code(502).send({ error: "Voice preview failed." });
+    } finally {
+      releaseWriter();
     }
     },
   );

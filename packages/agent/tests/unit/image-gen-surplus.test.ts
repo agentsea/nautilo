@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe("qualified Surplus image transport", () => {
-  test("uses closed canonical model mappings with explicit marketplace privacy", () => {
+  test("derives exact signed image routes without a single-model eligibility gate", () => {
     expect(resolveSurplusImageRoute("venice:gpt-image-2")).toEqual({
       modelId: "venice:gpt-image-2",
       surplusModelId: "venice-gpt-image-2",
@@ -45,7 +45,14 @@ describe("qualified Surplus image transport", () => {
       privacy: "marketplace-unpinned",
     });
     expect(resolveSurplusImageRoute("openai:gpt-image-2")).toBeNull();
-    expect(resolveSurplusImageRoute("venice:seedream-v5-pro")).toBeNull();
+    expect(resolveSurplusImageRoute("venice:seedream-v5-pro")).toMatchObject({
+      modelId: "venice:seedream-v5-pro",
+      surplusModelId: "venice-seedream-v5-pro",
+      operations: ["generate"],
+      maxReferenceImages: 0,
+      exactSize: false,
+      privacy: "marketplace-unpinned",
+    });
     expect(resolveSurplusImageRoute("alibaba:qwen-image-2-edit")).toBeNull();
   });
 
@@ -267,21 +274,22 @@ describe("qualified Surplus image transport", () => {
   test("binds response headers before reading paid image bytes", async () => {
     const sequence: string[] = [];
     const requestId = "image-request-owned";
-    const response = {
-      ok: true,
+    const response = new Response(JSON.stringify({
+      data: [{ b64_json: PNG.toString("base64") }],
+    }), {
       status: 200,
-      headers: new Headers({
+      headers: {
         "x-request-id": requestId,
         "x-si-buyer-cost-micro": "8800",
-      }),
-      body: { cancel: () => Promise.resolve() },
-      text: () => {
-        sequence.push("read-body");
-        return Promise.resolve(JSON.stringify({
-          data: [{ b64_json: PNG.toString("base64") }],
-        }));
       },
-    } as unknown as Response;
+    });
+    const originalGetReader = response.body!.getReader.bind(response.body!);
+    Object.defineProperty(response.body, "getReader", {
+      value: () => {
+        sequence.push("read-body");
+        return originalGetReader();
+      },
+    });
     const fetchImpl = (() => Promise.resolve(response)) as unknown as typeof fetch;
 
     await generateImagesSurplus(

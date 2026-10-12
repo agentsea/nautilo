@@ -46,6 +46,13 @@ export interface MediaGenerationReconcilerRepository {
     state: MediaGenerationState;
     now: Date;
   }>): Promise<ClaimedMediaGeneration | null>;
+  acknowledgeCancellation(input: MediaGenerationScope & Readonly<{
+    receiptId: string;
+    workerId: string;
+    expectedRevision: number;
+    state: "queued" | "retrieving";
+    now: Date;
+  }>): Promise<ClaimedMediaGeneration | null>;
   transition(input: MediaGenerationScope & Readonly<{
     receiptId: string;
     workerId: string;
@@ -98,10 +105,12 @@ export interface MediaGenerationArtifactCustody {
 export interface MediaGenerationReconcilerDependencies {
   readonly repository: MediaGenerationReconcilerRepository;
   readonly lifecycle?: Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete"> &
-    Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">>;
+    Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">> &
+    Readonly<{ cancel?: (input: { readonly accepted: VeniceAcceptedMediaWork }) => Promise<void> }>;
   /** Open only the exact persisted creating account for this claimed receipt. */
   readonly lifecycleFor?: (claim: Claim) => Promise<Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete"> &
-    Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">>>;
+    Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">> &
+    Readonly<{ cancel?: (input: { readonly accepted: VeniceAcceptedMediaWork }) => Promise<void> }>>;
   /** Settle the pre-dispatch cost attempt from durable terminal evidence. */
   readonly settleCost?: (claim: Claim, input: Readonly<{
     outcome: "succeeded" | "failed" | "cancelled" | "unknown";
@@ -198,7 +207,7 @@ function safeFailure(failure: MediaGenerationFailure): MediaGenerationSafeFailur
 
 function operationalFailure(input: Readonly<{
   code: string;
-  phase: "retrieve" | "download" | "save" | "cleanup" | "reconcile";
+  phase: "cancel" | "retrieve" | "download" | "save" | "cleanup" | "reconcile";
   retrySafe: boolean;
   recoveryActions: MediaGenerationSafeFailure["recoveryActions"];
 }>): MediaGenerationSafeFailure {
@@ -343,13 +352,50 @@ export class MediaGenerationReconciler {
     claim = beforeRetrieve;
 
     let lifecycle: Pick<VeniceMediaLifecycleAdapter, "retrieve" | "complete"> &
-      Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">>;
+      Partial<Pick<VeniceMediaLifecycleAdapter, "downloadSignedDelivery">> &
+      Readonly<{ cancel?: (input: { readonly accepted: VeniceAcceptedMediaWork }) => Promise<void> }>;
     try {
       lifecycle = this.deps.lifecycleFor
         ? await this.deps.lifecycleFor(claim)
         : this.deps.lifecycle ?? (() => { throw new Error("media lifecycle unavailable"); })();
     } catch (error) {
       return this.handleFailure(claim, workerId, error);
+    }
+    if (claim.cancellationRequestedAt !== null && claim.cancellationProviderAcknowledgedAt === null) {
+      if ((claim.provider ?? "venice") !== "surplus" ||
+          (claim.state !== "queued" && claim.state !== "retrieving")) {
+        const terminal = await this.transition(claim, workerId, "needs_action", { safeFailure: operationalFailure({
+          code: "MEDIA_CANCELLATION_UNAVAILABLE", phase: "cancel", retrySafe: false,
+          recoveryActions: ["repair_account"],
+        }) });
+        return terminal === null ? "lostLease" : "terminal";
+      }
+      let cancellationAcknowledged = false;
+      if (lifecycle.cancel) {
+        try {
+          await lifecycle.cancel({ accepted });
+          cancellationAcknowledged = true;
+        } catch (error) {
+          // DELETE is best effort and never owns terminal truth. Keep the
+          // intent unacknowledged so a later cycle retries it, but continue to
+          // the authoritative status GET in this cycle. The exact creating
+          // account being unavailable is different: GET cannot honestly run
+          // under another key, so surface that explicit recovery state.
+          if (error instanceof VeniceMediaLifecycleError &&
+              (error.failure.code === "SURPLUS_AUTHENTICATION" ||
+               error.failure.code === "VENICE_AUTHENTICATION")) {
+            return this.handleFailure(claim, workerId, error);
+          }
+        }
+      }
+      if (cancellationAcknowledged) {
+        const acknowledged = await this.deps.repository.acknowledgeCancellation({
+          ...scope(claim), receiptId: claim.receiptId, workerId,
+          expectedRevision: claim.revision, state: claim.state, now: this.now(),
+        });
+        if (!isClaim(acknowledged)) return "lostLease";
+        claim = acknowledged;
+      }
     }
     let retrieved: VeniceRetrieveResult;
     try {
@@ -362,7 +408,10 @@ export class MediaGenerationReconciler {
     }
 
     const afterRetrieve = await this.renew(claim, workerId);
-    if (afterRetrieve === null) return "lostLease";
+    if (afterRetrieve === null) {
+      if (retrieved.state === "binary") await retrieved.body.cancel().catch(() => undefined);
+      return "lostLease";
+    }
     claim = afterRetrieve;
 
     if (retrieved.state === "processing") {
@@ -425,7 +474,10 @@ export class MediaGenerationReconciler {
       const saving = await this.transition(claim, workerId, "saving", {
         ...(actualUsdMicros === undefined ? {} : { actualUsdMicros }),
       });
-      if (!isClaim(saving) || saving.state !== "saving") return "lostLease";
+      if (!isClaim(saving) || saving.state !== "saving") {
+        await retrieved.body.cancel().catch(() => undefined);
+        return "lostLease";
+      }
       claim = saving;
     }
     return this.persist(claim, workerId, retrieved.body, mimeType);
@@ -463,7 +515,10 @@ export class MediaGenerationReconciler {
     mimeType: SupportedGeneratedMediaMimeType,
   ): Promise<"completed" | "rescheduled" | "lostLease" | "terminal"> {
     const beforeWrite = await this.renew(claim, workerId);
-    if (beforeWrite === null) return "lostLease";
+    if (beforeWrite === null) {
+      await stream.cancel().catch(() => undefined);
+      return "lostLease";
+    }
     claim = beforeWrite;
     let written: WrittenStagedMediaArtifact;
     try {

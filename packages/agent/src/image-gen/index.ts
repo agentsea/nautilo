@@ -52,6 +52,14 @@ export {
   type SurplusImageAttemptInput,
 } from "./surplus-attempt";
 export { runFundedDirectImageAttempt } from "./funded-attempt";
+export {
+  DirectImageAttemptError,
+  type DirectImageAttemptOutcome,
+} from "./errors";
+export {
+  assertImageOutputBounds,
+  decodeBoundedImageBase64,
+} from "./bounds";
 
 export interface ProviderCreds {
   readonly openaiKey?: string;

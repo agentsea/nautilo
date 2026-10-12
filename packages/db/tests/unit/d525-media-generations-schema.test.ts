@@ -24,6 +24,7 @@ describe("D525 durable media generation schema", () => {
       "quote_digest", "safe_snapshot", "request_payload", "provider_queue_id", "admission_token",
       "admission_started_at", "safe_failure",
       "provider_execution_seconds", "provider_average_execution_seconds",
+      "cancellation_requested_at", "cancellation_provider_acknowledged_at",
       "artifact_internal_id", "cleanup_state", "claim_owner", "claim_expires_at",
       "revision", "retain_until",
     ]) expect(names).toContain(field);
@@ -65,6 +66,7 @@ describe("D525 durable media generation schema", () => {
       "media_generations_artifact_ready_shape",
       "media_generations_claim_shape",
       "media_generations_provider_timing_nonnegative",
+      "media_generations_cancellation_shape",
     ]) expect(checks).toContain(check);
   });
 });

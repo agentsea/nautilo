@@ -1,9 +1,10 @@
 /// <reference types="bun-types" />
 
 import { describe, expect, test } from "bun:test";
-import type { AgentProfileFull, AgentProfileResponse, CatalogResponse, CatalogVoice } from "@nautilo/types";
+import { VoiceFundingApiError } from "@nautilo/api-client/browser";
+import type { AgentProfileFull, AgentProfileResponse, CatalogResponse, CatalogVoice, VoiceFundingRecovery } from "@nautilo/types";
 
-import { createVoiceSettingsController, type VoiceSettingsApi } from "./voice-settings-controller";
+import { createVoiceSettingsController, mobileVoiceFundingDestination, type VoiceSettingsApi } from "./voice-settings-controller";
 
 const scope = { serverId: "server-a", userId: "user-a", actorId: "actor-a" };
 const voice = (id: string, name = id): CatalogVoice => ({ voiceId: id, name, accent: "", gender: "", age: "", descriptive: "", category: "", language: "en", locale: null, languageLabel: "English", previewUrl: null, verifiedLanguages: [], source: "provider" });
@@ -27,6 +28,25 @@ function fakeApi(initial = profile()) {
 }
 
 describe("Voice settings controller", () => {
+  test("maps only the closed recovery destinations to the selected Human settings scope", () => {
+    const recovery = (href: VoiceFundingRecovery["href"]): VoiceFundingRecovery => ({
+      errorCode: "provider_credentials_missing",
+      repairAction: "configure_provider_credentials",
+      href,
+    });
+    expect(mobileVoiceFundingDestination(recovery("/settings#personal-provider-keys"))).toEqual({
+      kind: "mobile",
+      href: "/(drawer)/(tabs)/settings/provider-keys",
+    });
+    expect(mobileVoiceFundingDestination(recovery("/settings#capability-models"))).toEqual({
+      kind: "mobile",
+      href: "/(drawer)/(tabs)/settings/capability-models",
+    });
+    expect(mobileVoiceFundingDestination(recovery("/admin#provider-credentials"))).toEqual({
+      kind: "server",
+      href: "/admin#provider-credentials",
+    });
+  });
   test("does not request an unconfigured scope", async () => {
     const fake = fakeApi(); const controller = createVoiceSettingsController(() => fake.api);
     await controller.load(); await controller.loadCatalog();
@@ -51,6 +71,27 @@ describe("Voice settings controller", () => {
     controller.setScope(scope);
     await controller.loadCatalog();
     expect(controller.getCatalog()).toMatchObject({ elevenLabsConfigured: false, voices: [] });
+  });
+
+  test("retains a typed catalog funding recovery without exposing provider detail", async () => {
+    const recovery = {
+      errorCode: "personal_credential_unavailable",
+      repairAction: "repair_provider_credential",
+      href: "/settings#personal-provider-keys",
+    } as const;
+    const fake = fakeApi();
+    fake.api.listVoiceCatalog = async () => {
+      throw new VoiceFundingApiError(403, recovery);
+    };
+    const controller = createVoiceSettingsController(() => fake.api);
+    controller.setScope(scope);
+
+    await controller.loadCatalog();
+
+    expect(controller.getCatalog()).toMatchObject({
+      error: { message: "The saved voice provider credential is unavailable." },
+      recovery,
+    });
   });
 
   test("pages and replaces the catalog when filters change", async () => {

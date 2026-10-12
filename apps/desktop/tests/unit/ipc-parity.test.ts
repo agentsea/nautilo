@@ -48,6 +48,7 @@ const ONBOARDING_METHOD_CHANNELS = {
   getServerUrl: "onboarding:get-server-url",
   complete: "onboarding:complete",
   cancel: "onboarding:cancel",
+  openVoiceFundingRecovery: "onboarding:open-voice-funding-recovery",
   loadExistingProfile: "onboarding:load-existing-profile",
   getConfigFlags: "onboarding:get-config-flags",
   getStartAt: "onboarding:get-start-at",
@@ -181,6 +182,17 @@ describe("IPC channel-name parity", () => {
     }
     expect(main).toContain('return ipcErr("sender mismatch")');
     expect(main).toContain("return { ok: false, error: msg };");
+    expect(main).toContain("voiceFundingIpcError(await resp.json().catch(() => null))");
+    expect(main).toContain("parseVoiceFundingRecovery(input)");
+    expect(main).toContain("navigateServerSessionView(view, new URL(recovery.href, serverUrl).toString())");
+    expect(main).toContain('preserveVoiceFundingRecovery ? ipcErr("Could not complete the voice request.")');
+    expect(main).toContain('"Voice preview request failed."');
+    expect(main).toContain('ipcErr("Could not prepare the voice preview.")');
+    const recoveryHandler = main.slice(
+      main.indexOf('ipcMain.handle("onboarding:open-voice-funding-recovery"'),
+      main.indexOf('// ── Hydration handlers', main.indexOf('ipcMain.handle("onboarding:open-voice-funding-recovery"')),
+    );
+    expect(recoveryHandler).not.toContain("shell.openExternal");
   });
 
   test("companion owner handlers are registered and sender-gated in their narrow module", () => {

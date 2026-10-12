@@ -12,7 +12,8 @@ import { bindAdmittedServiceFunding, runWithDurableServiceFunding } from "./serv
 
 export type MediaFundingFamily = "image" | "video" | "music";
 
-const SURPLUS_MEDIA_DISCOVERY_TIMEOUT_MS = 10_000;
+/** One bounded pre-spend window for media discovery, estimates, and exact quotes. */
+export const MEDIA_PRESPEND_TIMEOUT_MS = 10_000;
 
 export interface MediaFundingDependencies {
   readonly resolveFunding?: typeof resolveModelFunding;
@@ -98,7 +99,7 @@ export async function openMediaFunding(
     // is not evidence that another model/version may be substituted.
     const found = await runFunding(funding, "spend", ({ apiKey }) => findModel({
       catalogModelId: modelId, family, apiKey,
-      signal: AbortSignal.timeout(SURPLUS_MEDIA_DISCOVERY_TIMEOUT_MS),
+      signal: AbortSignal.timeout(MEDIA_PRESPEND_TIMEOUT_MS),
       ...(options?.surplusRequirements ? { requirements: options.surplusRequirements } : {}),
     }));
     if (!found) {

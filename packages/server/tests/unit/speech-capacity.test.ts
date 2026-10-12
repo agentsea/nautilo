@@ -87,3 +87,15 @@ test("retires expired idle accounts without replacing active account semaphores"
   pool.forAccount("account-c");
   expect(pool.forAccount("account-a")).not.toBe(first);
 });
+
+test("retires the requested account after its idle metadata expires", () => {
+  let now = 0;
+  const pool = new SpeechCapacityPool(() => now, 100);
+  const first = pool.forAccount("account-a");
+  first.observeMaximum("1");
+
+  now = 101;
+  const recreated = pool.forAccount("account-a");
+
+  expect(recreated).not.toBe(first);
+});

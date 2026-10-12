@@ -1,4 +1,5 @@
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
+import { readBoundedMediaJson, MediaResponseReadError } from "./media-response";
 
 const SURPLUS_MODELS_URL = "https://api.surplusintelligence.ai/v1/models";
 
@@ -73,8 +74,8 @@ function advertisesFamily(row: Record<string, unknown>, family: SurplusMediaFami
   switch (family) {
     case "image":
       return includesAll(outputModalities, ["image"])
-        && includesAll(supportedParameters, ["prompt", "model"])
-        && includesAll(supportedFeatures, ["image"]);
+        && includesAll(supportedParameters, ["prompt", "model", "n", "response_format"])
+        && includesAll(supportedFeatures, ["image", "quality"]);
     case "video":
       return includesAll(outputModalities, ["video"])
         && includesAll(supportedParameters, ["async", "text-to-video", "artifact"]);
@@ -141,8 +142,9 @@ export async function findSurplusMediaModel(input: {
 
   let payload: unknown;
   try {
-    payload = await response.json();
-  } catch {
+    payload = await readBoundedMediaJson(response);
+  } catch (error) {
+    if (!(error instanceof MediaResponseReadError)) throw error;
     return false;
   }
   if (!isRecord(payload) || !Array.isArray(payload["data"])) return false;

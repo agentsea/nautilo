@@ -297,9 +297,10 @@ describe("transcribe_audio tool", () => {
     expect(transcribe).not.toHaveBeenCalled();
   });
 
-  test("returns provider failures without automatically retrying transcription", async () => {
+  test("returns a closed provider failure without automatically retrying transcription", async () => {
+    const secret = "synthetic-provider-response-secret";
     const transcribe = mock(async () => {
-      throw new Error("provider request failed");
+      throw new Error(secret);
     });
     const tool = createTranscribeAudioTool({
       workspacePath: workspaceRoot,
@@ -311,7 +312,8 @@ describe("transcribe_audio tool", () => {
 
     const result = await tool.invoke({ path: "meeting.wav", zone: "workspace" });
 
-    expect(String(result)).toContain("provider request failed");
+    expect(String(result)).toBe("Error: Transcription provider request failed (provider_unavailable).");
+    expect(String(result)).not.toContain(secret);
     expect(transcribe).toHaveBeenCalledTimes(1);
   });
 });

@@ -69,6 +69,27 @@ describe("Genie customization route", () => {
     expect(options?.getCanonicalProfile()).toEqual({ ok: true, data: OWNER_PROFILE });
   });
 
+  test("opens a verified voice repair route without replacing the in-progress wizard", () => {
+    reapplyHappyDomGlobals();
+    const open = mock(() => null);
+    window.open = open as typeof window.open;
+    const view = render(<MemoryRouter><GenieCustomizationRoute /></MemoryRouter>);
+    const options = createAdapter.mock.calls[0]?.[0];
+
+    options?.onOpenVoiceFundingRecovery({
+      errorCode: "personal_credential_stale",
+      repairAction: "replace_provider_credential",
+      href: "/settings#personal-provider-keys",
+    });
+
+    expect(open).toHaveBeenCalledWith(
+      "/settings#personal-provider-keys",
+      "_blank",
+      "noopener,noreferrer",
+    );
+    expect(view.getByText("Shared Genie wizard")).toBeTruthy();
+  });
+
   test("holds the route at a loading gate until ProfileProvider is settled", () => {
     profileState = { ...profileState, response: null as never, loading: true };
     reapplyHappyDomGlobals();

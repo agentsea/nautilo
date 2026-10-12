@@ -1,4 +1,11 @@
-import type { TranscriptionInput, TranscriptionProvider, TranscriptionResult } from "./provider";
+import {
+  TranscriptionProviderRequestError,
+  transcriptionProviderFailureForStatus,
+  transcriptionTransportFailure,
+  type TranscriptionInput,
+  type TranscriptionProvider,
+  type TranscriptionResult,
+} from "./provider";
 
 const GROQ_TRANSCRIPTION_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
 export const GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo";
@@ -17,7 +24,7 @@ export class GroqTranscriptionProvider implements TranscriptionProvider {
 
   async transcribe(input: TranscriptionInput): Promise<TranscriptionResult> {
     if (!this.apiKey) {
-      throw new Error("GROQ_API_KEY is not configured");
+      throw new TranscriptionProviderRequestError("authentication_failed");
     }
 
     const form = new FormData();
@@ -35,24 +42,39 @@ export class GroqTranscriptionProvider implements TranscriptionProvider {
       form.append("timestamp_granularities[]", "segment");
     }
 
-    const response = await this.fetchImpl(GROQ_TRANSCRIPTION_URL, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.apiKey}`,
-      },
-      body: form,
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
-
-    if (!response.ok) {
-      // Body may be missing or non-UTF8; ignore stream errors so we still surface HTTP status.
-      const detail = await response.text().catch(() => "");
-      throw new Error(`Groq transcription failed: HTTP ${response.status}${detail ? ` ${detail.slice(0, 200)}` : ""}`);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(GROQ_TRANSCRIPTION_URL, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.apiKey}`,
+        },
+        body: form,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    } catch (error) {
+      throw transcriptionTransportFailure(error, input.signal);
     }
 
-    const result = (await response.json()) as { text?: unknown };
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      throw new TranscriptionProviderRequestError(
+        transcriptionProviderFailureForStatus(response.status),
+        response.status,
+      );
+    }
+
+    let result: { text?: unknown };
+    try {
+      result = (await response.json()) as { text?: unknown };
+    } catch {
+      throw new TranscriptionProviderRequestError("invalid_response", response.status);
+    }
+    if (typeof result.text !== "string") {
+      throw new TranscriptionProviderRequestError("invalid_response", response.status);
+    }
     return {
-      text: typeof result.text === "string" ? result.text : "",
+      text: result.text,
       provider: "groq",
       model: GROQ_TRANSCRIPTION_MODEL,
     };

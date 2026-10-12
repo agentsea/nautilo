@@ -4,11 +4,13 @@ import { resolve } from "node:path";
 import {
   assertMediaGenerationSafeSnapshot,
   assertMediaGenerationRequestPayload,
+  acknowledgeClaimedMediaGenerationCancellation,
   beginMediaGenerationAdmission,
   claimDueMediaGenerations,
   completeClaimedMediaGenerationCleanup,
   MEDIA_GENERATION_RECONCILABLE_STATES,
   readClaimedMediaGeneration,
+  requestMediaGenerationCancellation,
   recordMediaGenerationAccepted,
   recordMediaGenerationAdmissionRefused,
   releaseMediaGenerationClaim,
@@ -316,7 +318,8 @@ describe("D525 media generation repository", () => {
     const claimed = await claimDueMediaGenerations(db, { workerId: "worker", now: workerScope.now });
     expect(claimed).toHaveLength(1);
     expect(Object.keys(returningFields ?? {}).sort()).toEqual([
-      "actualUsdMicros", "artifactInternalId", "cleanupState", "fundingBinding", "initiatingAgentId", "kind",
+      "actualUsdMicros", "artifactInternalId", "cancellationProviderAcknowledgedAt", "cancellationRequestedAt",
+      "cleanupState", "fundingBinding", "initiatingAgentId", "kind",
       "namespaceId", "ownerId", "provider", "providerAccountFingerprint", "providerAverageExecutionSeconds",
       "providerExecutionSeconds", "providerModel", "providerQueueId", "quotedUsdMicros", "receiptId", "revision",
       "roomId", "state",
@@ -391,6 +394,49 @@ describe("D525 media generation repository", () => {
     expect(source).toContain("claimedWhere(claimedInput, now)");
   });
 
+  test("requests and acknowledges cancellation through exact revision and worker fences", async () => {
+    let requestPatch: Record<string, unknown> | undefined;
+    const requestChain = {
+      set(patch: Record<string, unknown>) { requestPatch = patch; return requestChain; },
+      where() { return requestChain; },
+      returning: async () => [{ state: "retrieving", revision: 5, cancellationRequestedAt: workerScope.now }],
+    };
+    const requested = await requestMediaGenerationCancellation(
+      { update: () => requestChain } as never,
+      { ...scope, expectedRevision: 4 },
+    );
+    expect(requested).toMatchObject({ state: "retrieving", revision: 5 });
+    expect(requestPatch).toMatchObject({ revision: 5, claimOwner: null, claimExpiresAt: null });
+    expect(requestPatch?.["cancellationRequestedAt"]).toBeInstanceOf(Date);
+    expect(requestPatch?.["nextAttemptAt"]).toEqual(requestPatch?.["cancellationRequestedAt"]);
+
+    let acknowledgementPatch: Record<string, unknown> | undefined;
+    const acknowledgementChain = {
+      set(patch: Record<string, unknown>) { acknowledgementPatch = patch; return acknowledgementChain; },
+      where() { return acknowledgementChain; },
+      returning: async () => [{
+        state: "retrieving", revision: 5,
+        cancellationRequestedAt: workerScope.now,
+        cancellationProviderAcknowledgedAt: workerScope.now,
+      }],
+    };
+    const acknowledged = await acknowledgeClaimedMediaGenerationCancellation(
+      { update: () => acknowledgementChain } as never,
+      { ...workerScope, state: "retrieving" },
+    );
+    expect(acknowledged).toMatchObject({ revision: 5, cancellationProviderAcknowledgedAt: workerScope.now });
+    expect(acknowledgementPatch).toMatchObject({
+      cancellationProviderAcknowledgedAt: workerScope.now,
+      revision: 5,
+    });
+    expect(acknowledgementPatch).not.toHaveProperty("claimOwner");
+    expect(source).toContain('eq(mediaGenerations.provider, "surplus")');
+    expect(source).toContain("isNotNull(mediaGenerations.fundingBinding)");
+    expect(source).toContain("isNull(mediaGenerations.cancellationRequestedAt)");
+    expect(source).toContain("isNotNull(mediaGenerations.cancellationRequestedAt)");
+    expect(source).toContain("isNull(mediaGenerations.cancellationProviderAcknowledgedAt)");
+  });
+
   test("schedules only the owned accepted receipt and keeps cleanup pending on cleanup retry", async () => {
     let retryPatch: Record<string, unknown> | undefined;
     const retryChain = {
@@ -437,7 +483,7 @@ describe("D525 media generation repository", () => {
 
   test("advances revision exactly once for every claim mutation, including claim and legacy release", async () => {
     const updateSegments = source.split(/(?:db|tx)\.update\(mediaGenerations\)/u).slice(1);
-    expect(updateSegments).toHaveLength(16);
+    expect(updateSegments).toHaveLength(18);
     for (const segment of updateSegments) {
       const setThroughWhere = segment.slice(0, segment.indexOf(".where("));
       expect(setThroughWhere).toContain("revision:");

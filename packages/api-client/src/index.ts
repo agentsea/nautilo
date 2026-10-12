@@ -2,6 +2,7 @@ export { createRoomPresencePoller } from "./room-presence";
 export {
   NautiloApiClient,
   ApiError,
+  VoiceFundingApiError,
   ProviderCredentialApiError,
   VideoGenerationPreparationError,
   EventFeedApiError,

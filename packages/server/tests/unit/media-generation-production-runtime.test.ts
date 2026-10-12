@@ -571,6 +571,7 @@ describe("D525 production media generation runtime", () => {
           model: "venice-minimax-music-v26",
           offers: [
             { available: true, healthy: true, media_unit: "job", media_unit_price: 60_000 },
+            { available: true, healthy: true, media_unit: "job", media_unit_price: 55_000 },
             { available: true, healthy: false, media_unit: "job", media_unit_price: 1 },
           ],
         }), { status: 200, headers: { "Content-Type": "application/json" } });
@@ -580,7 +581,7 @@ describe("D525 production media generation runtime", () => {
     const prepared = await runtime.prepare(actor, musicPreparation);
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
-    expect(prepared.prepared.preview.quote).toMatchObject({ kind: "estimate", amountMicros: 60_000 });
+    expect(prepared.prepared.preview.quote).toMatchObject({ kind: "estimate", amountMicros: 55_000 });
     expect(requests).toHaveLength(1);
     expect(requests[0]?.url).toBe("https://api.surplusintelligence.ai/api/markets/venice-minimax-music-v26");
     expect(requests[0]?.init).toMatchObject({ method: "GET", redirect: "error", credentials: "omit" });
@@ -696,6 +697,73 @@ describe("D525 production media generation runtime", () => {
     expect(fundingOpens).toBe(1);
     expect(submissions).toBe(1);
     expect(state.read()).toMatchObject({ provider: "surplus", state: "failed" });
+  });
+
+  for (const revokeAt of ["funding_open", "cost_write"] as const) {
+    test(`revocation during ${revokeAt} prevents paid media dispatch`, async () => {
+      const state = operations();
+      const funding = { humanUserId: actor.userId, provider: "surplus" as const,
+        binding: { kind: "server" as const, providerRoute: "surplus" as const },
+        credentialFingerprint: "a".repeat(64) };
+      let submitting = false;
+      let revoked = false;
+      let submissions = 0;
+      let costWrites = 0;
+      const runtime = createProductionMediaGenerationRuntime({
+        db: authorityDb(), dbOperations: state.dbOperations,
+        getCapabilities: async () => revoked ? [] : ["use_media_generation"],
+        openFunding: async (_human, modelId, family) => ({ modelId, family, funding,
+          runAttempt: async () => { throw new Error("unused"); } }),
+        runFunding: async (_binding, _intent, callback) => {
+          if (submitting && revokeAt === "funding_open") revoked = true;
+          return callback({ apiKey: "surplus-secret", usageFunding: {
+            kind: "server", humanUserId: actor.userId, providerRoute: "surplus" } });
+        },
+        surplusEstimateUsdMicros: async () => 60_000,
+        fetchImpl: async () => { submissions += 1; throw new Error("must not dispatch"); },
+        beginCostAttempt: async () => { costWrites += 1; if (revokeAt === "cost_write") revoked = true; },
+        settleCostAttempt: async () => undefined,
+      });
+      const prepared = await runtime.prepare(actor, musicPreparation);
+      if (!prepared.ok) throw new Error(prepared.recovery);
+      submitting = true;
+      expect(await runtime.submit(actor, submitInput(prepared))).toMatchObject({ queueStarted: false, state: "needs-action" });
+      expect(state.read()?.safeFailure).toMatchObject({ code: "MEDIA_AUTHORITY_CHANGED", completionCertainty: "not_started", chargeCertainty: "not_charged" });
+      expect(submissions).toBe(0);
+      expect(costWrites).toBe(revokeAt === "funding_open" ? 0 : 1);
+    });
+  }
+
+  test("failed cost settlement preserves an uncertain Surplus admission without resubmission", async () => {
+    const state = operations();
+    const funding = {
+      humanUserId: actor.userId, provider: "surplus" as const,
+      binding: { kind: "server" as const, providerRoute: "surplus" as const },
+      credentialFingerprint: "a".repeat(64),
+    };
+    let submissions = 0;
+    let settlements = 0;
+    const runtime = createProductionMediaGenerationRuntime({
+      db: authorityDb(), dbOperations: state.dbOperations, getCapabilities: mediaCapabilities,
+      openFunding: async (_human, modelId, family) => ({ modelId, family, funding,
+        runAttempt: async () => { throw new Error("unused"); } }),
+      runFunding: async (_binding, _intent, callback) => callback({ apiKey: "surplus-secret",
+        usageFunding: { kind: "server", humanUserId: actor.userId, providerRoute: "surplus" } }),
+      surplusEstimateUsdMicros: async () => 60_000,
+      fetchImpl: async () => { submissions += 1; throw new Error("transport interrupted after dispatch"); },
+      beginCostAttempt: async () => undefined,
+      settleCostAttempt: async () => { settlements += 1; throw new Error("accounting storage unavailable"); },
+    });
+    const prepared = await runtime.prepare(actor, musicPreparation);
+    if (!prepared.ok) throw new Error(prepared.recovery);
+    const result = await runtime.submit(actor, submitInput(prepared));
+    expect(result).toMatchObject({ queueStarted: null, state: "unknown" });
+    expect(state.read()).toMatchObject({ state: "unknown", safeFailure: {
+      completionCertainty: "unknown", chargeCertainty: "unknown", retrySafe: false,
+    } });
+    expect(await runtime.submit(actor, submitInput(prepared))).toEqual(result);
+    expect(submissions).toBe(1);
+    expect(settlements).toBe(1);
   });
 
   test("missing key resets any prior runtime and configured boot reset is symmetric", () => {
@@ -851,7 +919,7 @@ describe("D525 production media generation runtime", () => {
         db: authorityDb(),
         dbOperations: state.dbOperations,
         fetchImpl: provider.fetchImpl,
-        signedDeliveryAllowedHosts: ["delivery.example"],
+        veniceSignedDeliveryAllowedHosts: ["delivery.example"],
       });
       const prepared = await runtime.prepare(actor, preparation);
       if (!prepared.ok) throw new Error(prepared.recovery);

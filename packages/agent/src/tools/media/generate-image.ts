@@ -17,9 +17,12 @@
  */
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { readFile } from "node:fs/promises";
 import { posix } from "node:path";
 import { z } from "zod";
+import {
+  ATTACHMENT_POLICY,
+  readAttachmentBytesVerifiedSize,
+} from "@nautilo/attachments";
 import { log, warn } from "@nautilo/logger";
 import { getArtifactsRoot } from "@nautilo/config";
 import {
@@ -202,6 +205,7 @@ async function readAuthorizedReferences(
   facts: EnvelopeFacts,
 ): Promise<readonly ImageGenerationReference[]> {
   const references: ImageGenerationReference[] = [];
+  let totalBytes = 0;
   for (const logicalPath of paths) {
     const resolution = await resolveWorkspaceArtifact({
       logicalPath,
@@ -217,9 +221,37 @@ async function readAuthorizedReferences(
     if (mime !== "image/png" && mime !== "image/jpeg" && mime !== "image/webp") {
       throw new Error(`Workspace reference "${logicalPath}" is not a supported image artifact.`);
     }
-    references.push({ bytes: await readFile(resolution.physicalPath), mime });
+    const bounded = await readBoundedImageReference(
+      resolution.physicalPath,
+      resolution.artifact.size,
+      totalBytes,
+    );
+    totalBytes = bounded.totalBytes;
+    references.push({ bytes: bounded.bytes, mime });
   }
   return references;
+}
+
+/** Single-handle bounded reference read, exported for hermetic race/limit tests. */
+export async function readBoundedImageReference(
+  physicalPath: string,
+  expectedSize: number,
+  priorTotalBytes: number,
+): Promise<{ readonly bytes: Buffer; readonly totalBytes: number }> {
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0
+    || expectedSize > ATTACHMENT_POLICY.maxImageBytes) {
+    throw new Error("Workspace reference image exceeds the supported image size.");
+  }
+  const totalBytes = priorTotalBytes + expectedSize;
+  if (!Number.isSafeInteger(totalBytes)
+    || totalBytes > ATTACHMENT_POLICY.maxAcceptedBytesPerMessage) {
+    throw new Error("Workspace reference images exceed the supported total size.");
+  }
+  const read = await readAttachmentBytesVerifiedSize(physicalPath, expectedSize);
+  if (!read.ok) {
+    throw new Error("Workspace reference image changed or could not be read safely.");
+  }
+  return { bytes: read.bytes, totalBytes };
 }
 
 export function createGenerateImageTool(
