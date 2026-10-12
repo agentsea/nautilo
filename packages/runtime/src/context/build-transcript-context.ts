@@ -1,4 +1,5 @@
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
+import { randomUUID } from "node:crypto";
 import {
   getModelTokenLimit,
   ROOM_CONTEXT_MESSAGE_HEADER,
@@ -58,7 +59,7 @@ export type TranscriptContextScope =
       excludeMessageIds?: readonly number[];
       /** Stable inclusive durable cut used when rebuilding an active turn. */
       throughMessageIdInclusive?: number;
-      /** Active execution whose post-trigger rows may enter a refresh. */
+      /** Active execution whose post-trigger rows are labelled current progress. */
       foregroundExecutionId?: string;
       /** Exact current turn observation can be newer than its persisted Human input. */
       imageAssistanceTurnId?: string;
@@ -91,6 +92,8 @@ export interface BuildTranscriptContextOptions {
   recordContext?: ForegroundRecordContextPort;
   /** Parent turn cancellation; Record selection remains optional. */
   signal?: AbortSignal;
+  /** Admitted post-trigger Human inputs, pinned at their committed positions. */
+  acceptedHumanMessages?: readonly { messageId: number; message: BaseMessage }[];
 }
 
 export interface ForegroundContextDiagnosticV1 {
@@ -123,9 +126,9 @@ export interface BuildTranscriptContextDeps {
     scope: Extract<TranscriptContextScope, { kind: "room" }>,
   ): Promise<RoomHistoryHit[]>;
   /**
-   * Production Live Shadow refresh seam. Pages the same canonical Room source
-   * window so execution identity can be opened under authorization before the
-   * configured conversational bound is applied. A fixed Subthread parent
+   * Pages the canonical Room source for ordinary and protected refreshes.
+   * Protected execution identity is opened under authorization before the
+   * historical conversational bound is applied. A fixed Subthread parent
    * prefix is returned only on the first page and never participates in the
    * child transcript cursor.
    */
@@ -184,6 +187,8 @@ function narrativeTranscript(
   opts: Pick<BuildTranscriptContextOptions, "maxLines" | "addressedBy">,
   minimumCompleteTurns: number,
   activeTurnAfterMessageId?: number,
+  foregroundExecutionId?: string,
+  foregroundAgentId?: string,
 ): ForegroundNarrativeTranscriptV1 {
   const maximumLines = Math.max(
     1,
@@ -195,13 +200,18 @@ function narrativeTranscript(
     : hits;
   const turns: Array<{
     completeness: "complete" | "partial";
-    provenance: "prior" | "active_turn";
+    provenance: "prior" | "active_turn" | "surrounding";
     entries: string[];
   }> = [];
   for (const hit of boundedHits) {
-    const provenance = activeTurnAfterMessageId !== undefined
-      && hit.messageId > activeTurnAfterMessageId
-      ? "active_turn"
+    const afterTrigger = activeTurnAfterMessageId !== undefined
+      && hit.messageId > activeTurnAfterMessageId;
+    const ownProgress = hit.role !== "user"
+      && (foregroundAgentId === undefined || hit.authorAgentId === undefined || hit.authorAgentId === foregroundAgentId)
+      && (foregroundExecutionId === undefined
+        || hit.foregroundExecutionId === foregroundExecutionId);
+    const provenance = afterTrigger
+      ? ownProgress ? "active_turn" : "surrounding"
       : "prior";
     if (
       hit.role === "user"
@@ -365,10 +375,24 @@ function roomContextMaximumCharacters(input: Readonly<{
   );
 }
 
+/** The Room policy governs older context; current progress uses the invocation envelope. */
+function roomContextBudgets(
+  input: Parameters<typeof roomContextMaximumCharacters>[0],
+  refreshing: boolean,
+): { maximumCharacters: number; maximumHistoricalCharacters?: number } {
+  const historicalMaximum = roomContextMaximumCharacters(input);
+  if (!refreshing) {
+    return { maximumCharacters: historicalMaximum };
+  }
+  return {
+    maximumCharacters: Math.max(0, Math.floor(input.maximumContextCharacters ?? input.modelContextTokens * 4)),
+    maximumHistoricalCharacters: historicalMaximum,
+  };
+}
+
 /**
- * Applies the Room-only input budget after the cache-stable prompt.
- * Newest complete turns are indivisible while they fit; the configured
- * percentage is authoritative when even the minimum suffix is oversized.
+ * Applies the invocation envelope to current progress and the Room policy
+ * to semantic continuity plus any older history that fits afterward.
  */
 export function buildBudgetedRoomContext(input: {
   journal: RoomJournalContext;
@@ -381,8 +405,10 @@ export function buildBudgetedRoomContext(input: {
   addressedBy?: string;
   /** Accepted-request coordinate separating prior history from current progress. */
   activeTurnAfterMessageId?: number;
+  foregroundExecutionId?: string;
+  foregroundAgentId?: string;
 }): string | null {
-  const maxChars = roomContextMaximumCharacters(input);
+  const budgets = roomContextBudgets(input, input.activeTurnAfterMessageId !== undefined);
   const renderOpts: Pick<
     BuildTranscriptContextOptions,
     "maxLines" | "addressedBy"
@@ -406,7 +432,7 @@ export function buildBudgetedRoomContext(input: {
     transcriptBlock: null,
   });
   return buildForegroundContextProjectionV1({
-    maximumCharacters: maxChars,
+    ...budgets,
     journalBlock,
     journalRollupPresent: input.journal.rollup !== null,
     journalStatements: [
@@ -427,6 +453,8 @@ export function buildBudgetedRoomContext(input: {
       renderOpts,
       minimum,
       input.activeTurnAfterMessageId,
+      input.foregroundExecutionId,
+      input.foregroundAgentId,
     ),
   }).body;
 }
@@ -518,7 +546,16 @@ export async function buildTranscriptContext(
   if (hitsResult.status === "rejected") throw hitsResult.reason;
   if (policyResult.status === "rejected") throw policyResult.reason;
   if (journalResult.status === "rejected") throw journalResult.reason;
-  const hits = hitsResult.value;
+  const admitted = [...(opts.acceptedHumanMessages ?? [])].sort((left, right) => left.messageId - right.messageId);
+  // Invocation-local slots let one budgeted chronological projection retain
+  // exact admitted Human messages without quoting their bodies a second time.
+  const slotNonce = randomUUID();
+  const slots = admitted.map((entry) => ({ ...entry, marker: `[${slotNonce}:${entry.messageId}]` }));
+  const slotsById = new Map(slots.map((entry) => [entry.messageId, entry]));
+  const hits = hitsResult.value.map((hit) => {
+    const slot = hit.role === "user" ? slotsById.get(hit.messageId) : undefined;
+    return slot === undefined ? hit : { ...hit, snippet: slot.marker };
+  });
   const journal = journalResult.value;
   const roomPolicy = policyResult.value;
   const transcriptBlock = renderTranscriptBlock(hits, opts);
@@ -534,7 +571,11 @@ export async function buildTranscriptContext(
     && opts.currentHumanText !== undefined
     && passiveRecallEnabled
   ) {
-    const turns = completeTurns(hits);
+    const queryTrigger = opts.scope.excludeMessageId;
+    const queryHits = queryTrigger === undefined
+      ? hitsResult.value
+      : hitsResult.value.filter((hit) => hit.messageId < queryTrigger);
+    const turns = completeTurns(queryHits);
     const priorTurn = turns.at(-1)?.map((hit): ForegroundPriorTurnLine => ({
       role: hit.role === "user" || hit.role === "tool" ? hit.role : "assistant",
       text: hit.snippet,
@@ -599,7 +640,7 @@ export async function buildTranscriptContext(
             transcriptBlock: null,
           });
           const projection = buildForegroundContextProjectionV1({
-            maximumCharacters: roomContextMaximumCharacters(budgetInput),
+            ...roomContextBudgets(budgetInput, opts.scope.throughMessageIdInclusive !== undefined),
             journalBlock,
             journalRollupPresent: journal.rollup !== null,
             journalStatements: [
@@ -625,6 +666,8 @@ export async function buildTranscriptContext(
               opts.scope.kind === "room"
                 ? opts.scope.excludeMessageId
                 : undefined,
+              opts.scope.foregroundExecutionId,
+              opts.scope.agentId,
             ),
           });
           if (
@@ -655,18 +698,38 @@ export async function buildTranscriptContext(
         ? `${ROOM_CONTEXT_MESSAGE_HEADER}${transcriptBlock}`
         : null;
 
-  if (!block) return [];
-  return [
-    new HumanMessage({
-      content: block,
+  const narrativeMessage = (content: string): HumanMessage => new HumanMessage({
+      content,
       additional_kwargs: {
         nautilo_transient_context: true,
         ...(opts.scope.kind === "room"
           ? { nautilo_room_context_budgeted: true }
           : {}),
       },
-    }),
-  ];
+    });
+  if (slots.length === 0) return block ? [narrativeMessage(block)] : [];
+  const body = block ?? "";
+  const represented = slots.flatMap((slot) => {
+    const position = body.indexOf(slot.marker);
+    if (position < 0) return [];
+    const start = body.lastIndexOf("\n", position) + 1;
+    const endOfLine = body.indexOf("\n", position);
+    return [{ ...slot, start, end: endOfLine < 0 ? body.length : endOfLine + 1 }];
+  }).sort((left, right) => left.start - right.start);
+  const representedIds = new Set(represented.map((slot) => slot.messageId));
+  // A suffix may omit earlier admitted-input rows. Those inputs remain pinned
+  // before the selected suffix; their omitted surrounding exchanges stay omitted.
+  const messages: BaseMessage[] = slots.filter((slot) => !representedIds.has(slot.messageId)).map((slot) => slot.message);
+  let cursor = 0;
+  for (const slot of represented) {
+    const before = body.slice(cursor, slot.start).trim();
+    if (before) messages.push(narrativeMessage(before));
+    messages.push(slot.message);
+    cursor = slot.end;
+  }
+  const tail = body.slice(cursor).split("\n").filter((line) => !line.includes(slotNonce)).join("\n").trim();
+  if (tail) messages.push(narrativeMessage(tail));
+  return messages;
 }
 
 /**
@@ -716,6 +779,9 @@ export async function buildProtectedRoomHybridContext(input: Readonly<{
   readonly clock?: ForegroundContextClock;
   /** Accepted-request coordinate separating prior history from current progress. */
   readonly activeTurnAfterMessageId?: number;
+  readonly foregroundExecutionId?: string;
+  readonly foregroundAgentId?: string;
+  readonly acceptedHumanMessages?: BuildTranscriptContextOptions["acceptedHumanMessages"];
 }>): Promise<BaseMessage[]> {
   const roomPolicy = input.roomPolicy;
   return buildTranscriptContext({
@@ -723,11 +789,22 @@ export async function buildProtectedRoomHybridContext(input: Readonly<{
       kind: "room",
       roomId: "protected-invocation",
       ownerId: "protected-invocation",
+      ...(input.foregroundAgentId === undefined ? {} : { agentId: input.foregroundAgentId }),
       ...(input.activeTurnAfterMessageId === undefined
         ? {}
-        : { excludeMessageId: input.activeTurnAfterMessageId }),
+        : {
+            excludeMessageId: input.activeTurnAfterMessageId,
+            throughMessageIdInclusive: input.hits.reduce(
+              (maximum, hit) => Math.max(maximum, hit.messageId),
+              input.activeTurnAfterMessageId,
+            ),
+          }),
+      ...(input.foregroundExecutionId === undefined
+        ? {}
+        : { foregroundExecutionId: input.foregroundExecutionId }),
     },
     currentHumanText: input.currentHumanText,
+    ...(input.acceptedHumanMessages === undefined ? {} : { acceptedHumanMessages: input.acceptedHumanMessages }),
     ...(input.recordContext === undefined
       ? {}
       : { recordContext: input.recordContext }),

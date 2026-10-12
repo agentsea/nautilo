@@ -310,6 +310,7 @@ export type AgentTranscriptOpenInput<Value> = Readonly<{
   readonly sessionId: string;
   readonly namespaceId: string;
   readonly upToMessageId?: number;
+  readonly beforeMessageId?: number;
   readonly limit: number;
   readonly productReadAuthorization:
     ProtectedConversationProductReadAuthorization;

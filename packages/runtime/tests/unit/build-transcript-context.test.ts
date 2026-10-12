@@ -19,6 +19,7 @@ import {
   buildBudgetedRoomContext,
   buildProtectedRoomHybridContext,
   buildTranscriptContext,
+  resolveForegroundHistoryMessages,
   selectForegroundRecordsWithDeadline,
   runAgentTranscriptToHits,
   type RoomHistoryHit,
@@ -50,6 +51,45 @@ function depsFrom(room: RoomHistoryHit[], sub: RoomHistoryHit[] = []): BuildTran
     readSubagentTranscript: async () => sub,
   };
 }
+
+describe("admitted Human inputs in reconstructed current turns", () => {
+  test("pins a reply once between its question and subsequent progress", async () => {
+    const reply = new HumanMessage("Yes, include archived fixtures");
+    const hits = [
+      { ...makeHit("nova", "Nova", "Should I include archived fixtures?", "2026-06-01T10:00:01Z", "assistant"), messageId: 11, foregroundExecutionId: "execution" },
+      { ...makeHit("alice", "Alice", "Yes, include archived fixtures", "2026-06-01T10:00:02Z", "user"), messageId: 12 },
+      { ...makeHit("nova", "Nova", "Completed the archive inspection", "2026-06-01T10:00:03Z", "assistant"), messageId: 13, foregroundExecutionId: "execution" },
+    ];
+    const messages = await buildTranscriptContext({
+      scope: { kind: "room", roomId: "room", ownerId: "owner", excludeMessageId: 10, throughMessageIdInclusive: 13, foregroundExecutionId: "execution" },
+      maximumContextCharacters: 4_000,
+      acceptedHumanMessages: [{ messageId: 12, message: reply }],
+    }, depsFrom(hits));
+    expect(messages[1]).toBe(reply);
+    expect(messages.filter((message) => message === reply)).toHaveLength(1);
+    const visible = messages.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
+    expect(visible.match(/Yes, include archived fixtures/g)).toHaveLength(1);
+    expect(visible.indexOf("Should I include archived fixtures?")).toBeLessThan(visible.indexOf(reply.content as string));
+    expect(visible.indexOf(reply.content as string)).toBeLessThan(visible.indexOf("Completed the archive inspection"));
+    expect(visible).not.toMatch(/\[[0-9a-f-]{36}:12\]/);
+  });
+
+  test("pins omitted earlier replies before the retained newest suffix", async () => {
+    const reply = new HumanMessage("Yes, include archived fixtures");
+    const messages = await buildTranscriptContext({
+      scope: { kind: "room", roomId: "room", ownerId: "owner", excludeMessageId: 10, throughMessageIdInclusive: 14, foregroundExecutionId: "execution" },
+      maximumContextCharacters: 500,
+      acceptedHumanMessages: [{ messageId: 12, message: reply }],
+    }, depsFrom([
+      { ...makeHit("alice", "Alice", reply.content as string, "2026-06-01T10:00:02Z", "user"), messageId: 12 },
+      { ...makeHit("nova", "Nova", "large middle result ".repeat(100), "2026-06-01T10:00:03Z", "tool"), messageId: 13, foregroundExecutionId: "execution" },
+      { ...makeHit("nova", "Nova", "LATEST RECEIPT", "2026-06-01T10:00:04Z", "assistant"), messageId: 14, foregroundExecutionId: "execution" },
+    ]));
+    expect(messages[0]).toBe(reply);
+    expect(messages.at(-1)?.content).toContain("LATEST RECEIPT");
+    expect(messages.at(-1)?.content).toContain("earlier narrative entries omitted");
+  });
+});
 
 /**
  * R5 no-loss harness. Asserts the rendered transcript block CONTAINS the text
@@ -205,6 +245,102 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
     expect(priorIndex).toBeGreaterThanOrEqual(0);
     expect(markerIndex).toBeGreaterThan(priorIndex);
     expect(progressIndex).toBeGreaterThan(markerIndex);
+  });
+
+  test("keeps more than fifty fitting current-progress rows ahead of prior history", () => {
+    const prior = {
+      ...makeHit(
+        "alice",
+        "Alice",
+        `PRIOR_HISTORY ${"p".repeat(1_200)}`,
+        "2026-06-01T10:00:00Z",
+        "user",
+      ),
+      messageId: 10,
+    };
+    const active = Array.from({ length: 51 }, (_, index) => ({
+      ...makeHit(
+        "nova",
+        "Nova",
+        `ACTIVE_${index.toString().padStart(2, "0")}`,
+        `2026-06-01T10:01:${index.toString().padStart(2, "0")}Z`,
+        index % 2 === 0 ? "assistant" as const : "tool" as const,
+      ),
+      messageId: 11 + index,
+    }));
+    const content = buildBudgetedRoomContext({
+      journal: {
+        rollup: {
+          throughEventSequence: 1,
+          content: `DURABLE_DECISION ${"j".repeat(1_000)}`,
+        },
+        events: [],
+      },
+      hits: [prior, ...active],
+      modelContextTokens: 1_000,
+      maxRoomContextPercent: 50,
+      activeTurnAfterMessageId: 10,
+    })!;
+
+    expect(content.length).toBeLessThanOrEqual(4_000);
+    for (let index = 0; index < active.length; index += 1) {
+      expect(content).toContain(`ACTIVE_${index.toString().padStart(2, "0")}`);
+    }
+    expect(content).toContain("DURABLE_DECISION");
+    expect(content).not.toContain("PRIOR_HISTORY");
+  });
+
+  test("labels owning progress while retaining surrounding concurrent Room activity", async () => {
+    const hits: RoomHistoryHit[] = [
+      {
+        ...makeHit("alice", "Alice", "prior human request", "2026-06-01T10:00:00Z", "user"),
+        messageId: 9,
+      },
+      {
+        ...makeHit("nova", "Nova", "owned progress one", "2026-06-01T10:00:02Z", "assistant"),
+        messageId: 11,
+        foregroundExecutionId: "execution-owned",
+      },
+      {
+        ...makeHit("bob", "Bob", "concurrent human request", "2026-06-01T10:00:03Z", "user"),
+        messageId: 12,
+      },
+      {
+        ...makeHit("nova", "Nova", "foreign execution progress", "2026-06-01T10:00:04Z", "assistant"),
+        messageId: 13,
+        foregroundExecutionId: "execution-foreign",
+      },
+      {
+        ...makeHit("nova", "Nova", "owned progress two", "2026-06-01T10:00:05Z", "tool"),
+        messageId: 14,
+        foregroundExecutionId: "execution-owned",
+      },
+    ];
+    const result = await resolveForegroundHistoryMessages({
+      roomId: "room-1",
+      transcriptOwnerId: "owner-1",
+      agentId: "agent-1",
+      turnKind: "fresh",
+      currentHumanText: "accepted request",
+      currentMessageId: 10,
+      throughMessageIdInclusive: 14,
+      foregroundExecutionId: "execution-owned",
+    }, depsFrom(hits));
+    const content = result[0]!.content as string;
+
+    expect(content).toContain("prior human request");
+    expect(content).toContain("Completed progress in the current logical turn");
+    expect(content).toContain("owned progress one");
+    expect(content).toContain("owned progress two");
+    expect(content).toContain("Surrounding Room activity during the current logical turn");
+    expect(content).toContain("concurrent human request");
+    expect(content).toContain("foreign execution progress");
+    expect(content.indexOf("Completed progress in the current logical turn"))
+      .toBeGreaterThan(content.indexOf("prior human request"));
+    expect(content.indexOf("concurrent human request"))
+      .toBeGreaterThan(content.indexOf("owned progress one"));
+    expect(content.indexOf("owned progress two"))
+      .toBeGreaterThan(content.indexOf("foreign execution progress"));
   });
 
   test("M219 trims journal before sacrificing a minimum complete turn", () => {
@@ -538,10 +674,11 @@ class ManualForegroundClock implements ForegroundContextClock {
 }
 
 describe("M277 foreground hybrid context", () => {
-  test("builds one query from current text plus the newest prior Human request", async () => {
+  test.each([false, true])("builds recall from accepted input and pre-trigger Human history (refresh=%s)", async (refresh) => {
     const hits = [
-      makeHit("alice", "Alice", "Should we use Postgres?", "2026-06-01T10:00:00Z", "user"),
-      makeHit("nova", "Nova", "It handles concurrent writers.", "2026-06-01T10:00:01Z", "assistant"),
+      { ...makeHit("alice", "Alice", "Should we use Postgres?", "2026-06-01T10:00:00Z", "user"), messageId: 8 },
+      { ...makeHit("nova", "Nova", "It handles concurrent writers.", "2026-06-01T10:00:01Z", "assistant"), messageId: 9 },
+      ...(refresh ? [{ ...makeHit("bob", "Bob", "Unrelated concurrent request", "2026-06-01T10:00:02Z", "user"), messageId: 12 }] : []),
     ];
     const requests: unknown[] = [];
     const diagnostics: unknown[] = [];
@@ -552,7 +689,7 @@ describe("M277 foreground hybrid context", () => {
     });
     deps.emitForegroundContextDiagnostic = (diagnostic) => diagnostics.push(diagnostic);
     const result = await buildTranscriptContext({
-      scope: { kind: "room", roomId: "room-1", ownerId: "owner-1" },
+      scope: { kind: "room", roomId: "room-1", ownerId: "owner-1", ...(refresh ? { excludeMessageId: 10, throughMessageIdInclusive: 12 } : {}) },
       currentHumanText: "Why did we choose that?",
       recordContext: {
         representation: "ordinary",

@@ -778,7 +778,71 @@ describe("protected conversation executor IO", () => {
     });
   });
 
-  test("rereads a fresh authorized cut and excludes later Human input", async () => {
+  test.each([false, true])("pages current progress under live protected callbacks (revoke older page=%s)", async (revoke) => {
+    let initial = true;
+    let liveCallbacks = 0;
+    let maximumLiveCallbacks = 0;
+    let consumerCalls = 0;
+    const cursors: (number | undefined)[] = [];
+    const productReadAuthorization = Object.freeze({}) as never;
+    const rows = [9, 10, 11, 12, 13, 14].map((id) => ({
+      messageId: id,
+      revision: 0,
+      createdAt: new Date(`2027-01-15T08:00:${id.toString().padStart(2, "0")}.000Z`),
+      author: { actorId: "actor-agent", handle: "agent", displayName: "Agent" },
+      payload: { role: "assistant" as const, content: `PROGRESS ${id}`, sensitiveMetadata: { foregroundExecutionId: "active" } },
+    }));
+    const repository = {
+      withAgentTranscript: async <Value>(input: Parameters<ActiveConversationRepository["withAgentTranscript"]>[0]) => {
+        expect(input.productReadAuthorization).toBe(productReadAuthorization);
+        expect(input.authorization).toBe(authorization);
+        expect(input.limit).toBe(2);
+        const first = initial;
+        initial = false;
+        if (!first) {
+          expect(input.upToMessageId).toBe(14);
+          cursors.push(input.beforeMessageId);
+          if (revoke && input.beforeMessageId === 13) return { status: "unavailable" as const, reason: "authorization_unavailable" as const };
+        }
+        const page = first ? [] : rows.filter((row) => input.beforeMessageId === undefined || row.messageId < input.beforeMessageId).slice(-2);
+        liveCallbacks += 1;
+        maximumLiveCallbacks = Math.max(maximumLiveCallbacks, liveCallbacks);
+        try {
+          return { status: "executed" as const, value: await input.execute(page) as Value };
+        } finally { liveCallbacks -= 1; }
+      },
+      appendPreparedAgent: async () => ({ status: "committed" as const, message: committedMessage }),
+    } as Pick<ActiveConversationRepository, "withAgentTranscript" | "appendPreparedAgent">;
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 2,
+      productReadAuthorization,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: { transcriptOrigin: "main", parentThreadId: null, scopeId: null, subthreadRoomId: null, notificationContext: { mentionedHumanUserIds: [], causalHumanUserId: null, causalHumanTurnId: null } },
+      repository,
+      preparer: { prepare: async (input) => ({ status: "prepared", write: prepared(input.sessionId, input.idempotencyKey) }) },
+      execute: ({ readFreshHistory }) => readFreshHistory({
+        throughMessageIdInclusive: 14, excludeMessageId: 10, maximumContextCharacters: 10_000, recentConversationLimit: 1,
+        execute: (history) => {
+          consumerCalls += 1;
+          expect(liveCallbacks).toBeGreaterThan(2);
+          return history.map((hit) => hit.messageId);
+        },
+      }),
+    });
+    expect(result).toEqual({ status: "executed", value: revoke
+      ? { status: "unavailable", reason: "authorization_unavailable" }
+      : { status: "executed", value: [9, 11, 12, 13, 14] } });
+    expect(consumerCalls).toBe(revoke ? 0 : 1);
+    expect(cursors).toEqual(revoke ? [undefined, 13] : [undefined, 13, 11]);
+    expect(maximumLiveCallbacks).toBeGreaterThanOrEqual(2);
+    expect(liveCallbacks).toBe(0);
+  });
+
+  test("rereads a fresh authorized cut with concurrent surrounding activity", async () => {
     let opens = 0;
     let lateRead:
       | Parameters<
@@ -966,7 +1030,9 @@ describe("protected conversation executor IO", () => {
           status: "executed",
           value: [
             { id: 8, role: "user", content: "older request" },
+            { id: 11, role: "user", content: "queued request" },
             { id: 12, role: "assistant", content: "working" },
+            { id: 13, role: "assistant", content: "concurrent turn output" },
             { id: 14, role: "tool", content: "tool:lookup completed result" },
           ],
         },

@@ -707,6 +707,19 @@ describe("protected Active conversation repository", () => {
         entrypointId: "foreground.main",
         execute: () => undefined,
       }),
+      () => repository.withAgentTranscript({
+        sessionId: SESSION_ID,
+        namespaceId: NAMESPACE_ID,
+        beforeMessageId: 0,
+        limit: 1,
+        productReadAuthorization: PRODUCT_READ_AUTHORIZATION,
+        authorization: {
+          sessionId: "foreground:one",
+          viewId: "view:one",
+        } as ForegroundAuthorizationView,
+        entrypointId: "foreground.main",
+        execute: () => undefined,
+      }),
     ] as const;
     const failures = await Promise.allSettled(
       operations.map((operation) => operation()),
@@ -719,6 +732,7 @@ describe("protected Active conversation repository", () => {
       "RangeError: protected conversation read limit is out of bounds",
       "RangeError: protected conversation around radius is out of bounds",
       "RangeError: protected conversation read limit is out of bounds",
+      "RangeError: Conversation message ID must be a positive PostgreSQL serial",
     ]);
     expect(productCalls).toBe(0);
   });
@@ -772,6 +786,7 @@ describe("protected Active conversation repository", () => {
             expect(input.authorization).toBe(
               PRODUCT_READ_AUTHORIZATION,
             );
+            expect(input.beforeMessageId).toBe(7);
             return {
               sessionId: SESSION_ID,
               roomId: ROOM_ID,
@@ -790,6 +805,7 @@ describe("protected Active conversation repository", () => {
     const result = await repository.withAgentTranscript({
       sessionId: SESSION_ID,
       namespaceId: NAMESPACE_ID,
+      beforeMessageId: 7,
       limit: 2,
       productReadAuthorization: PRODUCT_READ_AUTHORIZATION,
       authorization,

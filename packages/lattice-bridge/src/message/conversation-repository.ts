@@ -1040,6 +1040,7 @@ export interface ConversationProtectedProductReadPort<ProtectedDto> {
     readonly sessionId: string;
     readonly namespaceId: string;
     readonly upToMessageId?: number;
+    readonly beforeMessageId?: number;
     readonly limit: number;
   }>): Promise<ConversationProtectedAgentReadBatch<ProtectedDto> | null>;
 }

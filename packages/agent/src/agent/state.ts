@@ -58,10 +58,15 @@ export interface ForegroundContextRefreshRequest {
 /** Runtime-stamped source needed to rebuild the accepted foreground request once. */
 export interface ForegroundContextRefreshSource {
   readonly acceptedMessages: BaseMessage[];
+  /** Durable coordinates aligned to exact entries in `acceptedMessages`. */
+  readonly acceptedMessageCoordinates?: readonly Readonly<{
+    acceptedMessageIndex: number;
+    messageId: number;
+  }>[];
   /** Exact non-Human suffix not yet covered by the durable transcript cut. */
   readonly retainedMessages?: BaseMessage[];
   readonly acceptedMessageIds?: readonly number[];
-  /** Stable foreground execution identity used to exclude concurrent turns. */
+  /** Stable foreground identity used to label this execution's progress. */
   readonly executionId?: string;
   readonly triggerMessageId?: number;
   readonly throughMessageIdInclusive?: number;

@@ -135,7 +135,8 @@ describe("resolveForegroundHistoryMessages", () => {
     expect(rendered).toContain("older request");
     expect(rendered).toContain("own completed result");
     expect(rendered).not.toContain("active request");
-    expect(rendered).not.toContain("other concurrent result");
+    expect(rendered).toContain("other concurrent result");
+    expect(rendered).toContain("Surrounding Room activity during the current logical turn");
   });
 
   test("Full refresh pages before windowing so concurrent output cannot evict ten owned anchors", async () => {
@@ -254,7 +255,8 @@ describe("resolveForegroundHistoryMessages", () => {
       expect(rendered).toContain(`own-${index}`);
     }
     expect(rendered).toContain("later-own-tool");
-    expect(rendered).not.toContain("concurrent-visible");
+    expect(rendered).toContain("concurrent-visible");
+    expect(rendered).toContain("Surrounding Room activity during the current logical turn");
   });
 
   test("Full refresh cancellation stops before an older authorized page", async () => {
@@ -346,7 +348,7 @@ describe("resolveForegroundHistoryMessages", () => {
     expect(pageCalls).toBe(1);
   });
 
-  test("Full refresh rejects an injected source page that moves forward", async () => {
+  test.each([false, true])("Full refresh rejects a forward or overlapping source page (overlap=%s)", async (overlap) => {
     const rows = [
       {
         messageId: 102,
@@ -375,10 +377,13 @@ describe("resolveForegroundHistoryMessages", () => {
         throw new Error("protected refresh must use the authorized pager");
       },
       readRoomTranscriptSourcePage: async () => {
-        const row = rows[pageCalls++]!;
+        const page = pageCalls++ === 0 ? [rows[0]!] : overlap
+          ? [{ ...rows[0]!, messageId: 101, sourceOrderTimestamp: "2026-06-01T10:00:00.000400Z" }, rows[0]!]
+          : [rows[1]!];
+        const row = page[0]!;
         return {
           fixedPrefix: [],
-          page: [row],
+          page,
           nextBefore: {
             orderTimestamp: row.sourceOrderTimestamp,
             messageId: row.messageId,
@@ -438,7 +443,7 @@ describe("resolveForegroundHistoryMessages", () => {
       throw new Error("expected protected history pager rejection");
     } catch (error) {
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain("did not move backward");
+      expect((error as Error).message).toContain(overlap ? "overlaps its previous cursor" : "did not move backward");
     }
     expect(pageCalls).toBe(2);
   });
