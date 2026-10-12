@@ -10,7 +10,41 @@ const receiptId = "mg_surplus_0123456789abcdef";
 const ownerId = "11111111-1111-4111-8111-111111111111";
 const fingerprint = "a".repeat(64);
 
-async function surplusProof(model = "minimax-music-v26"): Promise<MediaGenerationAdmissionProof> {
+const approvedRequests = {
+  "seedance-2-5-text-to-video-basic": {
+    kind: "video" as const,
+    requestPayload: {
+      version: 1 as const,
+      model: "seedance-2-5-text-to-video-basic",
+      prompt: "private harbor scene",
+      normalizedSettings: { durationSeconds: 8, aspectRatio: "16:9", resolution: "720p", audioEnabled: true },
+    },
+  },
+  "minimax-h3-enhanced-text-to-video": {
+    kind: "video" as const,
+    requestPayload: {
+      version: 1 as const,
+      model: "minimax-h3-enhanced-text-to-video",
+      prompt: "private harbor scene",
+      normalizedSettings: { durationSeconds: 10, aspectRatio: "16:9", resolution: "2K" },
+    },
+  },
+  "minimax-music-v26": {
+    kind: "music" as const,
+    requestPayload: {
+      version: 1 as const,
+      model: "minimax-music-v26",
+      prompt: "private melody",
+      lyrics: "private lyrics",
+      normalizedSettings: { instrumental: false },
+    },
+  },
+} as const;
+
+type SupportedModel = keyof typeof approvedRequests;
+
+async function surplusProof(model: SupportedModel = "minimax-music-v26"): Promise<MediaGenerationAdmissionProof> {
+  const approved = approvedRequests[model];
   const fundingBinding = {
     humanUserId: ownerId,
     provider: "surplus" as const,
@@ -26,18 +60,12 @@ async function surplusProof(model = "minimax-music-v26"): Promise<MediaGeneratio
     set() { return chain; },
     where() { return chain; },
     returning: async () => [{
-      kind: "music" as const,
+      kind: approved.kind,
       provider: "surplus" as const,
       providerModel: model,
       providerAccountFingerprint: fingerprint,
       fundingBinding,
-      requestPayload: {
-        version: 1 as const,
-        model,
-        prompt: "private melody",
-        lyrics: "private lyrics",
-        normalizedSettings: { instrumental: false },
-      },
+      requestPayload: approved.requestPayload,
     }],
   };
   const proof = await beginMediaGenerationAdmission(
@@ -48,38 +76,81 @@ async function surplusProof(model = "minimax-music-v26"): Promise<MediaGeneratio
   return proof;
 }
 
-describe("Surplus durable music lifecycle", () => {
-  test("qualifies only the exact probed music model and submits with receipt idempotency", async () => {
+describe("Surplus durable media lifecycle", () => {
+  test("maps only exact same-model non-reference routes", () => {
+    expect(resolveSurplusMediaRoute("seedance-2-5-text-to-video-basic")).toBe("venice-seedance-2-5-text-to-video-basic");
+    expect(resolveSurplusMediaRoute("minimax-h3-enhanced-text-to-video")).toBe("venice-minimax-h3-enhanced-text-to-video");
+    expect(resolveSurplusMediaRoute("sonilo-v1-1-music")).toBeNull();
     expect(resolveSurplusMediaRoute("minimax-music-v26")).toBe("venice-minimax-music-v26");
-    expect(resolveSurplusMediaRoute("seedance-2-5-text-to-video-basic")).toBeNull();
+    expect(resolveSurplusMediaRoute("seedance-2-5-reference-to-video-basic")).toBeNull();
+    expect(resolveSurplusMediaRoute("seedance-2-fast-t2v")).toBeNull();
+  });
+
+  test("submits the exact qualified approved request shapes to their family endpoints", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const lifecycle = new SurplusMediaLifecycleAdapter({
       apiKey: "surplus-secret",
       fetchImpl: async (url, init) => {
         requests.push({ url: String(url), ...(init ? { init } : {}) });
-        return new Response(JSON.stringify({ id: "market-job", kind: "music", status: "queued" }), {
+        const kind = String(url).includes("/video/") ? "video" : "music";
+        return new Response(JSON.stringify({ id: `market-${kind}`, kind, status: "queued" }), {
           status: 202,
           headers: { "content-type": "application/json" },
         });
       },
     });
 
-    const accepted = await lifecycle.queueVeniceMediaGeneration(await surplusProof());
-    expect(accepted.providerQueueId).toBe("market-job");
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.url).toBe("https://api.surplusintelligence.ai/v1/music/generations");
-    expect((requests[0]?.init?.headers as Record<string, string>)["Idempotency-Key"]).toBe(receiptId);
-    const requestBody = requests[0]?.init?.body;
-    if (typeof requestBody !== "string") throw new Error("expected serialized Surplus request");
-    expect(JSON.parse(requestBody)).toEqual({
-      model: "venice-minimax-music-v26",
-      prompt: "private melody",
-      lyrics_prompt: "private lyrics",
-      force_instrumental: false,
+    const cases = [
+      ["seedance-2-5-text-to-video-basic", "video", {
+        model: "venice-seedance-2-5-text-to-video-basic", prompt: "private harbor scene",
+        duration: "8s", aspect_ratio: "16:9", resolution: "720p", audio: true,
+      }],
+      ["minimax-h3-enhanced-text-to-video", "video", {
+        model: "venice-minimax-h3-enhanced-text-to-video", prompt: "private harbor scene",
+        duration: "10s", aspect_ratio: "16:9", resolution: "2K",
+      }],
+      ["minimax-music-v26", "music", {
+        model: "venice-minimax-music-v26", prompt: "private melody",
+        lyrics_prompt: "private lyrics", force_instrumental: false,
+      }],
+    ] as const;
+    for (const [model, kind, expectedBody] of cases) {
+      const accepted = await lifecycle.queueVeniceMediaGeneration(await surplusProof(model));
+      expect(accepted).toMatchObject({ model, kind, providerQueueId: `market-${kind}` });
+      const request = requests.at(-1);
+      expect(request?.url).toBe(`https://api.surplusintelligence.ai/v1/${kind}/generations`);
+      expect((request?.init?.headers as Record<string, string>)["Idempotency-Key"]).toBe(receiptId);
+      if (typeof request?.init?.body !== "string") throw new Error("expected serialized Surplus request");
+      expect(JSON.parse(request.init.body)).toEqual(expectedBody);
+    }
+    expect(requests).toHaveLength(3);
+  });
+
+  test("rejects reference media and approximate model aliases before submission", async () => {
+    let calls = 0;
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      fetchImpl: async () => {
+        calls += 1;
+        throw new Error("must not submit unsupported media");
+      },
     });
+    const base = await surplusProof();
+    const unsupported = {
+      ...base,
+      kind: "video",
+      providerModel: "seedance-2-5-reference-to-video-basic",
+      requestPayload: {
+        version: 1,
+        model: "seedance-2-5-reference-to-video-basic",
+        prompt: "private references",
+        referenceImages: [{ path: "references/private.png", revision: 1, sha256: "a".repeat(64) }],
+        normalizedSettings: { durationSeconds: 8, aspectRatio: "16:9", resolution: "720p", audioEnabled: true },
+      },
+    } as unknown as MediaGenerationAdmissionProof;
 
     try {
-      await lifecycle.queueVeniceMediaGeneration(await surplusProof("seedance-2-5-text-to-video-basic"));
+      await lifecycle.queueVeniceMediaGeneration(unsupported);
       throw new Error("expected unsupported route");
     } catch (error) {
       expect(error).toBeInstanceOf(VeniceMediaLifecycleError);
@@ -87,7 +158,7 @@ describe("Surplus durable music lifecycle", () => {
         code: "SURPLUS_MEDIA_ROUTE_UNSUPPORTED", completionCertainty: "not_started",
       });
     }
-    expect(requests).toHaveLength(1);
+    expect(calls).toBe(0);
   });
 
   test("an uncertain submit is never classified as retry-safe", async () => {
@@ -143,6 +214,29 @@ describe("Surplus durable music lifecycle", () => {
       { url: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0", authorization: "Bearer surplus-secret" },
       { url: "https://delivery.example/audio.mp3" },
     ]);
+  });
+
+  test("retrieves video from the video job endpoint and requires its exact output contract", async () => {
+    const urls: string[] = [];
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      fetchImpl: async (url) => {
+        urls.push(String(url));
+        return new Response(JSON.stringify({
+          id: "video-job", kind: "video", status: "succeeded",
+          results: [{ content_type: "video/mp4", url: "https://api.surplusintelligence.ai/v1/media/artifacts/video-job/0" }],
+          usage: { buyer_cost_usdc: "40000", settlement_status: "captured" },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    const retrieved = await lifecycle.retrieve({
+      accepted: {
+        receiptId, model: "seedance-2-5-text-to-video-basic", kind: "video", providerQueueId: "video-job",
+      },
+      attempt: 1,
+    });
+    expect(retrieved).toMatchObject({ state: "signed_delivery", actualCostUsdMicros: 40_000 });
+    expect(urls).toEqual(["https://api.surplusintelligence.ai/v1/video/generations/video-job"]);
   });
 
   test("records cancellation as terminal and preserves a captured charge", async () => {

@@ -495,6 +495,54 @@ describe("D525 production media generation runtime", () => {
     expect(fundingOpened).toBe(0);
   });
 
+  test("preflights every approved video setting and preserves an explicit audio-off request", async () => {
+    const opened: unknown[] = [];
+    const funding = {
+      humanUserId: actor.userId,
+      provider: "venice" as const,
+      binding: { kind: "server" as const, providerRoute: "venice" as const },
+      credentialFingerprint: "a".repeat(64),
+    };
+    const provider = providerFetch();
+    const runtime = createProductionMediaGenerationRuntime({
+      db: authorityDb(),
+      dbOperations: operations().dbOperations,
+      getCapabilities: mediaCapabilities,
+      openFunding: async (_humanUserId, modelId, family, options) => {
+        opened.push(options);
+        return { modelId, family, funding, runAttempt: async () => { throw new Error("unused"); } };
+      },
+      runFunding: async (_binding, _intent, callback) => callback({
+        apiKey: "venice-secret",
+        usageFunding: { kind: "server", humanUserId: actor.userId, providerRoute: "venice" },
+      }),
+      fetchImpl: provider.fetchImpl,
+    });
+
+    const prepared = await runtime.prepare(actor, {
+      ...preparation,
+      approvalId: "approval-video-audio-off",
+      request: {
+        model: "seedance-2-5-text-to-video-basic",
+        prompt: creativePrompt,
+        durationSeconds: 8,
+        aspectRatio: "16:9",
+        resolution: "720p",
+        audio: false,
+      },
+    });
+    expect(prepared.ok).toBe(true);
+    expect(opened).toEqual([{
+      operation: "generate",
+      surplusRequirements: {
+        durationSeconds: 8,
+        aspectRatio: "16:9",
+        resolution: "720p",
+        audio: false,
+      },
+    }]);
+  });
+
   test("uses the public fixed-origin market snapshot as an honest Surplus estimate", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const funding = {
@@ -537,6 +585,117 @@ describe("D525 production media generation runtime", () => {
     expect(requests[0]?.url).toBe("https://api.surplusintelligence.ai/api/markets/venice-minimax-music-v26");
     expect(requests[0]?.init).toMatchObject({ method: "GET", redirect: "error", credentials: "omit" });
     expect((requests[0]?.init?.headers as Record<string, string>)["Authorization"]).toBeUndefined();
+  });
+
+  test("falls back to the same-payer direct model before reserving when no healthy exact offer exists", async () => {
+    const state = operations();
+    const surplusFunding = {
+      humanUserId: actor.userId,
+      provider: "surplus" as const,
+      binding: { kind: "personal" as const, providerRoute: "surplus" as const, credentialId: "55555555-5555-4555-8555-555555555555", credentialRevision: 2 },
+      credentialFingerprint: "a".repeat(64),
+    };
+    const directFunding = {
+      humanUserId: actor.userId,
+      provider: "venice" as const,
+      binding: { kind: "personal" as const, providerRoute: "venice" as const, credentialId: "66666666-6666-4666-8666-666666666666", credentialRevision: 4 },
+      credentialFingerprint: "b".repeat(64),
+    };
+    const opened: Array<{ modelId: string; options: unknown }> = [];
+    const runtime = createProductionMediaGenerationRuntime({
+      db: authorityDb(),
+      dbOperations: state.dbOperations,
+      getCapabilities: mediaCapabilities,
+      openFunding: async (_humanUserId, modelId, family, options) => {
+        opened.push({ modelId, options });
+        const funding = options?.transport === "direct" ? directFunding : surplusFunding;
+        return { modelId, family, funding, runAttempt: async () => { throw new Error("unused"); } };
+      },
+      runFunding: async (binding, _intent, callback) => {
+        if (binding.binding.kind !== "personal") throw new Error("expected personal funding");
+        return callback({
+          apiKey: binding.provider === "surplus" ? "surplus-secret" : "venice-secret",
+          usageFunding: {
+            kind: "personal", humanUserId: actor.userId, payerHumanId: actor.userId,
+            providerRoute: binding.provider,
+            credentialId: binding.binding.credentialId,
+            credentialRevision: binding.binding.credentialRevision,
+          },
+        });
+      },
+      surplusEstimateUsdMicros: async () => null,
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/audio/quote")) {
+          return new Response(JSON.stringify({ quote: 0.09 }), {
+            status: 200, headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request ${String(url)}`);
+      },
+    });
+
+    const prepared = await runtime.prepare(actor, musicPreparation);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.prepared.preview.quote).toMatchObject({ kind: "exact", amountMicros: 90_000 });
+    expect(opened).toEqual([
+      { modelId: "venice:minimax-music-v26", options: { operation: "generate" } },
+      {
+        modelId: "venice:minimax-music-v26",
+        options: { operation: "generate", prior: surplusFunding, transport: "direct" },
+      },
+    ]);
+    expect(state.read()).toMatchObject({
+      provider: "venice",
+      providerModel: "minimax-music-v26",
+      fundingBinding: directFunding,
+      providerAccountFingerprint: directFunding.credentialFingerprint,
+    });
+  });
+
+  test("preserves an approved Surplus receipt after definitive refusal without direct resubmission", async () => {
+    const state = operations();
+    const funding = {
+      humanUserId: actor.userId,
+      provider: "surplus" as const,
+      binding: { kind: "server" as const, providerRoute: "surplus" as const },
+      credentialFingerprint: "a".repeat(64),
+    };
+    let fundingOpens = 0;
+    let submissions = 0;
+    const runtime = createProductionMediaGenerationRuntime({
+      db: authorityDb(),
+      dbOperations: state.dbOperations,
+      getCapabilities: mediaCapabilities,
+      openFunding: async (_humanUserId, modelId, family) => {
+        fundingOpens += 1;
+        return { modelId, family, funding, runAttempt: async () => { throw new Error("unused"); } };
+      },
+      runFunding: async (_binding, _intent, callback) => callback({
+        apiKey: "surplus-secret",
+        usageFunding: { kind: "server", humanUserId: actor.userId, providerRoute: "surplus" },
+      }),
+      surplusEstimateUsdMicros: async () => 60_000,
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/v1/music/generations")) {
+          submissions += 1;
+          return new Response(JSON.stringify({ error: "request refused" }), {
+            status: 422, headers: { "Content-Type": "application/json" },
+          });
+        }
+        throw new Error(`unexpected request ${String(url)}`);
+      },
+      beginCostAttempt: async () => undefined,
+      settleCostAttempt: async () => undefined,
+    });
+
+    const prepared = await runtime.prepare(actor, musicPreparation);
+    if (!prepared.ok) throw new Error(prepared.recovery);
+    const result = await runtime.submit(actor, submitInput(prepared));
+    expect(result).toMatchObject({ queueStarted: false, state: "failed" });
+    expect(fundingOpens).toBe(1);
+    expect(submissions).toBe(1);
+    expect(state.read()).toMatchObject({ provider: "surplus", state: "failed" });
   });
 
   test("missing key resets any prior runtime and configured boot reset is symmetric", () => {

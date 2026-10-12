@@ -52,6 +52,7 @@ export interface CapabilityFundingSession {
   openMedia?(modelId: string, family: "image" | "video" | "music", options?: {
     readonly operation?: "generate" | "edit";
     readonly directOnly?: boolean;
+    readonly transport?: "direct";
     readonly prior?: DurableServiceFundingBinding;
   }): Promise<AdmittedCapabilityMedia>;
   openService(provider: PaidServiceProvider, prior?: TaskFundingBinding): Promise<AdmittedCapabilityService>;

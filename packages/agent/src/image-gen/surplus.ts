@@ -3,7 +3,10 @@ import type {
   GenerateImagesResult,
   ImageGenerationProviderReceipt,
 } from "./types";
-import { readSurplusWireReceipt } from "../providers/surplus-transport";
+import {
+  isSafeSurplusDirectFallback,
+  readSurplusWireReceipt,
+} from "../providers/surplus-transport";
 
 const SURPLUS_IMAGE_ROOT = "https://api.surplusintelligence.ai";
 
@@ -42,10 +45,20 @@ export class SurplusImageAttemptError extends Error {
     readonly attemptOutcome: "failed" | "unknown",
     readonly failureCode: string,
     readonly receipt?: ImageGenerationProviderReceipt,
+    /** True only for a structured, pre-service refusal that is safe to replay directly. */
+    readonly directFallbackSafe = false,
   ) {
     super(message);
     this.name = "SurplusImageAttemptError";
   }
+}
+
+export function isSafeSurplusImageDirectFallback(
+  error: unknown,
+): error is SurplusImageAttemptError {
+  return error instanceof SurplusImageAttemptError
+    && error.attemptOutcome === "failed"
+    && error.directFallbackSafe;
 }
 
 export interface SurplusImageTransportObservation {
@@ -123,15 +136,32 @@ function adaptedRequiredParameters(
     .filter((parameter) => parameter !== "" && sentParameters.has(parameter));
 }
 
-function responseFailureOutcome(
+function parseFailurePayload(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function isSafeDirectFallbackResponse(
+  payload: unknown,
   status: number,
   receipt: ImageGenerationProviderReceipt,
-): "failed" | "unknown" {
-  const noSellerAttempt = receipt.marketplaceAttempts === 0
-    && receipt.buyerCostMicroUsd === undefined;
-  return noSellerAttempt && [400, 401, 402, 404, 429, 503].includes(status)
-    ? "failed"
-    : "unknown";
+): boolean {
+  return isSafeSurplusDirectFallback(payload, status, {
+    ...(receipt.requestId === undefined ? {} : { requestId: receipt.requestId }),
+    ...(receipt.marketplaceAttempts === undefined
+      ? {}
+      : { marketplaceAttempts: receipt.marketplaceAttempts }),
+    ...(receipt.buyerCostMicroUsd === undefined
+      ? {}
+      : { buyerCostMicro: receipt.buyerCostMicroUsd }),
+    ...(receipt.adaptedParameters === undefined
+      ? {}
+      : { adaptedParameters: receipt.adaptedParameters }),
+    truncated: receipt.truncated === true,
+  }, false);
 }
 
 function isPng(bytes: Buffer): boolean {
@@ -208,13 +238,17 @@ export async function generateImagesSurplus(
   }
   const text = await response.text().catch(() => "");
   if (!response.ok) {
+    const directFallbackSafe = isSafeDirectFallbackResponse(
+      parseFailurePayload(text),
+      response.status,
+      receipt,
+    );
     throw new SurplusImageAttemptError(
       `Surplus image ${operation} failed (HTTP ${response.status}).`,
-      responseFailureOutcome(response.status, receipt),
-      responseFailureOutcome(response.status, receipt) === "failed"
-        ? "provider_refused"
-        : "outcome_unknown",
+      directFallbackSafe ? "failed" : "unknown",
+      directFallbackSafe ? "provider_refused" : "outcome_unknown",
       receipt,
+      directFallbackSafe,
     );
   }
   if (receipt.truncated) {

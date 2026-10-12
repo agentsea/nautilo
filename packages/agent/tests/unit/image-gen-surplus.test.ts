@@ -134,6 +134,72 @@ describe("qualified Surplus image transport", () => {
     });
   });
 
+  test("marks only a structured no-seller response with zero attempts as safe for direct fallback", async () => {
+    globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify({
+      error: { code: "no_sellers_for_model" },
+    }), {
+      status: 404,
+      headers: {
+        "x-request-id": "no-seller-image",
+        "x-si-marketplace-attempts": "0",
+      },
+    }))) as unknown as typeof fetch;
+
+    const error = await generateImagesSurplus(
+      "venice:gpt-image-2",
+      generationArgs(),
+      "key",
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      attemptOutcome: "failed",
+      failureCode: "provider_refused",
+      directFallbackSafe: true,
+      receipt: {
+        requestId: "no-seller-image",
+        marketplaceAttempts: 0,
+      },
+    });
+  });
+
+  test.each([
+    {
+      name: "missing structured refusal code",
+      body: { error: { message: "not found" } },
+      headers: { "x-si-marketplace-attempts": "0" },
+    },
+    {
+      name: "seller attempt recorded",
+      body: { error: { code: "no_sellers_for_model" } },
+      headers: { "x-si-marketplace-attempts": "1" },
+    },
+    {
+      name: "positive buyer cost recorded",
+      body: { error: { code: "no_sellers_for_model" } },
+      headers: {
+        "x-si-marketplace-attempts": "0",
+        "x-si-buyer-cost-micro": "1",
+      },
+    },
+  ])("keeps $name terminal", async ({ body, headers }) => {
+    globalThis.fetch = (() => Promise.resolve(new Response(JSON.stringify(body), {
+      status: 404,
+      headers,
+    }))) as unknown as typeof fetch;
+
+    const error = await generateImagesSurplus(
+      "venice:gpt-image-2",
+      generationArgs(),
+      "key",
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      attemptOutcome: "unknown",
+      failureCode: "outcome_unknown",
+      directFallbackSafe: false,
+    });
+  });
+
   test("rejects adapted required parameters without replaying the charged result", async () => {
     let calls = 0;
     globalThis.fetch = (() => {

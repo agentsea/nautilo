@@ -11,10 +11,11 @@ import {
 } from "./venice-lifecycle";
 
 const SURPLUS_API_BASE = "https://api.surplusintelligence.ai";
-const SURPLUS_MUSIC_MODEL = "venice-minimax-music-v26";
 
 export const SURPLUS_MEDIA_ROUTES = Object.freeze({
-  "minimax-music-v26": SURPLUS_MUSIC_MODEL,
+  "seedance-2-5-text-to-video-basic": "venice-seedance-2-5-text-to-video-basic",
+  "minimax-h3-enhanced-text-to-video": "venice-minimax-h3-enhanced-text-to-video",
+  "minimax-music-v26": "venice-minimax-music-v26",
 } as const);
 
 export type SurplusEligibleMediaModel = keyof typeof SURPLUS_MEDIA_ROUTES;
@@ -24,6 +25,72 @@ export function resolveSurplusMediaRoute(modelId: string): string | null {
   return Object.prototype.hasOwnProperty.call(SURPLUS_MEDIA_ROUTES, modelId)
     ? SURPLUS_MEDIA_ROUTES[modelId as SurplusEligibleMediaModel]
     : null;
+}
+
+const SURPLUS_MEDIA_FACTS = Object.freeze({
+  "seedance-2-5-text-to-video-basic": { kind: "video", outputMime: "video/mp4" },
+  "minimax-h3-enhanced-text-to-video": { kind: "video", outputMime: "video/mp4" },
+  "minimax-music-v26": { kind: "music", outputMime: "audio/mpeg" },
+} as const);
+
+function routeFacts(modelId: string) {
+  return Object.prototype.hasOwnProperty.call(SURPLUS_MEDIA_FACTS, modelId)
+    ? SURPLUS_MEDIA_FACTS[modelId as SurplusEligibleMediaModel]
+    : undefined;
+}
+
+function integerSetting(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`approved ${label} is incomplete`);
+  }
+  return value;
+}
+
+function stringSetting(value: unknown, label: string): string {
+  if (!nonempty(value)) throw new Error(`approved ${label} is incomplete`);
+  return value;
+}
+
+function booleanSetting(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`approved ${label} is incomplete`);
+  return value;
+}
+
+function queuePayload(proof: MediaGenerationAdmissionProof, route: string): Record<string, unknown> {
+  const settings = proof.requestPayload.normalizedSettings;
+  switch (proof.providerModel) {
+    case "seedance-2-5-text-to-video-basic":
+      return {
+        model: route,
+        prompt: proof.requestPayload.prompt,
+        duration: `${integerSetting(settings.durationSeconds, "video duration")}s`,
+        aspect_ratio: stringSetting(settings.aspectRatio, "video aspect ratio"),
+        resolution: stringSetting(settings.resolution, "video resolution"),
+        audio: booleanSetting(settings.audioEnabled, "video audio setting"),
+      };
+    case "minimax-h3-enhanced-text-to-video":
+      return {
+        model: route,
+        prompt: proof.requestPayload.prompt,
+        duration: `${integerSetting(settings.durationSeconds, "video duration")}s`,
+        aspect_ratio: stringSetting(settings.aspectRatio, "video aspect ratio"),
+        resolution: stringSetting(settings.resolution, "video resolution"),
+      };
+    case "minimax-music-v26":
+      return {
+        model: route,
+        prompt: proof.requestPayload.prompt,
+        ...(proof.requestPayload.lyrics === undefined ? {} : { lyrics_prompt: proof.requestPayload.lyrics }),
+        force_instrumental: booleanSetting(settings.instrumental, "music instrumental setting"),
+      };
+    default:
+      throw new Error("approved marketplace media model is unsupported");
+  }
+}
+
+function generationEndpoint(kind: "video" | "music", queueId?: string): string {
+  const base = `${SURPLUS_API_BASE}/v1/${kind}/generations`;
+  return queueId === undefined ? base : `${base}/${encodeURIComponent(queueId)}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -138,7 +205,10 @@ export class SurplusMediaLifecycleAdapter {
 
   async queueVeniceMediaGeneration(proof: MediaGenerationAdmissionProof): Promise<VeniceAcceptedMediaWork> {
     const route = resolveSurplusMediaRoute(proof.providerModel);
-    if (proof.provider !== "surplus" || proof.kind !== "music" || route === null ||
+    const facts = routeFacts(proof.providerModel);
+    if (proof.provider !== "surplus" || proof.fundingBinding.provider !== "surplus" ||
+        proof.providerAccountFingerprint !== proof.fundingBinding.credentialFingerprint ||
+        route === null || facts === undefined || facts.kind !== proof.kind ||
         proof.requestPayload.model !== proof.providerModel) {
       throw new VeniceMediaLifecycleError(proof.receiptId, failure({
         code: "SURPLUS_MEDIA_ROUTE_UNSUPPORTED", phase: "admission",
@@ -146,17 +216,10 @@ export class SurplusMediaLifecycleAdapter {
         message: "This exact media model is not qualified for marketplace generation.",
       }));
     }
-    const settings = proof.requestPayload.normalizedSettings;
-    if (typeof settings.instrumental !== "boolean") throw new Error("approved music request is incomplete");
-    const payload = {
-      model: route,
-      prompt: proof.requestPayload.prompt,
-      ...(proof.requestPayload.lyrics === undefined ? {} : { lyrics_prompt: proof.requestPayload.lyrics }),
-      force_instrumental: settings.instrumental,
-    };
+    const payload = queuePayload(proof, route);
     let response: Response;
     try {
-      response = await this.fetchImpl(`${SURPLUS_API_BASE}/v1/music/generations`, {
+      response = await this.fetchImpl(generationEndpoint(facts.kind), {
         method: "POST",
         redirect: "error",
         headers: { ...this.authHeaders(true), "Idempotency-Key": proof.receiptId },
@@ -171,7 +234,7 @@ export class SurplusMediaLifecycleAdapter {
     }
     if (!response.ok) throw statusFailure(proof.receiptId, response.status, "admission");
     const body = await json(response);
-    if (!isRecord(body) || !nonempty(body["id"]) || body["kind"] !== "music" ||
+    if (!isRecord(body) || !nonempty(body["id"]) || body["kind"] !== facts.kind ||
         !["queued", "submitted", "processing", "running"].includes(String(body["status"]))) {
       throw new VeniceMediaLifecycleError(proof.receiptId, failure({
         code: "SURPLUS_ADMISSION_UNKNOWN", phase: "admission", retrySafe: false,
@@ -188,10 +251,18 @@ export class SurplusMediaLifecycleAdapter {
   }
 
   async retrieve(input: { readonly accepted: VeniceAcceptedMediaWork; readonly attempt: number }): Promise<VeniceRetrieveResult> {
+    const facts = routeFacts(input.accepted.model);
+    if (!facts || facts.kind !== input.accepted.kind) {
+      throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
+        code: "SURPLUS_MEDIA_ROUTE_UNSUPPORTED", phase: "retrieve", retrySafe: false,
+        recoveryActions: ["contact_support"],
+        message: "The marketplace receipt no longer matches a supported media route.",
+      }));
+    }
     let response: Response;
     try {
       response = await this.fetchImpl(
-        `${SURPLUS_API_BASE}/v1/music/generations/${encodeURIComponent(input.accepted.providerQueueId)}`,
+        generationEndpoint(facts.kind, input.accepted.providerQueueId),
         { method: "GET", redirect: "error", headers: this.authHeaders() },
       );
     } catch {
@@ -202,7 +273,7 @@ export class SurplusMediaLifecycleAdapter {
     }
     if (!response.ok) throw statusFailure(input.accepted.receiptId, response.status, "retrieve");
     const body = await json(response);
-    if (!isRecord(body) || body["id"] !== input.accepted.providerQueueId || body["kind"] !== "music") {
+    if (!isRecord(body) || body["id"] !== input.accepted.providerQueueId || body["kind"] !== facts.kind) {
       throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
         code: "SURPLUS_STATUS_INVALID", phase: "retrieve", retrySafe: true,
         recoveryActions: ["retry_retrieval"], message: "Marketplace status could not be verified.",
@@ -231,7 +302,7 @@ export class SurplusMediaLifecycleAdapter {
     }
     const results = Array.isArray(body["results"]) ? body["results"] : [];
     const result = results.length === 1 && isRecord(results[0]) ? results[0] : undefined;
-    if (body["status"] !== "succeeded" || !result || result["content_type"] !== "audio/mpeg" || !nonempty(result["url"])) {
+    if (body["status"] !== "succeeded" || !result || result["content_type"] !== facts.outputMime || !nonempty(result["url"])) {
       throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
         code: "SURPLUS_STATUS_INVALID", phase: "retrieve", retrySafe: true,
         recoveryActions: ["retry_retrieval"], message: "Marketplace completion could not be verified.",

@@ -493,22 +493,6 @@ export function createProductionMediaGenerationRuntime(
   const settleCostAttempt = options.settleCostAttempt ?? (legacyKey
     ? () => Promise.resolve()
     : settleServerProviderCostAttempt);
-  const admitFunding = async (actor: MediaGenerationApprovalActorContext, request: import("@nautilo/agent").NormalizedMediaGenerationRequest) => {
-    if (legacyKey) {
-      return {
-        humanUserId: actor.userId,
-        provider: "venice" as const,
-        binding: { kind: "server" as const, providerRoute: "venice" },
-        credentialFingerprint: providerAccountFingerprint(legacyKey),
-      };
-    }
-    return (await (options.openFunding ?? openMediaFunding)(
-      actor.userId,
-      `venice:${request.model}`,
-      request.model === "sonilo-v1-1-music" || request.model === "minimax-music-v26" ? "music" : "video",
-      { operation: "generate" },
-    )).funding;
-  };
   const withFunding = async <T>(
     binding: DurableServiceFundingBinding,
     intent: "spend" | "recover",
@@ -521,6 +505,84 @@ export function createProductionMediaGenerationRuntime(
       return callback({ apiKey: legacyKey, usageFunding: { kind: "server", humanUserId: binding.humanUserId, providerRoute: "venice" } });
     }
     return runFunding(binding, intent, callback);
+  };
+  const surplusEstimateByBinding = new WeakMap<DurableServiceFundingBinding, number>();
+  const estimateSurplus = async (binding: DurableServiceFundingBinding, modelId: string): Promise<number> => {
+    const amountUsdMicros = await withFunding(binding, "spend", () =>
+      options.surplusEstimateUsdMicros
+        ? options.surplusEstimateUsdMicros(modelId)
+        : createSurplusMediaEstimatePort({
+            ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+          }).estimate(modelId));
+    if (amountUsdMicros === null || !Number.isSafeInteger(amountUsdMicros) || amountUsdMicros < 0) {
+      throw new Error("marketplace media estimate unavailable");
+    }
+    return amountUsdMicros;
+  };
+  const admitFunding = async (actor: MediaGenerationApprovalActorContext, request: import("@nautilo/agent").NormalizedMediaGenerationRequest) => {
+    if (legacyKey) {
+      return {
+        humanUserId: actor.userId,
+        provider: "venice" as const,
+        binding: { kind: "server" as const, providerRoute: "venice" },
+        credentialFingerprint: providerAccountFingerprint(legacyKey),
+      };
+    }
+    const openFunding = options.openFunding ?? openMediaFunding;
+    const modelId = `venice:${request.model}`;
+    const family = request.model === "sonilo-v1-1-music" || request.model === "minimax-music-v26"
+      ? "music" as const
+      : "video" as const;
+    const directOnly = request.model === "seedance-2-5-reference-to-video-basic"
+      || resolveSurplusMediaRoute(request.model) === null;
+    const surplusRequirements = request.model === "seedance-2-5-text-to-video-basic"
+      ? {
+          durationSeconds: request.durationSeconds,
+          aspectRatio: request.aspectRatio,
+          resolution: request.resolution,
+          audio: request.audio,
+        }
+      : request.model === "minimax-h3-enhanced-text-to-video"
+        ? {
+            durationSeconds: request.durationSeconds,
+            aspectRatio: request.aspectRatio,
+            resolution: request.resolution,
+          }
+        : undefined;
+    const admitted = await openFunding(actor.userId, modelId, family, {
+      operation: "generate",
+      ...(directOnly ? { directOnly: true } : {}),
+      ...(surplusRequirements ? { surplusRequirements } : {}),
+    });
+    if (admitted.modelId !== modelId || admitted.family !== family ||
+        admitted.funding.humanUserId !== actor.userId ||
+        (directOnly && admitted.funding.provider === "surplus")) {
+      throw new Error("media funding admission changed the requested route");
+    }
+    if (admitted.funding.provider !== "surplus") return admitted.funding;
+
+    try {
+      surplusEstimateByBinding.set(
+        admitted.funding,
+        await estimateSurplus(admitted.funding, request.model),
+      );
+      return admitted.funding;
+    } catch {
+      // The market snapshot is part of fresh admission. If it has no healthy
+      // exact-model offer, retain the payer class and quote the same model
+      // directly before any approval-bound receipt is reserved.
+      const direct = await openFunding(actor.userId, modelId, family, {
+        operation: "generate",
+        prior: admitted.funding,
+        transport: "direct",
+      });
+      if (direct.modelId !== modelId || direct.family !== family || direct.funding.provider === "surplus" ||
+          direct.funding.humanUserId !== actor.userId ||
+          direct.funding.binding.kind !== admitted.funding.binding.kind) {
+        throw new Error("marketplace media fallback changed the admitted request");
+      }
+      return direct.funding;
+    }
   };
   const directRetrievalAdmission: VeniceMediaAdmissionPort = {
     async queueVeniceMediaGeneration(proof, actor) {
@@ -599,14 +661,9 @@ export function createProductionMediaGenerationRuntime(
       async quote(request) {
         if (!request.fundingBinding || !request.provider) throw new Error("media quote funding is missing");
         if (request.provider === "surplus") {
-          const amountUsdMicros = options.surplusEstimateUsdMicros
-            ? await options.surplusEstimateUsdMicros(request.pricingRequest.model)
-            : await createSurplusMediaEstimatePort({
-                ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-              }).estimate(request.pricingRequest.model);
-          if (amountUsdMicros === null || !Number.isSafeInteger(amountUsdMicros) || amountUsdMicros < 0) {
-            throw new Error("marketplace media estimate unavailable");
-          }
+          const amountUsdMicros = surplusEstimateByBinding.get(request.fundingBinding);
+          if (amountUsdMicros === undefined) throw new Error("marketplace media estimate was not admitted");
+          surplusEstimateByBinding.delete(request.fundingBinding);
           return { amountUsdMicros, kind: "estimate" };
         }
         return withFunding(request.fundingBinding, "spend", ({ apiKey }) =>

@@ -41,6 +41,14 @@ export interface SurplusImageAttemptDeps {
   readonly invoke?: typeof generateImagesSurplus;
 }
 
+/** A failed attempt whose durable settlement could not be confirmed is never replayable. */
+export class SurplusImageAttemptLedgerError extends Error {
+  constructor(readonly attemptError: unknown) {
+    super("Surplus image attempt accounting is unavailable; the request was not retried.");
+    this.name = "SurplusImageAttemptLedgerError";
+  }
+}
+
 function canonicalProvider(modelId: string): string {
   const separator = modelId.indexOf(":");
   if (separator < 1) throw new Error("A canonical image model id is required.");
@@ -192,6 +200,7 @@ export async function invokeSurplusImageAttempt(
       warn("[nautilo/surplus] image attempt settlement failed", {
         failureCode: "attempt_settlement_failed",
       });
+      throw new SurplusImageAttemptLedgerError(error);
     }
     throw error;
   }

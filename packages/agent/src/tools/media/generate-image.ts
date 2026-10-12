@@ -38,6 +38,7 @@ import { runFundedDirectImageAttempt } from "../../image-gen/funded-attempt";
 import { invokeSurplusImageAttempt } from "../../image-gen/surplus-attempt";
 import {
   assertSurplusImageRequestCompatible,
+  isSafeSurplusImageDirectFallback,
   resolveSurplusImageRoute,
 } from "../../image-gen/surplus";
 import type {
@@ -175,6 +176,24 @@ function requiresDirectImageTransport(
     return false;
   } catch {
     return true;
+  }
+}
+
+function assertSamePayerDirectFallback(
+  prior: AdmittedCapabilityMedia,
+  direct: AdmittedCapabilityMedia,
+  model: ImageModelConfig,
+): void {
+  if (direct.modelId !== model.id || direct.family !== "image") {
+    throw new Error("The direct image fallback changed the selected model.");
+  }
+  if (direct.funding.humanUserId !== prior.funding.humanUserId
+    || direct.funding.binding.kind !== prior.funding.binding.kind) {
+    throw new Error("The direct image fallback changed the admitted payer.");
+  }
+  if (direct.funding.provider !== model.provider
+    || direct.funding.binding.providerRoute !== model.provider) {
+    throw new Error("The direct image fallback does not match the selected model provider.");
   }
 }
 
@@ -350,40 +369,62 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
       }
 
       let result: Awaited<ReturnType<typeof generateImages>>;
+      const runFundedDirectAttempt = (
+        admitted: AdmittedCapabilityMedia,
+      ): Promise<Awaited<ReturnType<typeof generateImages>>> => admitted.runAttempt(
+        ({ apiKey, usageFunding }) => runFundedDirectImageAttempt({
+          ...(context == null ? {} : { context: context as ToolContext }),
+          canonicalModelId: modelEntry.id,
+          provider: modelEntry.provider,
+          usageFunding,
+          args: imageArgs,
+          ...(deps.beginProviderCostAttempt === undefined
+            ? {}
+            : { beginProviderCostAttempt: deps.beginProviderCostAttempt }),
+          invoke: () => generateImages(
+            imageArgs,
+            modelEntry.provider === "openai" ? { openaiKey: apiKey }
+              : modelEntry.provider === "google" ? { googleKey: apiKey }
+                : modelEntry.provider === "openrouter" ? { openrouterKey: apiKey }
+                  : { veniceKey: apiKey },
+            modelEntry.provider,
+            { meterUsage: false },
+          ),
+        }),
+      );
       try {
         if (funded) {
-          result = await funded.runAttempt(({ apiKey, usageFunding }) => {
-            if (actualProvider === "surplus") {
-              const route = resolveSurplusImageRoute(modelEntry.id);
-              if (!route) throw new Error(`${modelEntry.id} has no qualified Surplus image route.`);
-              return invokeSurplusImageAttempt({
-                route,
-                canonicalModelId: modelEntry.id,
-                args: imageArgs,
-                apiKey,
-                funding: usageFunding,
+          if (actualProvider === "surplus") {
+            try {
+              result = await funded.runAttempt(({ apiKey, usageFunding }) => {
+                const route = resolveSurplusImageRoute(modelEntry.id);
+                if (!route) throw new Error(`${modelEntry.id} has no qualified Surplus image route.`);
+                return invokeSurplusImageAttempt({
+                  route,
+                  canonicalModelId: modelEntry.id,
+                  args: imageArgs,
+                  apiKey,
+                  funding: usageFunding,
+                });
               });
+            } catch (error) {
+              if (!isSafeSurplusImageDirectFallback(error)) throw error;
+              if (!capabilityFunding?.openMedia) {
+                throw new Error("Image funding is unavailable for direct fallback.");
+              }
+              const direct = await capabilityFunding.openMedia(modelEntry.id, "image", {
+                operation: references.length > 0 ? "edit" : "generate",
+                directOnly: true,
+                transport: "direct",
+                prior: funded.funding,
+              });
+              assertSamePayerDirectFallback(funded, direct, modelEntry);
+              actualProvider = direct.funding.provider;
+              result = await runFundedDirectAttempt(direct);
             }
-            return runFundedDirectImageAttempt({
-              ...(context == null ? {} : { context: context as ToolContext }),
-              canonicalModelId: modelEntry.id,
-              provider: actualProvider,
-              usageFunding,
-              args: imageArgs,
-              ...(deps.beginProviderCostAttempt === undefined
-                ? {}
-                : { beginProviderCostAttempt: deps.beginProviderCostAttempt }),
-              invoke: () => generateImages(
-                imageArgs,
-                modelEntry.provider === "openai" ? { openaiKey: apiKey }
-                  : modelEntry.provider === "google" ? { googleKey: apiKey }
-                    : modelEntry.provider === "openrouter" ? { openrouterKey: apiKey }
-                      : { veniceKey: apiKey },
-                modelEntry.provider,
-                { meterUsage: false },
-              ),
-            });
-          });
+          } else {
+            result = await runFundedDirectAttempt(funded);
+          }
         } else {
           result = await generateImages(
             imageArgs,

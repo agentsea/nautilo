@@ -7,6 +7,7 @@ import {
   type GenerateImagesResult,
 } from "../../src/image-gen";
 import { surplusCredentialFingerprint } from "../../src/providers/surplus-reconciliation";
+import { SurplusImageAttemptLedgerError } from "../../src/image-gen/surplus-attempt";
 
 const HUMAN_ID = "40000000-0000-4000-8000-000000000004";
 const CREDENTIAL_ID = "50000000-0000-4000-8000-000000000005";
@@ -171,5 +172,31 @@ describe("durable Surplus image attempts", () => {
       costState: "unknown",
       failureCode: "outcome_unknown",
     }]);
+  });
+
+  test("turns settlement failure after a safe refusal into a terminal ledger error", async () => {
+    const refusal = new SurplusImageAttemptError(
+      "no seller",
+      "failed",
+      "provider_refused",
+      { marketplaceAttempts: 0 },
+      true,
+    );
+    const error = await invokeSurplusImageAttempt({
+      route,
+      canonicalModelId: route.modelId,
+      args,
+      apiKey: "personal-surplus-key",
+      funding,
+    }, {
+      mintAttemptId: () => ATTEMPT_ID,
+      begin: async () => undefined,
+      attach: async () => undefined,
+      settle: async () => { throw new Error("ledger unavailable"); },
+      invoke: () => Promise.reject(refusal),
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SurplusImageAttemptLedgerError);
+    expect(error).toMatchObject({ attemptError: refusal });
   });
 });

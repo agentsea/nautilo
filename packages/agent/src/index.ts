@@ -1464,6 +1464,8 @@ export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-cont
 export { listSpeechModels, getServerSpeechModel, resolveFundedSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
 
+export { deriveSurplusMediaModelId, findSurplusMediaModel, type SurplusMediaFamily, type SurplusMediaRequirements } from "./providers/surplus-media-route";
+
 export { normalizeGatewayBaseUrl } from "./providers/universal";
 
 export { getCapabilityFundingSession, runWithCapabilityFundingSession, type AdmittedCapabilityMedia, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
