@@ -65,7 +65,7 @@ export interface ProtectedConversationExecutorTurnScope {
     readonly excludeMessageId: number;
     readonly excludeMessageIds?: readonly number[];
     readonly foregroundExecutionId?: string;
-    readonly maximumContextCharacters?: number;
+    readonly maximumContextCharacters: number;
     readonly recentConversationLimit?: number;
     readonly execute: (
       history: readonly RoomHistoryHit[],

@@ -416,7 +416,7 @@ export async function executeProtectedConversationTurn<Value>(
           readonly excludeMessageId: number;
           readonly excludeMessageIds?: readonly number[];
           readonly foregroundExecutionId?: string;
-          readonly maximumContextCharacters?: number;
+          readonly maximumContextCharacters: number;
           readonly recentConversationLimit?: number;
           readonly execute: (
             history: readonly RoomHistoryHit[],
@@ -446,17 +446,17 @@ export async function executeProtectedConversationTurn<Value>(
               "protected transcript refresh exclusion is out of bounds",
             );
           }
+          if (
+            !Number.isFinite(readInput.maximumContextCharacters)
+            || readInput.maximumContextCharacters < 0
+          ) throw new RangeError("protected transcript refresh envelope is out of bounds");
           if (!callbackLive) {
             return Object.freeze({
               status: "unavailable" as const,
               reason: "authorization_unavailable" as const,
             });
           }
-          if (readInput.maximumContextCharacters !== undefined && (
-            !Number.isFinite(readInput.maximumContextCharacters)
-            || readInput.maximumContextCharacters < 0
-          )) throw new RangeError("protected transcript refresh envelope is out of bounds");
-          const envelope = readInput.maximumContextCharacters ?? Infinity;
+          const envelope = readInput.maximumContextCharacters;
           const historicalLimit = readInput.recentConversationLimit ?? input.limit;
           if (!Number.isSafeInteger(historicalLimit) || historicalLimit < 1) throw new RangeError("protected transcript history allowance is out of bounds");
           const readPage = (

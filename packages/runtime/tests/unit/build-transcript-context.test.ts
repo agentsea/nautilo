@@ -238,6 +238,7 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
       hits: [prior, progress],
       modelContextTokens: 1_000,
       activeTurnAfterMessageId: 10,
+      maximumContextCharacters: 4_000,
     })!;
     const priorIndex = content.indexOf("prior conversation");
     const markerIndex = content.indexOf("Completed progress in the current logical turn");
@@ -280,6 +281,7 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
       modelContextTokens: 1_000,
       maxRoomContextPercent: 50,
       activeTurnAfterMessageId: 10,
+      maximumContextCharacters: 4_000,
     })!;
 
     expect(content.length).toBeLessThanOrEqual(4_000);
@@ -325,6 +327,7 @@ describe("buildTranscriptContext (M166 Phase A)", () => {
       currentMessageId: 10,
       throughMessageIdInclusive: 14,
       foregroundExecutionId: "execution-owned",
+      maximumContextCharacters: 4_000,
     }, depsFrom(hits));
     const content = result[0]!.content as string;
 
@@ -690,6 +693,7 @@ describe("M277 foreground hybrid context", () => {
     deps.emitForegroundContextDiagnostic = (diagnostic) => diagnostics.push(diagnostic);
     const result = await buildTranscriptContext({
       scope: { kind: "room", roomId: "room-1", ownerId: "owner-1", ...(refresh ? { excludeMessageId: 10, throughMessageIdInclusive: 12 } : {}) },
+      maximumContextCharacters: 4_000,
       currentHumanText: "Why did we choose that?",
       recordContext: {
         representation: "ordinary",
@@ -1026,6 +1030,7 @@ describe("M277 foreground hybrid context", () => {
       journal: { rollup: null, events: [] },
       currentHumanText: "run the checks",
       activeTurnAfterMessageId: 10,
+      maximumContextCharacters: 4_000,
     });
     const content = result[0]!.content as string;
     expect(content).toContain("Completed progress in the current logical turn");

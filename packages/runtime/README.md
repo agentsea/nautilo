@@ -35,6 +35,8 @@ Each settled foreground segment rebuilds context through its last committed
 transcript receipt. Required instructions, admitted tool schemas, response
 allowance, accepted Human inputs, and live control state are reserved by the
 graph before it supplies the remaining invocation envelope to runtime.
+Refresh callers must supply a finite, nonnegative invocation allowance;
+missing allowances fail before transcript paging instead of guessing a window.
 
 Within that envelope, Journal and recalled Records retain their bounded
 semantic allocation first. The newest chronological suffix after the causal

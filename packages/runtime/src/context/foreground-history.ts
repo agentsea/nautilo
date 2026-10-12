@@ -1,6 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
 import { RECENT_CONVERSATION_LIMIT_DEFAULT } from "@nautilo/db";
-import { getModelTokenLimit } from "@nautilo/agent";
 import { buildTranscriptContext, type BuildTranscriptContextDeps } from "./build-transcript-context";
 import { defaultBuildTranscriptContextDeps } from "./build-transcript-context-deps";
 import { getCurrentLiveShadowTurnContext, protectLiveShadowForegroundHistory, protectLiveShadowForegroundJournal } from "../conversation/live-shadow-turn-context";
@@ -140,6 +139,11 @@ export async function buildForegroundHistoryMessages(
   depsOverride?: BuildTranscriptContextDeps,
 ): Promise<BaseMessage[]> {
   if (!args.roomId) return [];
+  if (args.throughMessageIdInclusive !== undefined && (
+    args.maximumContextCharacters === undefined
+    || !Number.isFinite(args.maximumContextCharacters)
+    || args.maximumContextCharacters < 0
+  )) throw new RangeError("Foreground refresh requires a finite nonnegative invocation allowance");
   const owned = depsOverride ? null : defaultBuildTranscriptContextDeps();
   const deps = depsOverride ?? owned;
   if (!deps) return [];
@@ -182,8 +186,7 @@ export async function buildForegroundHistoryMessages(
         const limit = (await deps.readRoomContextPolicy?.())
           ?.recentConversationLimit ?? RECENT_CONVERSATION_LIMIT_DEFAULT;
         const pages: RoomHistoryHit[] = [];
-        const currentEnvelope = Math.max(0, args.maximumContextCharacters
-          ?? (args.modelId ? getModelTokenLimit(args.modelId) : 128_000) * 4);
+        const currentEnvelope = args.maximumContextCharacters!;
         let currentCharacters = 0;
         let fixedPrefix: RoomHistoryHit[] = [];
         let before:

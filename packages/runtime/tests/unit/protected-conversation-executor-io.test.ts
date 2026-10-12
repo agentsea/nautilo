@@ -1004,6 +1004,7 @@ describe("protected conversation executor IO", () => {
           excludeMessageIds: [9, 10],
           throughMessageIdInclusive: 14,
           foregroundExecutionId: "turn-active",
+          maximumContextCharacters: 10_000,
           execute: (history) => history.map((hit) => ({
             id: hit.messageId,
             role: hit.role,
@@ -1014,6 +1015,7 @@ describe("protected conversation executor IO", () => {
         const revoked = await readFreshHistory({
           excludeMessageId: 10,
           throughMessageIdInclusive: 14,
+          maximumContextCharacters: 10_000,
           execute: () => {
             revokedCallbackCalls += 1;
             return "must not run";
@@ -1047,12 +1049,93 @@ describe("protected conversation executor IO", () => {
     expect(await lateRead!({
       excludeMessageId: 10,
       throughMessageIdInclusive: 14,
+      maximumContextCharacters: 10_000,
       execute: () => "must not run",
     })).toEqual({
       status: "unavailable",
       reason: "authorization_unavailable",
     });
     expect(opens).toBe(3);
+  });
+
+  test("rejects missing or invalid refresh envelopes before reading transcript pages", async () => {
+    let freshTranscriptPageReads = 0;
+    const repository = {
+      withAgentTranscript: async <Value>(
+        input: Parameters<
+          ActiveConversationRepository["withAgentTranscript"]
+        >[0],
+      ) => {
+        if (input.upToMessageId !== undefined) freshTranscriptPageReads += 1;
+        return {
+          status: "executed" as const,
+          value: await input.execute([]) as Value,
+        };
+      },
+      appendPreparedAgent: async () => ({
+        status: "committed" as const,
+        message: committedMessage,
+      }),
+    } as Pick<
+      ActiveConversationRepository,
+      "withAgentTranscript" | "appendPreparedAgent"
+    >;
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 20,
+      productReadAuthorization: Object.freeze({}) as never,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: {
+        transcriptOrigin: "main",
+        parentThreadId: null,
+        scopeId: null,
+        subthreadRoomId: null,
+        notificationContext: {
+          mentionedHumanUserIds: [],
+          causalHumanUserId: null,
+          causalHumanTurnId: null,
+        },
+      },
+      repository,
+      preparer: {
+        prepare: async (input) => ({
+          status: "prepared",
+          write: prepared(input.sessionId, input.idempotencyKey),
+        }),
+      },
+      execute: async ({ readFreshHistory }) => {
+        const invalid = [
+          {},
+          { maximumContextCharacters: Number.NaN },
+          { maximumContextCharacters: Number.POSITIVE_INFINITY },
+          { maximumContextCharacters: -1 },
+        ];
+        const failures: unknown[] = [];
+        for (const envelope of invalid) {
+          failures.push(await readFreshHistory({
+            excludeMessageId: 10,
+            throughMessageIdInclusive: 10,
+            ...envelope,
+            execute: () => "must not run",
+          } as never).catch((error: unknown) => error));
+        }
+        return failures;
+      },
+    });
+
+    expect(result.status).toBe("executed");
+    if (result.status !== "executed") throw new Error("expected execution");
+    expect(result.value).toHaveLength(4);
+    for (const failure of result.value) {
+      expect(failure).toBeInstanceOf(RangeError);
+      expect((failure as Error).message).toBe(
+        "protected transcript refresh envelope is out of bounds",
+      );
+    }
+    expect(freshTranscriptPageReads).toBe(0);
   });
 
   test("allows a trigger-equal protected cut before output is committed", async () => {
@@ -1108,6 +1191,7 @@ describe("protected conversation executor IO", () => {
       execute: ({ readFreshHistory }) => readFreshHistory({
         excludeMessageId: 10,
         throughMessageIdInclusive: 10,
+        maximumContextCharacters: 0,
         execute: (history) => history.length,
       }),
     });

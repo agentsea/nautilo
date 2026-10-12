@@ -384,8 +384,13 @@ function roomContextBudgets(
   if (!refreshing) {
     return { maximumCharacters: historicalMaximum };
   }
+  if (input.maximumContextCharacters === undefined
+    || !Number.isFinite(input.maximumContextCharacters)
+    || input.maximumContextCharacters < 0) {
+    throw new RangeError("Foreground refresh requires a finite nonnegative invocation allowance");
+  }
   return {
-    maximumCharacters: Math.max(0, Math.floor(input.maximumContextCharacters ?? input.modelContextTokens * 4)),
+    maximumCharacters: Math.floor(input.maximumContextCharacters),
     maximumHistoricalCharacters: historicalMaximum,
   };
 }
