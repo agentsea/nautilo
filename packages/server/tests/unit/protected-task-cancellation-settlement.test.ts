@@ -135,6 +135,7 @@ async function fixture(options: {
   let held = false;
   let cas = 0;
   const deleted: string[] = [];
+  const cleanup: (() => void)[] = [];
   const settle: NonNullable<Parameters<typeof createProtectedTaskCancellationSettlement>[0]["settle"]> =
     async (_db, coordinates, complete) => {
       expect(coordinates).toEqual({
@@ -152,6 +153,7 @@ async function fixture(options: {
       } finally { held = false; }
     };
   const recover = createProtectedTaskCancellationSettlement({
+    deferRecipientCleanup: release => { cleanup.push(release); },
     db: database, now: () => START + 120_000, settle,
     repository: { get: id => repository.get(id), compareAndSwap: async input => {
       expect(held).toBe(true);
@@ -166,12 +168,16 @@ async function fixture(options: {
       return true;
     } },
   });
-  return { recover: (verifyStaged?: VerifyStagedCancellationSettlement) => recover({
+  return { recover: async (verifyStaged?: VerifyStagedCancellationSettlement) => {
+    const result = await recover({
     taskId: TASK,
     taskRunId: RUN,
     ...(options.currentPolicyRevision === undefined
       ? {} : { currentPolicyRevision: options.currentPolicyRevision }),
-  }, verifyStaged),
+  }, verifyStaged);
+    if (result) for (const release of cleanup.splice(0)) release();
+    return result;
+  },
     repository, deleted, cas: () => cas, held: () => held };
 }
 

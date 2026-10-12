@@ -1,7 +1,7 @@
 import { assertFixtureDbMutationAllowed } from "@nautilo/db/testing";
 import { createHash, randomUUID } from "node:crypto";
 
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { resolveModelRole, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
   type ProtectedTaskMemoryAccessHandoff,
 } from "@nautilo/agent";
@@ -46,6 +46,8 @@ import {
   humanCryptoRecoveryKeys,
   and,
   inArray,
+  listProtectedTaskCancellationOutputCandidates,
+  or,
   jobs,
   memories,
   memoryCryptoRevisions,
@@ -67,6 +69,7 @@ import {
   serverAdmission,
   sql,
   taskDefinitionCryptoRevisions,
+  taskCancellationCryptoStagingReceipts,
   taskRunResultCryptoRevisions,
   taskRuns,
   tasks,
@@ -169,6 +172,7 @@ import {
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
   verifyCryptoPostgresHandle,
+  withTaskContentNamespaceAuthority,
   withNativeProtectedTaskDefinitionV1,
   type ConversationProductCanonicalTransactionRunner,
   type CryptoPostgresHandle,
@@ -182,6 +186,7 @@ import type {
 import {
   InMemoryLaneLock,
   JobManager,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   createTaskRuntimeDomainMemoryCryptoSession,
   withNativeProtectedTaskCheckpointManifest,
 } from "@nautilo/runtime";
@@ -243,14 +248,27 @@ import {
 import {
   createProtectedTaskRequesterPrivateRoomResolver,
 } from "../../src/routes/protected-task-requester-private-room.ts";
+import { createProtectedTaskCancellationAuthorityPort } from
+  "../../src/routes/protected-task-cancellation-authority.ts";
+import { createProtectedTaskCancellationClaim } from
+  "../../src/routes/protected-task-cancellation-claim.ts";
+import { createProtectedTaskCancellationPreparation } from
+  "../../src/routes/protected-task-cancellation-preparation.ts";
+import { createProtectedTaskCancellationPublication } from
+  "../../src/routes/protected-task-cancellation-publication.ts";
+import { createProtectedTaskCancellationPublicationRecovery } from
+  "../../src/routes/protected-task-cancellation-publication-recovery.ts";
+import { createProtectedTaskCancellationSettlement } from
+  "../../src/routes/protected-task-cancellation-settlement.ts";
 
 const ENABLE_ENV = "NAUTILO_PROTECTED_TASK_MEMORY_WRITER_INTEGRATION";
 // The caller must first verify ownership of the disposable clone, then bind
 // both its instance identity and PostgreSQL endpoint explicitly for this run.
 const EXPECTED_INSTANCE_ENV = "NAUTILO_PROTECTED_TASK_QA_INSTANCE";
 const EXPECTED_POSTGRES_PORT_ENV = "NAUTILO_PROTECTED_TASK_QA_POSTGRES_PORT";
-const NOW = Date.parse("2042-07-08T09:00:00.000Z");
-const EXPIRES_AT = NOW + 60_000;
+const FIXED_NOW = Date.parse("2042-07-08T09:00:00.000Z");
+let NOW = FIXED_NOW;
+let EXPIRES_AT = FIXED_NOW + 60_000;
 const SERVER_SCOPE = "https://task-memory.integration.test";
 
 class CrashAfterTaskResultCryptoStore extends PostgresTaskContentProductStore {
@@ -342,6 +360,11 @@ assertExactTarget();
 const describePostgres = process.env[ENABLE_ENV] === "1"
   ? describe.serial
   : describe.skip;
+
+beforeEach(() => {
+  NOW = FIXED_NOW;
+  EXPIRES_AT = FIXED_NOW + 60_000;
+});
 
 function digest(label: string): Uint8Array {
   return Uint8Array.from(createHash("sha256").update(label).digest());
@@ -509,6 +532,72 @@ function gateCanonicalRunnerAfterScopeOriginUpdate(
   });
 }
 
+function gateProtectedTaskCancellationAuthority(
+  targetCall: 1 | 2,
+): Readonly<{
+  withAuthority: typeof withTaskContentNamespaceAuthority;
+  entered: Promise<void>;
+  pid: Promise<number>;
+  release(): void;
+}> {
+  const entered = deferred();
+  const release = deferred();
+  const backend = Promise.withResolvers<number>();
+  let calls = 0;
+  const withAuthority: typeof withTaskContentNamespaceAuthority = async operation => {
+    const call = ++calls;
+    const observed = observeCanonicalRunner(operation.runner);
+    if (call === targetCall) {
+      observed.pid.then(backend.resolve, backend.reject);
+    }
+    return withTaskContentNamespaceAuthority({
+      ...operation,
+      runner: observed.runner,
+      use: async (authority, product, transaction, restricted) => {
+        if (call === targetCall) {
+          entered.resolve();
+          await release.promise;
+        }
+        return operation.use(authority, product, transaction, restricted);
+      },
+    });
+  };
+  return Object.freeze({
+    entered: entered.promise,
+    pid: backend.promise,
+    release: release.resolve,
+    withAuthority,
+  });
+}
+
+function failProtectedTaskCancellationAuthorityAfterCallback(
+  targetCall: 2,
+): typeof withTaskContentNamespaceAuthority {
+  let calls = 0;
+  return async operation => {
+    const call = ++calls;
+    if (call !== targetCall) return withTaskContentNamespaceAuthority(operation);
+    const runner: ConversationProductCanonicalTransactionRunner = Object.freeze({
+      ...operation.runner,
+      transaction: <Result>(
+        callback: Parameters<
+          ConversationProductCanonicalTransactionRunner["transaction"]
+        >[0],
+        options: Parameters<
+          ConversationProductCanonicalTransactionRunner["transaction"]
+        >[1],
+      ): Promise<Result> => operation.runner.transaction(
+        async (transaction, executor): Promise<Result> => {
+          await callback(transaction, executor);
+          throw new Error("synthetic loss before cancellation product commit");
+        },
+        options,
+      ),
+    });
+    return withTaskContentNamespaceAuthority({ ...operation, runner });
+  };
+}
+
 function canonicalProductConnection(
   runner: ConversationProductCanonicalTransactionRunner,
 ): PostgresJsBridgeConnection {
@@ -647,6 +736,18 @@ async function createBaseFixture(
             createdSessionIds,
           ));
         }
+      }
+      if (createdRequestIds.length > 0 || writtenObjectIds.length > 0) {
+        await admin.delete(taskCancellationCryptoStagingReceipts).where(or(
+          createdRequestIds.length === 0 ? undefined : inArray(
+            taskCancellationCryptoStagingReceipts.requestId,
+            createdRequestIds,
+          ),
+          writtenObjectIds.length === 0 ? undefined : inArray(
+            taskCancellationCryptoStagingReceipts.cryptoObjectId,
+            writtenObjectIds,
+          ),
+        ));
       }
       if (writtenObjectIds.length > 0) {
         await admin.delete(objectCryptoAccessHeads).where(
@@ -2683,14 +2784,37 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   }, 60_000);
 
-  test.each(["result", "parked continuation", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "cancellation recovery", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  test.each(["result", "parked continuation", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "cancellation recovery", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+    const unmappedRecovery = scenario === "unmapped recovery"
+      || scenario === "unmapped expired grant recovery";
+    const missingCiphertextRecovery = scenario === "missing ciphertext recovery";
+    const cancellationArchivePhase = scenario ===
+        "cancellation publication archive serialization"
+      ? "publication" as const
+      : scenario === "cancellation settlement archive serialization"
+        ? "settlement" as const
+        : null;
+    const cancellationProductRollback = scenario ===
+      "cancellation settlement product rollback recovery";
+    const cancellationArchiveScenario = cancellationArchivePhase !== null
+      || cancellationProductRollback
+      || scenario === "cancellation archive-first denial";
+    if (cancellationArchiveScenario) {
+      NOW = Date.now();
+      EXPIRES_AT = NOW + 60_000;
+    }
     const base = await createBaseFixture({ connectedExecution: true });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
       now: () => NOW,
     });
-    const unmappedRecovery = scenario === "unmapped recovery"
-      || scenario === "unmapped expired grant recovery";
-    const missingCiphertextRecovery = scenario === "missing ciphertext recovery";
+    const cancellationGate = cancellationArchivePhase === null
+      ? null
+      : gateProtectedTaskCancellationAuthority(
+          cancellationArchivePhase === "publication" ? 1 : 2,
+        );
+    const cancellationRollbackAuthority = cancellationProductRollback
+      ? failProtectedTaskCancellationAuthorityAfterCallback(2)
+      : null;
     let recoveryNow = NOW;
     let testError: unknown;
     let cleanupError: unknown;
@@ -3162,7 +3286,399 @@ describePostgres("sealed protected Task Memory object writer", () => {
       expect(recipients.size).toBe(1);
       expect(kicks).toBe(1);
 
-      if (scenario === "cancellation recovery") {
+      if (cancellationArchiveScenario) {
+        const initialRequestId = `task-run-authorization:${connected.taskRunId}`;
+        const cancellationRequestId =
+          `task-run-cancellation-result-authorization:${connected.taskRunId}`;
+        const cancellationObjectId = deriveTaskContentCryptoObjectIdV1({
+          kind: "run_result",
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          contentRevision: 2,
+        });
+        base.requestIds.add(cancellationRequestId);
+        base.objectIds.add(cancellationObjectId);
+        expect(await transitionTaskLifecycleTerminal(base.productDb, {
+          taskId: connected.taskId,
+          taskStatus: "cancelled",
+          taskPatch: { cancelledAt: new Date(NOW) },
+          runId: connected.taskRunId,
+          runStatus: "cancelled",
+        })).toMatchObject({
+          transitioned: true,
+          task: { status: "cancelled" },
+          run: { status: "cancelled", jobId: null },
+        });
+        const cancellationCandidates = await listProtectedTaskCancellationOutputCandidates(
+          base.productDb,
+          { limit: 2, throughTime: new Date(recoveryNow) },
+        );
+        expect(cancellationCandidates.candidates.map(candidate => ({
+          taskId: candidate.taskId,
+          taskRunId: candidate.taskRunId,
+          resultState: candidate.resultState,
+        }))).toEqual([{
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          resultState: "unmapped",
+        }]);
+        await composition.coordinator.recoverBeforeObservation(100);
+        expect(recipients.size).toBe(0);
+        const [settledExecution, awaitingCancellation] = await Promise.all([
+          base.admin.select({
+            state: backgroundCryptoAuthorizationRequests.state,
+            reason: backgroundCryptoAuthorizationRequests.terminalReason,
+          }).from(backgroundCryptoAuthorizationRequests).where(eq(
+            backgroundCryptoAuthorizationRequests.requestId,
+            initialRequestId,
+          )).then(rows => rows[0]),
+          base.admin.select({
+            state: backgroundCryptoAuthorizationRequests.state,
+          }).from(backgroundCryptoAuthorizationRequests).where(eq(
+            backgroundCryptoAuthorizationRequests.requestId,
+            cancellationRequestId,
+          )).then(rows => rows[0]),
+        ]);
+        expect(settledExecution).toEqual({
+          state: "cancelled",
+          reason: "cancelled",
+        });
+        expect(awaitingCancellation).toEqual({ state: "awaiting_recipient" });
+        await grantConnectedRequest(cancellationRequestId);
+        expect(recipients.size).toBe(1);
+
+        const cancellationRepository = new PostgresBackgroundAuthorizationRepository(
+          base.cryptoHandle,
+        );
+        const cancellationAuthority = createProtectedTaskCancellationAuthorityPort({
+          db: base.productDb,
+          restricted: () => base.restricted,
+          crypto: base.crypto,
+          serverScope: SERVER_SCOPE,
+          now: () => recoveryNow,
+        });
+        const cancellationPreparation = createProtectedTaskCancellationPreparation({
+          db: base.productDb,
+          restricted: () => base.restricted,
+          crypto: base.crypto,
+          serverScope: SERVER_SCOPE,
+          recipients,
+          recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
+          now: () => recoveryNow,
+        });
+        const granted = await cancellationRepository.get(cancellationRequestId);
+        if (granted?.snapshot.formatVersion !== 3
+          || granted.snapshot.credentialSubject.kind !== "runtime"
+          || granted.snapshot.credentialSubject.runtimeKind !== "task"
+          || granted.snapshot.credentialSubject.runtimeVersion !== 1
+          || granted.workKind !== "task.cancel_result"
+          || granted.purpose !== "task.cancel_result") {
+          throw new Error("Cancellation authorization was not grant-ready");
+        }
+        const grantedCancellation = granted as BackgroundAuthorizationTaskRuntimeRecordV3;
+        const cancellationPlan = await cancellationPreparation.resolvePlan(grantedCancellation);
+        if (cancellationPlan === null) {
+          throw new Error("Cancellation authorization plan was unavailable");
+        }
+        const stageOnlyPublication = createProtectedTaskCancellationPublication({
+          db: base.productDb,
+          restricted: base.restricted,
+          crypto: base.crypto,
+          owner,
+          serverScope: SERVER_SCOPE,
+          authority: cancellationAuthority,
+          now: () => recoveryNow,
+        }, {
+          recover: () => {
+            throw new Error("synthetic loss after cancellation stage");
+          },
+        });
+        const stageOnlyClaim = createProtectedTaskCancellationClaim({
+          authority: cancellationAuthority,
+          recipients,
+          repository: async connection => new PostgresBackgroundAuthorizationRepository(
+            await verifyCryptoPostgresHandle(connection),
+          ),
+          publish: stageOnlyPublication,
+          now: () => recoveryNow,
+        });
+        let stageError: unknown;
+        try {
+          await stageOnlyClaim({
+            plan: cancellationPlan,
+            record: grantedCancellation,
+            restricted: base.restricted,
+            signal: new AbortController().signal,
+          });
+        } catch (error) {
+          if (!(error instanceof Error)
+            || error.message !== "synthetic loss after cancellation stage") {
+            throw error;
+          }
+          stageError = error;
+        }
+        expect(stageError).toBeInstanceOf(Error);
+        expect((stageError as Error).message).toBe(
+          "synthetic loss after cancellation stage",
+        );
+        // Opening a grant is one-shot custody even when publication crashes.
+        expect(recipients.size).toBe(0);
+        expect(await base.admin.select({
+          requestId: taskCancellationCryptoStagingReceipts.requestId,
+          objectId: taskCancellationCryptoStagingReceipts.cryptoObjectId,
+        }).from(taskCancellationCryptoStagingReceipts).where(eq(
+          taskCancellationCryptoStagingReceipts.requestId,
+          cancellationRequestId,
+        ))).toEqual([{
+          requestId: cancellationRequestId,
+          objectId: cancellationObjectId,
+        }]);
+        expect(await objectRowCounts(base, cancellationObjectId)).toEqual({
+          payload: 1,
+          head: 1,
+          manifest: 1,
+          envelope: 1,
+        });
+        expect(await base.admin.select({
+          revision: taskRunResultCryptoRevisions.resultRevision,
+        }).from(taskRunResultCryptoRevisions).where(and(
+          eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+          eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+          eq(taskRunResultCryptoRevisions.resultRevision, 2),
+        ))).toEqual([]);
+        let settlementReleaseCalls = 0;
+        const settlementRecipients = Object.freeze({
+          delete: (...args: Parameters<TaskRuntimeRecipientRegistry["delete"]>) => {
+            settlementReleaseCalls += 1;
+            return recipients.delete(...args);
+          },
+        });
+        const createSettlement = async (
+          context: Parameters<Parameters<
+            typeof createProtectedTaskCancellationPublicationRecovery
+          >[0]["settle"]>[2],
+        ) => createProtectedTaskCancellationSettlement({
+          db: context.db,
+          repository: new PostgresBackgroundAuthorizationRepository(
+            await verifyCryptoPostgresHandle(context.restricted),
+          ),
+          recipients: settlementRecipients,
+          now: () => recoveryNow,
+          deferRecipientCleanup: context.deferRecipientCleanup,
+        });
+        const cancellationRecovery = createProtectedTaskCancellationPublicationRecovery({
+          db: base.productDb,
+          restricted: base.restricted,
+          crypto: base.crypto,
+          serverScope: SERVER_SCOPE,
+          // Product reconciliation leases use PostgreSQL wall-clock time.
+          // The signed fixture grant keeps its independent deterministic clock.
+          now: Date.now,
+          settle: async (coordinates, verifyStaged, context) =>
+            (await createSettlement(context))(coordinates, verifyStaged),
+        }, cancellationGate !== null ? {
+          withAuthority: cancellationGate.withAuthority,
+        } : cancellationRollbackAuthority !== null ? {
+          withAuthority: cancellationRollbackAuthority,
+        } : {});
+        const archiveRoom = () => base.productDb.update(rooms).set({
+          archivedAt: new Date(NOW + 1),
+          updatedAt: new Date(NOW + 1),
+        }).where(eq(rooms.id, base.roomId)).execute();
+        if (scenario === "cancellation archive-first denial") {
+          await archiveRoom();
+          expect(await cancellationRecovery({
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+          })).toBe("pending");
+          expect(await base.admin.select({
+            requestId: taskCancellationCryptoStagingReceipts.requestId,
+            objectId: taskCancellationCryptoStagingReceipts.cryptoObjectId,
+          }).from(taskCancellationCryptoStagingReceipts).where(eq(
+            taskCancellationCryptoStagingReceipts.requestId,
+            cancellationRequestId,
+          ))).toEqual([{
+            requestId: cancellationRequestId,
+            objectId: cancellationObjectId,
+          }]);
+          expect(await objectRowCounts(base, cancellationObjectId)).toEqual({
+            payload: 1,
+            head: 1,
+            manifest: 1,
+            envelope: 1,
+          });
+          expect(await base.admin.select({
+            revision: taskRunResultCryptoRevisions.resultRevision,
+          }).from(taskRunResultCryptoRevisions).where(and(
+            eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+            eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+            eq(taskRunResultCryptoRevisions.resultRevision, 2),
+          ))).toEqual([]);
+          const [run] = await base.admin.select({
+            revision: taskRuns.resultRevision,
+            mapping: taskRuns.resultCryptoMappingState,
+          }).from(taskRuns).where(eq(taskRuns.id, connected.taskRunId));
+          expect(run).toEqual({ revision: 0, mapping: "unmapped" });
+          const [request] = await base.admin.select({
+            state: backgroundCryptoAuthorizationRequests.state,
+          }).from(backgroundCryptoAuthorizationRequests).where(eq(
+            backgroundCryptoAuthorizationRequests.requestId,
+            cancellationRequestId,
+          ));
+          expect(request).toEqual({ state: "running" });
+          expect(settlementReleaseCalls).toBe(0);
+          expect(segmentCalls).toEqual([]);
+        } else if (cancellationProductRollback) {
+          let rollbackError: unknown;
+          try {
+            await cancellationRecovery({
+              taskId: connected.taskId,
+              taskRunId: connected.taskRunId,
+            });
+          } catch (error) {
+            rollbackError = error;
+          }
+          expect(rollbackError).toBeInstanceOf(Error);
+          expect((rollbackError as Error).message).toBe(
+            "synthetic loss before cancellation product commit",
+          );
+          const [mappedRun, unattached, completedRequest] = await Promise.all([
+            base.admin.select({
+              revision: taskRuns.resultRevision,
+              mapping: taskRuns.resultCryptoMappingState,
+            }).from(taskRuns).where(eq(taskRuns.id, connected.taskRunId))
+              .then(rows => rows[0]),
+            base.admin.select({
+              attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+            }).from(protectedTaskRunOutputBindings).where(eq(
+              protectedTaskRunOutputBindings.taskRunId,
+              connected.taskRunId,
+            )).then(rows => rows[0]),
+            base.admin.select({
+              state: backgroundCryptoAuthorizationRequests.state,
+            }).from(backgroundCryptoAuthorizationRequests).where(eq(
+              backgroundCryptoAuthorizationRequests.requestId,
+              cancellationRequestId,
+            )).then(rows => rows[0]),
+          ]);
+          expect(mappedRun).toEqual({ revision: 2, mapping: "verified" });
+          expect(unattached?.attachedAt).toBeNull();
+          expect(completedRequest).toEqual({ state: "completed" });
+          expect(settlementReleaseCalls).toBe(0);
+          expect(await cancellationRecovery({
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+          })).toBe("mapped");
+          const [attached] = await base.admin.select({
+            attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+          }).from(protectedTaskRunOutputBindings).where(eq(
+            protectedTaskRunOutputBindings.taskRunId,
+            connected.taskRunId,
+          ));
+          expect(attached?.attachedAt).toEqual(new Date(NOW));
+          expect(settlementReleaseCalls).toBe(1);
+          expect(segmentCalls).toEqual([]);
+        } else {
+          if (cancellationGate === null) {
+            throw new Error("Cancellation archive gate was unavailable");
+          }
+          const recovery = cancellationRecovery({
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+          });
+          try {
+            await Promise.race([
+              cancellationGate.entered,
+              recovery.then(result => {
+                throw new Error(
+                  `Cancellation recovery finished before its ${cancellationArchivePhase} authority phase: ${result}`,
+                );
+              }),
+            ]);
+          } catch (error) {
+            cancellationGate.release();
+            await Promise.allSettled([recovery]);
+            throw error;
+          }
+          const archive = archiveRoom();
+          try {
+            await waitForBlockedContender(
+              base,
+              await cancellationGate.pid,
+              `Room archive did not wait for cancellation ${cancellationArchivePhase}`,
+            );
+            cancellationGate.release();
+            const [recoveryResult] = await Promise.all([recovery, archive]);
+            expect(recoveryResult).toBe(
+              cancellationArchivePhase === "publication" ? "pending" : "mapped",
+            );
+          } catch (error) {
+            cancellationGate.release();
+            await Promise.allSettled([recovery, archive]);
+            throw error;
+          }
+          const [room, run, binding, request] = await Promise.all([
+            base.admin.select({ archivedAt: rooms.archivedAt }).from(rooms)
+              .where(eq(rooms.id, base.roomId)).then(rows => rows[0]),
+            base.admin.select({
+              revision: taskRuns.resultRevision,
+              objectId: taskRuns.resultCryptoObjectId,
+              mapping: taskRuns.resultCryptoMappingState,
+            }).from(taskRuns).where(eq(taskRuns.id, connected.taskRunId))
+              .then(rows => rows[0]),
+            base.admin.select({
+              attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+              completedAt: protectedTaskRunOutputBindings.completedAt,
+            }).from(protectedTaskRunOutputBindings).where(eq(
+              protectedTaskRunOutputBindings.taskRunId,
+              connected.taskRunId,
+            )).then(rows => rows[0]),
+            base.admin.select({
+              state: backgroundCryptoAuthorizationRequests.state,
+            }).from(backgroundCryptoAuthorizationRequests).where(eq(
+              backgroundCryptoAuthorizationRequests.requestId,
+              cancellationRequestId,
+            )).then(rows => rows[0]),
+          ]);
+          expect(room?.archivedAt).toEqual(new Date(NOW + 1));
+          expect(run).toEqual({
+            revision: 2,
+            objectId: cancellationObjectId,
+            mapping: "verified",
+          });
+          expect(await objectRowCounts(base, cancellationObjectId)).toEqual({
+            payload: 1,
+            head: 1,
+            manifest: 1,
+            envelope: 1,
+          });
+          if (cancellationArchivePhase === "publication") {
+            expect(binding?.attachedAt).toBeNull();
+            expect(request?.state).not.toBe("completed");
+            expect(settlementReleaseCalls).toBe(0);
+            // The queued archive wins before the fresh settlement phase. A
+            // retry must preserve the mapped result without releasing custody.
+            expect(await cancellationRecovery({
+              taskId: connected.taskId,
+              taskRunId: connected.taskRunId,
+            })).toBe("pending");
+            const [unchanged] = await base.admin.select({
+              attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+            }).from(protectedTaskRunOutputBindings).where(eq(
+              protectedTaskRunOutputBindings.taskRunId,
+              connected.taskRunId,
+            ));
+            expect(unchanged?.attachedAt).toBeNull();
+            expect(settlementReleaseCalls).toBe(0);
+          } else {
+            expect(binding?.attachedAt).toEqual(new Date(NOW));
+            expect(request).toEqual({ state: "completed" });
+            expect(settlementReleaseCalls).toBe(1);
+          }
+          expect(binding?.completedAt).toBeNull();
+          expect(segmentCalls).toEqual([]);
+        }
+      } else if (scenario === "cancellation recovery") {
         const requestId = `task-run-authorization:${connected.taskRunId}`;
         const persistOrphan = async () => {
           const jobId = await persistJobWithDatabase(base.productDb, {

@@ -920,12 +920,18 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
                 result = authorityUse.scopedRestricted
                   ? await withParkedTaskRuntimeRestrictedAuthority(
                     restricted,
-                    scoped => authorityUse.use(authority, product, scoped, tx),
+                    async scoped => {
+                      const current = await authorityUse.use(
+                        authority,
+                        product,
+                        scoped,
+                        tx,
+                      );
+                      await authorityUse.validateBeforeCommit();
+                      return current;
+                    },
                   )
                   : await authorityUse.use(authority, product, restricted);
-                if (authorityUse.scopedRestricted) {
-                  await authorityUse.validateBeforeCommit();
-                }
               } else {
                 result = await withParkedTaskRuntimeRestrictedAuthority(
                   restricted,

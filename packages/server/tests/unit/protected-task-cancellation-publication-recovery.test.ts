@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { protectedTaskRunOutputBindings, tasks, taskRunResultCryptoRevisions } from "@nautilo/db";
+import { protectedTaskRunOutputBindings, tasks, taskRunResultCryptoRevisions,
+  protectedTaskRunOutputBindingId, protectedTaskRunResultObjectId, protectedTaskRunResultOperationId } from "@nautilo/db";
 import type { DirectDatabase, ProtectedTaskCancellationOutputIntent,
   TaskRunResultCryptoRevision } from "@nautilo/db";
 import { fingerprintTaskContentAuthorityV1, deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
@@ -139,17 +140,35 @@ function fixture() {
     failureCode: null, cryptoCompletedAt: null, createdAt: new Date(START), updatedAt: new Date(START),
   };
   const reservation = { intent: { ...intent }, ledger };
+  const scopedRestricted = {} as Input["restricted"];
+  const scopedProduct = {} as Input["restricted"];
   const transaction = {} as Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
   let held = false;
   let verified = true;
   let staged: VerifiedStagedTaskCancellationPublication | null = null;
   let publicationPresent = false;
   let settlementVerifier: VerifyStagedCancellationSettlement | undefined;
+  let settlementProof: Parameters<VerifyStagedCancellationSettlement>[0] | undefined;
+  let beforeSettlement: (() => void) | undefined;
+  let settlementResult: Awaited<ReturnType<VerifyStagedCancellationSettlement>> | undefined;
+  let rejectCommitPhase = 0;
+  let phase = 0;
+  const cleanup: string[] = [];
   let selected: Awaited<ReturnType<Dependencies["read"]>> = { status: "found", reservation };
   const input: Input = { db: database, restricted: {} as Input["restricted"],
     crypto: new LatticeCrypto(), serverScope: "http://localhost", now: () => START + 90_000,
-    settle: async (_coordinates, verifyStaged) => {
-      settlementVerifier = verifyStaged; calls.push("settle"); return true;
+    settle: async (_coordinates, verifyStaged, context) => {
+      expect(held).toBe(true);
+      await context.db.transaction(async tx => { expect(tx).toBe(transaction); });
+      expect(context.restricted).toBe(scopedRestricted);
+      beforeSettlement?.();
+      settlementVerifier = verifyStaged;
+      settlementResult = await verifyStaged(settlementProof ?? { intent: reservation.intent,
+        currentPolicyRevision: _coordinates.currentPolicyRevision!, requesterHumanId: HUMAN,
+        authorityFingerprint: ledger.authorityFingerprint, cryptoAccessRevision: 0,
+        requiredNamespaceFingerprint: ledger.requiredNamespaceFingerprint });
+      context.deferRecipientCleanup(() => { expect(held).toBe(false); cleanup.push("released"); });
+      calls.push("settle"); return true;
     } };
   const deps: Dependencies = {
     readPolicy: async () => ({ mode: reservation.intent.representation === "dual"
@@ -161,48 +180,52 @@ function fixture() {
     productContext: (async () => ({ handle: {}, canonicalRunner: {} })) as unknown as Dependencies["productContext"],
     validateIntent: async () => { calls.push("intent"); return true; },
     cryptoHandle: async () => ({} as never),
+    productHandle: async connection => { expect(held).toBe(true); expect(connection).toBe(scopedProduct); return {} as never; },
     withAuthority: async operation => {
       expect(held).toBe(false);
       held = true;
+      phase += 1;
       try {
         if (!await operation.validateCurrentTaskRun({} as never, transaction, {} as never)) return null;
-        return await operation.use({ sourceRoomId: "room", sourceNamespaceId: NAMESPACE,
+        const result = await operation.use({ sourceRoomId: "room", sourceNamespaceId: NAMESPACE,
           facts: [{ namespaceId: NAMESPACE, domainId: row.domainId,
             expectedAccessRevision: 4, expectedPolicyRevision: operation.expectedPolicyRevision,
             expectedDomainEpoch: 3, expectedAuthorizationRevision: 8 }] },
-        {} as never, transaction, input.restricted);
+        scopedProduct, transaction, scopedRestricted);
+        if (phase === rejectCommitPhase) throw new Error("outer transaction commit rejected");
+        return result;
       } finally { held = false; }
     },
-    authorizationRepository: async () => ({ get: async () => row }),
+    authorizationRepository: async connection => { expect(held).toBe(true); expect(connection).toBe(scopedRestricted); return { get: async () => row }; },
     inspectStaged: async () => staged,
     hasCryptoPublication: async () => publicationPresent,
     reserveStaged: async value => value.product.reserveRevision({} as never),
     reservationProduct: options => ({ reserveRevision: async () => {
-      expect(held).toBe(false);
+      expect(held).toBe(true);
       calls.push("reserve");
       expect(await options.resolveAuthority({ requesterHumanId: HUMAN, namespaceId: NAMESPACE })).not.toBeNull();
-      calls.push("detached-authority");
+      calls.push("held-authority");
       await options.assertReservationCurrent({ kind: "run_result", taskId: TASK,
         taskRunId: RUN, contentRevision: 2 });
       selected = { status: "found", reservation };
       return { status: "reserved", state: {} as never };
     } }),
     repository: async options => {
-      expect(held).toBe(false);
+      expect(held).toBe(true);
       return { reconcileCoordinate: async operation => {
-        expect(held).toBe(false);
+        expect(held).toBe(true);
         expect(operation.operationId).toBe(intent.resultOperationId);
         expect(operation.coordinate).toEqual({ kind: "run_result", taskId: TASK,
           taskRunId: RUN, contentRevision: 2 });
         calls.push("reconcile");
         expect(await options.resolveAuthority({ requesterHumanId: HUMAN, namespaceId: NAMESPACE })).not.toBeNull();
-        ledger.leaseToken = operation.leaseToken;
-        ledger.leaseExpiresAt = new Date(START + 120_000);
+        ledger.leaseToken = options.reservation.ledger.leaseToken = operation.leaseToken;
+        ledger.leaseExpiresAt = options.reservation.ledger.leaseExpiresAt = new Date(START + 120_000);
         calls.push("verify");
         if (!verified) return "pending";
-        if (ledger.disposition !== "mapped") await operation.publishProduct?.();
+        if (options.reservation.ledger.disposition !== "mapped") await operation.publishProduct?.();
         calls.push("map");
-        if (ledger.disposition !== "mapped") {
+        if (options.reservation.ledger.disposition !== "mapped") {
           selected = { status: "found", reservation: { intent: reservation.intent,
             ledger: { ...ledger, disposition: "mapped", completion: "complete",
               cryptoCompletedAt: new Date(START + 90_000) } } };
@@ -242,6 +265,12 @@ function fixture() {
     publication: (present: boolean) => { publicationPresent = present; },
     clearStage: () => { staged = null; },
     settlementVerifier: () => settlementVerifier,
+    settlementResult: () => settlementResult,
+    checkSettlement: (proof: Parameters<VerifyStagedCancellationSettlement>[0], before?: () => void) => {
+      settlementProof = proof; beforeSettlement = before;
+    },
+    cleanup, phase: () => phase,
+    rejectCommit: (selectedPhase: number) => { rejectCommitPhase = selectedPhase; },
   };
 }
 
@@ -252,8 +281,7 @@ test.each(["protected", "dual"] as const)("recovers exact %s cancellation after 
   expect(f.row.acceptedMaterial!.authorizationExpiresAt).toBeLessThan(f.input.now!());
   const result = await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)({ taskId: TASK, taskRunId: RUN });
   expect(result).toBe("mapped");
-  expect(f.calls).toEqual(["intent", "reconcile", "intent", "verify", "intent", "product", "map",
-    "intent", "settle"]);
+  expect(f.calls).toEqual(["intent", "reconcile", "verify", "product", "map", "intent", "settle"]);
 });
 
 test("missing ciphertext stays pending without product replay or settlement", async () => {
@@ -273,7 +301,7 @@ test("only absent reservation permits fresh preparation", async () => {
   expect(f.calls).toEqual([]);
 });
 
-test("adopts a verified stage once outside held authority and recovers after grant pruning", async () => {
+test("adopts a verified stage once inside held authority and recovers after grant pruning", async () => {
   const f = fixture();
   f.stage();
   f.deps.authorizationRepository = async () => ({ get: async () => null });
@@ -283,22 +311,13 @@ test("adopts a verified stage once outside held authority and recovers after gra
   expect(f.calls.filter(call => call === "reserve")).toHaveLength(1);
   expect(f.calls.indexOf("intent")).toBeLessThan(f.calls.indexOf("reserve"));
   expect(f.calls.indexOf("reserve")).toBeLessThan(f.calls.indexOf("reconcile"));
-  expect(f.calls).toContain("detached-authority");
-  expect(await f.settlementVerifier()!({ intent: f.reservation.intent, currentPolicyRevision: 5, requesterHumanId: HUMAN,
-    authorityFingerprint: f.ledger.authorityFingerprint,
-    cryptoAccessRevision: 0,
-    requiredNamespaceFingerprint: f.ledger.requiredNamespaceFingerprint,
-  })).toEqual({ requestId: REQUEST, recipientGeneration: 0 });
+  expect(f.calls).toContain("held-authority");
+  expect(f.settlementResult()).toEqual({ requestId: REQUEST, recipientGeneration: 0 });
 });
 
 test.each(["intent", "requester", "authority", "namespace", "access", "stage"])(
   "staged settlement verifier rejects mismatched %s proof without product authority nesting", async mismatch => {
     const f = fixture(); f.stage();
-    expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
-      { taskId: TASK, taskRunId: RUN })).toBe("mapped");
-    const verifier = f.settlementVerifier();
-    expect(verifier).toBeDefined();
-    if (mismatch === "stage") f.clearStage();
     const proof = {
       currentPolicyRevision: 5,
       intent: mismatch === "intent" ? { ...f.reservation.intent, policyRevision: 6 } : f.reservation.intent,
@@ -308,7 +327,11 @@ test.each(["intent", "requester", "authority", "namespace", "access", "stage"])(
       requiredNamespaceFingerprint: mismatch === "namespace"
         ? new Uint8Array(32) : f.ledger.requiredNamespaceFingerprint,
     };
-    expect(await verifier!(proof)).toBeNull();
+    f.checkSettlement(proof, mismatch === "stage" ? f.clearStage : undefined);
+    expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+      { taskId: TASK, taskRunId: RUN })).toBe("mapped");
+    expect(f.settlementResult()).toBeNull();
+    expect(await f.settlementVerifier()!(proof)).toBeNull();
   },
 );
 
@@ -404,13 +427,41 @@ test.each(["active", "incomplete"])(
   },
 );
 
-test("stopped intent changed during verification prevents fixed product publication", async () => {
+test("archive-first authority denial prevents publication and settlement", async () => {
   const f = fixture();
-  let reads = 0;
-  f.deps.validateIntent = async () => ++reads < 3;
-  await rejects(createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)({ taskId: TASK, taskRunId: RUN }), "authority changed");
+  f.deps.withAuthority = async () => null;
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)({ taskId: TASK, taskRunId: RUN })).toBe("pending");
   expect(f.calls).not.toContain("product");
+  expect(f.calls).not.toContain("reconcile");
   expect(f.calls).not.toContain("settle");
+});
+
+test("archive between phases leaves committed mapping pending without settling custody", async () => {
+  const f = fixture();
+  const original = f.deps.withAuthority;
+  let entries = 0;
+  f.deps.withAuthority = operation => ++entries === 1 ? original(operation) : Promise.resolve(null);
+  const recover = createProtectedTaskCancellationPublicationRecovery(f.input, f.deps);
+  expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("pending");
+  expect(entries).toBe(2);
+  expect(f.calls).toContain("map");
+  expect(f.calls).not.toContain("settle");
+  expect(f.cleanup).toEqual([]);
+  f.deps.withAuthority = original;
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("mapped");
+  expect(f.cleanup).toEqual(["released"]);
+});
+
+test.each([1, 2])("outer phase %s commit rejection never deletes recipient custody", async phase => {
+  const f = fixture();
+  f.rejectCommit(phase);
+  await rejects(createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN }), "outer transaction commit rejected");
+  expect(f.phase()).toBe(phase);
+  expect(f.cleanup).toEqual([]);
+  if (phase === 1) expect(f.calls).not.toContain("settle");
+  else expect(f.calls).toContain("settle");
 });
 
 
@@ -439,7 +490,7 @@ test.each(["digest", "lease"])("rejects changed %s at product callback after ver
   let reads = 0;
   f.deps.read = async () => {
     reads += 1;
-    const ledger = reads < 4 ? f.ledger : { ...f.ledger,
+    const ledger = reads < 3 ? f.ledger : { ...f.ledger,
       ...(changed === "digest" ? { requestDigest: new Uint8Array(32).fill(9) }
         : { leaseToken: "10000000-0000-4000-8000-000000000099" }) };
     return { status: "found", reservation: { intent: f.reservation.intent, ledger } };
@@ -478,7 +529,7 @@ test("default reservation reader uses lifecycle metadata and re-reads under held
   const { read: _read, ...deps } = f.deps;
   expect(await createProtectedTaskCancellationPublicationRecovery({ ...f.input,
     db: { select } as unknown as DirectDatabase }, deps)({ taskId: TASK, taskRunId: RUN })).toBe("mapped");
-  expect(tables).toEqual(Array.from({ length: 6 }, () => [tasks,
+  expect(tables).toEqual(Array.from({ length: 5 }, () => [tasks,
     protectedTaskRunOutputBindings, taskRunResultCryptoRevisions]).flat());
 });
 
@@ -499,6 +550,40 @@ test("default reader leaves a fresh stopped Task without binding eligible for pr
   expect(tables).toEqual([tasks, protectedTaskRunOutputBindings, taskRunResultCryptoRevisions]);
   expect(f.calls).toEqual([]);
 });
+
+test.each(["untouched", "ledger", "crypto", "binding", "operation", "object", "terminal", "attached", "message", "wake", "completed", "policy"])(
+  "default reader permits only untouched execution binding without cancellation custody: %s", async scenario => {
+    const f = fixture();
+    const binding = { taskRunId: RUN, bindingId: protectedTaskRunOutputBindingId(RUN),
+      resultRevision: 1, resultOperationId: protectedTaskRunResultOperationId(RUN),
+      resultObjectId: protectedTaskRunResultObjectId(TASK, RUN), acceptedPolicyRevision: 5,
+      resultTerminalAt: null, resultAttachedAt: null, messageId: null, messagePublishedAt: null,
+      wakeJobId: null, wakeScheduledAt: null, completedAt: null };
+    const drift: Record<string, unknown> = scenario === "binding" ? { bindingId: "foreign" }
+      : scenario === "operation" ? { resultOperationId: "foreign" }
+      : scenario === "object" ? { resultObjectId: "foreign" }
+      : scenario === "terminal" ? { resultTerminalAt: intent.terminalAt }
+      : scenario === "attached" ? { resultAttachedAt: intent.terminalAt }
+      : scenario === "message" ? { messageId: 7, messagePublishedAt: intent.terminalAt }
+      : scenario === "wake" ? { wakeJobId: "foreign", wakeScheduledAt: intent.terminalAt }
+      : scenario === "completed" ? { completedAt: intent.terminalAt }
+      : scenario === "policy" ? { acceptedPolicyRevision: 0 } : {};
+    const select = () => ({ from: (table: unknown) => {
+      const rows = table === tasks ? [{ ownerId: intent.requesterUserId, requestorId: intent.requesterUserId,
+        agentId: intent.agentId, contentNamespaceId: NAMESPACE, contentRepresentation: "protected",
+        cancelledAt: intent.terminalAt, status: "cancelled" }]
+        : table === protectedTaskRunOutputBindings ? [{ ...binding, ...drift }]
+        : table === taskRunResultCryptoRevisions && scenario === "ledger" ? [f.ledger] : [];
+      return { where: () => ({ limit: () => Promise.resolve(rows) }) };
+    } });
+    const { read: _read, ...deps } = f.deps;
+    f.publication(scenario === "crypto");
+    expect(await createProtectedTaskCancellationPublicationRecovery({ ...f.input,
+      db: { select } as unknown as DirectDatabase }, deps)({ taskId: TASK, taskRunId: RUN }))
+      .toBe(scenario === "untouched" ? "missing" : "pending");
+    expect(f.calls).toEqual([]);
+  },
+);
 
 
 test.each(["protected", "dual"] as const)("incompatible mode waits and later compatible policy recovers the same %s staged bytes", async representation => {

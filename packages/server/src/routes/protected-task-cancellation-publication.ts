@@ -125,7 +125,8 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
     ...input,
     // The claim owner completes its authorization after publication returns.
     // Recovery here only attaches the durable result; the observer settles abandoned claims.
-    settle: async coordinates => (await recordProtectedTaskRunResultAttached(input.db, coordinates)).status !== "rejected",
+    settle: async (coordinates, _verifyStaged, context) =>
+      (await recordProtectedTaskRunResultAttached(context.db, coordinates)).status !== "rejected",
   });
   return async publication => {
     const intent = Object.freeze({ ...publication.plan.intent,

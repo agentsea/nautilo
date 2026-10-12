@@ -336,7 +336,7 @@ function exactTerminalResult(
  * terminal receipt alone.
  */
 export async function recordProtectedTaskRunResultAttached(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "transaction">,
   input: Readonly<{ taskId: string; taskRunId: string }>,
 ): Promise<RecordProtectedTaskRunOutputReceiptResult> {
   if (

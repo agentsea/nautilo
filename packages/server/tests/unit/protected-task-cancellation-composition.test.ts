@@ -21,7 +21,10 @@ function fixture() {
   }));
   let selected = "";
   const deps: Dependencies = {
-    recover: async () => "missing",
+    recover: async candidate => {
+      if (candidate.taskRunId === "mapped") { calls.push("recover:mapped"); return "mapped"; }
+      return "missing";
+    },
     settle: async candidate => { calls.push(`settle:${candidate.taskRunId}`); return true; },
     list: async (_db, options) => {
       calls.push(`list:${options.limit}:${options.throughTime.getTime()}`);
@@ -58,7 +61,7 @@ test("cancellation observer claims only ready fresh work and continues past one 
   const result = await service.recoverPage({ limit: 6 });
   expect(result).toMatchObject({ attempted: 6, published: 3, pending: 2, failures: 1 });
   expect(state.calls).toEqual([
-    `list:6:${NOW}`, "settle:mapped", "prepare:denied", "prepare:waiting", "prepare:ready", "claim:ready",
+    `list:6:${NOW}`, "recover:mapped", "prepare:denied", "prepare:waiting", "prepare:ready", "claim:ready",
     "prepare:error", "prepare:later", "claim:later",
   ]);
   expect(result.next?.throughTime.getTime()).toBe(NOW);
@@ -87,7 +90,7 @@ test("existing cancellation reservations never enter fresh preparation", async (
     return candidate.taskRunId === "ready" ? "mapped" : "pending";
   };
   const result = await createProtectedTaskCancellationComposition(state.input, { ...state.deps, recover }).recoverPage({ limit: 6 });
-  expect(result).toMatchObject({ published: 2, pending: 4, failures: 0 });
+  expect(result).toMatchObject({ published: 1, pending: 5, failures: 0 });
   expect(state.calls.some(call => call.startsWith("prepare:") || call.startsWith("claim:"))).toBe(false);
 });
 
@@ -99,5 +102,5 @@ test("mapped cancellation with pruned authority reaches receipt recovery once", 
   deps.recover = async () => { state.calls.push("recover"); return "mapped"; };
   const result = await createProtectedTaskCancellationComposition(state.input, deps).recoverPage({ limit: 1 });
   expect(result).toMatchObject({ attempted: 1, published: 1, pending: 0, failures: 0 });
-  expect(state.calls).toEqual(["settle", "recover"]);
+  expect(state.calls).toEqual(["recover"]);
 });

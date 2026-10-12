@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   and, eq, protectedTaskRunOutputBindings, tasks, taskRunResultCryptoRevisions,
   publishProtectedTaskCancellationProduct, getEncryptionTransitionPolicy,
+  protectedTaskRunOutputBindingId, protectedTaskRunResultObjectId, protectedTaskRunResultOperationId,
   type DirectDatabase, type PostgresJsBridgeConnection,
   type ProtectedTaskCancellationOutputIntent, type TaskRunResultCryptoRevision,
 } from "@nautilo/db";
@@ -15,7 +16,7 @@ import {
   createPostgresTaskContentRepositoryV1, PostgresHumanDeviceSignerHistory,
   PostgresTaskContentProductStore, hasTaskCancellationCryptoPublication,
   inspectStagedTaskCancellationPublication, reserveStagedTaskCancellationPublication,
-  verifyCryptoPostgresHandle, withTaskContentNamespaceAuthority,
+  verifyCryptoPostgresHandle, verifyConversationProductPostgresHandle, withTaskContentNamespaceAuthority,
   type DurableTaskContentRepositoryV1,
   type VerifiedStagedTaskCancellationPublication,
   type VerifyStagedTaskCancellationPublication,
@@ -34,6 +35,13 @@ import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from
 import { createProtectedTaskRequesterPrivateRoomResolver,
   type ProtectedTaskRequesterPrivateRoomResolver } from "./protected-task-requester-private-room";
 
+export type ProtectedTaskCancellationSettlementContext = Readonly<{
+  db: Pick<DirectDatabase, "transaction">;
+  restricted: PostgresJsBridgeConnection;
+  deferRecipientCleanup(release: () => void): void;
+}>;
+type Settle = (coordinates: Coordinates, verifyStaged: VerifyStagedCancellationSettlement,
+  context: ProtectedTaskCancellationSettlementContext) => Promise<boolean>;
 type Coordinates = Readonly<{ taskId: string; taskRunId: string; currentPolicyRevision?: number }>;
 type Reservation = Readonly<{
   intent: ProtectedTaskCancellationOutputIntent;
@@ -54,24 +62,25 @@ type Dependencies = Readonly<{
   withAuthority: typeof withTaskContentNamespaceAuthority;
   validateIntent: typeof validateCurrentProtectedTaskCancellationIntent;
   cryptoHandle: typeof verifyCryptoPostgresHandle;
+  productHandle: typeof verifyConversationProductPostgresHandle;
   authorizationRepository(connection: PostgresJsBridgeConnection): Promise<Pick<BackgroundAuthorizationRepository, "get">>;
   inspectStaged: typeof inspectStagedTaskCancellationPublication;
   hasCryptoPublication: typeof hasTaskCancellationCryptoPublication;
   reserveStaged: typeof reserveStagedTaskCancellationPublication;
   reservationProduct(input: Readonly<{
-    product: Awaited<ReturnType<typeof createHumanProductTransactionContext>>;
+    product: Pick<Awaited<ReturnType<typeof createHumanProductTransactionContext>>, "handle">;
     resolveAuthority: ContentResolver;
     verifyStagedCancellation: VerifyStagedTaskCancellationPublication;
     assertReservationCurrent(coordinate: TaskContentCoordinateV1): void | Promise<void>;
   }>): Pick<TaskContentProductStorePort, "reserveRevision">;
   repository(input: Readonly<{
     reservation: Reservation;
-    product: Awaited<ReturnType<typeof createHumanProductTransactionContext>>;
+    product: Pick<Awaited<ReturnType<typeof createHumanProductTransactionContext>>, "handle">;
     resolveAuthority: ContentResolver;
     verifyStagedCancellation: VerifyStagedTaskCancellationPublication;
   }>): Promise<Pick<DurableTaskContentRepositoryV1<unknown>, "reconcileCoordinate">>;
   publishProduct: typeof publishProtectedTaskCancellationProduct;
-  settle(coordinates: Coordinates, verifyStaged?: VerifyStagedCancellationSettlement): Promise<boolean>;
+  settle: Settle;
 }>;
 
 function equal(left: Uint8Array, right: Uint8Array): boolean {
@@ -97,6 +106,18 @@ async function readReservation(db: Pick<DirectDatabase, "select">,
     || task.contentNamespaceId === null || task.cancelledAt === null
     || (task.contentRepresentation !== "protected" && task.contentRepresentation !== "dual")) return { status: "invalid" };
   if (binding === undefined) return ledger === undefined ? { status: "missing", intent: null } : { status: "invalid" };
+  // An untouched execution binding is eligible for the canonical preparation
+  // owner to replace. Existing cancellation crypto still fences this outcome.
+  if (ledger === undefined && binding.taskRunId === coordinates.taskRunId
+    && binding.bindingId === protectedTaskRunOutputBindingId(coordinates.taskRunId)
+    && binding.resultRevision === 1
+    && binding.resultOperationId === protectedTaskRunResultOperationId(coordinates.taskRunId)
+    && binding.resultObjectId === protectedTaskRunResultObjectId(coordinates.taskId, coordinates.taskRunId)
+    && Number.isSafeInteger(binding.acceptedPolicyRevision) && binding.acceptedPolicyRevision > 0
+    && binding.resultTerminalAt === null && binding.resultAttachedAt === null
+    && binding.messageId === null && binding.messagePublishedAt === null
+    && binding.wakeJobId === null && binding.wakeScheduledAt === null
+    && binding.completedAt === null) return { status: "missing", intent: null };
   if (binding.resultRevision !== 2 || binding.resultTerminalAt === null) return { status: "invalid" };
   const intent: ProtectedTaskCancellationOutputIntent = {
     ...coordinates, requesterUserId: task.requestorId, agentId: task.agentId,
@@ -181,7 +202,7 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
   serverScope: string;
-  settle(coordinates: Coordinates, verifyStaged?: VerifyStagedCancellationSettlement): Promise<boolean>;
+  settle: Settle;
   now?: () => number;
 }>, overrides: Partial<Dependencies> = {}) {
   const read = overrides.read ?? readReservation;
@@ -201,7 +222,7 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
       value.assertReservationCurrent, value.verifyStagedCancellation));
   const now = input.now ?? Date.now;
   const recover = async (coordinates: Coordinates): Promise<"missing" | "pending" | "mapped" | "quarantined"> => {
-    let selected = await read(input.db, coordinates);
+    const selected = await read(input.db, coordinates);
     const startingPolicy = await readPolicy(input.db);
     if (startingPolicy.mode === "plaintext_only") return "pending";
     if (selected.status === "invalid") return "pending";
@@ -215,7 +236,7 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
     }
     const selectedIntent = selected.status === "found" ? selected.reservation.intent : selected.intent;
     if (selectedIntent === null) return "pending";
-    let intent: ProtectedTaskCancellationOutputIntent = selectedIntent;
+    const intent: ProtectedTaskCancellationOutputIntent = selectedIntent;
     if (startingPolicy.revision < intent.policyRevision
       || startingPolicy.mode !== (intent.representation === "dual"
         ? "shadow_encryption" : "encrypted_only")) return "pending";
@@ -234,11 +255,10 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
     }
     const product = await (overrides.productContext ?? createHumanProductTransactionContext)(
       intent.requesterUserId, input.db);
-    const cryptoHandle = await cryptoHandleFor(input.restricted);
     const coordinate = { kind: "run_result" as const, taskId: intent.taskId,
       taskRunId: intent.taskRunId, contentRevision: 2 };
-    const inspect = async (handle: typeof cryptoHandle, currentIntent: ProtectedTaskCancellationOutputIntent,
-      authority: TaskContentAuthorityV1) => {
+    const inspect = async (handle: Awaited<ReturnType<typeof cryptoHandleFor>>,
+      currentIntent: ProtectedTaskCancellationOutputIntent, authority: TaskContentAuthorityV1) => {
       const history = overrides.inspectStaged === undefined
         ? new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto }) : null;
       return inspectStaged({ handle, crypto: input.crypto, intent: currentIntent, authority,
@@ -248,9 +268,17 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
           history === null ? () => Promise.resolve(null)
             : createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle) });
     };
-    async function withCurrent<Value>(expected: Selection, use: (authority: TaskContentAuthorityV1,
-      transaction: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0],
-      current: Selection, restricted: PostgresJsBridgeConnection) => Promise<Value>): Promise<Value | null> {
+    type Held = Readonly<{
+      authority: TaskContentAuthorityV1;
+      transaction: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
+      current: Selection;
+      restricted: PostgresJsBridgeConnection;
+      product: Pick<Awaited<ReturnType<typeof createHumanProductTransactionContext>>, "handle">;
+      cryptoHandle: Awaited<ReturnType<typeof cryptoHandleFor>>;
+      resolveAuthority: ContentResolver;
+      verifyStagedCancellation: VerifyStagedTaskCancellationPublication;
+    }>;
+    async function withCurrent<Value>(expected: Selection, use: (held: Held) => Promise<Value>): Promise<Value | null> {
       const allowTerminalResultAttachment = expected.status === "found"
         && expected.reservation.ledger.disposition === "mapped"
         && expected.reservation.ledger.completion === "complete";
@@ -267,7 +295,7 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
         sourceRoomId: room!.roomId, expectedPolicyRevision: policy.revision,
         validateCurrentTaskRun: current => validateIntent({ product: current, intent,
           ...(allowTerminalResultAttachment ? { allowTerminalResultAttachment: true } : {}) }),
-        use: async (held, _product, transaction, restricted) => {
+        use: async (held, borrowedProduct, transaction, restricted) => {
           const fresh = await read(transaction, coordinates);
           if (expected.status === "invalid" || fresh.status === "invalid") return null;
           if (expected.status === "missing") {
@@ -279,15 +307,36 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
           const fact = held.facts[0];
           if (held.facts.length !== 1 || fact?.namespaceId !== intent.contentNamespaceId
             || fact.expectedPolicyRevision !== policy.revision) return null;
-          const authority: TaskContentAuthorityV1 = {
+          const authority: TaskContentAuthorityV1 = Object.freeze({
             authorityVersion: 1, kind: "requester_private_namespace", keyClass: "ai",
             requesterHumanId, namespaceId: fact.namespaceId,
             domainId: fact.domainId, expectedAccessRevision: fact.expectedAccessRevision,
             expectedPolicyRevision: fact.expectedPolicyRevision,
-          };
+          });
           if (fresh.status === "found"
             && !equal(fingerprintTaskContentAuthorityV1({ ...authority, expectedPolicyRevision: intent.policyRevision }), fresh.reservation.ledger.authorityFingerprint)) return null;
-          return use(authority, transaction, fresh, restricted);
+          const scopedProduct = { handle: await (overrides.productHandle
+            ?? verifyConversationProductPostgresHandle)(borrowedProduct) };
+          const cryptoHandle = await cryptoHandleFor(restricted);
+          let active = true;
+          const resolveAuthority: ContentResolver = expected => Promise.resolve(active
+            && expected.requesterHumanId === requesterHumanId
+            && expected.namespaceId === intent.contentNamespaceId ? authority : null);
+          const verifyStagedCancellation: VerifyStagedTaskCancellationPublication = async candidate => {
+            if (!active || !sameTaskContentCoordinateV1(candidate.coordinate, coordinate)
+              || candidate.operationId !== intent.resultOperationId
+              || candidate.cryptoObjectId !== intent.resultObjectId
+              || candidate.representation !== intent.representation
+              || !equal(fingerprintTaskContentAuthorityV1(candidate.currentAuthority),
+                fingerprintTaskContentAuthorityV1(authority))) return null;
+            const staged = await inspect(cryptoHandle, intent, authority);
+            return staged !== null && equal(staged.genesisManifestHash, candidate.requestDigest)
+              && equal(staged.authorityFingerprint, candidate.authorityFingerprint) ? staged : null;
+          };
+          try {
+            return await use({ authority, transaction, current: fresh, restricted,
+              product: scopedProduct, cryptoHandle, resolveAuthority, verifyStagedCancellation });
+          } finally { active = false; }
         },
       });
       if (result === null) {
@@ -298,171 +347,126 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
       }
       return result;
     }
-    const verifyStagedCancellation: VerifyStagedTaskCancellationPublication = async candidate => {
-      if (!sameTaskContentCoordinateV1(candidate.coordinate, coordinate)
-        || candidate.operationId !== intent.resultOperationId
-        || candidate.cryptoObjectId !== intent.resultObjectId
-        || candidate.representation !== intent.representation) return null;
-      const staged = await inspect(cryptoHandle, intent, candidate.currentAuthority);
-      return staged !== null && equal(staged.genesisManifestHash, candidate.requestDigest)
-        && equal(staged.authorityFingerprint, candidate.authorityFingerprint) ? staged : null;
-    };
-    async function currentStage(expected: Selection): Promise<Readonly<{
-      authority: TaskContentAuthorityV1;
-      staged: VerifiedStagedTaskCancellationPublication | null;
-    }> | null> {
-      try {
-        return await withCurrent(expected, async (authority, _transaction, fresh, restricted) => {
-          const handle = await cryptoHandleFor(restricted);
-          if (fresh.status === "invalid") return null;
-          const currentIntent = fresh.status === "found" ? fresh.reservation.intent : fresh.intent;
-          if (currentIntent === null) return null;
-          const staged = await inspect(handle, currentIntent, authority);
-          return { authority, staged };
-        });
-      } catch {
-        // Conflicting or incomplete staged bytes fence fresh encryption and are retried as pending.
-        return null;
-      }
+    async function proofIsCurrent(held: Held, reservation: Reservation): Promise<boolean> {
+      let staged: VerifiedStagedTaskCancellationPublication | null;
+      try { staged = await inspect(held.cryptoHandle, reservation.intent, held.authority); }
+      catch { return false; }
+      if (staged !== null) return stageMatchesReservation(staged, reservation);
+      if (held.authority.expectedPolicyRevision !== intent.policyRevision) return false;
+      const raw = await (await authorizationRepository(held.restricted))
+        .get(protectedTaskCancellationRequestId(intent.taskRunId));
+      const record = raw === null ? null : parseBackgroundAuthorizationRecord(raw);
+      return exactPublicationRecord(record, { intent, requesterHumanId,
+        authorityFingerprint: reservation.ledger.authorityFingerprint })
+        && (record.snapshot.state === "completed"
+          ? reservation.ledger.disposition === "mapped" && record.finishedAt === record.snapshot.updatedAt
+          : record.finishedAt === null && ["running", "publication_reconciliation"].includes(record.snapshot.state));
     }
-    if (selected.status === "missing") {
-      const proof = await currentStage(selected);
-      if (proof === null) return "pending";
-      if (proof.staged === null) {
-        return await hasCryptoPublication(cryptoHandle, {
+    // Phase one commits the mapped product before authorization can complete.
+    // Every nested transaction below borrows these same authority-held connections.
+    const publication = await withCurrent(selected, async held => {
+      let current = held.current;
+      if (current.status === "missing") {
+        let staged: VerifiedStagedTaskCancellationPublication | null;
+        try { staged = await inspect(held.cryptoHandle, intent, held.authority); }
+        catch { return "pending" as const; }
+        if (staged === null) return await hasCryptoPublication(held.cryptoHandle, {
           requestId: protectedTaskCancellationRequestId(intent.taskRunId), objectId: intent.resultObjectId,
-        }) ? "pending" : "missing";
+        }) ? "pending" as const : "missing" as const;
+        if (!sameIntent(staged.intent, intent)) return "pending" as const;
+        const stagedProduct = reservationProduct({ product: held.product,
+          resolveAuthority: held.resolveAuthority, verifyStagedCancellation: held.verifyStagedCancellation,
+          assertReservationCurrent: async candidate => {
+            const fresh = await inspect(held.cryptoHandle, intent, held.authority);
+            if (!sameTaskContentCoordinateV1(candidate, coordinate) || fresh === null || !sameStage(staged, fresh)) {
+              throw new Error("Cancellation staging receipt changed");
+            }
+          } });
+        const adopted = await reserveStaged({ staged, authority: held.authority, product: stagedProduct });
+        if (adopted.status !== "reserved" && adopted.status !== "replayed") return "pending" as const;
+        current = await read(held.transaction, coordinates);
+        if (current.status !== "found" || !exactReservation(current.reservation)
+          || !stageMatchesReservation(staged, current.reservation)) return "pending" as const;
       }
-      if (!sameIntent(proof.staged.intent, intent)) return "pending";
-      const detachedAuthority = Object.freeze({ ...proof.authority });
-      const resolveDetached: ContentResolver = expected => Promise.resolve(
-        expected.requesterHumanId === requesterHumanId && expected.namespaceId === intent.contentNamespaceId
-          ? detachedAuthority : null);
-      const stagedProduct = reservationProduct({ product, resolveAuthority: resolveDetached, verifyStagedCancellation,
-        assertReservationCurrent: async candidate => {
-          if (!sameTaskContentCoordinateV1(candidate, coordinate)) {
-            throw new Error("Cancellation staging coordinate changed");
-          }
-          // Product predecessor locks already prove the stopped Task/Run. Re-inspect only
-          // immutable crypto custody here so this callback never recursively locks Task/Run.
-          const current = await inspect(cryptoHandle, intent, detachedAuthority);
-          if (current === null || !sameStage(proof.staged!, current)) {
-            throw new Error("Cancellation staging receipt changed");
-          }
-        } });
-      const adopted = await reserveStaged({ staged: proof.staged, authority: detachedAuthority,
-        product: stagedProduct });
-      if (adopted.status !== "reserved" && adopted.status !== "replayed") return "pending";
-      selected = await read(input.db, coordinates);
-      if (selected.status !== "found" || !exactReservation(selected.reservation)
-        || !sameIntent(intent, selected.reservation.intent)
-        || !stageMatchesReservation(proof.staged, selected.reservation)) return "pending";
-      intent = selected.reservation.intent;
-    }
-    if (selected.status !== "found" || !exactReservation(selected.reservation)) return "pending";
-    let reservation = selected.reservation;
-    let ledger = reservation.ledger;
-    const leaseToken = randomUUID();
-    async function withProof<Value>(use: (authority: TaskContentAuthorityV1,
-      transaction: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0],
-      current: Reservation) => Promise<Value>): Promise<Value | null> {
-      return withCurrent({ status: "found", reservation }, async (authority, transaction, fresh, restricted) => {
-          if (fresh.status !== "found") return null;
-          const handle = await cryptoHandleFor(restricted);
-          let staged: VerifiedStagedTaskCancellationPublication | null;
-          try {
-            staged = await inspect(handle, fresh.reservation.intent, authority);
-          } catch {
-            return null;
-          }
-          if (staged !== null) {
-            if (!stageMatchesReservation(staged, fresh.reservation)) return null;
-          } else {
-            if (authority.expectedPolicyRevision !== intent.policyRevision) return null;
-            const raw = await (await authorizationRepository(restricted))
-              .get(protectedTaskCancellationRequestId(intent.taskRunId));
-            const record = raw === null ? null : parseBackgroundAuthorizationRecord(raw);
-            if (!exactPublicationRecord(record, { intent, requesterHumanId,
-              authorityFingerprint: ledger.authorityFingerprint })
-              || (record.snapshot.state === "completed"
-                ? fresh.reservation.ledger.disposition !== "mapped"
-                  || record.finishedAt !== record.snapshot.updatedAt
-                : record.finishedAt !== null
-                  || !["running", "publication_reconciliation"].includes(record.snapshot.state))) return null;
-          }
-          return use(authority, transaction, fresh.reservation);
+      if (current.status !== "found" || !exactReservation(current.reservation)
+        || !await proofIsCurrent(held, current.reservation)) return "pending" as const;
+      const reservation = current.reservation;
+      const ledger = reservation.ledger;
+      const leaseToken = randomUUID();
+      const repository = overrides.repository === undefined ? (() => {
+        const handle = held.cryptoHandle;
+        const history = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });
+        const unavailable = (): never => { throw new Error("Cancellation recovery cannot prepare or open content"); };
+        return createPostgresTaskContentRepositoryV1({
+          product: { handle: held.product.handle, resolveCurrentAuthority: held.resolveAuthority,
+            verifyStagedCancellation: held.verifyStagedCancellation },
+          crypto: { handle, crypto: input.crypto,
+            resolveCurrentAuthority: candidate => sameTaskContentCoordinateV1(candidate, coordinate)
+              ? held.resolveAuthority({ requesterHumanId, namespaceId: intent.contentNamespaceId }) : Promise.resolve(null),
+            resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
+            resolveHistoricalHumanDeviceSigningPublicKey: createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle) },
+          content: { prepareProtected: unavailable, publishProduct: unavailable,
+            readOrdinary: unavailable, readProtected: unavailable },
         });
-    }
-    const resolveAuthority: ContentResolver = async expected => {
-      if (expected.requesterHumanId !== requesterHumanId
-        || expected.namespaceId !== intent.contentNamespaceId) return null;
-      return withProof(authority => Promise.resolve(authority));
-    };
-    if (await resolveAuthority({ requesterHumanId,
-      namespaceId: intent.contentNamespaceId }) === null) return "pending";
-    const repository = overrides.repository === undefined ? await (async () => {
-      const handle = await cryptoHandleFor(input.restricted);
-      const history = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });
-      const unavailable = (): never => { throw new Error("Cancellation recovery cannot prepare or open content"); };
-      return createPostgresTaskContentRepositoryV1({
-        product: { handle: product.handle, resolveCurrentAuthority: resolveAuthority, verifyStagedCancellation },
-        crypto: { handle, crypto: input.crypto,
-          resolveCurrentAuthority: candidate => sameTaskContentCoordinateV1(candidate, coordinate)
-            ? resolveAuthority({ requesterHumanId, namespaceId: intent.contentNamespaceId })
-            : Promise.resolve(null),
-          resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-          resolveHistoricalHumanDeviceSigningPublicKey: createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle) },
-        content: { prepareProtected: unavailable, publishProduct: unavailable,
-          readOrdinary: unavailable, readProtected: unavailable },
-      });
-    })() : await overrides.repository({ reservation, product, resolveAuthority, verifyStagedCancellation });
-    // Reconciliation owns its transactions. Never enclose it in withProof:
-    // crypto verification and the product callback independently re-enter authority.
-    const outcome = await repository.reconcileCoordinate({ coordinate,
-      operationId: intent.resultOperationId, leaseToken,
-      publishProduct: async () => {
-        const published = await withProof(async (authority, transaction, current) => {
-          if (current.ledger.disposition !== "active" || current.ledger.leaseToken !== leaseToken
-            || current.ledger.leaseExpiresAt === null || current.ledger.leaseExpiresAt.getTime() <= now()) return false;
+      })() : await overrides.repository({ reservation, product: held.product,
+        resolveAuthority: held.resolveAuthority, verifyStagedCancellation: held.verifyStagedCancellation });
+      const outcome = await repository.reconcileCoordinate({ coordinate,
+        operationId: intent.resultOperationId, leaseToken,
+        publishProduct: async () => {
+          const fresh = await read(held.transaction, coordinates);
+          if (fresh.status !== "found" || !sameReservation(reservation, fresh.reservation)
+            || fresh.reservation.ledger.disposition !== "active" || fresh.reservation.ledger.leaseToken !== leaseToken
+            || fresh.reservation.ledger.leaseExpiresAt === null || fresh.reservation.ledger.leaseExpiresAt.getTime() <= now()) {
+            throw new Error("Cancellation recovery product authority changed");
+          }
           const result = await (overrides.publishProduct ?? publishProtectedTaskCancellationProduct)({
-            transaction: use => use(transaction),
-          }, { intent, currentPolicyRevision: authority.expectedPolicyRevision, requestDigest: ledger.requestDigest,
+            transaction: use => use(held.transaction),
+          }, { intent, currentPolicyRevision: held.authority.expectedPolicyRevision, requestDigest: ledger.requestDigest,
             prepared: { operationId: intent.resultOperationId, resultRevision: 2,
               resultObjectId: intent.resultObjectId, requesterHumanId: ledger.requesterHumanId,
-              authorityFingerprint: ledger.authorityFingerprint } }, () => Promise.resolve(current.ledger.leaseExpiresAt!.getTime() > now()));
-          return result.status !== "rejected";
-        });
-        if (published !== true) throw new Error("Cancellation recovery product authority changed");
-      },
+              authorityFingerprint: ledger.authorityFingerprint } }, () => Promise.resolve(fresh.reservation.ledger.leaseExpiresAt!.getTime() > now()));
+          if (result.status === "rejected") throw new Error("Cancellation recovery product authority changed");
+        },
+      });
+      if (outcome !== "mapped") return outcome === "quarantined" ? "quarantined" as const : "pending" as const;
+      const mapped = await read(held.transaction, coordinates);
+      return mapped.status === "found" && exactMappedSuccess(reservation, mapped.reservation)
+        ? mapped : "pending" as const;
     });
-    if (outcome === "mapped") {
-      const mapped = await read(input.db, coordinates);
-      if (mapped.status !== "found" || !exactMappedSuccess(reservation, mapped.reservation)) return "pending";
-      reservation = mapped.reservation;
-      ledger = reservation.ledger;
-      const settlementAuthority = await resolveAuthority({ requesterHumanId,
-        namespaceId: intent.contentNamespaceId });
-      if (settlementAuthority === null) return "pending";
+    if (publication === null) return "pending";
+    if (typeof publication === "string") return publication;
+    // Phase two re-admits current authority. A concurrent archive can win here,
+    // leaving the committed mapping pending without completing authorization.
+    const settled = await withCurrent(publication, async held => {
+      if (held.current.status !== "found" || !exactMappedSuccess(publication.reservation, held.current.reservation)
+        || !await proofIsCurrent(held, held.current.reservation)) return null;
+      const reservation = held.current.reservation;
+      const ledger = reservation.ledger;
       const verifyStaged: VerifyStagedCancellationSettlement = async proof => {
-        if (proof.currentPolicyRevision !== settlementAuthority.expectedPolicyRevision
+        if (await held.resolveAuthority({ requesterHumanId, namespaceId: intent.contentNamespaceId }) === null
+          || proof.currentPolicyRevision !== held.authority.expectedPolicyRevision
           || !sameIntent(proof.intent, reservation.intent) || proof.requesterHumanId !== requesterHumanId
           || proof.cryptoAccessRevision !== ledger.cryptoAccessRevision
           || !equal(proof.authorityFingerprint, ledger.authorityFingerprint)
           || !equal(proof.requiredNamespaceFingerprint, ledger.requiredNamespaceFingerprint)) return null;
         let staged: VerifiedStagedTaskCancellationPublication | null;
-        try {
-          staged = await inspect(cryptoHandle, reservation.intent, settlementAuthority);
-        } catch {
-          return null;
-        }
-        if (staged === null || !stageMatchesReservation(staged, reservation)
-          || staged.requestId !== protectedTaskCancellationRequestId(intent.taskRunId)) return null;
-        return { requestId: staged.requestId, recipientGeneration: staged.recipientGeneration };
+        try { staged = await inspect(held.cryptoHandle, reservation.intent, held.authority); }
+        catch { return null; }
+        return staged !== null && stageMatchesReservation(staged, reservation)
+          ? { requestId: staged.requestId, recipientGeneration: staged.recipientGeneration } : null;
       };
-      return await (overrides.settle ?? input.settle)({ ...coordinates,
-        currentPolicyRevision: settlementAuthority.expectedPolicyRevision }, verifyStaged) ? "mapped" : "pending";
-    }
-    return outcome === "quarantined" ? "quarantined" : "pending";
+      const cleanup: (() => void)[] = [];
+      const success = await (overrides.settle ?? input.settle)({ ...coordinates,
+        currentPolicyRevision: held.authority.expectedPolicyRevision }, verifyStaged, {
+        db: { transaction: use => use(held.transaction) }, restricted: held.restricted,
+        deferRecipientCleanup: release => { cleanup.push(release); },
+      });
+      return success ? cleanup : null;
+    });
+    if (settled === null) return "pending";
+    for (const release of settled) release();
+    return "mapped";
+
   };
   return async (coordinates: Coordinates): ReturnType<typeof recover> => {
     try {

@@ -957,7 +957,10 @@ describe("current Task Runtime authority", () => {
       accepted: value.accepted,
       now: () => NOW + 1,
       validateCurrentProduct: async () => true,
-      validateBeforeCommit: () => { closeChecks++; },
+      validateBeforeCommit: () => {
+        closeChecks++;
+        setTimeout(() => release.resolve(), 0);
+      },
       use: async (_authority, _product, currentRestricted) => {
         retained = currentRestricted;
         void currentRestricted.query("SELECT claim_cas");
@@ -966,14 +969,46 @@ describe("current Task Runtime authority", () => {
     }).finally(() => { settled = true; });
     await started.promise;
     expect(settled).toBe(false);
-    release.resolve();
     expect(await operation.catch((error: unknown) => error))
       .toBeInstanceOf(AggregateError);
-    expect(closeChecks).toBe(0);
+    expect(closeChecks).toBe(1);
     expect(() => retained?.query("SELECT claim_cas"))
+      .toThrow("Parked Task Runtime authority is not active");
+  });
+
+  test("keeps restricted claim authority live through final validation, then revokes it", async () => {
+    const value = await fixture();
+    const events: string[] = [];
+    const { runner } = productAuthority(value, events);
+    const baseRestricted = restrictedAuthority(value);
+    let retained: PostgresJsBridgeConnection | null = null;
+    let closeChecks = 0;
+    const result = await withCurrentAcceptedTaskRuntimeClaimAuthority({
+      runner: runner as never,
+      restricted: baseRestricted,
+      crypto: value.crypto,
+      serverScope: "https://nautilo.example",
+      subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+      accepted: value.accepted,
+      now: () => NOW + 1,
+      validateCurrentProduct: async () => true,
+      validateBeforeCommit: async () => {
+        closeChecks++;
+        expect(await retained?.query("SELECT current_user::text"))
+          .toEqual([{ current_user: "nautilo_crypto", session_user: "nautilo_crypto" }]);
+      },
+      use: async (_authority, _product, currentRestricted) => {
+        retained = currentRestricted;
+        return "claimed";
+      },
+    });
+    expect(result).toBe("claimed");
+    expect(closeChecks).toBe(1);
+    expect(() => retained?.query("SELECT current_user::text"))
       .toThrow("Parked Task Runtime authority is not active");
 
     const expiredAtClose = new Error("claim lease expired before commit");
+    let finalRetained: PostgresJsBridgeConnection | null = null;
     const expired = await withCurrentAcceptedTaskRuntimeClaimAuthority({
       runner: runner as never,
       restricted: baseRestricted,
@@ -983,14 +1018,21 @@ describe("current Task Runtime authority", () => {
       accepted: value.accepted,
       now: () => NOW + 1,
       validateCurrentProduct: async () => true,
-      validateBeforeCommit: () => {
+      validateBeforeCommit: async () => {
         closeChecks++;
+        expect(await finalRetained?.query("SELECT current_user::text"))
+          .toEqual([{ current_user: "nautilo_crypto", session_user: "nautilo_crypto" }]);
         throw expiredAtClose;
       },
-      use: async () => "claimed",
+      use: async (_authority, _product, currentRestricted) => {
+        finalRetained = currentRestricted;
+        return "claimed";
+      },
     }).catch((error: unknown) => error);
     expect(expired).toBe(expiredAtClose);
-    expect(closeChecks).toBe(1);
+    expect(closeChecks).toBe(2);
+    expect(() => finalRetained?.query("SELECT current_user::text"))
+      .toThrow("Parked Task Runtime authority is not active");
   });
 
   test("holds the exact parked proof before Namespace and restricted authority", async () => {

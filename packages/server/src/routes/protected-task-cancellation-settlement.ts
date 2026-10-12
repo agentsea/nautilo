@@ -65,7 +65,8 @@ export type VerifyStagedCancellationSettlement = (
 
 /** Settle an already mapped cancellation receipt without reopening any grant. */
 export function createProtectedTaskCancellationSettlement(input: Readonly<{
-  db: DirectDatabase;
+  db: Pick<DirectDatabase, "transaction">;
+  deferRecipientCleanup(release: () => void): void;
   repository: Pick<BackgroundAuthorizationRepository, "get" | "compareAndSwap">;
   recipients: Pick<TaskRuntimeRecipientRegistry, "delete">;
   now?: () => number;
@@ -117,7 +118,8 @@ export function createProtectedTaskCancellationSettlement(input: Readonly<{
       },
     );
     if (result.status === "rejected" || released === undefined) return false;
-    input.recipients.delete(released.requestId, released.generation);
+    const custody = released;
+    input.deferRecipientCleanup(() => { input.recipients.delete(custody.requestId, custody.generation); });
     return true;
   };
 }

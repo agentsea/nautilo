@@ -14,7 +14,7 @@ import { createProtectedTaskCancellationAuthorityPort } from "./protected-task-c
 import { createProtectedTaskCancellationClaim } from "./protected-task-cancellation-claim";
 import { createProtectedTaskCancellationDeviceAuthorization } from "./protected-task-cancellation-device-authorization";
 import { createProtectedTaskCancellationPreparation } from "./protected-task-cancellation-preparation";
-import { createProtectedTaskCancellationSettlement, type VerifyStagedCancellationSettlement } from "./protected-task-cancellation-settlement";
+import { createProtectedTaskCancellationSettlement } from "./protected-task-cancellation-settlement";
 import { createProtectedTaskCancellationPublication } from "./protected-task-cancellation-publication";
 import { createProtectedTaskCancellationPublicationRecovery } from "./protected-task-cancellation-publication-recovery";
 
@@ -22,7 +22,7 @@ type Dependencies = Readonly<{
   preparation: ReturnType<typeof createProtectedTaskCancellationPreparation>;
   claim: ReturnType<typeof createProtectedTaskCancellationClaim>;
   list: typeof listProtectedTaskCancellationOutputCandidates;
-  settle: ReturnType<typeof createProtectedTaskCancellationSettlement>;
+  settle: Parameters<typeof createProtectedTaskCancellationPublicationRecovery>[0]["settle"];
   recover: ReturnType<typeof createProtectedTaskCancellationPublicationRecovery>;
   repository: (connection: PostgresJsBridgeConnection) => Promise<Pick<PostgresBackgroundAuthorizationRepository, "get" | "compareAndSwap">>;
 }>;
@@ -58,10 +58,10 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
     // transaction. Publication acquires its own current-authority transactions.
     publish: createProtectedTaskCancellationPublication({ ...input, authority, now }),
   });
-  const settle = overrides.settle ?? (async (coordinates: Readonly<{ taskId: string; taskRunId: string; currentPolicyRevision?: number }>,
-    verifyStaged?: VerifyStagedCancellationSettlement) =>
+  const settle: Dependencies["settle"] = overrides.settle ?? (async (coordinates, verifyStaged, context) =>
     createProtectedTaskCancellationSettlement({
-      db: input.db, repository: await repository(input.restricted), recipients: input.recipients, now,
+      db: context.db, repository: await repository(context.restricted), recipients: input.recipients, now,
+      deferRecipientCleanup: context.deferRecipientCleanup,
     })(coordinates, verifyStaged));
   const recover = overrides.recover ?? createProtectedTaskCancellationPublicationRecovery({ ...input, settle });
   return Object.freeze({
@@ -82,19 +82,13 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
       for (const candidate of page.candidates) {
         signal.throwIfAborted();
         try {
-          // An immutable mapped receipt needs only control-plane settlement.
-          // It must never become another encryption attempt.
-          if (candidate.resultState === "mapped") {
-            if (await settle(candidate) || await recover(candidate) === "mapped") published += 1;
-            else pending += 1;
-            continue;
-          }
           const recovery = await recover(candidate);
           if (recovery !== "missing") {
             if (recovery === "mapped") published += 1;
             else pending += 1;
             continue;
           }
+          if (candidate.resultState === "mapped") { pending += 1; continue; }
           const prepared = await preparation.prepare(candidate);
           if (prepared.status !== "created" && prepared.status !== "exact_replay") {
             pending += 1;
