@@ -210,6 +210,7 @@ export async function withProtectedAgentTranscriptHistory<Value>(
     readonly sessionId: string;
     readonly namespaceId: string;
     readonly upToMessageId?: number;
+    readonly beforeMessageId?: number;
     readonly limit: number;
     readonly productReadAuthorization:
       ProtectedConversationProductReadAuthorization;
@@ -234,6 +235,9 @@ export async function withProtectedAgentTranscriptHistory<Value>(
     ...(input.upToMessageId === undefined
       ? {}
       : { upToMessageId: input.upToMessageId }),
+    ...(input.beforeMessageId === undefined
+      ? {}
+      : { beforeMessageId: input.beforeMessageId }),
     limit: input.limit,
     productReadAuthorization: input.productReadAuthorization,
     authorization: input.authorization,

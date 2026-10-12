@@ -632,6 +632,9 @@ export function createProtectedActiveConversationRepository(
       if (input.upToMessageId !== undefined) {
         assertConversationMessageId(input.upToMessageId);
       }
+      if (input.beforeMessageId !== undefined) {
+        assertConversationMessageId(input.beforeMessageId);
+      }
 
       let batch;
       try {
@@ -642,6 +645,9 @@ export function createProtectedActiveConversationRepository(
           ...(input.upToMessageId === undefined
             ? {}
             : { upToMessageId: input.upToMessageId }),
+          ...(input.beforeMessageId === undefined
+            ? {}
+            : { beforeMessageId: input.beforeMessageId }),
           limit: input.limit,
         });
       } catch {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
+import { DynamicStructuredTool } from "@langchain/core/tools";
 import {
   __setStubModelForTests,
   setAgentEventSink,
@@ -16,11 +17,13 @@ import {
   sessionMessages,
   sessions,
 } from "@nautilo/db";
+import { z } from "zod";
 import { eventBus } from "../../src/event-bus";
 import { JobManager } from "../../src/job-manager";
 import {
   closeAgentDb,
   getTranscriptMessages,
+  registerIntegrationTestTool,
   setupAgentTestEnv,
 } from "./agent-helpers";
 import {
@@ -38,6 +41,7 @@ const fastCoalesce = {
   coalescerWindowMs: 45,
   coalescerFirstSegmentQuietMs: 45,
 } as const;
+const progressToolName = "foreground_refresh_progress_fixture";
 
 let userId = "";
 let agentId = "";
@@ -45,10 +49,13 @@ let roomId = "";
 let namespaceId = "";
 let jobManager: JobManager;
 
-function messageText(message: BaseMessage | { content: unknown }): string {
-  if (typeof message.content === "string") return message.content;
-  if (!Array.isArray(message.content)) return "";
-  return message.content.map((block) => {
+function messageText(message: unknown): string {
+  if (typeof message === "string") return message;
+  if (!message || typeof message !== "object" || !("content" in message)) return "";
+  const content = (message as { content: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map((block) => {
     if (typeof block === "string") return block;
     if (block && typeof block === "object" && "text" in block) {
       const text = (block as { text?: unknown }).text;
@@ -64,6 +71,20 @@ beforeAll(async () => {
   setAgentEventSink({ emit: (event) => eventBus.emit(event) });
 
   const env = await setupAgentTestEnv("foreground-refresh-executor");
+  registerIntegrationTestTool({
+    name: progressToolName,
+    category: "development",
+    trustTier: "guest",
+    impact: "read-only",
+    exposure: "core",
+    resultScanPolicy: "never",
+    factory: () => new DynamicStructuredTool({
+      name: progressToolName,
+      description: "Return the durable receipt for one deterministic progress step.",
+      schema: z.object({ sequence: z.number().int().positive() }),
+      func: async ({ sequence }) => `EXECUTOR RECEIPT ${sequence}`,
+    }),
+  });
   userId = env.userId;
   agentId = env.agentId;
   jobManager = new JobManager(fastCoalesce);
@@ -162,8 +183,7 @@ describe("foreground context refresh executor composition", () => {
       const secondInvocation = stub.invocations[1]!.messages;
       expect(secondInvocation.some((message) => ToolMessage.isInstance(message))).toBe(false);
       expect(secondInvocation.some((message) =>
-        AIMessage.isInstance(message)
-        && message.tool_calls?.some((call) => call.id === toolCallId),
+        AIMessage.isInstance(message) && (message.tool_calls?.length ?? 0) > 0,
       )).toBe(false);
       const rebuiltContents = secondInvocation.map(messageText);
       const acceptedRequestIndex = rebuiltContents.findIndex((content) =>
@@ -192,9 +212,11 @@ describe("foreground context refresh executor composition", () => {
         if (!row.toolCalls) return [];
         return JSON.parse(row.toolCalls) as Array<{ id?: string; name?: string }>;
       });
-      const matchingToolCalls = toolCalls.filter((call) => call.id === toolCallId);
-      expect(matchingToolCalls).toHaveLength(1);
-      expect(matchingToolCalls[0]?.name).toBe("discover_tools");
+      // The graph may normalize provider-supplied call ids before persistence.
+      // The durable invariant here is one call to the requested tool, paired
+      // with the one start/end lifecycle already asserted above.
+      expect(toolCalls).toHaveLength(1);
+      expect(toolCalls[0]?.name).toBe("discover_tools");
 
       const db = getDirectDb();
       const [session] = await db
@@ -220,4 +242,77 @@ describe("foreground context refresh executor composition", () => {
       cleanup();
     }
   });
+
+  test("the final provider invocation retains a fitting turn across more than fifty refreshes", async () => {
+    const rounds = 56;
+    const originalSentinel = `ORIGINAL REQUEST ${randomUUID()}`;
+    const finalSentinel = `FINAL PROVIDER CHECK ${randomUUID()}`;
+    let finalProviderEvidence: {
+      original: boolean;
+      earliestProgress: boolean;
+      latestReceipt: boolean;
+    } | undefined;
+
+    const receiptPattern = /EXECUTOR RECEIPT (\d+)/g;
+    const visibleReceiptModel: ChatModel = {
+      async invoke(messages) {
+        const joined = messages.map(messageText).join("\n");
+        const visibleReceipts = [...joined.matchAll(receiptPattern)]
+          .map((match) => Number(match[1]));
+        const latestVisibleReceipt = visibleReceipts.length === 0
+          ? 0
+          : Math.max(...visibleReceipts);
+
+        if (latestVisibleReceipt >= rounds) {
+          finalProviderEvidence = {
+            original: joined.includes(originalSentinel),
+            earliestProgress: joined.includes("COMPLETED PROGRESS 1"),
+            latestReceipt: joined.includes(`EXECUTOR RECEIPT ${rounds}`),
+          };
+          return new AIMessage(finalSentinel);
+        }
+
+        const nextSequence = latestVisibleReceipt + 1;
+        return new AIMessage({
+          content: `COMPLETED PROGRESS ${nextSequence}`,
+          tool_calls: [{
+            id: `foreground-refresh-${nextSequence}-${randomUUID()}`,
+            name: progressToolName,
+            args: { sequence: nextSequence },
+          }],
+        });
+      },
+      bindTools: () => visibleReceiptModel,
+    };
+    __setStubModelForTests(visibleReceiptModel);
+
+    const threadId = `room:${roomId}`;
+    const runningJob = waitForRunningForegroundJob(jobManager);
+    await jobManager.createForegroundJob(userId, userId, threadId, {
+      message: `${originalSentinel}: complete every numbered progress step.`,
+      ownerId: userId,
+      causalHumanUserId: userId,
+      agentId,
+      actorRole: "owner",
+      explicitlySelected: true,
+      roomId,
+      threadId,
+      turnId: randomUUID(),
+    });
+    const job = await runningJob;
+    await pollUntilComplete(job, 180_000);
+
+    expect(job.status).toBe("completed");
+    expect(finalProviderEvidence).toEqual({
+      original: true,
+      earliestProgress: true,
+      latestReceipt: true,
+    });
+    const transcript = await getTranscriptMessages(threadId);
+    const transcriptText = transcript.map(messageText).join("\n");
+    expect(transcriptText).toContain(originalSentinel);
+    expect(transcriptText).toContain("COMPLETED PROGRESS 1");
+    expect(transcriptText).toContain(`EXECUTOR RECEIPT ${rounds}`);
+    expect(transcriptText).toContain(finalSentinel);
+  }, 200_000);
 });

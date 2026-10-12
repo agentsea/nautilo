@@ -780,6 +780,35 @@ describe("persistMessages — savedFingerprints discipline", () => {
     expect(emitted.length).toBe(0);
   });
 
+  test("canonical dedup aligns committed receipts to the exact inserted message", async () => {
+    const first = new HumanMessage({ id: "first", content: "already canonical" });
+    const second = new HumanMessage({ id: "second", content: "new canonical row" });
+    appendBehavior = async () => ({
+      failedIndices: [],
+      insertedCount: 1,
+      insertedRows: [{
+        id: "42",
+        role: "user",
+        content: "new canonical row",
+        fingerprint: "mockfp:human:new canonical row",
+        replyToMessageId: null,
+      }],
+    });
+    const committed: Array<{
+      rows: readonly { id: string; role: string }[];
+      messages: readonly unknown[];
+    }> = [];
+
+    await persistMessages("t1", "owner-1", [first, second], new Set(), {
+      eventBus: makeBus().bus,
+      onCommittedRows: (rows, messages) => committed.push({ rows, messages }),
+    });
+
+    expect(committed).toHaveLength(1);
+    expect(committed[0]?.rows.map((row) => row.id)).toEqual(["42"]);
+    expect(committed[0]?.messages).toEqual([second]);
+  });
+
   test("humanTurnId qualifier: same human text on different turns is treated as new", async () => {
     const saved = new Set<string>();
     const { bus, emitted } = makeBus();
