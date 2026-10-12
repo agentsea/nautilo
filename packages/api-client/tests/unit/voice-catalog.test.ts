@@ -136,7 +136,7 @@ describe("listVoiceCatalog (D215)", () => {
       expect(error).toBeInstanceOf(ApiError);
       expect(error).toMatchObject({
         status: 400,
-        message: "ELEVENLABS_API_KEY is not set",
+        message: "Voice service unavailable.",
       });
     }
   });
@@ -247,7 +247,7 @@ describe("previewVoice (D215)", () => {
     expect(seenBody).toBeUndefined();
   });
 
-  test("throws ApiError with server message on failure", async () => {
+  test("returns a stable preview failure instead of arbitrary response text", async () => {
     const mockFetch = async () =>
       new Response(JSON.stringify({ error: "Invalid voice id" }), {
         status: 400,
@@ -266,7 +266,7 @@ describe("previewVoice (D215)", () => {
       expect(error).toBeInstanceOf(ApiError);
       expect(error).toMatchObject({
         status: 400,
-        message: "Invalid voice id",
+        message: "Voice preview unavailable.",
       });
     }
   });

@@ -84,6 +84,7 @@ export type ConversationProtectedProductReadOperation =
     readonly sessionId: string;
     readonly namespaceId: string;
     readonly upToMessageId?: number;
+    readonly beforeMessageId?: number;
     readonly limit: number;
   }>;
 
@@ -681,6 +682,12 @@ export function createPostgresConversationProtectedReadPort(
           input.upToMessageId,
         );
       }
+      if (input.beforeMessageId !== undefined) {
+        assertPositiveInteger(
+          "Conversation Agent transcript cursor",
+          input.beforeMessageId,
+        );
+      }
       const operation = Object.freeze({
         kind: "agent_transcript" as const,
         ...input,
@@ -696,9 +703,20 @@ export function createPostgresConversationProtectedReadPort(
         `${SELECT_PUBLIC_MESSAGE_PROJECTION}
           WHERE sm.session_id = $1::uuid
             AND ($2::int IS NULL OR sm.id <= $2::int)
+            AND ($4::int IS NULL OR (sm.created_at, sm.id) < (
+              SELECT cursor.created_at, cursor.id
+              FROM session_messages cursor
+              WHERE cursor.session_id = $1::uuid
+                AND cursor.id = $4::int
+            ))
           ORDER BY sm.created_at DESC, sm.id DESC
           LIMIT $3::int`,
-        [input.sessionId, input.upToMessageId ?? null, input.limit],
+        [
+          input.sessionId,
+          input.upToMessageId ?? null,
+          input.limit,
+          input.beforeMessageId ?? null,
+        ],
       );
       return Object.freeze({
         sessionId: authority.sessionId,

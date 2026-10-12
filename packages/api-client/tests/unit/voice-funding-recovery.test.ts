@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { NautiloApiClient, VoiceFundingApiError } from "./client";
+import { NautiloApiClient, VoiceFundingApiError } from "../../src/client";
 import { parseVoiceFundingRecovery } from "@nautilo/types";
 
 const recovery = {

@@ -22,6 +22,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   jobs and voice streams retain their creating account, and Costs distinguishes
   estimates, actual charges and unresolved attempts. Voice funding errors link to
   the relevant key or model settings; previews accept up to 500 characters.
+
+- Long Genie turns retain their newest progress across context refreshes without
+  applying the older-history message count to the current run. Journal and
+  recalled Records remain available, concurrent Room activity is labelled as
+  surrounding history, and admitted replies keep their chronological position.
+
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed
   revision and rejects stale or changed profiles. The Agent access popup links

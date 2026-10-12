@@ -130,6 +130,7 @@ describe("voice catalog routes", () => {
       beginCost?: (receipt: ServerProviderCostAttemptAdmission) => Promise<void>;
       settleCost?: (receipt: ServerProviderCostReceipt) => Promise<void>;
       resolveSpeechModel?: VoiceRouteDeps["resolveSpeechModel"];
+      getCapabilities?: VoiceRouteDeps["getCapabilities"];
     } = {},
   ): FastifyInstance {
     const app = Fastify({ logger: false });
@@ -146,6 +147,7 @@ describe("voice catalog routes", () => {
       ...(input.beginCost ? { beginCost: input.beginCost } : {}),
       ...(input.settleCost ? { settleCost: input.settleCost } : {}),
       ...(input.resolveSpeechModel ? { resolveSpeechModel: input.resolveSpeechModel } : {}),
+      getCapabilities: input.getCapabilities ?? (async () => []),
     });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = input.sessionUserId === undefined ? "ordinary-user" : input.sessionUserId;
@@ -1395,31 +1397,50 @@ describe("voice catalog routes", () => {
 
   test.each([
     [
-      "owner",
+      "member",
       "provider_credentials_missing",
       "configure_server_provider_credentials",
       "/admin#provider-credentials",
+      ["manage_connection_providers"],
     ],
     [
       "member",
       "provider_credentials_missing",
+      "configure_server_provider_credentials",
+      "/admin#provider-credentials",
+      ["manage_server_settings"],
+    ],
+    [
+      "owner",
+      "provider_credentials_missing",
       "contact_operator",
       "/settings#personal-provider-keys",
+      [],
     ],
     [
       "member",
       "unsupported_provider",
       "choose_supported_speech_model",
       "/settings#capability-models",
+      ["manage_connection_providers"],
     ],
   ] as const)(
-    "voice funding repair for %s and %s uses a real settings destination",
-    async (viewerRole, code, repairAction, href) => {
+    "voice funding repair for %s and %s uses current capabilities for its destination",
+    async (viewerRole, code, repairAction, href, capabilities) => {
+      let capabilityLookups = 0;
       const funding: VoiceServiceFunding = {
         admit: async () => { throw new ModelFundingError(code); },
         run: async () => { throw new Error("must not run"); },
       };
-      const app = createVoicesRouteApp(null, { viewerRole, funding });
+      const app = createVoicesRouteApp(null, {
+        viewerRole,
+        funding,
+        getCapabilities: async (humanUserId) => {
+          expect(humanUserId).toBe("ordinary-user");
+          capabilityLookups += 1;
+          return [...capabilities];
+        },
+      });
 
       const response = await app.inject({
         method: "POST",
@@ -1432,6 +1453,7 @@ describe("voice catalog routes", () => {
         repairAction,
         href,
       });
+      expect(capabilityLookups).toBe(code === "provider_credentials_missing" ? 1 : 0);
     },
   );
 

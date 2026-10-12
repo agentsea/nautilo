@@ -28,6 +28,7 @@ import {
 } from "../costs/provider-cost-recorder";
 import {
   assertCanUseServerProviderCredentials,
+  getUserCapabilities,
   ServerProviderCredentialsDeniedError,
   toActionCapabilityHttpDenial,
 } from "@nautilo/trust";
@@ -95,31 +96,11 @@ type VoiceFundingFailureProjection = Readonly<{
   };
 }>;
 
-function canManageServerVoiceCredentials(role: ViewerRole | undefined): boolean {
-  return role === "owner" || role === "admin";
-}
-
-function policyViewerRole(role: string | undefined): ViewerRole | undefined {
-  switch (role) {
-    case "owner":
-    case "admin":
-    case "superuser":
-    case "member":
-    case "contributor":
-    case "community":
-    case "guest":
-    case "anonymous":
-    case "stranger":
-      return role;
-    default:
-      return undefined;
-  }
-}
-
-function voiceFundingFailureProjection(
+async function voiceFundingFailureProjection(
   error: ModelFundingError,
-  actorRole?: ViewerRole,
-): VoiceFundingFailureProjection {
+  humanUserId: string,
+  getCapabilities: typeof getUserCapabilities,
+): Promise<VoiceFundingFailureProjection> {
   switch (error.code) {
     case "personal_credentials_disabled":
       return {
@@ -153,7 +134,15 @@ function voiceFundingFailureProjection(
         },
       };
     case "provider_credentials_missing": {
-      const providerAdmin = canManageServerVoiceCredentials(actorRole);
+      let providerAdmin = false;
+      try {
+        const capabilities = await getCapabilities(humanUserId);
+        providerAdmin = capabilities.includes("manage_connection_providers")
+          || capabilities.includes("manage_server_settings");
+      } catch {
+        // Repair destinations are authority-bearing UI affordances. If the
+        // fresh capability read fails, do not advertise the admin surface.
+      }
       return {
         status: 409,
         body: {
@@ -244,7 +233,6 @@ import type {
   CatalogVerifiedLanguage,
   CatalogVoice,
   VoiceCustomizationHydrationResponse,
-  ViewerRole,
 } from "@nautilo/types";
 
 const CATALOG_TTL_MS = 15 * 60 * 1000;
@@ -330,6 +318,7 @@ export interface VoiceRouteDeps {
   beginCost?: (receipt: ServerProviderCostAttemptAdmission) => Promise<void>;
   settleCost?: (receipt: ServerProviderCostReceipt) => Promise<void>;
   resolveSpeechModel?: (humanUserId: string, configuredId?: string) => Promise<SpeechModel>;
+  getCapabilities?: typeof getUserCapabilities;
 }
 const compatibleCatalogCache = new Map<string, CompatibleCatalogCacheEntry>();
 const languageGroupCache = new Map<string, LanguageGroupCacheEntry>();
@@ -1413,6 +1402,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
   const assertServerFunding = deps.assertCanUseServerProviderCredentials
     ?? assertCanUseServerProviderCredentials;
   const funding = deps.funding ?? directVoiceServiceFunding;
+  const getCapabilities = deps.getCapabilities ?? getUserCapabilities;
   const legacyServerTestSeam = Boolean(deps.assertCanUseServerProviderCredentials && !deps.funding);
   const beginCost = deps.beginCost ?? (legacyServerTestSeam ? async () => {} : beginServerProviderCostAttempt);
   const settleCost = deps.settleCost ?? (legacyServerTestSeam ? async () => {} : settleServerProviderCostAttempt);
@@ -1460,7 +1450,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     try { account = await resolveAccount(request.sessionUserId, "voice_catalog_hydration", signal); }
     catch (error) {
       if (error instanceof ModelFundingError && !isMissingVoiceCredential(error)) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send(projection.body);
       }
       // Missing credentials remain a steady-state hydration result.
@@ -1542,7 +1532,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
       }
       if (error instanceof ModelFundingError) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send(projection.body);
       }
       return reply.code(502).send({
@@ -1570,7 +1560,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     try { account = await resolveAccount(request.sessionUserId, "voice_catalog", signal); }
     catch (error) {
       if (error instanceof ModelFundingError) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send({
           ...projection.body,
           voices: [] as CatalogVoice[],
@@ -1632,7 +1622,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
       }
       if (error instanceof ModelFundingError) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send({
           ...projection.body,
           voices: [] as CatalogVoice[],
@@ -1695,7 +1685,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     try { account = await resolveAccount(request.sessionUserId, "voice_preview", signal); }
     catch (error) {
       if (error instanceof ModelFundingError) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send(projection.body);
       }
       return reply.code(400).send({ error: voiceProviderUnavailableMessage() });
@@ -1711,7 +1701,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
     try { model = await resolveSpeechModel(request.sessionUserId); }
     catch (error) {
       if (error instanceof ModelFundingError) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send(projection.body);
       }
       return reply.code(503).send({ error: "The server speech model is unavailable." });
@@ -1746,7 +1736,7 @@ export function voiceRoutes(app: FastifyInstance, deps: VoiceRouteDeps = {}): vo
         return reply.code(403).send(toActionCapabilityHttpDenial(error));
       }
       if (error instanceof ModelFundingError) {
-        const projection = voiceFundingFailureProjection(error, policyViewerRole(request.policyContext?.actorRole));
+        const projection = await voiceFundingFailureProjection(error, request.sessionUserId, getCapabilities);
         return reply.code(projection.status).send(projection.body);
       }
       // Preview is deliberately callable by ordinary users. Keep provider

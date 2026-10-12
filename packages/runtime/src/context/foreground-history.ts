@@ -4,6 +4,7 @@ import { buildTranscriptContext, type BuildTranscriptContextDeps } from "./build
 import { defaultBuildTranscriptContextDeps } from "./build-transcript-context-deps";
 import { getCurrentLiveShadowTurnContext, protectLiveShadowForegroundHistory, protectLiveShadowForegroundJournal } from "../conversation/live-shadow-turn-context";
 import { recentConversationWindow, type RoomHistoryHit } from "../conductor/history-search";
+import { assembleCompositeContextBlock } from "../conductor/context-block";
 import { imageAssistanceHistory } from "../executors/image-assistance";
 import type { TurnKind } from "../executors/turn-kind";
 
@@ -24,9 +25,10 @@ export interface ForegroundHistoryOptions {
   maximumContextCharacters?: number;
   imageAssistanceTurnId?: string;
   onAuthorizedHistory?: (hits: readonly import("../conductor/history-search").RoomHistoryHit[]) => void;
+  acceptedHumanMessages?: readonly { messageId: number; message: BaseMessage }[];
 }
 
-function executionScopedHits(
+function committedTimelineHits(
   hits: readonly RoomHistoryHit[],
   scope: Extract<
     Parameters<BuildTranscriptContextDeps["readRoomTranscript"]>[0],
@@ -36,14 +38,11 @@ function executionScopedHits(
   if (
     scope.throughMessageIdInclusive === undefined
     || scope.excludeMessageId === undefined
-    || scope.foregroundExecutionId === undefined
   ) return [...hits];
+  const excluded = new Set([scope.excludeMessageId, ...(scope.excludeMessageIds ?? [])]);
   return hits.filter((hit) =>
-    hit.messageId < scope.excludeMessageId!
-    || (
-      hit.messageId > scope.excludeMessageId!
-      && hit.foregroundExecutionId === scope.foregroundExecutionId
-    ));
+    hit.messageId <= scope.throughMessageIdInclusive!
+    && !excluded.has(hit.messageId));
 }
 
 function conversationalAnchorCount(hits: readonly RoomHistoryHit[]): number {
@@ -116,6 +115,13 @@ function assertStrictSourcePage(
   ) {
     throw new Error("Protected foreground transcript pager did not move backward");
   }
+  const last = page.at(-1)!;
+  if (before !== undefined && !(
+    last.sourceOrderTimestamp! < before.orderTimestamp
+    || (last.sourceOrderTimestamp === before.orderTimestamp && last.messageId < before.messageId)
+  )) {
+    throw new Error("Foreground transcript page overlaps its previous cursor");
+  }
 }
 
 /** Ordinary ingress gate. Parked resumes do not reconstruct their checkpoint. */
@@ -133,6 +139,11 @@ export async function buildForegroundHistoryMessages(
   depsOverride?: BuildTranscriptContextDeps,
 ): Promise<BaseMessage[]> {
   if (!args.roomId) return [];
+  if (args.throughMessageIdInclusive !== undefined && (
+    args.maximumContextCharacters === undefined
+    || !Number.isFinite(args.maximumContextCharacters)
+    || args.maximumContextCharacters < 0
+  )) throw new RangeError("Foreground refresh requires a finite nonnegative invocation allowance");
   const owned = depsOverride ? null : defaultBuildTranscriptContextDeps();
   const deps = depsOverride ?? owned;
   if (!deps) return [];
@@ -160,12 +171,11 @@ export async function buildForegroundHistoryMessages(
   const authorizedDeps: BuildTranscriptContextDeps = {
     ...effectiveDeps,
     readRoomTranscript: async (scope) => {
-      let executionScoped: RoomHistoryHit[];
+      let timeline: RoomHistoryHit[];
       if (
-        liveShadowContext?.session != null
-        && scope.throughMessageIdInclusive !== undefined
+        scope.throughMessageIdInclusive !== undefined
         && scope.excludeMessageId !== undefined
-        && scope.foregroundExecutionId !== undefined
+        && (deps.readRoomTranscriptSourcePage !== undefined || liveShadowContext?.session != null)
       ) {
         const readPage = deps.readRoomTranscriptSourcePage?.bind(deps);
         if (readPage === undefined) {
@@ -176,6 +186,8 @@ export async function buildForegroundHistoryMessages(
         const limit = (await deps.readRoomContextPolicy?.())
           ?.recentConversationLimit ?? RECENT_CONVERSATION_LIMIT_DEFAULT;
         const pages: RoomHistoryHit[] = [];
+        const currentEnvelope = args.maximumContextCharacters!;
+        let currentCharacters = 0;
         let fixedPrefix: RoomHistoryHit[] = [];
         let before:
           | Readonly<{ orderTimestamp: string; messageId: number }>
@@ -191,37 +203,43 @@ export async function buildForegroundHistoryMessages(
             source.fixedPrefix.length,
           );
           if (before === undefined && source.fixedPrefix.length > 0) {
-            fixedPrefix = await protectLiveShadowForegroundHistory(
-              source.fixedPrefix,
-              args.signal,
-            );
+            fixedPrefix = liveShadowContext?.session != null
+              ? await protectLiveShadowForegroundHistory(source.fixedPrefix, args.signal)
+              : source.fixedPrefix;
             args.signal?.throwIfAborted();
           }
-          const authorizedPage = await protectLiveShadowForegroundHistory(
-            source.page,
-            args.signal,
-          );
+          const authorizedPage = liveShadowContext?.session != null
+            ? await protectLiveShadowForegroundHistory(source.page, args.signal)
+            : source.page;
           args.signal?.throwIfAborted();
-          pages.unshift(...executionScopedHits(authorizedPage, scope));
+          const admittedPage = committedTimelineHits(authorizedPage, scope);
+          pages.unshift(...admittedPage);
+          for (const hit of admittedPage) {
+            if (hit.messageId > scope.excludeMessageId) {
+              currentCharacters += (assembleCompositeContextBlock({ messages: [hit], maxLines: 1 })?.length ?? 0) + 1;
+            }
+          }
+          const prior = pages.filter((hit) => hit.messageId < scope.excludeMessageId!);
           if (
-            conversationalAnchorCount(pages) >= limit
+            currentCharacters >= currentEnvelope
+            || conversationalAnchorCount(prior) >= limit
             || source.page.length === 0
             || source.nextBefore === undefined
           ) break;
           before = source.nextBefore;
         }
-        executionScoped = [
+        timeline = [
           ...fixedPrefix,
-          ...recentConversationWindow(pages, limit),
+          ...recentConversationWindow(pages, limit, scope.excludeMessageId),
         ];
       } else {
-        executionScoped = executionScopedHits(
+        timeline = committedTimelineHits(
           await effectiveDeps.readRoomTranscript(scope),
           scope,
         );
       }
-      args.onAuthorizedHistory?.(executionScoped);
-      return imageAssistanceHistory(executionScoped);
+      args.onAuthorizedHistory?.(timeline);
+      return imageAssistanceHistory(timeline);
     },
   };
   try {
@@ -236,6 +254,7 @@ export async function buildForegroundHistoryMessages(
           ? {}
           : { recordContext: args.recordContext }),
         ...(args.signal === undefined ? {} : { signal: args.signal }),
+        ...(args.acceptedHumanMessages === undefined ? {} : { acceptedHumanMessages: args.acceptedHumanMessages }),
         scope: {
           kind: "room",
           roomId: args.roomId,

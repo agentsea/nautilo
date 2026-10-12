@@ -57,23 +57,69 @@ export function acceptedForegroundMessages(
   current: readonly BaseMessage[],
 ): BaseMessage[] {
   const accepted = [...original];
-  const overlap = new Map<string, number>();
-  for (const message of original) {
-    const key = JSON.stringify(message.content);
-    overlap.set(key, (overlap.get(key) ?? 0) + 1);
+  if (original.length === 0) {
+    return current.filter((message) =>
+      HumanMessage.isInstance(message)
+      && message.additional_kwargs["nautilo_transient_context"] !== true);
   }
-  for (const message of current) {
-    if (
-      !HumanMessage.isInstance(message)
-      || message.additional_kwargs["nautilo_transient_context"] === true
-    ) continue;
-    const key = JSON.stringify(message.content);
-    const remaining = overlap.get(key) ?? 0;
-    if (remaining > 0) {
-      overlap.set(key, remaining - 1);
-      continue;
+
+  const sameStrongAcceptedMessage = (
+    left: BaseMessage,
+    right: BaseMessage,
+  ): boolean => {
+    if (left === right) return true;
+    return left.constructor.name === right.constructor.name
+      && left.id !== undefined
+      && right.id !== undefined
+      && left.id === right.id;
+  };
+  const sameAcceptedMessage = (left: BaseMessage, right: BaseMessage): boolean => {
+    if (sameStrongAcceptedMessage(left, right)) return true;
+    if (left.constructor.name !== right.constructor.name) return false;
+    // Two checkpoint messages with explicit, different identities are distinct
+    // even when their Human-authored content happens to be identical. Falling
+    // through to content equality here can anchor a fork at an older parent
+    // request and promote unrelated Humans into the accepted live request.
+    if (left.id && right.id) return left.id === right.id;
+    // Checkpoint serialization can rehydrate the same accepted message as a new
+    // object and can omit an in-memory id. Exact content is the stable fallback,
+    // including every structured Human content block.
+    return JSON.stringify(left.content) === JSON.stringify(right.content);
+  };
+
+  const completeOrderedSourceEnd = (
+    matches: (left: BaseMessage, right: BaseMessage) => boolean,
+  ): number => {
+    // Model/tool messages may sit between accepted Humans (for example a
+    // parked question before its reply), so the source is an ordered
+    // subsequence rather than a contiguous slice.
+    let sourceIndex = 0;
+    for (let currentIndex = 0; currentIndex < current.length; currentIndex += 1) {
+      if (!matches(original[sourceIndex]!, current[currentIndex]!)) continue;
+      sourceIndex += 1;
+      if (sourceIndex === original.length) return currentIndex;
     }
-    accepted.push(message);
+    return -1;
+  };
+
+  // Search the whole checkpoint for an identity-backed source before allowing
+  // serialization fallback. Otherwise an older idless Human with equal content
+  // can consume the source occurrence before its exact in-memory original and
+  // promote intervening Humans into the live request.
+  const strongCausalEnd = completeOrderedSourceEnd(sameStrongAcceptedMessage);
+  const causalEnd = strongCausalEnd >= 0
+    ? strongCausalEnd
+    : completeOrderedSourceEnd(sameAcceptedMessage);
+
+  // Without a proven causal anchor, preserve the accepted source exactly and
+  // fail closed instead of promoting unrelated checkpoint Humans.
+  if (causalEnd < 0) return accepted;
+
+  for (const message of current.slice(causalEnd + 1)) {
+    if (
+      HumanMessage.isInstance(message)
+      && message.additional_kwargs["nautilo_transient_context"] !== true
+    ) accepted.push(message);
   }
   return accepted;
 }

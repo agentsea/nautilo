@@ -263,7 +263,7 @@ afterAll(() => {
   mock.restore();
 });
 
-test("compiled graph keeps more than one hundred visible text/tool segments bounded and exactly once", async () => {
+test("compiled graph carries the latest completed receipt through more than one hundred fitting refreshes", async () => {
   const cycleCount = 101;
   const executions: number[] = [];
   const providerCharacters: number[] = [];
@@ -278,14 +278,21 @@ test("compiled graph keeps more than one hundred visible text/tool segments boun
     invoke: async (messages) => {
       providerCharacters.push(messageCharacters(messages));
       modelCalls += 1;
-      if (modelCalls <= cycleCount) {
+      const completedSequences = messages.flatMap((message) => {
+        if (!ToolMessage.isInstance(message) || typeof message.content !== "string") return [];
+        const match = /^completed:(\d+)$/.exec(message.content);
+        return match?.[1] === undefined ? [] : [Number(match[1])];
+      });
+      const latestCompleted = completedSequences.at(-1) ?? 0;
+      if (latestCompleted < cycleCount) {
+        const sequence = latestCompleted + 1;
         return new AIMessage({
-          id: `assistant-step-${modelCalls}`,
-          content: `Visible progress ${modelCalls}.`,
+          id: `assistant-step-${sequence}`,
+          content: `Visible progress ${sequence}.`,
           tool_calls: [{
-            id: `tool-step-${modelCalls}`,
+            id: `tool-step-${sequence}`,
             name: "fixture_step",
-            args: { sequence: modelCalls },
+            args: { sequence },
           }],
         });
       }
@@ -309,13 +316,19 @@ test("compiled graph keeps more than one hundred visible text/tool segments boun
       const latestCall = [...state.messages].reverse().find((message) =>
         AIMessage.isInstance(message) && message.tool_calls?.length);
       expect(latestCall && AIMessage.isInstance(latestCall)).toBe(true);
-      for (const call of latestCall && AIMessage.isInstance(latestCall)
-        ? latestCall.tool_calls ?? []
-        : []) {
-        expect(state.messages.filter((message) =>
-          ToolMessage.isInstance(message) && message.tool_call_id === call.id)).toHaveLength(1);
+      if (!latestCall || !AIMessage.isInstance(latestCall)) {
+        throw new Error("refresh did not contain a completed tool call");
       }
-      return [request];
+      const receipts = (latestCall.tool_calls ?? []).map((call) => {
+        const paired = state.messages.filter((message): message is ToolMessage =>
+          ToolMessage.isInstance(message) && message.tool_call_id === call.id);
+        expect(paired).toHaveLength(1);
+        return paired[0]!;
+      });
+      // Rebuild the smallest complete provider-visible cycle. The model above
+      // has no hidden progress counter: forgetting this receipt repeats the
+      // same step and makes the execution assertion fail.
+      return [request, latestCall, ...receipts];
     },
   });
 

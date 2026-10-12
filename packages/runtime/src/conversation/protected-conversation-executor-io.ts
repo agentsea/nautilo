@@ -32,7 +32,8 @@ import type {
   ProtectedMessageDtoV2,
 } from "@nautilo/types";
 import { sanitizeMessageForTranscript } from "../executors/persist-messages";
-import type { RoomHistoryHit } from "../conductor/history-search";
+import { recentConversationWindow, type RoomHistoryHit } from "../conductor/history-search";
+import { assembleCompositeContextBlock } from "../conductor/context-block";
 import {
   withProtectedAgentTranscriptHistory,
 } from "./protected-conversation-transcript";
@@ -415,6 +416,8 @@ export async function executeProtectedConversationTurn<Value>(
           readonly excludeMessageId: number;
           readonly excludeMessageIds?: readonly number[];
           readonly foregroundExecutionId?: string;
+          readonly maximumContextCharacters: number;
+          readonly recentConversationLimit?: number;
           readonly execute: (
             history: readonly RoomHistoryHit[],
           ) => ReadValue | PromiseLike<ReadValue>;
@@ -443,44 +446,67 @@ export async function executeProtectedConversationTurn<Value>(
               "protected transcript refresh exclusion is out of bounds",
             );
           }
+          if (
+            !Number.isFinite(readInput.maximumContextCharacters)
+            || readInput.maximumContextCharacters < 0
+          ) throw new RangeError("protected transcript refresh envelope is out of bounds");
           if (!callbackLive) {
             return Object.freeze({
               status: "unavailable" as const,
               reason: "authorization_unavailable" as const,
             });
           }
+          const envelope = readInput.maximumContextCharacters;
+          const historicalLimit = readInput.recentConversationLimit ?? input.limit;
+          if (!Number.isSafeInteger(historicalLimit) || historicalLimit < 1) throw new RangeError("protected transcript history allowance is out of bounds");
+          const readPage = (
+            newer: readonly RoomHistoryHit[],
+            currentCharacters: number,
+            beforeMessageId?: number,
+          ): Promise<AgentTranscriptOpenResult<ReadValue>> => withProtectedAgentTranscriptHistory(input.repository, {
+            sessionId: input.sessionId,
+            namespaceId: input.namespaceId,
+            upToMessageId: readInput.throughMessageIdInclusive,
+            ...(beforeMessageId === undefined ? {} : { beforeMessageId }),
+            limit: input.limit,
+            productReadAuthorization: input.productReadAuthorization,
+            authorization: input.authorization,
+            entrypointId: input.entrypointId,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            execute: async (freshHistory) => {
+              input.signal?.throwIfAborted();
+              if (!callbackLive) throw new ProtectedConversationFreshReadClosedError();
+              const page = freshHistory.filter((hit) =>
+                hit.messageId <= readInput.throughMessageIdInclusive
+                && !excludedMessageIds.has(hit.messageId));
+              const timeline = [...page, ...newer];
+              const characters = currentCharacters + page.reduce((sum, hit) => sum + (
+                hit.messageId > readInput.excludeMessageId
+                  ? (assembleCompositeContextBlock({ messages: [hit], maxLines: 1 })?.length ?? 0) + 1
+                  : 0
+              ), 0);
+              const priorCount = timeline.reduce((count, hit) => count + (
+                hit.messageId < readInput.excludeMessageId
+                && (hit.role === "user" || (hit.role === "assistant" && hit.snippet?.trim())) ? 1 : 0
+              ), 0);
+              const oldest = freshHistory[0];
+              const newerIds = new Set(newer.map((hit) => hit.messageId));
+              if (oldest !== undefined && (oldest.messageId === beforeMessageId || page.some((row) => newerIds.has(row.messageId)))) {
+                throw new Error("Protected foreground transcript page overlaps its previous cursor");
+              }
+              if (freshHistory.length < input.limit || oldest === undefined || priorCount >= historicalLimit || characters >= envelope) {
+                return readInput.execute(recentConversationWindow(timeline, historicalLimit, readInput.excludeMessageId));
+              }
+              // Keep every enclosing authorization callback live until the
+              // final derived projection is built. Decrypted pages never
+              // escape their callback lifetime while older pages are opened.
+              const older = await readPage(timeline, characters, oldest.messageId);
+              if (older.status !== "executed") throw new ProtectedConversationFreshReadClosedError();
+              return older.value;
+            },
+          });
           try {
-            return await withProtectedAgentTranscriptHistory(input.repository, {
-              sessionId: input.sessionId,
-              namespaceId: input.namespaceId,
-              upToMessageId: readInput.throughMessageIdInclusive,
-              limit: input.limit,
-              productReadAuthorization: input.productReadAuthorization,
-              authorization: input.authorization,
-              entrypointId: input.entrypointId,
-              ...(input.signal === undefined ? {} : { signal: input.signal }),
-              execute: (freshHistory) => {
-                if (!callbackLive) {
-                  throw new ProtectedConversationFreshReadClosedError();
-                }
-                return readInput.execute(
-                  freshHistory.filter((hit) =>
-                    (
-                      hit.messageId < readInput.excludeMessageId
-                      && !excludedMessageIds.has(hit.messageId)
-                    )
-                    || (
-                      hit.messageId > readInput.excludeMessageId
-                      && (hit.role === "assistant" || hit.role === "tool")
-                      && (
-                        readInput.foregroundExecutionId === undefined
-                        || hit.foregroundExecutionId === readInput.foregroundExecutionId
-                      )
-                    )
-                  ),
-                );
-              },
-            });
+            return await readPage([], 0);
           } catch (error) {
             if (error instanceof ProtectedConversationFreshReadClosedError) {
               return Object.freeze({
