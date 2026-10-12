@@ -387,6 +387,9 @@ function assertReference(reference: TaskContentCryptoRevisionReferenceV1): void 
     || reference.expectedAuthorityFingerprint.length !== 32
     || !(reference.expectedAuthorityIdentityFingerprint instanceof Uint8Array)
     || reference.expectedAuthorityIdentityFingerprint.length !== 32
+    || (reference.expectedGenesisManifestHash !== undefined
+      && (!(reference.expectedGenesisManifestHash instanceof Uint8Array)
+        || reference.expectedGenesisManifestHash.length !== 32))
   ) throw new TypeError("Task crypto revision reference is invalid");
 }
 
@@ -395,6 +398,7 @@ async function verifyReference(
   reference: TaskContentCryptoRevisionReferenceV1,
 ): Promise<VerifiedTaskContentCryptoRevisionV1 | null> {
   assertReference(reference);
+  const expectedGenesisManifestHash = reference.expectedGenesisManifestHash?.slice();
   const authority = await input.resolveCurrentAuthority(reference.coordinate);
   if (
     authority === null
@@ -419,6 +423,8 @@ async function verifyReference(
   const payload = decodeEncryptedPayloadV2(durable.payloadBytes);
   if (
     durable.accessRevision !== reference.expectedAccessRevision
+    || (expectedGenesisManifestHash !== undefined
+      && !equalBytes(durable.genesisManifestHash, expectedGenesisManifestHash))
     || durable.namespaceId !== authority.namespaceId
     || durable.bindingRevisionAtWrap !== authority.expectedAccessRevision
     || payload.context.objectId !== reference.objectId

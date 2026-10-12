@@ -18,9 +18,10 @@ import {
   protectedTaskCancellationRequestId,
 } from "./protected-task-cancellation-plan";
 
-function exactPublicationRecord(
+export function exactPublicationRecord(
   record: BackgroundAuthorizationRecord | null,
-  proof: ProtectedTaskCancellationOutputSettlementProof,
+  proof: Pick<ProtectedTaskCancellationOutputSettlementProof,
+    "intent" | "requesterHumanId" | "authorityFingerprint">,
 ): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
   const { intent } = proof;
   if (record === null || record.snapshot.formatVersion !== 3

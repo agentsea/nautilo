@@ -1094,4 +1094,181 @@ describe("PostgresTaskContentProductStore", () => {
     expect(receipt?.failureCode).toBe("retry_exhausted");
     expect(connection.isolations).toEqual(["read committed", "serializable"]);
   });
+
+  test("claims only an exact due coordinate and operation", async () => {
+    const coordinate = definition();
+    const due = lifecycleRow(coordinate);
+    const leased = lifecycleRow(coordinate, {
+      lease_token: LEASE_ID,
+      lease_expires_at: new Date("2026-09-22T12:01:00.000Z"),
+    });
+    const { store, connection } = await setup([
+      {
+        contains: 'from "task_definition_crypto_revisions"',
+        rows: [due],
+        inspect(_parameters, statement) {
+          expect(statement).not.toContain("for update");
+        },
+      },
+      {
+        contains: 'from "task_definition_crypto_revisions"',
+        rows: [due],
+        inspect(parameters, statement) {
+          expect(statement).toContain("for update");
+          expect(parameters).toContain(TASK_ID);
+          expect(parameters).toContain(1);
+        },
+      },
+      {
+        contains: 'update "task_definition_crypto_revisions"',
+        rows: [leased],
+        inspect(parameters, statement) {
+          expect(statement).toContain('"operation_id" =');
+          expect(statement).toContain('"attempt_count" <');
+          expect(statement).toContain('"next_attempt_at" <= CURRENT_TIMESTAMP');
+          expect(parameters).toContain("operation:definition:1");
+          expect(parameters).toContain(TASK_ID);
+          expect(parameters).toContain(1);
+        },
+      },
+      { contains: 'from "tasks"', rows: [] },
+    ]);
+
+    const claimed = await store.claimReconciliationCoordinate({
+      coordinate,
+      operationId: "operation:definition:1",
+      leaseToken: LEASE_ID,
+    });
+
+    expect(claimed?.lifecycle).toMatchObject({
+      coordinate,
+      operationId: "operation:definition:1",
+      leaseToken: LEASE_ID,
+    });
+    expect(connection.steps).toHaveLength(0);
+    expect(connection.isolations).toEqual(["serializable", "read committed"]);
+  });
+
+  test("does not claim a coordinate for a different operation or live lease", async () => {
+    const coordinate = definition();
+    const due = lifecycleRow(coordinate);
+    const wrongOperation = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [due] },
+    ]);
+    expect(await wrongOperation.store.claimReconciliationCoordinate({
+      coordinate,
+      operationId: "operation:definition:2",
+      leaseToken: LEASE_ID,
+    })).toBeNull();
+    expect(wrongOperation.connection.steps).toHaveLength(0);
+
+    const leasedElsewhere = lifecycleRow(coordinate, {
+      lease_token: "10000000-0000-4000-8000-000000000009",
+      lease_expires_at: new Date("2026-09-22T12:01:00.000Z"),
+    });
+    const unavailable = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [leasedElsewhere] },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [leasedElsewhere] },
+      {
+        contains: 'update "task_definition_crypto_revisions"',
+        rows: [],
+        inspect(_parameters, statement) {
+          expect(statement).toContain('"lease_token" is null');
+          expect(statement).toContain('"lease_expires_at" <= CURRENT_TIMESTAMP');
+        },
+      },
+    ]);
+    expect(await unavailable.store.claimReconciliationCoordinate({
+      coordinate,
+      operationId: "operation:definition:1",
+      leaseToken: LEASE_ID,
+    })).toBeNull();
+    expect(unavailable.connection.steps).toHaveLength(0);
+
+    const sameLease = await setup([
+      {
+        contains: 'from "task_definition_crypto_revisions"',
+        rows: [{ ...leasedElsewhere, lease_token: LEASE_ID }],
+      },
+      {
+        contains: 'from "task_definition_crypto_revisions"',
+        rows: [{ ...leasedElsewhere, lease_token: LEASE_ID, lease_is_live: true }],
+      },
+      { contains: 'from "tasks"', rows: [] },
+    ]);
+    expect(await sameLease.store.claimReconciliationCoordinate({
+      coordinate,
+      operationId: "operation:definition:1",
+      leaseToken: LEASE_ID,
+    })).toMatchObject({ lifecycle: { leaseToken: LEASE_ID } });
+    expect(sameLease.connection.steps).toHaveLength(0);
+  });
+
+  test("returns an exact mapped coordinate without acquiring another lease", async () => {
+    const coordinate = definition();
+    const mapped = lifecycleRow(coordinate, {
+      completion: "complete",
+      disposition: "mapped",
+      next_attempt_at: null,
+      crypto_completed_at: NOW,
+    });
+    const product = {
+      task_id: TASK_ID,
+      owner_id: OWNER_ID,
+      requestor_id: OWNER_ID,
+      task_status: "completed",
+      prompt: "",
+      expected_output: null,
+      last_error: null,
+      metadata_json: '{"mode":"update","publish":"branch"}',
+      content_revision: 1,
+      content_namespace_id: NAMESPACE_ID,
+      content_representation: "protected",
+      crypto_object_id: deriveTaskContentCryptoObjectIdV1(coordinate),
+      crypto_access_revision: 0,
+      crypto_required_namespace_fingerprint:
+        fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+      crypto_mapping_state: "verified",
+    };
+    const { store, connection } = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [mapped] },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [mapped] },
+      { contains: 'from "tasks"', rows: [product] },
+    ]);
+
+    const replay = await store.claimReconciliationCoordinate({
+      coordinate,
+      operationId: "operation:definition:1",
+      leaseToken: LEASE_ID,
+    });
+
+    expect(replay?.lifecycle).toMatchObject({
+      disposition: "mapped",
+      leaseToken: null,
+    });
+    expect(replay?.product).toMatchObject({
+      coordinate,
+      cryptoMappingState: "verified",
+    });
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("rejects an immutable lifecycle substitution after authority resolution", async () => {
+    const coordinate = definition();
+    const observed = lifecycleRow(coordinate);
+    const substituted = lifecycleRow(coordinate, {
+      request_digest: new Uint8Array(32).fill(0x61),
+    });
+    const { store, connection } = await setup([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [observed] },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [substituted] },
+    ]);
+
+    expect(await store.claimReconciliationCoordinate({
+      coordinate,
+      operationId: "operation:definition:1",
+      leaseToken: LEASE_ID,
+    })).toBeNull();
+    expect(connection.steps).toHaveLength(0);
+  });
 });

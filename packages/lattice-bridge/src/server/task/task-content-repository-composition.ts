@@ -147,6 +147,7 @@ export interface DurableTaskContentRepositoryV1<ProductResult> {
     coordinate: TaskContentCoordinateV1;
   }>): ReturnType<typeof readTaskContentV1>;
   reconcilePending: TaskContentRepository["reconcilePending"];
+  reconcileCoordinate: TaskContentRepository["reconcileCoordinate"];
 }
 
 /**
@@ -341,6 +342,9 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
 
     reconcilePending: (request: Parameters<TaskContentRepository["reconcilePending"]>[0]) =>
       input.protectedRepository.reconcilePending(request),
+    reconcileCoordinate: (
+      request: Parameters<TaskContentRepository["reconcileCoordinate"]>[0],
+    ) => input.protectedRepository.reconcileCoordinate(request),
   };
   return Object.freeze(repository);
 }

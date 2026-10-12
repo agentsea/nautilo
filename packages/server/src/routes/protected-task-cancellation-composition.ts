@@ -16,12 +16,14 @@ import { createProtectedTaskCancellationDeviceAuthorization } from "./protected-
 import { createProtectedTaskCancellationPreparation } from "./protected-task-cancellation-preparation";
 import { createProtectedTaskCancellationSettlement } from "./protected-task-cancellation-settlement";
 import { createProtectedTaskCancellationPublication } from "./protected-task-cancellation-publication";
+import { createProtectedTaskCancellationPublicationRecovery } from "./protected-task-cancellation-publication-recovery";
 
 type Dependencies = Readonly<{
   preparation: ReturnType<typeof createProtectedTaskCancellationPreparation>;
   claim: ReturnType<typeof createProtectedTaskCancellationClaim>;
   list: typeof listProtectedTaskCancellationOutputCandidates;
   settle: ReturnType<typeof createProtectedTaskCancellationSettlement>;
+  recover: ReturnType<typeof createProtectedTaskCancellationPublicationRecovery>;
   repository: (connection: PostgresJsBridgeConnection) => Promise<Pick<PostgresBackgroundAuthorizationRepository, "get" | "compareAndSwap">>;
 }>;
 
@@ -60,6 +62,7 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
     createProtectedTaskCancellationSettlement({
       db: input.db, repository: await repository(input.restricted), recipients: input.recipients, now,
     })(coordinates));
+  const recover = overrides.recover ?? createProtectedTaskCancellationPublicationRecovery({ ...input, settle });
   return Object.freeze({
     ...hooks,
     async recoverPage(options: Readonly<{
@@ -82,6 +85,12 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
           // It must never become another encryption attempt.
           if (candidate.resultState === "mapped") {
             if (await settle(candidate)) published += 1;
+            else pending += 1;
+            continue;
+          }
+          const recovery = await recover(candidate);
+          if (recovery !== "missing") {
+            if (recovery === "mapped") published += 1;
             else pending += 1;
             continue;
           }

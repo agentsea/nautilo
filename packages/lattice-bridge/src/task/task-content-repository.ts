@@ -297,6 +297,7 @@ export type TaskContentCryptoRevisionReferenceV1 = Readonly<{
   expectedAccessRevision: number;
   expectedAuthorityFingerprint: Uint8Array;
   expectedAuthorityIdentityFingerprint: Uint8Array;
+  expectedGenesisManifestHash?: Uint8Array;
 }>;
 
 export type TaskContentProductMappingCasResult =
@@ -362,6 +363,11 @@ export interface TaskContentProductStorePort {
     leaseToken: string;
     limit: number;
   }>): Promise<readonly TaskContentRevisionStateV1[]>;
+  claimReconciliationCoordinate?(input: Readonly<{
+    coordinate: TaskContentCoordinateV1;
+    operationId: string;
+    leaseToken: string;
+  }>): Promise<TaskContentRevisionStateV1 | null>;
   failReconciliationClaim(input: Readonly<{
     coordinate: TaskContentCoordinateV1;
     leaseToken: string;
@@ -438,6 +444,12 @@ export interface TaskContentRepository {
       outcome: TaskContentReconciliationOutcome;
     }>[];
   }>>;
+  reconcileCoordinate(input: Readonly<{
+    coordinate: TaskContentCoordinateV1;
+    operationId: string;
+    leaseToken: string;
+    publishProduct?: () => Promise<void>;
+  }>): Promise<TaskContentReconciliationOutcome>;
 }
 
 export function assertTaskContentRevisionLifecycleV1(

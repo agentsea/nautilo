@@ -67,6 +67,40 @@ type TaskRunMessageAssociationTx = Pick<
   "insert" | "select"
 >;
 
+export type ProtectedTaskDeliveryRoomMember = Readonly<{
+  actorKind: string;
+  actorAgentId: string | null;
+}>;
+
+/**
+ * Derive the only Room thread that may receive a protected Task result.
+ * Strict one-Human/one-target-Agent Rooms retain their canonical Room thread;
+ * every larger Room uses the target Agent's stable group partition.
+ */
+export function deriveProtectedTaskDeliveryGraphThreadId(input: Readonly<{
+  roomId: string;
+  roomGraphThreadId: string;
+  targetAgentId: string;
+  members: readonly ProtectedTaskDeliveryRoomMember[];
+}>): string | null {
+  const humanCount = input.members.filter(
+    member => member.actorKind === "user",
+  ).length;
+  const agentIds = input.members
+    .filter(member => member.actorKind === "agent")
+    .map(member => member.actorAgentId)
+    .filter((agentId): agentId is string => typeof agentId === "string");
+  const targetAgentCount = agentIds.filter(
+    agentId => agentId === input.targetAgentId,
+  ).length;
+  if (humanCount < 1 || targetAgentCount !== 1) return null;
+  return humanCount === 1
+      && agentIds.length === 1
+      && agentIds[0] === input.targetAgentId
+    ? input.roomGraphThreadId
+    : `room:${input.roomId}:bot:${input.targetAgentId}`;
+}
+
 function assertAssociationInput(
   input: TaskRunMessageAssociationInput,
 ): void {
@@ -250,11 +284,20 @@ export async function recordTaskRunMessageAssociationInTx(
       .innerJoin(actors, eq(actors.id, roomMembers.actorId))
       .where(eq(roomMembers.roomId, destinationRoomId))
       .for("share");
+    const protectedDeliveryThreadId = room === undefined
+      || input.kind !== "raw_delivery" && !wakeTranscript
+      ? null
+      : deriveProtectedTaskDeliveryGraphThreadId({
+          roomId: room.id,
+          roomGraphThreadId: room.graphThreadId,
+          targetAgentId: task.agentId,
+          members,
+        });
     if (room === undefined
       || room.id !== destinationRoomId
       || (input.kind === "raw_delivery" || wakeTranscript)
         && (room.namespaceId !== input.expectedDestinationNamespaceId
-          || room.graphThreadId !== input.expectedThreadId
+          || protectedDeliveryThreadId !== input.expectedThreadId
           || room.archivedAt !== null)
       || session.roomId !== destinationRoomId
       || session.ownerId !== room.ownerId

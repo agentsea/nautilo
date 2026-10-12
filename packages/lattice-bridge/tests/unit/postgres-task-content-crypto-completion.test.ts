@@ -594,6 +594,37 @@ describe("Postgres Task content crypto completion", () => {
     });
   });
 
+  test("binds recovery to the exact genesis manifest, including after rewrap", async () => {
+    const state = await fixture("human");
+    await state.adapter.complete(state.prepared);
+    const genesis = state.connection.state.manifests.get(0)?.["manifest_hash"] as Uint8Array;
+    expect(genesis).toBeInstanceOf(Uint8Array);
+    const expectedGenesisManifestHash = genesis.slice();
+    expect(await state.adapter.verify({ ...state.reference, expectedGenesisManifestHash }))
+      .not.toBeNull();
+    state.rewrapHuman(3);
+    expect(await state.adapter.verify({ ...state.reference, expectedAccessRevision: 1,
+      expectedGenesisManifestHash })).not.toBeNull();
+    const wrongHash = expectedGenesisManifestHash.slice();
+    wrongHash[0]! ^= 1;
+    expect(state.adapter.verify({ ...state.reference, expectedAccessRevision: 1,
+      expectedGenesisManifestHash: wrongHash })).rejects.toBeInstanceOf(
+      TaskContentCryptoCompletionConflictError,
+    );
+    expect(state.adapter.verify({ ...state.reference,
+      expectedGenesisManifestHash: new Uint8Array(31) })).rejects.toThrow("reference is invalid");
+  });
+
+  test("snapshots the expected genesis hash before awaiting authority", async () => {
+    const state = await fixture("agent");
+    await state.adapter.complete(state.prepared);
+    const genesis = state.connection.state.manifests.get(0)?.["manifest_hash"] as Uint8Array;
+    const expectedGenesisManifestHash = genesis.slice();
+    const pending = state.adapter.verify({ ...state.reference, expectedGenesisManifestHash });
+    expectedGenesisManifestHash.fill(0);
+    expect(await pending).not.toBeNull();
+  });
+
   test("rejects cross-coordinate, cross-kind, and wrong access references", async () => {
     const state = await fixture("human");
     await state.adapter.complete(state.prepared);

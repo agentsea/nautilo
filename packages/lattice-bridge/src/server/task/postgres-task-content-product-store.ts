@@ -6,6 +6,7 @@ import {
   eq,
   inArray,
   isNull,
+  lt,
   lte,
   ne,
   or,
@@ -656,6 +657,97 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     }, { isolationLevel: "read committed" });
   }
 
+  async claimReconciliationCoordinate(
+    input: Parameters<NonNullable<
+      TaskContentProductStorePort["claimReconciliationCoordinate"]
+    >>[0],
+  ): Promise<TaskContentRevisionStateV1 | null> {
+    assertTaskContentCoordinateV1(input.coordinate);
+    assertUuid("Task content lease token", input.leaseToken);
+    if (!PORTABLE_ID.test(input.operationId)
+      || new TextEncoder().encode(input.operationId).length > 128) {
+      throw new TypeError("Task content operation ID is invalid");
+    }
+    const coordinate: TaskContentCoordinateV1 = Object.freeze({
+      ...input.coordinate,
+    });
+    const observed = await this.#readLifecycle(coordinate);
+    if (observed === null || observed.operationId !== input.operationId) {
+      return null;
+    }
+    const resolvedAuthority = await this.#currentAuthority(observed);
+    return this.#handle.transaction(async (transaction) => {
+      const row = await this.#lockedLifecycle(transaction, coordinate, true);
+      if (row === null) return null;
+      let lifecycle = lifecycleFromRow(coordinate.kind, row);
+      if (
+        lifecycle.operationId !== input.operationId
+        || !sameAuthorityResolutionLifecycle(observed, lifecycle)
+      ) return null;
+
+      if (lifecycle.disposition === "mapped") {
+        return resolvedAuthority === null
+          ? null
+          : this.#stateFromLifecycle(
+            transaction,
+            lifecycle,
+            resolvedAuthority,
+            false,
+          );
+      }
+      if (lifecycle.disposition !== "active") return null;
+      if (
+        lifecycle.leaseToken === input.leaseToken
+        && bool(row, "lease_is_live")
+      ) {
+        if (resolvedAuthority === null) {
+          await this.#persistAuthorityStale(transaction, lifecycle);
+          return null;
+        }
+        return this.#stateFromLifecycle(
+          transaction,
+          lifecycle,
+          resolvedAuthority,
+          false,
+        );
+      }
+
+      const table = this.#table(coordinate);
+      const claimed = await this.#updateLifecycleReturning(
+        transaction,
+        coordinate,
+        {
+          leaseToken: input.leaseToken,
+          leaseExpiresAt: taskContentReconciliationLeaseExpiry(),
+          updatedAt: sql`CURRENT_TIMESTAMP`,
+        },
+        and(
+          this.#coordinateWhere(coordinate),
+          eq(table.operationId, input.operationId),
+          eq(table.disposition, "active"),
+          lt(table.attemptCount, TASK_CONTENT_RECONCILE_MAX_ATTEMPTS),
+          lte(table.nextAttemptAt, sql`CURRENT_TIMESTAMP`),
+          or(
+            isNull(table.leaseToken),
+            lte(table.leaseExpiresAt, sql`CURRENT_TIMESTAMP`),
+          ),
+        ),
+      );
+      if (claimed === null) return null;
+      lifecycle = lifecycleFromRow(coordinate.kind, claimed);
+      if (resolvedAuthority === null) {
+        await this.#persistAuthorityStale(transaction, lifecycle);
+        return null;
+      }
+      return this.#stateFromLifecycle(
+        transaction,
+        lifecycle,
+        resolvedAuthority,
+        false,
+      );
+    }, { isolationLevel: "read committed" });
+  }
+
   async failReconciliationClaim(
     input: Parameters<TaskContentProductStorePort["failReconciliationClaim"]>[0],
   ): ReturnType<TaskContentProductStorePort["failReconciliationClaim"]> {
@@ -913,7 +1005,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
   }
 
   async #readLifecycle(
-    coordinate: TaskRunResultContentCoordinateV1,
+    coordinate: TaskContentCoordinateV1,
   ): Promise<TaskContentRevisionLifecycleV1 | null> {
     return this.#handle.transaction(async transaction => {
       const row = await this.#coordinateRow(transaction, coordinate, false);

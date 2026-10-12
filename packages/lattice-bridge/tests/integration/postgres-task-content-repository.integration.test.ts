@@ -48,7 +48,7 @@ import {
   classifyProtectedTaskMetadataV1,
 } from "@nautilo/types";
 import {
-  and, eq, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
+  and, eq, taskRuns, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
   createDirectDb,
   prepareProtectedTaskCancellationOutput,
   settleProtectedTaskCancellationOutput,
@@ -56,6 +56,7 @@ import {
   type ProtectedTaskCancellationOutputCandidate,
   type ProtectedTaskCancellationOutputDiscoveryCursor,
 } from "@nautilo/db";
+import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../src/task/task-content-prepared-revision.ts";
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 
 type SqlClient = postgres.Sql;
@@ -490,9 +491,9 @@ describe.serial("Postgres protected Task content repository", () => {
       objectIds.push(preparedCancelledResult.objectId);
       const cancellationOperationId =
         `task-run-cancelled-result:${cancelledRunId}`;
-      const cancellationDigest = crypto.hash(new TextEncoder().encode(
-        "cancelled-result-2",
-      ));
+      const cancellationDigest = crypto.hash(readPreparedTaskContentCryptoRevisionSnapshotV1(
+        preparedCancelledResult,
+      ).access.manifestBytes);
       const cancellationReservation = {
         operationId: cancellationOperationId,
         requestDigest: cancellationDigest,
@@ -584,10 +585,36 @@ describe.serial("Postgres protected Task content repository", () => {
         .toMatchObject({ status: "reserved", coordinate: cancelledResult });
       expect(await repository.reserveRevision(cancellationReservation))
         .toMatchObject({ status: "replayed", coordinate: cancelledResult });
-      expect(await repository.completeRevision({
+      // Simulate a process exit after crypto commit but before product mapping.
+      expect(await completion.complete(preparedCancelledResult)).toBe("created");
+      let productReplays = 0;
+      const replayFixedProduct = async () => {
+        const [unmapped] = await directDb.select({ revision: taskRuns.resultRevision })
+          .from(taskRuns).where(eq(taskRuns.id, cancelledRunId));
+        expect(unmapped?.revision).toBe(0);
+        productReplays += 1;
+      };
+      expect(await repository.reconcileCoordinate({
         coordinate: cancelledResult,
-        prepared: preparedCancelledResult,
-      })).toMatchObject({ status: "mapped", coordinate: cancelledResult });
+        operationId: `task-run-result:${cancelledRunId}`,
+        leaseToken: randomUUID(),
+        publishProduct: replayFixedProduct,
+      })).toBe("pending");
+      expect(productReplays).toBe(0);
+      expect(await repository.reconcileCoordinate({
+        coordinate: cancelledResult,
+        operationId: cancellationOperationId,
+        leaseToken: randomUUID(),
+        publishProduct: replayFixedProduct,
+      })).toBe("mapped");
+      expect(productReplays).toBe(1);
+      expect(await repository.reconcileCoordinate({
+        coordinate: cancelledResult,
+        operationId: cancellationOperationId,
+        leaseToken: randomUUID(),
+        publishProduct: replayFixedProduct,
+      })).toBe("mapped");
+      expect(productReplays).toBe(1);
       expect(await repository.completeRevision({
         coordinate: cancelledResult,
         prepared: preparedCancelledResult,
@@ -810,9 +837,9 @@ describe.serial("Postgres protected Task content repository", () => {
       objectIds.push(preparedStalePolicyResult.objectId);
       expect(await repository.reserveRevision({
         operationId: preparedCancellation.intent.resultOperationId,
-        requestDigest: crypto.hash(new TextEncoder().encode(
-          "stale-policy-cancelled-result-2",
-        )),
+        requestDigest: crypto.hash(readPreparedTaskContentCryptoRevisionSnapshotV1(
+          preparedStalePolicyResult,
+        ).access.manifestBytes),
         representation: "protected",
         authority,
         prepared: preparedStalePolicyResult,

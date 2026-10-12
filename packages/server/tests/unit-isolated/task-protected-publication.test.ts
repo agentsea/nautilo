@@ -178,6 +178,7 @@ class ReplayRepository implements TaskContentRepository {
       cryptoObjectId: input.prepared.objectId };
   }
   async reconcilePending() { return { outcomes: [] }; }
+  async reconcileCoordinate() { return "pending" as const; }
 }
 
 describe("authenticated protected Task HTTP publication", () => {

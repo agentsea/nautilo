@@ -4,6 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
+  deriveProtectedTaskDeliveryGraphThreadId,
   readProtectedTaskRunTranscriptIndex,
   readTaskRunMessageMappingCounts,
   recordTaskRunMessageAssociationInTx,
@@ -32,11 +33,14 @@ const ids = {
   owner: "50000000-0000-4000-8000-000000000001",
   roomOwner: "50000000-0000-4000-8000-000000000002",
   requester: "50000000-0000-4000-8000-000000000003",
+  peer: "50000000-0000-4000-8000-000000000004",
   agent: "60000000-0000-4000-8000-000000000001",
+  otherAgent: "60000000-0000-4000-8000-000000000002",
   actor: "70000000-0000-4000-8000-000000000001",
 };
 const graphThreadId = `subagent:task:${ids.task}:${ids.run}`;
 const destinationGraphThreadId = `room:${ids.room}:conversation`;
+const destinationAgentThreadId = `room:${ids.room}:bot:${ids.agent}`;
 const createdAt = new Date("2026-10-01T08:00:00.000Z");
 
 function input(
@@ -84,6 +88,11 @@ function writeHarness(
     sessionRoomId?: string;
     sessionThreadId?: string;
     roomGraphThreadId?: string;
+    members?: readonly Readonly<{
+      actorKind: string;
+      actorOwnerId: string;
+      actorAgentId: string | null;
+    }>[];
   }> = {},
 ) {
   const rows = [...initial];
@@ -118,7 +127,7 @@ function writeHarness(
     graphThreadId: options.roomGraphThreadId ?? graphThreadId,
     archivedAt: null,
   }];
-  const availableMembers = [{
+  const availableMembers = options.members ?? [{
     actorKind: "user",
     actorOwnerId: ids.roomOwner,
     actorAgentId: null,
@@ -199,6 +208,52 @@ function writeHarness(
   return { tx, rows };
 }
 
+describe("protected Task delivery Room thread derivation", () => {
+  const owner = {
+    actorKind: "user",
+    actorAgentId: null,
+  };
+  const peer = {
+    actorKind: "user",
+    actorAgentId: null,
+  };
+  const targetAgent = {
+    actorKind: "agent",
+    actorAgentId: ids.agent,
+  };
+  const otherAgent = {
+    actorKind: "agent",
+    actorAgentId: ids.otherAgent,
+  };
+  const derive = (
+    members: readonly Readonly<{
+      actorKind: string;
+      actorAgentId: string | null;
+    }>[],
+  ) => deriveProtectedTaskDeliveryGraphThreadId({
+    roomId: ids.room,
+    roomGraphThreadId: destinationGraphThreadId,
+    targetAgentId: ids.agent,
+    members,
+  });
+
+  test("uses the Room thread only for a strict one-Human/one-Agent DM", () => {
+    expect(derive([owner, targetAgent])).toBe(destinationGraphThreadId);
+  });
+
+  test("uses the target Agent partition for multi-Human or multi-Agent Rooms", () => {
+    expect(derive([owner, peer, targetAgent])).toBe(destinationAgentThreadId);
+    expect(derive([owner, targetAgent, otherAgent]))
+      .toBe(destinationAgentThreadId);
+  });
+
+  test("rejects missing or duplicate target Agents and Rooms without Humans", () => {
+    expect(derive([owner, otherAgent])).toBeNull();
+    expect(derive([owner, targetAgent, targetAgent])).toBeNull();
+    expect(derive([targetAgent])).toBeNull();
+  });
+});
+
 describe("TaskRun Message association receipts", () => {
   test("records once and returns an exact replay", async () => {
     const harness = writeHarness();
@@ -235,6 +290,160 @@ describe("TaskRun Message association receipts", () => {
     expect(await recordTaskRunMessageAssociationInTx(harness.tx, request))
       .toMatchObject({ status: "recorded", association: association(request) });
     expect(ids.otherRoom).not.toBe(ids.room);
+    expect(ids.roomOwner).not.toBe(ids.owner);
+  });
+
+  test("rejects the target Agent partition in a strict DM", async () => {
+    const harness = writeHarness([], undefined, {
+      sessionThreadId: destinationAgentThreadId,
+      roomGraphThreadId: destinationGraphThreadId,
+    });
+    expect(await recordTaskRunMessageAssociationInTx(harness.tx, input({
+      kind: "raw_delivery",
+      expectedThreadId: destinationAgentThreadId,
+      publicationKey: `task-run-delivery-message:${ids.run}`,
+      expectedDestinationRoomId: ids.room,
+      expectedDestinationNamespaceId: ids.namespace,
+    }))).toEqual({ status: "rejected", reason: "not_found" });
+    expect(harness.rows).toHaveLength(0);
+  });
+
+  test("records group delivery only in the target Agent partition", async () => {
+    const members = [{
+      actorKind: "user",
+      actorOwnerId: ids.roomOwner,
+      actorAgentId: null,
+    }, {
+      actorKind: "user",
+      actorOwnerId: ids.peer,
+      actorAgentId: null,
+    }, {
+      actorKind: "agent",
+      actorOwnerId: ids.roomOwner,
+      actorAgentId: ids.agent,
+    }];
+    const exact = writeHarness([], undefined, {
+      sessionThreadId: destinationAgentThreadId,
+      roomGraphThreadId: destinationGraphThreadId,
+      members,
+    });
+    const request = input({
+      kind: "raw_delivery",
+      expectedThreadId: destinationAgentThreadId,
+      publicationKey: `task-run-delivery-message:${ids.run}`,
+      expectedDestinationRoomId: ids.room,
+      expectedDestinationNamespaceId: ids.namespace,
+    });
+    expect(await recordTaskRunMessageAssociationInTx(exact.tx, request))
+      .toMatchObject({ status: "recorded" });
+
+    const wrongThread = writeHarness([], undefined, {
+      sessionThreadId: destinationGraphThreadId,
+      roomGraphThreadId: destinationGraphThreadId,
+      members,
+    });
+    expect(await recordTaskRunMessageAssociationInTx(wrongThread.tx, {
+      ...request,
+      expectedThreadId: destinationGraphThreadId,
+    })).toEqual({ status: "rejected", reason: "not_found" });
+
+    const otherAgentThreadId = `room:${ids.room}:bot:${ids.otherAgent}`;
+    const otherAgentThread = writeHarness([], undefined, {
+      sessionThreadId: otherAgentThreadId,
+      roomGraphThreadId: destinationGraphThreadId,
+      members,
+    });
+    expect(await recordTaskRunMessageAssociationInTx(otherAgentThread.tx, {
+      ...request,
+      expectedThreadId: otherAgentThreadId,
+    })).toEqual({ status: "rejected", reason: "not_found" });
+    expect(otherAgentThread.rows).toHaveLength(0);
+  });
+
+  test("records multi-Agent wake only in the target Agent partition", async () => {
+    const members = [{
+      actorKind: "user",
+      actorOwnerId: ids.roomOwner,
+      actorAgentId: null,
+    }, {
+      actorKind: "agent",
+      actorOwnerId: ids.roomOwner,
+      actorAgentId: ids.agent,
+    }, {
+      actorKind: "agent",
+      actorOwnerId: ids.roomOwner,
+      actorAgentId: ids.otherAgent,
+    }];
+    const wakeOperationId = `task-run-delivery-wake:${ids.run}`;
+    const request = input({
+      kind: "wake",
+      expectedThreadId: destinationAgentThreadId,
+      publicationKey: `${wakeOperationId}:1`,
+      expectedDestinationRoomId: ids.room,
+      expectedDestinationNamespaceId: ids.namespace,
+      expectedWakeOperationId: wakeOperationId,
+      expectedWakeOrdinal: 1,
+    });
+    const exact = writeHarness([], undefined, {
+      sessionThreadId: destinationAgentThreadId,
+      roomGraphThreadId: destinationGraphThreadId,
+      members,
+    });
+    expect(await recordTaskRunMessageAssociationInTx(exact.tx, request))
+      .toMatchObject({ status: "recorded" });
+
+    const wrongThread = writeHarness([], undefined, {
+      sessionThreadId: destinationGraphThreadId,
+      roomGraphThreadId: destinationGraphThreadId,
+      members,
+    });
+    expect(await recordTaskRunMessageAssociationInTx(wrongThread.tx, {
+      ...request,
+      expectedThreadId: destinationGraphThreadId,
+    })).toEqual({ status: "rejected", reason: "not_found" });
+    expect(wrongThread.rows).toHaveLength(0);
+  });
+
+  test("rejects protected delivery with invalid target membership", async () => {
+    const invalidMemberships = [
+      [{
+        actorKind: "user",
+        actorOwnerId: ids.roomOwner,
+        actorAgentId: null,
+      }, {
+        actorKind: "agent",
+        actorOwnerId: ids.roomOwner,
+        actorAgentId: ids.otherAgent,
+      }],
+      [{
+        actorKind: "user",
+        actorOwnerId: ids.roomOwner,
+        actorAgentId: null,
+      }, {
+        actorKind: "agent",
+        actorOwnerId: ids.roomOwner,
+        actorAgentId: ids.agent,
+      }, {
+        actorKind: "agent",
+        actorOwnerId: ids.roomOwner,
+        actorAgentId: ids.agent,
+      }],
+      [{
+        actorKind: "agent",
+        actorOwnerId: ids.roomOwner,
+        actorAgentId: ids.agent,
+      }],
+    ];
+    for (const members of invalidMemberships) {
+      const harness = writeHarness([], undefined, { members });
+      expect(await recordTaskRunMessageAssociationInTx(harness.tx, input({
+        kind: "raw_delivery",
+        publicationKey: `task-run-delivery-message:${ids.run}`,
+        expectedDestinationRoomId: ids.room,
+        expectedDestinationNamespaceId: ids.namespace,
+      }))).toEqual({ status: "rejected", reason: "not_found" });
+      expect(harness.rows).toHaveLength(0);
+    }
   });
 
   test("rejects a raw delivery destination substituted by its caller", async () => {

@@ -3,6 +3,7 @@ import { assertProtectedTaskOperationalMetadataProjectionV1 } from "@nautilo/typ
 import {
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   TASK_CONTENT_RECONCILE_MAX_BATCH,
+  assertTaskContentCoordinateV1,
   assertTaskContentRevisionLifecycleV1,
   deriveTaskContentCryptoObjectIdV1,
   fingerprintTaskContentAuthorityIdentityV1,
@@ -13,6 +14,7 @@ import {
   type AtomicTaskContentCryptoCompletionPort,
   type PreparedTaskContentCryptoRevisionV1,
   type TaskContentCompletionResult,
+  type TaskContentCoordinateV1,
   type TaskContentCryptoRevisionReferenceV1,
   type TaskContentFailureCode,
   type TaskContentProductStorePort,
@@ -126,14 +128,22 @@ function authorityMatches(state: TaskContentRevisionStateV1): boolean {
 function cryptoReference(
   state: TaskContentRevisionStateV1,
 ): TaskContentCryptoRevisionReferenceV1 {
+  const coordinate = Object.freeze({ ...state.lifecycle.coordinate });
+  const cancellationResult = coordinate.kind === "run_result"
+    && coordinate.contentRevision === 2
+    && state.lifecycle.operationId
+      === `task-run-cancelled-result:${coordinate.taskRunId}`;
   return Object.freeze({
-    coordinate: Object.freeze({ ...state.lifecycle.coordinate }),
+    coordinate,
     objectId: state.lifecycle.cryptoObjectId,
     objectType: state.lifecycle.objectType,
     expectedAccessRevision: state.product?.cryptoAccessRevision ?? 0,
     expectedAuthorityFingerprint: state.lifecycle.authorityFingerprint.slice(),
     expectedAuthorityIdentityFingerprint:
       fingerprintTaskContentAuthorityIdentityV1(state.authority),
+    ...(cancellationResult
+      ? { expectedGenesisManifestHash: state.lifecycle.requestDigest.slice() }
+      : {}),
   });
 }
 
@@ -298,10 +308,16 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   async function reconcileOne(
     state: TaskContentRevisionStateV1,
     leaseToken: string,
+    publishProduct?: () => Promise<void>,
   ): Promise<TaskContentReconciliationOutcome> {
     const lifecycle = state.lifecycle;
     if (lifecycle.disposition === "quarantined") return "quarantined";
     if (orphanReason(lifecycle) !== null) return "orphaned";
+    if (lifecycle.disposition === "mapped") {
+      assertMappedState(state);
+      await verifyComplete(state, null);
+      return "mapped";
+    }
     if (!authorityMatches(state)) {
       const stale = await markAuthorityStale(lifecycle, leaseToken);
       return stale.disposition === "quarantined"
@@ -328,6 +344,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       return "quarantined";
     }
     try {
+      await publishProduct?.();
       const result = await publishVerified(state, leaseToken);
       return result.status === "orphaned" ? "orphaned" : "mapped";
     } catch {
@@ -579,6 +596,50 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         }));
       }
       return Object.freeze({ outcomes: Object.freeze(outcomes) });
+    },
+
+    async reconcileCoordinate(
+      request: Parameters<TaskContentRepository["reconcileCoordinate"]>[0],
+    ) {
+      if (!UUID.test(request.leaseToken)) {
+        throw new TypeError("Task content reconciliation lease must be a UUID");
+      }
+      if (
+        typeof request.operationId !== "string"
+        || !PORTABLE_ID.test(request.operationId)
+        || new TextEncoder().encode(request.operationId).length > 128
+      ) throw new TypeError("Task content operation ID is invalid");
+      assertTaskContentCoordinateV1(request.coordinate);
+      const coordinate: TaskContentCoordinateV1 = Object.freeze({
+        ...request.coordinate,
+      });
+      if (input.product.claimReconciliationCoordinate === undefined) {
+        throw new Error(
+          "Task content product adapter does not support coordinate reconciliation",
+        );
+      }
+      const state = await input.product.claimReconciliationCoordinate(
+        Object.freeze({
+          coordinate,
+          operationId: request.operationId,
+          leaseToken: request.leaseToken,
+        }),
+      );
+      if (state === null) return "pending";
+      assertState(state);
+      if (
+        !sameTaskContentCoordinateV1(state.lifecycle.coordinate, coordinate)
+        || state.lifecycle.operationId !== request.operationId
+      ) throw new Error("Claimed Task content lifecycle is not the requested operation");
+      if (
+        state.lifecycle.disposition === "active"
+        && state.lifecycle.leaseToken !== request.leaseToken
+      ) throw new Error("Claimed Task content lifecycle has the wrong lease");
+      return reconcileOne(
+        state,
+        request.leaseToken,
+        request.publishProduct,
+      );
     },
   });
 }

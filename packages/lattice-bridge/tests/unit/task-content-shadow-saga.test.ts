@@ -103,6 +103,10 @@ class FakeProduct implements TaskContentProductStorePort {
   throwAfterMap = false;
   tooMany = false;
   claimedStates: readonly TaskContentRevisionStateV1[] | null = null;
+  lastCoordinateClaim: Parameters<NonNullable<
+    TaskContentProductStorePort["claimReconciliationCoordinate"]
+  >>[0] | null = null;
+  quarantineFailedClaim = false;
 
   constructor(events: string[]) {
     this.events = events;
@@ -246,8 +250,51 @@ class FakeProduct implements TaskContentProductStorePort {
     return this.tooMany ? [this.state, this.state] : [this.state];
   }
 
+  async claimReconciliationCoordinate(input: Parameters<NonNullable<
+    TaskContentProductStorePort["claimReconciliationCoordinate"]
+  >>[0]) {
+    this.events.push("product:claim-coordinate");
+    this.lastCoordinateClaim = input;
+    if (
+      input.operationId !== this.state.lifecycle.operationId
+      || input.coordinate.kind !== this.state.lifecycle.coordinate.kind
+      || input.coordinate.taskId !== this.state.lifecycle.coordinate.taskId
+      || input.coordinate.contentRevision
+        !== this.state.lifecycle.coordinate.contentRevision
+      || (input.coordinate.kind === "run_result"
+        && (this.state.lifecycle.coordinate.kind !== "run_result"
+          || input.coordinate.taskRunId
+            !== this.state.lifecycle.coordinate.taskRunId))
+    ) return null;
+    if (this.state.lifecycle.disposition === "mapped") return this.state;
+    if (this.state.lifecycle.leaseToken !== null) return null;
+    this.state = Object.freeze({
+      ...this.state,
+      lifecycle: lifecycle({
+        ...this.state.lifecycle,
+        leaseToken: input.leaseToken,
+        leaseExpiresAt: new Date(60_000),
+      }),
+    });
+    return this.state;
+  }
+
   async failReconciliationClaim() {
     this.events.push("product:fail");
+    if (this.quarantineFailedClaim) {
+      this.state = Object.freeze({
+        ...this.state,
+        lifecycle: lifecycle({
+          ...this.state.lifecycle,
+          attemptCount: 8,
+          disposition: "quarantined",
+          failureCode: "retry_exhausted",
+          nextAttemptAt: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+      });
+    }
     return this.state.lifecycle;
   }
 }
@@ -672,6 +719,171 @@ describe("dormant Task content shadow repository", () => {
     expect(testHarness.events).not.toContain("product:quarantine");
   });
 
+  test("reconciles only the exact coordinate and operation without a global claim", async () => {
+    const testHarness = harness();
+    testHarness.crypto.stored = prepared();
+    const mutableCoordinate: {
+      kind: "run_result";
+      taskId: string;
+      taskRunId: string;
+      contentRevision: number;
+    } = { ...coordinate };
+
+    expect(await testHarness.repository.reconcileCoordinate({
+      coordinate: mutableCoordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+      async publishProduct() {
+        testHarness.events.push("product:publish-callback");
+      },
+    })).toBe("mapped");
+    mutableCoordinate.taskRunId = "20000000-0000-4000-8000-000000000002";
+
+    expect(testHarness.events).toContain("product:claim-coordinate");
+    expect(testHarness.events).not.toContain("product:claim");
+    expect(testHarness.events.indexOf("crypto:verify")).toBeLessThan(
+      testHarness.events.indexOf("product:publish-callback"),
+    );
+    expect(testHarness.events.indexOf("product:publish-callback")).toBeLessThan(
+      testHarness.events.indexOf("product:complete"),
+    );
+    expect(testHarness.product.lastCoordinateClaim?.coordinate).toEqual(coordinate);
+    expect(Object.isFrozen(
+      testHarness.product.lastCoordinateClaim?.coordinate,
+    )).toBe(true);
+
+    const wrongOperation = harness();
+    expect(await wrongOperation.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.2",
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(wrongOperation.events).not.toContain("crypto:verify");
+
+    const alreadyLeased = harness();
+    alreadyLeased.product.state = Object.freeze({
+      ...alreadyLeased.product.state,
+      lifecycle: lifecycle({
+        leaseToken: "30000000-0000-4000-8000-000000000002",
+        leaseExpiresAt: new Date(60_000),
+      }),
+    });
+    expect(await alreadyLeased.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(alreadyLeased.events).not.toContain("crypto:verify");
+  });
+
+  test("retries missing coordinate crypto, quarantines exhaustion, and replays mapping", async () => {
+    const missing = harness();
+    expect(await missing.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(missing.events).toContain("product:fail");
+
+    const exhausted = harness();
+    exhausted.product.quarantineFailedClaim = true;
+    expect(await exhausted.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).toBe("quarantined");
+    expect(exhausted.product.state.lifecycle.failureCode).toBe("retry_exhausted");
+
+    const callbackFailure = harness();
+    callbackFailure.crypto.stored = prepared();
+    expect(await callbackFailure.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+      async publishProduct() {
+        callbackFailure.events.push("product:publish-callback");
+        throw new Error("lost product publication response");
+      },
+    })).toBe("pending");
+    expect(callbackFailure.events).toContain("crypto:verify");
+    expect(callbackFailure.events).toContain("product:publish-callback");
+    expect(callbackFailure.events).toContain("product:fail");
+    expect(callbackFailure.events).not.toContain("product:complete");
+    expect(callbackFailure.events).not.toContain("product:map");
+
+    const mapped = harness();
+    await reserve(mapped);
+    await mapped.repository.completeRevision({ coordinate, prepared: prepared() });
+    const globalClaims = mapped.events.filter((event) => event === "product:claim").length;
+    expect(await mapped.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+      async publishProduct() {
+        mapped.events.push("product:unexpected-callback");
+      },
+    })).toBe("mapped");
+    expect(mapped.events.filter((event) => event === "product:claim")).toHaveLength(
+      globalClaims,
+    );
+    expect(mapped.events).not.toContain("product:unexpected-callback");
+  });
+
+  test("binds only the closed cancellation reference to its genesis manifest hash", async () => {
+    const cancellation = harness();
+    const cancellationCoordinate = Object.freeze({
+      kind: "run_result" as const,
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      contentRevision: 2,
+    });
+    const requestDigest = new Uint8Array(32).fill(0x5a);
+    cancellation.product.state = Object.freeze({
+      product: null,
+      lifecycle: lifecycle({
+        coordinate: cancellationCoordinate,
+        operationId: `task-run-cancelled-result:${RUN_ID}`,
+        requestDigest,
+        cryptoObjectId: deriveTaskContentCryptoObjectIdV1(
+          cancellationCoordinate,
+        ),
+      }),
+      authority,
+    });
+
+    expect(await cancellation.repository.reconcileCoordinate({
+      coordinate: cancellationCoordinate,
+      operationId: `task-run-cancelled-result:${RUN_ID}`,
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(cancellation.crypto.lastReference?.expectedGenesisManifestHash)
+      .toEqual(requestDigest);
+    expect(cancellation.crypto.lastReference?.expectedGenesisManifestHash)
+      .not.toBe(requestDigest);
+
+    const normal = harness();
+    normal.crypto.stored = prepared();
+    await normal.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    });
+    expect(normal.crypto.lastReference?.expectedGenesisManifestHash)
+      .toBeUndefined();
+  });
+
+  test("fails explicitly when exact coordinate claiming is unsupported", () => {
+    const testHarness = harness();
+    Object.defineProperty(testHarness.product, "claimReconciliationCoordinate", {
+      value: undefined,
+    });
+    expect(testHarness.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).rejects.toThrow("does not support coordinate reconciliation");
+  });
+
   test("rejects cross-run prepared content and bounds leased batches", () => {
     const testHarness = harness();
     expect(testHarness.repository.completeRevision({
@@ -687,6 +899,16 @@ describe("dormant Task content shadow repository", () => {
       leaseToken: "invalid",
       limit: 1,
     })).rejects.toThrow("lease must be a UUID");
+    expect(testHarness.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: "invalid",
+    })).rejects.toThrow("lease must be a UUID");
+    expect(testHarness.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "invalid operation",
+      leaseToken: LEASE,
+    })).rejects.toThrow("operation ID is invalid");
     testHarness.product.tooMany = true;
     expect(testHarness.repository.reconcilePending({
       leaseToken: LEASE,

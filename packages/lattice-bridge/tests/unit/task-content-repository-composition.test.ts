@@ -175,6 +175,13 @@ class FakeProtectedRepository implements TaskContentRepository {
     this.calls.push(`reconcile:${input.limit}`);
     return { outcomes: [] };
   }
+
+  async reconcileCoordinate(
+    input: Parameters<TaskContentRepository["reconcileCoordinate"]>[0],
+  ) {
+    this.calls.push(`reconcile-coordinate:${input.operationId}`);
+    return "pending" as const;
+  }
 }
 
 function setup() {
@@ -552,9 +559,15 @@ describe("durable Task content repository composition", () => {
       leaseToken: "30000000-0000-4000-8000-000000000006",
       limit: 8,
     });
+    await state.repository.reconcileCoordinate({
+      coordinate: result(1).coordinate,
+      operationId: "task:result:retry",
+      leaseToken: "30000000-0000-4000-8000-000000000006",
+    });
     expect(state.calls.filter((call) => call === "reserve:run_result:protected"))
       .toHaveLength(2);
     expect(state.calls).toContain("reconcile:8");
+    expect(state.calls).toContain("reconcile-coordinate:task:result:retry");
   });
 
   test("fails closed on reservation CAS conflict and policy-selects reads", async () => {

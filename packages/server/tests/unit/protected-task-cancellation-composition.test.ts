@@ -21,6 +21,7 @@ function fixture() {
   }));
   let selected = "";
   const deps: Dependencies = {
+    recover: async () => "missing",
     settle: async candidate => { calls.push(`settle:${candidate.taskRunId}`); return true; },
     list: async (_db, options) => {
       calls.push(`list:${options.limit}:${options.throughTime.getTime()}`);
@@ -76,4 +77,16 @@ test("cancellation observer preserves its snapshot and propagates abort without 
   } catch (error) { caught = error; }
   expect(caught).toBe(controller.signal.reason);
   expect(state.calls).toEqual([`list:6:${NOW - 100}`]);
+});
+
+
+test("existing cancellation reservations never enter fresh preparation", async () => {
+  const state = fixture();
+  const recover: Dependencies["recover"] = async candidate => {
+    state.calls.push(`recover:${candidate.taskRunId}`);
+    return candidate.taskRunId === "ready" ? "mapped" : "pending";
+  };
+  const result = await createProtectedTaskCancellationComposition(state.input, { ...state.deps, recover }).recoverPage({ limit: 6 });
+  expect(result).toMatchObject({ published: 2, pending: 4, failures: 0 });
+  expect(state.calls.some(call => call.startsWith("prepare:") || call.startsWith("claim:"))).toBe(false);
 });
