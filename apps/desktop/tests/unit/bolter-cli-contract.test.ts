@@ -60,9 +60,9 @@ describe("fixed Bolter command plans", () => {
       "nautilo", "--name", "Nautilo", "--no-browser"]);
   });
 
-  test("receive is foreground JSON with a fixed quoted handover executable", () => {
+  test("receive includes unaddressed Human messages with a fixed foreground JSON handover", () => {
     const plan = createBolterReceiveInvocation(runtime, selection, "/opt/Nautilo's App/handover");
-    expect(plan.ok && plan.value.args).toEqual(["serve", "--input", "json", "--exec",
+    expect(plan.ok && plan.value.args).toEqual(["serve", "--all", "--input", "json", "--exec",
       "'/opt/Nautilo'\\''s App/handover'", "--url", "https://bolter.chat", "--agent", "synthetic-agent"]);
     expect(createBolterReceiveInvocation(runtime, selection, "handover").ok).toBe(false);
     expect(createBolterReceiveInvocation({ ...runtime, platform: "win32" }, selection, "C:\\handover.exe"))

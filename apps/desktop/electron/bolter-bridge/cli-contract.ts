@@ -172,7 +172,9 @@ export function createBolterReceiveInvocation(
   if (runtime.platform === "win32") return failure("unsupported-platform");
   if (!absolute(handoverExecutable, runtime.platform)) return failure("invalid-input");
   const command = `'${handoverExecutable.replaceAll("'", "'\\''")}'`;
-  return invocation(runtime, ["serve", "--input", "json", "--exec", command, ...flags.value]);
+  // Include unaddressed Human messages; the server admits only exact active bindings
+  // and independently rejects self echoes and unaddressed agent messages.
+  return invocation(runtime, ["serve", "--all", "--input", "json", "--exec", command, ...flags.value]);
 }
 
 export function validateBolterIdentity(raw: unknown): BolterContractResult<BolterCliIdentity> {
