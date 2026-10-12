@@ -3345,8 +3345,10 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ...options.bolterHostPort,
       isReady: () => !candidateSession.closed && options.bolterHostPort!.isReady(),
       onDisconnected() {
-        void Promise.resolve(options.bolterHostPort!.onDisconnected?.()).catch(() => undefined);
-        void candidateSession.settleBoundWork(options.bolterHostPort!.retire()).catch(() => undefined);
+        void (async () => { await options.bolterHostPort!.onDisconnected?.(); })().catch(() => undefined);
+        void candidateSession.settleBoundWork((async () => {
+          await options.bolterHostPort!.retire();
+        })()).catch(() => undefined);
       },
     } : undefined,
     codexHostPort: options.codexHostPort,
@@ -4120,10 +4122,9 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
   }
   } catch (error) {
-    if (options.bolterHostPort) {
-      await options.bolterHostPort.onDisconnected?.();
-      await options.bolterHostPort.retire();
-    }
+    // A superseded candidate must not clear the replacement's runtime authority.
+    const ownsRuntime = activeRelaySession === candidateSession || pendingRelayCandidate?.session === candidateSession;
+    // Fence candidate authority before any adapter cleanup can suspend or fail.
     revokeCandidateHumanConsent();
     sessionClient = null;
     if (pendingRelayCandidate?.session === candidateSession) {
@@ -4132,21 +4133,33 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
     if (activeRelaySession === candidateSession) { activeRelaySession = null; notifyLocalExecutionChanges(); }
     if (capabilityPublisher === candidatePublisher) capabilityPublisher = null;
-    activeComputerUseRuntime = null;
+    if (ownsRuntime) activeComputerUseRuntime = null;
     custodyRetirements += 1;
     const retired = candidateSession.retire();
-    try {
-      await retired.client?.disconnect();
-    } catch {
-      // A failed relay start must preserve the original start error.
-    }
-    try {
-      await retired.mcpHost?.stop();
-    } catch {
-      // A failed relay start must preserve the original start error.
-    }
-    await candidateSession.finishRetirement();
-    if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
+    // Start independent cleanup even when another adapter is still draining.
+    // Cleanup failures must not replace the original startup failure.
+    const retirement = Promise.allSettled([
+      (async () => { await options.bolterHostPort?.onDisconnected?.(); })(),
+      (async () => { await options.bolterHostPort?.retire(); })(),
+      (async () => {
+        try {
+          await retired.client?.disconnect();
+        } catch {
+          // Continue retiring the remaining candidate-owned resources.
+        }
+        try {
+          await retired.mcpHost?.stop();
+        } catch {
+          // Bound work still needs its final retirement sweep.
+        }
+        await candidateSession.finishRetirement();
+        if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
+      })(),
+    ]);
+    // A replacement may be selected now, but cannot use native resources until
+    // this exact failed candidate and any prior retirement have drained.
+    relayRetirementBarrier = Promise.allSettled([relayRetirementBarrier, retirement]).then(() => {});
+    await retirement;
     throw error;
   }
 }
