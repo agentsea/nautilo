@@ -314,10 +314,16 @@ export function validateCoverageEntry(input: unknown): ValidationResult {
       if (input.surface !== "processor" && input.surface !== "wire") {
         errors.push("authorized plaintext is limited to transient processor or wire boundaries");
       }
-      if (typeof input.locator !== "string" || input.locator.includes("*")
-        || !/^[^#]+#[^#]+$/u.test(input.locator)
-        || !isRepositoryRelativePath(input.locator.split("#")[0]!)) {
-        errors.push("authorized plaintext requires an exact repository source locator");
+      {
+        const exactSource = typeof input.locator === "string" && !input.locator.includes("*")
+          && /^[^#]+#[^#]+$/u.test(input.locator) && isRepositoryRelativePath(input.locator.split("#")[0]!);
+        const exactHttp = input.surface === "wire" && typeof input.locator === "string"
+          && /^http:request_response:(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/(?:[A-Za-z0-9_-]+|:[A-Za-z][A-Za-z0-9_]*)(?:\/(?:[A-Za-z0-9_-]+|:[A-Za-z][A-Za-z0-9_]*))*$/u.test(input.locator);
+        if (!exactSource && !exactHttp) errors.push("authorized plaintext requires an exact repository source or HTTP route locator");
+        if (exactHttp && (!isStringArray(input.writers) || input.writers.length === 0
+          || !input.writers.every(path => !path.includes("*") && isRepositoryRelativePath(path) && /\.[cm]?[jt]sx?$/u.test(path)))) {
+          errors.push("authorized plaintext HTTP routes require exact repository writer files");
+        }
       }
       if (input.mode !== "plaintext_only") errors.push("authorized plaintext requires plaintext_only eligibility");
       if (input.transientOnly !== true) errors.push("authorized plaintext cannot cover durable body retention");

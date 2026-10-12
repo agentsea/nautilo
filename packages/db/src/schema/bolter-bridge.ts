@@ -98,6 +98,25 @@ export const bolterInboxReceipts = pgTable("bolter_inbox_receipts", {
   ownerPolicy("bolter_inbox_owner", t.userId),
 ]).enableRLS();
 
+/** A Human's exact reviewed text grant; content stays in the canonical transcript. */
+export const bolterExplicitShares = pgTable("bolter_explicit_shares", {
+  id: uuid("id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  bindingId: uuid("binding_id").notNull(),
+  bindingRevision: integer("binding_revision").notNull(),
+  connectionGeneration: integer("connection_generation").notNull(),
+  requestId: uuid("request_id").notNull(),
+  sessionMessageId: integer("session_message_id").notNull().references(() => sessionMessages.id, { onDelete: "restrict" }),
+  fingerprint: text("fingerprint").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  unique("bolter_shares_owner_binding_id").on(t.userId, t.bindingId, t.id),
+  unique("bolter_shares_request").on(t.userId, t.requestId),
+  foreignKey({ name: "bolter_shares_binding_owner", columns: [t.userId, t.bindingId], foreignColumns: [bolterRoomBindings.userId, bolterRoomBindings.id] }).onDelete("restrict"),
+  check("bolter_shares_identity", sql`${t.fingerprint} ~ '^[0-9a-f]{64}$' AND ${t.bindingRevision} >= 0 AND ${t.connectionGeneration} > 0`),
+  ownerPolicy("bolter_shares_owner", t.userId),
+]).enableRLS();
+
 /** Final canonical text references only. An uncertain send is never automatically retried. */
 export const bolterOutbox = pgTable("bolter_outbox", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -118,6 +137,8 @@ export const bolterOutbox = pgTable("bolter_outbox", {
 }, (t) => [
   foreignKey({ name: "bolter_outbox_binding_owner", columns: [t.userId, t.bindingId], foreignColumns: [bolterRoomBindings.userId, bolterRoomBindings.id] }).onDelete("restrict"),
   foreignKey({ name: "bolter_outbox_reply_owner", columns: [t.userId, t.bindingId, t.sourceInboxId], foreignColumns: [bolterInboxReceipts.userId, bolterInboxReceipts.bindingId, bolterInboxReceipts.id] }).onDelete("restrict"),
+  foreignKey({ name: "bolter_outbox_share_owner", columns: [t.userId, t.bindingId, t.explicitShareId], foreignColumns: [bolterExplicitShares.userId, bolterExplicitShares.bindingId, bolterExplicitShares.id] }).onDelete("restrict"),
+  uniqueIndex("bolter_outbox_explicit_share").on(t.explicitShareId).where(sql`${t.explicitShareId} IS NOT NULL`),
   uniqueIndex("bolter_outbox_canonical_publication").on(t.bindingId, t.sessionMessageId),
   uniqueIndex("bolter_outbox_final_reply").on(t.sourceInboxId).where(sql`${t.sourceInboxId} IS NOT NULL`),
   index("bolter_outbox_owner_pending").on(t.userId, t.bindingId, t.createdAt).where(sql`${t.state} = 'pending'`),

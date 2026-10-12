@@ -42,6 +42,8 @@ export function createExternalRoomExecutionService(options: {
   jobManager: Pick<JobManager, "adoptExternalRoomJob" | "getJob" | "retryQuiescentExternalRoomClaims">;
   db?: BolterBridgeDatabase;
   executor?: JobExecutor;
+  onPendingPublication?: (receiver: BolterBindingContext) => void;
+  onRecoveryPass?: () => void;
 }) {
   const db = options.db ?? getSharedDirectAgentDb();
   let closed = false;
@@ -136,6 +138,7 @@ export function createExternalRoomExecutionService(options: {
               });
               if (!outbox) throw new Error("external_room_completion_withdrawn");
               if (event) emitCommittedMessage(event);
+              try { options.onPendingPublication?.(current.receiverContext); } catch { warn("[external-room] publication observation failed"); }
             },
           },
         };
@@ -263,6 +266,7 @@ export function createExternalRoomExecutionService(options: {
   const recovery = createReceiptRecoveryPump({
     async runPass() {
       const { unresolved, pending } = await service.recover();
+      options.onRecoveryPass?.();
       if (recoveryPassFailed) warn("[external-room] receipt recovery resumed");
       recoveryPassFailed = false;
       const state = `${unresolved}:${pending}`;

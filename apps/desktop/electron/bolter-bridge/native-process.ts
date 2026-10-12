@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createBolterIdentityInvocation, createBolterLoginInvocation, createBolterReceiveInvocation,
-  createBolterSendInvocation, type BolterCliInvocation, type BolterCliRuntime } from "./cli-contract";
+import { createBolterConversationsInvocation, createBolterDiscoveryInvocation, createBolterIdentityInvocation, createBolterLoginInvocation, createBolterReceiveInvocation,
+  createBolterSendInvocation, type BolterCliBinding, type BolterCliInvocation, type BolterCliRuntime, type BolterCliSelection } from "./cli-contract";
 import type { BolterCliProcessResult } from "./cli-client";
 
 /** Values require provider-version qualification; no default payload ceiling is invented. */
@@ -19,9 +19,13 @@ export function hasBolterNativeQualification(value: BolterNativeQualification | 
 function fixedPlan(plan: BolterCliInvocation, runtime: BolterCliRuntime, helper?: string): boolean {
   const args = plan.args;
   let expected: ReturnType<typeof createBolterLoginInvocation>;
-  const selection = { origin: args[args.indexOf("--url") + 1] ?? "", agentId: args[args.indexOf("--agent") + 1] ?? "" };
+  const cliSelector = args[args.indexOf("--agent") + 1] ?? "";
+  // Canonical IDs do not enter argv. Plan reconstruction validates the explicit selector only.
+  const selection = { origin: args[args.indexOf("--url") + 1] ?? "", agentId: "plan-identity", cliSelector };
   switch (args[0]) {
     case "login": expected = createBolterLoginInvocation(runtime); break;
+    case "agents": expected = createBolterDiscoveryInvocation(runtime); break;
+    case "chats": expected = createBolterConversationsInvocation(runtime, selection); break;
     case "me": expected = createBolterIdentityInvocation(runtime, selection); break;
     case "serve":
       if (!helper) return false;
@@ -96,12 +100,38 @@ export class BolterNativeProcessOwner {
       if (handover && (!this.options.attestHelper || !await this.options.attestHelper(handover.helper))) throw unavailable();
     } catch { throw unavailable(); }
     if (!current()) throw unavailable();
+    return this.launch(invocation, handover === undefined, current, onStdout);
+  }
+
+  /** Attest before server content release. The resulting capability admits one immediate fixed send. */
+  async prepareSend(selection: BolterCliSelection, additionalCurrent: () => boolean): Promise<{
+    execute(binding: BolterCliBinding, content: string): Promise<BolterCliProcessResult>;
+  }> {
+    const selected = Object.freeze({ ...selection });
+    const current = () => { try { return this.isCurrent() && additionalCurrent(); } catch { return false; } };
+    const plan = createBolterIdentityInvocation(this.runtime, selected);
+    if (!current() || !hasBolterNativeQualification(this.qualification, this.runtime.version) || !plan.ok) throw unavailable();
+    try { if (!await this.options.attest(plan.value)) throw unavailable(); } catch { throw unavailable(); }
+    if (!current()) throw unavailable();
+    let used = false;
+    return Object.freeze({ execute: (binding: BolterCliBinding, content: string) => {
+      if (used) return Promise.reject(unavailable());
+      used = true;
+      const send = createBolterSendInvocation(this.runtime, selected, { ...binding }, content);
+      if (!send.ok || !current()) return Promise.reject(unavailable());
+      // No asynchronous attestation, queue or callback precedes this exact native spawn.
+      try { return this.launch(send.value, true, current).result; } catch { return Promise.reject(unavailable()); }
+    } });
+  }
+
+  private launch(invocation: BolterCliInvocation, stdout: boolean, current: () => boolean,
+    onStdout?: (text: string) => void): BolterNativeChild {
+    if (!current()) throw unavailable();
     let process: ChildProcessWithoutNullStreams;
     try { process = this.spawnChild(invocation); } catch { throw unavailable(); }
     let failed = false;
     let output = "";
     let outputBytes = 0;
-    const stdout = handover === undefined;
     let settle!: (result: BolterCliProcessResult) => void;
     const result = new Promise<BolterCliProcessResult>(resolve => { settle = resolve; });
     const stop = () => {
@@ -134,7 +164,7 @@ export class BolterNativeProcessOwner {
       output = "";
     });
     if (!current()) { failed = true; void stop(); }
-    else process.stdin.end(pinned.stdin);
+    else process.stdin.end(invocation.stdin);
     return child;
   }
   async execute(plan: BolterCliInvocation, additionalCurrent?: () => boolean): Promise<BolterCliProcessResult> {

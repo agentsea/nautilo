@@ -2451,6 +2451,20 @@
       "when": 1791822943541,
       "tag": "0349_external_room_namespace_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 350,
+      "version": "7",
+      "when": 1791822943542,
+      "tag": "0350_gigantic_whistler",
+      "breakpoints": true
+    },
+    {
+      "idx": 351,
+      "version": "7",
+      "when": 1791822943543,
+      "tag": "0351_bolter_reviewed_share_guard",
+      "breakpoints": true
     }
   ]
 }

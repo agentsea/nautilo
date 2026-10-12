@@ -6,7 +6,7 @@ const runtime: BolterCliRuntime = {
   executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/connection",
   platform: "linux", version: "synthetic-cli-v1",
 };
-const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent" };
+const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent", cliSelector: "synthetic-agent" };
 const binding = { chatId: "synthetic-chat", threadRootId: "synthetic-root" };
 const receipt = { ...binding, messageId: "synthetic-published-message" };
 // These fixtures deliberately describe only the adapter's internal normalized format.

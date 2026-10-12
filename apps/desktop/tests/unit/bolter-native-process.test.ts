@@ -8,7 +8,7 @@ import { createBolterIdentityInvocation, createBolterReceiveInvocation, createBo
 const runtime = { executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/synthetic-home", platform: "linux" as const, version: "synthetic-v1" };
 // Bounds exercise synthetic fixtures only, not a qualified provider ceiling.
 const qualification = { version: runtime.version, maxOutputBytes: 1000, maxBatchBytes: 1000 };
-const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent" };
+const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent", cliSelector: "synthetic-agent" };
 function fake() {
   const process = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
     exitCode: null as number | null, signalCode: null as string | null, kills: 0,
@@ -115,4 +115,20 @@ test("helper attestation uses the same pinned executable and descriptor that wil
   expect(invocation?.env["NAUTILO_BOLTER_HANDOVER"]).toBe("synthetic-descriptor");
   child.finish();
   await running.result;
+});
+
+test("prepared send attests before release and immediately spawns at most once", async () => {
+  const child = fake();
+  let attestations = 0; let spawned: BolterCliInvocation | undefined;
+  const native = new BolterNativeProcessOwner({ runtime, qualification, isCurrent: () => true,
+    attest: () => { attestations++; return Promise.resolve(true); },
+    spawn: invocation => { spawned = invocation; return child.process; } });
+  const prepared = await native.prepareSend(selection, () => true);
+  expect(attestations).toBe(1); expect(spawned).toBeUndefined();
+  const result = prepared.execute({ chatId: "synthetic-chat", threadRootId: null }, "Synthetic text");
+  expect(spawned?.args[0]).toBe("call"); // No event-loop turn can queue or retarget released text.
+  expect(spawned?.stdin).toBe(JSON.stringify({ content: "Synthetic text" }));
+  expect(attestations).toBe(1);
+  await Promise.resolve(expect(prepared.execute({ chatId: "other-chat", threadRootId: null }, "Other text")).rejects.toThrow("unavailable"));
+  child.finish(); await result; await native.retire();
 });

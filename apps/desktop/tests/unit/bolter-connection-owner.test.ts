@@ -11,7 +11,7 @@ import type { BolterCliInvocation, BolterQualifiedDecoders } from "../../electro
 
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 const runtime = { executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/synthetic-home", platform: "linux" as const, version: "synthetic-v1" };
-const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent" };
+const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent", cliSelector: "synthetic-agent" };
 const destination = { chatId: "synthetic-chat", threadRootId: null };
 const message = { type: "message", messageId: "synthetic-input", ...destination, senderId: "synthetic-visitor", senderType: "user",
   senderLabel: "Visitor", content: "Synthetic external text", createdAt: "2026-01-01T00:00:00.000Z", addressed: false, truncated: false, redelivered: false };
@@ -201,4 +201,26 @@ test("retirement while confirming identity returns no stale confirmation", async
   await retiring;
   expect(f.calls.length).toBe(0);
   expect(f.owner.state).toBe("retired");
+});
+
+test("pause while receiver attestation is pending prevents a late receiver spawn", async () => {
+  const path = await directory();
+  let reached!: () => void; let release!: () => void;
+  const entered = new Promise<void>(resolve => { reached = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture({ attest: async p => { if (p.args[0] === "serve") { reached(); await gate; } return true; } });
+  const spool = { store: () => Promise.resolve({ id: "fixture", fingerprint: "fixture" }), pending: () => Promise.resolve([]),
+    read: () => Promise.reject(new Error("No synthetic record")), acknowledge: () => Promise.resolve() };
+  try {
+    await f.owner.confirmIdentity();
+    const starting = f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool });
+    await entered;
+    const pausing = f.owner.pauseReceiver();
+    release();
+    expect(await starting).toBe(false);
+    await pausing;
+    expect(f.calls.filter(p => p.args[0] === "serve")).toHaveLength(0);
+    expect(f.owner.state).toBe("connected");
+    expect(await readdir(path)).toEqual([]);
+  } finally { release(); await f.owner.retire(); await rm(path, { recursive: true, force: true }); }
 });

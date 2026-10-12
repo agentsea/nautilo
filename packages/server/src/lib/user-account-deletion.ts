@@ -8,6 +8,7 @@ import {
   agentPhotoSelectionRevisions,
   approvalChallenges,
   bolterConnections,
+  bolterExplicitShares,
   bolterInboxReceipts,
   bolterOutbox,
   bolterRoomBindings,
@@ -703,6 +704,8 @@ export async function deleteLocalUserAccount(
     // Remove children first in the same transaction as their canonical parents.
     await tx.delete(bolterOutbox).where(or(eq(bolterOutbox.userId, targetUserId),
       genieBindingIds.length > 0 ? inArray(bolterOutbox.bindingId, genieBindingIds) : undefined));
+    await tx.delete(bolterExplicitShares).where(or(eq(bolterExplicitShares.userId, targetUserId),
+      genieBindingIds.length > 0 ? inArray(bolterExplicitShares.bindingId, genieBindingIds) : undefined));
     await tx.delete(bolterInboxReceipts).where(or(eq(bolterInboxReceipts.userId, targetUserId),
       genieBindingIds.length > 0 ? inArray(bolterInboxReceipts.bindingId, genieBindingIds) : undefined));
     await tx.delete(bolterRoomBindings).where(or(eq(bolterRoomBindings.userId, targetUserId),

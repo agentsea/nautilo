@@ -40,6 +40,23 @@ describe("authorized transient plaintext contracts", () => {
     expect(validateCoverageEntry({ ...transientPlaintext, surface: "wire" })).toEqual({ ok: true });
   });
 
+  test("accepts exact HTTP boundaries only with source and transient-disclosure evidence", () => {
+    const entry = { ...transientPlaintext, surface: "wire", locator: "http:request_response:POST /api/fixture/:id/messages",
+      writers: ["packages/fixture/src/routes.ts"] };
+    expect(validateCoverageEntry(entry)).toEqual({ ok: true });
+    for (const locator of ["http:request_response:/api/fixture", "http:request_response:POST /api/*",
+      "http:request_response:POST /api/../fixture", "http:request_response:POST /api/%2e%2e/fixture",
+      "http:request_response:POST /api/fixture?wildcard=true", "http:request_response:POST https://example.test/api/fixture"]) {
+      expect(validateCoverageEntry({ ...entry, locator }).ok).toBe(false);
+    }
+    for (const writers of [[], ["packages/fixture"], ["../routes.ts"], ["packages/fixture/*.ts"]]) {
+      expect(validateCoverageEntry({ ...entry, writers }).ok).toBe(false);
+    }
+    expect(validateCoverageEntry({ ...entry, noRetentionTestEvidence: [] }).ok).toBe(false);
+    expect(validateCoverageEntry({ ...entry, surface: "processor" }).ok).toBe(false);
+    expect(validateCoverageEntry({ ...entry, mode: "full" }).ok).toBe(false);
+  });
+
   test.each([undefined, "shadow_encryption", "full", "all"])("rejects missing or wider mode %s", mode => {
     expect(validateCoverageEntry({ ...transientPlaintext, mode }).ok).toBe(false);
   });

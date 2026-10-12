@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { BolterCliClient, type BolterCliIdentityOutcome, type BolterCliSendOutcome } from "./cli-client";
-import { createBolterLoginInvocation, createBolterReceiveInvocation, decodeBolterReceiveBatch,
+import { BolterCliClient, type BolterCliConversationsOutcome, type BolterCliDiscoveryOutcome, type BolterCliIdentityOutcome, type BolterCliSendOutcome } from "./cli-client";
+import { createBolterLoginInvocation, createBolterReceiveInvocation, decodeBolterReceiveBatch, validateBolterReceipt,
   type BolterCliAuthLink, type BolterCliBinding, type BolterCliRuntime, type BolterCliSelection,
   type BolterQualifiedDecoders, type BolterCliReceiveItem, type BolterCliInvocation } from "./cli-contract";
 import { createBolterHandoverServer, type BolterHandoverServer } from "./handover";
@@ -23,7 +23,7 @@ export class BolterConnectionOwner {
   readonly generation = randomUUID();
   readonly scope: BolterSpoolScope;
   private readonly runtime: BolterCliRuntime;
-  private readonly selection: BolterCliSelection;
+  private selection: Readonly<BolterCliSelection> | null;
   private readonly decoders: BolterQualifiedDecoders | undefined;
   private readonly qualification: BolterNativeQualification | undefined;
   private readonly native: BolterNativeProcessOwner;
@@ -32,6 +32,7 @@ export class BolterConnectionOwner {
   private confirmed = false;
   private retired = false;
   private receiver: BolterNativeChild | null = null;
+  private receiverRevision = 0;
   private handover: BolterHandoverServer | null = null;
   private spool: BolterConnectionSpool | null = null;
   private starting: Promise<boolean> | null = null;
@@ -44,7 +45,7 @@ export class BolterConnectionOwner {
   constructor(options: {
     scope: BolterSpoolScope;
     runtime: BolterCliRuntime;
-    selection: BolterCliSelection;
+    selection?: BolterCliSelection | undefined;
     qualification?: BolterNativeQualification | undefined;
     decoders?: BolterQualifiedDecoders | undefined;
     attest: (plan: BolterCliInvocation) => Promise<boolean>;
@@ -58,7 +59,7 @@ export class BolterConnectionOwner {
       .some(value => typeof value !== "string" || value.trim().length === 0)) throw new Error("Bolter connection is unavailable.");
     this.scope = Object.freeze({ ...options.scope });
     this.runtime = Object.freeze({ ...options.runtime });
-    this.selection = Object.freeze({ ...options.selection });
+    this.selection = options.selection ? Object.freeze({ ...options.selection }) : null;
     this.decoders = options.decoders ? Object.freeze({ ...options.decoders }) : undefined;
     this.qualification = options.qualification ? Object.freeze({ ...options.qualification }) : undefined;
     this.currentCallback = options.isCurrent;
@@ -76,7 +77,15 @@ export class BolterConnectionOwner {
   get state(): BolterNativeConnectionState {
     return this.retired ? "retired" : this.current() ? this.stateValue : "unavailable";
   }
+  get confirmedIdentity(): Readonly<BolterCliSelection & { label?: string }> | null {
+    return this.current() && this.confirmed ? this.selection : null;
+  }
+  listConversations(): Promise<BolterCliConversationsOutcome> {
+    return this.current() && this.confirmed && this.selection ? this.client.listConversations(this.selection)
+      : Promise.resolve({ status: "unavailable", reason: "stale-authority" });
+  }
   async confirmIdentity(): Promise<BolterCliIdentityOutcome> {
+    if (!this.selection) return { status: "unavailable", reason: "invalid-input" };
     const outcome = await this.client.confirmIdentity(this.selection);
     if (outcome.status === "confirmed" && this.current()) {
       this.confirmed = true;
@@ -87,6 +96,18 @@ export class BolterConnectionOwner {
       if (this.receiver) await this.receiver.stop();
     }
     return outcome;
+  }
+  discoverIdentities(): Promise<BolterCliDiscoveryOutcome> { return this.client.discoverIdentities(); }
+
+  /** Bootstrap uses the owned HOME only; ambiguous identities are never chosen by default. */
+  async confirmDiscoveredIdentity(): Promise<BolterCliIdentityOutcome> {
+    if (!this.current() || this.receiver || this.confirmed || this.loggingIn) return { status: "unavailable", reason: "stale-authority" };
+    const discovered = await this.discoverIdentities();
+    if (discovered.status !== "available") return discovered;
+    if (!this.current()) return { status: "unavailable", reason: "stale-authority" };
+    if (discovered.identities.length !== 1) return { status: "unavailable", reason: "unsupported-output" };
+    this.selection = Object.freeze({ ...discovered.identities[0]! });
+    return this.confirmIdentity();
   }
   login(onLink: (link: BolterCliAuthLink) => void): Promise<BolterNativeLoginOutcome> {
     if (this.loggingIn) return this.loggingIn;
@@ -128,9 +149,11 @@ export class BolterConnectionOwner {
     return work;
   }
   private async performStart(options: { readonly handoverExecutable: string; readonly directory: string; readonly spool: BolterConnectionSpool }): Promise<boolean> {
-    if (!this.current() || !this.confirmed || this.loggingIn !== null
+    if (!this.current() || !this.confirmed || !this.selection || this.loggingIn !== null
       || this.decoders?.version !== this.runtime.version || !this.decoders.receiveItem
       || !hasBolterNativeQualification(this.qualification, this.runtime.version)) return false;
+    const revision = this.receiverRevision;
+    const receiverCurrent = () => this.current() && this.confirmed && revision === this.receiverRevision;
     const plan = createBolterReceiveInvocation(this.runtime, this.selection, options.handoverExecutable);
     if (!plan.ok) return false;
     const spool = Object.freeze({ store: options.spool.store.bind(options.spool), pending: options.spool.pending.bind(options.spool),
@@ -139,10 +162,10 @@ export class BolterConnectionOwner {
     try {
       handover = await createBolterHandoverServer({ directory: options.directory, generation: this.generation,
         scope: this.scope, maxBatchBytes: this.qualification!.maxBatchBytes,
-        isCurrent: () => this.current() && this.confirmed, store: spool.store });
-      if (!this.current() || !this.confirmed) { await handover.close(); return false; }
+        isCurrent: receiverCurrent, store: spool.store });
+      if (!receiverCurrent()) { await handover.close(); return false; }
       const child = await this.native.start(plan.value, { helper: options.handoverExecutable,
-        descriptor: JSON.stringify(handover.descriptor) });
+        descriptor: JSON.stringify(handover.descriptor) }, undefined, receiverCurrent);
       this.handover = handover;
       this.spool = spool;
       this.receiver = child;
@@ -157,11 +180,42 @@ export class BolterConnectionOwner {
       return true;
     } catch { await handover?.close().catch(() => undefined); return false; }
   }
+  async pauseReceiver(): Promise<void> {
+    this.receiverRevision++;
+    await this.starting;
+    this.stateValue = "unavailable";
+    const receiver = this.receiver;
+    await receiver?.stop();
+    await this.handover?.close();
+    if (this.receiver === receiver) this.receiver = null;
+    this.handover = null;
+    if (this.current() && this.confirmed) this.stateValue = "connected";
+  }
+  async prepareSend(): Promise<{ send(binding: BolterCliBinding, content: string): Promise<BolterCliSendOutcome> } | null> {
+    if (!this.current() || !this.confirmed || !this.selection || this.decoders?.version !== this.runtime.version || !this.decoders.receipt) return null;
+    const decoders = this.decoders;
+    try {
+      const prepared = await this.native.prepareSend(this.selection, () => this.current() && this.confirmed);
+      return Object.freeze({ send: async (binding: BolterCliBinding, content: string): Promise<BolterCliSendOutcome> => {
+        const destination = Object.freeze({ ...binding });
+        if (!this.current() || !this.confirmed) return { status: "unavailable", reason: "stale-authority" };
+        let result;
+        try { result = await prepared.execute(destination, content); } catch { return { status: "uncertain", reason: "execution-failed" }; }
+        if (!this.current() || result.exitCode !== 0) return { status: "uncertain", reason: "stale-authority" };
+        try {
+          const receipt = validateBolterReceipt(decoders.receipt!(JSON.parse(result.stdout) as unknown));
+          if (!receipt.ok || receipt.value.chatId !== destination.chatId || receipt.value.threadRootId !== destination.threadRootId)
+            return { status: "uncertain", reason: "destination-mismatch" };
+          return { status: "sent", receipt: receipt.value };
+        } catch { return { status: "uncertain", reason: "unsupported-output" }; }
+      } });
+    } catch { return null; }
+  }
   async send(binding: BolterCliBinding, content: string): Promise<BolterCliSendOutcome> {
     const destination = Object.freeze({ chatId: binding.chatId, threadRootId: binding.threadRootId });
     let bound = false;
     try { bound = this.boundCallback(destination) === true; } catch { /* Fail closed. */ }
-    if (!this.current() || !this.confirmed || !bound) return { status: "unavailable", reason: "stale-authority" };
+    if (!this.current() || !this.confirmed || !this.selection || !bound) return { status: "unavailable", reason: "stale-authority" };
     // Revalidate exact destination at the native spawn fence as well as this admission.
     const client = new BolterCliClient({ runtime: this.runtime, decoders: this.decoders,
       attest: () => Promise.resolve(true), isCurrent: () => {

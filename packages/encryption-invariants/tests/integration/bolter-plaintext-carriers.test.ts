@@ -15,12 +15,12 @@ const paths = BOLTER_PLAINTEXT_SOURCE_DECLARATIONS.map(item => item.evidence[0]!
 
 describe("exact authorized Bolter plaintext carriers", () => {
   test("verifies executable carrier and admission evidence without adding frozen debt", async () => {
-    expect(BOLTER_PLAINTEXT_COVERAGE).toHaveLength(5);
+    expect(BOLTER_PLAINTEXT_COVERAGE).toHaveLength(8);
     expect(WAVE_0_FROZEN_BASELINE_DEBT).toHaveLength(1590);
     const debtBefore = JSON.stringify(BASELINE_REGISTRY.debt);
     const inspection = await inspectDeclaredSourceInventory({ repoRoot: root, declarations: BOLTER_PLAINTEXT_SOURCE_DECLARATIONS });
     expect(inspection.errors).toEqual([]);
-    expect(inspection.observations).toHaveLength(5);
+    expect(inspection.observations).toHaveLength(8);
     const registry = { ...BASELINE_REGISTRY, entries: BOLTER_PLAINTEXT_COVERAGE };
     expect(auditCoverageRegistry(registry).ok).toBe(true);
     expect(compareInventory({ observed: inspection.observations, registry: { entries: BOLTER_PLAINTEXT_COVERAGE, debt: [], exceptions: [] }, frozenBaselineDebt: [] })).toEqual({ unknown: [], stale: [], unfrozenDebt: [] });
@@ -39,13 +39,13 @@ describe("exact authorized Bolter plaintext carriers", () => {
     expect(JSON.stringify(BASELINE_REGISTRY.debt)).toBe(debtBefore);
   });
 
-  test("closes only the exact spawn alarm and explicitly inventories undetected IPC carriers", async () => {
+  test("closes exact spawn and fixed diagnostics while inventorying undetected IPC carriers", async () => {
     const scan = await scanSourceAlarms({ repoRoot: root, scanRoots: paths });
     expect(scan.errors).toEqual([]);
-    expect(scan.alarms).toHaveLength(1);
+    expect(scan.alarms).toHaveLength(4);
     expect(inspectSourceAlarmReviews(scan.alarms, BOLTER_PLAINTEXT_SOURCE_ALARMS).errors).toEqual([]);
     for (const review of BOLTER_PLAINTEXT_SOURCE_ALARMS) expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
-    expect(BOLTER_PLAINTEXT_SOURCE_ALARMS.every(review => review.closure === "declaration")).toBe(true);
+    expect(BOLTER_PLAINTEXT_SOURCE_ALARMS.every(review => review.closure !== "baseline_debt")).toBe(true);
     const changed = scan.alarms.map(alarm => ({ ...alarm, locator: alarm.locator.replace(":1", ":2") }));
     expect(inspectSourceAlarmReviews(changed, BOLTER_PLAINTEXT_SOURCE_ALARMS).errors.some(error => error.startsWith("new source alarm has no closure:"))).toBe(true);
   });

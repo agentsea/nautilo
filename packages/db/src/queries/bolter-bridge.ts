@@ -9,7 +9,7 @@ import { jobs } from "../schema/jobs";
 import { workAcceptances } from "../schema/work-acceptances";
 import { sessions, sessionMessages } from "../schema/sessions";
 import { parseExternalMessageOrigin, type ExternalMessageOrigin } from "@nautilo/types";
-import { bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox, type BolterConnection, type BolterRoomBinding, type BolterInboxReceipt } from "../schema/bolter-bridge";
+import { bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox, bolterExplicitShares, type BolterConnection, type BolterRoomBinding, type BolterInboxReceipt } from "../schema/bolter-bridge";
 
 export type BolterBridgeDatabase = ReturnType<typeof getSharedDirectAgentDb>;
 export type BolterFactoryDatabase = ReturnType<typeof getSharedDirectDb>;
@@ -171,6 +171,7 @@ export function resolveBolterBindingWith(db: BolterBridgeDatabase, ctx: BolterRe
 export function createFreshBolterBindingWith(db: BolterFactoryDatabase, ctx: BolterReceiverContext,
   createRoom: (tx: BolterBridgeTransaction, connection: BolterConnection) => Promise<BolterBindingInsert>) {
   return scoped(db, ctx, async tx => {
+    await externalPlaintextFence(tx);
     const role = await tx.execute(sql`SELECT current_user AS role`);
     if (role[0]?.["role"] !== "nautilo") throw new BolterBridgeAuthorityError();
     const connection = await lockConnection(tx, ctx);
@@ -319,6 +320,45 @@ export function attachBolterInboundJobWith(db: BolterBridgeDatabase, ctx: Bolter
     return row ?? null;
   });
 }
+/** Stable request identity binds the exact reviewed body and destination. */
+export function bolterReviewedTextFingerprint(bindingId: string, requestId: string, content: string): string {
+  return createHash("sha256").update(JSON.stringify(["bolter-reviewed-text-v1", bindingId, requestId, content]), "utf8").digest("hex");
+}
+
+/** Trusted Human route only. This operation does not accept model or provider authority. */
+export function acceptBolterReviewedShareWith(db: BolterBridgeDatabase, ctx: BolterBindingContext,
+  input: { readonly requestId: string; readonly content: string },
+  persist: (tx: BolterBridgeTransaction, input: { shareId: string; fingerprint: string; binding: BolterRoomBinding }) => Promise<number>) {
+  if (!input.content.trim()) throw new BolterBridgeAuthorityError();
+  const digest = bolterReviewedTextFingerprint(ctx.bindingId, input.requestId, input.content);
+  return scoped(db, ctx, async tx => {
+    await externalPlaintextFence(tx);
+    const binding = await lockBinding(tx, ctx);
+    if (!binding) throw new BolterBridgeAuthorityError();
+    const [existing] = await tx.select().from(bolterExplicitShares).where(and(
+      eq(bolterExplicitShares.userId, ctx.userId), eq(bolterExplicitShares.requestId, input.requestId))).limit(1);
+    if (existing) {
+      if (existing.bindingId !== binding.id || existing.fingerprint !== digest) throw new BolterBridgeIdentityConflictError();
+      const [outbox] = await tx.select().from(bolterOutbox).where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.explicitShareId, existing.id))).limit(1);
+      if (!outbox) throw new BolterBridgeAuthorityError();
+      return outbox;
+    }
+    const shareId = randomUUID();
+    const sessionMessageId = await persist(tx, { shareId, fingerprint: digest, binding });
+    const [canonical] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })
+      .from(sessionMessages).where(eq(sessionMessages.id, sessionMessageId)).limit(1);
+    if (canonical?.content !== input.content || canonical.fingerprint !== digest) throw new BolterBridgeIdentityConflictError();
+    await tx.insert(bolterExplicitShares).values({ id: shareId, userId: ctx.userId, bindingId: binding.id,
+      bindingRevision: binding.revision, connectionGeneration: ctx.connectionGeneration,
+      requestId: input.requestId, sessionMessageId, fingerprint: digest });
+    const [outbox] = await tx.insert(bolterOutbox).values({ userId: ctx.userId, bindingId: binding.id,
+      bindingRevision: binding.revision, connectionGeneration: ctx.connectionGeneration,
+      sessionMessageId, explicitShareId: shareId, fingerprint: digest }).returning();
+    if (!outbox) throw new BolterBridgeAuthorityError();
+    return outbox;
+  });
+}
+
 export function enqueueBolterOutboxWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, input: BolterOutboxInsert) {
   fingerprint(input.fingerprint);
   if (!input.sourceInboxId || input.explicitShareId !== undefined) throw new BolterBridgeAuthorityError();
@@ -647,7 +687,29 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
       eq(bolterOutbox.state, "publishing"), eq(bolterOutbox.bindingRevision, ctx.bindingRevision),
       eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration));
     const [candidate] = await tx.select().from(bolterOutbox).where(predicate).limit(1);
-    if (!candidate?.sourceInboxId || candidate.explicitShareId !== null) return null;
+    if (!candidate || (candidate.sourceInboxId !== null) === (candidate.explicitShareId !== null)) return null;
+    if (candidate.explicitShareId !== null) {
+      const [share] = await tx.select().from(bolterExplicitShares).where(and(
+        eq(bolterExplicitShares.id, candidate.explicitShareId), eq(bolterExplicitShares.userId, ctx.userId),
+        eq(bolterExplicitShares.bindingId, binding.id), eq(bolterExplicitShares.bindingRevision, ctx.bindingRevision),
+        eq(bolterExplicitShares.connectionGeneration, ctx.connectionGeneration))).limit(1);
+      if (!share || share.sessionMessageId !== candidate.sessionMessageId || share.fingerprint !== candidate.fingerprint) return null;
+      const [claim] = await tx.select().from(bolterOutbox).where(predicate).for("update");
+      if (!claim || claim.explicitShareId !== share.id || claim.sourceInboxId !== null) return null;
+      const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })
+        .from(sessionMessages).innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId)).where(and(
+          eq(sessionMessages.id, share.sessionMessageId), eq(sessions.ownerId, ctx.userId), eq(sessions.roomId, binding.roomId),
+          eq(sessions.agentId, binding.agentId), eq(sessionMessages.role, "user"), eq(sessionMessages.externalAuthorship, false),
+          eq(sessionMessages.transcriptOrigin, "main"), isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),
+          sql`${sessionMessages.metadata}->'bolterReviewedShare' = ${JSON.stringify({ shareId: share.id, requestId: share.requestId })}::jsonb`
+        )).limit(1);
+      if (!message || typeof message.content !== "string" || !message.content.trim()
+        || bolterReviewedTextFingerprint(binding.id, share.requestId, message.content) !== share.fingerprint
+        || message.fingerprint !== share.fingerprint) return null;
+      return Object.freeze({ origin: binding.origin, providerAgentId: binding.providerAgentId,
+        chatId: binding.chatId, threadRootId: binding.threadId || null, content: message.content });
+    }
+    if (!candidate.sourceInboxId || !binding.modelSponsorshipAcceptedAt) return null;
     const [work] = await tx.select({ jobId: jobs.id, input: jobs.input }).from(bolterInboxReceipts)
       .innerJoin(jobs, eq(jobs.id, bolterInboxReceipts.jobId)).where(and(
         eq(bolterInboxReceipts.id, candidate.sourceInboxId), eq(bolterInboxReceipts.userId, ctx.userId),
@@ -732,3 +794,12 @@ export const settleBolterOutbox = (ctx: BolterBindingContext, input: Parameters<
 export const recoverBolterOutbox = (ctx: BolterOwnerContext, id: string) => recoverBolterOutboxWith(getSharedDirectAgentDb(), ctx, id);
 export const listBolterOutbox = (ctx: BolterOwnerContext, bindingId: string) => listBolterOutboxWith(getSharedDirectAgentDb(), ctx, bindingId);
 export const getBolterInboxReceipt = (ctx: BolterOwnerContext, id: string) => getBolterInboxReceiptWith(getSharedDirectAgentDb(), ctx, id);
+
+/** Owner-only request reconciliation; reply deliveries have no Human share request. */
+export function listBolterDeliverySummariesWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, bindingId: string) {
+  return scoped(db, ctx, tx => tx.select({ messageId: bolterOutbox.sessionMessageId, outboxId: bolterOutbox.id,
+    state: bolterOutbox.state, createdAt: bolterOutbox.createdAt, requestId: bolterExplicitShares.requestId })
+    .from(bolterOutbox).leftJoin(bolterExplicitShares, and(eq(bolterExplicitShares.id, bolterOutbox.explicitShareId),
+      eq(bolterExplicitShares.userId, bolterOutbox.userId), eq(bolterExplicitShares.bindingId, bolterOutbox.bindingId)))
+    .where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, bindingId))).orderBy(bolterOutbox.createdAt, bolterOutbox.id));
+}

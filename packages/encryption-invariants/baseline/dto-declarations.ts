@@ -1,3 +1,4 @@
+import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
 import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
@@ -6207,4 +6208,5 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = reviewedExte
     PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS,
   ),
   ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
+  ...BOLTER_HTTP_DECLARATIONS,
 ]);

@@ -48,6 +48,7 @@ import {
   type RelayNetworkPolicy,
   type RelayNetworkAllowRule,
   type RelayCodexHostPort,
+  type RelayBolterHostPort,
   type RelaySshPrepareRequestV1,
   RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION,
   type RelayAcpHostPort,
@@ -3286,6 +3287,8 @@ export interface StartRelayOptions {
    * is manufactured here; absent or not-ready ports leave the capability off.
    */
   codexHostPort?: RelayCodexHostPort | undefined;
+  /** Fixed Electron-owned integration port; its retirement drains real native children. */
+  bolterHostPort?: (RelayBolterHostPort & { retire(): Promise<void> }) | undefined;
   /** readiness-only Hermes ACP host; no execution route exists yet. */
   acpHostPort?: RelayAcpHostPort | undefined;
   /** Electron-owned parked Claude account/catalog discovery host. */
@@ -3338,6 +3341,14 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // callable while the replacement relay is still authenticating.
   activeComputerUseRuntime = null;
   const hostedRelay = createDesktopHostedRelayAdapter({
+    bolterHostPort: options.bolterHostPort ? {
+      ...options.bolterHostPort,
+      isReady: () => !candidateSession.closed && options.bolterHostPort!.isReady(),
+      onDisconnected() {
+        void Promise.resolve(options.bolterHostPort!.onDisconnected?.()).catch(() => undefined);
+        void candidateSession.settleBoundWork(options.bolterHostPort!.retire()).catch(() => undefined);
+      },
+    } : undefined,
     codexHostPort: options.codexHostPort,
     acpHostPort: options.acpHostPort,
     claudeConnectionHostPort: options.claudeConnectionHostPort,
@@ -4109,6 +4120,10 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
   }
   } catch (error) {
+    if (options.bolterHostPort) {
+      await options.bolterHostPort.onDisconnected?.();
+      await options.bolterHostPort.retire();
+    }
     revokeCandidateHumanConsent();
     sessionClient = null;
     if (pendingRelayCandidate?.session === candidateSession) {

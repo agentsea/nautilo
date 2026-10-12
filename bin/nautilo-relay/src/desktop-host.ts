@@ -10,6 +10,7 @@ import {
   type RelayAcpHostTransport,
   type RelayAdvertisedMcpTool,
   type RelayCapabilities,
+  type RelayBolterHostTransport,
   type RelayClaudeConnectionHostTransport,
   type RelayClaudeExecutionHostTransport,
   type RelayClient,
@@ -52,6 +53,7 @@ type HostInitializePayload = Readonly<{
     codex: boolean;
     acp: boolean;
     acpRegistrations: readonly ("hermes-acp" | "opencode-acp")[];
+    bolter?: boolean;
     claudeConnection: boolean;
     claudeExecution: boolean;
   }>;
@@ -98,7 +100,8 @@ function parseInitializePayload(value: unknown): HostInitializePayload {
     throw new Error("relay_host_initialize_invalid");
   }
   const ports = value["ports"];
-  if (!exact(ports, ["mcp", "sshPrepare", "codex", "acp", "acpRegistrations", "claudeConnection", "claudeExecution"])
+  if (!exact(ports, ["mcp", "sshPrepare", "codex", "acp", "acpRegistrations", "claudeConnection", "claudeExecution"], ["bolter"])
+    || (ports["bolter"] !== undefined && typeof ports["bolter"] !== "boolean")
     || typeof ports["mcp"] !== "boolean" || typeof ports["codex"] !== "boolean"
     || typeof ports["sshPrepare"] !== "boolean"
     || typeof ports["acp"] !== "boolean" || typeof ports["claudeConnection"] !== "boolean"
@@ -131,6 +134,7 @@ export class DesktopRelayHost {
   readonly #transports: {
     codex?: RelayCodexHostTransport;
     acp?: RelayAcpHostTransport;
+    bolter?: RelayBolterHostTransport;
     claudeConnection?: RelayClaudeConnectionHostTransport;
     claudeExecution?: RelayClaudeExecutionHostTransport;
   } = {};
@@ -256,6 +260,7 @@ export class DesktopRelayHost {
         ...(mcpHost === undefined ? {} : { mcpHost }),
         ...(payload.ports.codex ? { codexHostPort: this.#codexPort() } : {}),
         ...(payload.ports.acp ? { acpHostPort: this.#acpPort(payload.ports.acpRegistrations) } : {}),
+        ...(payload.ports.bolter ? { bolterHostPort: this.#bolterPort() } : {}),
         ...(payload.ports.claudeConnection ? { claudeConnectionHostPort: this.#claudeConnectionPort() } : {}),
         ...(payload.ports.claudeExecution ? { claudeExecutionHostPort: this.#claudeExecutionPort() } : {}),
       });
@@ -450,6 +455,20 @@ export class DesktopRelayHost {
     };
   }
 
+  #bolterPort() {
+    return {
+      isReady: () => true,
+      onRegistered: (session: unknown, transport: RelayBolterHostTransport) => {
+        this.#transports.bolter = transport;
+        void this.#portEvent("bolter-registered", session);
+      },
+      onCommand: (payload: unknown) => { void this.#portEvent("bolter-command", payload); },
+      onBatchAck: (payload: unknown) => { void this.#portEvent("bolter-batch-ack", payload); },
+      onAuthorized: (payload: unknown) => { void this.#portEvent("bolter-authorized", payload); },
+      onDisconnected: () => { delete this.#transports.bolter; void this.#portEvent("bolter-disconnected"); },
+    };
+  }
+
   #claudeConnectionPort() {
     return {
       isReady: () => true,
@@ -474,9 +493,10 @@ export class DesktopRelayHost {
     };
   }
 
-  #receiveTransport(transport: "codex" | "acp" | "claude-connection" | "claude-execution", payload: unknown): void {
+  #receiveTransport(transport: "bolter" | "codex" | "acp" | "claude-connection" | "claude-execution", payload: unknown): void {
     if (transport === "codex") this.#transports.codex?.send(payload as never);
     else if (transport === "acp") this.#transports.acp?.send(payload as never);
+    else if (transport === "bolter") this.#transports.bolter?.send(payload as never);
     else if (transport === "claude-connection") this.#transports.claudeConnection?.send(payload as never);
     else this.#transports.claudeExecution?.send(payload as never);
   }

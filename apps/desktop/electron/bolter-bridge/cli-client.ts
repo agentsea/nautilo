@@ -1,8 +1,8 @@
 import {
-  createBolterIdentityInvocation, createBolterSendInvocation, validateBolterAuthLink,
+  createBolterConversationsInvocation, decodeBolterConversations, createBolterDiscoveryInvocation, decodeBolterIdentities, createBolterIdentityInvocation, createBolterSendInvocation, validateBolterAuthLink,
   validateBolterIdentity, validateBolterReceipt,
   type BolterCliAuthLink, type BolterCliBinding, type BolterCliIdentity,
-  type BolterCliInvocation, type BolterCliReceipt, type BolterCliRuntime,
+  type BolterCliConversation, type BolterCliDiscoveredIdentity, type BolterCliInvocation, type BolterCliReceipt, type BolterCliRuntime,
   type BolterCliSelection, type BolterContractResult, type BolterQualifiedDecoders,
 } from "./cli-contract";
 
@@ -26,6 +26,10 @@ export type BolterCliUnavailableReason = "invalid-input" | "unsupported-output" 
   "unsupported-origin" | "unsupported-platform" | "stale-authority" | "attestation-failed" | "execution-failed";
 export type BolterCliIdentityOutcome =
   | { status: "confirmed"; identity: BolterCliIdentity }
+  | { status: "unavailable"; reason: BolterCliUnavailableReason };
+export type BolterCliDiscoveryOutcome = { status: "available"; identities: readonly BolterCliDiscoveredIdentity[] }
+  | { status: "unavailable"; reason: BolterCliUnavailableReason };
+export type BolterCliConversationsOutcome = { status: "available"; conversations: readonly BolterCliConversation[] }
   | { status: "unavailable"; reason: BolterCliUnavailableReason };
 export type BolterCliSendOutcome =
   | { status: "sent"; receipt: BolterCliReceipt }
@@ -79,6 +83,39 @@ export class BolterCliClient {
         return { status: "unavailable", reason: "unsupported-output" };
       }
       return { status: "confirmed", identity: identity.value };
+    } catch { return { status: "unavailable", reason: "unsupported-output" }; }
+  }
+
+  async discoverIdentities(): Promise<BolterCliDiscoveryOutcome> {
+    if (!this.qualified() || !this.options.decoders?.discovery) return { status: "unavailable", reason: "unsupported-output" };
+    const plan = createBolterDiscoveryInvocation(this.options.runtime);
+    if (!plan.ok) return { status: "unavailable", reason: plan.reason as BolterCliUnavailableReason };
+    const rejected = await this.admitted(plan.value);
+    if (rejected) return { status: "unavailable", reason: rejected };
+    if (!this.current()) return { status: "unavailable", reason: "stale-authority" };
+    try {
+      const result = await this.options.execute(plan.value);
+      if (!this.current()) return { status: "unavailable", reason: "stale-authority" };
+      if (result.exitCode !== 0) return { status: "unavailable", reason: "execution-failed" };
+      const identities = decodeBolterIdentities(JSON.parse(result.stdout) as unknown, this.options.runtime.version, this.options.decoders);
+      return identities.ok ? { status: "available", identities: identities.value }
+        : { status: "unavailable", reason: "unsupported-output" };
+    } catch { return { status: "unavailable", reason: "unsupported-output" }; }
+  }
+
+  async listConversations(selection: BolterCliSelection): Promise<BolterCliConversationsOutcome> {
+    if (!this.qualified() || !this.options.decoders?.conversations) return { status: "unavailable", reason: "unsupported-output" };
+    const plan = createBolterConversationsInvocation(this.options.runtime, { ...selection });
+    if (!plan.ok) return { status: "unavailable", reason: plan.reason as BolterCliUnavailableReason };
+    const rejected = await this.admitted(plan.value);
+    if (rejected) return { status: "unavailable", reason: rejected };
+    if (!this.current()) return { status: "unavailable", reason: "stale-authority" };
+    try {
+      const result = await this.options.execute(plan.value);
+      if (!this.current()) return { status: "unavailable", reason: "stale-authority" };
+      if (result.exitCode !== 0) return { status: "unavailable", reason: "execution-failed" };
+      const conversations = decodeBolterConversations(JSON.parse(result.stdout) as unknown, this.options.runtime.version, this.options.decoders);
+      return conversations.ok ? { status: "available", conversations: conversations.value } : { status: "unavailable", reason: "unsupported-output" };
     } catch { return { status: "unavailable", reason: "unsupported-output" }; }
   }
 

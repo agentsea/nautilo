@@ -75,3 +75,5 @@ export { isLocalExecutionReadArgs } from "./local-execution-read";
 
 
 export * from "./local-execution-delegation";
+
+export * from "./bolter";

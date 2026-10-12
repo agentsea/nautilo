@@ -788,3 +788,5 @@ export { createContentAccessPreviewCodec } from "./content-access-preview";
 export type { ContentAccessReceipt } from "./content-access-publication";
 
 export { getExternalRoomPolicy, restrictExternalRoomEnvelope, assertExternalRoomTextMode, assertExternalRoomSubject, externalRoomExecutionDependencies, type ExternalRoomExecutionDependencies, type ExternalRoomPolicy } from "./external-room-policy";
+
+export { insertPrivateRoomBundleTx } from "./queries";

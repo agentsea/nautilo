@@ -379,6 +379,12 @@ BEGIN
         public.bolter_room_bindings, public.bolter_connections TO nautilo;
     END IF;
   END IF;
+  IF to_regclass('public.bolter_explicit_shares') IS NOT NULL THEN
+    REVOKE ALL ON TABLE public.bolter_explicit_shares FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;
+    GRANT SELECT, INSERT ON TABLE public.bolter_explicit_shares TO nautilo_agent;
+    GRANT SELECT(id,user_id,binding_id,session_message_id), UPDATE(id), DELETE ON TABLE public.bolter_explicit_shares TO nautilo;
+    GRANT SELECT(explicit_share_id) ON TABLE public.bolter_outbox TO nautilo;
+  END IF;
 END $bolter_privileges$;
 DO $external_execution_privileges$
 BEGIN

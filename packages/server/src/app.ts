@@ -1,3 +1,5 @@
+import { createBolterController, type BolterController } from "./messaging/bolter-controller";
+import { bolterRoutes } from "./routes/bolter";
 import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
 import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
@@ -2099,7 +2101,11 @@ export async function createApp(options?: CreateAppOptions) {
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
   installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance });
-  const externalRoomExecution = createExternalRoomExecutionService({ jobManager });
+  let bolterController: BolterController | null = null;
+  const externalRoomExecution = createExternalRoomExecutionService({ jobManager,
+    onPendingPublication: () => { bolterController?.wakePublications(); },
+    onRecoveryPass: () => { bolterController?.wakePublications(); },
+  });
   app.decorate("externalRoomExecution", externalRoomExecution);
   // Match the existing conversion worker's recovery cadence. Durable claims
   // prevent overlapping execution across processes; this timer never takes over a claim.
@@ -3884,6 +3890,10 @@ export async function createApp(options?: CreateAppOptions) {
   );
   const codexTaskExecutionReader = createCodexTaskExecutionRouteReader(codexDb);
   const taskHarnessExecutionRouteReader = createTaskHarnessExecutionRouteStore(codexDb);
+  bolterController = createBolterController({ relay: relayRegistry, execution: externalRoomExecution });
+  bolterRoutes(app, bolterController);
+  app.addHook("onClose", () => bolterController?.close());
+
   const claudeConnections = new ClaudeConnectionController({
     getConnection: (userId) => getOrCreateClaudeConnectionWith(getServerDirectDb(), { userId }),
     setEnabled: async (userId, enabled) => {

@@ -1,10 +1,12 @@
+import * as firstPartySeeding from "../../src/apps/seed-first-party-apps";
+import { createBolterController } from "../../src/messaging/bolter-controller";
 import { expect, test, spyOn } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
-  actors, agents, externalRoomExecutionClaims, bolterConnections, bolterInboxReceipts, bolterOutbox, bolterRoomBindings,
+  actors, agents, externalRoomExecutionClaims, bolterConnections, bolterExplicitShares, bolterInboxReceipts, bolterOutbox, bolterRoomBindings,
   channelIdentities, credentials, eq, getSharedDirectAgentDb, getSharedDirectDb, groupMembers,
   inArray, jobs, namespaces, profiles, rooms, sessionMessages, sessions, users, workAcceptances,
-  createBolterConnectionWith, createFreshBolterBindingWith, getJobById, listBolterOutboxWith,
+  createBolterConnectionWith, createFreshBolterBindingWith, getBolterBindingWith, getJobById, listBolterOutboxWith,
   type BolterBindingContext,
 } from "@nautilo/db";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
@@ -42,6 +44,7 @@ test("real service and LangGraph publish source-bound replies through a fixed te
   const threads: string[] = [];
   const cleanupFailures: unknown[] = [];
   let primaryFailure: unknown;
+  let controller: ReturnType<typeof createBolterController> | undefined;
   let observedMessages = 0;
   const failingMessageObserver = (event: ServerEvent) => {
     if (event.type === "message.new" && roomIds.some(id => event.laneKey === `room:${id}`)) {
@@ -51,6 +54,8 @@ test("real service and LangGraph publish source-bound replies through a fixed te
   };
   eventBus.on(failingMessageObserver);
   const taskObserverStart = spyOn(TaskObserver.prototype, "start").mockResolvedValue(undefined);
+  // App bundle installation is independent of this real messaging/funding path.
+  const seedApps = spyOn(firstPartySeeding, "seedFirstPartyApps").mockResolvedValue({ seeded: [] });
   const model = createStubProvider({ responses: [
     { type: "text", content: "Final reply A" }, { type: "text", content: "Final reply B" },
   ] });
@@ -165,9 +170,102 @@ test("real service and LangGraph publish source-bound replies through a fixed te
       expect(prompt).not.toContain(connection.id);
       expect(prompt).not.toContain(bindings[0]!.bindingId);
     }
+
+    // The real controller and database publisher consume a finite synthetic Relay
+    // port. This proves local composition, not a qualified provider deployment.
+    type RelayPort = Parameters<typeof createBolterController>[0]["relay"];
+    const scope = { relayId: connection.relayId, userId: sponsor.userId, relaySessionId: randomUUID(),
+      desktopSessionId: connection.desktopSessionId, pairingGenerationRef: connection.pairingGenerationRef,
+      selectedProtocolVersion: 30, capabilityRevision: 1 };
+    let relayCurrent = true;
+    let receiverStarts = 0;
+    let contextListener: Parameters<RelayPort["onBolterContext"]>[0] | undefined;
+    let observationListener: Parameters<RelayPort["onBolterObservation"]>[0] | undefined;
+    const nativeSends: { chatId: string; content: string }[] = [];
+    const observation = { runtime: "qualified" as const, authentication: "confirmed" as const,
+      identity: { providerAgentId: connection.providerAgentId, identityFingerprint: connection.identityFingerprint, label: "Synthetic identity" },
+      receiver: "listening" as const };
+    const relay: RelayPort = {
+      getBolterSession: (relayId, userId) => relayCurrent && relayId === scope.relayId && userId === scope.userId ? scope : null,
+      listBolterSessions: userId => relayCurrent && userId === scope.userId ? [scope] : [],
+      onBolterObservation: listener => { observationListener = listener; return () => { observationListener = undefined; }; },
+      onBolterBatch: () => () => undefined,
+      onBolterContext: listener => { contextListener = listener; return () => { contextListener = undefined; }; },
+      async requestBolterCommand(input) {
+        if (!relayCurrent || input.signal.aborted) return { kind: "unavailable", reason: "desktop_offline" };
+        if (input.command.action === "connect") {
+          const { userId: _userId, ...wireScope } = scope;
+          observationListener?.({ userId: scope.userId, message: { type: "relay:bolter-observation", version: 30,
+            scope: wireScope, connectionId: input.command.connectionId, generation: 1, observation } });
+          return { kind: "observation", observation };
+        }
+        if (input.command.action === "list_conversations") return { kind: "conversations", conversations: [{ label: "Synthetic chat C", chatId: "synthetic-chat-c", threadRootId: null }] };
+        if (input.command.action === "send") {
+          expect(input.command).not.toHaveProperty("content");
+          const authorized = await input.authorize?.();
+          if (!authorized) return { kind: "unavailable", reason: "authority_changed" };
+          nativeSends.push({ chatId: authorized.chatId, content: authorized.content });
+          return { kind: "sent", receipt: { messageId: `synthetic-reviewed-${nativeSends.length}`, chatId: authorized.chatId, threadRootId: authorized.threadRootId } };
+        }
+        if (input.command.action === "start_receiver") receiverStarts++;
+        return { kind: "observation", observation: { ...observation, receiver: input.command.action === "start_receiver" ? "listening" : "stopped" } };
+      },
+    };
+    controller = createBolterController({ relay, execution: fixture.app.externalRoomExecution });
+    expect((await controller.connections(sponsor.userId)).availability.state).toBe("available");
+    expect(await controller.check(sponsor.userId, connection.id)).toMatchObject({ canCreateRoom: true, receiver: "listening" });
+    expect(receiverStarts).toBe(1);
+    const conversations = await controller.conversations(sponsor.userId, connection.id);
+    expect(conversations.status).toBe("available");
+    const choice = conversations.conversations[0];
+    if (!choice) throw new Error("Synthetic observed choice unavailable");
+    const created = await controller.createRoom(sponsor.userId, connection.id, { choiceId: choice.id,
+      agentId: genieId, name: "Synthetic reviewed Room", modelSponsorshipAccepted: true });
+    roomIds.push(created.roomId);
+    const createdBinding = await getBolterBindingWith(agentDb, { userId: sponsor.userId }, created.link.id);
+    if (!createdBinding) throw new Error("Synthetic fresh binding unavailable");
+    namespaceIds.push(createdBinding.namespaceId);
+    expect(created.link.chatId).toBe("synthetic-chat-c");
+    expect(created.link.receiver).toBe("listening");
+    expect((await controller.connectionRooms(sponsor.userId, connection.id)).links).toHaveLength(3);
+    const reviewed = { expectedRevision: created.link.revision, requestId: randomUUID(), content: "Exact Human-reviewed text \n" };
+    const shared = await controller.sendReviewed(sponsor.userId, created.link.id, reviewed);
+    const shareCtx = { ...receiver, bindingId: created.link.id, bindingRevision: created.link.revision };
+    await controller.publishPending(shareCtx);
+    const deliveries = (await controller.deliveries(sponsor.userId, created.link.id)).deliveries;
+    expect(deliveries[0]).toMatchObject({ messageId: shared.messageId, outboxId: shared.outboxId,
+      state: "published", requestId: reviewed.requestId });
+    expect(typeof deliveries[0]?.createdAt).toBe("string");
+    const retry = await controller.sendReviewed(sponsor.userId, created.link.id, reviewed);
+    expect(retry.outboxId).toBe(shared.outboxId);
+    await controller.publishPending(shareCtx);
+    expect(nativeSends).toEqual([{ chatId: "synthetic-chat-c", content: reviewed.content }]);
+    expect(model.invocations).toHaveLength(2);
+    const [humanMessage] = await fixture.db.select().from(sessionMessages).where(eq(sessionMessages.id, shared.messageId));
+    expect(humanMessage).toMatchObject({ role: "user", externalAuthorship: false, content: reviewed.content });
+    const paused = await controller.updateBinding(sponsor.userId, created.link.id, created.link.revision, "paused");
+    expect(paused.canSend).toBe(false);
+    await Promise.resolve(expect(controller.sendReviewed(sponsor.userId, created.link.id, { ...reviewed, requestId: randomUUID() })).rejects.toThrow());
+    expect((await controller.updateBinding(sponsor.userId, created.link.id, paused.revision, "active")).receiver).toBe("listening");
+    const startsBeforeReconnect = receiverStarts;
+    relayCurrent = false;
+    contextListener?.(scope.relayId, scope.userId, null);
+    expect((await controller.connections(sponsor.userId)).connections.every(item => !item.canCreateRoom)).toBe(true);
+    relayCurrent = true;
+    contextListener?.(scope.relayId, scope.userId, scope);
+    const reconnectDeadline = Date.now() + 30_000;
+    while (receiverStarts === startsBeforeReconnect && Date.now() < reconnectDeadline) await new Promise(resolve => setTimeout(resolve, 25));
+    expect(receiverStarts).toBe(startsBeforeReconnect + 1);
+    expect((await controller.connections(sponsor.userId)).connections[0]?.canCreateRoom).toBe(true);
+    const connectOperation = await controller.connect(sponsor.userId, scope.relayId);
+    const connectDeadline = Date.now() + 30_000;
+    while (controller.operation(sponsor.userId, connectOperation.operationId).status === "pending" && Date.now() < connectDeadline) await new Promise(resolve => setTimeout(resolve, 25));
+    expect(controller.operation(sponsor.userId, connectOperation.operationId).status).toBe("completed");
+    expect((await controller.connections(sponsor.userId)).connections).toHaveLength(2);
   } catch (error) {
     primaryFailure = error;
   } finally {
+    if (controller) await controller.close();
     const cleanup = async (run: () => Promise<unknown>) => {
       try { await run(); } catch (error) { cleanupFailures.push(error); }
     };
@@ -199,6 +297,7 @@ test("real service and LangGraph publish source-bound replies through a fixed te
       const db = fixture.db;
       await cleanup(() => db.transaction(async tx => {
         await tx.delete(bolterOutbox).where(eq(bolterOutbox.userId, peer!.userId));
+        await tx.delete(bolterExplicitShares).where(eq(bolterExplicitShares.userId, peer!.userId));
         await tx.delete(bolterInboxReceipts).where(eq(bolterInboxReceipts.userId, peer!.userId));
         await tx.delete(bolterRoomBindings).where(eq(bolterRoomBindings.userId, peer!.userId));
         await tx.delete(bolterConnections).where(eq(bolterConnections.userId, peer!.userId));
@@ -224,6 +323,7 @@ test("real service and LangGraph publish source-bound replies through a fixed te
       await cleanup(async () => {
         expect(await db.select({ id: users.id }).from(users).where(eq(users.id, peer!.userId))).toHaveLength(0);
         expect(await db.select({ id: rooms.id }).from(rooms).where(inArray(rooms.id, roomIds))).toHaveLength(0);
+        expect(await db.select({ id: bolterExplicitShares.id }).from(bolterExplicitShares).where(eq(bolterExplicitShares.userId, peer!.userId))).toHaveLength(0);
       });
     }
     if (fixture && quiesced) {
@@ -240,6 +340,7 @@ test("real service and LangGraph publish source-bound replies through a fixed te
     } else if (fixture) await cleanup(() => fixture!.app.close());
     eventBus.off(failingMessageObserver);
     taskObserverStart.mockRestore();
+    seedApps.mockRestore();
     for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
   }
   if (primaryFailure !== undefined || cleanupFailures.length) {

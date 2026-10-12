@@ -17,8 +17,8 @@ import { buildBolterBridgeRoleGrantsSql } from "../../src/utils/agent-role-grant
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 import { assertConnectedDbMarkerMatches } from "../../src/utils/db-identity-guard";
 import { ensureDatabase } from "../../src/utils/ensure-database";
-import { actors, agents, users, roomMembers, rooms, namespaces, sessions, sessionMessages, sessionMessageDirectedRecipients, jobs, workAcceptances, serverAdmission, bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox } from "../../src/schema";
-import { cancelBolterExecutionsForDeletedAgentsInTransaction, acceptBolterInboundWith, attachBolterInboundJobWith, acceptBolterModelSponsorshipWith, loadBolterExecutionWith, linkBolterExecutionAcceptanceWith, startBolterExecutionWith, settleBolterExecutionWith, completeBolterExecutionWith, listRecoverableBolterExecutionsWith, getBolterRecoveryWindowWith, nextBolterRecoverableExecutionWith, getBolterBindingWith, getBolterExecutionInputForReceiptWith, getBolterReceiptMessageIdsWith, getBolterCanonicalAttributionsWith, claimBolterOutboxWith, createBolterConnectionWith, createFreshBolterBindingWith, enqueueBolterOutboxWith, getBolterPublicationClaimWith, loadBolterPublicationContentWith, listBolterConnectionsWith, rotateBolterReceiverWith, setBolterConnectionStateWith, settleBolterOutboxWith, updateBolterBindingStateWith, type BolterBindingContext, type BolterBridgeDatabase, type BolterBridgeTransaction, type BolterReceiverContext, type ExternalRoomJobReference } from "../../src/queries/bolter-bridge";
+import { actors, agents, users, roomMembers, rooms, namespaces, sessions, sessionMessages, sessionMessageDirectedRecipients, jobs, workAcceptances, serverAdmission, bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox, bolterExplicitShares } from "../../src/schema";
+import { acceptBolterReviewedShareWith, bolterReviewedTextFingerprint, cancelBolterExecutionsForDeletedAgentsInTransaction, acceptBolterInboundWith, attachBolterInboundJobWith, acceptBolterModelSponsorshipWith, loadBolterExecutionWith, linkBolterExecutionAcceptanceWith, startBolterExecutionWith, settleBolterExecutionWith, completeBolterExecutionWith, listRecoverableBolterExecutionsWith, getBolterRecoveryWindowWith, nextBolterRecoverableExecutionWith, getBolterBindingWith, getBolterExecutionInputForReceiptWith, getBolterReceiptMessageIdsWith, getBolterCanonicalAttributionsWith, claimBolterOutboxWith, createBolterConnectionWith, createFreshBolterBindingWith, enqueueBolterOutboxWith, getBolterPublicationClaimWith, loadBolterPublicationContentWith, listBolterConnectionsWith, rotateBolterReceiverWith, setBolterConnectionStateWith, settleBolterOutboxWith, updateBolterBindingStateWith, type BolterBindingContext, type BolterBridgeDatabase, type BolterBridgeTransaction, type BolterReceiverContext, type ExternalRoomJobReference } from "../../src/queries/bolter-bridge";
 
 import { acquireExternalRoomExecutionClaimWith, releaseExternalRoomExecutionClaimWith, type ExternalRoomExecutionClaim } from "../../src/queries/external-room-execution-claims";
 import { updateJobStatusWithDatabase } from "../../src/queries/jobs";
@@ -100,6 +100,7 @@ async function cleanupFixture(fixture: Fixture) {
     await admin.transaction(async tx => {
       const owners = [fixture.owner, fixture.otherOwner];
       await tx.delete(bolterOutbox).where(inArray(bolterOutbox.userId, owners));
+      await tx.delete(bolterExplicitShares).where(inArray(bolterExplicitShares.userId, owners));
       await tx.delete(bolterInboxReceipts).where(inArray(bolterInboxReceipts.userId, owners));
       await tx.delete(bolterRoomBindings).where(inArray(bolterRoomBindings.userId, owners));
       await tx.delete(bolterConnections).where(inArray(bolterConnections.userId, owners));
@@ -121,6 +122,7 @@ async function cleanupFixture(fixture: Fixture) {
       + (SELECT count(*) FROM public.bolter_connections WHERE user_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
       + (SELECT count(*) FROM public.bolter_room_bindings WHERE user_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
       + (SELECT count(*) FROM public.bolter_inbox_receipts WHERE user_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
+      + (SELECT count(*) FROM public.bolter_explicit_shares WHERE user_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
       + (SELECT count(*) FROM public.bolter_outbox WHERE user_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
       + (SELECT count(*) FROM public.sessions WHERE owner_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
       + (SELECT count(*) FROM public.jobs WHERE owner_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid) OR requestor_id IN (${fixture.owner}::uuid,${fixture.otherOwner}::uuid))
@@ -718,4 +720,61 @@ describe("Bolter actual PostgreSQL authority and lifecycle", () => {
     const [remaining] = await admin.execute(sql`SELECT count(*)::integer AS count FROM pg_namespace WHERE nspname = ${schemaName}`);
     expect(remaining?.["count"]).toBe(0);
   });
+});
+
+
+describe("reviewed Human publications on real database roles", () => {
+  test("atomic exact grant, idempotent retry, canonical read and terminal ambiguity", async () => withFixture(async (_tx, fixture, db) => {
+    const first = await freshBinding(db, fixture, await receiver(db, fixture));
+    const second = await freshBinding(db, fixture, await receiver(db, fixture, "second"));
+    const requestId = randomUUID();
+    const text = "Synthetic reviewed text with exact trailing space ";
+    let writes = 0;
+    const persist = (body: string, forged = false) => async (tx: BolterBridgeTransaction, grant: { shareId: string; fingerprint: string }) => {
+      writes++;
+      const turnId = randomUUID();
+      const appended = await appendCanonicalTranscriptRowsInTx(tx, {
+        session: { threadId: `room:${first.binding.roomId}:reviewed`, ownerId: fixture.owner, personaId: "owner",
+          agentId: fixture.agent, roomId: first.binding.roomId, title: "Synthetic reviewed text" },
+        rows: [plainRow({ role: "user", content: body, fingerprint: grant.fingerprint, humanTurnId: turnId,
+          replyToMessageId: null, metadata: { bolterReviewedShare: { shareId: grant.shareId, requestId },
+            ...(forged ? { externalReceiptId: randomUUID() } : {}) } })],
+        notificationContext: { causalHumanUserId: null, causalHumanTurnId: null, mentionedHumanUserIds: [] },
+      });
+      if (!appended.insertedRows[0] || appended.failedIndices.length) throw new Error("Synthetic canonical share failed");
+      return Number(appended.insertedRows[0].id);
+    };
+    for (const altered of [{ ...first.ctx, userId: fixture.otherOwner }, { ...first.ctx, bindingRevision: 1 }, { ...first.ctx, connectionGeneration: 2 }]) {
+      await Promise.resolve(expect(acceptBolterReviewedShareWith(db, altered, { requestId, content: text }, persist(text))).rejects.toThrow());
+    }
+    expect(writes).toBe(0);
+    await Promise.resolve(expect(acceptBolterReviewedShareWith(db, first.ctx, { requestId, content: text }, persist(text, true))).rejects.toThrow());
+    await Promise.resolve(expect(acceptBolterReviewedShareWith(db, first.ctx, { requestId, content: text }, persist("changed text"))).rejects.toThrow());
+    const outbox = await acceptBolterReviewedShareWith(db, first.ctx, { requestId, content: text }, persist(text));
+    expect(outbox.sourceInboxId).toBeNull(); expect(outbox.explicitShareId).not.toBeNull();
+    expect(outbox.fingerprint).toBe(bolterReviewedTextFingerprint(first.binding.id, requestId, text));
+    const beforeRetry = writes;
+    expect((await acceptBolterReviewedShareWith(db, first.ctx, { requestId, content: text }, persist(text))).id).toBe(outbox.id);
+    expect(writes).toBe(beforeRetry);
+    await Promise.resolve(expect(acceptBolterReviewedShareWith(db, first.ctx, { requestId, content: "changed" }, persist("changed"))).rejects.toThrow());
+    await Promise.resolve(expect(acceptBolterReviewedShareWith(db, second.ctx, { requestId, content: text }, persist(text))).rejects.toThrow());
+    await Promise.resolve(expect(db.transaction(async tx => {
+      await tx.execute(sql`SELECT set_config('app.current_user_id', ${fixture.owner}, true)`);
+      await tx.update(bolterExplicitShares).set({ fingerprint: "b".repeat(64) }).where(eq(bolterExplicitShares.id, outbox.explicitShareId!));
+    })).rejects.toThrow());
+    const claim = await claimBolterOutboxWith(db, first.ctx, outbox.id);
+    if (!claim?.claimToken) throw new Error("Synthetic share claim unavailable");
+    const input = { outboxId: outbox.id, claimToken: claim.claimToken };
+    expect((await loadBolterPublicationContentWith(db, first.ctx, input))?.content).toBe(text);
+    expect(await loadBolterPublicationContentWith(db, second.ctx, input)).toBeNull();
+    expect(await loadBolterPublicationContentWith(db, { ...first.ctx, bindingRevision: 1 }, input)).toBeNull();
+    expect((await settleBolterOutboxWith(db, first.ctx, { ...input, state: "uncertain" }))?.state).toBe("uncertain");
+    expect(await claimBolterOutboxWith(db, first.ctx, outbox.id)).toBeNull();
+    expect(await loadBolterPublicationContentWith(db, first.ctx, input)).toBeNull();
+    await product.transaction(async tx => {
+      await tx.delete(bolterOutbox).where(eq(bolterOutbox.userId, fixture.owner));
+      await tx.delete(bolterExplicitShares).where(eq(bolterExplicitShares.userId, fixture.owner));
+    });
+    expect(await admin.select().from(bolterExplicitShares).where(eq(bolterExplicitShares.userId, fixture.owner))).toHaveLength(0);
+  }));
 });

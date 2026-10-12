@@ -9,7 +9,9 @@ export type BolterContractResult<T> =
 
 export interface BolterCliSelection {
   origin: string;
+  /** Canonical provider identity, never inferred from the short CLI selector. */
   agentId: string;
+  cliSelector: string;
 }
 
 export interface BolterCliRuntime {
@@ -32,7 +34,9 @@ export interface BolterCliBinding {
   threadRootId: string | null;
 }
 
-export type BolterCliIdentity = BolterCliSelection;
+export interface BolterCliIdentity { origin: string; agentId: string }
+export interface BolterCliDiscoveredIdentity extends BolterCliSelection { label?: string }
+export interface BolterCliConversation extends BolterCliBinding { label: string }
 export interface BolterCliAuthLink { url: string; code: string }
 export interface BolterCliReceipt extends BolterCliBinding { messageId: string }
 
@@ -64,6 +68,8 @@ export type BolterCliReceiveItem = BolterCliMessage | BolterCliControl;
 export interface BolterQualifiedDecoders {
   version: string;
   identity?: (raw: unknown) => unknown;
+  discovery?: (raw: unknown) => unknown;
+  conversations?: (raw: unknown) => unknown;
   authLink?: (stdout: string) => unknown;
   receiveItem?: (raw: unknown) => unknown;
   receipt?: (raw: unknown) => unknown;
@@ -116,8 +122,18 @@ function invocation(
 }
 function selected(selection: BolterCliSelection): BolterContractResult<string[]> {
   if (!origin(selection.origin)) return failure("unsupported-origin");
-  if (!id(selection.agentId)) return failure("invalid-input");
-  return success(["--url", selection.origin, "--agent", selection.agentId]);
+  if (!id(selection.agentId) || !argument(selection.cliSelector)) return failure("invalid-input");
+  return success(["--url", selection.origin, "--agent", selection.cliSelector]);
+}
+
+/** Local discovery has no --url flag; each decoded identity must carry its origin. */
+export function createBolterDiscoveryInvocation(runtime: BolterCliRuntime): BolterContractResult<BolterCliInvocation> {
+  return invocation(runtime, ["agents", "--json"]);
+}
+export function createBolterConversationsInvocation(runtime: BolterCliRuntime,
+  selection: BolterCliSelection): BolterContractResult<BolterCliInvocation> {
+  const flags = selected(selection);
+  return flags.ok ? invocation(runtime, ["chats", "--json", ...flags.value]) : flags;
 }
 
 export function createBolterIdentityInvocation(
@@ -162,6 +178,47 @@ export function createBolterReceiveInvocation(
 export function validateBolterIdentity(raw: unknown): BolterContractResult<BolterCliIdentity> {
   if (!record(raw) || !origin(raw["origin"]) || !id(raw["agentId"])) return failure("unsupported-output");
   return success({ origin: raw["origin"], agentId: raw["agentId"] });
+}
+
+export function decodeBolterIdentities(raw: unknown, version: string,
+  decoders?: BolterQualifiedDecoders): BolterContractResult<readonly BolterCliDiscoveredIdentity[]> {
+  if (decoders?.version !== version || !decoders.discovery) return failure("unsupported-output");
+  try {
+    const decoded: unknown = decoders.discovery(raw);
+    if (!Array.isArray(decoded)) return failure("unsupported-output");
+    const identities: BolterCliDiscoveredIdentity[] = [];
+    const canonical = new Set<string>();
+    const selectors = new Set<string>();
+    for (const item of decoded) {
+      if (!record(item) || !origin(item["origin"]) || !id(item["agentId"]) || !argument(item["cliSelector"])
+        || (item["label"] !== undefined && (typeof item["label"] !== "string" || item["label"].length === 0))) return failure("unsupported-output");
+      const key = JSON.stringify([item["origin"], item["agentId"]]);
+      if (canonical.has(key) || selectors.has(item["cliSelector"])) return failure("unsupported-output");
+      canonical.add(key); selectors.add(item["cliSelector"]);
+      identities.push(Object.freeze({ origin: item["origin"], agentId: item["agentId"], cliSelector: item["cliSelector"],
+        ...(typeof item["label"] === "string" ? { label: item["label"] } : {}) }));
+    }
+    return success(Object.freeze(identities));
+  } catch { return failure("unsupported-output"); }
+}
+
+export function decodeBolterConversations(raw: unknown, version: string,
+  decoders?: BolterQualifiedDecoders): BolterContractResult<readonly BolterCliConversation[]> {
+  if (decoders?.version !== version || !decoders.conversations) return failure("unsupported-output");
+  try {
+    const decoded: unknown = decoders.conversations(raw);
+    if (!Array.isArray(decoded)) return failure("unsupported-output");
+    const conversations: BolterCliConversation[] = [];
+    const seen = new Set<string>();
+    for (const item of decoded) {
+      if (!record(item) || !id(item["chatId"]) || (item["threadRootId"] !== null && !id(item["threadRootId"]))
+        || typeof item["label"] !== "string" || item["label"].length === 0) return failure("unsupported-output");
+      const key = JSON.stringify([item["chatId"], item["threadRootId"]]);
+      if (seen.has(key)) return failure("unsupported-output");
+      seen.add(key); conversations.push(Object.freeze({ chatId: item["chatId"], threadRootId: item["threadRootId"], label: item["label"] }));
+    }
+    return success(Object.freeze(conversations));
+  } catch { return failure("unsupported-output"); }
 }
 
 export function validateBolterAuthLink(raw: unknown): BolterContractResult<BolterCliAuthLink> {

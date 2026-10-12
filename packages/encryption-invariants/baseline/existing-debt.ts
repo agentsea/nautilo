@@ -1,3 +1,5 @@
+import { BOLTER_NATIVE_STORAGE_COVERAGE } from "./reviewed-bolter-native-storage";
+import { BOLTER_HTTP_COVERAGE } from "./reviewed-bolter-http";
 import { BOLTER_PLAINTEXT_COVERAGE } from "./reviewed-bolter-plaintext-carriers";
 import { REVIEWED_REFLECTION_REPLAY_COVERAGE } from "./reviewed-main-2026-09-12-reflection";
 import {
@@ -1770,6 +1772,7 @@ const BOLTER_METADATA_COVERAGE: readonly EncryptionCoverageEntry[] = [
   { table: "bolter_connections", fields: ["id", "user_id", "relay_id", "desktop_session_id", "pairing_generation_ref", "home_handle", "origin", "provider_agent_id", "identity_fingerprint", "generation", "revision", "enabled", "revoked_at", "created_at", "updated_at"] },
   { table: "bolter_room_bindings", fields: ["id", "user_id", "connection_id", "room_id", "namespace_id", "agent_id", "origin", "provider_agent_id", "chat_id", "thread_id", "revision", "state", "model_sponsorship_accepted_at", "created_at", "updated_at"] },
   { table: "bolter_inbox_receipts", fields: ["id", "user_id", "binding_id", "binding_revision", "connection_generation", "provider_message_id", "fingerprint", "external_sender_id", "session_message_id", "turn_id", "job_id", "state", "created_at", "updated_at"] },
+  { table: "bolter_explicit_shares", fields: ["id", "user_id", "binding_id", "binding_revision", "connection_generation", "request_id", "session_message_id", "fingerprint", "created_at"] },
   { table: "bolter_outbox", fields: ["id", "user_id", "binding_id", "binding_revision", "connection_generation", "session_message_id", "source_inbox_id", "explicit_share_id", "fingerprint", "state", "claim_token", "provider_message_id", "created_at", "updated_at"] },
 ].flatMap(({ table, fields }): EncryptionCoverageEntry[] => [table, ...fields.map(field => `${table}.${field}`)].map(name => ({
   id: `db.bolter.${name}`,
@@ -1859,6 +1862,8 @@ const BOLTER_INBOX_DEVICE_COVERAGE: EncryptionCoverageEntry = {
 export const BASELINE_REGISTRY: CoverageRegistry = {
   entries: [
     ...BOLTER_PLAINTEXT_COVERAGE,
+    ...BOLTER_NATIVE_STORAGE_COVERAGE,
+    ...BOLTER_HTTP_COVERAGE,
     ...BOLTER_METADATA_COVERAGE,
     ...BOLTER_EXECUTION_METADATA_COVERAGE,
     BOLTER_AUDIENCE_COVERAGE,

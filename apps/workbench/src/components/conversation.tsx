@@ -236,6 +236,7 @@ import { CompanionTarget } from "../companion/companion-provider";
 import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
 import { useCan } from "../hooks/use-can";
 import { apiClient } from "../lib/api";
+import { BolterMessageComposer } from "./bolter-message-composer";
 import { shouldMarkRoomReadAtBottom } from "../modes/rooms/shape/read-tracking/mark-room-read-at-bottom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { createRoomMessageRouteIntentConsumer } from "../routes/room-route";
@@ -1993,6 +1994,10 @@ function ConversationBody({
           composer (below the presence strip) so it stays flush and does
           NOT bounce when the "…is thinking" strip appears/disappears. */}
       {canInvokeAgents && !directHumanRoom.isDirectHumanRoom ? <AutoApproveBar /> : null}
+
+      {verified && activeRoomId ? <BolterMessageComposer
+        key={`${activeRoomId}:${auth.viewerGeneration}:${auth.credentialGeneration}`}
+        roomId={activeRoomId} scopeKey={`${auth.viewerGeneration}:${auth.credentialGeneration}`} /> : null}
 
       <div className={`border-t border-border bg-background ${railPadX} ${railNarrow ? "py-2" : "py-3"}`}>
         <Composer

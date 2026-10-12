@@ -434,7 +434,7 @@ describe("coverage report", () => {
     const registry = { ...input.registry, entries: [...input.registry.entries, ...BOLTER_PLAINTEXT_COVERAGE] };
     const report = formatCoverageReport({ ...input, registry,
       observed: [...input.observed, ...BOLTER_PLAINTEXT_COVERAGE.map(({ id, surface, locator }) => ({ id, surface, locator }))] });
-    expect(report).toContain("| authorized_plaintext | 5 |");
+    expect(report).toContain("| authorized_plaintext | 8 |");
     expect(report).toContain("block the whole-product encryption claim");
     expect(report).toContain("| protected | 0 |");
     for (const entry of BOLTER_PLAINTEXT_COVERAGE) {

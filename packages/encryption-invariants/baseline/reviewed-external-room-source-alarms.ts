@@ -35,6 +35,12 @@ export function reviewedExternalRoomSourceAlarms(reviews: readonly SourceAlarmRe
     }
   }
   return [
+    {
+      locator: "packages/server/src/messaging/external-room-execution.ts#log_emitter:4c5e7749df0886dd:1",
+      owner: "packages/server", closure: "reviewed_exclusion",
+      exclusionId: "exclusion.external-room.publication-observation-failed",
+      reason: "This exact catch emits only the fixed publication observation failed literal. The callback exception, message body, destination, identity, credential and key are never interpolated. Publication content has a separately declared transient plaintext boundary.",
+    },
     ...reviews.filter(review => review.locator !== REPLACED_DISPATCH).map((review): SourceAlarmReview => {
       const locator = externalRoomSourceAlarmLocator(review.locator);
       if (review.locator === `${EXECUTOR}7ef703451e44cded:6`

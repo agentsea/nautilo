@@ -10,7 +10,7 @@ const runtime: BolterCliRuntime = {
   executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/connection",
   platform: "linux", version: "synthetic-cli-v1",
 };
-const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent" };
+const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent", cliSelector: "synthetic-agent" };
 // These decoders exercise the internal contract, not an observed Bolter packet format.
 const decoders: BolterQualifiedDecoders = { version: runtime.version, receiveItem: (raw) => raw };
 const message: BolterCliMessage = {
