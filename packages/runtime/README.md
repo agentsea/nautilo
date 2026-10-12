@@ -28,3 +28,30 @@ Each component is backed by an interface with two implementations:
 ## Dependency rule
 
 `@nautilo/runtime` depends on `@nautilo/agent` and `@nautilo/db`. The server depends on runtime. Apps never import runtime directly.
+
+## Foreground context reconstruction
+
+Each settled foreground segment rebuilds context through its last committed
+transcript receipt. Required instructions, admitted tool schemas, response
+allowance, accepted Human inputs, and live control state are reserved by the
+graph before it supplies the remaining invocation envelope to runtime.
+Refresh callers must supply a finite, nonnegative invocation allowance;
+missing allowances fail before transcript paging instead of guessing a window.
+
+Within that envelope, Journal and recalled Records retain their bounded
+semantic allocation first. The newest chronological suffix after the causal
+Human trigger follows, using all remaining space. Matching execution output
+is labelled current progress; other visible Human and Agent activity is
+labelled surrounding Room activity. It remains quoted narration unless it was
+explicitly admitted as input. Admitted later replies retain their exact Human
+message at their committed position, once, including across checkpoint resumes.
+If earlier exchanges cannot fit, those inputs stay pinned before the retained
+suffix and the omission is disclosed.
+
+Earlier transcript history uses leftover space within the configured Room
+percentage and recent-conversation count. Those settings do not cut current
+progress. The source reader pages backward through the authorized Room scope;
+the final projection enforces the invocation envelope and discloses excerpts.
+A parked segment retains its exact live assistant/tool/Human protocol sequence
+until a new committed receipt permits reconstruction. Existing optional Memory
+and live-state assembly remain owned by the graph.

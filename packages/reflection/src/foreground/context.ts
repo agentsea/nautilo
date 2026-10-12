@@ -116,7 +116,7 @@ export interface ForegroundNarrativeTurnV1 {
   /** A complete turn starts with its durable Human row. */
   readonly completeness: "complete" | "partial";
   /** Durable rows produced after the accepted request in this logical turn. */
-  readonly provenance?: "prior" | "active_turn";
+  readonly provenance?: "prior" | "active_turn" | "surrounding";
   /** Already-labelled narrative entries in chronological order. */
   readonly entries: readonly string[];
 }
@@ -270,10 +270,14 @@ const OVERSIZED_ENTRY_EXCERPT =
   "[Excerpt from one oversized narrative entry — middle omitted]";
 const CURRENT_ACTIVE_TURN_PROGRESS =
   "[Completed progress in the current logical turn — entries below were produced after the accepted Human request]";
+const SURROUNDING_ROOM_ACTIVITY =
+  "[Surrounding Room activity during the current logical turn — entries below belong to other Humans or executions]";
+
+type NarrativeProvenance = NonNullable<ForegroundNarrativeTurnV1["provenance"]>;
 
 interface NarrativeSelectionEntry {
   readonly text: string;
-  readonly activeTurn: boolean;
+  readonly provenance: NarrativeProvenance;
 }
 
 function transcriptBlock(input: Readonly<{
@@ -290,13 +294,18 @@ function transcriptBlock(input: Readonly<{
   if (input.partial === "source") lines.push(PARTIAL_SOURCE_TURN);
   if (input.partial === "selection") lines.push(PARTIAL_SELECTED_TURN);
   if (input.excerpt) lines.push(OVERSIZED_ENTRY_EXCERPT);
-  let activeTurnLabelWritten = false;
+  let previousProvenance: NarrativeProvenance | null = null;
   for (const entry of input.entries) {
-    if (entry.activeTurn && !activeTurnLabelWritten) {
+    if (entry.provenance === "active_turn" && previousProvenance !== "active_turn") {
       lines.push(CURRENT_ACTIVE_TURN_PROGRESS);
-      activeTurnLabelWritten = true;
+    } else if (
+      entry.provenance === "surrounding"
+      && previousProvenance !== "surrounding"
+    ) {
+      lines.push(SURROUNDING_ROOM_ACTIVITY);
     }
     lines.push(entry.text);
+    previousProvenance = entry.provenance;
   }
   if (input.includeSuffix !== false && input.narrative.suffix) {
     lines.push(input.narrative.suffix);
@@ -307,13 +316,15 @@ function transcriptBlock(input: Readonly<{
 function truthfulBaselineTranscript(
   narrative: ForegroundNarrativeTranscriptV1,
 ): string | null {
-  if (narrative.turns.some((turn) => turn.provenance === "active_turn")) {
+  if (narrative.turns.some((turn) =>
+    turn.provenance === "active_turn" || turn.provenance === "surrounding"
+  )) {
     const firstTurn = narrative.turns.find((turn) => turn.entries.length > 0);
     return transcriptBlock({
       narrative,
       entries: narrative.turns.flatMap((turn) => turn.entries.map((text) => ({
         text,
-        activeTurn: turn.provenance === "active_turn",
+        provenance: turn.provenance ?? "prior",
       }))),
       omittedBefore: narrative.earlierEntriesOmitted,
       partial: firstTurn?.completeness === "partial" ? "source" : null,
@@ -333,6 +344,7 @@ function truthfulBaselineTranscript(
 function boundedNarrativeTranscript(input: Readonly<{
   readonly narrative: ForegroundNarrativeTranscriptV1;
   readonly maximumCharacters: number;
+  readonly maximumHistoricalCharacters?: number;
 }>): string | null {
   const { narrative } = input;
   if (input.maximumCharacters <= narrative.header.length) return null;
@@ -343,7 +355,7 @@ function boundedNarrativeTranscript(input: Readonly<{
     0,
     Math.trunc(narrative.minimumCompleteTurns),
   );
-  if (minimumCompleteTurns > 0) {
+  if (minimumCompleteTurns > 0 && input.maximumHistoricalCharacters === undefined) {
     let completeSeen = 0;
     let preferredStart = turns.length;
     for (let index = turns.length - 1; index >= 0; index -= 1) {
@@ -359,7 +371,7 @@ function boundedNarrativeTranscript(input: Readonly<{
         narrative,
         entries: preferredTurns.flatMap((turn) => turn.entries.map((text) => ({
           text,
-          activeTurn: turn.provenance === "active_turn",
+          provenance: turn.provenance ?? "prior",
         }))),
         omittedBefore: narrative.earlierEntriesOmitted || preferredStart > 0,
         partial: preferredTurns[0]?.completeness === "partial" ? "source" : null,
@@ -376,7 +388,7 @@ function boundedNarrativeTranscript(input: Readonly<{
       entry,
       turnIndex,
       entryIndex,
-      activeTurn: turn.provenance === "active_turn",
+      provenance: turn.provenance ?? "prior",
     }))
   );
   let selected: typeof flattened = [];
@@ -389,14 +401,38 @@ function boundedNarrativeTranscript(input: Readonly<{
       : firstTurn.completeness === "partial"
         ? "source" as const
         : null;
+    const selectionEntries = candidate.map(({ entry, provenance }) => ({
+      text: entry,
+      provenance,
+    }));
     const rendered = transcriptBlock({
       narrative,
-      entries: candidate.map(({ entry, activeTurn }) => ({ text: entry, activeTurn })),
+      entries: selectionEntries,
       omittedBefore: narrative.earlierEntriesOmitted || index > 0,
       partial,
       excerpt: false,
     });
-    if (rendered === null || rendered.length > input.maximumCharacters) break;
+    const historicalEntries = selectionEntries.filter(
+      (entry) => entry.provenance === "prior",
+    );
+    const historical = historicalEntries.length === 0
+      ? null
+      : transcriptBlock({
+          narrative,
+          entries: historicalEntries,
+          omittedBefore: true,
+          partial: "selection",
+          excerpt: false,
+          includeSuffix: false,
+        });
+    if (
+      rendered === null
+      || rendered.length > input.maximumCharacters
+      || (
+        input.maximumHistoricalCharacters !== undefined
+        && (historical?.length ?? 0) > input.maximumHistoricalCharacters
+      )
+    ) break;
     selected = candidate;
   }
   if (selected.length > 0) {
@@ -404,7 +440,7 @@ function boundedNarrativeTranscript(input: Readonly<{
     const firstTurn = turns[first.turnIndex]!;
     return transcriptBlock({
       narrative,
-      entries: selected.map(({ entry, activeTurn }) => ({ text: entry, activeTurn })),
+      entries: selected.map(({ entry, provenance }) => ({ text: entry, provenance })),
       omittedBefore:
         narrative.earlierEntriesOmitted
         || flattened.indexOf(first) > 0,
@@ -419,28 +455,32 @@ function boundedNarrativeTranscript(input: Readonly<{
 
   const newest = flattened.at(-1);
   if (newest === undefined) return null;
+  const excerptMaximum = newest.provenance === "prior"
+      && input.maximumHistoricalCharacters !== undefined
+    ? Math.min(input.maximumCharacters, input.maximumHistoricalCharacters)
+    : input.maximumCharacters;
   const emptyExcerpt = transcriptBlock({
     narrative,
-    entries: [{ text: "", activeTurn: newest.activeTurn }],
+    entries: [{ text: "", provenance: newest.provenance }],
     omittedBefore: true,
     partial: turns[newest.turnIndex]!.completeness === "partial"
       ? "source"
       : "selection",
     excerpt: true,
   });
-  const excerptAllowance = input.maximumCharacters - (emptyExcerpt?.length ?? 0);
+  const excerptAllowance = excerptMaximum - (emptyExcerpt?.length ?? 0);
   if (excerptAllowance <= 0) return null;
   const excerpt = clampText(newest.entry, excerptAllowance);
   const rendered = transcriptBlock({
     narrative,
-    entries: [{ text: excerpt, activeTurn: newest.activeTurn }],
+    entries: [{ text: excerpt, provenance: newest.provenance }],
     omittedBefore: true,
     partial: turns[newest.turnIndex]!.completeness === "partial"
       ? "source"
       : "selection",
     excerpt: true,
   });
-  return rendered !== null && rendered.length <= input.maximumCharacters
+  return rendered !== null && rendered.length <= excerptMaximum
     ? rendered
     : null;
 }
@@ -508,6 +548,8 @@ function lifecycleCounts(
  */
 export function buildForegroundContextProjectionV1(input: Readonly<{
   readonly maximumCharacters: number;
+  /** Historical Room allowance within the larger invocation envelope. */
+  readonly maximumHistoricalCharacters?: number;
   readonly journalBlock: string | null;
   readonly journalRollupPresent: boolean;
   readonly journalStatements: readonly string[];
@@ -542,15 +584,66 @@ export function buildForegroundContextProjectionV1(input: Readonly<{
     recordBlock,
     baselineTranscript,
   ]);
+  const historicalMaximum = Math.min(
+    input.maximumCharacters,
+    Math.max(
+      0,
+      Math.floor(input.maximumHistoricalCharacters ?? input.maximumCharacters),
+    ),
+  );
   if (
     completeBody === null
-    || completeBody.length <= input.maximumCharacters
+    || (
+      completeBody.length <= input.maximumCharacters
+      && (
+        input.maximumHistoricalCharacters === undefined
+        || completeBody.length <= historicalMaximum
+      )
+    )
   ) {
     body = completeBody;
     journalCharacters = input.journalBlock?.length ?? 0;
     recordCharacters = recordBlock?.length ?? 0;
     transcriptCharacters = baselineTranscript?.length ?? 0;
     packedRecordCount = selected.length;
+  } else if (input.maximumHistoricalCharacters !== undefined) {
+    const transcriptPresent = input.narrative.turns.some(
+      (turn) => turn.entries.length > 0,
+    );
+    const semanticPresent = input.journalBlock !== null || selected.length > 0;
+    const semanticTranscriptSeparator = semanticPresent && transcriptPresent ? 2 : 0;
+    const semantic = boundedSemanticSections({
+      journalBlock: input.journalBlock,
+      records: selected,
+      maximumCharacters: Math.max(
+        0,
+        historicalMaximum - semanticTranscriptSeparator,
+      ),
+    });
+    const semanticSections = [semantic.journal, semantic.records].filter(
+      (section): section is string => section !== null,
+    );
+    const semanticCharacters = semanticSections.reduce(
+      (sum, section) => sum + section.length,
+      0,
+    ) + Math.max(0, semanticSections.length - 1) * 2;
+    const transcriptSeparator = semanticSections.length > 0 && transcriptPresent ? 2 : 0;
+    const transcript = boundedNarrativeTranscript({
+      narrative: input.narrative,
+      maximumCharacters: Math.max(
+        0,
+        input.maximumCharacters - semanticCharacters - transcriptSeparator,
+      ),
+      maximumHistoricalCharacters: Math.max(
+        0,
+        historicalMaximum - semanticCharacters - transcriptSeparator,
+      ),
+    });
+    body = joinSections([semantic.journal, semantic.records, transcript]);
+    journalCharacters = semantic.journal?.length ?? 0;
+    recordCharacters = semantic.records?.length ?? 0;
+    transcriptCharacters = transcript?.length ?? 0;
+    packedRecordCount = semantic.packedRecordCount;
   } else {
     const transcriptPresent = input.narrative.turns.some(
       (turn) => turn.entries.length > 0,

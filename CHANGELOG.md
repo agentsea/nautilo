@@ -100,6 +100,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   on the search path.
 - Windows tests retain an event-loop reference while each test runs, allowing
   unref timers and test timeouts to settle instead of leaving a busy test process.
+- Long Genie turns retain their newest progress across context refreshes without
+  applying the older-history message count to the current run. Journal and
+  recalled Records remain available, concurrent Room activity is labelled as
+  surrounding history, and admitted replies keep their chronological position.
 
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed

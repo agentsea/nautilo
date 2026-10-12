@@ -57,6 +57,8 @@ export interface RoomHistoryHit {
   handle: string;
   /** Server-internal actor id. NEVER passed to the LLM. */
   authorActorId: string;
+  /** Durable Agent owner coordinate for execution-aware narration labels. */
+  authorAgentId?: string;
   snippet: string;
   /** Count-only reaction snapshot for woken-bot transcript lines. */
   reactions?: { emoji: string; count: number }[];
@@ -84,6 +86,7 @@ interface RawHistoryRow {
   agent_handle: string | null;
   agent_display_name: string | null;
   agent_actor_id: string | null;
+  author_agent_id?: string | null;
   user_handle: string | null;
   user_name: string | null;
   user_actor_id: string | null;
@@ -109,6 +112,7 @@ function selectHistoryRows(db: Pick<DirectDatabase, "select">) {
         "agent_display_name",
       ),
       agent_actor_id: sql<string | null>`${agentAuthor.id}`.as("agent_actor_id"),
+      author_agent_id: sql<string | null>`${sessions.agentId}`.as("author_agent_id"),
       user_handle: sql<string | null>`${users.handle}`.as("user_handle"),
       user_name: sql<string | null>`${userAuthor.displayName}`.as("user_name"),
       user_actor_id: sql<string | null>`${userAuthor.id}`.as("user_actor_id"),
@@ -280,6 +284,7 @@ export async function searchRoomHistory(
       ag.handle          AS agent_handle,
       aa.display_name    AS agent_display_name,
       aa.id              AS agent_actor_id,
+      s.agent_id         AS author_agent_id,
       u.handle           AS user_handle,
       ua.display_name    AS user_name,
       ua.id              AS user_actor_id
@@ -351,6 +356,11 @@ function mapHistoryRows(
       authorDisplayName: display ?? handle,
       handle,
       authorActorId: actorId,
+      ...(isAgentAuthoredEvidence
+        && typeof row.author_agent_id === "string"
+        && row.author_agent_id.length > 0
+        ? { authorAgentId: row.author_agent_id }
+        : {}),
       toolName: row.tool_name,
       snippet: contentProjection === "full" ? row.content : snippetOf(row.content),
       ...(typeof foregroundExecutionId === "string"
@@ -368,12 +378,15 @@ function mapHistoryRows(
 
 /**
  * Applies the same conversational-boundary rule as the production SQL to an
- * already-authorized oldest-first source. Tool rows remain attached to the
- * surviving boundary; a tool-only active tail remains intact.
+ * already-authorized oldest-first source. When a trigger coordinate is known,
+ * only earlier history spends the recency allowance; the complete visible
+ * timeline after the trigger remains attached. Tool rows remain attached to
+ * the surviving boundary, and a tool-only active tail remains intact.
  */
 export function recentConversationWindow(
   hits: readonly RoomHistoryHit[],
   conversationalLimit: number,
+  triggerMessageId?: number,
 ): RoomHistoryHit[] {
   const limit = Math.max(
     1,
@@ -382,6 +395,10 @@ export function recentConversationWindow(
   const boundaries: number[] = [];
   for (let index = 0; index < hits.length; index += 1) {
     const hit = hits[index]!;
+    if (
+      triggerMessageId !== undefined
+      && hit.messageId >= triggerMessageId
+    ) continue;
     if (
       hit.role === "user"
       || (
@@ -491,10 +508,12 @@ export async function allRoomMessages(
  * Selects the configured newest conversational boundaries after collapsing only
  * non-null user fingerprints, then retains every assistant/tool evidence row
  * from the earliest surviving boundary through either the exclusive fresh-turn
- * trigger or an inclusive committed refresh cut. Refresh reads keep only the
- * active Agent's output after the trigger, so later queued Human input remains
- * outside the running turn. The SQL may rank newest-first, but callers always
- * receive `(created_at, id)` oldest-first.
+ * trigger or an inclusive committed refresh cut. For an ordinary refresh, the
+ * conversational allowance ranks only pre-trigger history and every visible
+ * Room row after the trigger remains in the stable timeline. Authorized source
+ * reads remain page-limited so their caller can open and bound them safely. The
+ * SQL may rank newest-first, but callers always receive `(created_at, id)`
+ * oldest-first.
  */
 export async function recentBoundedRoomMessages(
   db: RoomHistorySearchDb,
@@ -509,14 +528,15 @@ export async function recentBoundedRoomMessages(
     /**
      * Stable durable upper cut for an in-process foreground refresh. Requires
      * both `excludeMessageId` (the accepted Human trigger) and `agentId`.
-     * Rows after the trigger are then limited to this Agent's assistant/tool
-     * output, so a queued Human message cannot leak into the active turn.
+     * Rows after the trigger form the Room's stable visible timeline through
+     * this cut. Accepted Human coordinates and their fan-out duplicates remain
+     * excluded separately.
      */
     throughMessageIdInclusive?: number;
     /**
-     * Ordinary server-owned execution identity. When supplied, competing
-     * post-trigger output is removed before the conversational source window
-     * is ranked.
+     * Ordinary server-owned execution identity. Source rows retain their own
+     * identities so the context renderer can distinguish owning progress from
+     * surrounding Room activity without narrowing the durable read.
      */
     foregroundExecutionId?: string;
     /**
@@ -597,17 +617,7 @@ export async function recentBoundedRoomMessages(
     : sql`false`;
   const transcriptBound = args.throughMessageIdInclusive !== undefined
     ? sql`AND sm.id <= ${args.throughMessageIdInclusive}
-        AND (
-          sm.id < ${args.excludeMessageId!}
-          OR (
-            sm.id > ${args.excludeMessageId!}
-            AND sm.role IN ('assistant', 'tool')
-            AND s.agent_id = ${args.agentId!}
-            ${args.foregroundExecutionId === undefined
-              ? sql``
-              : sql`AND sm.metadata->>'nautilo_foreground_execution_id' = ${args.foregroundExecutionId}`}
-          )
-        )`
+        AND sm.id <> ${args.excludeMessageId!}`
     : args.excludeMessageId != null
       ? sql`AND (sm.id < ${args.excludeMessageId} OR ${currentImageResult})`
       : sql``;
@@ -639,6 +649,11 @@ export async function recentBoundedRoomMessages(
   // that admitted post-trigger tail instead of letting the LEFT JOIN's null
   // anchor discard it. Do not widen an ordinary fresh read or pull older
   // pre-trigger evidence into this fallback.
+  const ordinaryRefreshTimeline =
+    args.throughMessageIdInclusive !== undefined
+    && args.authorizedConversationWindow !== true
+      ? sql`e.message_id > ${args.excludeMessageId!}`
+      : sql`false`;
   const refreshTailWithoutConversationalAnchor =
     args.throughMessageIdInclusive !== undefined
       ? sql`(first.message_id IS NULL AND e.message_id > ${args.excludeMessageId!})`
@@ -656,6 +671,7 @@ export async function recentBoundedRoomMessages(
         ag.handle AS agent_handle,
         aa.display_name AS agent_display_name,
         aa.id AS agent_actor_id,
+        s.agent_id AS author_agent_id,
         u.handle AS user_handle,
         ua.display_name AS user_name,
         ua.id AS user_actor_id,
@@ -712,17 +728,21 @@ export async function recentBoundedRoomMessages(
           )`}
     ),
     conversational AS (
-      SELECT message_id, ts
-      FROM page_eligible
+      SELECT e.message_id, e.ts
+      FROM page_eligible e
       WHERE
-        (role = 'user' AND fingerprint_ordinal = 1)
+        ${args.throughMessageIdInclusive !== undefined
+          && args.authorizedConversationWindow !== true
+          ? sql`e.message_id < ${args.excludeMessageId!} AND`
+          : sql``}
+        ((e.role = 'user' AND e.fingerprint_ordinal = 1)
         OR (
-          role = 'assistant'
+          e.role = 'assistant'
           AND ${args.authorizedConversationWindow
             ? sql`true`
-            : sql`btrim(content) <> ''`}
-        )
-      ORDER BY ts DESC, message_id DESC
+            : sql`btrim(e.content) <> ''`}
+        ))
+      ORDER BY e.ts DESC, e.message_id DESC
       LIMIT ${conversationalLimit}
     ),
     earliest AS (
@@ -740,6 +760,7 @@ export async function recentBoundedRoomMessages(
       e.agent_handle,
       e.agent_display_name,
       e.agent_actor_id,
+      e.author_agent_id,
       e.user_handle,
       e.user_name,
       e.user_actor_id,
@@ -750,6 +771,7 @@ export async function recentBoundedRoomMessages(
     WHERE
       (
         e.current_image_result
+        OR ${ordinaryRefreshTimeline}
         OR ${refreshTailWithoutConversationalAnchor}
         OR e.ts > first.ts
         OR (e.ts = first.ts AND e.message_id >= first.message_id)

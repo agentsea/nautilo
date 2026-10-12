@@ -154,10 +154,7 @@ export function createPersistingProcessor(
           ...(foregroundExecutionId === undefined
             ? {}
             : { foregroundExecutionId }),
-          onCommittedRows: (rows: readonly { id: string }[]) =>
-            foregroundContextReceipts.recordIds(
-              rows.map((row) => Number(row.id)),
-            ),
+          onCommittedRows: foregroundContextReceipts.recordMessages,
           requireDurable: "foreground-context" as const,
         }),
     ...(taskTurnId && deps.roomId && deps.agentId && deps.taskToolLifecycle ? {
@@ -250,8 +247,10 @@ export function createPersistingProcessor(
             ...(foregroundContextReceipts === undefined
               ? {}
               : {
-                  onCommittedMessageIds:
-                    foregroundContextReceipts.recordIds,
+                  // Protected publication can commit a strict subset of this
+                  // event batch. Until it supplies exact row/message pairs,
+                  // advance only the durable fence and do not guess alignment.
+                  onCommittedMessageIds: foregroundContextReceipts.recordIds,
                 }),
             persistOrdinary: (messages) =>
               persistOrdinary([...messages], assistantMessageKey),

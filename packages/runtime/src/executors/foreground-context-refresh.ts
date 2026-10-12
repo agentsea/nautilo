@@ -3,16 +3,27 @@ import { acceptedForegroundMessages } from "@nautilo/agent";
 export { acceptedForegroundMessages } from "@nautilo/agent";
 import { estimateTokenCount, type RebuildForegroundContext } from "@nautilo/agent";
 import type { ForegroundRecordContextPort } from "@nautilo/reflection/foreground";
+import { getContentAsString } from "@nautilo/message-invariants";
+import { RECENT_CONVERSATION_LIMIT_DEFAULT, type ResolvedServerContextConfig } from "@nautilo/db";
 import { buildForegroundHistoryMessages } from "../context/foreground-history";
 import { buildProtectedRoomHybridContext } from "../context/build-transcript-context";
 import type { ProtectedConversationExecutorTurnScope } from "../conversation/conversation-execution-services";
 import type { RoomHistoryHit } from "../conductor/history-search";
 import { imageAssistanceHistory } from "./image-assistance";
+import { defaultBuildTranscriptContextDeps } from "../context/build-transcript-context-deps";
+
+async function readRoomContextPolicy(): Promise<ResolvedServerContextConfig | undefined> {
+  const deps = defaultBuildTranscriptContextDeps();
+  try { return await deps.readRoomContextPolicy?.(); }
+  finally { await deps.close(); }
+}
 
 /** Only committed row receipts advance this execution's history read fence. */
 export class ForegroundContextReceipts {
   triggerMessageId: number | undefined;
   throughMessageIdInclusive: number | undefined;
+  readonly #humanMessageIds = new WeakMap<BaseMessage, number>();
+  readonly #humanMessageIdsByCheckpointId = new Map<string, number>();
 
   constructor(triggerMessageId?: number, private readonly captureTrigger = true) {
     this.triggerMessageId = triggerMessageId;
@@ -32,6 +43,63 @@ export class ForegroundContextReceipts {
       const human = rows.find((row) => row.role === "user");
       if (human) this.triggerMessageId = Number(human.id);
     }
+  };
+
+  readonly recordMessages = (
+    rows: readonly { id: string; role: string }[],
+    messages: readonly BaseMessage[],
+  ): void => {
+    if (rows.length !== messages.length) {
+      throw new Error("Committed transcript receipts do not align with their messages");
+    }
+    this.recordRows(rows);
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index]!;
+      const message = messages[index]!;
+      if (row.role !== "user" || !HumanMessage.isInstance(message)) continue;
+      const messageId = Number(row.id);
+      this.#humanMessageIds.set(message, messageId);
+      if (message.id) this.#humanMessageIdsByCheckpointId.set(message.id, messageId);
+    }
+  };
+
+  readonly acceptedMessageCoordinates = (
+    acceptedMessages: readonly BaseMessage[],
+    prior: readonly Readonly<{
+      acceptedMessageIndex: number;
+      messageId: number;
+    }>[] = [],
+  ): readonly Readonly<{ acceptedMessageIndex: number; messageId: number }>[] => {
+    const byIndex = new Map<number, number>();
+    const usedMessageIds = new Set<number>();
+    for (const coordinate of prior) {
+      if (
+        !Number.isSafeInteger(coordinate.acceptedMessageIndex)
+        || coordinate.acceptedMessageIndex < 0
+        || coordinate.acceptedMessageIndex >= acceptedMessages.length
+        || !Number.isSafeInteger(coordinate.messageId)
+        || coordinate.messageId < 1
+        || byIndex.has(coordinate.acceptedMessageIndex)
+        || usedMessageIds.has(coordinate.messageId)
+      ) continue;
+      byIndex.set(coordinate.acceptedMessageIndex, coordinate.messageId);
+      usedMessageIds.add(coordinate.messageId);
+    }
+    for (let index = 0; index < acceptedMessages.length; index += 1) {
+      if (byIndex.has(index)) continue;
+      const acceptedMessage = acceptedMessages[index]!;
+      const messageId = this.#humanMessageIds.get(acceptedMessage)
+        ?? (acceptedMessage.id
+          ? this.#humanMessageIdsByCheckpointId.get(acceptedMessage.id)
+          : undefined);
+      if (messageId !== undefined && !usedMessageIds.has(messageId)) {
+        byIndex.set(index, messageId);
+        usedMessageIds.add(messageId);
+      }
+    }
+    return [...byIndex]
+      .sort(([left], [right]) => left - right)
+      .map(([acceptedMessageIndex, messageId]) => ({ acceptedMessageIndex, messageId }));
   };
 }
 
@@ -108,7 +176,10 @@ export function createForegroundContextRebuilder(input: Readonly<{
   protectedTurn?: ProtectedConversationExecutorTurnScope;
   recordContext?: ForegroundRecordContextPort;
   onAuthorizedHistory?: (hits: readonly RoomHistoryHit[]) => void;
-}>, deps: Readonly<{ readHistory: typeof buildForegroundHistoryMessages }> = { readHistory: buildForegroundHistoryMessages }): RebuildForegroundContext {
+}>, deps: Readonly<{
+  readHistory: typeof buildForegroundHistoryMessages;
+  readRoomContextPolicy?: () => Promise<ResolvedServerContextConfig | undefined>;
+}> = { readHistory: buildForegroundHistoryMessages, readRoomContextPolicy }): RebuildForegroundContext {
   return async ({ state, request, signal }) => {
     signal?.throwIfAborted();
     const source = state.foregroundContextRefreshSource;
@@ -126,6 +197,23 @@ export function createForegroundContextRebuilder(input: Readonly<{
     const accepted = acceptedForegroundMessages(source.acceptedMessages, state.messages);
     const cutAdvanced = receiptCut !== undefined
       && (sourceCut === undefined || receiptCut > sourceCut);
+    const acceptedMessageCoordinates = input.receipts.acceptedMessageCoordinates(
+      accepted,
+      source.acceptedMessageCoordinates,
+    );
+    const coordinatedPostTrigger = cutAdvanced
+      ? acceptedMessageCoordinates.filter((coordinate) => coordinate.messageId > trigger)
+      : [];
+    const coordinatedAcceptedIndexes = new Set(
+      coordinatedPostTrigger.map((coordinate) => coordinate.acceptedMessageIndex),
+    );
+    const acceptedPrefix = accepted.filter(
+      (_message, index) => !coordinatedAcceptedIndexes.has(index),
+    );
+    const acceptedHumanMessages = coordinatedPostTrigger.map((coordinate) => ({
+      messageId: coordinate.messageId,
+      message: accepted[coordinate.acceptedMessageIndex]!,
+    }));
     const retained = cutAdvanced
       ? { messages: [], narrativeInsertionIndex: 0 }
       : liveSegmentForRebuild(state.messages, source.acceptedMessages);
@@ -142,11 +230,14 @@ export function createForegroundContextRebuilder(input: Readonly<{
             - estimateTokenCount(source.retainedMessages ?? []),
         ) * 4,
     );
-    const currentHumanText = accepted.map((message) => typeof message.content === "string" ? message.content : "").join("\n");
+    const currentHumanText = accepted.map((message) => getContentAsString(message.content)).join("\n");
     let history: BaseMessage[];
     if (input.protectedTurn !== undefined) {
+      const roomPolicy = await deps.readRoomContextPolicy?.();
       const result = await input.protectedTurn.readFreshHistory({
         throughMessageIdInclusive: through,
+        maximumContextCharacters: narrativeMaximumCharacters,
+        recentConversationLimit: roomPolicy?.recentConversationLimit ?? RECENT_CONVERSATION_LIMIT_DEFAULT,
         excludeMessageId: trigger,
         ...(source.acceptedMessageIds === undefined ? {} : { excludeMessageIds: source.acceptedMessageIds }),
         ...(source.executionId === undefined
@@ -159,7 +250,11 @@ export function createForegroundContextRebuilder(input: Readonly<{
             currentHumanText,
             modelId: request.modelId,
             maximumContextCharacters: narrativeMaximumCharacters,
+            ...(roomPolicy === undefined ? {} : { roomPolicy }),
             activeTurnAfterMessageId: trigger,
+            foregroundAgentId: input.agentId,
+            ...(acceptedHumanMessages.length === 0 ? {} : { acceptedHumanMessages }),
+            ...(source.executionId === undefined ? {} : { foregroundExecutionId: source.executionId }),
             ...(input.recordContext === undefined ? {} : { recordContext: input.recordContext }),
             ...(signal === undefined ? {} : { signal }),
           });
@@ -179,6 +274,7 @@ export function createForegroundContextRebuilder(input: Readonly<{
         currentMessageId: trigger,
         ...(source.acceptedMessageIds === undefined ? {} : { excludeMessageIds: source.acceptedMessageIds }),
         throughMessageIdInclusive: through,
+        ...(acceptedHumanMessages.length === 0 ? {} : { acceptedHumanMessages }),
         ...(source.executionId === undefined
           ? {}
           : { foregroundExecutionId: source.executionId }),
@@ -193,10 +289,17 @@ export function createForegroundContextRebuilder(input: Readonly<{
       });
     }
     signal?.throwIfAborted();
-    const { retainedMessages: _previousRetained, ...sourceWithoutRetained } = source;
+    const {
+      retainedMessages: _previousRetained,
+      acceptedMessageCoordinates: _previousCoordinates,
+      ...sourceWithoutRetained
+    } = source;
     const nextSource = {
       ...sourceWithoutRetained,
       acceptedMessages: accepted,
+      ...(acceptedMessageCoordinates.length === 0
+        ? {}
+        : { acceptedMessageCoordinates }),
       triggerMessageId: trigger,
       throughMessageIdInclusive: through,
       ...(retainedLiveSegment.length === 0
@@ -223,7 +326,7 @@ export function createForegroundContextRebuilder(input: Readonly<{
       // request after its narrated results makes it look newly issued at each
       // segment boundary and can restart already-completed work.
       // eslint-disable-next-line nautilo-msg/no-naked-message-concat -- accepted Human context and narrative contain no tool-call protocol messages.
-      messages: accepted.concat(history),
+      messages: acceptedPrefix.concat(history),
       source: nextSource,
     };
   };

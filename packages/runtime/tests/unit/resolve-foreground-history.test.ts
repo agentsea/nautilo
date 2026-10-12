@@ -57,6 +57,24 @@ function capturingDeps(hits: RoomHistoryHit[]): {
 }
 
 describe("resolveForegroundHistoryMessages", () => {
+  test.each([undefined, NaN, Infinity, -1])("refresh rejects invalid invocation allowance %s before reading context", async (maximumContextCharacters) => {
+    let reads = 0;
+    const deps: BuildTranscriptContextDeps = {
+      readRoomTranscript: async () => { reads += 1; return []; },
+      readRoomTranscriptSourcePage: async () => { reads += 1; return { fixedPrefix: [], page: [] }; },
+      readRoomJournal: async () => { reads += 1; return { rollup: null, events: [] }; },
+      readSubagentTranscript: async () => [],
+    };
+    const failure = await resolveForegroundHistoryMessages({
+      turnKind: "fresh", roomId: "room", transcriptOwnerId: "owner", agentId: "agent",
+      currentMessageId: 10, throughMessageIdInclusive: 13,
+      ...(maximumContextCharacters === undefined ? {} : { maximumContextCharacters }),
+    }, deps).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(RangeError);
+    expect((failure as Error).message).toBe("Foreground refresh requires a finite nonnegative invocation allowance");
+    expect(reads).toBe(0);
+  });
+
   test("DM fresh turn builds from the transcript", async () => {
     const { deps, scopes } = capturingDeps([
       makeHit("alice", "Alice", "hello", "2026-06-01T10:00:00Z"),
@@ -106,7 +124,7 @@ describe("resolveForegroundHistoryMessages", () => {
     expect(scopes[0]!.subthread).toBeUndefined();
   });
 
-  test("refresh keeps prior history and only this execution's post-trigger rows", async () => {
+  test("refresh keeps prior history and narrates the visible post-trigger timeline", async () => {
     const { deps, scopes } = capturingDeps([
       { ...makeHit("alice", "Alice", "older request", "2026-06-01T10:00:00Z"), messageId: 8, role: "user" },
       { ...makeHit("alice", "Alice", "active request", "2026-06-01T10:00:01Z"), messageId: 10, role: "user" },
@@ -122,6 +140,7 @@ describe("resolveForegroundHistoryMessages", () => {
       currentMessageId: 10,
       throughMessageIdInclusive: 13,
       foregroundExecutionId: "turn-active",
+      maximumContextCharacters: 4_000,
     }, deps);
 
     expect(scopes[0]).toMatchObject({
@@ -135,7 +154,8 @@ describe("resolveForegroundHistoryMessages", () => {
     expect(rendered).toContain("older request");
     expect(rendered).toContain("own completed result");
     expect(rendered).not.toContain("active request");
-    expect(rendered).not.toContain("other concurrent result");
+    expect(rendered).toContain("other concurrent result");
+    expect(rendered).toContain("Surrounding Room activity during the current logical turn");
   });
 
   test("Full refresh pages before windowing so concurrent output cannot evict ten owned anchors", async () => {
@@ -242,6 +262,7 @@ describe("resolveForegroundHistoryMessages", () => {
         currentMessageId: trigger,
         throughMessageIdInclusive: laterTool.messageId,
         foregroundExecutionId: "turn-active",
+        maximumContextCharacters: 4_000,
       }, deps),
     });
 
@@ -254,7 +275,8 @@ describe("resolveForegroundHistoryMessages", () => {
       expect(rendered).toContain(`own-${index}`);
     }
     expect(rendered).toContain("later-own-tool");
-    expect(rendered).not.toContain("concurrent-visible");
+    expect(rendered).toContain("concurrent-visible");
+    expect(rendered).toContain("Surrounding Room activity during the current logical turn");
   });
 
   test("Full refresh cancellation stops before an older authorized page", async () => {
@@ -336,6 +358,7 @@ describe("resolveForegroundHistoryMessages", () => {
           currentMessageId: 100,
           throughMessageIdInclusive: 102,
           foregroundExecutionId: "turn-active",
+          maximumContextCharacters: 4_000,
           signal: controller.signal,
         }, deps),
       });
@@ -346,7 +369,7 @@ describe("resolveForegroundHistoryMessages", () => {
     expect(pageCalls).toBe(1);
   });
 
-  test("Full refresh rejects an injected source page that moves forward", async () => {
+  test.each([false, true])("Full refresh rejects a forward or overlapping source page (overlap=%s)", async (overlap) => {
     const rows = [
       {
         messageId: 102,
@@ -375,10 +398,13 @@ describe("resolveForegroundHistoryMessages", () => {
         throw new Error("protected refresh must use the authorized pager");
       },
       readRoomTranscriptSourcePage: async () => {
-        const row = rows[pageCalls++]!;
+        const page = pageCalls++ === 0 ? [rows[0]!] : overlap
+          ? [{ ...rows[0]!, messageId: 101, sourceOrderTimestamp: "2026-06-01T10:00:00.000400Z" }, rows[0]!]
+          : [rows[1]!];
+        const row = page[0]!;
         return {
           fixedPrefix: [],
-          page: [row],
+          page,
           nextBefore: {
             orderTimestamp: row.sourceOrderTimestamp,
             messageId: row.messageId,
@@ -433,12 +459,13 @@ describe("resolveForegroundHistoryMessages", () => {
           currentMessageId: 100,
           throughMessageIdInclusive: 103,
           foregroundExecutionId: "turn-active",
+          maximumContextCharacters: 4_000,
         }, deps),
       });
       throw new Error("expected protected history pager rejection");
     } catch (error) {
       expect(error).toBeInstanceOf(Error);
-      expect((error as Error).message).toContain("did not move backward");
+      expect((error as Error).message).toContain(overlap ? "overlaps its previous cursor" : "did not move backward");
     }
     expect(pageCalls).toBe(2);
   });
