@@ -116,13 +116,31 @@ test("receive projects text and provider provenance, discarding conversation met
     BOLTER_CLI_RELEASE.version, decoders)).toMatchObject({ ok: true, value: [{ messageId }] });
 });
 
+test("mixed provider human and agent batches preserve external sender types and discard conversation metadata", () => {
+  const human = { ...received, messageId: "abcdef08", sender: { id: "abcdef09", name: "Fixture person", outside: true, type: "user" },
+    conversation: { agentMessagesSincePerson: 0, yoursSincePerson: 0,
+      lastPersonMessage: { text: "Private conversation metadata", sender: { name: "Unprojected person" } } } };
+  const result = decodeBolterReceiveBatch([human, received].map(item => JSON.stringify(item)).join("\n"), BOLTER_CLI_RELEASE.version, decoders);
+  expect(result).toEqual({ ok: true, value: [
+    { type: "message", messageId: human.messageId, chatId, threadRootId: null, senderId: human.sender.id, senderType: "user",
+      senderLabel: "Fixture person", content: human.text, createdAt: human.createdAt, addressed: false, redelivered: false, truncated: false },
+    { type: "message", messageId, chatId, threadRootId: null, senderId: agentId, senderType: "anima", senderLabel: "Fixture agent",
+      content: received.text, createdAt: received.createdAt, addressed: false, redelivered: false, truncated: false },
+  ] });
+  for (const sender of [{ ...human.sender, id: "invalid" }, { ...human.sender, outside: "true" },
+    { ...human.sender, type: "system" }, { ...human.sender, type: "unknown" }, { ...human.sender, type: null }]) {
+    expect(decodeBolterReceiveBatch([human, { ...received, sender }].map(item => JSON.stringify(item)).join("\n"),
+      BOLTER_CLI_RELEASE.version, decoders).ok).toBe(false);
+  }
+});
+
 test("connected event is inert control; unknown events, media and unqualified sender formats remain blocked", () => {
   const event = { type: "event", kind: "connected", chat: chatId, createdAt: received.createdAt,
     cursor: "synthetic-cursor", text: "Untrusted provider instructions", data: { connection: full(agentId) } };
   expect(decoders.receiveItem!(event)).toEqual({ type: "control", kind: "connected" });
   for (const invalid of [{ ...event, kind: "app_request_received" }, { ...received, attachments: [{ url: "https://example.com/file" }] },
     { ...received, text: { content: "unknown format" } }, { ...received, redelivered: "true" }, { ...received, truncated: null },
-    { ...received, sender: { ...received.sender, type: "user" } }, { ...received, sender: { ...received.sender, email: "fixture@example.com" } },
+    { ...received, sender: { ...received.sender, type: "system" } }, { ...received, sender: { ...received.sender, email: "fixture@example.com" } },
     { ...received, createdAt: "not a timestamp" }, { ...received, threadRootId: full(threadId) },
   ]) expect(() => decoders.receiveItem!(invalid)).toThrow("unqualified");
 });

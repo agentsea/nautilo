@@ -77,13 +77,14 @@ export function getBolterProductionDecoders(version: string): BolterQualifiedDec
       || (message["replyToId"] !== null && !alias(message["replyToId"]))
       || typeof message["addressed"] !== "boolean" || !nonempty(message["chatName"]) || !timestamp(message["createdAt"])
       || !nonempty(message["cursor"]) || !text(message["text"]) || !conversation || typeof conversation !== "object" || Array.isArray(conversation)
-      || !alias(sender["id"]) || !nonempty(sender["name"]) || typeof sender["outside"] !== "boolean" || sender["type"] !== "anima"
+      || !alias(sender["id"]) || !nonempty(sender["name"]) || typeof sender["outside"] !== "boolean"
+      || (sender["type"] !== "anima" && sender["type"] !== "user")
       || (Object.hasOwn(message, "redelivered") && typeof message["redelivered"] !== "boolean")
       || (Object.hasOwn(message, "truncated") && typeof message["truncated"] !== "boolean")) throw unqualified();
     // Conversation counters/cursor/provider prose never become routing, identity, or execution authority.
     // This version omits flags on observed complete text and repeated handovers; canonical IDs still deduplicate.
     return { type: "message", messageId: message["messageId"], chatId: message["chat"], threadRootId: message["threadRootId"],
-      senderId: sender["id"], senderType: "anima", senderLabel: sender["name"], content: message["text"], createdAt: message["createdAt"],
+      senderId: sender["id"], senderType: sender["type"], senderLabel: sender["name"], content: message["text"], createdAt: message["createdAt"],
       addressed: message["addressed"], redelivered: message["redelivered"] ?? false, truncated: message["truncated"] ?? false };
   }, receipt(raw: unknown): unknown {
     const outer = record(raw, ["text", "isError"]);
