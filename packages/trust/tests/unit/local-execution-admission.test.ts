@@ -15,7 +15,6 @@ describe("managed execution contained admission", () => {
       expect(resolveWorkstationAdmission({ ...evidence, session: null }).override).toBe("none");
       expect(resolveWorkstationAdmission({ ...evidence, exactPlan: false }).override).toBe("none");
       expect(resolveWorkstationAdmission({ ...evidence, executionClass: "real_workstation" }).override).toBe("none");
-      expect(resolveWorkstationAdmission({ ...evidence, executionClass: "typed_broker" }).override).toBe("none");
     }
   });
 });

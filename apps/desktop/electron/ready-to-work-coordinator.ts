@@ -1,4 +1,4 @@
-/** One-shot D557 reconciliation over the existing feature owners. */
+/** One-shot Ready to work reconciliation over the existing feature owners. */
 
 import {
   READY_TO_WORK_COMPONENT_IDS,
@@ -30,7 +30,7 @@ export interface ReadyToWorkCoordinatorOwners {
   disableCodingConnection(): Promise<void>;
 }
 
-/** Serializes only D557 mutations/reconciliation; renderer acknowledgements bypass it. */
+/** Serializes only Ready to work mutations/reconciliation; renderer acknowledgements bypass it. */
 export class ReadyToWorkOperationQueue {
   private tail: Promise<void> = Promise.resolve();
 
@@ -73,7 +73,7 @@ export async function commitReadyOwnerEnable(input: Readonly<{
   return true;
 }
 
-/** A freshly minted D516 receipt survives only if its provider is still live. */
+/** A freshly minted Computer Use receipt survives only if its provider is still live. */
 export async function commitReadyComputerUseEnable(input: Readonly<{
   providerReady: () => boolean | Promise<boolean>;
   disable: () => Promise<void>;
@@ -153,12 +153,13 @@ export class ReadyToWorkCoordinator {
     desired: ReadyToWorkDesiredState,
     observed: Partial<Record<ReadyToWorkComponentId, OwnerResult>>,
   ): ReadyToWorkAggregateStatus {
-    const key = `${attemptKey(desired)}\0${READY_TO_WORK_COMPONENT_IDS
-      .map((id) => desired.components[id] ? "1" : "0").join("")}`;
+    const key = attemptKey(desired);
     const merged: Partial<Record<ReadyToWorkComponentId, OwnerResult>> = {};
+    // Independent choices retain their observations only under the exact same
+    // Human and connection. An Off observation discards that owner's old state.
     if (this.snapshotKey === key) {
       for (const component of this.snapshot.components) {
-        if (component.state !== "off_by_choice" && component.repairTarget !== null) {
+        if (desired.components[component.id] && component.state !== "off_by_choice" && component.repairTarget !== null) {
           merged[component.id] = {
             state: component.state,
             reason: component.reason,
@@ -177,6 +178,8 @@ export class ReadyToWorkCoordinator {
     desired: ReadyToWorkDesiredState;
     trigger: ReconcileTrigger;
     isCurrent: () => boolean | Promise<boolean>;
+    /** Restore ancillary choices without touching independent Development authority. */
+    componentsOnly?: boolean;
   }>): Promise<ReadyToWorkAggregateStatus> {
     const key = attemptKey(input.desired);
     if (input.trigger === "startup" && this.startupAttemptKey === key) return this.snapshot;
@@ -186,8 +189,7 @@ export class ReadyToWorkCoordinator {
       for (const id of READY_TO_WORK_COMPONENT_IDS) {
         if (input.desired.components[id]) observed[id] = failed(id, "authority_changed");
       }
-      this.snapshotKey = `${key}\0${READY_TO_WORK_COMPONENT_IDS
-        .map((id) => input.desired.components[id] ? "1" : "0").join("")}`;
+      this.snapshotKey = key;
       this.snapshot = readyToWorkAggregateStatus(input.desired, observed);
       return this.snapshot;
     }
@@ -221,8 +223,10 @@ export class ReadyToWorkCoordinator {
       if (input.desired.components.voice) observed.voice = failed("voice", "authority_changed");
       if (input.desired.components.auto_approve) observed.auto_approve = failed("auto_approve", "authority_changed");
     }
-    await run("workstation", () => this.owners.restoreWorkstation(input.desired),
-      () => this.owners.disableWorkstation());
+    if (!input.componentsOnly) {
+      await run("workstation", () => this.owners.restoreWorkstation(input.desired),
+        () => this.owners.disableWorkstation());
+    }
     await run("computer_use", () => this.owners.observeComputerUse(input.desired),
       () => this.owners.disableComputerUse());
     await run("coding_connection", () => this.owners.restoreCodingConnection(input.desired, input.isCurrent),
@@ -235,8 +239,7 @@ export class ReadyToWorkCoordinator {
         }
       }
     }
-    this.snapshotKey = `${key}\0${READY_TO_WORK_COMPONENT_IDS
-      .map((id) => input.desired.components[id] ? "1" : "0").join("")}`;
+    this.snapshotKey = key;
     this.snapshot = readyToWorkAggregateStatus(input.desired, observed);
     return this.snapshot;
   }

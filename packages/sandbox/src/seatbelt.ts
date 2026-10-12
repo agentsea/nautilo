@@ -38,6 +38,7 @@ import { warn } from "@nautilo/logger";
 
 import {
   SAFE_ENV_VARS,
+  withoutNativeLoaderEnvironment,
   isDangerousEnvVar,
   isReservedEnvVar,
 } from "./env-vars";
@@ -58,6 +59,8 @@ export interface SandboxExecBuildOptions {
   readonly args: readonly string[];
   /** Trusted local Developer Workstation profile; never sourced from wire config. */
   readonly allowWorkspaceGovernanceWrites?: boolean;
+  /** Locally admitted developer access to user credential files; never wire policy. */
+  readonly allowUserCredentialFiles?: boolean;
   /**
    * Whether to allow outbound + inbound network. Defaults to true
    * for Phase 2 (parity with bubblewrap — no network containment).
@@ -112,6 +115,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // unit-testable without pulling in `child_process` or env state.
   const profile = buildSbplProfile({
     workspace: opts.workspace,
+    allowUserCredentialFiles: opts.allowUserCredentialFiles === true,
     dataDir: opts.dataDir,
     toolsBin: opts.toolsBin,
     config: opts.config,
@@ -136,7 +140,7 @@ export function buildSandboxExec(opts: SandboxExecBuildOptions): SpawnArgs {
   // env leak — spawn will pass exactly this object.
   const env: Record<string, string> = opts.preparedEnvironment === undefined
     ? {}
-    : { ...opts.preparedEnvironment };
+    : withoutNativeLoaderEnvironment(opts.preparedEnvironment);
 
   // Hardened defaults (match bubblewrap.ts Step 11 Spacebot
   // src/sandbox.rs:556-570).

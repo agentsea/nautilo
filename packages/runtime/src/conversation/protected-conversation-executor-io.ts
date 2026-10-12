@@ -62,10 +62,16 @@ function isTransientContext(message: BaseMessage): boolean {
 }
 
 function nativeToolArguments(
-  type: "tool_use" | "tool_call" | "function",
+  type: "tool_use" | "tool_call" | "function" | "functionCall",
   record: Readonly<Record<string, unknown>>,
 ): unknown {
   if (type === "tool_call") return record["args"];
+  if (type === "functionCall") {
+    const functionCall = record["functionCall"];
+    return typeof functionCall === "object" && functionCall !== null
+      ? (functionCall as Readonly<Record<string, unknown>>)["args"]
+      : undefined;
+  }
   const nested = record["function"];
   // LangChain Anthropic streaming accumulates input_json_delta into a JSON
   // string in the native tool_use block, while tool_calls.args is parsed.
@@ -136,20 +142,28 @@ function visibleContent(message: BaseMessage): string {
       AIMessage.isInstance(message)
       && (record["type"] === "tool_use"
         || record["type"] === "tool_call"
-        || record["type"] === "function")
+        || record["type"] === "function"
+        || record["type"] === "functionCall")
     ) {
       // Provider-native tool transport is represented canonically by
       // `message.tool_calls` below. Accept it only when LangChain produced that
       // canonical call too; otherwise dropping the block would lose secret
       // tool arguments from the protected transcript.
-      const id = typeof record["id"] === "string" ? record["id"] : undefined;
-      const name = typeof record["name"] === "string"
-        ? record["name"]
-        : typeof (record["function"] as Record<string, unknown> | undefined)?.["name"] === "string"
-        ? (record["function"] as Record<string, unknown>)["name"] as string
+      const geminiFunctionCall = record["type"] === "functionCall"
+        && typeof record["functionCall"] === "object"
+        && record["functionCall"] !== null
+        ? record["functionCall"] as Record<string, unknown>
         : undefined;
+      const identity = geminiFunctionCall ?? record;
+      const id = typeof identity["id"] === "string" ? identity["id"] : undefined;
+      const name = typeof identity["name"] === "string"
+        ? identity["name"]
+        : typeof (record["function"] as Record<string, unknown> | undefined)?.["name"] === "string"
+          ? (record["function"] as Record<string, unknown>)["name"] as string
+          : undefined;
       const type = record["type"];
       const rawFingerprint = name === undefined
+        || (type === "functionCall" && (id === undefined || id.length === 0))
         ? null
         : canonicalToolCallFingerprint({
             name,

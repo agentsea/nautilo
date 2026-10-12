@@ -14,6 +14,8 @@ import { Sandbox } from "./sandbox";
 export interface RelayDispatchSandboxLocalAuthority {
   /** Runtime-only; never accepted from the serialized Relay envelope. */
   readonly allowWorkspaceGovernanceWrites?: boolean;
+  /** Locally admitted developer access to user credential files; never wire policy. */
+  readonly allowUserCredentialFiles?: boolean;
   readonly managedHome?: string;
   readonly preparedEnvironment?: Readonly<Record<string, string>>;
 }

@@ -4,13 +4,13 @@ import { getToolPolicy, getRegisteredToolNames } from "../../src/tool-policies";
 describe("tool policy registry", () => {
   test("all built-in tool policies are registered, including local execution replacements", () => {
     const names = getRegisteredToolNames();
-    expect(names).toHaveLength(111);
+    expect(names).toHaveLength(109);
     expect(names).toContain("exec_command");
     expect(names).toContain("write_stdin");
-    expect(names).toContain("local_git");
     expect(names).toContain("read_shell_output");
     expect(names).toContain("human_terminal");
-    expect(names).toContain("local_github");
+    expect(names).not.toContain("local_git");
+    expect(names).not.toContain("local_github");
     expect(names).toContain("browse_web");
     expect(names).toContain("apply_patch");
     expect(names).toContain("select_current_folder");

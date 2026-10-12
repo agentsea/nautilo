@@ -16,8 +16,7 @@
  *     local binding / sandbox construction remains fail-closed execution
  *     authority, not server-side admission evidence.
  *   - explicit Real Workstation run_shell attempts proceed to independent
- *     Electron local consent; typed brokers use the exact active-session
- *     plan proof and proceed to the local GitBroker.
+ *     Electron local consent.
  *   - no active session ⇒ `no_active_session` for a profile-bound sandbox
  *     dispatch (Full Mode off; D375 client ask→auto and the PIN dock run
  *     unchanged).
@@ -69,7 +68,7 @@ function baseEvidence(
 
 function assertAuto(
   evidence: WorkstationAdmissionEvidence,
-  executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation" = "profile_bound_sandbox",
+  executionClass: "profile_bound_sandbox" | "real_workstation" = "profile_bound_sandbox",
 ): void {
   const d = resolveWorkstationAdmission(evidence);
   expect(d).toEqual({ override: "auto", executionClass });
@@ -118,18 +117,11 @@ describe("resolveWorkstationAdmission — happy path", () => {
   });
 });
 
-describe("resolveWorkstationAdmission — real workstation and typed broker", () => {
+describe("resolveWorkstationAdmission — real workstation", () => {
   test("explicit real_workstation run_shell proceeds to Electron local consent", () => {
     assertAuto(
       baseEvidence({ executionClass: "real_workstation" }),
       "real_workstation",
-    );
-  });
-
-  test("typed_broker → auto with an active session + exact plan", () => {
-    assertAuto(
-      baseEvidence({ executionClass: "typed_broker" }),
-      "typed_broker",
     );
   });
 
@@ -153,13 +145,6 @@ describe("resolveWorkstationAdmission — real workstation and typed broker", ()
     );
   });
 
-  test("typed_broker still requires an active session", () => {
-    assertNone(
-      baseEvidence({ executionClass: "typed_broker", session: null }),
-      "no_active_session",
-      "typed_broker",
-    );
-  });
 });
 
 describe("resolveWorkstationAdmission — active session required", () => {

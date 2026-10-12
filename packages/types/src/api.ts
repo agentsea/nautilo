@@ -1077,6 +1077,8 @@ export interface RoomMessageDto {
   content: string;
   toolCalls?: string | null;
   toolName?: string | null;
+  /** Canonical invocation identity for a persisted tool result. */
+  toolCallId?: string;
   displayContent?: string;
   createdAt: string;
   /** null until the first successful edit. */

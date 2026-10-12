@@ -1504,6 +1504,8 @@ const reviewedBridgeProductConsumerInventory = [
   // its exact server-side fixtures verify these boundaries without new stores.
   "packages/agent/src/tools/memory/projection-sharing.ts -> @nautilo/lattice-bridge",
   "packages/agent/tests/unit-isolated/protected-checkpoint-resume.test.ts -> @nautilo/lattice-bridge",
+  // Type-only embedding port for the hermetic protected Memory admission test.
+  "packages/agent/tests/unit-isolated/model-tool-call-secondary-ingress.test.ts -> @nautilo/lattice-bridge",
   "packages/agent/tests/unit/friendly-errors.test.ts -> @nautilo/lattice-bridge",
   "packages/agent/tests/unit/protected-memory-projection-continuation.test.ts -> @nautilo/lattice-bridge",
   "packages/agent/tests/unit/tools-lifecycle-events.test.ts -> @nautilo/lattice-bridge",

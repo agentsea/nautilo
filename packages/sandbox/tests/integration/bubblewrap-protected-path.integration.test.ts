@@ -39,6 +39,7 @@ describe("D418 protected paths — live bubblewrap", () => {
     writeFileSync(mask, "");
 
     const wrapped = buildBubblewrap({
+      bwrapExecutable: "/usr/bin/bwrap",
       workspace,
       dataDir: join(workspace, "data"),
       toolsBin: "/usr/bin",

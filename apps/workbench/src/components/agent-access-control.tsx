@@ -112,9 +112,9 @@ export function AgentAccessControl({ readyToWork = desktopAPI?.readyToWork,
       if (!stored.ok) throw new Error("Profile unavailable");
       const reviewed = await workstationProfiles.prepareActivation();
       if (!current()) return;
-      if (!reviewed.ok || !reviewed.data.scope || reviewed.data.seed.id !== stored.data.profile.id
-        || reviewed.data.seed.revision !== stored.data.profile.revision
-        || reviewed.data.seed.protectedPolicyVersion !== stored.data.profile.protectedPolicyVersion) throw new Error("Profile changed during review");
+      // Desktop may review a shipped upgrade before persisting it with PIN consent.
+      // Activation revalidates the exact reviewed revision; the stored revision can be older.
+      if (!reviewed.ok || !reviewed.data.scope || reviewed.data.seed.id !== stored.data.profile.id) throw new Error("Profile review unavailable");
       setDevelopmentReview(reviewed.data); setOpen(false); setPinAction("development");
     } catch {
       if (current()) setReviewError("Development scope could not be reviewed. Check the profile and try again.");
@@ -170,6 +170,10 @@ export function AgentAccessControl({ readyToWork = desktopAPI?.readyToWork,
       </div>
     </details>
     {access.error || fullMacError || reviewError ? <p role="alert" className="text-xs text-error">{reviewError ?? fullMacError ?? access.error}</p> : null}
+    {compact && <nav aria-label="Agent access settings" className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2 text-xs text-primary">
+      <a href="/settings#workstation-access">Workstation access settings</a>
+      <a href="/settings#startup">Ready to work settings</a>
+    </nav>}
   </div>;
   return <>
     {compact ? <>
@@ -187,6 +191,7 @@ export function AgentAccessControl({ readyToWork = desktopAPI?.readyToWork,
         <p>Network: {developmentReview.scope.network.mode === "host" ? "Destinations available to this Mac, including the internet." : developmentReview.scope.network.mode === "isolated" ? "Isolated network." : developmentReview.scope.network.allow.map(rule => `${rule.kind}: ${rule.value}`).join(", ") || "No allowed destinations."}</p>
         <p>Tools: {developmentReview.seed.capabilities.map(capability => capability.id).join(", ") || "None declared"}.</p>
         <p>Environment names: {developmentReview.scope.environmentKeys.join(", ") || "None"}.</p>
+        {developmentReview.seed.userEnvironment === true ? <p className="font-medium text-foreground">Your developer environment: Commands and package scripts can read and use credentials in your home folder and use your shell environment and credential helpers. They can also change or delete other files in your home folder and install or update tools there and in discovered Homebrew directories. Network restrictions still apply.</p> : null}
         <p>Tool and network access can send data to reachable destinations. This does not grant Full Mac access.</p>
       </div> : undefined}
       error={fullMacError ?? access.error ?? undefined} submitting={busy} submittingLabel="Checking access…"

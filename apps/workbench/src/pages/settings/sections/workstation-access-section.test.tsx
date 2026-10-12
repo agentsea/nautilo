@@ -30,6 +30,7 @@ const getSeedDescriptor = mock(async () => ({
     discoveryProviders: ["path"],
     environmentKeys: ["PATH"],
     capabilities: [{ id: "developer_tools", backend: "local_process" }],
+    userEnvironment: true,
   },
 }));
 const runDiscoveryReview = mock(async () => ({
@@ -562,6 +563,7 @@ describe("DesktopFilesystemAccessSection", () => {
   test("uses the compact PIN prompt after the user acknowledged this revision", async () => {
     const view = render(<DesktopFilesystemAccessSection />);
     await view.findByText("Discovery review");
+    expect(view.getByText(/Commands and package scripts can read and use credentials in your home folder/)).toBeTruthy();
     await view.findByRole("button", { name: "Acknowledge and prepare Developer Workstation" });
     fireEvent.click(view.getByRole("button", { name: "Acknowledge and prepare Developer Workstation" }));
     await view.findByRole("button", { name: "Enable Developer Workstation with PIN" });

@@ -55,6 +55,36 @@ describe("structured SSH approval interrupt mapping", () => {
     }, "thread-1", "lane-1")).toBeNull();
   });
 
+  test("projects retired broker batches as deny-only while preserving mixed tool context", () => {
+    const event = interruptValueToServerEvent({
+      type: "approval_ask",
+      approvalId: "legacy-mixed",
+      tools: [
+        { name: "local_git", args: { operation: "status" } },
+        { name: "apply_patch", args: { patch: "fixture" } },
+      ],
+      allowedVerbs: ["once", "room", "always", "deny"],
+    }, "thread-1", "lane-1");
+    if (!event || event.type !== "approval.ask") throw new Error("approval event missing");
+
+    expect(event).toMatchObject({
+      type: "approval.ask",
+      approvalId: "legacy-mixed",
+      allowedVerbs: ["deny"],
+      requiresExplicitReview: true,
+      tools: [{ name: "local_git" }, { name: "apply_patch" }],
+    });
+    expect(event?.reason).toContain("Deny the whole batch");
+
+    const legacyDto = interruptValueToServerEvent({
+      type: "approval_ask",
+      approvalId: "legacy-field",
+      tools: [],
+      github: { version: 1 },
+    }, "thread-1", "lane-1");
+    expect(legacyDto).toMatchObject({ allowedVerbs: ["deny"], requiresExplicitReview: true });
+  });
+
   test("accepts only bounded timeout facts carried by the exact review DTO", () => {
     expect(interruptValueToServerEvent({
       type: "approval_ask",

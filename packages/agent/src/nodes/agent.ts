@@ -22,6 +22,7 @@ import { getToolCatalog } from "@nautilo/catalog";
 import { envelopeReadableNamespaces } from "@nautilo/trust";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
 import { invokeChatModelWithFallback, resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
+import { normalizeModelToolCallIdentity } from "./model-tool-call-identity";
 import { runWithUsageContext } from "../usage/usage-context";
 import { withholdSkipForExplicitSelection } from "./skip-gate";
 import {
@@ -363,7 +364,7 @@ export async function agentNode(
     if (included) actualPreparedMessages = candidate;
     log(`[research-note-draft] event=${included ? "included" : "omitted_budget"} task=${state.currentTaskId} task_run=${state.currentTaskRunId} model=${requestedModelId} message_tokens=${candidateTokens} allowance_tokens=${allowance}`);
   }
-  const { response, modelUsed } = await runWithUsageContext(
+  const { response: providerResponse, modelUsed } = await runWithUsageContext(
     {
       callType: usageCallType,
       userId: causalHumanForExecution(state.causalHumanUserId) || null,
@@ -424,6 +425,7 @@ export async function agentNode(
       ),
   );
 
+  const response = normalizeModelToolCallIdentity(providerResponse, actualPreparedMessages);
   if (config.nautilo_log_tool_calls) {
     logProgressiveToolExposure(
       "agent",

@@ -608,8 +608,6 @@ export async function preModelNode(
       && (delegatedReady || (state.verifiedOrdinaryOrigin?.kind === "local_electron"
         && relayRegistry?.getDesktopSessionId?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.desktopSessionId
         && relayRegistry?.getPairingGeneration?.(state.verifiedOrdinaryOrigin.relayId) === state.verifiedOrdinaryOrigin.pairingGeneration)),
-    canUseGitHub: !delegatedRelayId && exactExecutionCapabilities?.["canUseGitHub"] === true,
-    canUseLocalGit: !delegatedRelayId && exactExecutionCapabilities?.["canUseLocalGit"] === true,
     canUseHumanTerminal: exactExecutionCapabilities?.["canUseHumanTerminal"] === true
       && relayRegistry?.getCapabilities(state.verifiedOrdinaryOrigin?.kind === "local_electron" ? state.verifiedOrdinaryOrigin.relayId : "")?.humanTerminal?.owner.roomId === state.roomId,
     canReadShellOutput: !delegatedRelayId && exactExecutionCapabilities?.["canReadShellOutput"] === true,
@@ -871,13 +869,9 @@ export async function preModelNode(
         ? "This delegated work uses the original Human's saved Mac and project under its Basic or Development ceiling. It never inherits Full Mac or a Human terminal handoff. If that Mac or its source/project authority is unavailable, report the exact blocker; never substitute another computer. "
         : "Commands use the exact initiating Desktop and its currently admitted access. ")
       + "A yielded running receipt refers to the same process: retrieve output with its session_id and cursor, and stop it with write_stdin cancel:true. Never relaunch after an unknown delivery outcome or report stopped without confirmed cleanup. "
-      + (relayCapabilities["canUseLocalGit"] === true ? "Use local_git for supported typed local Git. " : "")
       + (relayCapabilities["canReadShellOutput"] === true ? "Use read_shell_output for earlier retained shell output. " : "")
       + (relayCapabilities["canUseHumanTerminal"] === true ? "Use human_terminal for the exact Human terminal handoff. " : "")
-      + (relayCapabilities["canUseGitHub"] === true
-        ? "Use local_github account_status to check the admitted GitHub account, then use its supported typed operations. A successful status confirms the account broker path; exact repository access is checked per operation. Do not test GitHub authentication with gh through exec_command; contained commands cannot read the protected account configuration. "
-        : "Authenticated GitHub operations remain unavailable until their admitted account capability is enabled; do not bypass this with shell credentials. ")
-      + "Unavailable tools have no shell fallback."
+      + "Use ordinary command-line tools, including git and gh, through exec_command when the active profile permits them."
     : "";
   const stableSystemPrefix = buildSystemPrompt({
     assistantName: state.assistantName || "Genie",

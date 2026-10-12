@@ -129,3 +129,10 @@ export function isDangerousEnvVar(name: string): boolean {
   }
   return false;
 }
+
+/** Keep native linker/module injection out of the unsandboxed wrapper process. */
+export function withoutNativeLoaderEnvironment(environment: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(environment).filter(([key]) =>
+    !key.startsWith("LD_") && !key.startsWith("DYLD_") &&
+    !["GCONV_PATH", "GLIBC_TUNABLES", "LOCPATH", "NLSPATH", "MALLOC_TRACE"].includes(key)));
+}

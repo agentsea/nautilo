@@ -1,4 +1,3 @@
-import type { GitHubPublishApproval } from "./github-invocation";
 /**
  * @nautilo/types - Realtime Event Types
  *
@@ -1398,7 +1397,6 @@ export interface ApprovalAskEvent {
   localMcpInstall?: LocalMcpInstallApproval | undefined;
   /** exact paid media quote requiring one explicit, non-standing approval. */
   mediaGeneration?: MediaGenerationApproval | undefined;
-  github?: GitHubPublishApproval | undefined;
   /** exact Electron-local SSH target selected after the first approval. */
   structuredSsh?: StructuredSshApproval | undefined;
   /** When true clients must not auto-resolve or offer room/always scope. */

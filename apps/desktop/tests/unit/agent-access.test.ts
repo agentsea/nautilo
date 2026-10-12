@@ -167,19 +167,19 @@ test("production component Off preserves Development and fences only component o
 const reconcileStart = main.indexOf("async function reconcileReadyToWorkNow(");
 const reconcileEnd = main.indexOf("function enabledReadyCodingHarnessStatuses(", reconcileStart);
 const reconcileCode = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice(reconcileStart, reconcileEnd));
-test("production component Restore passes only four choices to the existing coordinator and never migrates Development", async () => {
+test("production component Restore preserves selection identity while excluding Development restoration", async () => {
   let reconciled: typeof desired | null = null;
   const deps = { readyToWorkGeneration: 0, readyToWorkCoordinatorBinding: null, createReadyToWorkDesiredState,
     readyRemembered: { loadFor: () => desired, mayMigrate: () => { throw new Error("must not migrate"); } },
     readyToWorkPersistence: { mayRestore: (explicit: boolean) => { expect(explicit).toBe(false); return true; }, attention: () => null },
     readyToWorkActiveBindingMatches: async () => true,
-    readyToWorkCoordinator: { reconcile: async (input: { desired: typeof desired; isCurrent(): Promise<boolean> }) => {
-      expect(await input.isCurrent()).toBe(true); reconciled = input.desired; return {};
+    readyToWorkCoordinator: { reconcile: async (input: { desired: typeof desired; componentsOnly: boolean; isCurrent(): Promise<boolean> }) => {
+      expect(await input.isCurrent()).toBe(true); expect(input.componentsOnly).toBe(true); reconciled = input.desired; return {};
     } }, refreshReadyToWorkStatus: async (value: typeof desired) => value,
   };
   const reconcile = runInNewContext(`${reconcileCode}; reconcileReadyToWorkNow`, deps) as (...args: unknown[]) => Promise<unknown>;
   expect(await reconcile(binding, "explicit_restore", 0, true)).toEqual(desired);
-  expect(reconciled).toMatchObject({ components: { ...components, workstation: false } });
+  expect(reconciled).toEqual(desired);
 });
 
 test("changed reviewed profile selectors refuse Development before any owner activation or write", async () => {
@@ -196,7 +196,7 @@ const reviewCode = new Bun.Transpiler({ loader: "ts" }).transformSync(main.slice
 test("production review discloses actual stored profile revision and permissions, never stale shipped scope or env values", async () => {
   const seed = developerWorkstationSeedProfile({ home: "/tmp/fixture-home", platform: "linux" });
   const stored = { ...seed, revision: seed.revision + 1, roots: [{ path: "/tmp/explicit-fixture", access: ["read" as const] }],
-    network: { mode: "isolated" as const, allow: [] }, toolchainCapabilities: [], environmentKeys: ["SYNTHETIC_KEY_NAME"] };
+    network: { mode: "isolated" as const, allow: [] }, toolchainCapabilities: [], environmentKeys: ["SYNTHETIC_KEY_NAME"], capabilities: ["user_environment"] };
   let current = true;
   const deps = { assertMainWindowSender() {}, readyToWorkGeneration: 0, resolveReadyToWorkBinding: async () => binding,
     resolveDeveloperWorkstationSeed,
@@ -204,10 +204,10 @@ test("production review discloses actual stored profile revision and permissions
     activeWorkstationProfileController: { getProfileStore: () => ({ get: async () => ({ ok: true, data: { profile: stored } }) }) },
     runSeedDiscoveryReview: async (profile: typeof seed) => { expect(profile).toBe(stored); return { ok: true, review: {} }; },
     readyBindingIsCurrent: () => current, profileIpcFailure: (code: string, message: string) => ({ ok: false, code, message }),
-    buildSeedDescriptor: (profile: typeof seed) => ({ id: profile.id, revision: profile.revision }),
+    buildSeedDescriptor: (profile: typeof seed) => ({ id: profile.id, revision: profile.revision, ...(profile.capabilities.includes("user_environment") ? { userEnvironment: true } : {}) }),
     developmentProfileScope, currentFolderPath: "/tmp/current-project", genieWorkspaceRoot: "/tmp/workspace" };
   const review = runInNewContext(`${reviewCode}; prepareDevelopmentReviewForSender`, deps) as (event: unknown) => Promise<unknown>;
-  expect(await review({})).toMatchObject({ ok: true, data: { seed: { revision: stored.revision }, scope: {
+  expect(await review({})).toMatchObject({ ok: true, data: { seed: { revision: stored.revision, userEnvironment: true }, scope: {
     currentProject: "/tmp/current-project", roots: stored.roots, network: { mode: "isolated", allow: [] }, environmentKeys: ["SYNTHETIC_KEY_NAME"] } } });
   current = false; expect(await review({})).toMatchObject({ ok: false });
 });
@@ -227,15 +227,20 @@ test("production seed upgrade requires exact new review and completed PIN verifi
   for (const scenario of ["old-review", "wrong-profile", "bad-pin", "cas-failure", "success"] as const) {
     const events: string[] = [];
     const store = { get: async () => ({ ok: true, data: { profile: stored } }),
-      update: async (input: unknown) => {
+      replaceReviewedRevision: async (input: unknown) => {
         events.push("write");
-        expect(input).toEqual({ profileId: seed.id, expectedRevision: 1, profile: seed });
+        expect(input).toEqual({
+          profileId: seed.id,
+          expectedRevision: 1,
+          expectedProfile: stored,
+          profile: seed,
+        });
         return scenario === "cas-failure" ? { ok: false } : { ok: true, data: { profile: seed } };
       } };
     const select = runInNewContext(`${selectorsCode}; readyToWorkProfileSelectors`, {
       materializeSeedProfileForReview: () => ({ ok: true, profile: seed }),
       activeWorkstationProfileController: { getProfileStore: () => store },
-      resolveDeveloperWorkstationSeed: () => ({ kind: "shipped_v1_upgrade", expectedRevision: 1, reviewProfile: seed }),
+      resolveDeveloperWorkstationSeed: () => ({ kind: "shipped_upgrade", previousRevision: 1, reviewProfile: seed }),
     }) as (reviewed: { profileId: string; profileRevision: number }, verify: () => Promise<void>) => Promise<{ ok: boolean }>;
     const reviewed = { profileId: scenario === "wrong-profile" ? "foreign" : seed.id,
       profileRevision: scenario === "old-review" ? 1 : seed.revision };

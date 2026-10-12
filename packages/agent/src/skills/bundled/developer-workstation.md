@@ -3,7 +3,7 @@ name: developer-workstation
 description: Develop on the initiating Nautilo Desktop through managed local execution — Current Folder authority, contained Basic and Development access, temporary Full Mac, file editing, Git and GitHub setup, retained execution, and precise denial remediation.
 requiresTools: [exec_command, write_stdin, apply_patch]
 source: official
-version: 12
+version: 13
 ---
 # Developer Workstation — Skill
 
@@ -80,22 +80,13 @@ The user-facing surfaces are:
 3. **Settings → Workstation** owns Basic, the Development environment session,
    protected access, and temporary Full Mac authorization.
 
-For GitHub work, inspect the available account tools and Connection status first.
-An installed `gh` binary or the Human's host login does not prove that a
-contained command has authenticated account access. Never copy credentials,
-read protected account files, run shell authentication setup, or inject tokens
-into a command to bypass the admitted account capability.
-
-When `local_github` is offered, use its `account_status` operation to check the
-admitted account instead of running `gh auth status`. Contained commands cannot
-read the protected GitHub CLI configuration even when Development exposes the
-Human's real home path. Use only the tool's declared account, issue/PR read, and
-publishing operations. Publishing retains its separate Human review. It does
-not provide arbitrary `gh`, merge, review submission, or authenticated network
-Git. If the required operation or account capability is unavailable, report
-that precise limitation; do not claim Development enables it. Human account
-login and account selection remain in Connections. Ask before switching
-accounts or changing healthy account configuration.
+Development commands run in the Human's trusted user environment. They can use
+the real HOME, native credential helpers, SSH agents, package-manager settings,
+and the full installed `git` and `gh` command lines. Use `gh auth status` when
+account state matters. Do not print, copy, or deliberately expose credentials;
+let native tools and helpers use them in place. Connections → GitHub remains the
+UI for signing in and choosing an account. Ask before switching accounts or
+changing healthy account configuration.
 
 For other developer tools, use an already admitted installer only when setup is
 part of the Human's request and its writes and network access fit the profile.
@@ -109,13 +100,9 @@ including read operations and explicitly authorized worktree management. For
 `git worktree remove`, prove the exact target first, avoid `--force`, and verify
 both registration and directory state afterward.
 
-When `local_git` is actually available, it offers typed `status`, `diff`,
-`add`, `commit`, `worktree-add`, and safe broker-created `worktree-remove`.
-When the exact authenticated GitHub capability is also available, it adds
-GitHub clone, fetch, fast-forward-only pull, and a separately reviewed exact
-push. It disables hooks, signing, arbitrary credential helpers, external
-filters, redirects, force options, and model-selected remotes. Respect its
-`sideEffectStarted` and `retrySafe` result. Never retry an uncertain push.
+Use ordinary `git` and `gh` commands through managed Development execution.
+Generic command approval and the Human's requested Git safety constraints still
+apply. Never retry an uncertain push; inspect the exact remote branch first.
 
 ## Write workstation commands portably
 

@@ -1,4 +1,3 @@
-import type { GitHubCapability } from "../../types/src/github-invocation";
 import { parseHumanTerminalConsentOwner, type HumanTerminalConsent } from "../../types/src/human-terminal";
 import type {
   DesktopFilesystemAccessOperation,
@@ -394,8 +393,6 @@ export type RelayCapabilities = {
    *  Electron desktop relay advertises this — it hosts the PTY pool; the
    *  standalone relay can run shell but has no terminal host. */
   canUseTerminal?: boolean | undefined;
-  canUseGitHub?: boolean | undefined;
-  github?: GitHubCapability | undefined;
   canUseHumanTerminal?: boolean | undefined;
   humanTerminal?: RelayHumanTerminalCapability | undefined;
   /** Secret-free, transient notification that the Human explicitly handed
@@ -411,8 +408,6 @@ export type RelayCapabilities = {
   /** Electron-local, opaque, directory-only paired phone picker. */
   canBrowsePairedFilesystem?: boolean | undefined;
   canRunShell?: boolean | undefined;
-  canUseLocalGit?: boolean | undefined;
-  localGit?: { readonly version: 1 } | undefined;
   canReadShellOutput?: boolean | undefined;
   canExecuteLocal?: boolean | undefined;
   /** Static support for fresh Task-run admission against a durable project grant. */

@@ -203,7 +203,6 @@ export function foregroundContextRefreshInput(
     computerUseInvocationBindings: {},
     fullMacInvocationBindings: {},
     delegatedLocalExecutionBindings: {},
-    githubInvocationBindings: {},
     humanTerminalInvocationBindings: {},
     requiredHostRelays: {},
     identityEnrollmentToolCallIds: [],

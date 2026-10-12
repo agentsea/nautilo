@@ -3,7 +3,7 @@ name: shell-execution
 description: Managed local command execution through exec_command and write_stdin on the initiating Nautilo Desktop — contained Basic and Development access, temporary Full Mac, repeatable output, interactive contained PTYs, cancellation, and truthful fallback when execution is unavailable.
 requiresTools: [exec_command, write_stdin]
 source: official
-version: 8
+version: 9
 ---
 # Shell Execution — Skill
 
@@ -73,11 +73,8 @@ is actually offered; it is not the continuation path for an `exec_command`
 
 ## Related tools when available
 
-- Use `local_git` for its narrow typed Git operations when the active
-  Development profile and broker support the requested operation. Exact
-  GitHub clone, fetch, fast-forward-only pull, and separately reviewed push
-  also require the authenticated GitHub capability. It is not a general shell
-  or an arbitrary credential/remotes surface.
+- Use ordinary `git`, `gh`, package-manager, and developer CLI commands through
+  `exec_command` when the active Development profile permits them.
 - Use `human_terminal` only after the Human explicitly hands over their exact
   existing terminal. It sends input to that terminal and has its own receipts;
   it is not a way to acquire or replace managed local execution.

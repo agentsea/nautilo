@@ -29,10 +29,12 @@ describe("tool catalog registration", () => {
 
   // Built-in tools are counted separately from the active signed Computer Use catalog.
   test("registers all built-in tools including transcription and Connections", () => {
-    expect(catalog.size).toBe(114 + activeComputerUseHostToolDefinitions().length);
-    for (const name of ["exec_command", "write_stdin", "local_git", "read_shell_output"]) {
+    expect(catalog.size).toBe(112 + activeComputerUseHostToolDefinitions().length);
+    for (const name of ["exec_command", "write_stdin", "read_shell_output"]) {
       expect(catalog.get(name)).toBeDefined();
     }
+    expect(catalog.get("local_git")).toBeUndefined();
+    expect(catalog.get("local_github")).toBeUndefined();
   });
 
   test("registers mini_app with static destructive approval", () => {
@@ -264,10 +266,10 @@ describe("tool catalog registration", () => {
   test("stats reflect correct distribution", () => {
     const stats = catalog.getStats();
     // Built-in tools are counted separately from the active signed Computer Use catalog.
-    expect(stats.total).toBe(114 + activeComputerUseHostToolDefinitions().length);
-    expect(stats.bySource.builtin).toBe(114 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.total).toBe(112 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.bySource.builtin).toBe(112 + activeComputerUseHostToolDefinitions().length);
     expect(stats.bySource.mcp).toBe(0);
-    expect(stats.enabled).toBe(114 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.enabled).toBe(112 + activeComputerUseHostToolDefinitions().length);
     expect(stats.byTier.admin).toBeGreaterThan(0);
     expect(stats.byTier.standard).toBeGreaterThan(0);
     expect(stats.byTier.high).toBeGreaterThan(0);

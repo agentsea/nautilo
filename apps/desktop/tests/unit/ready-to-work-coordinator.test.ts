@@ -28,6 +28,39 @@ const ready = (target: "voice_settings" | "auto_approve_settings" | "workstation
   ({ state: "ready" as const, reason: null, repairTarget: target });
 
 describe("Ready-to-work coordinator", () => {
+  test("component restoration retains confirmed owners when Development is observed afterward", async () => {
+    let workstationRestores = 0;
+    const coordinator = new ReadyToWorkCoordinator({
+      restoreRendererOwners: async () => ({ voice: ready("voice_settings"), autoApprove: ready("auto_approve_settings") }),
+      restoreWorkstation: async () => { workstationRestores += 1; return ready("workstation_settings"); },
+      observeComputerUse: async () => ready("computer_use_settings"),
+      restoreCodingConnection: async () => ready("coding_connection_settings"),
+      disableRendererOwners: async () => undefined,
+      disableWorkstation: async () => undefined,
+      disableComputerUse: async () => undefined,
+      disableCodingConnection: async () => undefined,
+    });
+    const desired = createReadyToWorkDesiredState(binding, {
+      voice: true, auto_approve: true, workstation: true, computer_use: false, coding_connection: false,
+    });
+    await coordinator.reconcile({ desired, trigger: "explicit_restore", componentsOnly: true, isCurrent: () => true });
+    const status = coordinator.observe(desired, { workstation: ready("workstation_settings") });
+    expect(workstationRestores).toBe(0);
+    for (const id of ["voice", "auto_approve", "workstation"]) {
+      expect(status.components.find(component => component.id === id)).toMatchObject({ state: "ready", reason: null });
+    }
+    const basic = createReadyToWorkDesiredState(binding, { ...desired.components, workstation: false });
+    const basicStatus = coordinator.observe(basic, {});
+    expect(basicStatus.components.find(component => component.id === "auto_approve")?.state).toBe("ready");
+    expect(basicStatus.components.find(component => component.id === "workstation")?.state).toBe("off_by_choice");
+    // Re-selecting an owner cannot revive the observation from before Off.
+    expect(coordinator.observe(desired, {}).components.find(component => component.id === "workstation")?.state)
+      .toBe("needs_attention");
+    const changed = createReadyToWorkDesiredState({ ...binding, humanId: "another-human" }, desired.components);
+    expect(coordinator.observe(changed, {}).components.find(component => component.id === "auto_approve"))
+      .toMatchObject({ state: "needs_attention" });
+  });
+
   test("bounds a hung owner/network promise so the lane can admit later work", async () => {
     const never = new Promise<string>(() => undefined);
     expect(await readyToWorkBoundedValue(never, 5, "timed-out")).toBe("timed-out");

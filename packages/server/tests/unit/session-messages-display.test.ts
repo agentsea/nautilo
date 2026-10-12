@@ -271,3 +271,13 @@ test("cross-Agent duplicate IDs need an exact author for name lookup", () => {
     "⚙ tool [success]", "⚙ beta [success]", "⚙ alpha [success]",
   ]);
 });
+
+test("same-author legacy duplicate IDs keep results visible without guessing a tool name", () => {
+  const rows = enrichSessionMessagesForDisplay([
+    { id: "a", role: "assistant", authorAgentId: "agent", content: "", toolCalls: JSON.stringify([{ id: "same", name: "alpha" }]) },
+    { id: "b", role: "assistant", authorAgentId: "agent", content: "", toolCalls: JSON.stringify([{ id: "same", name: "beta" }]) },
+    { id: "result", role: "tool", authorAgentId: "agent", toolCallId: "same", content: "retained output", toolCalls: null },
+  ]);
+  expect(rows[2]!.displayContent).toBe("⚙ tool [success]");
+  expect(rows[2]!.content).toBe("retained output");
+});

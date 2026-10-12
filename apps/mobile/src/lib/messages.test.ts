@@ -8,6 +8,7 @@ import {
   applyThreadSummaryEvent,
   applyStreamEvent,
   chatItemPresentationKey,
+  chatItemKey,
   computeMessageGroupings,
   fromHistoryMessages,
   isSelfUserMessage,
@@ -21,6 +22,9 @@ import {
 function apply(items: ChatItem[], event: ServerEvent): ChatItem[] {
   return applyStreamEvent(items, event);
 }
+
+const canonicalToolId = (index: number): string =>
+  `nc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_${index}`;
 
 describe("mobile human message authorship", () => {
   const message = (id: string, sourceUserId?: string): MessageItem => ({
@@ -104,6 +108,286 @@ describe("mobile chat item presentation identity", () => {
       result: "available bytes",
       resultTruncated: true,
     });
+  });
+
+  test("retains six canonical tool cards while replayed deliveries dedupe by invocation", () => {
+    const laneKey = "room:00000000-0000-4000-8000-000000000001";
+    const calls = [
+      { id: canonicalToolId(0), name: "discover_tools", args: "time tools", result: "catalogue" },
+      { id: canonicalToolId(1), name: "discover_tools", args: "current time", result: "catalogue" },
+      { id: canonicalToolId(2), name: "discover_tools", args: "timezone", result: "catalogue" },
+      { id: canonicalToolId(3), name: "activate_tools", args: "get_current_time", result: "activated" },
+      { id: canonicalToolId(4), name: "get_current_time", args: "Europe/Athens", result: "12:00" },
+      { id: canonicalToolId(5), name: "get_current_time", args: "Europe/Athens", result: "12:00" },
+    ] as const;
+    let items: ChatItem[] = [];
+
+    for (const [index, call] of calls.entries()) {
+      if (index < 5) {
+        items = apply(items, {
+          type: "message.new",
+          laneKey,
+          messageId: `assistant-intermediate-${index + 1}`,
+          role: "ai",
+          content: `Intermediate ${index + 1}`,
+        } as ServerEvent);
+      }
+      const start = {
+        type: "tool.start",
+        laneKey,
+        toolCallId: call.id,
+        toolName: call.name,
+        argsSummary: call.args,
+      } as ServerEvent;
+      items = apply(items, start);
+      const lengthAfterStart = items.length;
+      items = apply(items, start);
+      expect(items).toHaveLength(lengthAfterStart);
+
+      const end = {
+        type: "tool.end",
+        laneKey,
+        toolCallId: call.id,
+        toolName: call.name,
+        duration: 25,
+        status: "success",
+        result: call.result,
+      } as ServerEvent;
+      items = apply(items, end);
+      const lengthAfterEnd = items.length;
+      items = apply(items, end);
+      expect(items).toHaveLength(lengthAfterEnd);
+    }
+    items = apply(items, {
+      type: "message.new",
+      laneKey,
+      messageId: "assistant-final",
+      role: "ai",
+      content: "Final report",
+    } as ServerEvent);
+
+    const tools = items.filter((item) => item.kind === "tool");
+    expect(tools).toMatchObject(calls.map((call) => ({
+      kind: "tool",
+      toolCallId: call.id,
+      toolName: call.name,
+      argsSummary: call.args,
+      status: "success",
+      result: call.result,
+    })));
+    expect(new Set(tools.map((tool) => tool.kind === "tool" && tool.toolCallId)).size).toBe(6);
+    expect(items.flatMap((item) => item.kind === "message" ? [item.text] : [])).toEqual([
+      "Intermediate 1",
+      "Intermediate 2",
+      "Intermediate 3",
+      "Intermediate 4",
+      "Intermediate 5",
+      "Final report",
+    ]);
+  });
+
+  test("cold history keeps six canonical calls and reconciles a later replay by invocation id", () => {
+    const calls = [
+      { rowId: "201", id: canonicalToolId(0), name: "discover_tools", result: "catalogue" },
+      { rowId: "203", id: canonicalToolId(1), name: "discover_tools", result: "catalogue" },
+      { rowId: "205", id: canonicalToolId(2), name: "discover_tools", result: "catalogue" },
+      { rowId: "207", id: canonicalToolId(3), name: "activate_tools", result: "activated" },
+      { rowId: "209", id: canonicalToolId(4), name: "get_current_time", result: "12:00" },
+      { rowId: "210", id: canonicalToolId(5), name: "get_current_time", result: "12:00" },
+    ] as const;
+    const history = fromHistoryMessages(calls.flatMap((call, index) => [
+      ...(index < 5 ? [{
+        id: String(Number(call.rowId) - 1),
+        role: "assistant",
+        content: `Intermediate ${index + 1}`,
+        createdAt: `2026-08-27T00:0${index}:00.000Z`,
+      }] : []),
+      {
+        id: call.rowId,
+        role: "tool",
+        content: call.result,
+        toolCallId: call.id,
+        toolName: call.name,
+        displayContent: `⚙ ${call.name} [success]`,
+        createdAt: `2026-08-27T00:0${index}:30.000Z`,
+      },
+    ]));
+
+    const historicalTools = history.filter((item) => item.kind === "tool");
+    expect(historicalTools.map((item) => item.kind === "tool" && item.toolCallId))
+      .toEqual(calls.map((call) => call.id));
+    expect(historicalTools.map(chatItemPresentationKey))
+      .toEqual(calls.map((call) => `tool:row:${call.rowId}`));
+    expect(history.flatMap((item) => item.kind === "message" ? [item.text] : []))
+      .toEqual(["Intermediate 1", "Intermediate 2", "Intermediate 3", "Intermediate 4", "Intermediate 5"]);
+
+    const replayStart = apply(history, {
+      type: "tool.start",
+      laneKey: "room:00000000-0000-4000-8000-000000000001",
+      toolCallId: canonicalToolId(5),
+      toolName: "get_current_time",
+    } as ServerEvent);
+    expect(replayStart).toBe(history);
+    const replayEnd = apply(replayStart, {
+      type: "tool.end",
+      laneKey: "room:00000000-0000-4000-8000-000000000001",
+      toolCallId: canonicalToolId(5),
+      toolName: "get_current_time",
+      duration: 25,
+      status: "success",
+      result: "12:00 replayed",
+    } as ServerEvent);
+    expect(replayEnd.filter((item) => item.kind === "tool")).toHaveLength(6);
+    expect(replayEnd.find((item) =>
+      item.kind === "tool" && item.toolCallId === canonicalToolId(5))).toMatchObject({
+      result: "12:00 replayed",
+      presentationKey: "210",
+    });
+  });
+
+  test("legacy history rows without invocation ids remain separate", () => {
+    const legacy = fromHistoryMessages(["301", "302"].map((id) => ({
+      id,
+      role: "tool",
+      content: "same result",
+      toolName: "get_current_time",
+      displayContent: "⚙ get_current_time [success]",
+      createdAt: `2026-08-27T00:00:${id === "301" ? "01" : "02"}.000Z`,
+    })));
+
+    expect(legacy.map((item) => item.kind === "tool" && item.toolCallId)).toEqual(["301", "302"]);
+    expect(legacy.map(chatItemPresentationKey)).toEqual(["tool:row:301", "tool:row:302"]);
+  });
+
+  test("legacy reused invocation ids retain separate rows for an ambiguous late end delivery", () => {
+    const rows = fromHistoryMessages(["301", "302"].map((id) => ({
+      id, role: "tool", toolCallId: "reused", content: id,
+      toolName: "fixture_read", createdAt: `2026-08-27T00:00:${id === "301" ? "01" : "02"}.000Z`,
+    })));
+    expect(rows.map(chatItemKey)).toEqual(["tool:row:301", "tool:row:302"]);
+    const caughtUp = reconcileLatestHistoryItems(rows.slice(0, 1), rows);
+    expect(caughtUp).toEqual(rows);
+    const delivered = apply(caughtUp, {
+      type: "tool.end", toolCallId: "reused", toolName: "fixture_read",
+      status: "success", duration: 1, result: "unpaired late result",
+    } as ServerEvent);
+    expect(delivered).toHaveLength(3);
+    expect(delivered.slice(0, 2)).toEqual(caughtUp);
+    expect(delivered[2]).toMatchObject({
+      toolCallId: "reused", result: "unpaired late result",
+    });
+    expect(delivered[2]).not.toHaveProperty("presentationKey");
+  });
+
+  test("keeps a resumed legacy lifecycle separate from one colliding history row", () => {
+    const [persisted] = fromHistoryMessages([{
+      id: "401", role: "tool", toolCallId: "legacy-reused", toolName: "fixture_read",
+      content: "old result", createdAt: "2026-08-27T00:00:01.000Z",
+    }]);
+    if (!persisted) throw new Error("expected persisted tool row");
+    const start = {
+      type: "tool.start", toolCallId: "legacy-reused", toolName: "fixture_read",
+      argsSummary: "new arguments",
+    } as ServerEvent;
+    const started = apply([persisted], start);
+    expect(started).toHaveLength(2);
+    expect(apply(started, start)).toBe(started);
+
+    const end = {
+      type: "tool.end", toolCallId: "legacy-reused", toolName: "fixture_read",
+      status: "success", duration: 1, result: "new result",
+    } as ServerEvent;
+    const completed = apply(started, end);
+    expect(completed[0]).toMatchObject({ presentationKey: "401", result: "old result" });
+    expect(completed[1]).toMatchObject({ argsSummary: "new arguments", result: "new result" });
+    expect(completed[1]).not.toHaveProperty("presentationKey");
+    expect(apply(completed, end)).toHaveLength(2);
+  });
+
+  test("numeric legacy invocation and persisted row ids use disjoint reconciliation keys", () => {
+    const [persisted] = fromHistoryMessages([{
+      id: "401", role: "tool", toolCallId: "401", toolName: "fixture_read",
+      content: "old result", createdAt: "2026-08-27T00:00:01.000Z",
+    }]);
+    if (!persisted) throw new Error("expected persisted tool row");
+    const live = applyStreamEvent([], {
+      type: "tool.start", toolCallId: "401", toolName: "fixture_read",
+      argsSummary: "new arguments",
+    } as ServerEvent)[0];
+    if (!live) throw new Error("expected live tool card");
+
+    expect(chatItemKey(persisted)).toBe("tool:row:401");
+    expect(chatItemKey(live)).toBe("tool:live:401");
+    const reconciled = reconcileLatestHistoryItems([persisted, live], [persisted]);
+    expect(reconciled).toHaveLength(2);
+    expect(reconciled).toContainEqual(persisted);
+    expect(reconciled).toContainEqual(live);
+
+    const completed = applyStreamEvent(reconciled, {
+      type: "tool.end", toolCallId: "401", toolName: "fixture_read",
+      status: "success", duration: 1, result: "new result",
+    } as ServerEvent);
+    expect(completed).toHaveLength(2);
+    expect(completed.find((item) => item.kind === "tool" && item.presentationKey === "401"))
+      .toMatchObject({ result: "old result" });
+    expect(completed.find((item) => item.kind === "tool" && item.presentationKey === undefined))
+      .toMatchObject({ result: "new result" });
+  });
+
+  test("latest history never adopts a legacy live card by reused provider id", () => {
+    const live = apply([], {
+      type: "tool.start", toolCallId: "legacy-reused", toolName: "fixture_read",
+    } as ServerEvent);
+    const history = fromHistoryMessages(["501", "502"].map((id) => ({
+      id, role: "tool", toolCallId: "legacy-reused", toolName: "fixture_read",
+      content: `persisted ${id}`, createdAt: `2026-08-27T00:00:0${id === "501" ? "1" : "2"}.000Z`,
+    })));
+    const reconciled = reconcileLatestHistoryItems(live, history);
+    expect(reconciled).toHaveLength(3);
+    expect(reconciled.filter((item) => item.kind === "tool" && item.presentationKey === undefined))
+      .toEqual(live);
+    expect(reconciled.filter((item) => item.kind === "tool" && item.presentationKey !== undefined))
+      .toEqual(history);
+  });
+
+  test("history reconciles a live canonical card to its persisted row without adding a second card", () => {
+    const callId = canonicalToolId(7);
+    const live = apply([], {
+      type: "tool.start", toolCallId: callId, toolName: "fixture_read",
+    } as ServerEvent);
+    const history = fromHistoryMessages([{
+      id: "501", role: "tool", toolCallId: callId, toolName: "fixture_read",
+      content: "result", createdAt: "2026-08-27T00:00:01.000Z",
+    }]);
+    const adopted = reconcileLatestHistoryItems(live, history);
+    expect(adopted).toEqual(history);
+    expect(apply(adopted, {
+      type: "tool.start", toolCallId: callId, toolName: "fixture_read",
+    } as ServerEvent)).toBe(adopted);
+    const ended = apply(adopted, {
+      type: "tool.end", toolCallId: callId, toolName: "fixture_read",
+      status: "success", duration: 1, result: "late canonical result",
+    } as ServerEvent);
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ presentationKey: "501", result: "late canonical result" });
+  });
+
+  test("latest history does not adopt a live card when canonical persisted identity is duplicated", () => {
+    const callId = canonicalToolId(8);
+    const live = apply([], {
+      type: "tool.start", toolCallId: callId, toolName: "fixture_read",
+    } as ServerEvent);
+    const history = fromHistoryMessages(["601", "602"].map((id) => ({
+      id, role: "tool", toolCallId: callId, toolName: "fixture_read",
+      content: `persisted ${id}`, createdAt: `2026-08-27T00:00:0${id === "601" ? "1" : "2"}.000Z`,
+    })));
+
+    const reconciled = reconcileLatestHistoryItems(live, history);
+    expect(reconciled).toHaveLength(3);
+    expect(reconciled.filter((item) => item.kind === "tool" && item.presentationKey === undefined))
+      .toEqual(live);
+    expect(reconciled.filter((item) => item.kind === "tool" && item.presentationKey !== undefined))
+      .toEqual(history);
   });
 
   test("hydrates persisted tool disclosure from content, not its compact display line", () => {

@@ -35,6 +35,8 @@ export type SandboxMode = "enabled" | "disabled";
 export type SandboxBackend =
   | {
       readonly kind: "bubblewrap";
+      /** Absolute executable path proven by the backend detector. */
+      readonly executable: string;
       readonly procSupported: boolean;
       /**
        * True only after the detector proves bwrap can late-overmount a

@@ -2,17 +2,14 @@ import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { bindDelegatedLocalExecution } from "./local-execution/admission";
 import type { DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
-import { parseGitHubCapability, parseGitHubGitOperation, parseGitHubOperation, parseGitHubPreparedGitPush, parseGitHubPreparedOperation, sameGitHubOwner, githubPublishing } from "@nautilo/types";
-import { parseRelayGitHubInvocationBinding, RELAY_GITHUB_PROTOCOL_VERSION, type RelayGitHubInvocationBinding } from "@nautilo/relay";
 import { isRelayLocalExecutionSearchAllowed } from "@nautilo/relay";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { HumanTerminalAdmissionPort } from "./terminal/admission";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
-import { localGitSchema } from "./local-git/local-git";
 import { readShellOutputSchema } from "./shell/read-shell-output";
-import { RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION, isRelayLocalGitCapability } from "@nautilo/relay";
+import { RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION } from "@nautilo/relay";
 import type { LocalExecutionHistoryPort } from "./local-execution/history";
 import { RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
 import { execCommandSchema, writeStdinSchema, isLocalExecutionTool, localExecutionOperation } from "./local-execution/local-execution";
@@ -570,7 +567,6 @@ export type ToolRelayRegistry = {
       retainLocalExecutionSource?: (() => () => void) | undefined;
       localExecutionHistoryBinding?: RelayLocalExecutionHistoryBindingV1 | undefined;
       humanTerminalBinding?: RelayHumanTerminalBinding | undefined;
-      githubBinding?: RelayGitHubInvocationBinding | undefined;
       /** server-owned marker for dispatches admitted by the live uncontained session resolver. */
       uncontainedHostCommandsSession?: true | undefined;
       onSecurityScanProgress?: ((progress: RelaySecurityScanProgressMessage) => void) | undefined;
@@ -702,11 +698,11 @@ function resolveExactTaskContinuationCapabilities(input: {
 /**
  * Structural view of `WorkstationDispatchPlan` read by the tools node. Only
  * the binding fields the tools node re-validates + the `relayId` it pins.
- * `executionClass` additionally fences the typed Git lane. Admission timing
- * remains owned by the registry.
+ * `executionClass` preserves the admitted command containment class. Admission
+ * timing remains owned by the registry.
  */
 export interface WorkstationDispatchPlanView {
-  readonly executionClass?: "basic_sandbox" | "profile_bound_sandbox" | "typed_broker" | "real_workstation";
+  readonly executionClass?: "basic_sandbox" | "profile_bound_sandbox" | "real_workstation";
   readonly agentId?: string;
   readonly roomId?: string;
   readonly conversationId?: string;
@@ -781,64 +777,6 @@ export type WorkstationPlanRevalidationReasonView =
  * exposed; the runtime `RelayActiveWorkstationSessionView` satisfies this
  * structurally without the agent importing the runtime package.
  */
-/** Bind only the exact current foreground and admitted Development account owner. */
-export function bindGitHubInvocation(state: NautiloState, toolCallId: string, stage: "read" | "prepare", previous?: RelayGitHubInvocationBinding,
-  authenticatedGit = false): RelayGitHubInvocationBinding | null {
-  const registry = _relayRegistry, origin = state.verifiedOrdinaryOrigin;
-  const human = causalHumanForExecution(state.causalHumanUserId) || origin?.userId;
-  if (!registry || origin?.kind !== "local_electron" || !human || origin.userId !== human
-    || !toolCallId || !state.agentId || !state.roomId || !state.turnId || !(state.currentThreadId || state.langgraphThreadId)
-    || state.trustedExecutionEntrypoint !== "foreground.main" || state.taskRun || state.subagentRun) return null;
-  const caps = registry.getCapabilities(origin.relayId), capability = parseGitHubCapability(caps?.github);
-  const active = registry.getActiveWorkstationSession?.(human), profile = registry.getWorkstationProfileSnapshot?.(origin.relayId);
-  if (!capability || caps?.profile !== "desktop-agent" || caps.canUseGitHub !== true || (authenticatedGit && capability.authenticatedGit?.version !== 1)
-    || (registry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_GITHUB_PROTOCOL_VERSION
-    || registry.getUserId?.(origin.relayId) !== human || registry.getDesktopSessionId?.(origin.relayId) !== origin.desktopSessionId
-    || registry.getPairingGeneration?.(origin.relayId) !== origin.pairingGeneration
-    || registry.getLocalExecutionPairingGeneration?.(origin.relayId) !== capability.identity.pairingGeneration
-    || capability.identity.humanUserId !== human || capability.identity.relayId !== origin.relayId
-    || capability.identity.desktopSessionId !== origin.desktopSessionId || capability.identity.instanceId !== resolveInstance().instanceId
-    || !active || active.userId !== human || active.relayId !== origin.relayId || active.desktopSessionId !== origin.desktopSessionId
-    || active.capabilityRevision !== registry.getCapabilityRevision?.(origin.relayId)
-    || !profile || profile.profileId !== capability.identity.profileId || profile.profileRevision !== capability.identity.profileRevision
-    || profile.protectedPolicyVersion !== capability.identity.protectedPolicyVersion) return null;
-  const owner = { ...capability.identity, agentId: state.agentId, roomId: state.roomId,
-    conversationId: state.currentThreadId || state.langgraphThreadId, runId: state.turnId };
-  const localNetworkPolicy = toRelayNetworkPolicy(resolveServerPosture().localNetworkPolicy ?? { mode: "host" });
-  if (previous && (previous.toolCallId !== toolCallId || previous.generation !== capability.generation
-    || !sameGitHubOwner(previous.owner, owner) || JSON.stringify(previous.localNetworkPolicy) !== JSON.stringify(localNetworkPolicy))) return null;
-  return previous ?? parseRelayGitHubInvocationBinding({ version: 1, generation: capability.generation, toolCallId, owner, stage, localNetworkPolicy });
-}
-
-export async function prepareGitHubInvocation(state: NautiloState, tc: { id?: string; args: Record<string, unknown> }, port: HumanTerminalAdmissionPort | undefined) {
-  const git = parseGitHubGitOperation(tc.args);
-  const registry = _relayRegistry, binding = bindGitHubInvocation(state, tc.id ?? "", "prepare", undefined, git !== null);
-  if (!registry || !binding || !port || !githubPublishing(tc.args)) throw new Error("GITHUB_UNAVAILABLE");
-  let workstationShellBinding: RelayWorkstationShellBinding | undefined;
-  if (git) {
-    const plans = _workstationDispatchPlanRegistry;
-    const fingerprint = readWorkstationRelayFingerprint(binding.owner.relayId);
-    const plan = plans?.get(binding.toolCallId) ?? plans?.readmit?.({ toolCallId: binding.toolCallId,
-      userId: binding.owner.humanUserId, currentFolder: state.currentFolder ?? "", executionClass: "typed_broker", fingerprint }) ?? null;
-    workstationShellBinding = plan ? buildWorkstationShellBindingFromPlan(plan, binding.toolCallId) ?? undefined : undefined;
-    if (!workstationShellBinding) throw new Error("GITHUB_GIT_PROJECT_UNAVAILABLE");
-  }
-  return port.withAdmission(async signal => {
-    if (!bindGitHubInvocation(state, binding.toolCallId, "prepare", binding, git !== null)) throw new Error("GITHUB_AUTHORITY_CHANGED");
-    const result = await registry.dispatch(binding.owner.relayId, { toolName: git ? "local_git" : "local_github", args: tc.args,
-      impact: "read-only", approvalObtained: false, githubBinding: binding, signal,
-      ...(workstationShellBinding ? { workstationShellBinding } : {}) });
-    if (!bindGitHubInvocation(state, binding.toolCallId, "prepare", binding, git !== null)) throw new Error("GITHUB_AUTHORITY_CHANGED");
-    const value = result.result as { ok?: unknown; prepared?: unknown } | undefined;
-    const prepared = result.status === "ok" && value?.ok === true
-      ? parseGitHubPreparedOperation(value.prepared) ?? parseGitHubPreparedGitPush(value.prepared) : null;
-    if (!prepared || prepared.generation !== binding.generation || prepared.toolCallId !== binding.toolCallId
-      || JSON.stringify(parseGitHubOperation(prepared.request) ?? parseGitHubGitOperation(prepared.request))
-        !== JSON.stringify(parseGitHubOperation(tc.args) ?? parseGitHubGitOperation(tc.args))) throw new Error("GITHUB_PREPARATION_UNAVAILABLE");
-    return { binding, prepared };
-  });
-}
-
 export interface ActiveWorkstationSessionView {
   readonly userId: string;
   readonly relayId: string;
@@ -880,7 +818,7 @@ export interface WorkstationDispatchPlanRegistry {
     readonly toolCallId: string;
     readonly userId: string;
     readonly currentFolder: string;
-    readonly executionClass: "profile_bound_sandbox" | "typed_broker" | "real_workstation";
+    readonly executionClass: "profile_bound_sandbox" | "real_workstation";
     readonly fingerprint: WorkstationRelayFingerprintView;
   }): WorkstationDispatchPlanView | null;
 }
@@ -3563,37 +3501,8 @@ async function executeViaRelayRaw(
       relayUnavailable: true,
     };
   }
-
-  // this is deliberately before generic host resolution. Current
-  // Folder adoption is meaningful only on the local Electron that received
-  // the ordinary request; it must never select a paired-mobile host or the
-  // first relay advertising a capability.
   if (tc.name === "select_current_folder") {
     return await executeSelectCurrentFolderViaRelay(tc, state, _relayRegistry);
-  }
-
-  if (tc.name === "local_github") {
-    const request = parseGitHubOperation(tc.args), port = opts.humanTerminalAdmissionPort;
-    const pinned = tc.id ? parseRelayGitHubInvocationBinding(state.githubInvocationBindings?.[tc.id], tc.args) : null;
-    const publishing = githubPublishing(tc.args);
-    const unavailable = () => ({ ok: false as const, errorMessage: publishing
-      ? "GitHub publishing outcome is unconfirmed. Do not retry or recreate the publishing request; inspect GitHub with a read first."
-      : "GitHub source or account authority is unavailable. No account content was released." });
-    if (!request || !port || !pinned || pinned.stage !== (publishing ? "publish" : "read")
-      || !bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned)) return unavailable();
-    const registry = _relayRegistry;
-    try {
-      return await port.withAdmission(async signal => {
-        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned)) throw new Error("GITHUB_AUTHORITY_CHANGED");
-        const result = await registry.dispatch(pinned.owner.relayId, { toolName: tc.name, args: tc.args,
-          impact: publishing ? "destructive" : "read-only", approvalObtained: publishing,
-          githubBinding: pinned, signal: opts.signal ? AbortSignal.any([signal, opts.signal]) : signal });
-        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned)) throw new Error("GITHUB_AUTHORITY_CHANGED");
-        return result.status === "ok" ? { ok: true as const, rawContent: JSON.stringify(result.result),
-          ...(result.result && typeof result.result === "object" && "ok" in result.result && result.result.ok === false
-            ? { toolError: "GitHub operation was not confirmed. Follow the receipt; never retry an uncertain publication." } : {}) } : unavailable();
-      });
-    } catch { return unavailable(); }
   }
   if (tc.name === "human_terminal") {
     if (resolveServerPosture().localNetworkPolicy?.mode !== undefined && resolveServerPosture().localNetworkPolicy?.mode !== "host") {
@@ -3718,7 +3627,7 @@ async function executeViaRelayRaw(
   }
   const capability = policy.relayCapability ?? "canReadWorkspace";
   const isManagedExecution = isLocalExecutionTool(tc.name);
-  const userId = isManagedExecution || tc.name === "local_git" || tc.name === "read_shell_output"
+  const userId = isManagedExecution || tc.name === "read_shell_output"
     ? (causalHumanForExecution(state.causalHumanUserId) || state.verifiedOrdinaryOrigin?.userId || "")
     : state.userId ?? "";
   if (isManagedExecution && (!userId || !tc.id || !state.agentId || !state.turnId
@@ -3738,7 +3647,7 @@ async function executeViaRelayRaw(
       return { ok: false, errorMessage: "Error: retained output search is unavailable on this computer. No command or input was sent." };
     }
   }
-  if (tc.name === "local_git" || tc.name === "read_shell_output") {
+  if (tc.name === "read_shell_output") {
     const origin = state.verifiedOrdinaryOrigin;
     const caps = origin?.kind === "local_electron" ? _relayRegistry.getCapabilities(origin.relayId) : undefined;
     if (origin?.kind !== "local_electron" || origin.userId !== userId
@@ -3746,10 +3655,10 @@ async function executeViaRelayRaw(
       || _relayRegistry.getUserId?.(origin.relayId) !== userId
       || _relayRegistry.getDesktopSessionId?.(origin.relayId) !== origin.desktopSessionId
       || _relayRegistry.getPairingGeneration?.(origin.relayId) !== origin.pairingGeneration
-      || (_relayRegistry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_SHELL_REPLACEMENTS_PROTOCOL_VERSION
+      || (_relayRegistry.getProtocolVersion?.(origin.relayId) ?? 0) < RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION
       || caps?.profile !== "desktop-agent"
-      || !(tc.name === "local_git" ? localGitSchema : readShellOutputSchema).safeParse(tc.args).success
-      || !(tc.name === "local_git" ? caps.canUseLocalGit === true && isRelayLocalGitCapability(caps.localGit) : caps.canReadShellOutput === true)) {
+      || !readShellOutputSchema.safeParse(tc.args).success
+      || caps.canReadShellOutput !== true) {
       return { ok: false, errorMessage: "Error: this local tool requires its supported contract on the exact initiating Desktop." };
     }
   }
@@ -4048,7 +3957,7 @@ async function executeViaRelayRaw(
     (relayId === undefined || state.verifiedOrdinaryOrigin?.kind === "local_electron") &&
     !isFullMacStart && plan === null &&
     planRegistry?.readmit !== undefined &&
-    (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "local_git") &&
+    (tc.name === "run_shell" || tc.name === "exec_command") &&
     !isRunShellOutputArtifact &&
     tc.args["execution"] !== "workstation"
   ) {
@@ -4060,8 +3969,7 @@ async function executeViaRelayRaw(
           toolCallId: tc.id ?? "",
           userId,
           currentFolder: state.currentFolder ?? "",
-          executionClass:
-            tc.name === "local_git" || tc.args["git"] !== undefined ? "typed_broker" : "profile_bound_sandbox",
+          executionClass: "profile_bound_sandbox",
           fingerprint: refreshFingerprint,
         });
         if (readmitted !== null) {
@@ -4620,47 +4528,12 @@ async function executeViaRelayRaw(
     ? securityScanRequest.request
     : dispatchArgs;
 
-  // task 3.1.3b — when a WorkstationDispatchPlan pinned this dispatch AND
-  // the tool is a generic `run_shell`, attach the plan-bound shell-binding
-  // envelope. It carries ONLY the opaque ids / binding / operation metadata the
-  // desktop relay needs to prove the dispatch maps to the active
-  // profile/session grant authority — no roots, no paths. The relay revalidates
-  // every field against its live Electron state and may use profile-bound roots
-  // only after that revalidation succeeds. The plan never widens
-  // `allowedRoots` (computed above exactly as before); the binding is admission
-  // metadata only.
+  // When a WorkstationDispatchPlan pinned this command, attach the
+  // plan-bound shell binding without widening the sandbox roots.
   let shellBinding =
-    plan !== null && (tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "local_git") && !isRealWorkstationRunShell && !isFullMacStart && !isRunShellOutputArtifact
+    plan !== null && (tc.name === "run_shell" || tc.name === "exec_command") && !isRealWorkstationRunShell && !isFullMacStart && !isRunShellOutputArtifact
       ? (buildWorkstationShellBindingFromPlan(plan, tc.id ?? "") ?? undefined)
       : undefined;
-
-  if (tc.name === "local_git" && (shellBinding === undefined || plan?.executionClass !== "typed_broker")) {
-    return { ok: false, errorMessage: "Error: local_git requires a current typed Git plan on the selected Development workstation." };
-  }
-
-  const authenticatedGit = tc.name === "local_git" ? parseGitHubGitOperation(tc.args) : null;
-  if (authenticatedGit) {
-    const publishing = authenticatedGit.operation === "push";
-    const pinned = tc.id ? parseRelayGitHubInvocationBinding(state.githubInvocationBindings?.[tc.id], tc.args) : null;
-    const port = opts.humanTerminalAdmissionPort;
-    const unavailable = () => ({ ok: false as const, errorMessage: publishing
-      ? "GitHub push outcome is unconfirmed. Do not retry it; inspect the exact remote branch first."
-      : "Authenticated GitHub access is unavailable for this account, project, or network policy." });
-    if (!pinned || !port || pinned.stage !== (publishing ? "publish" : "read")
-      || !bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned, true)) return unavailable();
-    try {
-      return await port.withAdmission(async signal => {
-        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned, true)) throw new Error("GITHUB_AUTHORITY_CHANGED");
-        const result = await _relayRegistry!.dispatch(pinned.owner.relayId, { toolName: tc.name, args: tc.args,
-          impact: publishing ? "destructive" : "read-only", approvalObtained: publishing, githubBinding: pinned,
-          workstationShellBinding: shellBinding, signal: opts.signal ? AbortSignal.any([signal, opts.signal]) : signal });
-        if (!bindGitHubInvocation(state, tc.id!, publishing ? "prepare" : "read", pinned, true)) throw new Error("GITHUB_AUTHORITY_CHANGED");
-        return result.status === "ok" ? { ok: true as const, rawContent: JSON.stringify(result.result),
-          ...(result.result && typeof result.result === "object" && "ok" in result.result && result.result.ok === false
-            ? { toolError: "Authenticated Git operation was not confirmed. Follow its receipt and never retry an uncertain push." } : {}) } : unavailable();
-      });
-    } catch { return unavailable(); }
-  }
 
   // protected-shell enforcement — a Full Workstation eligible relay
   // (one advertising an active Workstation Profile binding snapshot) must
@@ -4683,7 +4556,7 @@ async function executeViaRelayRaw(
   // defense-in-depth at the dispatch seam. Non-Full-Mode behavior is
   // byte-for-byte preserved: no advertised profile + no active session
   // bound here ⇒ the generic sandbox path remains valid.
-  if ((tc.name === "run_shell" || tc.name === "exec_command" || tc.name === "local_git") && !isRealWorkstationRunShell && !isFullMacStart &&
+  if ((tc.name === "run_shell" || tc.name === "exec_command") && !isRealWorkstationRunShell && !isFullMacStart &&
     !isRunShellOutputArtifact && shellBinding === undefined) {
     const advertisedProfile =
       _relayRegistry.getWorkstationProfileSnapshot?.(relayId) ?? null;

@@ -8,7 +8,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { detectBackendCore, type Prober } from "../../src/detect";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { detectBackendCore, resolveBwrapExecutable, type Prober } from "../../src/detect";
 
 type ProbeResp = { exitCode: number; stderr?: string };
 type ProbeMap = Record<string, ProbeResp>;
@@ -33,22 +36,23 @@ describe("detectBackendCore", () => {
   describe("linux", () => {
     test("no bwrap → {none}", async () => {
       const prober = stubProber({
-        "bwrap --version": { exitCode: 127, stderr: "bwrap: command not found" },
+        "/usr/bin/bwrap --version": { exitCode: 127, stderr: "bwrap: command not found" },
       });
       expect(await detectBackendCore("linux", prober)).toEqual({ kind: "none" });
     });
 
     test("bwrap present + /proc mountable → {bubblewrap, procSupported: true}", async () => {
       const prober = stubProber({
-        "bwrap --version": { exitCode: 0, stderr: "" },
-        "bwrap --proc /proc --ro-bind /bin /bin -- true": { exitCode: 0, stderr: "" },
-        "bwrap --ro-bind /usr /usr --ro-bind /usr/bin/true /usr/bin/false -- /usr/bin/false": {
+        "/usr/bin/bwrap --version": { exitCode: 0, stderr: "" },
+        "/usr/bin/bwrap --proc /proc --ro-bind /bin /bin -- true": { exitCode: 0, stderr: "" },
+        "/usr/bin/bwrap --ro-bind /usr /usr --ro-bind /usr/bin/true /usr/bin/false -- /usr/bin/false": {
           exitCode: 0,
           stderr: "",
         },
       });
       expect(await detectBackendCore("linux", prober)).toEqual({
         kind: "bubblewrap",
+        executable: "/usr/bin/bwrap",
         procSupported: true,
         fileMaskSupported: true,
       });
@@ -59,18 +63,19 @@ describe("detectBackendCore", () => {
       // /proc isn't mountable inside bwrap. Builder in 1.5 will
       // skip `--proc /proc`.
       const prober = stubProber({
-        "bwrap --version": { exitCode: 0, stderr: "" },
-        "bwrap --proc /proc --ro-bind /bin /bin -- true": {
+        "/usr/bin/bwrap --version": { exitCode: 0, stderr: "" },
+        "/usr/bin/bwrap --proc /proc --ro-bind /bin /bin -- true": {
           exitCode: 1,
           stderr: "bwrap: Can't mount proc: Operation not permitted",
         },
-        "bwrap --ro-bind /usr /usr --ro-bind /usr/bin/true /usr/bin/false -- /usr/bin/false": {
+        "/usr/bin/bwrap --ro-bind /usr /usr --ro-bind /usr/bin/true /usr/bin/false -- /usr/bin/false": {
           exitCode: 1,
           stderr: "bwrap: file overmount unsupported",
         },
       });
       expect(await detectBackendCore("linux", prober)).toEqual({
         kind: "bubblewrap",
+        executable: "/usr/bin/bwrap",
         procSupported: false,
         fileMaskSupported: false,
       });
@@ -113,4 +118,16 @@ describe("detectBackendCore", () => {
       expect(await detectBackendCore("freebsd", prober)).toEqual({ kind: "none" });
     });
   });
+});
+
+test("user-owned PATH launchers are never trusted as the outer bubblewrap", () => {
+  const directory = mkdtempSync(join(tmpdir(), "untrusted-bwrap-"));
+  try {
+    const executable = join(directory, "bwrap");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n");
+    chmodSync(executable, 0o755);
+    expect(resolveBwrapExecutable(directory)).toBeUndefined();
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
