@@ -1,11 +1,12 @@
 import type { BolterQualifiedDecoders } from "./cli-contract";
 
+const releaseVersion = "eaf521f882831d4336a3e23dcb9fbd669ad7accd";
 export const BOLTER_CLI_RELEASE = Object.freeze({
-  version: "eaf521f882831d4336a3e23dcb9fbd669ad7accd",
+  version: releaseVersion,
   artifacts: Object.freeze({
-    "darwin-arm64": Object.freeze({ url: "https://bolter.chat/bolter-agent/darwin-arm64",
+    "darwin-arm64": Object.freeze({ url: `https://cdn.bolter.chat/bolter-agent/${releaseVersion}/darwin-arm64`,
       sha256: "b0c6b5de7115e93f7455d593d0bf45485a8a3fcb9c524f77b0920b027b2fa9d4", bytes: 6539810 }),
-    "darwin-x64": Object.freeze({ url: "https://bolter.chat/bolter-agent/darwin-amd64",
+    "darwin-x64": Object.freeze({ url: `https://cdn.bolter.chat/bolter-agent/${releaseVersion}/darwin-amd64`,
       sha256: "95d66bc0849468f28726661be65fb7975ac102913bbb02d02f7dbf9f2468c5eb", bytes: 7013520 }),
   }),
 });

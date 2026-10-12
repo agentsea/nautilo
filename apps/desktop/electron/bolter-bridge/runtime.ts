@@ -106,7 +106,9 @@ export async function provisionBolterRuntime(input: BolterRuntimeProvisioning): 
   try {
     const { artifact, version } = options;
     if (!/^[a-f0-9]{40}$/u.test(version) || !/^[a-f0-9]{64}$/u.test(artifact.sha256)
-      || !Number.isSafeInteger(artifact.bytes) || artifact.bytes <= 0 || new URL(artifact.url).origin !== "https://bolter.chat"
+      || !Number.isSafeInteger(artifact.bytes) || artifact.bytes <= 0
+      || !["darwin-arm64", "darwin-amd64"].some(platform =>
+        artifact.url === `https://cdn.bolter.chat/bolter-agent/${version}/${platform}`)
       || !options.isCurrent()) throw unavailable();
     const initial = await directory(options.directory);
     const parent = await lstat(dirname(options.directory));
@@ -125,8 +127,10 @@ export async function provisionBolterRuntime(input: BolterRuntimeProvisioning): 
       // An existing incompatible or replaced artifact is never silently overwritten.
       try { await lstat(executable); throw unavailable(); }
       catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw unavailable(); }
-      const response = await (options.fetch ?? fetch)(artifact.url, { credentials: "omit", redirect: "follow" });
-      if (!response.ok || !response.body || !["https://bolter.chat", "https://cdn.bolter.chat"].includes(new URL(response.url || artifact.url).origin)) throw unavailable();
+      // Immutable releases must not drift through the provider's latest alias or redirects.
+      const response = await (options.fetch ?? fetch)(artifact.url, { credentials: "omit", redirect: "error" });
+      if (!response.ok || !response.body || response.redirected
+        || response.url !== artifact.url) throw unavailable();
       await check();
       temporary = join(release, `.download-${randomUUID()}`);
       const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o700);
