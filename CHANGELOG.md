@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Desktop's qualification-only Computer Use driver preserves explicitly empty
+  accessibility values, distinguishing blank controls from unavailable readback.
+
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed
   revision and rejects stale or changed profiles. The Agent access popup links

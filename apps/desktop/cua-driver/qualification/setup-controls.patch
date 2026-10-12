@@ -1867,3 +1867,66 @@ index 3c5b4167c..2bd8bf0cb 100644
      fn observation(
          workspace_frontmost_pid: Option<i32>,
          front_process_matches_target: Option<bool>,
+--- a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
++++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+@@ -812,12 +812,7 @@
+             // "1"/"0") — controls whose state was previously invisible here.
+             // Falls back to `value` so the field never regresses for
+             // string-valued elements.
+-            if let Some(value) = node
+-                .value_state
+-                .clone()
+-                .or_else(|| node.value.clone())
+-                .filter(|v| !v.is_empty())
+-            {
++            if let Some(value) = node.value_state.clone().or_else(|| node.value.clone()) {
+                 entry["value"] = serde_json::Value::String(value);
+             }
+             if let Some(desc) = node.value_description.clone() {
+@@ -1194,6 +1189,28 @@
+     }
+
+     #[test]
++    fn elements_preserve_empty_ax_value_without_inventing_missing_value() {
++        let mut nodes = vec![node(Some(0), "AXTextArea", Some("Document"), 1, None, None)];
++        // Absence remains absence, not an invented blank document.
++        assert!(build_elements_array_with_token(&nodes, 1)[0]
++            .get("value")
++            .is_none());
++        // A successfully read empty AXValue is evidence, even when the display
++        // tree's fallback contains a placeholder. Preserve actual value first.
++        nodes[0].value_state = Some(String::new());
++        nodes[0].value = Some("Placeholder".into());
++        assert_eq!(build_elements_array_with_token(&nodes, 1)[0]["value"], "");
++        nodes[0].value_state = None;
++        nodes[0].value = Some(String::new());
++        assert_eq!(build_elements_array_with_token(&nodes, 1)[0]["value"], "");
++        nodes[0].value_state = Some(" \n".into());
++        assert_eq!(
++            build_elements_array_with_token(&nodes, 1)[0]["value"],
++            " \n"
++        );
++    }
++
++    #[test]
+     fn elements_surface_control_state_fields() {
+         // A slider whose AXValue is a CFNumber: `value` comes from the
+         // coerced value_state, alongside value_description, min/max,
+@@ -1279,13 +1296,13 @@
+     }
+
+     #[test]
+-    fn elements_omit_empty_value() {
+-        // An empty AXValue must not emit a `value` field (matches the other
+-        // optional fields' omit-when-absent contract).
++    fn elements_preserve_explicit_empty_value() {
++        // Empty and absent are different states: a successful blank AXValue
++        // read must remain distinguishable from an unavailable attribute.
+         let mut nodes = vec![node(Some(0), "AXButton", Some("OK"), 0, None, None)];
+         nodes[0].value = Some(String::new());
+         let entry = &build_elements_array(&nodes)[0];
+-        assert!(entry.get("value").is_none(), "empty value must be omitted");
++        assert_eq!(entry["value"], "", "explicit empty value must be preserved");
+     }
+
+     #[test]

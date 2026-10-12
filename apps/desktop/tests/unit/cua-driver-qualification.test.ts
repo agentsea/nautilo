@@ -20,12 +20,13 @@ test("source export retains the exact pinned upstream MIT license beside the pat
   });
 });
 
-test.each(["0.0.0-dev", "0.14.40"])("approved patch preserves every source check for Desktop %s", (version) => {
+test("tester patch preserves every source check", () => {
+  const version = "0.0.0-dev";
   const result = validateQualificationSource(source, patch, version);
   expect(result.kind).toBe("qualification-source-patch");
-  expect(result.productionPackaging).toBe(true);
-  expect(result.effectiveTree).toBe("b69ba1bf17a0f5e9eb833ab7fff8116bdaac7bfe");
-  expect(result.patchSha256).toBe("cfc958d4dedb36f0a1546074512dbb128af36013f93ba82641ba8247a7c68c9d");
+  expect(result.productionPackaging).toBe(false);
+  expect(result.effectiveTree).toBe("8baadfc06903fd0be9af4fac637a04f519ed4a45");
+  expect(result.patchSha256).toBe("eb4e353ea14cc1d16a38e3c80eba4389468a6b09e9f4648b32bce231a49b225e");
   expect(result.upstreamContribution).toEqual({
     url: "https://github.com/trycua/cua/pull/3404",
     commit: "ad79aa13eb06a52c13cc21a0a87c8cc80d389dd1",
@@ -36,8 +37,20 @@ test.each(["0.0.0-dev", "0.14.40"])("approved patch preserves every source check
   expect(() => validateQualificationSource({ ...result, baseRevision: "main" }, patch, version)).toThrow("identity");
   expect(() => validateQualificationSource({ ...result, rustToolchain: "stable" }, patch, version)).toThrow("identity");
   expect(() => validateQualificationSource({ ...result, upstreamContribution: null }, patch, version)).toThrow("provenance");
-  expect(() => assertQualificationTree(result.effectiveTree, "b69ba1bf17a0f5e9eb833ab7fff8116bdaac7bfe")).not.toThrow();
+  expect(() => assertQualificationTree(result.effectiveTree, "8baadfc06903fd0be9af4fac637a04f519ed4a45")).not.toThrow();
   expect(() => assertQualificationTree("different", result.effectiveTree)).toThrow("reviewed source");
+});
+
+test("checked-in empty-value repair cannot enter production packaging", () => {
+  expect(() => validateQualificationSource(source, patch, "0.14.40")).toThrow("qualification-only");
+  expect(patch.toString()).toContain("elements_preserve_empty_ax_value_without_inventing_missing_value");
+});
+
+test("explicit promotion still requires matching source bytes", () => {
+  const tester = validateQualificationSource(source, patch, "0.0.0-dev");
+  const promoted = { ...tester, productionPackaging: true };
+  expect(validateQualificationSource(promoted, patch, "0.14.40").productionPackaging).toBe(true);
+  expect(() => validateQualificationSource(promoted, Buffer.from("changed"), "0.14.40")).toThrow("checksum");
 });
 
 test("an unpromoted patch still refuses production packaging without a stock fallback", async () => {

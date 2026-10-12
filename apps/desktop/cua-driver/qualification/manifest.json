@@ -1,10 +1,10 @@
 {
   "kind": "qualification-source-patch",
-  "productionPackaging": true,
+  "productionPackaging": false,
   "baseVersion": "0.23.2",
   "baseRevision": "e88e9d899ac5effaeae38619527ebaa46b26ce72",
-  "effectiveTree": "b69ba1bf17a0f5e9eb833ab7fff8116bdaac7bfe",
-  "patchSha256": "cfc958d4dedb36f0a1546074512dbb128af36013f93ba82641ba8247a7c68c9d",
+  "effectiveTree": "8baadfc06903fd0be9af4fac637a04f519ed4a45",
+  "patchSha256": "eb4e353ea14cc1d16a38e3c80eba4389468a6b09e9f4648b32bce231a49b225e",
   "upstreamLicense": {
     "path": "LICENSE.md",
     "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",

@@ -1,9 +1,9 @@
 # Qualified, pinned Cua source input
 
 Desktop builds the exact released Cua source plus `setup-controls.patch` for
-both updater-disabled qualification and normal production packaging. The
-reviewed manifest explicitly approves production packaging after signed live
-browser qualification. This is a Nautilo-maintained patch, not an upstream
+updater-disabled qualification. The current empty-value repair is not approved
+for production packaging. It retains explicit empty accessibility values while
+leaving unavailable values absent. This is a Nautilo-maintained patch, not an upstream
 release, and does not introduce a runtime driver updater. The `qualification`
 directory and manifest kind retain their original provenance naming.
 
