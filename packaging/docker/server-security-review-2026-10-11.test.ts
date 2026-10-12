@@ -11,6 +11,20 @@ const fixture = read("fixtures/server-security-review-2026-10-11.json") as {
   reviewedAdvisories: Record<string, { url: string; fixedThreshold: string | null; releases: Record<string, { status: string }> }>;
 };
 const source = read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
+// Replay the earlier scanner metadata with its original exact fixed thresholds.
+// Current Debian-package thresholds are qualified separately against new raw
+// observations; changing current policy must not rewrite this historical input.
+const refreshed = read("fixtures/server-chromium-fixed-version-refresh-2026-10-12.json") as {
+  installedVersion: string; packages: string[];
+  cases: { advisoryId: string; severity: string; previousThreshold: string; fixedVersion: string }[];
+};
+source.exceptions = source.exceptions.map((entry) => {
+  const revision = refreshed.cases.find(c => c.advisoryId === entry.advisoryId && c.severity === entry.severity);
+  if (!revision || !refreshed.packages.includes(entry.packageName)
+    || entry.installedVersion !== refreshed.installedVersion
+    || entry.unavailableFix?.fixedVersion !== revision.fixedVersion) return entry;
+  return { ...entry, unavailableFix: { ...entry.unavailableFix, fixedVersion: revision.previousThreshold } };
+});
 const digest = `sha256:${"a".repeat(64)}`;
 function input(architecture: Architecture): EvaluateVulnerabilityPolicyInput {
   const image = { digest, reference: `registry.example/runtime@${digest}`, sizeBytes: 42 };
