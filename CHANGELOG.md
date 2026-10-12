@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Desktop Host attestation cancellation terminates and reaps its probe process.
+  Signed-package verification reports timed probe stages and fails at its
+  bootstrap deadline even when an asynchronous check does not settle.
+
 - Desktop's qualification-only Computer Use driver preserves explicitly empty
   accessibility values, distinguishing blank controls from unavailable readback.
 

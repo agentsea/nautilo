@@ -4,8 +4,49 @@ import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 
 import { createManagedComputerUseHostRuntime } from "../electron/computer-use-host-runtime/managed-runtime.ts";
+import { runMacosComputerUseHostCommand, type MacosCommandRunner } from "../electron/computer-use-host-runtime/macos-attestor.ts";
 
 const BOOTSTRAP_DEADLINE_MS = 60_000;
+
+export async function withBootstrapDeadline<T>(work: (signal: AbortSignal) => Promise<T>, milliseconds = BOOTSTRAP_DEADLINE_MS): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`packaged Computer Use Host bootstrap exceeded ${milliseconds}ms`);
+      controller.abort(error);
+      reject(error);
+    }, milliseconds);
+  });
+  try {
+    const value = await Promise.race([work(controller.signal), expired]);
+    controller.signal.throwIfAborted();
+    return value;
+  } finally { clearTimeout(timer); }
+}
+
+/** No executable paths, native diagnostics, or signed payloads enter CI logs. */
+export function reportBootstrapProbes(runner: MacosCommandRunner, report: (message: string) => void): MacosCommandRunner {
+  let sequence = 0;
+  return async (executable, args, signal) => {
+    const probe = ++sequence;
+    const operation = executable === "/usr/bin/codesign"
+      ? args[0] === "--verify" ? "signature-verify" : args[0] === "-dv" ? "signature-identity" : "signature-requirement"
+      : executable === "/usr/bin/lipo" ? "architectures" : "host-health";
+    const started = performance.now();
+    const abort = () => report(`stage=probe-abort probe=${probe} operation=${operation}`);
+    report(`stage=probe-start probe=${probe} operation=${operation}`);
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const result = await runner(executable, args, signal);
+      report(`stage=probe-complete probe=${probe} operation=${operation} code=${result.code} elapsedMs=${Math.round(performance.now() - started)}`);
+      return result;
+    } catch {
+      report(`stage=probe-failed probe=${probe} operation=${operation} elapsedMs=${Math.round(performance.now() - started)}`);
+      throw new Error(`packaged Host probe ${probe} (${operation}) failed`);
+    } finally { signal?.removeEventListener("abort", abort); }
+  };
+}
 
 export async function launchIsInManagedStorage(options: Readonly<{
   runtimeRoot: string;
@@ -26,9 +67,6 @@ async function main(argv = process.argv): Promise<void> {
   const desktopExecutable = join(bundlePath, "Contents", "MacOS", "Nautilo");
   const manifest = JSON.parse(await readFile(join(resourceDirectory, "manifest.json"), "utf8")) as { version?: unknown };
   const proofRoot = await mkdtemp(join(tmpdir(), "nautilo-packaged-host-proof-"));
-  const deadline = new AbortController();
-  const deadlineTimer = setTimeout(() => deadline.abort(new Error("packaged Host bootstrap deadline exceeded")), BOOTSTRAP_DEADLINE_MS);
-  deadlineTimer.unref();
   try {
     process.stdout.write("[verify-packaged-computer-use-host] stage=bootstrap-start\n");
     const runtime = createManagedComputerUseHostRuntime({
@@ -37,9 +75,10 @@ async function main(argv = process.argv): Promise<void> {
       desktopExecutable,
       ...(process.getuid === undefined ? {} : { expectedUid: process.getuid() }),
       fetcher: () => Promise.resolve(new Response(null, { status: 503 })),
+      commandRunner: reportBootstrapProbes(runMacosComputerUseHostCommand,
+        (message) => process.stdout.write(`[verify-packaged-computer-use-host] ${message}\n`)),
     });
-    const state = await runtime.bootstrap(deadline.signal);
-    if (deadline.signal.aborted) throw new Error(`packaged Computer Use Host bootstrap exceeded ${BOOTSTRAP_DEADLINE_MS}ms`);
+    const state = await withBootstrapDeadline((signal) => runtime.bootstrap(signal));
     process.stdout.write(`[verify-packaged-computer-use-host] stage=bootstrap-complete state=${state.state}\n`);
     if (state.state !== "ready" || state.source !== "bundled" || state.generation !== 1
       || state.release.version !== manifest.version || state.remoteUpdateFailure !== "host_pointer_untrusted") {
@@ -58,7 +97,6 @@ async function main(argv = process.argv): Promise<void> {
     launch.lease.release();
     process.stdout.write(`[verify-packaged-computer-use-host] version=${state.release.version} source=bundled generation=1 offlineFallback=passed\n`);
   } finally {
-    clearTimeout(deadlineTimer);
     await rm(proofRoot, { recursive: true, force: true });
   }
 }
@@ -66,6 +104,7 @@ async function main(argv = process.argv): Promise<void> {
 if (import.meta.main) {
   main().catch((error: unknown) => {
     console.error(`[verify-packaged-computer-use-host] FATAL ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
+    // A failed qualification must not remain alive on an uncooperative probe.
+    process.exit(1);
   });
 }

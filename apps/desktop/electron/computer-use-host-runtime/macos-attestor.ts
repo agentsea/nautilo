@@ -14,19 +14,26 @@ const MAX_COMMAND_OUTPUT = 64 * 1024;
 export type MacosCommandResult = Readonly<{ code: number | null; stdout: string; stderr: string }>;
 export type MacosCommandRunner = (executable: string, argumentsValue: readonly string[], signal?: AbortSignal) => Promise<MacosCommandResult>;
 
-const runMacosComputerUseHostCommand: MacosCommandRunner = async (executable, argumentsValue, signal) => await new Promise((resolve) => {
+export const runMacosComputerUseHostCommand: MacosCommandRunner = async (executable, argumentsValue, signal) => await new Promise((resolve) => {
+  if (signal?.aborted) { resolve({ code: null, stdout: "", stderr: "" }); return; }
+  let result: MacosCommandResult | undefined;
   const child = execFile(executable, [...argumentsValue], {
     encoding: "utf8",
     maxBuffer: MAX_COMMAND_OUTPUT,
     windowsHide: true,
     shell: false,
+    // These are read-only attestation/health probes, not interactive work.
+    // Cancellation must terminate the owned probe even if it ignores SIGTERM.
+    killSignal: "SIGKILL",
     ...(signal ? { signal } : {}),
     env: { LANG: "C", LC_ALL: "C", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
-  }, (error, stdout, stderr) => resolve({
+  }, (error, stdout, stderr) => { result = {
     code: error && "code" in error && typeof error.code === "number" ? error.code : error ? null : 0,
     stdout: String(stdout),
     stderr: String(stderr),
-  }));
+  }; });
+  // execFile can call back on abort before the child has actually exited.
+  child.once("close", () => resolve(result ?? { code: null, stdout: "", stderr: "" }));
   child.stdin?.end();
 });
 
