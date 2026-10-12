@@ -33,6 +33,8 @@ export class BolterConnectionOwner {
   private retired = false;
   private receiver: BolterNativeChild | null = null;
   private receiverRevision = 0;
+  private receiverReady = false;
+  private receiverObserver: (() => void) | undefined;
   private handover: BolterHandoverServer | null = null;
   private spool: BolterConnectionSpool | null = null;
   private starting: Promise<boolean> | null = null;
@@ -76,6 +78,10 @@ export class BolterConnectionOwner {
   }
   get state(): BolterNativeConnectionState {
     return this.retired ? "retired" : this.current() ? this.stateValue : "unavailable";
+  }
+  get listening(): boolean { return this.current() && this.confirmed && this.receiver !== null && this.receiverReady; }
+  private notifyReceiver(): void {
+    try { if (this.current()) this.receiverObserver?.(); } catch { /* Observation failure does not undo durable handover. */ }
   }
   get confirmedIdentity(): Readonly<BolterCliSelection & { label?: string }> | null {
     return this.current() && this.confirmed ? this.selection : null;
@@ -139,7 +145,7 @@ export class BolterConnectionOwner {
         : { status: "unavailable", reason: "execution-failed" };
     } catch { return { status: "unavailable", reason: "execution-failed" }; }
   }
-  startReceiver(options: { readonly handoverExecutable: string; readonly directory: string; readonly spool: BolterConnectionSpool }): Promise<boolean> {
+  startReceiver(options: { readonly handoverExecutable: string; readonly directory: string; readonly spool: BolterConnectionSpool; readonly onStateChange?: (() => void) | undefined }): Promise<boolean> {
     if (this.starting) return this.starting;
     if (this.receiver !== null) return Promise.resolve(this.current() && this.confirmed && this.stateValue === "receiver-running");
     const work = this.performStart({ ...options });
@@ -148,10 +154,12 @@ export class BolterConnectionOwner {
     void work.then(settled, settled);
     return work;
   }
-  private async performStart(options: { readonly handoverExecutable: string; readonly directory: string; readonly spool: BolterConnectionSpool }): Promise<boolean> {
+  private async performStart(options: { readonly handoverExecutable: string; readonly directory: string; readonly spool: BolterConnectionSpool; readonly onStateChange?: (() => void) | undefined }): Promise<boolean> {
     if (!this.current() || !this.confirmed || !this.selection || this.loggingIn !== null
       || this.decoders?.version !== this.runtime.version || !this.decoders.receiveItem
       || !hasBolterNativeQualification(this.qualification, this.runtime.version)) return false;
+    this.receiverReady = false;
+    this.receiverObserver = options.onStateChange;
     const revision = this.receiverRevision;
     const receiverCurrent = () => this.current() && this.confirmed && revision === this.receiverRevision;
     const plan = createBolterReceiveInvocation(this.runtime, this.selection, options.handoverExecutable);
@@ -162,7 +170,19 @@ export class BolterConnectionOwner {
     try {
       handover = await createBolterHandoverServer({ directory: options.directory, generation: this.generation,
         scope: this.scope, maxBatchBytes: this.qualification!.maxBatchBytes,
-        isCurrent: receiverCurrent, store: spool.store });
+        isCurrent: receiverCurrent, store: async jsonl => {
+          // Preserve every batch before interpreting it. Unknown packets remain durable and blocked.
+          const receipt = await spool.store(jsonl);
+          if (receiverCurrent()) {
+            const decoded = decodeBolterReceiveBatch(jsonl, this.runtime.version, this.decoders);
+            if (decoded.ok && decoded.value.length > 0 && decoded.value.every(item => item.type === "message" || item.kind === "connected")) {
+              const changed = !this.receiverReady;
+              this.receiverReady = true;
+              if (changed) this.notifyReceiver();
+            }
+          }
+          return receipt;
+        } });
       if (!receiverCurrent()) { await handover.close(); return false; }
       const child = await this.native.start(plan.value, { helper: options.handoverExecutable,
         descriptor: JSON.stringify(handover.descriptor) }, undefined, receiverCurrent);
@@ -171,8 +191,9 @@ export class BolterConnectionOwner {
       this.receiver = child;
       // Spawn is process evidence only, not provider listening/readiness confirmation.
       this.stateValue = "receiver-running";
+      if (this.receiverReady) this.notifyReceiver();
       void child.result.then(async () => {
-        if (this.receiver === child) { this.receiver = null; this.stateValue = "unavailable"; }
+        if (this.receiver === child) { this.receiver = null; this.receiverReady = false; this.stateValue = "unavailable"; this.notifyReceiver(); }
         await handover?.close();
         if (this.handover === handover) this.handover = null;
       }).catch(() => undefined);
@@ -182,6 +203,8 @@ export class BolterConnectionOwner {
   }
   async pauseReceiver(): Promise<void> {
     this.receiverRevision++;
+    this.receiverReady = false;
+    this.notifyReceiver();
     await this.starting;
     this.stateValue = "unavailable";
     const receiver = this.receiver;
@@ -190,6 +213,7 @@ export class BolterConnectionOwner {
     if (this.receiver === receiver) this.receiver = null;
     this.handover = null;
     if (this.current() && this.confirmed) this.stateValue = "connected";
+    this.notifyReceiver();
   }
   async prepareSend(): Promise<{ send(binding: BolterCliBinding, content: string): Promise<BolterCliSendOutcome> } | null> {
     if (!this.current() || !this.confirmed || !this.selection || this.decoders?.version !== this.runtime.version || !this.decoders.receipt) return null;

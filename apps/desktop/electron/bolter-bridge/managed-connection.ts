@@ -7,7 +7,7 @@ import { BolterConnectionOwner } from "./connection-owner";
 import { BolterInboxSpool, type BolterSpoolCipher } from "./inbox-spool";
 import { BOLTER_CLI_RELEASE, getBolterProductionDecoders } from "./production-contract";
 import { createBolterConnectionDirectories, createBolterPrivateRoot, productionBolterArtifact, provisionBolterRuntime } from "./runtime";
-import { hasBolterNativeQualification, type BolterNativeQualification } from "./native-process";
+import { bolterNativeAdmissionPolicy, hasBolterNativeQualification, type BolterNativeQualification } from "./native-process";
 import type { BolterQualifiedDecoders, BolterCliSelection } from "./cli-contract";
 import type { BolterNativeConnectionDriver } from "./relay-port";
 
@@ -79,12 +79,14 @@ export function createManagedBolterConnectionFactory(options: {
     const directories = await createBolterConnectionDirectories(records, scope, descriptor.homeHandle);
     const artifact = productionBolterArtifact(process.platform, process.arch);
     const decoders = config.decoders ?? getBolterProductionDecoders(BOLTER_CLI_RELEASE.version);
-    const qualified = hasBolterNativeQualification(config.qualification, BOLTER_CLI_RELEASE.version)
+    const qualification = config.qualification ?? bolterNativeAdmissionPolicy(BOLTER_CLI_RELEASE.version);
+    const qualified = hasBolterNativeQualification(qualification, BOLTER_CLI_RELEASE.version)
       && decoders?.version === BOLTER_CLI_RELEASE.version && !!decoders.identity && !!decoders.discovery && !!decoders.authLink
       && !!decoders.receiveItem && !!decoders.receipt && !!decoders.conversations;
     let owner: BolterConnectionOwner | null = null;
     let retired = false;
     let pending = false;
+    let ingressBlocked = false;
     let flush: Promise<unknown> | null = null;
     let dirty = false;
     let ensuring: Promise<void> | null = null;
@@ -94,8 +96,8 @@ export function createManagedBolterConnectionFactory(options: {
       return { runtime: !artifact ? "unavailable" : qualified ? "qualified" : "qualification_required",
         authentication: identity ? "confirmed" : pending ? "pending" : descriptor.identity ? "unknown" : "required",
         identity: identity ? { providerAgentId: identity.agentId, label: "Bolter agent", identityFingerprint: identityFingerprint(identity) } : null,
-        receiver: owner?.state === "receiver-running" ? "running" : "stopped",
-        ...(!artifact ? { reason: "runtime_unavailable" as const } : !qualified ? { reason: "qualification_required" as const } : {}) };
+        receiver: owner?.listening ? "listening" : owner?.state === "receiver-running" ? "running" : "stopped",
+        ...(!artifact ? { reason: "runtime_unavailable" as const } : !qualified ? { reason: "qualification_required" as const } : ingressBlocked ? { reason: "receiver_unavailable" as const } : {}) };
     };
     const performEnsure = async () => {
       if (owner || !qualified || !artifact || !live()) return;
@@ -103,7 +105,7 @@ export function createManagedBolterConnectionFactory(options: {
       const executable = await provisionBolterRuntime({ directory: runtimeRoot, artifact, version: BOLTER_CLI_RELEASE.version, isCurrent: live });
       if (!live()) throw unavailable();
       owner = new BolterConnectionOwner({ scope, runtime: { executable, home: directories.home, version: BOLTER_CLI_RELEASE.version,
-        platform: process.platform as "darwin" }, decoders, qualification: config.qualification, selection: descriptor.identity ?? undefined,
+        platform: process.platform as "darwin" }, decoders, qualification, selection: descriptor.identity ?? undefined,
         isCurrent: live, isBound: () => false,
         // Exact provider bytes are checked before every operation; no raw provider diagnostics escape.
         attest: () => provisionBolterRuntime({ directory: runtimeRoot, artifact, version: BOLTER_CLI_RELEASE.version, isCurrent: live }).then(path => path === executable),
@@ -144,7 +146,7 @@ export function createManagedBolterConnectionFactory(options: {
         return conversations.status === "available" ? { kind: "conversations", conversations: [...conversations.conversations] }
           : { kind: "unavailable", reason: "qualification_required" };
       },
-      async start(accept) {
+      async start(accept, onObservation) {
         const result = await confirm();
         if (!owner || result.authentication !== "confirmed" || !config.helper) return { ...result, reason: "receiver_unavailable" };
         const spool = new BolterInboxSpool({ directory: directories.spool, scope, cipher: config.cipher, isCurrent: live });
@@ -157,6 +159,10 @@ export function createManagedBolterConnectionFactory(options: {
               dirty = false;
               const result = await owner.flushInbox((items, receipt) => accept(items.filter(item => item.type === "message"), receipt.id));
               accepted = result === "accepted";
+              if (live() && ingressBlocked !== !accepted) {
+                ingressBlocked = !accepted;
+                try { onObservation?.(observation()); } catch { /* Observation does not alter durable delivery. */ }
+              }
               if (!accepted) break;
             }
           })();
@@ -166,6 +172,7 @@ export function createManagedBolterConnectionFactory(options: {
           }, () => { if (flush === work) flush = null; });
         };
         const started = await owner.startReceiver({ handoverExecutable: config.helper.executable, directory: directories.handover,
+          onStateChange: () => { if (live()) onObservation?.(observation()); },
           spool: { pending: () => spool.pending(), read: id => spool.read(id), acknowledge: receipt => spool.acknowledge(receipt),
             store: async jsonl => { const receipt = await spool.store(jsonl); queueMicrotask(drain); return receipt; } } });
         if (started) drain(); return observation();

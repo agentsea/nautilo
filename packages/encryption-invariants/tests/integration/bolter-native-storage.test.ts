@@ -11,8 +11,9 @@ test("classifies sealed local recovery and exact content-free build/runtime sink
   const paths = [...new Set(BOLTER_NATIVE_STORAGE_ALARMS.map(alarm => alarm.locator.split("#")[0]!))];
   const scan = await scanSourceAlarms({repoRoot, scanRoots:paths});
   expect(scan.errors).toEqual([]);
-  expect(scan.alarms).toHaveLength(9);
-  expect(inspectSourceAlarmReviews(scan.alarms,BOLTER_NATIVE_STORAGE_ALARMS).errors).toEqual([]);
+  expect(BOLTER_NATIVE_STORAGE_ALARMS).toHaveLength(10);
+  expect(scan.alarms.filter(alarm => BOLTER_NATIVE_STORAGE_ALARMS.some(review => review.locator === alarm.locator))).toHaveLength(10);
+  expect(inspectSourceAlarmReviews(scan.alarms,CURRENT_SOURCE_ALARM_REVIEWS.filter(review => paths.includes(review.locator.split("#")[0]!))).errors).toEqual([]);
   for (const review of BOLTER_NATIVE_STORAGE_ALARMS) expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
   for (const entry of BOLTER_NATIVE_STORAGE_COVERAGE) {
     expect(validateCoverageEntry(entry)).toEqual({ok:true});

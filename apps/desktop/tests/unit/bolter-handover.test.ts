@@ -1,13 +1,12 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, chmod, realpath, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, chmod, lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { createConnection } from "node:net";
 import { createBolterHandoverServer, handOverBolterBatch, parseBolterHandoverDescriptor } from "../../electron/bolter-bridge/handover";
 import { runBolterHandover } from "../../electron/bolter-bridge/handover-main";
 
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 async function directory() {
-  // Keep the fixed IPC fixture below the native Unix socket path length.
   const result = await mkdtemp(join(await realpath("/tmp"), "nb-"));
   await chmod(result, 0o700);
   return result;
@@ -133,4 +132,83 @@ test("peer disconnect cannot release admission while its durable store is pendin
     await closing;
     expect(retired).toBe(true);
   } finally { socket.destroy(); release(); await server.close(); await rm(path, { recursive: true, force: true }); }
+});
+
+
+test("deep managed storage uses a short private endpoint and removes it after quiescence", async () => {
+  const root = await directory();
+  const path = join(root, "synthetic-managed-storage-".repeat(5), "connection", "handover");
+  await mkdir(path, { recursive: true, mode: 0o700 });
+  let stored = 0;
+  const server = await createBolterHandoverServer({ directory: path, scope, generation: "synthetic-generation",
+    maxBatchBytes: 4, isCurrent: () => true, store: () => { stored++; return Promise.resolve({ id: "fixture", fingerprint: "fixture" }); } });
+  const endpoint = dirname(server.descriptor.socketPath);
+  try {
+    expect(Buffer.byteLength(path)).toBeGreaterThan(104);
+    expect(server.descriptor.socketPath.startsWith(path)).toBe(false);
+    expect(Buffer.byteLength(server.descriptor.socketPath)).toBeLessThan(process.platform === "darwin" ? 104 : 108);
+    const stat = await lstat(endpoint);
+    expect(stat.mode & 0o777).toBe(0o700);
+    expect(stat.isSymbolicLink()).toBe(false);
+    expect(await handOverBolterBatch(server.descriptor, input("éé"))).toBe(true);
+    expect(await handOverBolterBatch(server.descriptor, input("ééx"))).toBe(false);
+    expect(stored).toBe(1);
+    await server.close();
+    await Promise.resolve(expect(lstat(endpoint)).rejects.toMatchObject({ code: "ENOENT" }));
+    expect((await lstat(path)).isDirectory()).toBe(true);
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("replaced storage anchor rejects handover without removing replacement directories", async () => {
+  const root = await directory();
+  const path = join(root, "anchor");
+  await mkdir(path, { mode: 0o700 });
+  let stored = 0;
+  const server = await createBolterHandoverServer({ directory: path, scope, generation: "synthetic-generation",
+    maxBatchBytes: 1000, isCurrent: () => true, store: () => { stored++; return Promise.resolve({ id: "fixture", fingerprint: "fixture" }); } });
+  const endpoint = dirname(server.descriptor.socketPath);
+  try {
+    await rename(path, join(root, "original"));
+    await mkdir(path, { mode: 0o700 });
+    expect(await handOverBolterBatch(server.descriptor, input())).toBe(false);
+    expect(stored).toBe(0);
+    await server.close();
+    expect((await lstat(path)).isDirectory()).toBe(true);
+    await Promise.resolve(expect(lstat(endpoint)).rejects.toMatchObject({ code: "ENOENT" }));
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("an OS temporary root beyond the native socket path fails closed without residue", async () => {
+  const root = await directory();
+  const temporary = join(root, "synthetic-temporary-root-".repeat(5));
+  await mkdir(temporary, { mode: 0o700 });
+  const previous = process.env["TMPDIR"];
+  try {
+    process.env["TMPDIR"] = temporary;
+    await Promise.resolve(expect(createBolterHandoverServer({ directory: root, scope, generation: "synthetic-generation",
+      maxBatchBytes: 1000, isCurrent: () => true, store: () => Promise.reject(new Error("No store")) })).rejects.toThrow("unavailable"));
+    expect(await readdir(temporary)).toEqual([]);
+  } finally {
+    if (previous === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+
+test("authority loss after binding removes the owned temporary endpoint before rejecting startup", async () => {
+  const root = await directory();
+  const anchor = join(root, "anchor");
+  await mkdir(anchor, { mode: 0o700 });
+  const previous = process.env["TMPDIR"];
+  let checks = 0;
+  try {
+    process.env["TMPDIR"] = root;
+    await Promise.resolve(expect(createBolterHandoverServer({ directory: anchor, scope, generation: "synthetic-generation",
+      maxBatchBytes: 1000, isCurrent: () => ++checks === 1, store: () => Promise.reject(new Error("No store")) })).rejects.toThrow("unavailable"));
+    expect(await readdir(root)).toEqual(["anchor"]);
+  } finally {
+    if (previous === undefined) delete process.env["TMPDIR"]; else process.env["TMPDIR"] = previous;
+    await rm(root, { recursive: true, force: true });
+  }
 });

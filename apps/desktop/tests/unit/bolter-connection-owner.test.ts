@@ -91,6 +91,7 @@ test("receiver uses encrypted durable handover, no listening claim, and drains b
     await f.owner.confirmIdentity();
     expect(await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool })).toBe(true);
     expect(f.owner.state).toBe("receiver-running");
+    expect(f.owner.listening).toBe(false);
     expect(await f.owner.startReceiver({ handoverExecutable: "/different", directory: path, spool })).toBe(true);
     expect(f.calls.filter(p => p.args[0] === "serve").length).toBe(1);
     const serve = f.calls.find(p => p.args[0] === "serve")!;
@@ -99,6 +100,7 @@ test("receiver uses encrypted durable handover, no listening claim, and drains b
     async function* input() { yield Buffer.from(JSON.stringify(message) + "\n"); }
     expect(await handOverBolterBatch(descriptor, input())).toBe(true);
     expect((await spool.pending()).length).toBe(1);
+    expect(f.owner.listening).toBe(true);
     let accepted = 0;
     expect(await f.owner.flushInbox((items) => { accepted++; expect(items[0]).toEqual(message); return Promise.resolve(true); })).toBe("accepted");
     expect(accepted).toBe(1);
@@ -223,4 +225,80 @@ test("pause while receiver attestation is pending prevents a late receiver spawn
     expect(f.owner.state).toBe("connected");
     expect(await readdir(path)).toEqual([]);
   } finally { release(); await f.owner.retire(); await rm(path, { recursive: true, force: true }); }
+});
+
+
+test("listening requires current durable qualified handover; unknown packets remain blocked", async () => {
+  const path = await directory();
+  const f = fixture();
+  const records: { id: string; fingerprint: string; jsonl: string }[] = [];
+  let committed!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>(resolve => { committed = resolve; });
+  const durable = new Promise<void>(resolve => { release = resolve; });
+  const states: boolean[] = [];
+  const spool = {
+    store: async (jsonl: string) => { committed(); await durable; const record = { id: String(records.length), fingerprint: "synthetic", jsonl }; records.push(record); return record; },
+    pending: () => Promise.resolve(records.map(record => record.id)),
+    read: (id: string) => Promise.resolve(records.find(record => record.id === id)!),
+    acknowledge: () => Promise.reject(new Error("Unknown packets must remain durable")),
+  };
+  try {
+    await f.owner.confirmIdentity();
+    await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool,
+      onStateChange: () => { states.push(f.owner.listening); } });
+    const descriptor = parseBolterHandoverDescriptor(f.calls.find(plan => plan.args[0] === "serve")!.env["NAUTILO_BOLTER_HANDOVER"]!)!;
+    async function* packet(value: unknown) { yield Buffer.from(JSON.stringify(value) + "\n"); }
+    const unknown = handOverBolterBatch(descriptor, packet({ type: "unexpected" }));
+    await entered;
+    expect(f.owner.listening).toBe(false);
+    expect(records).toHaveLength(0);
+    release();
+    expect(await unknown).toBe(true); // Native ACK means durable storage, not semantic acceptance.
+    expect(f.owner.listening).toBe(false);
+    expect(await f.owner.flushInbox(() => Promise.reject(new Error("Must not admit unknown packet")))).toBe("blocked");
+    expect(records).toHaveLength(1);
+    expect(await handOverBolterBatch(descriptor, packet({ type: "control", kind: "connected" }))).toBe(true);
+    expect(f.owner.listening).toBe(true);
+    expect(states).toEqual([true]);
+    expect(records).toHaveLength(2);
+    const pausing = f.owner.pauseReceiver();
+    expect(f.owner.listening).toBe(false);
+    f.children.at(-1)!.finish();
+    await pausing;
+    expect(states.at(-1)).toBe(false);
+  } finally {
+    release();
+    for (const child of f.children) if (child.value.exitCode === null) child.finish();
+    await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
+});
+
+test("late durable handover cannot restore readiness after authority withdrawal", async () => {
+  const path = await directory();
+  const f = fixture();
+  let entered!: () => void; let release!: () => void;
+  const storing = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let stored = false;
+  const states: boolean[] = [];
+  const spool = { store: async () => { entered(); await gate; stored = true; return { id: "synthetic", fingerprint: "synthetic" }; },
+    pending: () => Promise.resolve([]), read: () => Promise.reject(new Error("No read")), acknowledge: () => Promise.resolve() };
+  try {
+    await f.owner.confirmIdentity();
+    await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool,
+      onStateChange: () => { states.push(f.owner.listening); } });
+    const descriptor = parseBolterHandoverDescriptor(f.calls.find(plan => plan.args[0] === "serve")!.env["NAUTILO_BOLTER_HANDOVER"]!)!;
+    async function* input() { yield Buffer.from(JSON.stringify({ type: "control", kind: "connected" }) + "\n"); }
+    const handing = handOverBolterBatch(descriptor, input());
+    await storing;
+    f.revoke(); release();
+    expect(await handing).toBe(false);
+    expect(stored).toBe(true);
+    expect(f.owner.listening).toBe(false);
+    expect(states).toEqual([]);
+  } finally {
+    release(); for (const child of f.children) if (child.value.exitCode === null) child.finish();
+    await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
 });

@@ -9,7 +9,8 @@ export interface BolterNativeConnectionDriver {
   connect(onLink: (auth: { url: string; code: string }) => void): Promise<BolterConnectionObservation>;
   check(): Promise<BolterConnectionObservation>;
   conversations(): Promise<BolterNativeResult>;
-  start(accept: (messages: readonly BolterReceivedMessage[], batchId: string) => Promise<boolean>): Promise<BolterConnectionObservation>;
+  start(accept: (messages: readonly BolterReceivedMessage[], batchId: string) => Promise<boolean>,
+    onObservation?: (observation: BolterConnectionObservation) => void): Promise<BolterConnectionObservation>;
   pause(): Promise<BolterConnectionObservation>;
   prepareSend(): Promise<((content: NonNullable<RelayBolterAuthorized["content"]>) => Promise<BolterNativeResult>) | null>;
   retire(): Promise<void>;
@@ -36,7 +37,8 @@ export function createBolterNativeRelayPort(options: {
   let retirement = Promise.resolve();
   const current = (s: Session) => { try { return session === s && fence(); } catch { return false; } };
   const observation = (s: Session, connection: Connection, value: BolterConnectionObservation) => {
-    if (current(s) && connection.active) s.transport.send({ type: "relay:bolter-observation", version: BOLTER_RELAY_PROTOCOL_VERSION,
+    if (current(s) && connection.active && s.connections.get(connection.id)?.generation === connection.generation
+      && s.generations.get(connection.id) === connection.generation) s.transport.send({ type: "relay:bolter-observation", version: BOLTER_RELAY_PROTOCOL_VERSION,
       scope: s.scope, connectionId: connection.id, generation: connection.generation, observation: value });
   };
   const disconnect = () => {
@@ -128,7 +130,7 @@ export function createBolterNativeRelayPort(options: {
             connectionId: value.id, generation: value.generation, batchId, messages: [...messages] })) return false;
           return await accepted && current(s) && value.active;
         } finally { s.batches.delete(batchId); }
-      });
+      }, result => observation(s, value, result));
       return { kind: "observation", observation: result };
     }
     if (command.action !== "send") return unavailable("invalid_request");

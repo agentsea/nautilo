@@ -1,8 +1,9 @@
-import { randomBytes, randomUUID } from "node:crypto";
-import { lstat, realpath, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { lstat, mkdtemp, realpath, rmdir, unlink } from "node:fs/promises";
 import { createServer, createConnection, type Socket } from "node:net";
 import { isAbsolute, join, resolve } from "node:path";
 import { TextDecoder } from "node:util";
+import { tmpdir } from "node:os";
 import type { BolterSpoolScope, BolterSpoolReceipt } from "./inbox-spool";
 
 const unavailable = () => new Error("Bolter handover is unavailable.");
@@ -57,15 +58,35 @@ export async function createBolterHandoverServer(options: {
   const store = options.store;
   let retired = false;
   const current = () => { try { return !retired && currentCallback() === true; } catch { return false; } };
-  const descriptor = parseBolterHandoverDescriptor(JSON.stringify({ version: 1,
-    socketPath: join(options.directory, `${randomUUID()}.sock`), generation: options.generation,
+  const candidate = parseBolterHandoverDescriptor(JSON.stringify({ version: 1,
+    socketPath: join(options.directory, "s.sock"), generation: options.generation,
     nonce: randomBytes(32).toString("hex"), scope: { ...options.scope }, maxBatchBytes: options.maxBatchBytes }));
-  if (!descriptor || !isAbsolute(options.directory) || !current()) throw unavailable();
+  if (!candidate || !isAbsolute(options.directory) || !current()) throw unavailable();
   const directoryPath = options.directory;
   const directory = await lstat(directoryPath);
   if (!directory.isDirectory() || directory.isSymbolicLink() || (directory.mode & 0o077) !== 0
     || (process.getuid && directory.uid !== process.getuid()) || await realpath(directoryPath) !== resolve(directoryPath)) throw unavailable();
+  // Managed storage can exceed sockaddr_un.sun_path. The endpoint instead lives in
+  // a fresh private OS-temporary directory; the managed directory remains its authority anchor.
+  const socketDirectoryPath = await mkdtemp(join(await realpath(tmpdir()), "nb-"));
+  const socketDirectory = await lstat(socketDirectoryPath);
+  const validSocketDirectory = async () => {
+    const now = await lstat(socketDirectoryPath);
+    if (!now.isDirectory() || now.isSymbolicLink() || now.dev !== socketDirectory.dev || now.ino !== socketDirectory.ino
+      || (now.mode & 0o077) !== 0 || (process.getuid && now.uid !== process.getuid())
+      || await realpath(socketDirectoryPath) !== resolve(socketDirectoryPath)) throw unavailable();
+  };
+  const removeSocketDirectory = async () => {
+    try { await validSocketDirectory(); await rmdir(socketDirectoryPath); } catch { /* Never recurse into a replaced or nonempty directory. */ }
+  };
+  const descriptor = Object.freeze({ ...candidate, socketPath: join(socketDirectoryPath, "s.sock") });
+  // The native structure includes the terminating NUL: 104 bytes on Darwin, 108 on Linux.
+  const nativePathBytes = process.platform === "darwin" ? 104 : 108;
+  if (Buffer.byteLength(descriptor.socketPath, "utf8") >= nativePathBytes) {
+    await removeSocketDirectory(); throw unavailable();
+  }
   const validDirectory = async () => {
+    await validSocketDirectory();
     const now = await lstat(directoryPath);
     if (!now.isDirectory() || now.isSymbolicLink() || now.dev !== directory.dev || now.ino !== directory.ino
       || (now.mode & 0o077) !== 0 || await realpath(directoryPath) !== resolve(directoryPath)) throw unavailable();
@@ -145,8 +166,18 @@ export async function createBolterHandoverServer(options: {
   let socketStat: Awaited<ReturnType<typeof lstat>> | undefined;
   const stopServer = async () => {
     for (const socket of sockets) socket.destroy();
+    // Node closes and may unlink its original pathname before our fallback identity check.
+    // Mode 0700 excludes other OS users; the owning OS account remains trusted.
     await new Promise<void>(resolveClose => server.close(() => resolveClose()));
     await Promise.allSettled([...pending]);
+  };
+  const removeSocket = async () => {
+    try {
+      await validSocketDirectory();
+      const stat = await lstat(descriptor.socketPath);
+      if (socketStat && stat.isSocket() && stat.dev === socketStat.dev && stat.ino === socketStat.ino) await unlink(descriptor.socketPath);
+    } catch { /* Explicit fallback never removes a replaced path; Node close may unlink its bound pathname. */ }
+    await removeSocketDirectory();
   };
   try {
     await new Promise<void>((success, reject) => {
@@ -155,27 +186,24 @@ export async function createBolterHandoverServer(options: {
       server.listen(descriptor.socketPath, () => { server.off("error", fail); success(); });
     });
     server.on("error", () => { retired = true; for (const socket of sockets) socket.destroy(); });
-    await validDirectory();
-    if (!current()) throw unavailable();
+    await validSocketDirectory();
     socketStat = await lstat(descriptor.socketPath);
     if (!socketStat.isSocket() || (process.getuid && socketStat.uid !== process.getuid())) throw unavailable();
+    await validDirectory();
+    if (!current()) throw unavailable();
   } catch {
     retired = true;
     await stopServer();
+    await removeSocket();
     throw unavailable();
   }
-  const ownedSocket = socketStat;
   let closing: Promise<void> | undefined;
   return Object.freeze({ descriptor, close() {
     retired = true;
     for (const socket of sockets) socket.destroy();
     closing ??= (async () => {
       await stopServer();
-      try {
-        await validDirectory();
-        const stat = await lstat(descriptor.socketPath);
-        if (stat.isSocket() && stat.dev === ownedSocket.dev && stat.ino === ownedSocket.ino) await unlink(descriptor.socketPath);
-      } catch { /* Explicit fallback never removes a replaced path; Node close may unlink its bound pathname. */ }
+      await removeSocket();
     })();
     return closing;
   } });
@@ -187,7 +215,7 @@ export async function handOverBolterBatch(descriptor: BolterHandoverDescriptor,
   const pinned = parseBolterHandoverDescriptor(JSON.stringify(descriptor));
   if (!pinned) return false;
   try {
-    // Bound collection by the separately qualified producer batch size, not a new default.
+    // Apply the local admission budget; overflow is rejection, never a truncated acknowledgement.
     const chunks: Buffer[] = [];
     let bytes = 0;
     for await (const chunk of input) {

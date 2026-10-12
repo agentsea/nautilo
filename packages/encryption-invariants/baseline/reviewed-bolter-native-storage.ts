@@ -1,6 +1,7 @@
 import type { EncryptionCoverageEntry } from "../src/model";
 import type { SourceDeclaration } from "../src/node/source-inventory";
 import type { SourceAlarmReview } from "../src/node/source-alarm-review";
+const HANDOVER = "apps/desktop/electron/bolter-bridge/handover.ts";
 const MANAGED = "apps/desktop/electron/bolter-bridge/managed-connection.ts";
 const RUNTIME = "apps/desktop/electron/bolter-bridge/runtime.ts";
 const HELPER = "apps/desktop/electron/bolter-bridge/helper-runtime.ts";
@@ -26,6 +27,7 @@ export const BOLTER_NATIVE_STORAGE_ALARMS: readonly SourceAlarmReview[] = [
     declarationId: `source.bolter-descriptor.${fingerprint}`, reason: "Within source.file.bolter-connection-descriptor, only sealed recovery descriptor ciphertext is written and atomically published by this exact sink. Message text and provider authentication files are outside this descriptor.",
   })),
   ...[
+    [`${HANDOVER}#temporary_storage:9dd26a249bd2af09:1`, "handover-endpoint", "This fresh mode-0700 temporary directory contains only the Unix socket endpoint, not a message archive, authentication file or diagnostic log. Message bytes traverse the separately declared transient handover carrier and enter the sealed inbox spool. Close drains admitted work. The explicit socket-removal fallback checks inode identity, but Node close can first unlink its original bound pathname; the owning OS account remains trusted. Empty-directory removal checks identity and never recursively removes replaced or nonempty directories."],
     [`${RUNTIME}#subprocess_processor:b0ca953d0d9928fc:1`, "cli-version", "The exact fixed version command has no account HOME, login, message stdin or credential environment. It compares bounded-by-expected-byte-count release stdout and discards stderr; no provider body is processed."],
     [`${RUNTIME}#filesystem_write:972e179d0755bf73:1`, "cli-artifact-write", "Only public CLI artifact bytes from the pinned HTTPS origin are written, constrained by exact release size and digest, never account credentials or messages."],
     [`${RUNTIME}#filesystem_write:d03202c1e0d07587:1`, "cli-artifact-publish", "This rename publishes only the byte-verified public CLI executable from the exact artifact write. It does not publish provider message or account data."],

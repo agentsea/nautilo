@@ -14,6 +14,7 @@ function fixture(options: { failFirstFactory?: boolean; deferFirstSend?: boolean
   let factoryCalls = 0;
   let preparations = 0;
   const messages: RelayBolterDesktopMessage[] = [];
+  const observations: ((value: BolterConnectionObservation) => void)[] = [];
   const drivers: { retired: boolean; current: () => boolean; generation: number }[] = [];
   let sends = 0;
   let intake: ((messages: readonly BolterReceivedMessage[], batchId: string) => Promise<boolean>) | undefined;
@@ -23,7 +24,7 @@ function fixture(options: { failFirstFactory?: boolean; deferFirstSend?: boolean
     const driver: BolterNativeConnectionDriver = {
       connect: () => Promise.resolve(observation), check: () => Promise.resolve(observation),
       conversations: () => Promise.resolve({ kind: "conversations", conversations: [] }),
-      start: accept => { intake = accept; return Promise.resolve(observation); }, pause: () => Promise.resolve({ ...observation, receiver: "stopped" }),
+      start: (accept, onObservation) => { intake = accept; if (onObservation) observations.push(onObservation); return Promise.resolve(observation); }, pause: () => Promise.resolve({ ...observation, receiver: "stopped" }),
       prepareSend: () => Promise.resolve(options.deferFirstSend && preparations++ === 0 ? null : content => { sends++; return Promise.resolve({ kind: "sent", receipt: { messageId: "synthetic-reply",
         chatId: content.chatId, threadRootId: content.threadRootId } }); }),
       retire: () => { state.retired = true; return Promise.resolve(); },
@@ -34,7 +35,7 @@ function fixture(options: { failFirstFactory?: boolean; deferFirstSend?: boolean
   let sequence = 10;
   const envelope = (command: BolterNativeCommand): RelayBolterCommand => ({ type: "relay:bolter-command", version: 30,
     scope, correlationId: `10000000-0000-4000-8000-${String(sequence++).padStart(12, "0")}`, command });
-  return { port, envelope, messages, drivers, sends: () => sends,
+  return { port, envelope, messages, drivers, observations, sends: () => sends,
     batch: (batchId: string) => { if (!intake) throw new Error("Synthetic receiver absent"); return intake([], batchId); } };
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
@@ -137,4 +138,23 @@ test("failed newer generation cannot restore a stale receiver generation", async
   expect(f.drivers).toHaveLength(1);
   expect(f.drivers[0]?.generation).toBe(2);
   await f.port.retire();
+});
+
+
+test("receiver observations reach only the exact active connection generation", async () => {
+  const f = fixture();
+  await f.port.onCommand(f.envelope({ action: "start_receiver", connectionId: id, generation: 1 }));
+  f.observations[0]!({ ...observation, receiver: "listening" });
+  expect(f.messages.at(-1)).toMatchObject({ type: "relay:bolter-observation", connectionId: id, generation: 1,
+    observation: { receiver: "listening" } });
+  await f.port.onCommand(f.envelope({ action: "start_receiver", connectionId: id, generation: 2 }));
+  const count = f.messages.length;
+  f.observations[0]!({ ...observation, receiver: "listening" });
+  expect(f.messages).toHaveLength(count);
+  f.observations[1]!({ ...observation, receiver: "stopped" });
+  expect(f.messages.at(-1)).toMatchObject({ type: "relay:bolter-observation", generation: 2, observation: { receiver: "stopped" } });
+  await f.port.retire();
+  const retiredCount = f.messages.length;
+  f.observations[1]!({ ...observation, receiver: "listening" });
+  expect(f.messages).toHaveLength(retiredCount);
 });

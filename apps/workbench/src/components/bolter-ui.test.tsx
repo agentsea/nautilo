@@ -84,6 +84,7 @@ describe("Bolter connection journey through the real HTTP client", () => {
     expect(bolterConnectionLabel({ ...connection, receiver: "starting" })).toBe("Starting receiver");
     expect(bolterConnectionLabel({ ...connection, receiver: "stopped" })).toBe("Connected");
     expect(bolterConnectionLabel(connection)).toBe("Listening");
+    expect(bolterConnectionLabel({ ...connection, reason: "receiver_unavailable" })).toBe("Delivery needs attention");
   });
   test("creates only a fresh room for the exact observed choice after explicit credit consent", async () => {
     let opened: string | null = null;

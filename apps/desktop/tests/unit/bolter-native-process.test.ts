@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { BolterNativeProcessOwner } from "../../electron/bolter-bridge/native-process";
+import { RELAY_HOST_CONTROL_MAX_BYTES } from "@nautilo/relay";
+import { bolterNativeAdmissionPolicy, BolterNativeProcessOwner } from "../../electron/bolter-bridge/native-process";
 import { createBolterIdentityInvocation, createBolterReceiveInvocation, createBolterSendInvocation, type BolterCliInvocation } from "../../electron/bolter-bridge/cli-contract";
 
 const runtime = { executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/synthetic-home", platform: "linux" as const, version: "synthetic-v1" };
@@ -131,4 +132,25 @@ test("prepared send attests before release and immediately spawns at most once",
   expect(attestations).toBe(1);
   await Promise.resolve(expect(prepared.execute({ chatId: "other-chat", threadRootId: null }, "Other text")).rejects.toThrow("unavailable"));
   child.finish(); await result; await native.retire();
+});
+
+
+test("native admission reuses the Host byte budget without claiming provider maxima", () => {
+  const policy = bolterNativeAdmissionPolicy(runtime.version);
+  expect(policy).toEqual({ version: runtime.version, maxOutputBytes: RELAY_HOST_CONTROL_MAX_BYTES, maxBatchBytes: RELAY_HOST_CONTROL_MAX_BYTES });
+  expect(Object.isFrozen(policy)).toBe(true);
+});
+
+test("output admission counts UTF-8 bytes and never exposes a truncated success", async () => {
+  for (const [text, overflow] of [["éé", false], ["ééx", true]] as const) {
+    const child = fake();
+    const native = new BolterNativeProcessOwner({ runtime, qualification: { ...qualification, maxOutputBytes: 4 },
+      attest: () => Promise.resolve(true), isCurrent: () => true, spawn: () => child.process });
+    const running = await native.start(plan());
+    child.value.stdout.write(text);
+    expect(child.value.kills).toBe(overflow ? 1 : 0);
+    child.finish();
+    expect(await running.result).toEqual({ exitCode: overflow ? null : 0, stdout: overflow ? "" : text, stderr: "" });
+    await native.retire();
+  }
 });

@@ -12,7 +12,7 @@ export function bolterReason(reason?: BolterStatusReason): string {
     case "authentication_required": return "Sign in to Bolter to connect your identity.";
     case "identity_unconfirmed": return "Your Bolter identity has not been confirmed yet.";
     case "identity_selection_required": return "Choose a Bolter identity before connecting.";
-    case "receiver_unavailable": return "The receiver is not ready. Reload its current status.";
+    case "receiver_unavailable": return "The receiver needs attention. Messages already queued are retained.";
     case "authority_changed": case "conflict": return "The connection changed. Reload before continuing.";
     case "delivery_uncertain": return "Delivery is uncertain. Do not resend without checking the destination.";
     case "unsupported_content": return "Only text can be sent through this connection.";
@@ -25,7 +25,7 @@ export function bolterReason(reason?: BolterStatusReason): string {
 
 export function bolterConnectionLabel(connection: BolterConnectionSummary): string {
   switch (connection.status) {
-    case "connected": return connection.receiver === "listening" ? "Listening"
+    case "connected": return connection.reason === "receiver_unavailable" ? "Delivery needs attention" : connection.receiver === "listening" ? "Listening"
       : connection.receiver === "starting" ? "Starting receiver"
       : connection.receiver === "running" ? "Receiver running" : "Connected";
     case "needs_auth": return "Sign-in required";
@@ -40,8 +40,9 @@ export function bolterConnectionLabel(connection: BolterConnectionSummary): stri
 export function bolterCatalogueSummary(connections: readonly BolterConnectionSummary[]): ConnectedAppCatalogueSummary {
   const connection = connections.find(item => item.status === "connected") ?? connections.find(item => item.status !== "revoked");
   if (!connection) return { state: "available", statusLabel: "Not connected", tone: "muted" };
-  return { state: connection.status === "connected" ? "connected" : "attention",
-    statusLabel: bolterConnectionLabel(connection), tone: connection.status === "connected" ? "ok" : "warn" };
+  const healthy = connection.status === "connected" && !connection.reason;
+  return { state: healthy ? "connected" : "attention",
+    statusLabel: bolterConnectionLabel(connection), tone: healthy ? "ok" : "warn" };
 }
 
 export function bolterDeliveryLabel(state: BolterDeliveryState): string {

@@ -1,13 +1,18 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { RELAY_HOST_CONTROL_MAX_BYTES } from "@nautilo/relay";
 import { createBolterConversationsInvocation, createBolterDiscoveryInvocation, createBolterIdentityInvocation, createBolterLoginInvocation, createBolterReceiveInvocation,
   createBolterSendInvocation, type BolterCliBinding, type BolterCliInvocation, type BolterCliRuntime, type BolterCliSelection } from "./cli-contract";
 import type { BolterCliProcessResult } from "./cli-client";
 
-/** Values require provider-version qualification; no default payload ceiling is invented. */
+/** Local admission budgets, not claims about provider-supported payload maxima. */
 export interface BolterNativeQualification {
   readonly version: string;
   readonly maxOutputBytes: number;
   readonly maxBatchBytes: number;
+}
+/** Reuses the established Host transport budget; complete encoded frames remain checked separately. */
+export function bolterNativeAdmissionPolicy(version: string): BolterNativeQualification {
+  return Object.freeze({ version, maxOutputBytes: RELAY_HOST_CONTROL_MAX_BYTES, maxBatchBytes: RELAY_HOST_CONTROL_MAX_BYTES });
 }
 export type BolterNativeSpawn = (plan: BolterCliInvocation) => ChildProcessWithoutNullStreams;
 const unavailable = () => new Error("Bolter native execution is unavailable.");
