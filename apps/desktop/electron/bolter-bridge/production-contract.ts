@@ -11,7 +11,7 @@ export const BOLTER_CLI_RELEASE = Object.freeze({
 });
 export type BolterCliArtifact = { readonly url: string; readonly sha256: string; readonly bytes: number };
 
-/** Empty local discovery is observed; populated/auth/receive/receipt output remains unqualified. */
+/** Empty discovery and the initial login prompt are observed; messaging and identity outputs remain unqualified. */
 export function getBolterProductionDecoders(version: string): BolterQualifiedDecoders | undefined {
   if (version !== BOLTER_CLI_RELEASE.version) return undefined;
   return Object.freeze({ version, discovery(raw: unknown): unknown {
@@ -20,5 +20,10 @@ export function getBolterProductionDecoders(version: string): BolterQualifiedDec
     if (Object.keys(value).sort().join() !== "agents,harness" || !Array.isArray(value["agents"])
       || value["agents"].length !== 0 || typeof value["harness"] !== "string") throw new Error("Bolter output is unqualified.");
     return [];
+  }, authLink(stdout: string): unknown {
+    // Parse only the complete observed prompt. Provider prose is never executable authority.
+    const prompt = /^Open this link on any device to sign in \(or create a Bolter account\): https:\/\/bolter\.chat\/device\?code=([A-Z]{4}-[A-Z]{4})\nCheck that the page shows the code ([A-Z]{4}-[A-Z]{4})\. If this command is stopped, run it again to keep waiting on the same code\.\n$/u.exec(stdout);
+    if (!prompt || prompt[0] !== stdout || prompt[1] !== prompt[2]) throw new Error("Bolter output is unqualified.");
+    return Object.freeze({ url: `https://bolter.chat/device?code=${prompt[1]}`, code: prompt[1] });
   } });
 }

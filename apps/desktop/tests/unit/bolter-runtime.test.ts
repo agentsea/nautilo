@@ -19,11 +19,11 @@ async function fixture() {
 const providerFetch = (() => Promise.resolve(new Response(bytes))) as typeof fetch;
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 
-test("production contract only decodes observed empty discovery and never invents live outputs", () => {
+test("production contract recognizes observed discovery and auth prompt without qualifying live identity or messaging", () => {
   const decoders = getBolterProductionDecoders(BOLTER_CLI_RELEASE.version);
   expect(decodeBolterIdentities({ agents: [], harness: "codex" }, BOLTER_CLI_RELEASE.version, decoders)).toEqual({ ok: true, value: [] });
   expect(decodeBolterIdentities({ agents: [{ id: "synthetic" }], harness: "codex" }, BOLTER_CLI_RELEASE.version, decoders).ok).toBe(false);
-  expect([decoders?.identity, decoders?.authLink, decoders?.receiveItem, decoders?.receipt]).toEqual([undefined, undefined, undefined, undefined]);
+  expect([decoders?.identity, decoders?.receiveItem, decoders?.receipt]).toEqual([undefined, undefined, undefined]);
   expect(getBolterProductionDecoders("other-version")).toBeUndefined();
   expect(productionBolterArtifact("win32", "x64")).toBeUndefined();
   expect(productionBolterArtifact("darwin", "arm64")?.sha256).toHaveLength(64);

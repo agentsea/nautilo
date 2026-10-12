@@ -1,4 +1,5 @@
 import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
+import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
 import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
@@ -6200,7 +6201,7 @@ const PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
 const PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS: readonly DtoDeclaration[] =
   reviewedImageAssistanceDtoReplacements(PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS);
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = reviewedExternalMessageAttributionDtoReplacements([
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = reviewedBolterRelayDtoReplacements(reviewedExternalMessageAttributionDtoReplacements([
   ...PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS.has(entry.locator)
   ),
@@ -6209,4 +6210,4 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = reviewedExte
   ),
   ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
   ...BOLTER_HTTP_DECLARATIONS,
-]);
+]));
