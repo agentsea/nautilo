@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiError } from "@nautilo/api-client/browser";
 import type { BolterConnectionSummary, BolterConnectionsResponse, BolterConversationChoice, BolterOperationResponse, BolterRoomLinkSummary } from "@nautilo/types";
 import { apiClient } from "../../lib/api";
 import { Button } from "../settings/ui";
@@ -15,6 +16,9 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
 }) {
   const [data, setData] = useState<BolterConnectionsResponse | null>(null);
   const [operation, setOperation] = useState<BolterOperationResponse | null>(null);
+  const [pollingStopped, setPollingStopped] = useState(false);
+  const operationRevision = useRef(0);
+  const operationRead = useRef<{ id: string; work: Promise<boolean> } | null>(null);
   const [busy, setBusy] = useState(false);
   const [relayId, setRelayId] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +65,7 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
 
   useEffect(() => {
     epoch.current += 1;
-    setData(null); setOperation(null); setSelectedConnection(null); setDisconnect(null); setError(null);
+    setData(null); setOperation(null); setPollingStopped(false); setSelectedConnection(null); setDisconnect(null); setError(null);
     setChoices([]); setAgents([]); setChoiceId(""); setAgentId(""); setName(""); setConsent(false);
     setLinks({}); setRelayId("");
     void reload();
@@ -76,11 +80,54 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
     catch { if (current()) setError("Bolter could not complete this request. Reload to check its current state."); }
     finally { if (current()) setBusy(false); }
   }
-  async function observeOperation(result: BolterOperationResponse, current: () => boolean) {
+  const observeOperation = useCallback(async (result: BolterOperationResponse, current: () => boolean) => {
     if (!current()) return;
-    setOperation(result);
+    setOperation(result); setPollingStopped(false);
     if (result.status === "completed") { setOperation(null); await reload(); }
-  }
+  }, [reload]);
+  const refreshOperation = useCallback((id: string): Promise<boolean> => {
+    // Manual checks and automatic refresh share one in-flight read.
+    if (operationRead.current?.id === id) return operationRead.current.work;
+    const scopeCurrent = capture();
+    const revision = operationRevision.current;
+    const current = () => scopeCurrent() && revision === operationRevision.current;
+    const work = (async () => {
+      try {
+        const result = await apiClient.getBolterOperation(id);
+        if (!current()) return false;
+        await observeOperation(result, current);
+        return result.status === "pending" || result.status === "auth_pending";
+      } catch (error) {
+        if (current()) {
+          setPollingStopped(true);
+          if (error instanceof ApiError && error.status === 404) {
+            setOperation(null);
+            setError("Bolter sign-in was interrupted. Connect Bolter again; you may need to confirm your account with Bolter again.");
+          } else setError("Could not check Bolter sign-in. Check sign-in to try again.");
+        }
+        return false;
+      }
+    })();
+    operationRead.current = { id, work };
+    void work.then(() => { if (operationRead.current?.work === work) operationRead.current = null; });
+    return work;
+  }, [capture, observeOperation]);
+  const operationId = operation?.operationId;
+  const pendingOperation = operation?.status === "pending" || operation?.status === "auth_pending";
+  useEffect(() => {
+    if (!operationId || !pendingOperation || pollingStopped) return;
+    let cancelled = false;
+    const current = capture();
+    let timer: number | undefined;
+    const poll = async () => {
+      if (cancelled || !current()) return;
+      const pending = await refreshOperation(operationId);
+      // Match Connections' existing sequential two-second device-auth refresh cadence.
+      if (pending && !cancelled && current()) timer = window.setTimeout(() => void poll(), 2_000);
+    };
+    timer = window.setTimeout(() => void poll(), 2_000);
+    return () => { cancelled = true; if (timer !== undefined) window.clearTimeout(timer); };
+  }, [operationId, pendingOperation, pollingStopped, capture, refreshOperation]);
   async function beginLink(connection: BolterConnectionSummary) {
     const current = capture();
     const [conversations, availableAgents] = await Promise.all([apiClient.getBolterConversations(connection.id), apiClient.listAgents()]);
@@ -92,7 +139,6 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
   }
   const chosen = choices.find(item => item.id === choiceId);
   const available = data?.availability.state === "available";
-  const pendingOperation = operation?.status === "pending" || operation?.status === "auth_pending";
 
   return <section aria-label="Bolter connection" className="space-y-4 text-sm">
     <p className="text-foreground-muted">Keep the receiving Nautilo Desktop running. Each linked room has one Bolter conversation.</p>
@@ -113,16 +159,17 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
     {data && !available ? <p role="status">{bolterReason(data.availability.reason ?? (data.availability.state !== "available" ? data.availability.state : undefined))}</p> : null}
     {error ? <p role="alert" className="text-[var(--error)]">{error}</p> : null}
     {operation ? <div className="space-y-2 rounded-lg border border-border p-3" aria-label="Bolter sign-in">
-      <p role="status">{operation.status === "auth_pending" ? "Sign in to Bolter, then check sign-in." : operation.status === "pending" ? "Connecting to Bolter…" : bolterReason(operation.reason)}</p>
+      <p role="status">{operation.status === "auth_pending" ? pollingStopped ? "Sign in to Bolter, then check sign-in." : "Sign in to Bolter. This page will update when you’re connected." : operation.status === "pending" ? "Connecting to Bolter…" : bolterReason(operation.reason)}</p>
       {operation.auth && operation.status === "auth_pending" ? <>
         <a className="text-accent underline" href={operation.auth.url} target="_blank" rel="noopener noreferrer">Open Bolter sign-in</a>
         <p>Code: <span className="font-mono">{operation.auth.code}</span></p>
       </> : null}
       {pendingOperation ? <div className="flex gap-2">
         <Button disabled={busy} onClick={() => void run(async () => {
-          const current = capture(); await observeOperation(await apiClient.getBolterOperation(operation.operationId), current);
+          await refreshOperation(operation.operationId);
         })}>Check sign-in</Button>
         <Button disabled={busy} onClick={() => void run(async () => {
+          operationRevision.current += 1; setPollingStopped(true);
           const current = capture(); await apiClient.cancelBolterOperation(operation.operationId);
           if (current()) { setOperation(null); await reload(); }
         })}>Cancel sign-in</Button>

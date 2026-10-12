@@ -13,14 +13,15 @@ describe("Bolter explicit Human sharing", () => {
       [350, "0350_gigantic_whistler", "70cdb08e7b09df2d4f6789c51e779c00da5a8df2a5e5adc3b6e56b53c36c7ec7"],
       [351, "0351_bolter_reviewed_share_guard", "d65ec78ea55f5346b29cb65dcb6e602d300a21da1652c1e2e2980c2c38bf0057"],
     ] as const;
+    type Snapshot = { id: string; prevId: string; tables: Record<string, unknown> };
     for (const [idx, tag, hash] of identities) {
       const entry = journal.entries.find(row => row.idx === idx)!;
       const previous = journal.entries.find(row => row.idx === idx - 1)!;
       expect(entry.tag).toBe(tag);
       expect(entry.when).toBeGreaterThan(previous.when);
       expect(createHash("sha256").update(readFileSync(resolve(directory, `${tag}.sql`))).digest("hex")).toBe(hash);
-      const snapshot = JSON.parse(readFileSync(resolve(directory, `meta/${String(idx).padStart(4, "0")}_snapshot.json`), "utf8"));
-      const previousSnapshot = JSON.parse(readFileSync(resolve(directory, `meta/${String(previous.idx).padStart(4, "0")}_snapshot.json`), "utf8"));
+      const snapshot = JSON.parse(readFileSync(resolve(directory, `meta/${String(idx).padStart(4, "0")}_snapshot.json`), "utf8")) as Snapshot;
+      const previousSnapshot = JSON.parse(readFileSync(resolve(directory, `meta/${String(previous.idx).padStart(4, "0")}_snapshot.json`), "utf8")) as Snapshot;
       expect(snapshot.prevId).toBe(previousSnapshot.id);
       expect(snapshot.tables["public.media_generations"]).toEqual(previousSnapshot.tables["public.media_generations"]);
       expect(snapshot.tables["public.bolter_explicit_shares"]).toBeDefined();

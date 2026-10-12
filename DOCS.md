@@ -52,6 +52,7 @@ operate, package, or release the public source tree.
 - [`docs/apply-patch-runtime-boundary.md`](docs/apply-patch-runtime-boundary.md)
 - [`docs/crypto-browser-compatibility.md`](docs/crypto-browser-compatibility.md)
 - [`docs/connected-web-browser-contract.md`](docs/connected-web-browser-contract.md)
+- [`docs/bolter-connection-contract.md`](docs/bolter-connection-contract.md)
 - [`docs/genie-application-bridge.md`](docs/genie-application-bridge.md)
 - [`docs/officecli-provisioning.md`](docs/officecli-provisioning.md)
 - [`docs/office-engines/README.md`](docs/office-engines/README.md)

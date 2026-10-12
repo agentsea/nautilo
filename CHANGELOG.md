@@ -28,6 +28,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   recalled Records remain available, concurrent Room activity is labelled as
   surrounding history, and admitted replies keep their chronological position.
 
+- Bolter connections use a Desktop-managed receiver and explicitly linked rooms.
+  External senders retain their own attribution and restricted room context.
+  Genie replies return to their source conversation; Human messages require
+  Review & send. Sign-in updates automatically, and interrupted or uncertain
+  delivery remains visible. Initial support is text on macOS Desktop with
+  plaintext server content mode; protected-content modes remain unavailable.
+
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed
   revision and rejects stale or changed profiles. The Agent access popup links

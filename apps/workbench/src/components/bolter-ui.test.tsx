@@ -1,5 +1,5 @@
 import { reapplyHappyDomGlobals } from "../../tests/bun-dom-preload";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { apiClient } from "../lib/api";
 import { BolterConnectionSection } from "../pages/connections/bolter-connection-section";
@@ -50,12 +50,118 @@ beforeEach(() => {
     const method = init?.method ?? "GET";
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
     if (method !== "GET") writes.push({ path, body });
-    return json(await responder(path, method, body));
+    const result = await responder(path, method, body);
+    return result instanceof Response ? result : json(result);
   }) as typeof fetch;
 });
 afterEach(() => { cleanup(); globalThis.fetch = originalFetch; apiClient.setToken(null); });
 
 describe("Bolter connection journey through the real HTTP client", () => {
+  function pollClock() {
+    const scheduled = new Map<number, () => void>();
+    let sequence = 0;
+    const originalSet = window.setTimeout.bind(window);
+    const originalClear = window.clearTimeout.bind(window);
+    const set = spyOn(window, "setTimeout").mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay !== 2_000) return originalSet(handler, delay, ...args);
+      if (typeof handler !== "function") throw new Error("Expected a polling callback");
+      const id = --sequence; scheduled.set(id, () => handler(...args)); return id;
+    }) as typeof window.setTimeout);
+    const clear = spyOn(window, "clearTimeout").mockImplementation((id?: number) => {
+      if (id !== undefined && scheduled.delete(id)) return;
+      originalClear(id);
+    });
+    return { scheduled, async tick() {
+      const next = scheduled.entries().next().value;
+      if (!next) throw new Error("No pending operation refresh");
+      scheduled.delete(next[0]); await act(async () => { next[1](); });
+    }, restore() { set.mockRestore(); clear.mockRestore(); } };
+  }
+  const authPending = { operationId: CONNECTION, status: "auth_pending", auth: { url: "https://bolter.chat/device?code=ABCD-EFGH", code: "ABCD-EFGH" } };
+  async function beginPending() {
+    const view = render(<BolterConnectionSection scopeKey="fixture-scope" onRoomCreated={async () => {}} />);
+    await waitFor(() => expect((view.getByRole("button", { name: "Connect Bolter" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(view.getByRole("button", { name: "Connect Bolter" }));
+    await waitFor(() => expect(view.getByLabelText("Bolter sign-in")).toBeTruthy());
+    return view;
+  }
+  test("sequential operation refresh discovers delayed auth and completion, sharing manual reads", async () => {
+    const clock = pollClock(); const delayed = deferred<unknown>(); let reads = 0; let lists = 0;
+    responder = (path, method, body) => {
+      if (path.endsWith("/connect")) return { operationId: CONNECTION, status: "pending" };
+      if (path === `/api/bolter/operations/${CONNECTION}`) return ++reads === 1 ? delayed.promise : { operationId: CONNECTION, status: "completed", connection };
+      if (path === "/api/bolter/connections") lists++;
+      return defaults(path, method, body);
+    };
+    try {
+      const view = await beginPending();
+      await clock.tick(); expect(reads).toBe(1); expect(clock.scheduled.size).toBe(0);
+      fireEvent.click(view.getByRole("button", { name: "Check sign-in" }));
+      expect(reads).toBe(1);
+      await act(async () => { delayed.resolve(authPending); });
+      expect(view.getByRole("link", { name: "Open Bolter sign-in" })).toBeTruthy();
+      expect(clock.scheduled.size).toBe(1);
+      await clock.tick();
+      await waitFor(() => expect(view.queryByLabelText("Bolter sign-in")).toBeNull());
+      expect(reads).toBe(2); expect(lists).toBe(2); expect(clock.scheduled.size).toBe(0);
+      expect(writes).toHaveLength(1);
+    } finally { cleanup(); clock.restore(); }
+  });
+  test.each(["unmount", "viewer", "cancel"] as const)("operation refresh discards delayed results after %s", async boundary => {
+    const clock = pollClock(); const late = deferred<unknown>(); let reads = 0;
+    responder = (path, method, body) => path.endsWith("/connect") ? { operationId: CONNECTION, status: "pending" }
+      : path === `/api/bolter/operations/${CONNECTION}` ? (reads++, late.promise)
+      : path.endsWith("/cancel") ? { operationId: CONNECTION, status: "unavailable", reason: "operation_cancelled" } : defaults(path, method, body);
+    try {
+      const view = await beginPending(); await clock.tick();
+      if (boundary === "unmount") view.unmount();
+      else if (boundary === "viewer") {
+        apiClient.setToken("fixture-new-viewer");
+        view.rerender(<BolterConnectionSection scopeKey="new-viewer" onRoomCreated={async () => {}} />);
+      } else fireEvent.click(view.getByRole("button", { name: "Cancel sign-in" }));
+      await act(async () => { late.resolve(authPending); });
+      expect(view.queryByText("ABCD-EFGH")).toBeNull();
+      expect(clock.scheduled.size).toBe(0); expect(reads).toBe(1);
+    } finally { cleanup(); clock.restore(); }
+  });
+  test.each(["network", "not_found", "terminal"] as const)("operation %s stops automatic refresh with honest recovery", async failure => {
+    const clock = pollClock(); let reads = 0;
+    responder = (path, method, body) => {
+      if (path.endsWith("/connect")) return authPending;
+      if (path === `/api/bolter/operations/${CONNECTION}`) {
+        reads++;
+        if (failure === "network" && reads === 1) throw new Error("Synthetic network failure");
+        if (failure === "not_found") return new Response(JSON.stringify({ code: "not_found" }), { status: 404, headers: { "content-type": "application/json" } });
+        return { operationId: CONNECTION, status: "unavailable", reason: "desktop_offline" };
+      }
+      return defaults(path, method, body);
+    };
+    try {
+      const view = await beginPending(); await clock.tick();
+      expect(clock.scheduled.size).toBe(0); expect(reads).toBe(1);
+      if (failure === "network") {
+        expect(view.getByText("Could not check Bolter sign-in. Check sign-in to try again.")).toBeTruthy();
+        expect(view.getByText("ABCD-EFGH")).toBeTruthy();
+        fireEvent.click(view.getByRole("button", { name: "Check sign-in" }));
+        await waitFor(() => expect(reads).toBe(2));
+        await waitFor(() => expect(view.queryByText("ABCD-EFGH")).toBeNull());
+      } else {
+        expect(view.queryByText("ABCD-EFGH")).toBeNull();
+        expect((view.getByRole("button", { name: "Connect Bolter" }) as HTMLButtonElement).disabled).toBe(false);
+        if (failure === "not_found") expect(view.getByText(/Bolter sign-in was interrupted/)).toBeTruthy();
+      }
+      expect(clock.scheduled.size).toBe(0);
+    } finally { cleanup(); clock.restore(); }
+  });
+  test("Connect after remount recovers the server's pending operation without storing its auth link", async () => {
+    const clock = pollClock(); let connects = 0;
+    responder = (path, method, body) => path.endsWith("/connect") ? (++connects === 1 ? { operationId: CONNECTION, status: "pending" } : authPending) : defaults(path, method, body);
+    try {
+      const first = await beginPending(); first.unmount(); expect(clock.scheduled.size).toBe(0);
+      const second = await beginPending(); expect(second.getByText("ABCD-EFGH")).toBeTruthy();
+      expect(connects).toBe(2); expect(clock.scheduled.size).toBe(1);
+    } finally { cleanup(); clock.restore(); }
+  });
   test.each([1, 2])("first connection selects its receiving Desktop from %i eligible devices", async count => {
     responder = (path, method, body) => path === "/api/bolter/connections"
       ? { connections: [], availability: { state: "available" }, desktops: Array.from({ length: count }, (_, index) => ({ relayId: `fixture-device-${index}`, label: `Fixture Desktop ${index}` })) }
