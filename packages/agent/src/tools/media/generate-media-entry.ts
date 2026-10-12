@@ -52,11 +52,11 @@ export const GenerateVideoSchema = z.object({
 
 export const GenerateMusicSchema = z.object({
   model: z.enum(["sonilo-v1-1-music", "minimax-music-v26"]).optional()
-    .describe("Omit to use the server default. Sonilo is duration-controlled and always instrumental; MiniMax supports lyrics or instrumental mode."),
+    .describe('Omit to use the server default. For instrumental MiniMax, set model="minimax-music-v26" and forceInstrumental=true, then omit durationSeconds and lyrics. Sonilo is duration-controlled and always instrumental.'),
   prompt: z.string().trim().min(1).max(4_096),
-  durationSeconds: z.number().int().optional().describe("Sonilo only. MiniMax Music does not accept a requested duration."),
-  lyrics: z.string().optional().describe("MiniMax Music only. Omit for instrumental music and for Sonilo."),
-  forceInstrumental: z.boolean().optional().describe("MiniMax Music only. Sonilo is always instrumental."),
+  durationSeconds: z.number().int().nullable().optional().describe('Sonilo only. For model="minimax-music-v26", omit this key or send null; MiniMax Music rejects every numeric duration.'),
+  lyrics: z.string().nullable().optional().describe('MiniMax vocal output only. Omit this key or send null when forceInstrumental=true and for Sonilo.'),
+  forceInstrumental: z.boolean().optional().describe('MiniMax Music only. Set true for instrumental MiniMax output and omit lyrics; Sonilo is always instrumental.'),
   filename,
 }).strict();
 
@@ -115,7 +115,7 @@ export function createGenerateVideoTool() {
 export function createGenerateMusicTool() {
   return new DynamicStructuredTool({
     name: "generate_music",
-    description: `Generate music with a Venice-hosted generation model. Omit model to use the server's music default; specify a model when the user requests one or the required capabilities differ. Sonilo creates 1–600 seconds of instrumental music; MiniMax Music 2.6 supports a 10–300 character direction plus optional lyrics or instrumental-only output. ${COMMON_DESCRIPTION}`,
+    description: `Generate music with a Venice-hosted generation model. Omit model to use the server's music default; specify a model when the user requests one or the required capabilities differ. Sonilo creates 1–600 seconds of instrumental music and accepts optional durationSeconds. MiniMax Music 2.6 supports a 10–300 character direction plus either lyrics or instrumental-only output, but never a numeric durationSeconds. For instrumental MiniMax, send model="minimax-music-v26", prompt, and forceInstrumental=true; omit durationSeconds and lyrics or send them as null. ${COMMON_DESCRIPTION}`,
     schema: GenerateMusicSchema,
     // InvocationService intercepts this name and executes only the exact
     // checkpoint-prepared approval. A direct call has no paid authority.

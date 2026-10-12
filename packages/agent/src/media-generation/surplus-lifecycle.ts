@@ -11,6 +11,11 @@ import {
 } from "./venice-lifecycle";
 
 const SURPLUS_API_BASE = "https://api.surplusintelligence.ai";
+const SURPLUS_API_HOST = "api.surplusintelligence.ai";
+// The authenticated Surplus artifact endpoint redirects completed media to
+// this provider-owned bucket. Keep the production boundary pinned to the exact
+// observed bucket rather than admitting an S3 or AWS hostname family.
+const SURPLUS_ARTIFACT_HOST = "surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com";
 
 export const SURPLUS_MEDIA_ROUTES = Object.freeze({
   "seedance-2-5-text-to-video-basic": "venice-seedance-2-5-text-to-video-basic",
@@ -168,12 +173,27 @@ function validateArtifactUrl(value: string, jobId: string, allowedHosts: readonl
   let url: URL;
   try { url = new URL(value); } catch { return undefined; }
   const host = url.hostname.toLowerCase();
-  const allowed = new Set(["api.surplusintelligence.ai", ...allowedHosts.map((item) => item.trim().toLowerCase())]);
+  const allowed = new Set([SURPLUS_API_HOST, SURPLUS_ARTIFACT_HOST, ...allowedHosts.map((item) => item.trim().toLowerCase())]);
   if (url.protocol !== "https:" || url.username || url.password || url.hash ||
       (url.port && url.port !== "443") || !allowed.has(host)) return undefined;
-  if (host === "api.surplusintelligence.ai" &&
-      !url.pathname.startsWith(`/v1/media/artifacts/${encodeURIComponent(jobId)}/`)) return undefined;
+  if (host === SURPLUS_API_HOST &&
+      url.pathname !== `/v1/media/artifacts/${encodeURIComponent(jobId)}/0`) return undefined;
+  if (host === SURPLUS_ARTIFACT_HOST &&
+      !url.pathname.split("/").includes(encodeURIComponent(jobId))) return undefined;
   return url.toString();
+}
+
+function canonicalArtifactUrl(jobId: string, artifactIndex: unknown): string | undefined {
+  // The current media contract returns exactly one result. Binding index zero
+  // to the already verified job ID avoids trusting a seller-controlled URL or
+  // widening the delivery-host allowlist.
+  if (artifactIndex !== 0) return undefined;
+  return `${SURPLUS_API_BASE}/v1/media/artifacts/${encodeURIComponent(jobId)}/0`;
+}
+
+function withActualCost(error: VeniceMediaLifecycleError, actualCostUsdMicros: number | undefined) {
+  if (actualCostUsdMicros !== undefined) error.actualCostUsdMicros = actualCostUsdMicros;
+  return error;
 }
 
 export interface SurplusMediaLifecycleConfig {
@@ -297,22 +317,19 @@ export class SurplusMediaLifecycleAdapter {
         message: body["status"] === "cancelled" || body["status"] === "canceled" ? "The marketplace generation was cancelled." :
           body["status"] === "expired" ? "The marketplace result expired before it could be captured." : "The marketplace generation failed.",
       }));
-      Object.assign(error, { actualCostUsdMicros });
-      throw error;
+      throw withActualCost(error, actualCostUsdMicros);
     }
     const results = Array.isArray(body["results"]) ? body["results"] : [];
     const result = results.length === 1 && isRecord(results[0]) ? results[0] : undefined;
-    if (body["status"] !== "succeeded" || !result || result["content_type"] !== facts.outputMime || !nonempty(result["url"])) {
-      throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
+    const signedDeliveryUrl = result
+      ? canonicalArtifactUrl(input.accepted.providerQueueId, result["artifact_index"])
+      : undefined;
+    if (body["status"] !== "succeeded" || !result || result["content_type"] !== facts.outputMime || !signedDeliveryUrl) {
+      throw withActualCost(new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
         code: "SURPLUS_STATUS_INVALID", phase: "retrieve", retrySafe: true,
         recoveryActions: ["retry_retrieval"], message: "Marketplace completion could not be verified.",
-      }));
+      })), actualCostUsdMicros);
     }
-    const signedDeliveryUrl = validateArtifactUrl(result["url"], input.accepted.providerQueueId, this.allowedHosts);
-    if (!signedDeliveryUrl) throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({
-      code: "SURPLUS_DELIVERY_UNSAFE", phase: "download", retrySafe: false,
-      recoveryActions: ["contact_support"], message: "The marketplace returned an unsafe result location.",
-    }));
     return Object.freeze({
       state: "signed_delivery", receiptId: input.accepted.receiptId, signedDeliveryUrl,
       ...(actualCostUsdMicros === undefined ? {} : { actualCostUsdMicros }),
@@ -328,7 +345,7 @@ export class SurplusMediaLifecycleAdapter {
       try {
         response = await this.fetchImpl(current, {
           method: "GET", redirect: "manual", credentials: "omit",
-          headers: url.hostname === "api.surplusintelligence.ai" ? this.authHeaders() : {},
+          headers: url.hostname === SURPLUS_API_HOST ? this.authHeaders() : {},
         });
       } catch {
         throw new VeniceMediaLifecycleError(input.accepted.receiptId, failure({

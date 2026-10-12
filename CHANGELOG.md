@@ -10,7 +10,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace
   routes fall back to the same model's direct provider within the admitted
-  funding source, without substituting model versions.
+  funding source, without substituting model versions. Marketplace media
+  approvals label current estimates and explain that final charges can differ.
 
 - Personal provider keys can fund image generation and editing, video/music,
   ElevenLabs speech and transcription, and existing Groq transcription under

@@ -49,7 +49,7 @@ import type {
 } from "@nautilo/types";
 import { isMediaGenerationApproval } from "@nautilo/types";
 import { useApprovalAsk } from "../adapters/runtime-contexts";
-import { MediaGenerationVisualReview, type GenerationReviewPresentation } from "./media-generation-visual-review";
+import { generationQuoteLabel, MediaGenerationVisualReview, type GenerationReviewPresentation } from "./media-generation-visual-review";
 import {
   formatToolPreview,
   redactToolArgsForDisplay,
@@ -389,7 +389,7 @@ function MediaGenerationTechnicalDetail({ approval }: { approval: MediaGeneratio
             ({preview.prompt.characterCount.toLocaleString()} characters{preview.prompt.truncated ? ", summary shown" : ""})
           </span>
         </dd>
-        <dt>Exact quote</dt>
+        <dt>{generationQuoteLabel(approval)}</dt>
         <dd className="font-semibold text-foreground">
           {preview.quote.display}
         </dd>
@@ -399,7 +399,7 @@ function MediaGenerationTechnicalDetail({ approval }: { approval: MediaGeneratio
         </dd>
       </dl>
       <p role="alert" className="mt-2 font-semibold text-[var(--warning)]">
-        Approving starts paid generation using this exact quote.
+        {preview.spendNotice}
       </p>
       {preview.model === "seedance-2-5-reference-to-video-basic" ? (
         <p className="mt-1 text-foreground-muted">
@@ -440,6 +440,7 @@ export function ApprovalAskDock() {
     () => isMediaGenerationApproval(state.mediaGeneration) ? state.mediaGeneration : null,
     [state.mediaGeneration],
   );
+  const displayedReason = mediaGeneration?.preview.spendNotice ?? state.reason;
   const parsedGitHub = parseGitHubPublishApproval(state.github);
   const github = parsedGitHub?.approvalId === state.approvalId ? parsedGitHub : null;
   const requiresGitHubReview = state.github != null || state.tools.some(tool => tool.name === "local_github");
@@ -567,7 +568,7 @@ export function ApprovalAskDock() {
                 flows through for telemetry / keyboard-shortcut
                 addressing, just not rendered as a scare-chip. */}
           </div>
-          <p className="mt-0.5 text-xs text-foreground-muted">{state.reason}</p>
+          <p className="mt-0.5 text-xs text-foreground-muted">{displayedReason}</p>
 
           {state.network ? (
             <div className="mt-2 rounded-md border border-border bg-background-element/70 px-2 py-1.5 text-[11px] text-foreground-muted">

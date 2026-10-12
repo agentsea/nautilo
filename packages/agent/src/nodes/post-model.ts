@@ -1223,7 +1223,7 @@ export function createPostModelNode(
           approval: {
             ...forced,
             verb: "ask",
-            reason: "Starting this media generation spends the exact USD amount shown below.",
+            reason: "Starting this media generation spends money and needs your approval.",
           },
         });
         continue;
@@ -2847,7 +2847,7 @@ export function buildAskPayload(
     tools: batch.map(({ tc }) => isManageLocalMcpInstall(tc)
       ? { ...toolEntry(tc), args: { action: "install" } }
       : isMediaGenerationToolCall(tc) ? { ...toolEntry(tc), args: {} } : toolEntry(tc)),
-    reason: combinedReason,
+    reason: mediaGeneration?.preview.spendNotice ?? combinedReason,
     reasonCode: classifyReasonCodeForBatch(batch),
     ...(networkContextForAskBatch(batch) !== null
       ? { network: networkContextForAskBatch(batch)! }

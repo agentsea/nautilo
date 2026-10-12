@@ -186,19 +186,26 @@ describe("Surplus durable media lifecycle", () => {
     const seen: Array<{ url: string; authorization?: string }> = [];
     const lifecycle = new SurplusMediaLifecycleAdapter({
       apiKey: "surplus-secret",
-      signedDeliveryAllowedHosts: ["delivery.example"],
       fetchImpl: async (url, init) => {
         const headers = init?.headers as Record<string, string> | undefined;
         seen.push({ url: String(url), ...(headers?.["Authorization"] ? { authorization: headers["Authorization"] } : {}) });
         if (String(url).endsWith("/v1/music/generations/market-job")) {
           return new Response(JSON.stringify({
             id: "market-job", kind: "music", status: "succeeded",
-            results: [{ content_type: "audio/mpeg", url: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0" }],
+            results: [{
+              artifact_index: 0,
+              content_type: "audio/mpeg",
+              // The canonical artifact coordinate comes from job + index. A
+              // seller URL cannot expand the authenticated download boundary.
+              url: "https://untrusted-delivery.example/private?signature=secret",
+            }],
             usage: { buyer_cost_usdc: "105600", settlement_status: "captured" },
           }), { status: 200, headers: { "content-type": "application/json" } });
         }
         if (String(url).startsWith("https://api.surplusintelligence.ai/v1/media/artifacts/")) {
-          return new Response(null, { status: 302, headers: { location: "https://delivery.example/audio.mp3" } });
+          return new Response(null, { status: 302, headers: {
+            location: "https://surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com/media/market-job/0/audio.mp3?X-Amz-Signature=secret",
+          } });
         }
         return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "audio/mpeg" } });
       },
@@ -207,13 +214,50 @@ describe("Surplus durable media lifecycle", () => {
     const retrieved = await lifecycle.retrieve({ accepted, attempt: 1 });
     expect(retrieved).toMatchObject({ state: "signed_delivery", actualCostUsdMicros: 105_600 });
     if (retrieved.state !== "signed_delivery") throw new Error("expected signed delivery");
+    expect(retrieved.signedDeliveryUrl).toBe("https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0");
     const downloaded = await lifecycle.downloadSignedDelivery({ accepted, signedDeliveryUrl: retrieved.signedDeliveryUrl });
     expect(downloaded).toMatchObject({ state: "binary", contentType: "audio/mpeg" });
     expect(seen).toEqual([
       { url: "https://api.surplusintelligence.ai/v1/music/generations/market-job", authorization: "Bearer surplus-secret" },
       { url: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0", authorization: "Bearer surplus-secret" },
-      { url: "https://delivery.example/audio.mp3" },
+      { url: "https://surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com/media/market-job/0/audio.mp3?X-Amz-Signature=secret" },
     ]);
+  });
+
+  test("rejects sibling buckets and unsafe variants without sending a bearer token", async () => {
+    const candidates = [
+      "https://surplus-artifacts-569215998805.s3.us-east-1.amazonaws.com/media/market-job/0/audio.mp3?signature=secret",
+      "https://surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com/media/other-job/0/audio.mp3?signature=secret",
+      "http://surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com/media/market-job/0/audio.mp3",
+      "https://user:password@surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com/media/market-job/0/audio.mp3",
+      "https://surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com:444/media/market-job/0/audio.mp3",
+      "https://surplus-artifacts-569215998804.s3.us-east-1.amazonaws.com/media/market-job/0/audio.mp3#fragment",
+    ];
+    for (const candidate of candidates) {
+      const seen: Array<{ url: string; authorization?: string }> = [];
+      const lifecycle = new SurplusMediaLifecycleAdapter({
+        apiKey: "surplus-secret",
+        fetchImpl: async (url, init) => {
+          const headers = init?.headers as Record<string, string> | undefined;
+          seen.push({ url: String(url), ...(headers?.["Authorization"] ? { authorization: headers["Authorization"] } : {}) });
+          return new Response(null, { status: 302, headers: { location: candidate } });
+        },
+      });
+      try {
+        await lifecycle.downloadSignedDelivery({
+          accepted: { receiptId, model: "minimax-music-v26", kind: "music", providerQueueId: "market-job" },
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0",
+        });
+        throw new Error("expected unsafe redirect rejection");
+      } catch (error) {
+        expect(error).toBeInstanceOf(VeniceMediaLifecycleError);
+        expect((error as VeniceMediaLifecycleError).failure.code).toBe("SURPLUS_DELIVERY_UNSAFE");
+      }
+      expect(seen).toEqual([{
+        url: "https://api.surplusintelligence.ai/v1/media/artifacts/market-job/0",
+        authorization: "Bearer surplus-secret",
+      }]);
+    }
   });
 
   test("retrieves video from the video job endpoint and requires its exact output contract", async () => {
@@ -224,7 +268,7 @@ describe("Surplus durable media lifecycle", () => {
         urls.push(String(url));
         return new Response(JSON.stringify({
           id: "video-job", kind: "video", status: "succeeded",
-          results: [{ content_type: "video/mp4", url: "https://api.surplusintelligence.ai/v1/media/artifacts/video-job/0" }],
+          results: [{ artifact_index: 0, content_type: "video/mp4" }],
           usage: { buyer_cost_usdc: "40000", settlement_status: "captured" },
         }), { status: 200, headers: { "content-type": "application/json" } });
       },
@@ -237,6 +281,32 @@ describe("Surplus durable media lifecycle", () => {
     });
     expect(retrieved).toMatchObject({ state: "signed_delivery", actualCostUsdMicros: 40_000 });
     expect(urls).toEqual(["https://api.surplusintelligence.ai/v1/video/generations/video-job"]);
+  });
+
+  test("rejects an invalid artifact index while preserving captured settlement", async () => {
+    const lifecycle = new SurplusMediaLifecycleAdapter({
+      apiKey: "surplus-secret",
+      fetchImpl: async () => new Response(JSON.stringify({
+        id: "market-job", kind: "music", status: "succeeded",
+        results: [{ artifact_index: 1, content_type: "audio/mpeg" }],
+        usage: { buyer_cost_usdc: "96000", settlement_status: "captured" },
+      }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+
+    try {
+      await lifecycle.retrieve({
+        accepted: { receiptId, model: "minimax-music-v26", kind: "music", providerQueueId: "market-job" },
+        attempt: 1,
+      });
+      throw new Error("expected invalid artifact index");
+    } catch (error) {
+      expect(error).toBeInstanceOf(VeniceMediaLifecycleError);
+      expect((error as VeniceMediaLifecycleError).failure).toMatchObject({
+        code: "SURPLUS_STATUS_INVALID",
+        completionCertainty: "accepted",
+      });
+      expect((error as VeniceMediaLifecycleError).actualCostUsdMicros).toBe(96_000);
+    }
   });
 
   test("records cancellation as terminal and preserves a captured charge", async () => {

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
+import { Validator, type Schema } from "@cfworker/json-schema";
+import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { registerAllTools } from "../../src/tools/register-all";
 import { createDiscoverToolsTool } from "../../src/tools/meta/discover-tools";
 import { resolveIntentPacks } from "../../src/tools/exposure/manifest";
@@ -219,6 +221,64 @@ describe("D525 paid media tool entry", () => {
       queueId: "provider-queue",
     }).success).toBe(false);
     expect(GenerateVideoSchema.safeParse({ action: "render", prompt: "A sailboat" }).success).toBe(false);
+  });
+
+  test("exposes executable MiniMax instrumental arguments through the OpenAI and Surplus schema", async () => {
+    const tool = createGenerateMusicTool();
+    const openAI = convertToOpenAITool(tool) as {
+      function: { parameters: Schema & { required?: string[] } };
+    };
+    const parameters = openAI.function.parameters;
+    const args = {
+      model: "minimax-music-v26",
+      prompt: "Warm analog synths with a slow nocturnal pulse",
+      forceInstrumental: true,
+    } as const;
+
+    expect(parameters.required).toEqual(["prompt"]);
+    expect(parameters.properties?.["durationSeconds"]).toMatchObject({
+      anyOf: [{ type: "integer" }, { type: "null" }],
+    });
+    expect(parameters.properties?.["lyrics"]).toMatchObject({
+      anyOf: [{ type: "string" }, { type: "null" }],
+    });
+    expect(new Validator(parameters).validate(args).valid).toBe(true);
+    expect(GenerateMusicSchema.parse(args)).toEqual(args);
+    expect(normalizeMediaGenerationIntent(args)).toEqual(args);
+
+    const result = JSON.parse(String(await tool.invoke(args))) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      queueStarted: false,
+      state: "failed",
+      failure: { code: "APPROVAL_REQUIRED" },
+    });
+
+    const explicitUnset = { ...args, durationSeconds: null, lyrics: null } as const;
+    expect(new Validator(parameters).validate(explicitUnset).valid).toBe(true);
+    expect(GenerateMusicSchema.parse(explicitUnset)).toEqual(explicitUnset);
+    expect(normalizeMediaGenerationIntent(explicitUnset)).toEqual(args);
+  });
+
+  test("preserves Sonilo duration in the exposed schema and canonical normalization", () => {
+    const openAI = convertToOpenAITool(createGenerateMusicTool()) as {
+      function: { parameters: Schema };
+    };
+    const explicit = {
+      model: "sonilo-v1-1-music",
+      prompt: "Quiet piano",
+      durationSeconds: 47,
+    } as const;
+
+    expect(new Validator(openAI.function.parameters).validate(explicit).valid).toBe(true);
+    expect(normalizeMediaGenerationIntent(explicit)).toEqual(explicit);
+    expect(normalizeMediaGenerationIntent({
+      model: "sonilo-v1-1-music",
+      prompt: "Quiet piano",
+    })).toEqual({
+      model: "sonilo-v1-1-music",
+      prompt: "Quiet piano",
+      durationSeconds: 90,
+    });
   });
 
   test("a direct factory invocation cannot bypass prepared paid approval", async () => {

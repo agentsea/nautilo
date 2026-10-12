@@ -406,7 +406,7 @@ export class MediaGenerationReconciler {
       try {
         retrieved = await lifecycle.downloadSignedDelivery({ accepted, signedDeliveryUrl: retrieved.signedDeliveryUrl });
       } catch (error) {
-        return this.handleFailure(claim, workerId, error);
+        return this.handleFailure(claim, workerId, error, terminalCost);
       }
     }
 
@@ -591,15 +591,48 @@ export class MediaGenerationReconciler {
     claim: Claim,
     workerId: string,
     error: unknown,
+    confirmedActualUsdMicros?: number,
   ): Promise<"completed" | "rescheduled" | "lostLease" | "terminal"> {
     if (!(error instanceof VeniceMediaLifecycleError)) {
+      if (confirmedActualUsdMicros !== undefined && this.deps.settleCost) {
+        try {
+          await this.deps.settleCost(claim, {
+            outcome: "unknown",
+            actualUsdMicros: confirmedActualUsdMicros,
+            failureCode: "venice_retrieve_retry",
+          });
+        } catch {
+          return this.reschedule(claim, workerId, operationalFailure({
+            code: "MEDIA_COST_SETTLEMENT_RETRY", phase: "reconcile", retrySafe: true,
+            recoveryActions: ["retry_same_receipt"],
+          }));
+        }
+      }
       return this.reschedule(claim, workerId, operationalFailure({
         code: "VENICE_RETRIEVE_RETRY", phase: "retrieve", retrySafe: true,
         recoveryActions: ["retry_same_receipt"],
       }));
     }
-    const failure = safeFailure(error.failure);
+    const actualUsdMicros = error.actualCostUsdMicros ?? confirmedActualUsdMicros;
+    const classifiedFailure = safeFailure(error.failure);
+    const failure = actualUsdMicros === undefined
+      ? classifiedFailure
+      : { ...classifiedFailure, chargeCertainty: "charged" as const };
     if (error.failure.retrySafe && error.failure.completionCertainty === "accepted") {
+      if (actualUsdMicros !== undefined && this.deps.settleCost) {
+        try {
+          await this.deps.settleCost(claim, {
+            outcome: "unknown",
+            actualUsdMicros,
+            failureCode: error.failure.code.toLowerCase(),
+          });
+        } catch {
+          return this.reschedule(claim, workerId, operationalFailure({
+            code: "MEDIA_COST_SETTLEMENT_RETRY", phase: "reconcile", retrySafe: true,
+            recoveryActions: ["retry_same_receipt"],
+          }));
+        }
+      }
       return this.reschedule(claim, workerId, failure);
     }
     const state = terminalState(error.failure);
@@ -608,7 +641,7 @@ export class MediaGenerationReconciler {
         await this.deps.settleCost(claim, {
           outcome: error.failure.code === "SURPLUS_CANCELLED" ? "cancelled" :
             error.failure.completionCertainty === "unknown" ? "unknown" : "failed",
-          ...(error.actualCostUsdMicros === undefined ? {} : { actualUsdMicros: error.actualCostUsdMicros }),
+          ...(actualUsdMicros === undefined ? {} : { actualUsdMicros }),
           failureCode: error.failure.code.toLowerCase(),
         });
       } catch {
@@ -620,7 +653,7 @@ export class MediaGenerationReconciler {
     }
     const terminal = await this.transition(claim, workerId, state, {
       safeFailure: failure,
-      ...(error.actualCostUsdMicros === undefined ? {} : { actualUsdMicros: error.actualCostUsdMicros }),
+      ...(actualUsdMicros === undefined ? {} : { actualUsdMicros }),
     });
     return terminal === null ? "lostLease" : "terminal";
   }

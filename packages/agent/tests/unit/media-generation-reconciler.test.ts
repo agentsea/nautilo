@@ -12,6 +12,7 @@ import {
   type MediaGenerationReconcilerRepository,
   type VeniceAcceptedMediaWork,
   type VeniceArtifactCommitProof,
+  type VeniceBinaryResult,
   type VeniceRetrieveResult,
 } from "../../src/media-generation";
 import { classifyVeniceMediaFailure } from "../../src/media-generation/errors";
@@ -195,9 +196,10 @@ async function root(): Promise<string> {
 
 function lifecycle(input: {
   retrieve?: (accepted: VeniceAcceptedMediaWork, attempt: number) => Promise<VeniceRetrieveResult>;
+  download?: (accepted: VeniceAcceptedMediaWork, signedDeliveryUrl: string) => Promise<VeniceBinaryResult>;
   complete?: (accepted: VeniceAcceptedMediaWork, proof: VeniceArtifactCommitProof) => Promise<void>;
 } = {}) {
-  const calls = { retrieve: 0, complete: 0, attempts: [] as number[], accepted: [] as VeniceAcceptedMediaWork[] };
+  const calls = { retrieve: 0, download: 0, complete: 0, attempts: [] as number[], accepted: [] as VeniceAcceptedMediaWork[] };
   return {
     calls,
     port: {
@@ -215,6 +217,15 @@ function lifecycle(input: {
       async complete(args: { accepted: VeniceAcceptedMediaWork; commitProof: VeniceArtifactCommitProof }) {
         calls.complete += 1;
         await input.complete?.(args.accepted, args.commitProof);
+      },
+      async downloadSignedDelivery(args: { accepted: VeniceAcceptedMediaWork; signedDeliveryUrl: string }) {
+        calls.download += 1;
+        return input.download?.(args.accepted, args.signedDeliveryUrl) ?? {
+          state: "binary" as const,
+          receiptId: args.accepted.receiptId,
+          contentType: "audio/mpeg",
+          body: mp4Stream(),
+        };
       },
     },
   };
@@ -379,6 +390,91 @@ describe("D525 restart-safe media generation reconciler", () => {
     expect(repository.current).toMatchObject({ state: "ready", cleanupState: "completed" });
   });
 
+  test("retains captured Surplus cost when signed delivery is terminally unsafe", async () => {
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number; failureCode?: string }> = [];
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", kind: "music", providerModel: "minimax-music-v26" }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "signed_delivery",
+          receiptId: accepted.receiptId,
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/provider-private-queue/0",
+          actualCostUsdMicros: 105_600,
+        }),
+        download: async (accepted) => {
+          throw new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_DELIVERY_UNSAFE", phase: "download", retrySafe: false,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "charged_or_committed",
+            recoveryActions: ["contact_support"], message: "Unsafe delivery route.",
+          });
+        },
+      }),
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-unsafe" })).toMatchObject({ terminal: 1 });
+    expect(settlements).toEqual([{
+      outcome: "failed", actualUsdMicros: 105_600, failureCode: "surplus_delivery_unsafe",
+    }]);
+    expect(h.repository.current).toMatchObject({ state: "failed", actualUsdMicros: 105_600 });
+  });
+
+  test("retains captured Surplus cost as outcome-unknown while an interrupted download retries", async () => {
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number; failureCode?: string }> = [];
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", kind: "music", providerModel: "minimax-music-v26" }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "signed_delivery",
+          receiptId: accepted.receiptId,
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/provider-private-queue/0",
+          actualCostUsdMicros: 40_000,
+        }),
+        download: async (accepted) => {
+          throw new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_DOWNLOAD_RETRY", phase: "download", retrySafe: true,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "unknown",
+            recoveryActions: ["retry_download"], message: "Download interrupted.",
+          });
+        },
+      }),
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-download" })).toMatchObject({ rescheduled: 1 });
+    expect(settlements).toEqual([{
+      outcome: "unknown", actualUsdMicros: 40_000, failureCode: "surplus_download_retry",
+    }]);
+    expect(h.repository.current).toMatchObject({ state: "retrieving", actualUsdMicros: null });
+    expect(h.repository.reschedules.at(-1)?.failure).toMatchObject({ chargeCertainty: "charged" });
+  });
+
+  test("does not invent cost when an interrupted Surplus download has no confirmed fee", async () => {
+    let settlements = 0;
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", kind: "music", providerModel: "minimax-music-v26" }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "signed_delivery",
+          receiptId: accepted.receiptId,
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/provider-private-queue/0",
+        }),
+        download: async (accepted) => {
+          throw new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_DOWNLOAD_RETRY", phase: "download", retrySafe: true,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "unknown",
+            recoveryActions: ["retry_download"], message: "Download interrupted.",
+          });
+        },
+      }),
+      settleCost: async () => { settlements += 1; },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-no-cost" })).toMatchObject({ rescheduled: 1 });
+    expect(settlements).toBe(0);
+    expect(h.repository.current).toMatchObject({ actualUsdMicros: null });
+  });
+
   test("an over-cap accepted result stays on the same receipt and safely reschedules persistence", async () => {
     const h = await reconciler({ maxBytes: 8 });
     expect(await h.worker.runOnce({ workerId: "worker-cap" })).toMatchObject({
@@ -396,6 +492,28 @@ describe("D525 restart-safe media generation reconciler", () => {
     });
     expect(h.mediaCustody.commits).toBe(0);
     expect(h.mediaLifecycle.calls.retrieve).toBe(1);
+  });
+
+  test("retains captured cost on the saving receipt when persistence retries", async () => {
+    const h = await reconciler({
+      initial: claim({ provider: "surplus" }),
+      maxBytes: 8,
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "binary",
+          receiptId: accepted.receiptId,
+          contentType: "video/mp4",
+          body: mp4Stream(),
+          actualCostUsdMicros: 72_500,
+        }),
+      }),
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-persistence" })).toMatchObject({ rescheduled: 1 });
+    expect(h.repository.current).toMatchObject({ state: "saving", actualUsdMicros: 72_500 });
+    expect(h.repository.reschedules.at(-1)?.failure).toMatchObject({
+      code: "MEDIA_ARTIFACT_TOO_LARGE", phase: "save",
+    });
   });
 
   test("recovers an already-indexed saving receipt after restart without retrieving or writing again", async () => {

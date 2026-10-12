@@ -19,6 +19,10 @@ export function generationPrice(approval: MediaGenerationApproval): string {
   return `$${(approval.preview.quote.amountMicros / 1_000_000).toFixed(6).replace(/0{1,4}$/u, "")}`;
 }
 
+export function generationQuoteLabel(approval: MediaGenerationApproval): "Exact quote" | "Estimated cost" {
+  return approval.preview.quote.kind === "estimate" ? "Estimated cost" : "Exact quote";
+}
+
 export async function loadApprovalReference(reference: Reference, roomId: string | undefined, signal: AbortSignal): Promise<Blob> {
   if (!reference.content) throw new Error("This older approval has no verified preview. Request a fresh quote.");
   const { content } = reference;
@@ -75,13 +79,17 @@ export function MediaGenerationVisualReview({ approval, presentation, roomId, te
   const videos = preview.referenceVideos ?? [];
   const audios = preview.referenceAudios ?? [];
   const settings = preview.settings;
+  const quoteLabel = generationQuoteLabel(approval);
   const modelLabel = ({ "seedance-2-5-text-to-video-basic": "Seedance 2.5", "seedance-2-5-reference-to-video-basic": "Seedance 2.5 · References", "minimax-h3-enhanced-text-to-video": "MiniMax H3", "sonilo-v1-1-music": "Sonilo", "minimax-music-v26": "MiniMax Music" } as Record<string, string>)[preview.model] ?? preview.model;
   const summary = [modelLabel, settings.durationSeconds === undefined ? null : `${settings.durationSeconds} sec`, settings.resolution, settings.aspectRatio,
     settings.audio === undefined ? null : settings.audio ? "With audio" : "No audio"].filter(value => value != null).join(" · ");
   return <section className="mt-4 min-w-0 space-y-4" aria-label={`Paid ${preview.mediaKind} generation`} data-testid="media-generation-approval">
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div><h3 className="font-semibold text-foreground">{presentation?.sceneName ?? `New ${preview.mediaKind}`}</h3><p className="text-sm text-foreground-muted">{summary}</p></div>
-      <strong className="text-xl tabular-nums text-foreground" data-testid="media-generation-quote">{generationPrice(approval)}</strong>
+      <div className="text-right">
+        <span className="block text-xs font-medium text-foreground-muted" data-testid="media-generation-quote-kind">{quoteLabel}</span>
+        <strong className="block text-xl tabular-nums text-foreground" data-testid="media-generation-quote">{generationPrice(approval)}</strong>
+      </div>
     </div>
     {images.length + videos.length + audios.length > 0 ? <div>
       <h4 className="mb-2 text-sm font-medium text-foreground">{presentation?.continuation ? `Continuing from ${presentation.continuation.sceneName}` : "Your references"}</h4>
@@ -98,7 +106,8 @@ export function MediaGenerationVisualReview({ approval, presentation, roomId, te
     <div><h4 className="mb-1 text-sm font-medium text-foreground">Scene prompt</h4>
       <p className="whitespace-pre-wrap break-words text-sm text-foreground">{presentation?.prompt ?? preview.prompt.summary}{!presentation && preview.prompt.truncated ? "… (summary)" : ""}</p>
     </div>
-    <p className="text-xs text-foreground-muted">One paid generation. No automatic retry. Quote valid until <time dateTime={approval.expiresAt}>{new Date(approval.expiresAt).toLocaleTimeString()}</time>.</p>
+    <p role={preview.quote.kind === "estimate" ? "alert" : undefined} className={preview.quote.kind === "estimate" ? "text-sm font-semibold text-[var(--warning)]" : "text-sm font-medium text-foreground"}>{preview.spendNotice}</p>
+    <p className="text-xs text-foreground-muted">One paid generation. No automatic retry. {preview.quote.kind === "estimate" ? "Estimate" : "Quote"} valid until <time dateTime={approval.expiresAt}>{new Date(approval.expiresAt).toLocaleTimeString()}</time>.</p>
     <details className="min-w-0 text-xs text-foreground-muted"><summary className="cursor-pointer">Technical details</summary>{technicalDetails}</details>
   </section>;
 }
