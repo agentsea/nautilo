@@ -90,6 +90,8 @@ function timestamp(value: unknown): number {
 export async function validateCurrentProtectedTaskCancellationIntent(input: Readonly<{
   product: PostgresJsBridgeConnection;
   intent: ProtectedTaskCancellationOutputIntent;
+  /** Recovery-only: the mapped result may already have its exact terminal receipt. */
+  allowTerminalResultAttachment?: boolean;
 }>): Promise<boolean> {
   const { product, intent } = input;
   const taskRows = await executeTypedConversationProductQuery(product,
@@ -134,7 +136,9 @@ export async function validateCurrentProtectedTaskCancellationIntent(input: Read
     && binding.result_object_id === intent.resultObjectId
     && binding.accepted_policy_revision === intent.policyRevision
     && timestamp(binding.result_terminal_at) === intent.terminalAt.getTime()
-    && binding.result_attached_at === null;
+    && (binding.result_attached_at === null
+      || input.allowTerminalResultAttachment === true
+        && timestamp(binding.result_attached_at) === intent.terminalAt.getTime());
 }
 
 async function exactPrivateRoom(product: PostgresJsBridgeConnection,

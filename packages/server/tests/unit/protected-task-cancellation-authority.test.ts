@@ -114,6 +114,18 @@ test("stopped intent proof reads only Task/Run/output metadata without a Job or 
   expect(value.queries.join("\n")).not.toMatch(/prompt|expected_output|crypto_object_id|job_id|task_definition|"jobs"/u);
 });
 
+test("recovery-only validation accepts exactly the terminal attachment timestamp", async () => {
+  const attached = fixture((stage, row) => stage === "binding"
+    ? { ...row, result_attached_at: new Date(terminalAt) } : row);
+  expect(await validateCurrentProtectedTaskCancellationIntent({ product: attached.connection, intent,
+    allowTerminalResultAttachment: true })).toBe(true);
+
+  const mismatched = fixture((stage, row) => stage === "binding"
+    ? { ...row, result_attached_at: new Date(terminalAt.getTime() + 1) } : row);
+  expect(await validateCurrentProtectedTaskCancellationIntent({ product: mismatched.connection, intent,
+    allowTerminalResultAttachment: true })).toBe(false);
+});
+
 for (const [stage, field, replacement] of [
   ["task", "status", "running"], ["task", "requestor_id", "other"],
   ["task", "agent_id", "other"], ["task", "content_namespace_id", "other"],

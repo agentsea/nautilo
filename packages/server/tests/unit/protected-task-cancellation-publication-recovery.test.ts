@@ -348,6 +348,58 @@ test("mapped replay settles without a product callback", async () => {
   expect(f.calls).toContain("settle");
 });
 
+test("mapped complete recovery permits exact terminal attachment after authorization pruning", async () => {
+  const f = fixture(); f.stage();
+  f.ledger.disposition = "mapped"; f.ledger.completion = "complete";
+  f.ledger.cryptoCompletedAt = new Date(START);
+  f.select({ status: "found", reservation: f.reservation });
+  f.deps.authorizationRepository = async () => ({ get: async () => null });
+  const attachmentModes: boolean[] = [];
+  f.deps.validateIntent = async input => {
+    attachmentModes.push(input.allowTerminalResultAttachment === true);
+    return input.allowTerminalResultAttachment === true;
+  };
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("mapped");
+  expect(attachmentModes.length).toBeGreaterThan(0);
+  expect(attachmentModes.every(Boolean)).toBe(true);
+  expect(f.calls).not.toContain("product");
+});
+
+test("active recovery never enables terminal attachment replay", async () => {
+  const f = fixture(); f.stage();
+  f.select({ status: "found", reservation: f.reservation });
+  const attachmentModes: boolean[] = [];
+  f.deps.validateIntent = async input => {
+    attachmentModes.push(input.allowTerminalResultAttachment === true);
+    return input.allowTerminalResultAttachment === true;
+  };
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("pending");
+  expect(attachmentModes).toEqual([false]);
+  expect(f.calls).not.toContain("reconcile");
+});
+
+test.each(["active", "incomplete"])(
+  "terminal attachment recovery rejects a fresh %s ledger under held authority", async drift => {
+    const f = fixture(); f.stage();
+    const mapped = { ...f.ledger, disposition: "mapped" as const,
+      completion: "complete" as const, cryptoCompletedAt: new Date(START) };
+    const changed = { ...mapped,
+      ...(drift === "active" ? { disposition: "active" as const }
+        : { completion: "pending" as const }) };
+    let reads = 0;
+    f.deps.read = async () => ({ status: "found", reservation: {
+      intent: f.reservation.intent, ledger: ++reads === 1 ? mapped : changed,
+    } });
+    f.deps.validateIntent = async input => input.allowTerminalResultAttachment === true;
+    expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+      { taskId: TASK, taskRunId: RUN })).toBe("pending");
+    expect(f.calls).not.toContain("reconcile");
+    expect(f.calls).not.toContain("settle");
+  },
+);
+
 test("stopped intent changed during verification prevents fixed product publication", async () => {
   const f = fixture();
   let reads = 0;

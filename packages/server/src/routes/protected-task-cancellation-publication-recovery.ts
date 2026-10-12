@@ -235,13 +235,17 @@ export function createProtectedTaskCancellationPublicationRecovery(input: Readon
     async function withCurrent<Value>(expected: Selection, use: (authority: TaskContentAuthorityV1,
       transaction: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0],
       current: Selection, restricted: PostgresJsBridgeConnection) => Promise<Value>): Promise<Value | null> {
+      const allowTerminalResultAttachment = expected.status === "found"
+        && expected.reservation.ledger.disposition === "mapped"
+        && expected.reservation.ledger.completion === "complete";
       return withAuthority({
         runner: product.canonicalRunner, restricted: input.restricted, crypto: input.crypto,
         serverScope: input.serverScope, taskId: intent.taskId,
         requesterUserId: intent.requesterUserId, requesterHumanId,
         agentId: intent.agentId, contentNamespaceId: intent.contentNamespaceId,
         sourceRoomId: room!.roomId, expectedPolicyRevision: intent.policyRevision,
-        validateCurrentTaskRun: current => validateIntent({ product: current, intent }),
+        validateCurrentTaskRun: current => validateIntent({ product: current, intent,
+          ...(allowTerminalResultAttachment ? { allowTerminalResultAttachment: true } : {}) }),
         use: async (held, _product, transaction, restricted) => {
           const fresh = await read(transaction, coordinates);
           if (expected.status === "invalid" || fresh.status === "invalid") return null;
