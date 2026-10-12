@@ -87,6 +87,13 @@
       "source": "\\bapplyWorkspaceArtifactRowChange\\s*\\("
     },
     {
+      "id": "workspace_generated_row_change_adapter",
+      "source": "\\binput\\.apply\\s*\\(",
+      "modules": [
+        "packages/agent/src/tools/media/generated-image-publication.ts"
+      ]
+    },
+    {
       "id": "workspace_structural_row",
       "source": "\\b(?:insertArtifact|attachArtifactToNamespace|updateArtifactPath|markArtifactDeleted)\\s*\\("
     },
@@ -138,7 +145,15 @@
       "source": "\\bwriteFile\\s*\\(",
       "modules": [
         "packages/agent/src/tools/office/office.ts",
-        "packages/agent/src/tools/media/generate-image.ts"
+        "packages/agent/src/tools/media/generate-image.ts",
+        "packages/agent/src/tools/media/generated-image-publication.ts"
+      ]
+    },
+    {
+      "id": "workspace_generated_publication_bytes",
+      "source": "\\binput\\.writeBytes\\s*\\(",
+      "modules": [
+        "packages/agent/src/tools/media/generated-image-publication.ts"
       ]
     },
     {
@@ -716,19 +731,21 @@
     },
     {
       "id": "MEDIA-GENERATE-WS",
-      "module": "packages/agent/src/tools/media/generate-image.ts",
+      "module": "packages/agent/src/tools/media/generated-image-publication.ts",
       "symbols": [
-        "applyWorkspaceArtifactRowChange"
+        "publishGeneratedImages",
+        "applyWorkspaceArtifactRowChange",
+        "writeAtomic"
       ],
       "disposition": "coordinator_adapter",
       "owner": "workspace_backend",
       "hits": [
         {
-          "primitive": "workspace_row_change",
-          "count": 1
+          "primitive": "workspace_generated_row_change_adapter",
+          "count": 2
         },
         {
-          "primitive": "workspace_generated_direct_bytes",
+          "primitive": "workspace_generated_publication_bytes",
           "count": 1
         }
       ]
