@@ -9,7 +9,7 @@ import {
   markBackgroundAuthorizationGrantReady, markBackgroundAuthorizationRunning,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "@nautilo/runtime";
-import { createProtectedTaskCancellationSettlement } from "../../src/routes/protected-task-cancellation-settlement";
+import { createProtectedTaskCancellationSettlement, type VerifyStagedCancellationSettlement } from "../../src/routes/protected-task-cancellation-settlement";
 import { protectedTaskCancellationIdempotencyKey } from "../../src/routes/protected-task-cancellation-plan";
 const START = 1_700_100_000_000;
 const TASK = "10000000-0000-4000-8000-000000000001";
@@ -122,13 +122,14 @@ const proof: ProtectedTaskCancellationOutputSettlementProof = {
 };
 async function fixture(options: {
   row?: BackgroundAuthorizationTaskRuntimeRecordV3;
+  pruned?: boolean;
   mappedProof?: ProtectedTaskCancellationOutputSettlementProof;
   lostCasResponse?: boolean;
   rejectProof?: boolean;
   rejectProductCommit?: boolean;
 } = {}) {
   const repository = new InMemoryBackgroundAuthorizationRepository();
-  await repository.create(options.row ?? runningRecord());
+  if (!options.pruned) await repository.create(options.row ?? runningRecord());
   let held = false;
   let cas = 0;
   const deleted: string[] = [];
@@ -158,7 +159,8 @@ async function fixture(options: {
       return true;
     } },
   });
-  return { recover: () => recover({ taskId: TASK, taskRunId: RUN }), repository, deleted, cas: () => cas };
+  return { recover: (verifyStaged?: VerifyStagedCancellationSettlement) => recover({ taskId: TASK, taskRunId: RUN }, verifyStaged),
+    repository, deleted, cas: () => cas, held: () => held };
 }
 
 test.each([false, true])("mapped cancellation settles an expired claim, including lost CAS response (%s)", async lostCasResponse => {
@@ -205,3 +207,34 @@ test("a lost product commit retains custody and can retry the completed authoriz
   expect(await state.recover()).toBe(false);
   expect(state.cas()).toBe(1);
 });
+
+test("pruned cancellation request settles from exact staged proof under product locks", async () => {
+  const state = await fixture({ pruned: true });
+  expect(await state.recover(async current => {
+    expect(state.held()).toBe(true);
+    expect(current).toEqual(proof);
+    return { requestId: REQUEST, recipientGeneration: 4 };
+  })).toBe(true);
+  expect(state.cas()).toBe(0);
+  expect(state.deleted).toEqual([`${REQUEST}:4`]);
+});
+
+test("staged fallback never bypasses a conflicting surviving request", async () => {
+  const row = runningRecord();
+  const state = await fixture({ row: { ...row, workKind: "task.execute", purpose: "task.execute" } });
+  let calls = 0;
+  expect(await state.recover(async () => { calls++; return { requestId: REQUEST, recipientGeneration: 0 }; })).toBe(false);
+  expect(calls).toBe(0);
+  expect(state.deleted).toEqual([]);
+});
+
+test.each(["absent", "mismatch", "generation", "failed-commit"] as const)(
+  "pruned request cannot release custody for %s staged proof", async kind => {
+    const state = await fixture({ pruned: true, rejectProductCommit: kind === "failed-commit" });
+    expect(await state.recover(async () => kind === "absent" ? null : {
+      requestId: kind === "mismatch" ? "other-request" : REQUEST,
+      recipientGeneration: kind === "generation" ? -1 : 2,
+    })).toBe(false);
+    expect(state.deleted).toEqual([]);
+    expect(state.cas()).toBe(0);
+  });

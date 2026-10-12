@@ -34,6 +34,7 @@ const EXPECTED_TABLE_NAMES = [
   "background_crypto_authorization_domain_requirements",
   "background_crypto_authorization_namespace_requirements",
   "processor_crypto_signer_authorizations",
+  "task_cancellation_crypto_staging_receipts",
 ] as const;
 
 const migration = readFileSync(

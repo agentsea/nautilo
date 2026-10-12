@@ -136,11 +136,13 @@ function fixture(input: Readonly<{
   now?: () => number;
   authorityOverride?: typeof authority;
   hasCancellationReservation?: boolean;
+  cancellationPublication?: boolean | readonly boolean[];
 }> = {}) {
   const repository = input.repository
     ?? new InMemoryBackgroundAuthorizationRepository();
   const deleted: Array<readonly [string, number]> = [];
   let prepares = 0;
+  let publicationChecks = 0;
   const previous: ProtectedTaskCancellationOutputAuthority = {
     taskId: TASK,
     taskRunId: RUN,
@@ -200,6 +202,15 @@ function fixture(input: Readonly<{
       handle: {},
     }) as Awaited<ReturnType<NonNullable<Overrides["productContext"]>>>,
     inspectContentAuthority: async () => input.authorityOverride ?? authority,
+    hasCancellationPublication: async () => {
+      const publication = input.cancellationPublication;
+      const selected = typeof publication === "boolean"
+          || publication === undefined
+        ? publication
+        : publication[publicationChecks] ?? publication.at(-1);
+      publicationChecks += 1;
+      return selected ?? false;
+    },
     hasCancellationReservation: async () =>
       input.hasCancellationReservation ?? false,
     readTaskId: async taskRunId => taskRunId === RUN ? TASK : null,
@@ -224,6 +235,9 @@ function fixture(input: Readonly<{
     preparation,
     get prepares() {
       return prepares;
+    },
+    get publicationChecks() {
+      return publicationChecks;
     },
     repository,
   };
@@ -261,6 +275,68 @@ test("settles linked execution authority before creating an encrypt-only cancell
   expect(await value.preparation.resolvePlan(
     cancellation as BackgroundAuthorizationTaskRuntimeRecordV3,
   )).not.toBeNull();
+});
+
+for (const existing of ["staged receipt", "bare ciphertext object"] as const) {
+  test(`does not prepare or create authority when a ${existing} exists`, async () => {
+    const value = fixture({ cancellationPublication: true });
+
+    expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+      .toEqual({ status: "not_ready" });
+    expect(value.prepares).toBe(0);
+    expect(value.deleted).toEqual([]);
+    expect(value.publicationChecks).toBe(1);
+    expect(await value.repository.get(protectedTaskCancellationRequestId(RUN)))
+      .toBeNull();
+  });
+}
+
+test("does not create a request when publication appears after plan construction", async () => {
+  const value = fixture({
+    jobAuthorizationRequestId: null,
+    cancellationPublication: [false, false, false, true],
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(value.prepares).toBe(1);
+  expect(value.deleted).toEqual([]);
+  expect(value.publicationChecks).toBe(4);
+  expect(await value.repository.get(protectedTaskCancellationRequestId(RUN)))
+    .toBeNull();
+});
+
+test("does not settle or delete prior authority when publication appears under the stopped Run lock", async () => {
+  const value = fixture({ cancellationPublication: [false, true] });
+  const prior = priorExecution();
+  await value.repository.create(prior);
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(await value.repository.get(prior.snapshot.requestId)).toEqual(prior);
+  expect(value.deleted).toEqual([]);
+  expect(value.publicationChecks).toBe(2);
+  expect(await value.repository.get(protectedTaskCancellationRequestId(RUN)))
+    .toBeNull();
+});
+
+test("does not reconstruct a reusable plan after cancellation publication", async () => {
+  const plan = createProtectedTaskCancellationPlan({
+    intent,
+    namespaceAuthority: authority,
+    crypto: new LatticeCrypto(),
+    now: NOW,
+    recipientTtlMs: 60_000,
+  });
+  const value = fixture({
+    jobAuthorizationRequestId: null,
+    cancellationPublication: true,
+  });
+
+  expect(await value.preparation.resolvePlan(plan.initialRecord)).toBeNull();
+  expect(value.prepares).toBe(0);
+  expect(value.deleted).toEqual([]);
+  expect(value.publicationChecks).toBe(1);
 });
 
 function claimedCancellation(input: Readonly<{
@@ -326,6 +402,36 @@ function claimedCancellation(input: Readonly<{
   };
 }
 
+function recipientCancellation(
+  expiresAt = NOW + 10,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const plan = createProtectedTaskCancellationPlan({
+    intent,
+    namespaceAuthority: authority,
+    crypto: new LatticeCrypto(),
+    now: NOW,
+    recipientTtlMs: 60_000,
+  });
+  const descriptorBytes = new Uint8Array([1, 2, 3]);
+  return {
+    ...plan.initialRecord,
+    snapshot: attachBackgroundAuthorizationRecipient(
+      plan.initialRecord.snapshot,
+      {
+        recipientGeneration: 0,
+        recipientKeyId: `task-cancellation-runtime:${RUN}:0`,
+        recipientPublicKey: Buffer.from(new Uint8Array(65).fill(4))
+          .toString("base64url"),
+        descriptorDigest:
+          "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+        expiresAt,
+        now: NOW + 1,
+      },
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    descriptorBytes,
+  };
+}
+
 test("refreshes same-policy preclaim authority under the stopped Task lock", async () => {
   const repository = new InMemoryBackgroundAuthorizationRepository();
   const stalePlan = createProtectedTaskCancellationPlan({
@@ -381,6 +487,30 @@ test("does not refresh a live claimed cancellation after authority drift", async
     .toEqual({ status: "conflict" });
   expect(await repository.get(selected.snapshot.requestId)).toEqual(selected);
   expect(value.deleted).toEqual([]);
+});
+
+test("stops drift replacement when publication appears under the held authority", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const stalePlan = createProtectedTaskCancellationPlan({
+    intent,
+    namespaceAuthority: priorAuthority,
+    crypto: new LatticeCrypto(),
+    now: NOW,
+    recipientTtlMs: 60_000,
+  });
+  await repository.create(stalePlan.initialRecord);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    cancellationPublication: [false, false, false, false, true],
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(await repository.get(stalePlan.initialRecord.snapshot.requestId))
+    .toEqual(stalePlan.initialRecord);
+  expect(value.deleted).toEqual([]);
+  expect(value.publicationChecks).toBe(5);
 });
 
 test("rotates an expired claim then refreshes its same-policy authority", async () => {
@@ -467,6 +597,24 @@ test("rotates an expired claimed cancellation only while revision 2 is absent", 
     acceptedMaterial: null,
   });
   expect(value.deleted).toContainEqual([selected.snapshot.requestId, 0]);
+});
+
+test("does not rotate an expired claim when publication appears under the held authority", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const selected = claimedCancellation();
+  await repository.create(selected);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => NOW + 11,
+    cancellationPublication: [false, false, false, false, true],
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(await repository.get(selected.snapshot.requestId)).toEqual(selected);
+  expect(value.deleted).toEqual([]);
+  expect(value.publicationChecks).toBe(5);
 });
 
 test("rotates an expired running cancellation while revision 2 is absent", async () => {
@@ -572,37 +720,13 @@ test("rotates an exact durably expired cancellation recipient under held content
     jobAuthorizationRequestId: null,
     now: () => clock,
   });
-  const plan = createProtectedTaskCancellationPlan({
-    intent,
-    namespaceAuthority: authority,
-    crypto: new LatticeCrypto(),
-    now: NOW,
-    recipientTtlMs: 60_000,
-  });
-  const descriptorBytes = new Uint8Array([1, 2, 3]);
-  const attached: BackgroundAuthorizationTaskRuntimeRecordV3 = {
-    ...plan.initialRecord,
-    snapshot: attachBackgroundAuthorizationRecipient(
-      plan.initialRecord.snapshot,
-      {
-        recipientGeneration: 0,
-        recipientKeyId: `task-cancellation-runtime:${RUN}:0`,
-        recipientPublicKey: Buffer.from(new Uint8Array(65).fill(4))
-          .toString("base64url"),
-        descriptorDigest:
-          "039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
-        expiresAt: NOW + 10,
-        now: NOW + 1,
-      },
-    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
-    descriptorBytes,
-  };
+  const attached = recipientCancellation();
   await repository.create(attached);
   clock = NOW + 11;
 
   const prepared = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
   expect(prepared.status).toBe("exact_replay");
-  expect((await repository.get(plan.initialRecord.snapshot.requestId))?.snapshot)
+  expect((await repository.get(attached.snapshot.requestId))?.snapshot)
     .toMatchObject({
       state: "awaiting_recipient",
       recipientGeneration: 1,
@@ -610,7 +734,25 @@ test("rotates an exact durably expired cancellation recipient under held content
       recipient: null,
     });
   expect(value.deleted).toContainEqual([
-    plan.initialRecord.snapshot.requestId,
+    attached.snapshot.requestId,
     0,
   ]);
+});
+
+test("does not rotate an expired recipient when publication appears under the held authority", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const attached = recipientCancellation();
+  await repository.create(attached);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => NOW + 11,
+    cancellationPublication: [false, false, false, false, true],
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(await repository.get(attached.snapshot.requestId)).toEqual(attached);
+  expect(value.deleted).toEqual([]);
+  expect(value.publicationChecks).toBe(5);
 });

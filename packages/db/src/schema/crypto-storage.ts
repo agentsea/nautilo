@@ -117,6 +117,7 @@ export const LATTICE_STORAGE_TABLE_NAMES = Object.freeze([
   "background_crypto_authorization_domain_requirements",
   "background_crypto_authorization_namespace_requirements",
   "processor_crypto_signer_authorizations",
+  "task_cancellation_crypto_staging_receipts",
 ] as const);
 
 export const CRYPTO_DELIVERY_TABLE_NAMES = Object.freeze([
@@ -251,6 +252,10 @@ export const CRYPTO_STORAGE_TABLE_PRIVILEGES = Object.freeze({
     "DELETE",
   ]),
   processor_crypto_signer_authorizations: Object.freeze([
+    "SELECT",
+    "INSERT",
+  ]),
+  task_cancellation_crypto_staging_receipts: Object.freeze([
     "SELECT",
     "INSERT",
   ]),
@@ -711,6 +716,76 @@ export const cryptoObjects = pgTable(
     ...appendOnlyPolicies("crypto_objects"),
   ],
 ).enableRLS();
+
+export const taskCancellationCryptoStagingReceipts = pgTable(
+  "task_cancellation_crypto_staging_receipts",
+  {
+    requestId: text("request_id").primaryKey(),
+    recipientGeneration: bigint("recipient_generation", {
+      mode: "number",
+    }).notNull(),
+    claimId: text("claim_id").notNull(),
+    authorizationDigest: bytea("authorization_digest").notNull(),
+    stoppedIntentHash: bytea("stopped_intent_hash").notNull(),
+    policyRevision: bigint("policy_revision", { mode: "number" }).notNull(),
+    authorityFingerprint: bytea("authority_fingerprint").notNull(),
+    cryptoObjectId: text("crypto_object_id").notNull(),
+    genesisManifestHash: bytea("genesis_manifest_hash").notNull(),
+    stagedAt: timestamp("staged_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("uq_task_cancel_staging_object").on(table.cryptoObjectId),
+    foreignKey({
+      columns: [table.cryptoObjectId],
+      foreignColumns: [cryptoObjects.objectId],
+      name: "task_cancel_staging_object_fk",
+    }).onDelete("cascade"),
+    portableId("task_cancel_staging_request_id_portable", table.requestId),
+    safeCounter(
+      "task_cancel_staging_generation_safe",
+      table.recipientGeneration,
+    ),
+    portableId("task_cancel_staging_claim_id_portable", table.claimId),
+    exactBytes(
+      "task_cancel_staging_authorization_digest_size",
+      table.authorizationDigest,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    exactBytes(
+      "task_cancel_staging_stopped_intent_hash_size",
+      table.stoppedIntentHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    check(
+      "task_cancel_staging_policy_revision_positive",
+      sql`${table.policyRevision} >= 1`,
+    ),
+    exactBytes(
+      "task_cancel_staging_authority_fingerprint_size",
+      table.authorityFingerprint,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    portableId(
+      "task_cancel_staging_object_id_portable",
+      table.cryptoObjectId,
+    ),
+    check(
+      "task_cancel_staging_object_shape",
+      sql`${table.cryptoObjectId} ~ '^task-run-result:v1:[0-9a-f]{64}$'`,
+    ),
+    exactBytes(
+      "task_cancel_staging_genesis_manifest_hash_size",
+      table.genesisManifestHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    ...appendOnlyPolicies("task_cancel_staging"),
+  ],
+).enableRLS();
+
+export type TaskCancellationCryptoStagingReceipt =
+  typeof taskCancellationCryptoStagingReceipts.$inferSelect;
+export type NewTaskCancellationCryptoStagingReceipt =
+  typeof taskCancellationCryptoStagingReceipts.$inferInsert;
 
 export const objectCryptoAccessManifests = pgTable(
   "object_crypto_access_manifests",
@@ -5165,6 +5240,7 @@ export const LATTICE_STORAGE_TABLES = Object.freeze([
   backgroundCryptoAuthorizationDomainRequirements,
   backgroundCryptoAuthorizationNamespaceRequirements,
   processorCryptoSignerAuthorizations,
+  taskCancellationCryptoStagingReceipts,
 ] as const);
 
 export const CRYPTO_DELIVERY_TABLES = Object.freeze([

@@ -131,6 +131,7 @@ type DurablePublication = Readonly<{
   payloadBytes: Uint8Array;
   payloadHash: Uint8Array;
   genesisManifestHash: Uint8Array;
+  genesisManifestBytes: Uint8Array;
   accessRevision: number;
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
@@ -177,7 +178,8 @@ function authorityMatches(
     && left.expectedPolicyRevision === right.expectedPolicyRevision;
 }
 
-async function readDurablePublication(input: Readonly<{
+/** Internal shared verifier; this is not a public adoption/preparation API. */
+export async function readDurableTaskContentPublication(input: Readonly<{
   executor: CryptoPostgresExecutor;
   crypto: LatticeCrypto;
   objectId: string;
@@ -223,6 +225,7 @@ async function readDurablePublication(input: Readonly<{
       object_id: objectCryptoAccessManifests.objectId,
       manifest_hash: objectCryptoAccessManifests.manifestHash,
       payload_hash: objectCryptoAccessManifests.payloadHash,
+      manifest_bytes: objectCryptoAccessManifests.manifestBytes,
     }).from(objectCryptoAccessManifests).where(and(
       eq(objectCryptoAccessManifests.objectId, input.objectId),
       eq(objectCryptoAccessManifests.accessRevision, 0),
@@ -288,6 +291,7 @@ async function readDurablePublication(input: Readonly<{
       payloadBytes,
       payloadHash,
       genesisManifestHash: rowBytes(genesis, "manifest_hash"),
+      genesisManifestBytes: rowBytes(genesis, "manifest_bytes"),
       accessRevision,
       manifestBytes,
       manifestHash,
@@ -409,7 +413,7 @@ async function verifyReference(
   ) return null;
   const durable = await withVerifiedCryptoPostgresTransaction(
     input.handle,
-    (executor) => readDurablePublication({
+    (executor) => readDurableTaskContentPublication({
       executor,
       crypto: input.crypto,
       objectId: reference.objectId,
@@ -462,7 +466,7 @@ export function createPostgresTaskContentCryptoCompletion(
             `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
             [exact.objectId],
           );
-          const durable = await readDurablePublication({
+          const durable = await readDurableTaskContentPublication({
             executor,
             crypto: input.crypto,
             objectId: exact.objectId,
@@ -500,7 +504,7 @@ export function createPostgresTaskContentCryptoCompletion(
             )
           ) conflict("Task crypto completion authority is stale");
           await insertExact(executor, exact);
-          const inserted = await readDurablePublication({
+          const inserted = await readDurableTaskContentPublication({
             executor,
             crypto: input.crypto,
             objectId: exact.objectId,

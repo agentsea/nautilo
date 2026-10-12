@@ -14,7 +14,7 @@ import { createProtectedTaskCancellationAuthorityPort } from "./protected-task-c
 import { createProtectedTaskCancellationClaim } from "./protected-task-cancellation-claim";
 import { createProtectedTaskCancellationDeviceAuthorization } from "./protected-task-cancellation-device-authorization";
 import { createProtectedTaskCancellationPreparation } from "./protected-task-cancellation-preparation";
-import { createProtectedTaskCancellationSettlement } from "./protected-task-cancellation-settlement";
+import { createProtectedTaskCancellationSettlement, type VerifyStagedCancellationSettlement } from "./protected-task-cancellation-settlement";
 import { createProtectedTaskCancellationPublication } from "./protected-task-cancellation-publication";
 import { createProtectedTaskCancellationPublicationRecovery } from "./protected-task-cancellation-publication-recovery";
 
@@ -58,10 +58,11 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
     // transaction. Publication acquires its own current-authority transactions.
     publish: createProtectedTaskCancellationPublication({ ...input, authority, now }),
   });
-  const settle = overrides.settle ?? (async (coordinates: Readonly<{ taskId: string; taskRunId: string }>) =>
+  const settle = overrides.settle ?? (async (coordinates: Readonly<{ taskId: string; taskRunId: string }>,
+    verifyStaged?: VerifyStagedCancellationSettlement) =>
     createProtectedTaskCancellationSettlement({
       db: input.db, repository: await repository(input.restricted), recipients: input.recipients, now,
-    })(coordinates));
+    })(coordinates, verifyStaged));
   const recover = overrides.recover ?? createProtectedTaskCancellationPublicationRecovery({ ...input, settle });
   return Object.freeze({
     ...hooks,
@@ -84,7 +85,7 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
           // An immutable mapped receipt needs only control-plane settlement.
           // It must never become another encryption attempt.
           if (candidate.resultState === "mapped") {
-            if (await settle(candidate)) published += 1;
+            if (await settle(candidate) || await recover(candidate) === "mapped") published += 1;
             else pending += 1;
             continue;
           }

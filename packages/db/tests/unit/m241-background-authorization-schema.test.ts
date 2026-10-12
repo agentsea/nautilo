@@ -146,17 +146,19 @@ describe("M241 background authorization durable schema", () => {
 
   test("adds one mutable request ledger and append-only signer evidence to crypto storage", () => {
     expect(LATTICE_STORAGE_ADAPTER_TABLE_NAMES).toHaveLength(15);
-    expect(LATTICE_STORAGE_TABLE_NAMES.slice(-4)).toEqual([
+    expect(LATTICE_STORAGE_TABLE_NAMES.slice(-5)).toEqual([
       "background_crypto_authorization_requests",
       "background_crypto_authorization_domain_requirements",
       "background_crypto_authorization_namespace_requirements",
       "processor_crypto_signer_authorizations",
+      "task_cancellation_crypto_staging_receipts",
     ]);
-    expect(LATTICE_STORAGE_TABLES.slice(-4).map(getTableName)).toEqual([
+    expect(LATTICE_STORAGE_TABLES.slice(-5).map(getTableName)).toEqual([
       "background_crypto_authorization_requests",
       "background_crypto_authorization_domain_requirements",
       "background_crypto_authorization_namespace_requirements",
       "processor_crypto_signer_authorizations",
+      "task_cancellation_crypto_staging_receipts",
     ]);
     expect(
       CRYPTO_STORAGE_TABLE_PRIVILEGES

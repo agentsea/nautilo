@@ -1,20 +1,16 @@
 import {
   and, eq, taskRunResultCryptoRevisions,
-  PROTECTED_TASK_CANCELLED_RESULT, publishProtectedTaskCancellationProduct,
   recordProtectedTaskRunResultAttached,
-  type DirectDatabase, type PostgresJsBridgeConnection,
+  type DirectDatabase, type PostgresJsBridgeConnection, type ProtectedTaskCancellationOutputIntent,
 } from "@nautilo/db";
 import {
-  ClassifiedDataOperationError, fingerprintTaskContentAuthorityV1,
-  sameTaskContentCoordinateV1, taskRuntimePreparedResultDigestV1,
+  ClassifiedDataOperationError,
   withProtectedTaskCancellationResultSigner,
   type EncryptionDataOperationOwner, type TaskContentAuthorityV1,
-  type PreparedTaskContentCryptoRevisionV1, type TaskRunResultContentCoordinateV1, type TaskContentCoordinateV1,
 } from "@nautilo/lattice-bridge";
 import {
-  createPostgresTaskContentRepositoryV1, PostgresHumanDeviceSignerHistory,
-  PostgresLatticeStorage, prepareNativeTaskRuntimeCancelledRunResult,
-  verifyCryptoPostgresHandle, type DurableTaskContentRepositoryV1,
+  PostgresHumanDeviceSignerHistory, PostgresLatticeStorage,
+  stageNativeTaskCancellationPublication, verifyCryptoPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
 import {
   assertAuthenticTaskRuntimeCancellationResultEvidence,
@@ -24,7 +20,7 @@ import {
 import { parseBackgroundAuthorizationRecord, type BackgroundAuthorizationTaskRuntimeRecordV3 } from "@nautilo/runtime";
 import type { ProtectedTaskCancellationAuthorityPort } from "./protected-task-cancellation-authority";
 import type { ProtectedTaskCancellationPlan } from "./protected-task-cancellation-plan";
-import { createHumanProductTransactionContext } from "./human-message-product-store";
+import { createProtectedTaskCancellationPublicationRecovery } from "./protected-task-cancellation-publication-recovery";
 import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from
   "./protected-task-historical-human-device-signing-key";
 import { withProtectedTaskResultSignerHistory } from "./protected-task-result-signer-history";
@@ -40,26 +36,20 @@ export type ProtectedTaskCancellationPublication = (input: Readonly<{
   assertCurrentClaim(): void | Promise<void>;
 }>) => Promise<void>;
 
-type ContentAuthorityResolver = (expected: Readonly<{
-  requesterHumanId: string; namespaceId: string;
-}>) => Promise<TaskContentAuthorityV1 | null>;
-
 export type ProtectedTaskCancellationPublicationDependencies = Readonly<{
-  prepare(input: Readonly<{
+  stage(input: Readonly<{
     agentId: string;
+    intent: ProtectedTaskCancellationOutputIntent;
+    restricted: PostgresJsBridgeConnection;
     authority: TaskContentAuthorityV1;
     evidence: TaskRuntimeCancellationResultEvidence;
     domains: readonly DomainForegroundSecretEntry[];
     signal: AbortSignal;
     assertCurrentTaskAuthority(): Promise<void>;
-  }>): Promise<PreparedTaskContentCryptoRevisionV1>;
-  repository(input: Readonly<{
-    requesterUserId: string;
-    coordinate: TaskRunResultContentCoordinateV1;
-    authority: TaskContentAuthorityV1;
-    resolveAuthority: ContentAuthorityResolver;
-    assertReservationCurrent(coordinate: TaskContentCoordinateV1): Promise<void>;
-  }>): Promise<Pick<DurableTaskContentRepositoryV1<unknown>, "publishPreparedProtectedOrDual">>;
+    assertCurrentClaim(): void | Promise<void>;
+  }>): Promise<"staged" | "already_staged">;
+  recover(coordinates: Readonly<{ taskId: string; taskRunId: string }>):
+    Promise<"missing" | "pending" | "mapped" | "quarantined">;
 }>;
 
 function unavailable(): never {
@@ -84,10 +74,11 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
   now?: () => number;
 }>, overrides: Partial<ProtectedTaskCancellationPublicationDependencies> = {}): ProtectedTaskCancellationPublication {
   const now = input.now ?? Date.now;
-  const prepare: ProtectedTaskCancellationPublicationDependencies["prepare"] =
-    overrides.prepare ?? (async value => {
-      const handle = await verifyCryptoPostgresHandle(input.restricted);
+  const stage: ProtectedTaskCancellationPublicationDependencies["stage"] =
+    overrides.stage ?? (async value => {
+      const handle = await verifyCryptoPostgresHandle(value.restricted);
       const storage = new PostgresLatticeStorage(handle);
+      const signerHistory = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });
       const domains = value.domains;
       const domain = domains[0];
       if (domains.length !== 1 || domain === undefined || domain.domainId !== value.authority.domainId
@@ -111,13 +102,18 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
             expectedAgentAuthorizationRevision: agentAuthorizationRevision,
             resolveHistoricalRuntimeCommitter: history.resolveHistoricalRuntimeCommitter,
             resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
-            execute: signer => prepareNativeTaskRuntimeCancelledRunResult({
-              restricted: input.restricted, serverScope: input.serverScope, domains,
+            execute: signer => stageNativeTaskCancellationPublication({
+              intent: value.intent, assertCurrentClaim: value.assertCurrentClaim,
+              resolveHistoricalAgentSignerAuthority: signerHistory.resolveAgentRuntimeSignerManager,
+              resolveHistoricalHumanDeviceSigningPublicKey:
+                createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
+              preparation: { restricted: value.restricted, serverScope: input.serverScope, domains,
               signal: value.signal, assertCurrentTaskAuthority: value.assertCurrentTaskAuthority,
               crypto: input.crypto, evidence: value.evidence, authority: value.authority,
               createdAt: now(), agentAuthorizationRevision: signer.agentAuthorizationRevision,
               runtime: signer.runtime, signerPublication: signer.signerPublication,
               resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
+              },
             }),
           });
           if (result.status !== "executed") unavailable();
@@ -125,25 +121,12 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
         },
       });
     });
-  const createRepository: ProtectedTaskCancellationPublicationDependencies["repository"] =
-    overrides.repository ?? (async value => {
-      const handle = await verifyCryptoPostgresHandle(input.restricted);
-      const product = await createHumanProductTransactionContext(value.requesterUserId, input.db);
-      const history = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });
-      return createPostgresTaskContentRepositoryV1({
-        product: { handle: product.handle, resolveCurrentAuthority: value.resolveAuthority,
-          assertReservationCurrent: value.assertReservationCurrent },
-        crypto: { handle, crypto: input.crypto,
-          resolveCurrentAuthority: candidate => sameTaskContentCoordinateV1(candidate, value.coordinate)
-            ? value.resolveAuthority(value.authority) : Promise.resolve(null),
-          resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-          resolveHistoricalHumanDeviceSigningPublicKey:
-            createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
-        },
-        content: { prepareProtected: unavailable, publishProduct: unavailable,
-          readOrdinary: unavailable, readProtected: unavailable },
-      });
-    });
+  const recover = overrides.recover ?? createProtectedTaskCancellationPublicationRecovery({
+    ...input,
+    // The claim owner completes its authorization after publication returns.
+    // Recovery here only attaches the durable result; the observer settles abandoned claims.
+    settle: async coordinates => (await recordProtectedTaskRunResultAttached(input.db, coordinates)).status !== "rejected",
+  });
   return async publication => {
     const intent = Object.freeze({ ...publication.plan.intent,
       terminalAt: new Date(publication.plan.intent.terminalAt.getTime()) });
@@ -188,7 +171,6 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
         domainId: target.domainId, expectedAccessRevision: target.expectedAccessRevision,
         expectedPolicyRevision: intent.policyRevision,
       });
-      const expectedFingerprint = fingerprintTaskContentAuthorityV1(authority);
       const withCurrent = async <Value>(use: (...args: Parameters<Parameters<
         ProtectedTaskCancellationAuthorityPort["withAccepted"]
       >[0]["use"]>) => Value | Promise<Value>): Promise<Value | null> => input.authority.withAccepted({
@@ -206,18 +188,6 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
           return await use(...args);
         },
       });
-      const resolveAuthority = async (expected: Readonly<{
-        requesterHumanId: string; namespaceId: string;
-      }>) => {
-        if (expected.requesterHumanId !== subject.humanActorId
-          || expected.namespaceId !== intent.contentNamespaceId) return null;
-        return withCurrent<TaskContentAuthorityV1>(() => authority);
-      };
-      const assertCurrentTaskAuthority = async () => {
-        await assertLive();
-        if (await resolveAuthority(authority) === null) unavailable();
-      };
-      await assertCurrentTaskAuthority();
       const reserved = await input.db.select({ operationId: taskRunResultCryptoRevisions.operationId })
         .from(taskRunResultCryptoRevisions).where(and(
           eq(taskRunResultCryptoRevisions.taskId, intent.taskId),
@@ -229,51 +199,36 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
         // ledger; another random encryption would conflict with its identity.
         throw new ClassifiedDataOperationError("stale", "Cancellation result requires publication reconciliation");
       }
-      const prepared = await prepare({ agentId: intent.agentId, authority,
-        evidence, domains: publication.domains, signal, assertCurrentTaskAuthority });
-      await assertLive();
-      const coordinate = { kind: "run_result" as const, taskId: intent.taskId,
-        taskRunId: intent.taskRunId, contentRevision: 2 };
-      const repository = await createRepository({ requesterUserId: intent.requesterUserId,
-        coordinate, authority, resolveAuthority, assertReservationCurrent: async candidate => {
-          if (!sameTaskContentCoordinateV1(candidate, coordinate)) unavailable();
-          await assertLive();
-        } });
-      const requestDigest = taskRuntimePreparedResultDigestV1(prepared);
-      const publishProduct = async (token: number, representation: "protected" | "dual") => {
-        if (token !== intent.policyRevision || representation !== intent.representation) unavailable();
-        const result = await withCurrent(async (_current, _product, _restricted, transaction) => {
-          // Reuse the already-held product transaction; a second connection
-          // would wait forever for this owner's Task/Run locks.
-          const result = await publishProtectedTaskCancellationProduct({
-            transaction: use => use(transaction),
-          }, { intent, requestDigest,
-            prepared: { operationId: intent.resultOperationId, resultRevision: 2,
-              resultObjectId: intent.resultObjectId, requesterHumanId: subject.humanActorId,
-              authorityFingerprint: expectedFingerprint },
-          }, async () => { await assertLive(); return true; });
-          if (result.status === "rejected") unavailable();
-          return result;
+      const publish = async (representation: "protected" | "dual") => {
+        if (representation !== intent.representation) unavailable();
+        const staged = await withCurrent(async (_current, _product, restricted, transaction) => {
+          const currentReservation = await transaction.select({ operationId: taskRunResultCryptoRevisions.operationId })
+            .from(taskRunResultCryptoRevisions).where(and(
+              eq(taskRunResultCryptoRevisions.taskId, intent.taskId),
+              eq(taskRunResultCryptoRevisions.taskRunId, intent.taskRunId),
+              eq(taskRunResultCryptoRevisions.resultRevision, 2),
+            )).limit(1);
+          if (currentReservation.length !== 0) {
+            throw new ClassifiedDataOperationError("stale", "Cancellation result requires publication reconciliation");
+          }
+          // Authority locks are already held. Re-entering withAccepted here
+          // would deadlock on the same stopped Task/Run.
+          return stage({ agentId: intent.agentId, intent, restricted, authority,
+            evidence, domains: publication.domains, signal,
+            assertCurrentTaskAuthority: assertLive,
+            assertCurrentClaim: publication.assertCurrentClaim });
         });
-        if (result === null) unavailable();
-        return result;
+        if (staged === null) unavailable();
+        // The restricted outer transaction has committed before any product
+        // reservation. Recovery uses the durable receipt, never a live grant.
+        const outcome = await recover({ taskId: intent.taskId, taskRunId: intent.taskRunId });
+        if (outcome !== "mapped") {
+          throw new ClassifiedDataOperationError("stale", "Cancellation result requires publication reconciliation");
+        }
       };
-      const receipt = await repository.publishPreparedProtectedOrDual({
-        owner: input.owner, operationId: intent.resultOperationId, requestDigest,
-        authority, operationalMetadata: null, prepared,
-        ordinaryContent: { coordinate,
-          payload: { formatVersion: 1, resultText: PROTECTED_TASK_CANCELLED_RESULT, lastError: null } },
-        publishProtectedProduct: context => publishProduct(context.revalidationToken, "protected"),
-        publishDualProduct: (_content, context) => publishProduct(context.revalidationToken, "dual"),
+      await input.owner.runMutation({
+        protected: () => publish("protected"), dual: () => publish("dual"),
       });
-      if (receipt.representation !== intent.representation || receipt.protectedRevision === null
-        || receipt.protectedRevision.status === "orphaned"
-        || !sameTaskContentCoordinateV1(receipt.protectedRevision.coordinate, coordinate)
-        || receipt.protectedRevision.cryptoObjectId !== intent.resultObjectId) unavailable();
-      const attached = await recordProtectedTaskRunResultAttached(input.db, {
-        taskId: intent.taskId, taskRunId: intent.taskRunId,
-      });
-      if (attached.status === "rejected") unavailable();
     } finally { destroyAcceptedTaskRuntimeRecord(accepted); }
   };
 }

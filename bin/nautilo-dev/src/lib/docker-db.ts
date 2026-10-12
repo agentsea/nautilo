@@ -404,6 +404,7 @@ export const DATA_TABLES = [
   // mixed legacy/protected Artifact table and omit it from the later crypto
   // block. Blob rows precede revision rows for the exact retained-blob FK.
   "public.crypto_objects",
+  "public.task_cancellation_crypto_staging_receipts",
   "public.artifacts",
   // M322 — immutable exact-operation receipts must survive restore so a retry
   // cannot regrant access. COPY inserts unchanged receipts after all four FK

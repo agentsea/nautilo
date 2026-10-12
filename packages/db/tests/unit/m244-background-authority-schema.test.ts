@@ -46,14 +46,15 @@ describe("M244 background Agent v2 authority-set schema", () => {
       /"format_version" = 1 or \( .*"format_version" = 2 and .*"credential_subject_kind" in \('agent', 'processor'\) \)/,
     );
 
-    expect(LATTICE_STORAGE_TABLE_NAMES.slice(-4)).toEqual([
+    expect(LATTICE_STORAGE_TABLE_NAMES.slice(-5)).toEqual([
       "background_crypto_authorization_requests",
       "background_crypto_authorization_domain_requirements",
       "background_crypto_authorization_namespace_requirements",
       "processor_crypto_signer_authorizations",
+      "task_cancellation_crypto_staging_receipts",
     ]);
-    expect(LATTICE_STORAGE_TABLES.slice(-4).map(getTableName)).toEqual([
-      ...LATTICE_STORAGE_TABLE_NAMES.slice(-4),
+    expect(LATTICE_STORAGE_TABLES.slice(-5).map(getTableName)).toEqual([
+      ...LATTICE_STORAGE_TABLE_NAMES.slice(-5),
     ]);
     expect(
       CRYPTO_STORAGE_TABLE_PRIVILEGES

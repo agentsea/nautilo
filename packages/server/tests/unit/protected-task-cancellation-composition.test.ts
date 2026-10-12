@@ -90,3 +90,14 @@ test("existing cancellation reservations never enter fresh preparation", async (
   expect(result).toMatchObject({ published: 2, pending: 4, failures: 0 });
   expect(state.calls.some(call => call.startsWith("prepare:") || call.startsWith("claim:"))).toBe(false);
 });
+
+test("mapped cancellation with pruned authority reaches receipt recovery once", async () => {
+  const state = fixture();
+  const deps = { ...state.deps, list: async () => ({ candidates: [{ taskId: "task:mapped", taskRunId: "mapped", jobId: null,
+    terminalAt: new Date(NOW - 1), bindingState: "cancellation" as const, resultState: "mapped" as const }], next: null }) };
+  deps.settle = async () => { state.calls.push("settle"); return false; };
+  deps.recover = async () => { state.calls.push("recover"); return "mapped"; };
+  const result = await createProtectedTaskCancellationComposition(state.input, deps).recoverPage({ limit: 1 });
+  expect(result).toMatchObject({ attempted: 1, published: 1, pending: 0, failures: 0 });
+  expect(state.calls).toEqual(["settle", "recover"]);
+});

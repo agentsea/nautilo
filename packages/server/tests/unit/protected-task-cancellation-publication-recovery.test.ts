@@ -4,6 +4,7 @@ import { protectedTaskRunOutputBindings, tasks, taskRunResultCryptoRevisions } f
 import type { DirectDatabase, ProtectedTaskCancellationOutputIntent,
   TaskRunResultCryptoRevision } from "@nautilo/db";
 import { fingerprintTaskContentAuthorityV1, deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import type { VerifiedStagedTaskCancellationPublication } from "@nautilo/lattice-bridge/server";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
   attachBackgroundAuthorizationRecipient, claimBackgroundAuthorizationRequest,
@@ -12,6 +13,7 @@ import {
 } from "@nautilo/runtime";
 import { protectedTaskCancellationIdempotencyKey } from "../../src/routes/protected-task-cancellation-plan";
 import { createProtectedTaskCancellationPublicationRecovery } from "../../src/routes/protected-task-cancellation-publication-recovery";
+import type { VerifyStagedCancellationSettlement } from "../../src/routes/protected-task-cancellation-settlement";
 
 type Input = Parameters<typeof createProtectedTaskCancellationPublicationRecovery>[0];
 type ReadDependencies = Required<NonNullable<Parameters<typeof createProtectedTaskCancellationPublicationRecovery>[1]>>;
@@ -140,16 +142,22 @@ function fixture() {
   const transaction = {} as Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
   let held = false;
   let verified = true;
+  let staged: VerifiedStagedTaskCancellationPublication | null = null;
+  let publicationPresent = false;
+  let settlementVerifier: VerifyStagedCancellationSettlement | undefined;
   let selected: Awaited<ReturnType<Dependencies["read"]>> = { status: "found", reservation };
   const input: Input = { db: database, restricted: {} as Input["restricted"],
     crypto: new LatticeCrypto(), serverScope: "http://localhost", now: () => START + 90_000,
-    settle: async () => { calls.push("settle"); return true; } };
+    settle: async (_coordinates, verifyStaged) => {
+      settlementVerifier = verifyStaged; calls.push("settle"); return true;
+    } };
   const deps: Dependencies = {
     read: async () => selected,
     resolveHuman: async () => ({ id: HUMAN, displayName: "Requester", trustState: "trusted" }),
     resolveRoom: async () => ({ roomId: "room", namespaceId: NAMESPACE }),
     productContext: (async () => ({ handle: {}, canonicalRunner: {} })) as unknown as Dependencies["productContext"],
     validateIntent: async () => { calls.push("intent"); return true; },
+    cryptoHandle: async () => ({} as never),
     withAuthority: async operation => {
       expect(held).toBe(false);
       held = true;
@@ -163,6 +171,19 @@ function fixture() {
       } finally { held = false; }
     },
     authorizationRepository: async () => ({ get: async () => row }),
+    inspectStaged: async () => staged,
+    hasCryptoPublication: async () => publicationPresent,
+    reserveStaged: async value => value.product.reserveRevision({} as never),
+    reservationProduct: options => ({ reserveRevision: async () => {
+      expect(held).toBe(false);
+      calls.push("reserve");
+      expect(await options.resolveAuthority({ requesterHumanId: HUMAN, namespaceId: NAMESPACE })).not.toBeNull();
+      calls.push("detached-authority");
+      await options.assertReservationCurrent({ kind: "run_result", taskId: TASK,
+        taskRunId: RUN, contentRevision: 2 });
+      selected = { status: "found", reservation };
+      return { status: "reserved", state: {} as never };
+    } }),
     repository: async options => {
       expect(held).toBe(false);
       return { reconcileCoordinate: async operation => {
@@ -178,6 +199,11 @@ function fixture() {
         if (!verified) return "pending";
         if (ledger.disposition !== "mapped") await operation.publishProduct?.();
         calls.push("map");
+        if (ledger.disposition !== "mapped") {
+          selected = { status: "found", reservation: { intent: reservation.intent,
+            ledger: { ...ledger, disposition: "mapped", completion: "complete",
+              cryptoCompletedAt: new Date(START + 90_000) } } };
+        }
         return "mapped";
       } };
     },
@@ -199,7 +225,21 @@ function fixture() {
   };
   return { input, deps, calls, row, ledger, reservation, transaction,
     select: (value: typeof selected) => { selected = value; },
-    missingCrypto: () => { verified = false; } };
+    missingCrypto: () => { verified = false; },
+    stage: () => {
+      staged = { intent: { ...intent, terminalAt: new Date(intent.terminalAt) }, requestId: REQUEST,
+        recipientGeneration: 0, claimId: "published-result-claim",
+        authorizationDigest: new Uint8Array(32).fill(6),
+        genesisManifestHash: ledger.requestDigest.slice(),
+        authorityFingerprint: ledger.authorityFingerprint.slice(),
+      } as VerifiedStagedTaskCancellationPublication;
+      publicationPresent = true;
+      selected = { status: "missing", intent: { ...intent, terminalAt: new Date(intent.terminalAt) } };
+    },
+    publication: (present: boolean) => { publicationPresent = present; },
+    clearStage: () => { staged = null; },
+    settlementVerifier: () => settlementVerifier,
+  };
 }
 
 test.each(["protected", "dual"] as const)("recovers exact %s cancellation after grant expiry using borrowed product transaction", async representation => {
@@ -209,7 +249,8 @@ test.each(["protected", "dual"] as const)("recovers exact %s cancellation after 
   expect(f.row.acceptedMaterial!.authorizationExpiresAt).toBeLessThan(f.input.now!());
   const result = await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)({ taskId: TASK, taskRunId: RUN });
   expect(result).toBe("mapped");
-  expect(f.calls).toEqual(["intent", "reconcile", "intent", "verify", "intent", "product", "map", "settle"]);
+  expect(f.calls).toEqual(["intent", "reconcile", "intent", "verify", "intent", "product", "map",
+    "intent", "settle"]);
 });
 
 test("missing ciphertext stays pending without product replay or settlement", async () => {
@@ -221,12 +262,61 @@ test("missing ciphertext stays pending without product replay or settlement", as
 
 test("only absent reservation permits fresh preparation", async () => {
   const f = fixture();
-  f.select({ status: "missing" });
+  f.select({ status: "missing", intent: f.reservation.intent });
   const recover = createProtectedTaskCancellationPublicationRecovery(f.input, f.deps);
   expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("missing");
   f.select({ status: "invalid" });
   expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("pending");
-  expect(f.calls).toEqual([]);
+  expect(f.calls).toEqual(["intent"]);
+});
+
+test("adopts a verified stage once outside held authority and recovers after grant pruning", async () => {
+  const f = fixture();
+  f.stage();
+  f.deps.authorizationRepository = async () => ({ get: async () => null });
+  expect(f.row.acceptedMaterial!.authorizationExpiresAt).toBeLessThan(f.input.now!());
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("mapped");
+  expect(f.calls.filter(call => call === "reserve")).toHaveLength(1);
+  expect(f.calls.indexOf("intent")).toBeLessThan(f.calls.indexOf("reserve"));
+  expect(f.calls.indexOf("reserve")).toBeLessThan(f.calls.indexOf("reconcile"));
+  expect(f.calls).toContain("detached-authority");
+  expect(await f.settlementVerifier()!({ intent: f.reservation.intent, requesterHumanId: HUMAN,
+    authorityFingerprint: f.ledger.authorityFingerprint,
+    cryptoAccessRevision: 0,
+    requiredNamespaceFingerprint: f.ledger.requiredNamespaceFingerprint,
+  })).toEqual({ requestId: REQUEST, recipientGeneration: 0 });
+});
+
+test.each(["intent", "requester", "authority", "namespace", "access", "stage"])(
+  "staged settlement verifier rejects mismatched %s proof without product authority nesting", async mismatch => {
+    const f = fixture(); f.stage();
+    expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+      { taskId: TASK, taskRunId: RUN })).toBe("mapped");
+    const verifier = f.settlementVerifier();
+    expect(verifier).toBeDefined();
+    if (mismatch === "stage") f.clearStage();
+    const proof = {
+      intent: mismatch === "intent" ? { ...f.reservation.intent, policyRevision: 6 } : f.reservation.intent,
+      requesterHumanId: mismatch === "requester" ? "foreign" : HUMAN,
+      authorityFingerprint: mismatch === "authority" ? new Uint8Array(32) : f.ledger.authorityFingerprint,
+      cryptoAccessRevision: mismatch === "access" ? 1 : 0,
+      requiredNamespaceFingerprint: mismatch === "namespace"
+        ? new Uint8Array(32) : f.ledger.requiredNamespaceFingerprint,
+    };
+    expect(await verifier!(proof)).toBeNull();
+  },
+);
+
+test.each(["bare", "invalid"])("%s staged custody fences fresh preparation", async kind => {
+  const f = fixture();
+  f.select({ status: "missing", intent: f.reservation.intent });
+  if (kind === "bare") f.publication(true);
+  else f.deps.inspectStaged = async () => { throw new Error("staging receipt conflict"); };
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("pending");
+  expect(f.calls).not.toContain("reserve");
+  expect(f.calls).not.toContain("reconcile");
 });
 
 test.each(["operation", "object", "namespace", "requester", "fingerprint", "kind", "idempotency", "policy", "unclaimed"])(
@@ -317,7 +407,9 @@ test("default reservation reader uses lifecycle metadata and re-reads under held
   const tables: unknown[] = [];
   const select = () => ({ from: (table: unknown) => {
     tables.push(table);
-    const rows = table === taskRunResultCryptoRevisions ? [f.ledger]
+    const rows = table === taskRunResultCryptoRevisions ? [{ ...f.ledger,
+      ...(f.calls.includes("map") ? { disposition: "mapped", completion: "complete",
+        cryptoCompletedAt: new Date(START + 90_000) } : {}) }]
       : table === tasks ? [{ ownerId: intent.requesterUserId, requestorId: intent.requesterUserId,
         agentId: intent.agentId, contentNamespaceId: NAMESPACE, contentRepresentation: "protected",
         cancelledAt: intent.terminalAt, status: "cancelled" }]
@@ -330,6 +422,24 @@ test("default reservation reader uses lifecycle metadata and re-reads under held
   const { read: _read, ...deps } = f.deps;
   expect(await createProtectedTaskCancellationPublicationRecovery({ ...f.input,
     db: { select } as unknown as DirectDatabase }, deps)({ taskId: TASK, taskRunId: RUN })).toBe("mapped");
-  expect(tables).toEqual(Array.from({ length: 4 }, () => [taskRunResultCryptoRevisions,
-    tasks, protectedTaskRunOutputBindings]).flat());
+  expect(tables).toEqual(Array.from({ length: 6 }, () => [tasks,
+    protectedTaskRunOutputBindings, taskRunResultCryptoRevisions]).flat());
+});
+
+test("default reader leaves a fresh stopped Task without binding eligible for preparation", async () => {
+  const f = fixture();
+  const tables: unknown[] = [];
+  const select = () => ({ from: (table: unknown) => {
+    tables.push(table);
+    const rows = table === tasks ? [{ ownerId: intent.requesterUserId,
+      requestorId: intent.requesterUserId, agentId: intent.agentId,
+      contentNamespaceId: NAMESPACE, contentRepresentation: "protected",
+      cancelledAt: intent.terminalAt, status: "cancelled" }] : [];
+    return { where: () => ({ limit: () => Promise.resolve(rows) }) };
+  } });
+  const { read: _read, ...deps } = f.deps;
+  expect(await createProtectedTaskCancellationPublicationRecovery({ ...f.input,
+    db: { select } as unknown as DirectDatabase }, deps)({ taskId: TASK, taskRunId: RUN })).toBe("missing");
+  expect(tables).toEqual([tasks, protectedTaskRunOutputBindings, taskRunResultCryptoRevisions]);
+  expect(f.calls).toEqual([]);
 });

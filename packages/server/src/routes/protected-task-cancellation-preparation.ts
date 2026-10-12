@@ -16,7 +16,9 @@ import {
   LatticeCrypto,
   type TaskRuntimeRecipientRegistry,
 } from "@nautilo/lattice-crypto";
+import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
+  hasTaskCancellationCryptoPublication,
   inspectTaskContentNamespaceAuthority,
   verifyCryptoPostgresHandle,
   withTaskContentNamespaceAuthority,
@@ -42,6 +44,7 @@ import {
 } from "./protected-task-requester-private-room";
 import {
   createProtectedTaskCancellationPlan,
+  protectedTaskCancellationRequestId,
   type ProtectedTaskCancellationPlan,
 } from "./protected-task-cancellation-plan";
 import { validateCurrentProtectedTaskCancellationIntent } from
@@ -86,6 +89,13 @@ type Dependencies = Readonly<{
   inspectContentAuthority: typeof inspectTaskContentNamespaceAuthority;
   withContentAuthority: typeof withTaskContentNamespaceAuthority;
   validateCurrentIntent: typeof validateCurrentProtectedTaskCancellationIntent;
+  hasCancellationPublication(
+    restricted: PostgresJsBridgeConnection,
+    intent: Pick<
+      ProtectedTaskCancellationOutputIntent,
+      "taskRunId" | "resultObjectId"
+    >,
+  ): Promise<boolean>;
   hasCancellationReservation(
     transaction: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0],
     intent: ProtectedTaskCancellationOutputIntent,
@@ -163,6 +173,14 @@ export function createProtectedTaskCancellationPreparation(
       ?? withTaskContentNamespaceAuthority,
     validateCurrentIntent: overrides.validateCurrentIntent
       ?? validateCurrentProtectedTaskCancellationIntent,
+    hasCancellationPublication: overrides.hasCancellationPublication
+      ?? (async (connection, intent) => hasTaskCancellationCryptoPublication(
+        await verifyCryptoPostgresHandle(connection),
+        {
+          requestId: protectedTaskCancellationRequestId(intent.taskRunId),
+          objectId: intent.resultObjectId,
+        },
+      )),
     hasCancellationReservation: overrides.hasCancellationReservation
       ?? (async (transaction, intent) => {
         const rows = await transaction.select({
@@ -180,6 +198,33 @@ export function createProtectedTaskCancellationPreparation(
       return rows.length === 1 ? rows[0]!.taskId : null;
     }),
   };
+
+  function publicationIdentity(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+  }>) {
+    return Object.freeze({
+      taskRunId: input.taskRunId,
+      resultObjectId: deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: input.taskId,
+        taskRunId: input.taskRunId,
+        contentRevision: 2,
+      }),
+    });
+  }
+
+  async function hasDetachedCancellationPublication(
+    intent: Pick<
+      ProtectedTaskCancellationOutputIntent,
+      "taskRunId" | "resultObjectId"
+    >,
+  ): Promise<boolean> {
+    return dependencies.hasCancellationPublication(
+      dependencies.restricted(),
+      intent,
+    );
+  }
 
   async function currentCoordinates(
     intent: ProtectedTaskCancellationOutputIntent,
@@ -204,6 +249,7 @@ export function createProtectedTaskCancellationPreparation(
   async function planForIntent(
     intent: ProtectedTaskCancellationOutputIntent,
   ): Promise<ProtectedTaskCancellationPlan | null> {
+    if (await hasDetachedCancellationPublication(intent)) return null;
     const coordinates = await currentCoordinates(intent);
     if (coordinates === null) return null;
     const authority = await dependencies.inspectContentAuthority({
@@ -267,6 +313,9 @@ export function createProtectedTaskCancellationPreparation(
         intent,
       }),
       use: async (authority, _product, transaction, scoped) => {
+        if (await dependencies.hasCancellationPublication(scoped, intent)) {
+          return "stale" as const;
+        }
         const currentPlan = createProtectedTaskCancellationPlan({
           intent,
           namespaceAuthority: authority,
@@ -377,6 +426,9 @@ export function createProtectedTaskCancellationPreparation(
         intent,
       }),
       use: async (authority, _product, transaction, scoped) => {
+        if (await dependencies.hasCancellationPublication(scoped, intent)) {
+          return Object.freeze({ status: "stale" as const });
+        }
         const currentPlan = createProtectedTaskCancellationPlan({
           intent,
           namespaceAuthority: authority,
@@ -483,6 +535,9 @@ export function createProtectedTaskCancellationPreparation(
     status: "ready";
     plan: ProtectedTaskCancellationPlan;
   }> | Readonly<{ status: "stale" }> | Readonly<{ status: "conflict" }>> {
+    if (await hasDetachedCancellationPublication(intent)) {
+      return Object.freeze({ status: "stale" as const });
+    }
     let plan = detachedPlan;
     let record = selected;
     if (!exactCancellationPlan(record, plan)) {
@@ -515,6 +570,9 @@ export function createProtectedTaskCancellationPreparation(
       taskRunId: input.taskRunId,
       requiredPolicyRevision: policy.revision,
     }, async previous => {
+      if (await hasDetachedCancellationPublication(
+        publicationIdentity(previous),
+      )) return false;
       const settled = await (await getRepository())
         .settleTaskRuntimeExecutionAuthorities({
           workId: previous.taskRunId,
@@ -538,6 +596,9 @@ export function createProtectedTaskCancellationPreparation(
     taskId: string;
     taskRunId: string;
   }>): Promise<ProtectedTaskCancellationPlan | null> {
+    if (await hasDetachedCancellationPublication(publicationIdentity(input))) {
+      return null;
+    }
     const prepared = await prepareStoppedOutput(input);
     if (prepared.status !== "prepared"
       && prepared.status !== "exact_replay") return null;
@@ -549,6 +610,11 @@ export function createProtectedTaskCancellationPreparation(
       const policy = await dependencies.readPolicy(dependencies.db);
       if (policy.mode === "plaintext_only") {
         return Object.freeze({ status: "inactive" as const });
+      }
+      if (await hasDetachedCancellationPublication(
+        publicationIdentity(coordinates),
+      )) {
+        return Object.freeze({ status: "not_ready" as const });
       }
       const prepared = await prepareStoppedOutput(coordinates);
       if (prepared.status === "rejected") {
@@ -585,6 +651,9 @@ export function createProtectedTaskCancellationPreparation(
           status: "exact_replay" as const,
           plan: reconciled.plan,
         });
+      }
+      if (await hasDetachedCancellationPublication(prepared.intent)) {
+        return Object.freeze({ status: "not_ready" as const });
       }
       try {
         const created = await repository.create(plan.initialRecord);

@@ -1027,6 +1027,16 @@ export {
 } from "./task/native-task-run-result-preparation.ts";
 
 export {
+  stageNativeTaskCancellationPublication,
+  inspectStagedTaskCancellationPublication,
+  reserveStagedTaskCancellationPublication,
+  hasTaskCancellationCryptoPublication,
+  type VerifiedStagedTaskCancellationPublication,
+  type StageNativeTaskCancellationPublicationInput,
+  type InspectStagedTaskCancellationPublicationInput,
+} from "./task/postgres-task-cancellation-crypto-staging.ts";
+
+export {
   persistTaskRuntimeAgentObject,
   type TaskRuntimeAgentObjectPersistenceAuthority,
   type WithTaskRuntimeAgentObjectPersistenceAuthority,

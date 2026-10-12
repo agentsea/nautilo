@@ -122,6 +122,13 @@ describe("backup restore target allowlists", () => {
     expect([...RESTORE_DATA_TABLES].sort()).toEqual(schemaTables);
   });
 
+  test("restores cancellation staging receipts after their encrypted object", () => {
+    const receipt = "public.task_cancellation_crypto_staging_receipts";
+    expect(DATA_TABLES.indexOf(receipt)).toBeGreaterThan(DATA_TABLES.indexOf("public.crypto_objects"));
+    expect(RESTORE_DATA_TABLES.has(receipt)).toBe(true);
+    expect(RESTORE_MIGRATIONS.find(rule => rule.table === receipt)).toBeUndefined();
+  });
+
   test("restores Task crypto revisions before their mapped product rows", () => {
     const indexOf = (table: string): number => DATA_TABLES.indexOf(table);
 

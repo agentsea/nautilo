@@ -1,3 +1,25 @@
+import { drizzle } from "drizzle-orm/postgres-js";
+import {
+  agentId as latticeAgentId, cryptoDomainId, createDomainForegroundAuthorizationPlan,
+  domainNamespaceRetainedAuthoritySetDigest, mintDomainForegroundAuthorization,
+  prepareAgentRuntimeInitialization, prepareDomainNamespaceBundle, TaskRuntimeRecipientRegistry,
+  type DomainForegroundSecretEntry, type TaskRuntimeCancellationResultEvidence,
+} from "@nautilo/lattice-crypto";
+import {
+  DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2, DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+  encodeAgentRuntimeSignerPublicationV1, serializeDomainForegroundAuthorizationV2,
+} from "@nautilo/lattice-crypto/wire";
+import {
+  stageNativeTaskCancellationPublication, inspectStagedTaskCancellationPublication,
+  reserveStagedTaskCancellationPublication, hasTaskCancellationCryptoPublication,
+  type StageNativeTaskCancellationPublicationInput,
+} from "@nautilo/lattice-bridge/server";
+import {
+  BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS, cryptoDomains, domainKeyPublicationOperations, domainKeyHeads, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
+  humanCryptoCustodies, humanCryptoDevices, agentCryptoRuntimeStates, agentCryptoRuntimeSigners,
+  backgroundCryptoAuthorizationRequests, taskCancellationCryptoStagingReceipts, cryptoObjects, objectCryptoAccessHeads, objectCryptoNamespaceEnvelopes, objectCryptoAccessManifests,
+  type PostgresJsBridgeConnection, type ProtectedTaskCancellationOutputIntent,
+} from "@nautilo/db";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import postgres from "postgres";
@@ -516,6 +538,9 @@ describe.serial("Postgres protected Task content repository", () => {
         [cancelledRunId, stoppedAt],
       );
 
+      await exerciseNativeCancellationStaging({ app, cryptoDatabase, taskId, ownerId,
+        humanActorId, agentId, namespaceValue, domainId, objectIds, terminalAt: stoppedAt });
+
       expect(await repository.reserveRevision(cancellationReservation))
         .toEqual({ status: "stale" });
       await app.unsafe(
@@ -952,3 +977,393 @@ describe.serial("Postgres protected Task content repository", () => {
     }
   });
 });
+
+async function nativeCancellationFixture(input: { task: string; run: string; human: string;
+  namespace: string; domain: string; agent: string; restricted: PostgresJsBridgeConnection }) {
+  const { task: TASK, run: RUN, human: HUMAN, namespace: NAMESPACE, domain: DOMAIN, agent: AGENT } = input;
+  const NOW = Date.now();
+  const DEVICE = `cancellation-stage-device:${RUN}`;
+  const SERVER = "https://nautilo.example";
+  const bytes = (value: number) => new Uint8Array(32).fill(value);
+  const crypto = new LatticeCrypto();
+  const issuer = crypto.generateSigningKeyPair();
+  const manager = crypto.generateSigningKeyPair();
+  const domainKey = bytes(0x41);
+  const generationKey = bytes(0x42);
+  const retained = [{ generation: namespaceGeneration(0), accessRevision: accessRevision(0), headDigest: bytes(0x43), generationKey }];
+  const retainedDigest = domainNamespaceRetainedAuthoritySetDigest(crypto, retained);
+  const domainRequirement = { domainId: DOMAIN, sourceNamespaceId: NAMESPACE,
+    participantDigest: crypto.hash(new TextEncoder().encode(HUMAN)), participantCount: 1, keyClass: "ai" as const,
+    domainKeyGeneration: 4, authorizationRevision: authorizationRevision(9), headDigest: crypto.hash(new TextEncoder().encode(DOMAIN)),
+    activeNamespaceBindingSetDigest: bytes(0x63), activeNamespaceBindingCount: 1 };
+  const domain: DomainForegroundSecretEntry = { ...domainRequirement, domainKey };
+  const current = { serverId: SERVER, cryptoDomainId: cryptoDomainId(DOMAIN), participantDigest: domain.participantDigest,
+    participantCount: 1, keyClass: "ai" as const, domainKeyGeneration: 4,
+    domainAuthorizationRevision: authorizationRevision(9), domainHeadDigest: domain.headDigest,
+    namespaceId: namespaceId(NAMESPACE), namespaceAccessRevision: accessRevision(0),
+    namespaceCurrentGeneration: namespaceGeneration(0), bundleRevision: 1, retainedAuthoritySetDigest: retainedDigest };
+  const native = prepareDomainNamespaceBundle(crypto, {
+    operationId: `native-task-result-binding:${RUN}`, previousBindingDigest: null,
+    bundle: { ...current, formatVersion: DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
+      purpose: DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2, retainedGenerationCount: 1, retainedGenerations: retained },
+    issuerHumanId: humanId(HUMAN), issuerDeviceId: cryptoDeviceId(DEVICE), issuerDeviceSigningGeneration: 1,
+    issuerSigningPrivateKey: issuer.privateKey, issuerSigningPublicKey: issuer.publicKey, domainKey, issuedAt: NOW,
+  });
+  const initialized = await prepareAgentRuntimeInitialization({ crypto, operationId: `native-result-initialization:${RUN}`, agentId: latticeAgentId(AGENT),
+    authorizationRevision: authorizationRevision(7),
+    configObjects: [{ objectId: "task-native-agent-config", configRevision: authorizationRevision(1), plaintextDek: bytes(0x21) }],
+    domains: [], resolveCurrentDomainCommitterAuthority: () => null,
+    manager: { managerHumanId: humanId(HUMAN), managerAuthorizationRevision: authorizationRevision(2), managerDeviceId: cryptoDeviceId(DEVICE) },
+    managerSigningPrivateKey: manager.privateKey, resolveCurrentManagerAuthority: () => manager.publicKey });
+  const restricted = input.restricted;
+  const base = { restricted, crypto, serverScope: SERVER, domains: [domain], signal: new AbortController().signal,
+    authority: { authorityVersion: 1 as const, kind: "requester_private_namespace" as const, keyClass: "ai" as const,
+      requesterHumanId: HUMAN, namespaceId: NAMESPACE, domainId: DOMAIN, expectedAccessRevision: 0, expectedPolicyRevision: 1 },
+    createdAt: NOW, agentAuthorizationRevision: 7, runtime: initialized.runtime,
+    signerPublication: initialized.signerPublication, resolveHistoricalSignerPublicationManager: () => manager.publicKey,
+    assertCurrentTaskAuthority: () => Promise.resolve() };
+  const cancellationCoordinate = Object.freeze({
+    kind: "run_result" as const,
+    taskId: TASK,
+    taskRunId: RUN,
+    contentRevision: 2 as const,
+  });
+  const cancellationResult = Object.freeze({
+    taskId: TASK,
+    taskRunId: RUN,
+    contentRevision: 2 as const,
+    objectId: deriveTaskContentCryptoObjectIdV1(cancellationCoordinate),
+    signerAgentId: AGENT,
+    namespace: Object.freeze({
+      namespaceId: NAMESPACE,
+      domainId: DOMAIN,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: 0,
+      expectedPolicyRevision: 1,
+    }),
+  });
+  const cancellationNow = NOW;
+  const withCancellationEvidence = async <Value>(operation: (
+    evidence: TaskRuntimeCancellationResultEvidence,
+    signal: AbortSignal,
+    domains: readonly DomainForegroundSecretEntry[],
+    authorizationBytes: Uint8Array,
+    recipientPublicKey: Uint8Array,
+  ) => Value | PromiseLike<Value>) => {
+    const recipients = new TaskRuntimeRecipientRegistry(crypto, {
+      now: () => cancellationNow,
+    });
+    const attempt = await recipients.createAttempt({
+      requestId: `task-run-cancellation-result-authorization:${RUN}`,
+      workId: RUN,
+      recipientGeneration: 1,
+      recipientKeyId: `native-cancel-result-recipient:${RUN}`,
+      expiresAt: NOW + 60_000,
+    });
+    if (attempt.status !== "created") throw new Error("cancellation recipient unavailable");
+    const plan = createDomainForegroundAuthorizationPlan(crypto, {
+      authorizationId: `task-run-cancellation-result-authorization:${RUN}`,
+      policyRevision: 1,
+      sessionId: "native-cancel-result-episode",
+      roomId: "native-cancel-result-room",
+      subjectHumanId: humanId(HUMAN),
+      committerDeviceId: cryptoDeviceId(DEVICE),
+      committerDeviceSigningGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(5),
+      recipientKind: "runtime",
+      recipientPrincipalId: "nautilo_task_runtime",
+      recipientAuthorizationRevision: authorizationRevision(6),
+      recipientRuntimeGeneration: 1,
+      recipientKeyId: `native-cancel-result-recipient:${RUN}`,
+      operations: ["encrypt"],
+      issuedAt: NOW,
+      deadlineAt: NOW + 60_000,
+      maximumSecretBytes: 4_096,
+      domains: [domainRequirement],
+    });
+    const authorization = await mintDomainForegroundAuthorization(crypto, {
+      plan,
+      domains: [domain],
+      committerDeviceSigningPrivateKey: issuer.privateKey,
+      recipientEncryptionPublicKey: attempt.attempt.recipientPublicKey,
+    });
+    const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+      authorization,
+    );
+    try {
+      return await recipients.withOpenedCancellationResultGrant({
+        requestId: `task-run-cancellation-result-authorization:${RUN}`,
+        workId: RUN,
+        recipientGeneration: 1,
+        recipientKeyId: `native-cancel-result-recipient:${RUN}`,
+        claimId: `native-cancel-result-claim:${RUN}`,
+        claimExpiresAt: NOW + 60_000,
+        authorizationBytes,
+        current: {
+          authorizationId: plan.authorizationId,
+          policyRevision: plan.policyRevision,
+          sessionId: plan.sessionId,
+          roomId: plan.roomId,
+          subjectHumanId: plan.subjectHumanId,
+          committerDeviceId: plan.committerDeviceId,
+          committerDeviceSigningGeneration:
+            plan.committerDeviceSigningGeneration,
+          committerDeviceSigningPublicKey: issuer.publicKey,
+          committerDeviceActive: true,
+          hostAuthorizationRevision: plan.hostAuthorizationRevision,
+          recipientKind: plan.recipientKind,
+          recipientPrincipalId: plan.recipientPrincipalId,
+          recipientAuthorizationRevision:
+            plan.recipientAuthorizationRevision,
+          recipientRuntimeGeneration: plan.recipientRuntimeGeneration,
+          recipientKeyId: plan.recipientKeyId,
+          recipientAuthorized: true,
+          domains: plan.domains,
+        },
+        currentNamespaceRequirements: [{
+          ordinal: 0,
+          namespaceId: NAMESPACE,
+          domainId: DOMAIN,
+          operations: ["encrypt"],
+          expectedAccessRevision: 0,
+          expectedPolicyRevision: 1,
+        }],
+        result: cancellationResult,
+        operation: (domains, signal, evidence) => operation(
+          evidence,
+          signal,
+          domains,
+          authorizationBytes,
+          attempt.attempt.recipientPublicKey,
+        ),
+      });
+    } finally {
+      authorizationBytes.fill(0);
+      recipients.close();
+    }
+  };
+  return {
+    crypto,
+    cancellationCoordinate,
+    cancellationResult,
+    base,
+
+    native, initialized, issuer, manager, domainRequirement, retainedDigest, DEVICE, NOW,
+    withCancellationEvidence,
+  };
+}
+
+async function exerciseNativeCancellationStaging(input: {
+  app: SqlClient; cryptoDatabase: SqlClient; taskId: string; ownerId: string;
+  humanActorId: string; agentId: string; namespaceValue: string; domainId: string;
+  objectIds: string[]; terminalAt: Date;
+}): Promise<void> {
+  const fixtureAdmin = client(adminUrl);
+  const fixtureApp = client(appUrl);
+  const fixtureCrypto = client(cryptoUrl);
+  const database = drizzle(fixtureAdmin);
+  const run = randomUUID();
+  const restricted = cryptoConnection(input.cryptoDatabase) as PostgresJsBridgeConnection;
+  const f = await nativeCancellationFixture({ task: input.taskId, run,
+    human: input.humanActorId, agent: input.agentId,
+    namespace: input.namespaceValue, domain: input.domainId, restricted });
+  const bytes = (value: number) => new Uint8Array(32).fill(value);
+  const date = new Date(f.NOW);
+  const deadline = new Date(f.NOW + 60_000);
+  const requestId = `task-run-cancellation-result-authorization:${run}`;
+  const intent: ProtectedTaskCancellationOutputIntent = {
+    taskId: input.taskId, taskRunId: run, requesterUserId: input.ownerId,
+    agentId: input.agentId, contentNamespaceId: input.namespaceValue,
+    representation: "protected", resultRevision: 2,
+    resultOperationId: `task-run-cancelled-result:${run}`,
+    resultObjectId: f.cancellationResult.objectId, policyRevision: 1,
+    taskStatus: "cancelled", runStatus: "cancelled", terminalAt: input.terminalAt,
+  };
+  input.objectIds.push(intent.resultObjectId);
+  const history = {
+    resolveHistoricalHumanDeviceSigningPublicKey: () => Promise.resolve(null),
+    resolveHistoricalAgentSignerAuthority: ((context) => ({ ...context,
+      managerSigningPublicKey: f.manager.publicKey.slice() })) satisfies
+        StageNativeTaskCancellationPublicationInput["resolveHistoricalAgentSignerAuthority"],
+  };
+  const handle = await verifyCryptoPostgresHandle(cryptoConnection(input.cryptoDatabase));
+  const inspect = () => inspectStagedTaskCancellationPublication({ ...history,
+    handle, intent, crypto: f.crypto, authority: f.base.authority });
+  const failed = async (operation: Promise<unknown>) => {
+    expect(await operation.then(() => null, (error: unknown) => error)).toBeInstanceOf(Error);
+  };
+  try {
+    await database.insert(taskRuns).values({ id: run, taskId: input.taskId,
+      graphThreadId: `staged-cancellation:${run}`, status: "cancelled", completedAt: input.terminalAt });
+    await database.insert(protectedTaskRunOutputBindings).values({
+      taskRunId: run, bindingId: `task-run-output:${run}`, deliveryMode: "none",
+      resultRevision: 2, resultOperationId: intent.resultOperationId,
+      resultObjectId: intent.resultObjectId, acceptedPolicyRevision: 1,
+      acceptedAt: input.terminalAt, resultTerminalAt: input.terminalAt,
+    });
+    await database.insert(humanCryptoCustodies).values({ humanId: input.humanActorId,
+      userId: input.ownerId, humanActorId: input.humanActorId,
+      initialInstallationLineageDigest: bytes(0x71), state: "active",
+      everInitializedAt: date, firstDeviceId: f.DEVICE, currentRecoveryGeneration: 1,
+      currentRecoveryPublicKeyDigest: bytes(0x72), revision: 1, createdAt: date, updatedAt: date });
+    await database.insert(humanCryptoDevices).values({ deviceId: f.DEVICE,
+      humanId: input.humanActorId, userId: input.ownerId, humanActorId: input.humanActorId,
+      clientKind: "browser", installationLineageDigest: bytes(0x73), deviceGeneration: 1,
+      signingPublicKey: f.issuer.publicKey, encryptionPublicKey: (await f.crypto.generateEncryptionKeyPair()).publicKey,
+      publicFingerprint: f.crypto.hash(f.issuer.publicKey), state: "active",
+      authorizationKind: "first_bootstrap", recoveryGeneration: 1,
+      authorizationEvidenceDigest: bytes(0x75), keyPackageGeneration: 1,
+      keyPackageCount: 0, revision: 1, createdAt: date, activatedAt: date });
+    await database.insert(cryptoDomains).values({ id: input.domainId,
+      participantDigest: f.domainRequirement.participantDigest, participants: [input.humanActorId],
+      epoch: 4, authorizationRevision: 9, rosterBytes: bytes(0x76) });
+    await database.insert(domainKeyPublicationOperations).values({ operationId: `stage-domain:${run}`,
+      idempotencyKey: `stage-domain:${run}`, domainId: input.domainId, keyClass: "ai",
+      participantDigest: f.domainRequirement.participantDigest, participantCount: 1,
+      domainKeyGeneration: 4, authorizationRevision: 9, expectedPreviousHeadDigest: bytes(0x60),
+      headDigest: f.domainRequirement.headDigest, headBytes: bytes(0x76),
+      issuerHumanId: input.humanActorId, issuerDeviceId: f.DEVICE,
+      issuerDeviceSigningGeneration: 1, state: "active", createdAt: date, updatedAt: date,
+      deadlineAt: deadline, activatedAt: date });
+    await database.insert(domainKeyHeads).values({ domainId: input.domainId, keyClass: "ai",
+      participantDigest: f.domainRequirement.participantDigest, participantCount: 1,
+      domainKeyGeneration: 4, authorizationRevision: 9, headDigest: f.domainRequirement.headDigest,
+      headBytes: bytes(0x76), publicationOperationId: `stage-domain:${run}`,
+      issuerHumanId: input.humanActorId, issuerDeviceId: f.DEVICE,
+      issuerDeviceSigningGeneration: 1, activatedAt: date });
+    const binding = { namespaceId: input.namespaceValue, domainId: input.domainId, keyClass: "ai",
+      domainKeyGeneration: 4, domainAuthorizationRevision: 9,
+      domainHeadDigest: f.domainRequirement.headDigest, namespaceAccessRevision: 0,
+      namespaceCurrentGeneration: 0, bundleRevision: 1, retainedGenerationCount: 1,
+      retainedAuthoritySetDigest: f.retainedDigest, bindingDigest: f.native.bindingDigest,
+      activatedAt: date };
+    await database.insert(namespaceDomainKeyBindings).values({ ...binding,
+      operationId: f.native.binding.operationId, idempotencyKey: `stage-binding:${run}`,
+      plaintextDigest: f.native.plaintextDigest, ciphertextDigest: f.native.binding.ciphertextDigest,
+      bindingBytes: f.native.bytes, issuerHumanId: input.humanActorId, issuerDeviceId: f.DEVICE,
+      issuerDeviceSigningGeneration: 1, state: "active", createdAt: date, updatedAt: date, deadlineAt: deadline });
+    await database.insert(namespaceDomainKeyHeads).values({ ...binding,
+      bindingOperationId: f.native.binding.operationId });
+    await database.insert(agentCryptoRuntimeStates).values({ agentId: input.agentId,
+      authorizationRevision: 7, runtimeGeneration: 0, configObjectCount: 1, configInventoryDigest: bytes(0x77) });
+    await database.insert(agentCryptoRuntimeSigners).values({ ...f.initialized.signerPublication,
+      publicationBytes: encodeAgentRuntimeSignerPublicationV1(f.initialized.signerPublication) });
+
+    const opened = await f.withCancellationEvidence(async (evidence, signal, domains, authorizationBytes, recipientPublicKey) => {
+      const identity = JSON.stringify(["nautilo/task-cancellation-result/v1", input.taskId,
+        run, input.ownerId, input.agentId, input.namespaceValue, intent.resultOperationId,
+        intent.resultObjectId, intent.terminalAt.getTime()]);
+      await database.insert(backgroundCryptoAuthorizationRequests).values({
+        requestId, workId: run, workKind: "task.cancel_result", purpose: "task.cancel_result",
+        formatVersion: 3, credentialSubjectKind: "runtime", runtimeKind: "task", runtimeVersion: 1,
+        workIdentityHash: f.crypto.hash(new TextEncoder().encode(requestId)),
+        idempotencyKey: `task-cancellation:${Buffer.from(f.crypto.hash(new TextEncoder().encode(identity))).toString("hex")}`,
+        namespaceId: input.namespaceValue, domainId: input.domainId, expectedDomainEpoch: 4,
+        expectedNamespaceAccessRevision: 0, expectedPolicyRevision: 1,
+        recipientGeneration: evidence.recipientGeneration, descriptorHash: bytes(0x78), descriptorBytes: bytes(0x79),
+        recipientKeyId: evidence.recipientKeyId, recipientPublicKey, recipientExpiresAt: deadline,
+        acceptedResponseKind: "runtime", acceptedResponseHash: evidence.authorizationDigest,
+        acceptedResponseBytes: authorizationBytes, credentialId: requestId,
+        credentialHash: evidence.authorizationDigest, issuingHumanId: input.humanActorId,
+        issuingDeviceId: f.DEVICE, issuingDeviceAuthorizationRevision: 1,
+        issuerSigningPublicKeyHash: f.crypto.hash(f.issuer.publicKey), acceptedAt: date,
+        authorizationExpiresAt: deadline, requestRevision: 4, state: "running",
+        claimId: evidence.claimId, claimExpiresAt: deadline, retryCount: 0, maximumAttempts: BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS.maximumAttempts,
+        createdAt: date, updatedAt: date,
+      });
+      // Product locks outlive the restricted staging transaction, as in withAccepted.
+      const stage = (rollback: boolean) => input.app.begin(async productTx => {
+        await productTx.unsafe("SELECT id FROM tasks WHERE id = $1 FOR UPDATE", [input.taskId]);
+        await productTx.unsafe("SELECT id FROM task_runs WHERE id = $1 FOR UPDATE", [run]);
+        return input.cryptoDatabase.begin(async cryptoTx => {
+          const executor = cryptoExecutor(cryptoTx) as Pick<PostgresJsBridgeConnection, "query">;
+          const borrowed: PostgresJsBridgeConnection = { query: executor.query.bind(executor),
+            transaction: use => use(executor), transactionOnce: use => use(executor) };
+          const result = await stageNativeTaskCancellationPublication({ ...history, intent,
+            preparation: { ...f.base, restricted: borrowed, evidence, signal, domains },
+            assertCurrentClaim: () => Promise.resolve() });
+          if (rollback) throw new Error("simulated outer transaction rollback");
+          return result;
+        });
+      });
+      expect(await stage(true).then(() => null, (error: unknown) => error instanceof Error ? error.message : String(error))).toBe("simulated outer transaction rollback");
+      expect(await hasTaskCancellationCryptoPublication(handle,
+        { requestId, objectId: intent.resultObjectId })).toBe(false);
+      expect(await inspect()).toBeNull();
+      expect(await stage(false)).toBe("staged");
+      const first = await inspect();
+      expect(first).not.toBeNull();
+      expect(await stage(false)).toBe("already_staged");
+      expect((await inspect())!.genesisManifestHash).toEqual(first!.genesisManifestHash);
+    });
+    expect(opened.status).toBe("opened");
+    // Crash after staging: no product ledger, no live grant or request survives.
+    expect(await database.select().from(taskRunResultCryptoRevisions)
+      .where(eq(taskRunResultCryptoRevisions.taskRunId, run))).toHaveLength(0);
+    await database.delete(backgroundCryptoAuthorizationRequests)
+      .where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
+    const staged = await inspect();
+    expect(staged).not.toBeNull();
+    const product = new PostgresTaskContentProductStore(
+      await verifyConversationProductPostgresHandle(productConnection(input.app)), () => f.base.authority);
+    const reserve = await reserveStagedTaskCancellationPublication({ staged: staged!, authority: f.base.authority, product });
+    expect(reserve.status).toBe("reserved");
+    const [ledger] = await database.select().from(taskRunResultCryptoRevisions)
+      .where(eq(taskRunResultCryptoRevisions.taskRunId, run));
+    expect(ledger!.requestDigest).toEqual(staged!.genesisManifestHash);
+    expect(ledger!.cryptoObjectId).toBe(intent.resultObjectId);
+    const recovery = createDormantTaskContentShadowRepository({ product,
+      crypto: createPostgresTaskContentCryptoCompletion({ ...history, handle, crypto: f.crypto,
+        resolveCurrentAuthority: () => Promise.resolve(f.base.authority) }) });
+    expect(await recovery.reconcileCoordinate({ coordinate: f.cancellationCoordinate,
+      operationId: intent.resultOperationId, leaseToken: randomUUID() })).toBe("mapped");
+    const [mapped] = await database.select().from(taskRuns).where(eq(taskRuns.id, run));
+    expect(mapped!.resultCryptoObjectId).toBe(intent.resultObjectId);
+    expect(mapped!.resultCryptoMappingState).toBe("verified");
+
+    const [security] = await admin.unsafe<{ relrowsecurity: boolean; relforcerowsecurity: boolean;
+      app_select: boolean; agent_select: boolean; crypto_insert: boolean; crypto_update: boolean; crypto_delete: boolean }[]>(
+      `SELECT relrowsecurity, relforcerowsecurity,
+        has_table_privilege('nautilo', oid, 'SELECT') AS app_select,
+        has_table_privilege('nautilo_agent', oid, 'SELECT') AS agent_select,
+        has_table_privilege('nautilo_crypto', oid, 'INSERT') AS crypto_insert,
+        has_table_privilege('nautilo_crypto', oid, 'UPDATE') AS crypto_update,
+        has_table_privilege('nautilo_crypto', oid, 'DELETE') AS crypto_delete
+       FROM pg_class WHERE oid = 'task_cancellation_crypto_staging_receipts'::regclass`);
+    expect(security).toEqual({ relrowsecurity: true, relforcerowsecurity: true,
+      app_select: false, agent_select: false, crypto_insert: true, crypto_update: false, crypto_delete: false });
+    await failed(drizzle(fixtureApp).select().from(taskCancellationCryptoStagingReceipts));
+    await failed(fixtureAdmin.begin(async tx => {
+      await tx.unsafe("SET LOCAL ROLE nautilo_agent");
+      await drizzle(tx).select().from(taskCancellationCryptoStagingReceipts);
+    }));
+    await failed(drizzle(fixtureCrypto).update(taskCancellationCryptoStagingReceipts)
+      .set({ claimId: "forbidden-replacement" }).where(eq(taskCancellationCryptoStagingReceipts.requestId, requestId)));
+    await failed(drizzle(fixtureCrypto).delete(taskCancellationCryptoStagingReceipts)
+      .where(eq(taskCancellationCryptoStagingReceipts.requestId, requestId)));
+    expect((await inspect())!.claimId).toBe(staged!.claimId);
+  } finally {
+    await database.delete(backgroundCryptoAuthorizationRequests).where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
+    await database.delete(taskRuns).where(eq(taskRuns.id, run));
+    await database.delete(taskRunResultCryptoRevisions).where(eq(taskRunResultCryptoRevisions.taskRunId, run));
+    // Admin cleanup is permitted; the receipt disappears only with its object.
+    await database.delete(objectCryptoAccessHeads).where(eq(objectCryptoAccessHeads.objectId, intent.resultObjectId));
+    await database.delete(objectCryptoNamespaceEnvelopes).where(eq(objectCryptoNamespaceEnvelopes.objectId, intent.resultObjectId));
+    await database.delete(objectCryptoAccessManifests).where(eq(objectCryptoAccessManifests.objectId, intent.resultObjectId));
+    await database.delete(cryptoObjects).where(eq(cryptoObjects.objectId, intent.resultObjectId));
+    expect(await database.select().from(taskCancellationCryptoStagingReceipts)
+      .where(eq(taskCancellationCryptoStagingReceipts.requestId, requestId))).toHaveLength(0);
+    await database.delete(namespaceDomainKeyHeads).where(eq(namespaceDomainKeyHeads.namespaceId, input.namespaceValue));
+    await database.delete(namespaceDomainKeyBindings).where(eq(namespaceDomainKeyBindings.domainId, input.domainId));
+    await database.delete(domainKeyHeads).where(eq(domainKeyHeads.domainId, input.domainId));
+    await database.delete(domainKeyPublicationOperations).where(eq(domainKeyPublicationOperations.domainId, input.domainId));
+    await database.delete(cryptoDomains).where(eq(cryptoDomains.id, input.domainId));
+    await database.delete(agentCryptoRuntimeSigners).where(eq(agentCryptoRuntimeSigners.agentId, input.agentId));
+    await database.delete(agentCryptoRuntimeStates).where(eq(agentCryptoRuntimeStates.agentId, input.agentId));
+    await database.delete(humanCryptoDevices).where(eq(humanCryptoDevices.deviceId, f.DEVICE));
+    await database.delete(humanCryptoCustodies).where(eq(humanCryptoCustodies.humanId, input.humanActorId));
+    f.issuer.privateKey.fill(0);
+    f.manager.privateKey.fill(0);
+    await Promise.all([fixtureAdmin.end(), fixtureApp.end(), fixtureCrypto.end()]);
+  }
+}
