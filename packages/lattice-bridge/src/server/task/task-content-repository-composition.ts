@@ -1,3 +1,4 @@
+import type { VerifyStagedTaskCancellationPublication } from "./postgres-task-cancellation-crypto-staging.ts";
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
 import {
   mutateTaskContentV1,
@@ -360,6 +361,7 @@ export function createPostgresTaskContentRepositoryV1<ProductResult>(input: Read
     resolveCurrentAuthority: ResolveCurrentTaskContentAuthority;
     /** Called under product predecessor locks immediately before a new reservation. */
     assertReservationCurrent?: (coordinate: TaskContentCoordinateV1) => void | Promise<void>;
+    verifyStagedCancellation?: VerifyStagedTaskCancellationPublication;
   }>;
   crypto: PostgresCryptoCompletionInput;
   content: DurableTaskContentPortsV1<ProductResult>;
@@ -368,6 +370,7 @@ export function createPostgresTaskContentRepositoryV1<ProductResult>(input: Read
     input.product.handle,
     input.product.resolveCurrentAuthority,
     input.product.assertReservationCurrent,
+    input.product.verifyStagedCancellation,
   );
   const crypto = createPostgresTaskContentCryptoCompletion(input.crypto);
   return bindDurableTaskContentRepositoryV1({

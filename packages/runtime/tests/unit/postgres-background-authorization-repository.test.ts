@@ -2309,8 +2309,12 @@ test("replaces cancellation authority with one locked revision CAS and an atomic
       domainRequirements: [fixture.authoritySet.domainRequirements[0]!],
     } };
   const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...expected,
-    workIdentityHash: new Uint8Array(32).fill(0x7a), expectedDomainEpoch: expected.expectedDomainEpoch + 1,
-    authoritySet: { ...expected.authoritySet, domainRequirements: [{ ...expected.authoritySet.domainRequirements[0]!,
+    workIdentityHash: new Uint8Array(32).fill(0x7a),
+    expectedPolicyRevision: expected.expectedPolicyRevision + 1,
+    expectedDomainEpoch: expected.expectedDomainEpoch + 1,
+    authoritySet: { namespaceRequirements: [{ ...expected.authoritySet.namespaceRequirements[0]!,
+      expectedPolicyRevision: expected.expectedPolicyRevision + 1 }],
+      domainRequirements: [{ ...expected.authoritySet.domainRequirements[0]!,
       expectedEpoch: expected.expectedDomainEpoch + 1 }] } };
   const next = buildUnclaimedTaskCancellationAuthorityReplacement({ expected, replacement, now: START + 2 });
   const value = await setup([
@@ -2319,6 +2323,7 @@ test("replaces cancellation authority with one locked revision CAS and an atomic
   ]);
   expect(await value.repository.replaceUnclaimedTaskCancellationAuthority({ expected, replacement, now: START + 2 }))
     .toEqual({ status: "replaced", record: next });
+  expect(next.expectedPolicyRevision).toBe(expected.expectedPolicyRevision + 1);
   expect(value.connection.transactions).toBe(1);
   const statements = value.connection.statements.map(normalizedSql);
   const lock = statements.findIndex(statement => statement.includes("FOR UPDATE"));

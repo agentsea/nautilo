@@ -540,3 +540,10 @@ function sameBytesForContract(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
     && left.every((value, index) => value === right[index]);
 }
+
+
+/** A compatible policy may return later; immutable cancellation publication stays retryable. */
+export class TaskCancellationPublicationPolicyUnavailableError extends Error {
+  override readonly name = "TaskCancellationPublicationPolicyUnavailableError";
+  constructor() { super("Task cancellation publication policy is temporarily unavailable"); }
+}

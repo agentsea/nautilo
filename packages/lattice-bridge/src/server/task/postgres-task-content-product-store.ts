@@ -18,10 +18,12 @@ import {
   tasks,
   taskLocalExecutionDefinitionInvalidationPatch,
   TASK_LOCAL_EXECUTION_RECREATE_TEXT,
+  type ProtectedTaskCancellationOutputIntent,
 } from "@nautilo/db";
 
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
 import {
+  TaskCancellationPublicationPolicyUnavailableError,
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   TASK_CONTENT_RECONCILE_MAX_ATTEMPTS,
   TASK_CONTENT_RECONCILE_MAX_BATCH,
@@ -58,6 +60,12 @@ import {
   taskContentReconciliationFailureValues,
   taskContentReconciliationLeaseExpiry,
 } from "./task-content-reconciliation-policy.ts";
+import {
+  verifiedStagedCancellationPolicyRevision,
+  type StagedTaskCancellationPublicationProofInput,
+  type VerifyStagedTaskCancellationPublication,
+} from "./postgres-task-cancellation-crypto-staging.ts";
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
 const FAILURE_CODES = new Set<TaskContentFailureCode>([
@@ -344,15 +352,24 @@ function sameAuthorityResolutionLifecycle(
     );
 }
 
+function isCancellationPublication(input: Pick<StagedTaskCancellationPublicationProofInput,
+  "coordinate" | "operationId" | "cryptoObjectId">): boolean {
+  return input.coordinate.kind === "run_result" && input.coordinate.contentRevision === 2
+    && input.operationId === `task-run-cancelled-result:${input.coordinate.taskRunId}`
+    && input.cryptoObjectId === deriveTaskContentCryptoObjectIdV1(input.coordinate);
+}
+
 export class PostgresTaskContentProductStore implements TaskContentProductStorePort {
   readonly #handle: ConversationProductPostgresHandle;
   readonly #resolveCurrentAuthority: ResolveCurrentTaskContentAuthority;
+  readonly #verifyStagedCancellation: VerifyStagedTaskCancellationPublication | undefined;
   readonly #assertReservationCurrent: ((coordinate: TaskContentCoordinateV1) => void | Promise<void>) | undefined;
 
   constructor(
     handle: ConversationProductPostgresHandle,
     resolveCurrentAuthority: ResolveCurrentTaskContentAuthority,
     assertReservationCurrent?: (coordinate: TaskContentCoordinateV1) => void | Promise<void>,
+    verifyStagedCancellation?: VerifyStagedTaskCancellationPublication,
   ) {
     assertVerifiedConversationProductPostgresHandle(handle);
     if (handle.role !== "nautilo") {
@@ -364,6 +381,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     this.#handle = handle;
     this.#resolveCurrentAuthority = resolveCurrentAuthority;
     this.#assertReservationCurrent = assertReservationCurrent;
+    this.#verifyStagedCancellation = verifyStagedCancellation;
   }
 
   async reserveRevision(
@@ -383,6 +401,16 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       )
     ) return { status: "stale" };
     return this.#handle.transaction(async (transaction) => {
+      let stagedIntent: ProtectedTaskCancellationOutputIntent | null = null;
+      if (this.#verifyStagedCancellation !== undefined && isCancellationPublication(input)) {
+        const policy = await this.#lockedPublicationPolicy(transaction);
+        await this.#lockResultProduct(transaction, input.coordinate as TaskRunResultContentCoordinateV1);
+        stagedIntent = await this.#stagedIntent({ ...input, currentAuthority: authority });
+        if (stagedIntent !== null
+          && !this.#publicationPolicyMatches(policy, authority.expectedPolicyRevision, input.representation)) {
+          return { status: "stale" };
+        }
+      }
       const operations = await this.#operationRows(transaction, input.operationId, true);
       if (operations.length > 0) {
         if (operations.length !== 1) return { status: "conflict" };
@@ -398,7 +426,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       if (!sameBytes(
         fingerprintTaskContentAuthorityV1(authority),
         input.authorityFingerprint,
-      )) return { status: "stale" };
+      ) && stagedIntent === null) return { status: "stale" };
       if (await this.#coordinateRow(transaction, input.coordinate, true) !== null) {
         return { status: "conflict" };
       }
@@ -407,7 +435,8 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         input.requesterHumanId,
       );
       if (requesterOwnerId === null
-        || !await this.#predecessorIsCurrent(transaction, input, requesterOwnerId, authority.expectedPolicyRevision)) {
+        || (stagedIntent !== null && stagedIntent.requesterUserId !== requesterOwnerId)
+        || !await this.#predecessorIsCurrent(transaction, input, requesterOwnerId, stagedIntent?.policyRevision ?? authority.expectedPolicyRevision, stagedIntent)) {
         return { status: "stale" };
       }
       // A leased publisher must recheck after acquiring the product locks.
@@ -506,6 +535,9 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       const lockedResult = input.coordinate.kind === "run_result"
         ? await this.#lockResultProduct(transaction, input.coordinate)
         : null;
+      const stagedIntent = observedResult !== null && resolvedResultAuthority !== null
+        ? await this.#stagedIntent({ ...observedResult, currentAuthority: resolvedResultAuthority })
+        : null;
       const row = await this.#lockedLifecycle(transaction, input.coordinate, true);
       if (row === null) return "missing";
       const lifecycle = lifecycleFromRow(input.coordinate.kind, row);
@@ -561,6 +593,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
           current.expectedPolicyRevision,
           lockedResult,
           lockedResultPublicationPolicy,
+          stagedIntent,
         );
       if (result === "wrong_authority") {
         if (lifecycle.disposition === "active") await this.#persistAuthorityStale(transaction, lifecycle);
@@ -906,11 +939,23 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     return oneOrNone(await executeTypedConversationProductQuery(transaction, query), "Task content reservation insert");
   }
 
+  async #stagedIntent(expected: StagedTaskCancellationPublicationProofInput): Promise<ProtectedTaskCancellationOutputIntent | null> {
+    if (this.#verifyStagedCancellation === undefined || !isCancellationPublication(expected)) return null;
+    const exact = Object.freeze({ ...expected, coordinate: Object.freeze({ ...expected.coordinate }),
+      requestDigest: expected.requestDigest.slice(), authorityFingerprint: expected.authorityFingerprint.slice(),
+      currentAuthority: Object.freeze({ ...expected.currentAuthority }) });
+    const proof = await this.#verifyStagedCancellation(Object.freeze({ ...exact,
+      requestDigest: exact.requestDigest.slice(), authorityFingerprint: exact.authorityFingerprint.slice() }));
+    if (proof === null || verifiedStagedCancellationPolicyRevision(proof, exact) === null) return null;
+    return Object.freeze({ ...proof.intent, terminalAt: new Date(proof.intent.terminalAt) });
+  }
+
   async #predecessorIsCurrent(
     transaction: ConversationProductPostgresTransaction,
     input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0],
     requesterOwnerId: string,
     expectedPolicyRevision: number,
+    stagedIntent: ProtectedTaskCancellationOutputIntent | null = null,
   ): Promise<boolean> {
     if (input.coordinate.kind === "definition") {
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
@@ -967,7 +1012,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       return text(row, "task_status") === "cancelled" && text(row, "run_status") === "cancelled"
         && previous === 0 && text(row, "result_representation") === "ordinary"
         && nullableText(row, "result_content_namespace_id") === null
-        && await this.#exactCancellationIntent(transaction, input.coordinate, input.operationId, input.cryptoObjectId, input.representation, expectedPolicyRevision);
+        && await this.#exactCancellationIntent(transaction, input.coordinate, input.operationId, input.cryptoObjectId, input.representation, expectedPolicyRevision, stagedIntent);
     }
     return previous === input.coordinate.contentRevision - 1
       && (previous === 0
@@ -1080,6 +1125,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       mode: string;
       revision: number;
     }> | null,
+    stagedIntent: ProtectedTaskCancellationOutputIntent | null,
   ): Promise<"applied" | "duplicate" | "missing" | "stale" | "wrong_authority"> {
     const coordinate = lifecycle.coordinate;
     if (coordinate.kind !== "run_result") throw new Error("Result mapping kind mismatch");
@@ -1092,19 +1138,24 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       return "stale";
     }
     if (row === null) return "missing";
+    if (stagedIntent !== null && stagedIntent.requesterUserId !== requesterOwnerId) return "wrong_authority";
+    if (stagedIntent !== null
+      && !this.#publicationPolicyMatches(lockedPublicationPolicy, expectedPolicyRevision, lifecycle.representation)) {
+      throw new TaskCancellationPublicationPolicyUnavailableError();
+    }
     if (integer(row, "result_revision") === coordinate.contentRevision
       && nullableText(row, "crypto_object_id") === lifecycle.cryptoObjectId
       && nullableText(row, "result_content_namespace_id") === lifecycle.namespaceId
       && text(row, "result_representation") === lifecycle.representation
       && text(row, "crypto_mapping_state") === "verified"
       && sameBytes(nullableBytes(row, "crypto_required_namespace_fingerprint") ?? new Uint8Array(), lifecycle.requiredNamespaceFingerprint)) return "duplicate";
-    if (!exactCurrentAuthority) return "wrong_authority";
+    if (!exactCurrentAuthority && stagedIntent === null) return "wrong_authority";
     const cancelled = text(parent, "task_status") === "cancelled"
       || text(row, "run_status") === "cancelled";
     if (cancelled && (text(parent, "task_status") !== "cancelled"
       || text(row, "run_status") !== "cancelled"
       || integer(row, "result_revision") !== 0
-      || !await this.#exactCancellationIntent(transaction, coordinate, lifecycle.operationId, lifecycle.cryptoObjectId, lifecycle.representation, expectedPolicyRevision))) return "stale";
+      || !await this.#exactCancellationIntent(transaction, coordinate, lifecycle.operationId, lifecycle.cryptoObjectId, lifecycle.representation, stagedIntent?.policyRevision ?? expectedPolicyRevision, stagedIntent))) return "stale";
     if (!this.#publicationPolicyMatches(
       lockedPublicationPolicy,
       expectedPolicyRevision,
@@ -1132,6 +1183,7 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     cryptoObjectId: string,
     representation: "protected" | "dual",
     expectedPolicyRevision: number,
+    stagedIntent: ProtectedTaskCancellationOutputIntent | null = null,
   ): Promise<boolean> {
     if (coordinate.contentRevision !== 2
       || operationId !== `task-run-cancelled-result:${coordinate.taskRunId}`
@@ -1142,6 +1194,12 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         .from(binding).innerJoin(taskRuns, eq(taskRuns.id, binding.taskRunId))
         .innerJoin(tasks, eq(tasks.id, taskRuns.taskId)).where(and(
           eq(tasks.id, coordinate.taskId), eq(tasks.status, "cancelled"),
+          stagedIntent === null ? undefined : and(
+            eq(tasks.agentId, stagedIntent.agentId),
+            eq(tasks.contentRepresentation, stagedIntent.representation),
+            eq(tasks.contentNamespaceId, stagedIntent.contentNamespaceId),
+            eq(tasks.cancelledAt, stagedIntent.terminalAt),
+          ),
           eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.status, "cancelled"),
           eq(taskRuns.completedAt, tasks.cancelledAt),
           eq(binding.resultTerminalAt, taskRuns.completedAt),

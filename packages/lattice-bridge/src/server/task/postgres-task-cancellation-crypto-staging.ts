@@ -41,7 +41,7 @@ export type VerifiedStagedTaskCancellationPublication = Readonly<{
   authorityFingerprint: Uint8Array;
   readonly [stagedCancellationBrand]: true;
 }>;
-const verified = new WeakMap<object, string>();
+const verified = new WeakMap<object, Readonly<{ snapshot: string; currentAuthorityFingerprint: Uint8Array }>>();
 const encoder = new TextEncoder();
 const receipts = taskCancellationCryptoStagingReceipts;
 
@@ -133,6 +133,7 @@ export type InspectStagedTaskCancellationPublicationInput = History & Readonly<{
   handle: CryptoPostgresHandle;
   crypto: LatticeCrypto;
   intent: Intent;
+  /** Current authorization; receipt policy remains immutable historical provenance. */
   authority: TaskContentAuthorityV1;
 }>;
 
@@ -142,12 +143,14 @@ export async function inspectStagedTaskCancellationPublication(
 ): Promise<VerifiedStagedTaskCancellationPublication | null> {
   const intent = copyIntent(input.intent);
   const authority = Object.freeze({ ...input.authority });
-  if (!authorityMatches(intent, authority)) conflict("Cancellation staging authority disagrees");
+  const historicalAuthority = Object.freeze({ ...authority, expectedPolicyRevision: intent.policyRevision });
+  if (!authorityMatches(intent, historicalAuthority)
+    || authority.expectedPolicyRevision < intent.policyRevision) conflict("Cancellation staging authority disagrees");
   return withVerifiedCryptoPostgresTransaction(input.handle, async handle => {
     const rows = await receiptRows(handle, intent);
     if (rows.length === 0) return null;
     const row = rows[0]!;
-    const fingerprint = fingerprintTaskContentAuthorityV1(authority);
+    const fingerprint = fingerprintTaskContentAuthorityV1(historicalAuthority);
     if (rows.length !== 1 || row.request_id !== requestId(intent)
       || row.crypto_object_id !== intent.resultObjectId
       || integer(row, "policy_revision") !== intent.policyRevision
@@ -174,7 +177,8 @@ export async function inspectStagedTaskCancellationPublication(
       authorizationDigest: bytes(row, "authorization_digest"),
       genesisManifestHash: bytes(row, "genesis_manifest_hash"), authorityFingerprint: fingerprint,
     }) as VerifiedStagedTaskCancellationPublication;
-    verified.set(token, tokenFingerprint(token));
+    verified.set(token, { snapshot: tokenFingerprint(token),
+      currentAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority) });
     return token;
   });
 }
@@ -295,9 +299,7 @@ export async function reserveStagedTaskCancellationPublication(input: Readonly<{
   product: Pick<TaskContentProductStorePort, "reserveRevision">;
 }>): ReturnType<TaskContentProductStorePort["reserveRevision"]> {
   const token = input.staged;
-  if (verified.get(token) !== tokenFingerprint(token)
-    || !authorityMatches(token.intent, input.authority)
-    || !equal(token.authorityFingerprint, fingerprintTaskContentAuthorityV1(input.authority))) {
+  if (!verifiedForCurrentAuthority(token, input.authority)) {
     conflict("Unverified or mutated cancellation staging token");
   }
   return input.product.reserveRevision({
@@ -309,4 +311,51 @@ export async function reserveStagedTaskCancellationPublication(input: Readonly<{
     cryptoObjectId: token.intent.resultObjectId, objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1,
     payloadVersion: 1, operationalMetadata: null,
   });
+}
+
+
+function verifiedForCurrentAuthority(token: VerifiedStagedTaskCancellationPublication,
+  current: TaskContentAuthorityV1): boolean {
+  const stored = verified.get(token);
+  return stored !== undefined && stored.snapshot === tokenFingerprint(token)
+    && equal(stored.currentAuthorityFingerprint, fingerprintTaskContentAuthorityV1(current))
+    && current.expectedPolicyRevision >= token.intent.policyRevision
+    && authorityMatches(token.intent, { ...current, expectedPolicyRevision: token.intent.policyRevision })
+    && equal(token.authorityFingerprint, fingerprintTaskContentAuthorityV1({
+      ...current, expectedPolicyRevision: token.intent.policyRevision,
+    }));
+}
+
+export type StagedTaskCancellationPublicationProofInput = Readonly<{
+  coordinate: Parameters<TaskContentProductStorePort["reserveRevision"]>[0]["coordinate"];
+  operationId: string;
+  cryptoObjectId: string;
+  requestDigest: Uint8Array;
+  authorityFingerprint: Uint8Array;
+  representation: "protected" | "dual";
+  currentAuthority: TaskContentAuthorityV1;
+}>;
+
+/** Runs under product locks; implementations inspect immutable crypto without re-entering product authority. */
+export type VerifyStagedTaskCancellationPublication = (
+  input: StagedTaskCancellationPublicationProofInput,
+) => Promise<VerifiedStagedTaskCancellationPublication | null>;
+
+/** Internal product-store admission: a closed coordinate alone never authorizes policy drift. */
+export function verifiedStagedCancellationPolicyRevision(
+  token: VerifiedStagedTaskCancellationPublication,
+  expected: StagedTaskCancellationPublicationProofInput,
+): number | null {
+  try {
+    return verifiedForCurrentAuthority(token, expected.currentAuthority)
+      && sameTaskContentCoordinateV1(coordinate(token.intent), expected.coordinate)
+      && token.intent.resultOperationId === expected.operationId
+      && token.intent.resultObjectId === expected.cryptoObjectId
+      && token.intent.representation === expected.representation
+      && equal(token.genesisManifestHash, expected.requestDigest)
+      && equal(token.authorityFingerprint, expected.authorityFingerprint)
+      ? token.intent.policyRevision : null;
+  } catch {
+    return null;
+  }
 }

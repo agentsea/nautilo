@@ -58,7 +58,7 @@ export function exactPublicationRecord(
   return Buffer.from(fingerprint).equals(proof.authorityFingerprint);
 }
 
-/** Called only under the mapped-product settlement locks when its old request was pruned. */
+/** Called under mapped-product locks for pruned custody or a newer compatible policy. */
 export type VerifyStagedCancellationSettlement = (
   proof: ProtectedTaskCancellationOutputSettlementProof,
 ) => Promise<Readonly<{ requestId: string; recipientGeneration: number }> | null>;
@@ -72,22 +72,24 @@ export function createProtectedTaskCancellationSettlement(input: Readonly<{
   settle?: typeof settleProtectedTaskCancellationOutput;
 }>) {
   const now = input.now ?? Date.now;
-  return async (coordinates: Readonly<{ taskId: string; taskRunId: string }>,
+  return async (coordinates: Readonly<{ taskId: string; taskRunId: string; currentPolicyRevision?: number }>,
     verifyStaged?: VerifyStagedCancellationSettlement): Promise<boolean> => {
     let released: Readonly<{ requestId: string; generation: number }> | undefined;
     const result = await (input.settle ?? settleProtectedTaskCancellationOutput)(
       input.db, coordinates, async proof => {
         const raw = await input.repository.get(protectedTaskCancellationRequestId(proof.intent.taskRunId));
+        const requiresStagedProof = raw === null || proof.currentPolicyRevision !== proof.intent.policyRevision;
+        const staged = requiresStagedProof ? await verifyStaged?.(proof) : null;
+        if (requiresStagedProof && (staged == null
+          || staged.requestId !== protectedTaskCancellationRequestId(proof.intent.taskRunId)
+          || !Number.isSafeInteger(staged.recipientGeneration) || staged.recipientGeneration < 0)) return false;
         if (raw === null) {
-          const staged = await verifyStaged?.(proof);
-          if (staged == null
-            || staged.requestId !== protectedTaskCancellationRequestId(proof.intent.taskRunId)
-            || !Number.isSafeInteger(staged.recipientGeneration) || staged.recipientGeneration < 0) return false;
-          released = { requestId: staged.requestId, generation: staged.recipientGeneration };
+          released = { requestId: staged!.requestId, generation: staged!.recipientGeneration };
           return true;
         }
         const record = parseBackgroundAuthorizationRecord(raw);
-        if (!exactPublicationRecord(record, proof)) return false;
+        if (!exactPublicationRecord(record, proof)
+          || staged != null && record.snapshot.recipientGeneration !== staged.recipientGeneration) return false;
         if (record.snapshot.state === "completed") {
           if (record.finishedAt !== record.snapshot.updatedAt) return false;
         } else {

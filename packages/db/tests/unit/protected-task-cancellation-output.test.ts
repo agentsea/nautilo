@@ -180,6 +180,8 @@ function harness(options: Readonly<{
   binding?: ProtectedTaskRunOutputBinding | null;
   job?: Job | null;
   room?: Room | null;
+  ledger?: TaskRunResultCryptoRevision | null;
+  loseBindingUpdate?: boolean;
 }> = {}) {
   const taskRow = options.task === undefined ? task() : options.task;
   const runRow = options.run === undefined ? run() : options.run;
@@ -187,6 +189,7 @@ function harness(options: Readonly<{
   let bindingRow = options.binding === undefined ? binding() : options.binding;
   const jobRow = options.job === undefined ? null : options.job;
   const roomRow = options.room === undefined ? room() : options.room;
+  const ledgerRow = options.ledger ?? null;
   const locks: Array<{ table: unknown; kind: string }> = [];
   const updates: Record<string, unknown>[] = [];
   const inserts: Record<string, unknown>[] = [];
@@ -264,6 +267,9 @@ function harness(options: Readonly<{
     if (table === protectedTaskRunOutputBindings) {
       return bindingRow ? [bindingRow] : [];
     }
+    if (table === taskRunResultCryptoRevisions) {
+      return ledgerRow ? [ledgerRow] : [];
+    }
     throw new Error("unexpected table");
   };
   const tx = {
@@ -276,6 +282,10 @@ function harness(options: Readonly<{
             locks.push({ table, kind });
             return rows(table);
           },
+          then: <TResult1 = unknown[], TResult2 = never>(
+            onfulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null,
+            onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ) => Promise.resolve(rows(table)).then(onfulfilled, onrejected),
         };
         return query;
       },
@@ -287,6 +297,7 @@ function harness(options: Readonly<{
             if (table !== protectedTaskRunOutputBindings || bindingRow === null) {
               throw new Error("unexpected update table");
             }
+            if (options.loseBindingUpdate) return [];
             updates.push(values);
             bindingRow = { ...bindingRow, ...values };
             return [bindingRow];
@@ -328,6 +339,18 @@ const input = {
   taskRunId: ids.run,
   requiredPolicyRevision: 9,
 } as const;
+
+function cancellationBinding(
+  overrides: Partial<ProtectedTaskRunOutputBinding> = {},
+): ProtectedTaskRunOutputBinding {
+  return binding({
+    resultRevision: 2,
+    resultOperationId: protectedTaskRunCancelledResultOperationId(ids.run),
+    resultObjectId: protectedTaskRunCancelledResultObjectId(ids.task, ids.run),
+    resultTerminalAt: cancelledAt,
+    ...overrides,
+  });
+}
 
 describe("protected Task cancellation output intent", () => {
   test("retargets the pristine pre-dispatch output after authority settlement", async () => {
@@ -438,12 +461,7 @@ describe("protected Task cancellation output intent", () => {
   });
 
   test("replays only the exact cancellation coordinate", async () => {
-    const fixture = harness({ binding: binding({
-      resultRevision: 2,
-      resultOperationId: protectedTaskRunCancelledResultOperationId(ids.run),
-      resultObjectId: protectedTaskRunCancelledResultObjectId(ids.task, ids.run),
-      resultTerminalAt: cancelledAt,
-    }) });
+    const fixture = harness({ binding: cancellationBinding() });
     const result = await prepareProtectedTaskCancellationOutput(
       fixture.db,
       input,
@@ -451,6 +469,73 @@ describe("protected Task cancellation output intent", () => {
     );
     expect(result.status).toBe("exact_replay");
     expect(fixture.updates).toEqual([]);
+  });
+
+  test("refreshes an exact pristine cancellation intent to a newer same-mode policy only with explicit custody proof", async () => {
+    const fixture = harness({ binding: cancellationBinding({ acceptedPolicyRevision: 8 }) });
+    let previousSettlementCalled = false;
+    const contexts: unknown[] = [];
+    const result = await prepareProtectedTaskCancellationOutput(
+      fixture.db,
+      input,
+      () => {
+        previousSettlementCalled = true;
+        return Promise.resolve(true);
+      },
+      context => {
+        contexts.push(context);
+        return Promise.resolve(true);
+      },
+    );
+    expect(result).toMatchObject({ status: "prepared",
+      binding: { acceptedPolicyRevision: 9 }, intent: { policyRevision: 9 } });
+    expect(previousSettlementCalled).toBe(false);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]).toMatchObject({
+      previousIntent: { policyRevision: 8 },
+      nextIntent: { policyRevision: 9 },
+    });
+    expect((contexts[0] as { transaction: unknown }).transaction).toBeDefined();
+    expect(fixture.updates).toEqual([{ acceptedPolicyRevision: 9 }]);
+  });
+
+  test("policy refresh defaults closed and rejects custody, ledger, backwards, cross-mode, and CAS races", async () => {
+    const old = cancellationBinding({ acceptedPolicyRevision: 8 });
+    const noGuard = harness({ binding: old });
+    expect(await prepareProtectedTaskCancellationOutput(
+      noGuard.db, input, () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "not_ready" });
+
+    const custody = harness({ binding: old });
+    expect(await prepareProtectedTaskCancellationOutput(
+      custody.db, input, () => Promise.resolve(true), () => Promise.resolve(false),
+    )).toEqual({ status: "rejected", reason: "not_ready" });
+
+    const withLedger = harness({ binding: old,
+      ledger: resultReservation("protected") });
+    let ledgerGuardCalled = false;
+    expect(await prepareProtectedTaskCancellationOutput(
+      withLedger.db, input, () => Promise.resolve(true), () => {
+        ledgerGuardCalled = true;
+        return Promise.resolve(true);
+      },
+    )).toEqual({ status: "rejected", reason: "conflict" });
+    expect(ledgerGuardCalled).toBe(false);
+
+    const backwards = harness({ binding: cancellationBinding({ acceptedPolicyRevision: 10 }) });
+    expect(await prepareProtectedTaskCancellationOutput(
+      backwards.db, input, () => Promise.resolve(true), () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "conflict" });
+
+    const crossMode = harness({ binding: old, policy: policy({ mode: "shadow_encryption" }) });
+    expect(await prepareProtectedTaskCancellationOutput(
+      crossMode.db, input, () => Promise.resolve(true), () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "authority_changed" });
+
+    const lost = harness({ binding: old, loseBindingUpdate: true });
+    expect(prepareProtectedTaskCancellationOutput(
+      lost.db, input, () => Promise.resolve(true), () => Promise.resolve(true),
+    )).rejects.toThrow("lost its locked binding");
   });
 
   test("keeps the original intent when previous authority is not settled", async () => {
@@ -605,6 +690,8 @@ function productHarness(options: Readonly<{
   binding?: ProtectedTaskRunOutputBinding;
   reservation?: TaskRunResultCryptoRevision;
   actor?: Actor | null;
+  policyRevision?: number;
+  policyMode?: EncryptionTransitionPolicyRow["mode"];
 }> ) {
   const representation = options.representation;
   const taskRow = task({
@@ -620,7 +707,9 @@ function productHarness(options: Readonly<{
     resultTerminalAt: cancelledAt,
   });
   const policyRow = policy({
-    mode: representation === "dual" ? "shadow_encryption" : "encrypted_only",
+    mode: options.policyMode ?? (representation === "dual"
+      ? "shadow_encryption" : "encrypted_only"),
+    revision: options.policyRevision ?? 9,
   });
   const definitionRow = definition(representation);
   const reservationRow = options.reservation
@@ -712,6 +801,37 @@ function productInput(representation: "protected" | "dual") {
 }
 
 describe("protected Task cancellation product callback", () => {
+  test("publishes immutable old-policy intent under an explicit newer same-mode fence", async () => {
+    const fixture = productHarness({ representation: "protected", policyRevision: 10 });
+    expect(await publishProtectedTaskCancellationProduct(
+      fixture.db,
+      { ...productInput("protected"), currentPolicyRevision: 10 },
+      () => Promise.resolve(true),
+    )).toEqual({ status: "exact_replay" });
+    expect(fixture.writes).toEqual([]);
+
+    const strict = productHarness({ representation: "protected", policyRevision: 10 });
+    expect(await publishProtectedTaskCancellationProduct(
+      strict.db,
+      productInput("protected"),
+      () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "authority_changed" });
+
+    const crossMode = productHarness({ representation: "protected", policyRevision: 10,
+      policyMode: "shadow_encryption" });
+    expect(await publishProtectedTaskCancellationProduct(
+      crossMode.db,
+      { ...productInput("protected"), currentPolicyRevision: 10 },
+      () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "authority_changed" });
+
+    expect(publishProtectedTaskCancellationProduct(
+      fixture.db,
+      { ...productInput("protected"), currentPolicyRevision: 8 },
+      () => Promise.resolve(true),
+    )).rejects.toThrow("malformed");
+  });
+
   test("writes only the fixed Shadow ordinary result under current authority", async () => {
     const fixture = productHarness({ representation: "dual" });
     let authorityChecks = 0;

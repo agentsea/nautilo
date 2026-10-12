@@ -169,6 +169,7 @@ type FixtureOptions = Readonly<{
   definition?: TaskDefinitionCryptoRevision | null;
   reservation?: TaskRunResultCryptoRevision | null;
   policyRevision?: number;
+  policyMode?: string;
   actor?: Actor | null;
 }>;
 
@@ -185,9 +186,9 @@ function fixture(options: FixtureOptions = {}) {
   const policyRow = {
     id: "server",
     revision: options.policyRevision ?? 9,
-    mode: taskRow.contentRepresentation === "dual"
+    mode: options.policyMode ?? (taskRow.contentRepresentation === "dual"
       ? "shadow_encryption"
-      : "encrypted_only",
+      : "encrypted_only"),
   };
   const actorRow = options.actor === undefined
     ? ({ id: ids.human, kind: "user", ownerId: ids.owner } as Actor)
@@ -289,6 +290,7 @@ describe("protected Task cancellation output settlement", () => {
             terminalAt,
           },
           requesterHumanId: ids.human,
+          currentPolicyRevision: 9,
           cryptoAccessRevision: 0,
         });
         expect(proof.authorityFingerprint).toEqual(authorityFingerprint);
@@ -360,6 +362,42 @@ describe("protected Task cancellation output settlement", () => {
       () => Promise.resolve(false),
     )).toEqual({ status: "rejected", reason: "not_ready" });
     expect(state.updates).toEqual([]);
+  });
+
+  test("settles old immutable intent only under an explicit newer same-mode policy", async () => {
+    const state = fixture({ policyRevision: 10 });
+    const revisions: number[] = [];
+    expect(await settleProtectedTaskCancellationOutput(
+      state.db,
+      { ...input, currentPolicyRevision: 10 },
+      proof => {
+        revisions.push(proof.currentPolicyRevision);
+        expect(proof.intent.policyRevision).toBe(9);
+        return Promise.resolve(true);
+      },
+    )).toMatchObject({ status: "completed" });
+    expect(revisions).toEqual([10]);
+
+    const strict = fixture({ policyRevision: 10 });
+    expect(await settleProtectedTaskCancellationOutput(
+      strict.db,
+      input,
+      () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "authority_changed" });
+
+    const crossMode = fixture({ policyRevision: 10, policyMode: "shadow_encryption" });
+    expect(await settleProtectedTaskCancellationOutput(
+      crossMode.db,
+      { ...input, currentPolicyRevision: 10 },
+      () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "authority_changed" });
+
+    const backwards = fixture({ policyRevision: 8 });
+    expect(await settleProtectedTaskCancellationOutput(
+      backwards.db,
+      { ...input, currentPolicyRevision: 8 },
+      () => Promise.resolve(true),
+    )).toEqual({ status: "rejected", reason: "authority_changed" });
   });
 
   test("rejects Plain, stale authority, incomplete crypto, and conflicting receipts", async () => {

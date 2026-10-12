@@ -2566,7 +2566,7 @@ export function buildUnclaimedTaskRuntimeAuthorityReplacement(input: Readonly<{
   return buildUnclaimedTaskAuthorityReplacement(input, false);
 }
 
-/** Same-policy refresh for the single encrypt-only cancellation Namespace. */
+/** Monotonic policy refresh for the single encrypt-only cancellation Namespace. */
 export function buildUnclaimedTaskCancellationAuthorityReplacement(input: Readonly<{
   expected: BackgroundAuthorizationTaskRuntimeRecordV3;
   replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -2639,7 +2639,7 @@ function buildUnclaimedTaskAuthorityReplacement(input: Readonly<{
       !== JSON.stringify(nextPlan.snapshot.credentialSubject)
     || current.idempotencyKey !== nextPlan.idempotencyKey
     || (cancellation
-      ? current.expectedPolicyRevision !== nextPlan.expectedPolicyRevision
+      ? current.expectedPolicyRevision > nextPlan.expectedPolicyRevision
         || !exactTaskCancellationAuthorityAnchor(current)
         || !exactTaskCancellationAuthorityAnchor(nextPlan)
       : !isTaskRuntimeStableIdempotencyKey(current.idempotencyKey, current.snapshot.workId)

@@ -152,6 +152,9 @@ function fixture() {
       settlementVerifier = verifyStaged; calls.push("settle"); return true;
     } };
   const deps: Dependencies = {
+    readPolicy: async () => ({ mode: reservation.intent.representation === "dual"
+      ? "shadow_encryption" : "encrypted_only", shadowBehavior: "strict", revision: 5,
+      shadowEncryptionStartedAt: new Date(START), updatedAt: new Date(START) }),
     read: async () => selected,
     resolveHuman: async () => ({ id: HUMAN, displayName: "Requester", trustState: "trusted" }),
     resolveRoom: async () => ({ roomId: "room", namespaceId: NAMESPACE }),
@@ -165,7 +168,7 @@ function fixture() {
         if (!await operation.validateCurrentTaskRun({} as never, transaction, {} as never)) return null;
         return await operation.use({ sourceRoomId: "room", sourceNamespaceId: NAMESPACE,
           facts: [{ namespaceId: NAMESPACE, domainId: row.domainId,
-            expectedAccessRevision: 4, expectedPolicyRevision: 5,
+            expectedAccessRevision: 4, expectedPolicyRevision: operation.expectedPolicyRevision,
             expectedDomainEpoch: 3, expectedAuthorizationRevision: 8 }] },
         {} as never, transaction, input.restricted);
       } finally { held = false; }
@@ -227,14 +230,14 @@ function fixture() {
     select: (value: typeof selected) => { selected = value; },
     missingCrypto: () => { verified = false; },
     stage: () => {
-      staged = { intent: { ...intent, terminalAt: new Date(intent.terminalAt) }, requestId: REQUEST,
+      staged = { intent: { ...reservation.intent, terminalAt: new Date(intent.terminalAt) }, requestId: REQUEST,
         recipientGeneration: 0, claimId: "published-result-claim",
         authorizationDigest: new Uint8Array(32).fill(6),
         genesisManifestHash: ledger.requestDigest.slice(),
         authorityFingerprint: ledger.authorityFingerprint.slice(),
       } as VerifiedStagedTaskCancellationPublication;
       publicationPresent = true;
-      selected = { status: "missing", intent: { ...intent, terminalAt: new Date(intent.terminalAt) } };
+      selected = { status: "missing", intent: { ...reservation.intent, terminalAt: new Date(intent.terminalAt) } };
     },
     publication: (present: boolean) => { publicationPresent = present; },
     clearStage: () => { staged = null; },
@@ -267,7 +270,7 @@ test("only absent reservation permits fresh preparation", async () => {
   expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("missing");
   f.select({ status: "invalid" });
   expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("pending");
-  expect(f.calls).toEqual(["intent"]);
+  expect(f.calls).toEqual([]);
 });
 
 test("adopts a verified stage once outside held authority and recovers after grant pruning", async () => {
@@ -281,7 +284,7 @@ test("adopts a verified stage once outside held authority and recovers after gra
   expect(f.calls.indexOf("intent")).toBeLessThan(f.calls.indexOf("reserve"));
   expect(f.calls.indexOf("reserve")).toBeLessThan(f.calls.indexOf("reconcile"));
   expect(f.calls).toContain("detached-authority");
-  expect(await f.settlementVerifier()!({ intent: f.reservation.intent, requesterHumanId: HUMAN,
+  expect(await f.settlementVerifier()!({ intent: f.reservation.intent, currentPolicyRevision: 5, requesterHumanId: HUMAN,
     authorityFingerprint: f.ledger.authorityFingerprint,
     cryptoAccessRevision: 0,
     requiredNamespaceFingerprint: f.ledger.requiredNamespaceFingerprint,
@@ -297,6 +300,7 @@ test.each(["intent", "requester", "authority", "namespace", "access", "stage"])(
     expect(verifier).toBeDefined();
     if (mismatch === "stage") f.clearStage();
     const proof = {
+      currentPolicyRevision: 5,
       intent: mismatch === "intent" ? { ...f.reservation.intent, policyRevision: 6 } : f.reservation.intent,
       requesterHumanId: mismatch === "requester" ? "foreign" : HUMAN,
       authorityFingerprint: mismatch === "authority" ? new Uint8Array(32) : f.ledger.authorityFingerprint,
@@ -311,8 +315,8 @@ test.each(["intent", "requester", "authority", "namespace", "access", "stage"])(
 test.each(["bare", "invalid"])("%s staged custody fences fresh preparation", async kind => {
   const f = fixture();
   f.select({ status: "missing", intent: f.reservation.intent });
-  if (kind === "bare") f.publication(true);
-  else f.deps.inspectStaged = async () => { throw new Error("staging receipt conflict"); };
+  f.publication(true);
+  if (kind === "invalid") f.deps.inspectStaged = async () => { throw new Error("staging receipt conflict"); };
   expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
     { taskId: TASK, taskRunId: RUN })).toBe("pending");
   expect(f.calls).not.toContain("reserve");
@@ -494,4 +498,61 @@ test("default reader leaves a fresh stopped Task without binding eligible for pr
     db: { select } as unknown as DirectDatabase }, deps)({ taskId: TASK, taskRunId: RUN })).toBe("missing");
   expect(tables).toEqual([tasks, protectedTaskRunOutputBindings, taskRunResultCryptoRevisions]);
   expect(f.calls).toEqual([]);
+});
+
+
+test.each(["protected", "dual"] as const)("incompatible mode waits and later compatible policy recovers the same %s staged bytes", async representation => {
+  const f = fixture();
+  f.reservation.intent.representation = representation;
+  f.ledger.representation = representation;
+  f.stage();
+  const originalHash = f.ledger.requestDigest.slice();
+  const originalAuthority = f.ledger.authorityFingerprint.slice();
+  let mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" = "plaintext_only";
+  let revision = 6;
+  f.deps.readPolicy = async () => ({ mode, revision, shadowBehavior: "strict",
+    shadowEncryptionStartedAt: new Date(START), updatedAt: new Date(START) });
+  f.deps.authorizationRepository = async () => ({ get: async () => null });
+  const recover = createProtectedTaskCancellationPublicationRecovery(f.input, f.deps);
+  expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("pending");
+  mode = representation === "dual" ? "encrypted_only" : "shadow_encryption";
+  expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("pending");
+  expect(f.calls).toEqual([]);
+  mode = representation === "dual" ? "shadow_encryption" : "encrypted_only"; revision = 7;
+  expect(await recover({ taskId: TASK, taskRunId: RUN })).toBe("mapped");
+  expect(f.ledger.requestDigest).toEqual(originalHash);
+  expect(f.ledger.authorityFingerprint).toEqual(originalAuthority);
+  expect(f.reservation.intent.policyRevision).toBe(5);
+  expect(f.calls.filter(call => call === "reserve")).toHaveLength(1);
+});
+
+test("empty cancellation custody reaches preparation after a compatible policy revision", async () => {
+  const f = fixture();
+  f.select({ status: "missing", intent: f.reservation.intent });
+  const original = await f.deps.readPolicy(database);
+  f.deps.readPolicy = async () => ({ ...original, revision: 6 });
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("missing");
+  expect(f.calls).toEqual([]);
+});
+
+test("legacy reservation without staged provenance cannot cross a policy revision", async () => {
+  const f = fixture();
+  const original = await f.deps.readPolicy(database);
+  f.deps.readPolicy = async () => ({ ...original, revision: 6 });
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("pending");
+  expect(f.calls).not.toContain("reconcile");
+});
+
+test("a policy race while acquiring authority remains pending without reconciliation", async () => {
+  const f = fixture(); f.stage();
+  const original = await f.deps.readPolicy(database);
+  let revision = 5;
+  f.deps.readPolicy = async () => ({ ...original, revision });
+  f.deps.withAuthority = async () => { revision += 1; return null; };
+  expect(await createProtectedTaskCancellationPublicationRecovery(f.input, f.deps)(
+    { taskId: TASK, taskRunId: RUN })).toBe("pending");
+  expect(f.calls).not.toContain("reserve");
+  expect(f.calls).not.toContain("reconcile");
 });

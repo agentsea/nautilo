@@ -2183,6 +2183,17 @@ function refreshedCancellationPlan(initial: BackgroundAuthorizationTaskRuntimeRe
         expectedEpoch: value.expectedEpoch + 1, expectedAuthorizationRevision: value.expectedAuthorizationRevision + 1 })) } };
 }
 
+function cancellationPlanAtPolicy(
+  initial: BackgroundAuthorizationTaskRuntimeRecordV3,
+  policyRevision: number,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const refreshed = refreshedCancellationPlan(initial);
+  return { ...refreshed, expectedPolicyRevision: policyRevision,
+    authoritySet: { ...refreshed.authoritySet, namespaceRequirements:
+      refreshed.authoritySet.namespaceRequirements.map(value => ({ ...value,
+        expectedPolicyRevision: policyRevision })) } };
+}
+
 test.each(["awaiting_recipient", "awaiting_device", "grant_ready"] as const)(
   "replaces only the exact unclaimed cancellation authority from %s", async state => {
     const initial = cancellationReplacementFixture();
@@ -2221,7 +2232,19 @@ test.each(["awaiting_recipient", "awaiting_device", "grant_ready"] as const)(
     expect(() => buildUnclaimedTaskRuntimeAuthorityReplacement({ expected, replacement, now: START + 3 })).toThrow();
   });
 
-test("cancellation replacement refuses execution, identity or policy drift, and claimed work", () => {
+test("cancellation replacement permits only monotonic policy drift", () => {
+  const expected = cancellationReplacementFixture();
+  const replacement = cancellationPlanAtPolicy(expected, expected.expectedPolicyRevision + 1);
+  const next = buildUnclaimedTaskCancellationAuthorityReplacement({ expected, replacement, now: START + 4 });
+  expect(next.expectedPolicyRevision).toBe(expected.expectedPolicyRevision + 1);
+  expect(next.authoritySet.namespaceRequirements[0]?.expectedPolicyRevision)
+    .toBe(expected.expectedPolicyRevision + 1);
+  expect(() => buildUnclaimedTaskCancellationAuthorityReplacement({ expected,
+    replacement: cancellationPlanAtPolicy(expected, expected.expectedPolicyRevision - 1),
+    now: START + 4 })).toThrow();
+});
+
+test("cancellation replacement refuses execution, identity drift, and claimed work", () => {
   const expected = cancellationReplacementFixture();
   const replacement = refreshedCancellationPlan(expected);
   const reject = (old: BackgroundAuthorizationTaskRuntimeRecordV3, next: BackgroundAuthorizationTaskRuntimeRecordV3) =>
@@ -2232,9 +2255,7 @@ test("cancellation replacement refuses execution, identity or policy drift, and 
   reject({ ...expected, idempotencyKey: "task-cancellation:invalid" }, { ...replacement, idempotencyKey: "task-cancellation:invalid" });
   reject(expected, { ...replacement, snapshot: { ...replacement.snapshot, workId: "other-run" } });
   reject(expected, { ...replacement, snapshot: { ...replacement.snapshot, namespaceId: "other-namespace" } });
-  reject(expected, { ...replacement, expectedPolicyRevision: replacement.expectedPolicyRevision + 1,
-    authoritySet: { ...replacement.authoritySet, namespaceRequirements: replacement.authoritySet.namespaceRequirements.map(
-      value => ({ ...value, expectedPolicyRevision: value.expectedPolicyRevision + 1 })) } });
+  reject(expected, { ...replacement, expectedPolicyRevision: replacement.expectedPolicyRevision + 1 });
   reject(expected, { ...replacement, snapshot: { ...replacement.snapshot, recipientGeneration: 1 } });
   const descriptorBytes = new Uint8Array([1, 2, 3]);
   const waiting: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...expected, descriptorBytes,

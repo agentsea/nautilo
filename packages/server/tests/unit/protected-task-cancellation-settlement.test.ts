@@ -118,6 +118,7 @@ const fingerprint = fingerprintTaskContentAuthorityV1({
 });
 const proof: ProtectedTaskCancellationOutputSettlementProof = {
   intent, requesterHumanId: HUMAN, authorityFingerprint: fingerprint,
+  currentPolicyRevision: 5,
   cryptoAccessRevision: 0, requiredNamespaceFingerprint: new Uint8Array(32).fill(5),
 };
 async function fixture(options: {
@@ -127,6 +128,7 @@ async function fixture(options: {
   lostCasResponse?: boolean;
   rejectProof?: boolean;
   rejectProductCommit?: boolean;
+  currentPolicyRevision?: number;
 } = {}) {
   const repository = new InMemoryBackgroundAuthorizationRepository();
   if (!options.pruned) await repository.create(options.row ?? runningRecord());
@@ -135,7 +137,12 @@ async function fixture(options: {
   const deleted: string[] = [];
   const settle: NonNullable<Parameters<typeof createProtectedTaskCancellationSettlement>[0]["settle"]> =
     async (_db, coordinates, complete) => {
-      expect(coordinates).toEqual({ taskId: TASK, taskRunId: RUN });
+      expect(coordinates).toEqual({
+        taskId: TASK,
+        taskRunId: RUN,
+        ...(options.currentPolicyRevision === undefined
+          ? {} : { currentPolicyRevision: options.currentPolicyRevision }),
+      });
       if (options.rejectProof) return { status: "rejected", reason: "conflict" };
       held = true;
       try {
@@ -159,7 +166,12 @@ async function fixture(options: {
       return true;
     } },
   });
-  return { recover: (verifyStaged?: VerifyStagedCancellationSettlement) => recover({ taskId: TASK, taskRunId: RUN }, verifyStaged),
+  return { recover: (verifyStaged?: VerifyStagedCancellationSettlement) => recover({
+    taskId: TASK,
+    taskRunId: RUN,
+    ...(options.currentPolicyRevision === undefined
+      ? {} : { currentPolicyRevision: options.currentPolicyRevision }),
+  }, verifyStaged),
     repository, deleted, cas: () => cas, held: () => held };
 }
 
@@ -173,6 +185,75 @@ test.each([false, true])("mapped cancellation settles an expired claim, includin
   expect(state.deleted).toEqual([`${REQUEST}:0`]);
   expect(await state.recover()).toBe(true);
   expect(state.cas()).toBe(1);
+});
+
+test("same-policy settlement does not require or consult staged recovery proof", async () => {
+  const state = await fixture();
+  let calls = 0;
+  expect(await state.recover(async () => {
+    calls += 1;
+    return null;
+  })).toBe(true);
+  expect(calls).toBe(0);
+  expect(state.cas()).toBe(1);
+});
+
+test("newer compatible policy settles a surviving old-policy request only with exact staged proof", async () => {
+  const currentProof: ProtectedTaskCancellationOutputSettlementProof = {
+    ...proof,
+    currentPolicyRevision: 6,
+  };
+  const state = await fixture({
+    mappedProof: currentProof,
+    currentPolicyRevision: 6,
+  });
+  let calls = 0;
+  expect(await state.recover(async received => {
+    calls += 1;
+    expect(received).toEqual(currentProof);
+    return { requestId: REQUEST, recipientGeneration: 0 };
+  })).toBe(true);
+  expect(calls).toBe(1);
+  expect(state.cas()).toBe(1);
+  expect(state.deleted).toEqual([`${REQUEST}:0`]);
+});
+
+test("newer compatible policy cannot settle a surviving request without staged proof", async () => {
+  const state = await fixture({
+    mappedProof: { ...proof, currentPolicyRevision: 6 },
+    currentPolicyRevision: 6,
+  });
+  expect(await state.recover()).toBe(false);
+  expect(state.cas()).toBe(0);
+  expect(state.deleted).toEqual([]);
+});
+
+test("newer compatible policy rejects a staged proof for another recipient generation", async () => {
+  const state = await fixture({
+    mappedProof: { ...proof, currentPolicyRevision: 6 },
+    currentPolicyRevision: 6,
+  });
+  expect(await state.recover(async () => ({
+    requestId: REQUEST,
+    recipientGeneration: 1,
+  }))).toBe(false);
+  expect(state.cas()).toBe(0);
+  expect(state.deleted).toEqual([]);
+});
+
+test("newer compatible policy does not let staged proof bless a foreign surviving request", async () => {
+  const row = runningRecord();
+  const state = await fixture({
+    row: { ...row, workKind: "task.execute", purpose: "task.execute" },
+    mappedProof: { ...proof, currentPolicyRevision: 6 },
+    currentPolicyRevision: 6,
+  });
+  expect(await state.recover(async () => ({
+    requestId: REQUEST,
+    recipientGeneration: 0,
+  }))).toBe(false);
+  expect(state.cas()).toBe(0);
+  expect(state.deleted).toEqual([]);
 });
 
 test.each(["identity", "human", "fingerprint", "policy", "namespace", "execution"] as const)(

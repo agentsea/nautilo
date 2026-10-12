@@ -8,6 +8,7 @@ import {
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 import {
   TASK_CONTENT_PAYLOAD_VERSION_V1,
+  TaskCancellationPublicationPolicyUnavailableError,
   deriveTaskContentCryptoObjectIdV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
@@ -338,6 +339,43 @@ function harness() {
     repository: createDormantTaskContentShadowRepository({ product, crypto }),
   };
 }
+
+test.each(["claim", "verify", "publication", "mapping", "mapped_verify"])(
+  "cancellation policy wait at %s never consumes retry attempts or changes disposition", async step => {
+    const h = harness();
+    const stopped = { ...coordinate, contentRevision: 2 };
+    const operationId = `task-run-cancelled-result:${RUN_ID}`;
+    h.product.state = { product: step === "mapped_verify" ? {
+      coordinate: stopped, namespaceId: authority.namespaceId, representation: "dual",
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(stopped), cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: fingerprintTaskContentNamespaceV1(authority.namespaceId),
+      cryptoMappingState: "verified",
+    } : null, authority, lifecycle: lifecycle({
+      coordinate: stopped, operationId, cryptoObjectId: deriveTaskContentCryptoObjectIdV1(stopped),
+      ...(step === "mapped_verify" ? { completion: "complete", disposition: "mapped", cryptoCompletedAt: new Date(1), nextAttemptAt: null } : {}),
+    }) };
+    h.crypto.stored = prepared({ coordinate: stopped, objectId: deriveTaskContentCryptoObjectIdV1(stopped) });
+    const wait = () => Promise.reject(new TaskCancellationPublicationPolicyUnavailableError());
+    if (step === "claim") h.product.claimReconciliationCoordinate = wait;
+    if (step === "verify" || step === "mapped_verify") h.crypto.verify = wait;
+    if (step === "mapping") h.product.compareAndSwapCryptoMapping = wait;
+    expect(await h.repository.reconcileCoordinate({ coordinate: stopped, operationId, leaseToken: LEASE,
+      ...(step === "publication" ? { publishProduct: wait } : {}),
+    })).toBe("pending");
+    expect(h.events).not.toContain("product:fail");
+    expect(h.events).not.toContain("product:authority-stale");
+    expect(h.events).not.toContain("product:quarantine");
+    expect(h.product.state.lifecycle.attemptCount).toBe(0);
+    expect(h.product.state.lifecycle.disposition).toBe(step === "mapped_verify" ? "mapped" : "active");
+  },
+);
+
+test("ordinary writer does not gain cancellation policy-wait semantics", async () => {
+  const h = harness();
+  h.product.claimReconciliationCoordinate = () => Promise.reject(new TaskCancellationPublicationPolicyUnavailableError());
+  expect(await h.repository.reconcileCoordinate({ coordinate, operationId: h.product.state.lifecycle.operationId,
+    leaseToken: LEASE }).catch((error: unknown) => error)).toBeInstanceOf(TaskCancellationPublicationPolicyUnavailableError);
+});
 
 async function reserve(testHarness: ReturnType<typeof harness>) {
   return testHarness.repository.reserveRevision({

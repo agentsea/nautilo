@@ -111,6 +111,14 @@ type PreviousAuthoritySettlement = (
   authority: ProtectedTaskCancellationOutputAuthority,
 ) => Promise<boolean>;
 
+export type AuthorizeProtectedTaskCancellationPolicyRefresh = (
+  context: Readonly<{
+    transaction: ProtectedTaskCancellationProductTransaction;
+    previousIntent: ProtectedTaskCancellationOutputIntent;
+    nextIntent: ProtectedTaskCancellationOutputIntent;
+  }>,
+) => Promise<boolean>;
+
 export type ProtectedTaskCancellationProductTransaction = Pick<
   DirectDatabase,
   "select" | "update"
@@ -133,6 +141,7 @@ export type PublishProtectedTaskCancellationProductResult =
 
 export type ProtectedTaskCancellationOutputSettlementProof = Readonly<{
   intent: ProtectedTaskCancellationOutputIntent;
+  currentPolicyRevision: number;
   requesterHumanId: string;
   authorityFingerprint: Uint8Array;
   cryptoAccessRevision: number;
@@ -742,6 +751,7 @@ export async function prepareProtectedTaskCancellationOutput(
     requiredPolicyRevision: number;
   }>,
   settlePreviousAuthority: PreviousAuthoritySettlement,
+  authorizePolicyRefresh?: AuthorizeProtectedTaskCancellationPolicyRefresh,
 ): Promise<PrepareProtectedTaskCancellationOutputResult> {
   if (
     !CANONICAL_UUID.test(input.taskId)
@@ -883,11 +893,18 @@ export async function prepareProtectedTaskCancellationOutput(
       protectedTaskRunCancelledResultOperationId(run.id);
     const cancelledObjectId =
       protectedTaskRunCancelledResultObjectId(task.id, run.id);
-    const exactCancellationIntent = binding !== undefined
+    const cancellationIntentAtBindingPolicy = binding !== undefined
+      && binding.resultRevision === 2
+      && Number.isSafeInteger(binding.acceptedPolicyRevision)
+      && binding.acceptedPolicyRevision > 0
+      ? cancellationIntent(task, run, binding.acceptedPolicyRevision)
+      : null;
+    const exactCancellationCoordinate = binding !== undefined
       && binding.resultRevision === 2
       && binding.resultOperationId === cancelledOperationId
       && binding.resultObjectId === cancelledObjectId
-      && binding.resultTerminalAt?.getTime() === run.completedAt!.getTime()
+      && binding.resultTerminalAt?.getTime() === run.completedAt!.getTime();
+    const exactCancellationIntent = exactCancellationCoordinate
       && binding.acceptedPolicyRevision === policy.revision;
     const exactExecutionIntent = binding !== undefined
       && binding.resultRevision === 1
@@ -899,7 +916,54 @@ export async function prepareProtectedTaskCancellationOutput(
     const intent = cancellationIntent(task, run, policy.revision);
     if (binding !== undefined
       && !exactCancellationIntent && !exactExecutionIntent) {
-      return rejected("conflict");
+      const monotonicPolicyRefresh = exactCancellationCoordinate
+        && cancellationIntentAtBindingPolicy !== null
+        && binding.acceptedPolicyRevision < policy.revision;
+      if (!monotonicPolicyRefresh) return rejected("conflict");
+      if (authorizePolicyRefresh === undefined) return rejected("not_ready");
+      const ledgerRows = await tx.select({
+        taskRunId: taskRunResultCryptoRevisions.taskRunId,
+      }).from(taskRunResultCryptoRevisions).where(or(
+        and(
+          eq(taskRunResultCryptoRevisions.taskId, task.id),
+          eq(taskRunResultCryptoRevisions.taskRunId, run.id),
+          eq(taskRunResultCryptoRevisions.resultRevision, 2),
+        ),
+        eq(taskRunResultCryptoRevisions.operationId, cancelledOperationId),
+      )).limit(2);
+      if (ledgerRows.length !== 0) return rejected("conflict");
+      if (!await authorizePolicyRefresh(Object.freeze({
+        transaction: tx,
+        previousIntent: cancellationIntentAtBindingPolicy,
+        nextIntent: intent,
+      }))) return rejected("not_ready");
+      const [refreshed] = await tx.update(protectedTaskRunOutputBindings).set({
+        acceptedPolicyRevision: policy.revision,
+      }).where(and(
+        eq(protectedTaskRunOutputBindings.taskRunId, run.id),
+        eq(protectedTaskRunOutputBindings.bindingId, binding.bindingId),
+        eq(protectedTaskRunOutputBindings.resultRevision, 2),
+        eq(protectedTaskRunOutputBindings.resultOperationId, cancelledOperationId),
+        eq(protectedTaskRunOutputBindings.resultObjectId, cancelledObjectId),
+        eq(protectedTaskRunOutputBindings.acceptedPolicyRevision,
+          binding.acceptedPolicyRevision),
+        eq(protectedTaskRunOutputBindings.resultTerminalAt, run.completedAt!),
+        isNull(protectedTaskRunOutputBindings.resultAttachedAt),
+        isNull(protectedTaskRunOutputBindings.messageId),
+        isNull(protectedTaskRunOutputBindings.messagePublishedAt),
+        isNull(protectedTaskRunOutputBindings.wakeJobId),
+        isNull(protectedTaskRunOutputBindings.wakeScheduledAt),
+        isNull(protectedTaskRunOutputBindings.completedAt),
+      )).returning();
+      if (!refreshed) {
+        throw new Error("Protected Task cancellation policy refresh lost its locked binding");
+      }
+      return Object.freeze({
+        status: "prepared" as const,
+        binding: refreshed,
+        intent,
+        previousAuthority,
+      });
     }
     if (!await settlePreviousAuthority(previousAuthority)) {
       return rejected("not_ready");
@@ -1138,12 +1202,15 @@ export async function publishProtectedTaskCancellationProduct(
     intent: ProtectedTaskCancellationOutputIntent;
     prepared: ProtectedTaskCancellationProductPrepared;
     requestDigest: Uint8Array;
+    currentPolicyRevision?: number;
   }>,
   assertCurrentAuthority: AssertCurrentCancellationAuthority,
 ): Promise<PublishProtectedTaskCancellationProductResult> {
   const requestedIntent = input.intent;
   const requestedPrepared = input.prepared;
   const requestedDigest = input.requestDigest;
+  const requestedCurrentPolicyRevision = input.currentPolicyRevision
+    ?? requestedIntent.policyRevision;
   if (
     !CANONICAL_UUID.test(requestedIntent.taskId)
     || !CANONICAL_UUID.test(requestedIntent.taskRunId)
@@ -1170,6 +1237,8 @@ export async function publishProtectedTaskCancellationProduct(
       && requestedIntent.representation !== "dual")
     || !Number.isSafeInteger(requestedIntent.policyRevision)
     || requestedIntent.policyRevision < 1
+    || !Number.isSafeInteger(requestedCurrentPolicyRevision)
+    || requestedCurrentPolicyRevision < requestedIntent.policyRevision
     || requestedIntent.taskStatus !== "cancelled"
     || requestedIntent.runStatus !== "cancelled"
     || !(requestedIntent.terminalAt instanceof Date)
@@ -1186,6 +1255,7 @@ export async function publishProtectedTaskCancellationProduct(
     authorityFingerprint: requestedPrepared.authorityFingerprint.slice(),
   });
   const requestDigest = requestedDigest.slice();
+  const currentPolicyRevision = requestedCurrentPolicyRevision;
 
   try {
     return await db.transaction(async (tx) => {
@@ -1227,7 +1297,7 @@ export async function publishProtectedTaskCancellationProduct(
 
       if (
         !policy
-        || policy.revision !== intent.policyRevision
+        || policy.revision !== currentPolicyRevision
         || policy.mode !== (intent.representation === "dual"
           ? "shadow_encryption"
           : "encrypted_only")
@@ -1346,12 +1416,20 @@ function exactCancellationSettlementReceipts(
  */
 export async function settleProtectedTaskCancellationOutput(
   db: Pick<DirectDatabase, "transaction">,
-  input: Readonly<{ taskId: string; taskRunId: string }>,
+  input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    currentPolicyRevision?: number;
+  }>,
   settleAuthorization: SettleCancellationAuthorization,
 ): Promise<SettleProtectedTaskCancellationOutputResult> {
   if (
     !CANONICAL_UUID.test(input.taskId)
     || !CANONICAL_UUID.test(input.taskRunId)
+    || input.currentPolicyRevision !== undefined && (
+      !Number.isSafeInteger(input.currentPolicyRevision)
+      || input.currentPolicyRevision < 1
+    )
     || typeof settleAuthorization !== "function"
   ) throw new TypeError("Protected Task cancellation settlement is malformed");
 
@@ -1391,9 +1469,12 @@ export async function settleProtectedTaskCancellationOutput(
       run,
       binding.acceptedPolicyRevision,
     );
+    const currentPolicyRevision = input.currentPolicyRevision
+      ?? intent.policyRevision;
     if (
       !policy
-      || policy.revision !== intent.policyRevision
+      || currentPolicyRevision < intent.policyRevision
+      || policy.revision !== currentPolicyRevision
       || policy.mode !== (intent.representation === "dual"
         ? "shadow_encryption"
         : "encrypted_only")
@@ -1466,6 +1547,7 @@ export async function settleProtectedTaskCancellationOutput(
         ...intent,
         terminalAt: new Date(intent.terminalAt.getTime()),
       }),
+      currentPolicyRevision: policy.revision,
       requesterHumanId: reservation.requesterHumanId,
       authorityFingerprint: reservation.authorityFingerprint.slice(),
       cryptoAccessRevision: reservation.cryptoAccessRevision,

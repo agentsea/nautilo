@@ -58,7 +58,7 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
     // transaction. Publication acquires its own current-authority transactions.
     publish: createProtectedTaskCancellationPublication({ ...input, authority, now }),
   });
-  const settle = overrides.settle ?? (async (coordinates: Readonly<{ taskId: string; taskRunId: string }>,
+  const settle = overrides.settle ?? (async (coordinates: Readonly<{ taskId: string; taskRunId: string; currentPolicyRevision?: number }>,
     verifyStaged?: VerifyStagedCancellationSettlement) =>
     createProtectedTaskCancellationSettlement({
       db: input.db, repository: await repository(input.restricted), recipients: input.recipients, now,

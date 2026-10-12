@@ -84,6 +84,20 @@ const priorAuthority: CancellationNamespaceAuthority = Object.freeze({
   })]),
 });
 
+function intentAtPolicy(policyRevision: number): ProtectedTaskCancellationOutputIntent {
+  return Object.freeze({ ...intent, policyRevision });
+}
+
+function authorityAtPolicy(policyRevision: number): CancellationNamespaceAuthority {
+  return Object.freeze({
+    ...authority,
+    facts: Object.freeze(authority.facts.map(fact => Object.freeze({
+      ...fact,
+      expectedPolicyRevision: policyRevision,
+    }))) as CancellationNamespaceAuthority["facts"],
+  });
+}
+
 function priorExecution(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   return {
     snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
@@ -137,12 +151,16 @@ function fixture(input: Readonly<{
   authorityOverride?: typeof authority;
   hasCancellationReservation?: boolean;
   cancellationPublication?: boolean | readonly boolean[];
+  policyRevision?: number;
+  refreshFromPolicyRevision?: number;
 }> = {}) {
   const repository = input.repository
     ?? new InMemoryBackgroundAuthorizationRepository();
   const deleted: Array<readonly [string, number]> = [];
   let prepares = 0;
   let publicationChecks = 0;
+  let refreshGuardCalls = 0;
+  const policyRevision = input.policyRevision ?? 7;
   const previous: ProtectedTaskCancellationOutputAuthority = {
     taskId: TASK,
     taskRunId: RUN,
@@ -155,8 +173,29 @@ function fixture(input: Readonly<{
     _db,
     _coordinates,
     settle,
+    authorizePolicyRefresh,
   ) => {
     prepares += 1;
+    if ((input.mode ?? "encrypted_only") !== "encrypted_only") {
+      return { status: "rejected", reason: "authority_changed" };
+    }
+    const preparedIntent = intentAtPolicy(policyRevision);
+    if (input.refreshFromPolicyRevision !== undefined) {
+      refreshGuardCalls += 1;
+      if (authorizePolicyRefresh === undefined || !await authorizePolicyRefresh({
+        transaction: {} as never,
+        previousIntent: intentAtPolicy(input.refreshFromPolicyRevision),
+        nextIntent: preparedIntent,
+      })) return { status: "rejected", reason: "not_ready" };
+      return {
+        status: "prepared",
+        binding: {} as Extract<Awaited<ReturnType<
+          typeof prepareProtectedTaskCancellationOutput
+        >>, { status: "prepared" | "exact_replay" }>["binding"],
+        intent: preparedIntent,
+        previousAuthority: previous,
+      };
+    }
     if (!await settle(previous)) {
       return { status: "rejected", reason: "not_ready" };
     }
@@ -168,7 +207,7 @@ function fixture(input: Readonly<{
       binding: {} as Extract<Awaited<ReturnType<
         typeof prepareProtectedTaskCancellationOutput
       >>, { status: "prepared" | "exact_replay" }>["binding"],
-      intent,
+      intent: preparedIntent,
       previousAuthority: previous,
     };
   };
@@ -187,7 +226,7 @@ function fixture(input: Readonly<{
     readPolicy: async () => ({
       mode: input.mode ?? "encrypted_only",
       shadowBehavior: "strict",
-      revision: 7,
+      revision: policyRevision,
       shadowEncryptionStartedAt: new Date(NOW - 10_000),
       updatedAt: new Date(NOW - 10_000),
     }),
@@ -238,6 +277,9 @@ function fixture(input: Readonly<{
     },
     get publicationChecks() {
       return publicationChecks;
+    },
+    get refreshGuardCalls() {
+      return refreshGuardCalls;
     },
     repository,
   };
@@ -755,4 +797,190 @@ test("does not rotate an expired recipient when publication appears under the he
   expect(await repository.get(attached.snapshot.requestId)).toEqual(attached);
   expect(value.deleted).toEqual([]);
   expect(value.publicationChecks).toBe(5);
+});
+
+test("refreshes a pristine old-policy binding and advances its unclaimed request generation", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const oldPlan = createProtectedTaskCancellationPlan({
+    intent: intentAtPolicy(7),
+    namespaceAuthority: authorityAtPolicy(7),
+    crypto: new LatticeCrypto(),
+    now: NOW,
+    recipientTtlMs: 60_000,
+  });
+  await repository.create(oldPlan.initialRecord);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+  });
+
+  const result = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
+  expect(result.status).toBe("exact_replay");
+  expect(value.refreshGuardCalls).toBe(1);
+  const refreshed = await repository.get(oldPlan.initialRecord.snapshot.requestId);
+  expect(refreshed).toMatchObject({
+    expectedPolicyRevision: 8,
+    snapshot: {
+      state: "awaiting_recipient",
+      recipientGeneration: 1,
+    },
+    descriptorBytes: null,
+    acceptedMaterial: null,
+  });
+  expect(refreshed?.authoritySet?.namespaceRequirements[0])
+    .toMatchObject({ expectedPolicyRevision: 8, operations: ["encrypt"] });
+  expect(value.deleted).toEqual([[oldPlan.initialRecord.snapshot.requestId, 0]]);
+});
+
+test("creates the current-policy request after recovering an old binding with no request", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+  });
+
+  const result = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
+  expect(result.status).toBe("created");
+  expect(value.refreshGuardCalls).toBe(1);
+  expect(await repository.get(protectedTaskCancellationRequestId(RUN)))
+    .toMatchObject({
+      expectedPolicyRevision: 8,
+      snapshot: {
+        state: "awaiting_recipient",
+        recipientGeneration: 0,
+      },
+    });
+  expect(value.deleted).toEqual([]);
+});
+
+test("waits without refreshing when the current policy mode is incompatible", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const oldPlan = createProtectedTaskCancellationPlan({
+    intent: intentAtPolicy(7), namespaceAuthority: authorityAtPolicy(7),
+    crypto: new LatticeCrypto(), now: NOW, recipientTtlMs: 60_000,
+  });
+  await repository.create(oldPlan.initialRecord);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    mode: "shadow_encryption",
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "conflict" });
+  expect(value.refreshGuardCalls).toBe(0);
+  expect(await repository.get(oldPlan.initialRecord.snapshot.requestId))
+    .toEqual(oldPlan.initialRecord);
+  expect(value.deleted).toEqual([]);
+});
+
+test("does not refresh an old-policy binding while its claim is live", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const selected = claimedCancellation({ claimExpiresAt: NOW + 100 });
+  await repository.create(selected);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => NOW + 50,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(value.refreshGuardCalls).toBe(1);
+  expect(await repository.get(selected.snapshot.requestId)).toEqual(selected);
+  expect(value.deleted).toEqual([]);
+});
+
+test("does not refresh an old-policy binding for a foreign request", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const oldPlan = createProtectedTaskCancellationPlan({
+    intent: intentAtPolicy(7), namespaceAuthority: authorityAtPolicy(7),
+    crypto: new LatticeCrypto(), now: NOW, recipientTtlMs: 60_000,
+  });
+  const foreign = {
+    ...oldPlan.initialRecord,
+    purpose: "task.execute" as const,
+    workKind: "task.execute" as const,
+  };
+  await repository.create(foreign);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(value.refreshGuardCalls).toBe(1);
+  expect(await repository.get(foreign.snapshot.requestId)).toEqual(foreign);
+  expect(value.deleted).toEqual([]);
+});
+
+test("does not refresh an old-policy binding after ciphertext or a receipt appears", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const oldPlan = createProtectedTaskCancellationPlan({
+    intent: intentAtPolicy(7), namespaceAuthority: authorityAtPolicy(7),
+    crypto: new LatticeCrypto(), now: NOW, recipientTtlMs: 60_000,
+  });
+  await repository.create(oldPlan.initialRecord);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+    cancellationPublication: [false, true],
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(value.refreshGuardCalls).toBe(1);
+  expect(value.publicationChecks).toBe(2);
+  expect(await repository.get(oldPlan.initialRecord.snapshot.requestId))
+    .toEqual(oldPlan.initialRecord);
+  expect(value.deleted).toEqual([]);
+});
+
+test("rotates an expired old-policy claim before replacing it with the current plan", async () => {
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const selected = claimedCancellation({ running: true, claimExpiresAt: NOW + 10 });
+  await repository.create(selected);
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => NOW + 11,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+  });
+
+  expect((await value.preparation.prepare({ taskId: TASK, taskRunId: RUN })).status)
+    .toBe("exact_replay");
+  expect(value.refreshGuardCalls).toBe(1);
+  expect(await repository.get(selected.snapshot.requestId)).toMatchObject({
+    expectedPolicyRevision: 8,
+    snapshot: {
+      state: "awaiting_recipient",
+      recipientGeneration: 2,
+      claimId: null,
+      claimExpiresAt: null,
+    },
+    descriptorBytes: null,
+    acceptedMaterial: null,
+  });
+  expect(value.deleted).toContainEqual([selected.snapshot.requestId, 0]);
 });

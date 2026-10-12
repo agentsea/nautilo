@@ -15,7 +15,9 @@ import {
   decodeEncryptedPayloadV2, decodeNamespaceObjectEnvelopeV2, encodeAgentRuntimeSignerPublicationV1,
   serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
-import { deriveTaskContentCryptoObjectIdV1 } from "../../src/task/task-content-repository.ts";
+import { deriveTaskContentCryptoObjectIdV1, fingerprintTaskContentAuthorityV1, fingerprintTaskContentNamespaceV1, TaskCancellationPublicationPolicyUnavailableError } from "../../src/task/task-content-repository.ts";
+import { PostgresTaskContentProductStore } from "../../src/server/task/postgres-task-content-product-store.ts";
+import { verifyConversationProductPostgresHandle, type ConversationProductPostgresConnection, type ConversationProductDatabaseRow, type ConversationProductPostgresScalar } from "../../src/server/message/postgres-conversation-product-store.ts";
 import { decodeTaskRunResultPayloadV1 } from "../../src/task/task-payload-v1.ts";
 
 import { verifyCryptoPostgresHandle, type CryptoPostgresConnection, type CryptoPostgresExecutor } from "../../src/server/storage/postgres-lattice-storage.ts";
@@ -397,6 +399,7 @@ import {
   stageNativeTaskCancellationPublication, inspectStagedTaskCancellationPublication,
   reserveStagedTaskCancellationPublication, hasTaskCancellationCryptoPublication,
   type StageNativeTaskCancellationPublicationInput,
+  type VerifiedStagedTaskCancellationPublication,
 } from "../../src/server/task/postgres-task-cancellation-crypto-staging.ts";
 
 const OWNER = "70000000-0000-4000-8000-000000000711";
@@ -579,3 +582,123 @@ test("an existing receipt for another claim never authorizes another preparation
     expect(f.value.stages.filter(stage => stage === "native-binding")).toHaveLength(bindings);
   });
 });
+
+test("same-mode recovery preserves historical bytes and requires a freshly inspected current authority", async () => {
+  const f = await stagingFixture();
+  await f.run(async stage => { await stage(); });
+  const original = (await f.inspect())!;
+  const current = { ...f.value.base.authority, expectedPolicyRevision: 4 };
+  let calls = 0;
+  const product = { reserveRevision: (input: Parameters<PostgresTaskContentProductStore["reserveRevision"]>[0]) => {
+    calls += 1;
+    expect(input.authorityFingerprint).toEqual(original.authorityFingerprint);
+    expect(input.requestDigest).toEqual(original.genesisManifestHash);
+    return Promise.resolve({ status: "stale" as const });
+  } };
+  await fails(reserveStagedTaskCancellationPublication({ staged: original, authority: current, product }));
+  expect(calls).toBe(0);
+  f.connection.claim = null;
+  const fresh = await inspectStagedTaskCancellationPublication({ ...f.history, handle: f.handle,
+    crypto: f.value.crypto, intent: f.intent, authority: current });
+  expect(fresh!.authorityFingerprint).toEqual(original.authorityFingerprint);
+  expect(fresh!.authorityFingerprint).not.toEqual(fingerprintTaskContentAuthorityV1(current));
+  await reserveStagedTaskCancellationPublication({ staged: fresh!, authority: current, product });
+  expect(calls).toBe(1);
+});
+
+test("fresh staging still requires exact policy equality", async () => {
+  const f = await stagingFixture();
+  await f.run(async stage => {
+    f.value.base.authority.expectedPolicyRevision = 4;
+    await fails(stage());
+  });
+  expect(f.connection.state.object).toBeNull();
+  expect(f.connection.state.receipt).toBeNull();
+});
+
+test.each(["policy", "requester", "namespace", "domain", "access"])("historical staging does not admit changed %s authority", async change => {
+  const f = await stagingFixture();
+  await f.run(async stage => { await stage(); });
+  const current = { ...f.value.base.authority, expectedPolicyRevision: 4 };
+  if (change === "policy") current.expectedPolicyRevision = 2;
+  if (change === "requester") current.requesterHumanId = OWNER;
+  if (change === "namespace") current.namespaceId = DOMAIN;
+  if (change === "domain") current.domainId = NAMESPACE;
+  if (change === "access") current.expectedAccessRevision = 1;
+  await fails(inspectStagedTaskCancellationPublication({ ...f.history, handle: f.handle,
+    crypto: f.value.crypto, intent: f.intent, authority: current }));
+});
+
+type ProductStep = Readonly<{ contains: string; rows: readonly ConversationProductDatabaseRow[];
+  inspect?: (parameters: readonly ConversationProductPostgresScalar[]) => void }>;
+class StagedProductConnection implements ConversationProductPostgresConnection {
+  readonly steps: ProductStep[];
+  locks = 0;
+  constructor(steps: ProductStep[]) { this.steps = [...steps]; }
+  async query<Row extends ConversationProductDatabaseRow>(statement: string,
+    parameters: readonly ConversationProductPostgresScalar[] = []): Promise<readonly Row[]> {
+    if (statement.includes("SELECT current_user::text")) return [{ current_user: "nautilo", session_user: "nautilo" }] as unknown as Row[];
+    const step = this.steps.shift();
+    if (step === undefined) throw new Error(`Unexpected product query: ${statement}`);
+    expect(statement).toContain(step.contains);
+    if (statement.includes("for update") && (statement.includes('from "tasks"') || statement.includes('from "task_runs"'))) this.locks += 1;
+    step.inspect?.(parameters);
+    return step.rows as Row[];
+  }
+  transaction<Value>(use: (tx: StagedProductConnection) => Promise<Value>): Promise<Value> { return use(this); }
+}
+
+test.each(["applied", "policy_race", "incompatible", "duplicate_policy_race", "wrong_terminal", "forged", "stale_token", "generic"])(
+  "staged cancellation mapping handles %s without a generic authority bypass", async scenario => {
+    const f = await stagingFixture();
+    await f.run(async stage => { await stage(); });
+    const current = { ...f.value.base.authority, expectedPolicyRevision: 4 };
+    const proof = (await inspectStagedTaskCancellationPublication({ ...f.history, handle: f.handle,
+      crypto: f.value.crypto, intent: f.intent, authority: scenario === "stale_token" ? f.value.base.authority : current }))!;
+    const lifecycle = { sequence: 1, task_id: TASK, task_run_id: RUN, result_revision: 2,
+      operation_id: f.intent.resultOperationId, request_digest: proof.genesisManifestHash,
+      authority_fingerprint: proof.authorityFingerprint, requester_human_id: HUMAN,
+      content_namespace_id: NAMESPACE, crypto_object_id: f.intent.resultObjectId, payload_version: 1,
+      representation: "protected", required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE),
+      completion: "complete", disposition: "active", attempt_count: 0, next_attempt_at: new Date(NOW),
+      lease_token: null, lease_expires_at: null, failure_code: null, crypto_completed_at: new Date(NOW) };
+    const policyWait = ["policy_race", "incompatible", "duplicate_policy_race"].includes(scenario);
+    const invalidProof = ["forged", "stale_token", "generic"].includes(scenario);
+    const run = { task_id: TASK, task_run_id: RUN, run_status: "cancelled", result_revision: 0,
+      result_content_namespace_id: null, result_representation: "ordinary", crypto_object_id: null,
+      crypto_access_revision: 0, crypto_required_namespace_fingerprint: null, crypto_mapping_state: "unmapped" };
+    const steps: ProductStep[] = [
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [lifecycle] },
+      { contains: 'from "encryption_transition_policy"', rows: [{ mode: scenario === "incompatible" ? "shadow_encryption" : "encrypted_only", revision: scenario.includes("policy_race") ? 5 : 4 }] },
+      { contains: 'from "tasks"', rows: [{ owner_id: OWNER, requestor_id: OWNER, namespace_id: NAMESPACE, task_status: "cancelled" }] },
+      { contains: 'from "task_runs"', rows: [scenario === "duplicate_policy_race" ? { ...run, result_revision: 2,
+        result_content_namespace_id: NAMESPACE, result_representation: "protected", crypto_object_id: f.intent.resultObjectId,
+        crypto_required_namespace_fingerprint: lifecycle.required_namespace_fingerprint, crypto_mapping_state: "verified" } : run] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [lifecycle] },
+      { contains: 'from "actors"', rows: [{ owner_id: OWNER }] },
+    ];
+    if (!policyWait && !invalidProof) steps.push({ contains: 'from "protected_task_run_output_bindings"',
+      rows: scenario === "wrong_terminal" ? [] : [{ task_run_id: RUN }],
+      inspect: parameters => {
+        expect(parameters).toContain(3);
+        expect(parameters).toContain(AGENT);
+        expect(parameters.some(value => value instanceof Date ? value.getTime() === NOW - 1 : value === f.intent.terminalAt.toISOString())).toBe(true);
+      } });
+    if (scenario === "applied") steps.push({ contains: 'update "task_runs"', rows: [{ task_run_id: RUN }] });
+    if (!policyWait) steps.push({ contains: 'update "task_run_result_crypto_revisions"', rows: [lifecycle] });
+    const connection = new StagedProductConnection(steps);
+    const handle = await verifyConversationProductPostgresHandle(connection);
+    const store = new PostgresTaskContentProductStore(handle, () => Promise.resolve(current), undefined,
+      scenario === "generic" ? undefined : async input => {
+        expect(connection.locks).toBe(2);
+        expect(input.currentAuthority).toEqual(current);
+        return scenario === "forged" ? { ...proof } as VerifiedStagedTaskCancellationPublication : proof;
+      });
+    const result = store.compareAndSwapCryptoMapping({ coordinate: f.value.cancellationCoordinate,
+      cryptoObjectId: f.intent.resultObjectId, expectedAuthorityFingerprint: proof.authorityFingerprint,
+      expectedRepresentation: "protected", leaseToken: null });
+    if (policyWait) expect(await result.catch((error: unknown) => error)).toBeInstanceOf(TaskCancellationPublicationPolicyUnavailableError);
+    else expect(await result).toBe(scenario === "applied" ? "applied" : invalidProof ? "wrong_authority" : "stale");
+    expect(connection.steps).toHaveLength(0);
+  },
+);

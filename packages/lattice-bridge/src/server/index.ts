@@ -1034,6 +1034,8 @@ export {
   type VerifiedStagedTaskCancellationPublication,
   type StageNativeTaskCancellationPublicationInput,
   type InspectStagedTaskCancellationPublicationInput,
+  type VerifyStagedTaskCancellationPublication,
+  type StagedTaskCancellationPublicationProofInput,
 } from "./task/postgres-task-cancellation-crypto-staging.ts";
 
 export {

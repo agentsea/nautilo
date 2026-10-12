@@ -13,9 +13,10 @@ import {
   stageNativeTaskCancellationPublication, inspectStagedTaskCancellationPublication,
   reserveStagedTaskCancellationPublication, hasTaskCancellationCryptoPublication,
   type StageNativeTaskCancellationPublicationInput,
+  type VerifyStagedTaskCancellationPublication,
 } from "@nautilo/lattice-bridge/server";
 import {
-  BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS, cryptoDomains, domainKeyPublicationOperations, domainKeyHeads, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
+  encryptionTransitionPolicy, BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS, cryptoDomains, domainKeyPublicationOperations, domainKeyHeads, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
   humanCryptoCustodies, humanCryptoDevices, agentCryptoRuntimeStates, agentCryptoRuntimeSigners,
   backgroundCryptoAuthorizationRequests, taskCancellationCryptoStagingReceipts, cryptoObjects, objectCryptoAccessHeads, objectCryptoNamespaceEnvelopes, objectCryptoAccessManifests,
   type PostgresJsBridgeConnection, type ProtectedTaskCancellationOutputIntent,
@@ -1187,8 +1188,9 @@ async function exerciseNativeCancellationStaging(input: {
         StageNativeTaskCancellationPublicationInput["resolveHistoricalAgentSignerAuthority"],
   };
   const handle = await verifyCryptoPostgresHandle(cryptoConnection(input.cryptoDatabase));
-  const inspect = () => inspectStagedTaskCancellationPublication({ ...history,
-    handle, intent, crypto: f.crypto, authority: f.base.authority });
+  const inspect = (authority: TaskContentAuthorityV1 = f.base.authority) =>
+    inspectStagedTaskCancellationPublication({ ...history,
+      handle, intent, crypto: f.crypto, authority });
   const failed = async (operation: Promise<unknown>) => {
     expect(await operation.then(() => null, (error: unknown) => error)).toBeInstanceOf(Error);
   };
@@ -1304,17 +1306,70 @@ async function exerciseNativeCancellationStaging(input: {
       .where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
     const staged = await inspect();
     expect(staged).not.toBeNull();
+    const productHandle = await verifyConversationProductPostgresHandle(
+      productConnection(input.app),
+    );
+    await database.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", revision: 2,
+      shadowEncryptionStartedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const incompatibleAuthority = Object.freeze({
+      ...f.base.authority,
+      expectedPolicyRevision: 2,
+    });
+    const incompatibleStage = await inspect(incompatibleAuthority);
+    expect(incompatibleStage).not.toBeNull();
+    expect(incompatibleStage!.genesisManifestHash).toEqual(staged!.genesisManifestHash);
+    expect(incompatibleStage!.authorityFingerprint).toEqual(staged!.authorityFingerprint);
+    const verifyStagedCancellation: VerifyStagedTaskCancellationPublication =
+      proof => inspect(proof.currentAuthority);
+    const incompatibleProduct = new PostgresTaskContentProductStore(
+      productHandle,
+      () => incompatibleAuthority,
+      undefined,
+      verifyStagedCancellation,
+    );
+    expect(await reserveStagedTaskCancellationPublication({
+      staged: incompatibleStage!,
+      authority: incompatibleAuthority,
+      product: incompatibleProduct,
+    })).toEqual({ status: "stale" });
+    expect(await database.select().from(taskRunResultCryptoRevisions)
+      .where(eq(taskRunResultCryptoRevisions.taskRunId, run))).toHaveLength(0);
+
+    await database.update(encryptionTransitionPolicy).set({
+      mode: "encrypted_only", revision: 3,
+      updatedAt: new Date(),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const currentAuthority = Object.freeze({
+      ...f.base.authority,
+      expectedPolicyRevision: 3,
+    });
+    const currentStage = await inspect(currentAuthority);
+    expect(currentStage).not.toBeNull();
+    expect(currentStage!.genesisManifestHash).toEqual(staged!.genesisManifestHash);
+    expect(currentStage!.authorityFingerprint).toEqual(staged!.authorityFingerprint);
     const product = new PostgresTaskContentProductStore(
-      await verifyConversationProductPostgresHandle(productConnection(input.app)), () => f.base.authority);
-    const reserve = await reserveStagedTaskCancellationPublication({ staged: staged!, authority: f.base.authority, product });
+      productHandle,
+      () => currentAuthority,
+      undefined,
+      verifyStagedCancellation,
+    );
+    const reserve = await reserveStagedTaskCancellationPublication({
+      staged: currentStage!,
+      authority: currentAuthority,
+      product,
+    });
     expect(reserve.status).toBe("reserved");
     const [ledger] = await database.select().from(taskRunResultCryptoRevisions)
       .where(eq(taskRunResultCryptoRevisions.taskRunId, run));
     expect(ledger!.requestDigest).toEqual(staged!.genesisManifestHash);
+    expect(ledger!.authorityFingerprint).toEqual(staged!.authorityFingerprint);
     expect(ledger!.cryptoObjectId).toBe(intent.resultObjectId);
     const recovery = createDormantTaskContentShadowRepository({ product,
       crypto: createPostgresTaskContentCryptoCompletion({ ...history, handle, crypto: f.crypto,
-        resolveCurrentAuthority: () => Promise.resolve(f.base.authority) }) });
+        resolveCurrentAuthority: () => Promise.resolve(currentAuthority) }) });
     expect(await recovery.reconcileCoordinate({ coordinate: f.cancellationCoordinate,
       operationId: intent.resultOperationId, leaseToken: randomUUID() })).toBe("mapped");
     const [mapped] = await database.select().from(taskRuns).where(eq(taskRuns.id, run));
@@ -1343,6 +1398,11 @@ async function exerciseNativeCancellationStaging(input: {
       .where(eq(taskCancellationCryptoStagingReceipts.requestId, requestId)));
     expect((await inspect())!.claimId).toBe(staged!.claimId);
   } finally {
+    await database.update(encryptionTransitionPolicy).set({
+      mode: "encrypted_only", revision: 1,
+      shadowEncryptionStartedAt: new Date(),
+      updatedAt: new Date(),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
     await database.delete(backgroundCryptoAuthorizationRequests).where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
     await database.delete(taskRuns).where(eq(taskRuns.id, run));
     await database.delete(taskRunResultCryptoRevisions).where(eq(taskRunResultCryptoRevisions.taskRunId, run));

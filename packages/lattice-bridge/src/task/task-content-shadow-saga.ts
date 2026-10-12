@@ -1,6 +1,7 @@
 import { assertProtectedTaskOperationalMetadataProjectionV1 } from "@nautilo/types";
 
 import {
+  TaskCancellationPublicationPolicyUnavailableError,
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   TASK_CONTENT_RECONCILE_MAX_BATCH,
   assertTaskContentCoordinateV1,
@@ -50,6 +51,13 @@ function sameJson(left: unknown, right: unknown): boolean {
   return leftKeys.length === rightKeys.length
     && leftKeys.every((key, index) => key === rightKeys[index]
       && sameJson(leftRecord[key], rightRecord[key]));
+}
+
+function cancellationPolicyWait(cause: unknown, coordinate: TaskContentCoordinateV1,
+  operationId: string): boolean {
+  return cause instanceof TaskCancellationPublicationPolicyUnavailableError
+    && coordinate.kind === "run_result" && coordinate.contentRevision === 2
+    && operationId === `task-run-cancelled-result:${coordinate.taskRunId}`;
 }
 
 function orphanReason(
@@ -219,6 +227,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
     try {
       verified = await input.crypto.verify(cryptoReference(state));
     } catch (cause) {
+      if (cancellationPolicyWait(cause, state.lifecycle.coordinate, state.lifecycle.operationId)) throw cause;
       throw new Error("Task content crypto verification is unavailable", {
         cause,
       });
@@ -315,7 +324,10 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
     if (orphanReason(lifecycle) !== null) return "orphaned";
     if (lifecycle.disposition === "mapped") {
       assertMappedState(state);
-      await verifyComplete(state, null);
+      try { await verifyComplete(state, null); } catch (cause) {
+        if (cancellationPolicyWait(cause, lifecycle.coordinate, lifecycle.operationId)) return "pending";
+        throw cause;
+      }
       return "mapped";
     }
     if (!authorityMatches(state)) {
@@ -327,7 +339,8 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
     let verified: VerifiedTaskContentCryptoRevisionV1 | null;
     try {
       verified = await input.crypto.verify(cryptoReference(state));
-    } catch {
+    } catch (cause) {
+      if (cancellationPolicyWait(cause, lifecycle.coordinate, lifecycle.operationId)) return "pending";
       return failClaim(lifecycle, leaseToken, "storage_transient");
     }
     if (verified === null) {
@@ -347,7 +360,8 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       await publishProduct?.();
       const result = await publishVerified(state, leaseToken);
       return result.status === "orphaned" ? "orphaned" : "mapped";
-    } catch {
+    } catch (cause) {
+      if (cancellationPolicyWait(cause, lifecycle.coordinate, lifecycle.operationId)) return "pending";
       return failClaim(lifecycle, leaseToken, "storage_transient");
     }
   }
@@ -618,13 +632,15 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
           "Task content product adapter does not support coordinate reconciliation",
         );
       }
-      const state = await input.product.claimReconciliationCoordinate(
-        Object.freeze({
-          coordinate,
-          operationId: request.operationId,
-          leaseToken: request.leaseToken,
-        }),
-      );
+      let state: TaskContentRevisionStateV1 | null;
+      try {
+        state = await input.product.claimReconciliationCoordinate(Object.freeze({
+          coordinate, operationId: request.operationId, leaseToken: request.leaseToken,
+        }));
+      } catch (cause) {
+        if (cancellationPolicyWait(cause, coordinate, request.operationId)) return "pending";
+        throw cause;
+      }
       if (state === null) return "pending";
       assertState(state);
       if (

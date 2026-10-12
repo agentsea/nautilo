@@ -45,6 +45,7 @@ import {
 import {
   createProtectedTaskCancellationPlan,
   protectedTaskCancellationRequestId,
+  protectedTaskCancellationIdempotencyKey,
   type ProtectedTaskCancellationPlan,
 } from "./protected-task-cancellation-plan";
 import { validateCurrentProtectedTaskCancellationIntent } from
@@ -402,7 +403,7 @@ export function createProtectedTaskCancellationPreparation(
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
   }> | Readonly<{ status: "stale" }> | Readonly<{ status: "conflict" }>> {
     const selected = structuredClone(supplied);
-    if (selected.expectedPolicyRevision !== intent.policyRevision) {
+    if (selected.expectedPolicyRevision > intent.policyRevision) {
       return Object.freeze({ status: "conflict" as const });
     }
     const coordinates = await currentCoordinates(intent);
@@ -452,7 +453,7 @@ export function createProtectedTaskCancellationPreparation(
             record: loaded,
           });
         }
-        if (loaded.expectedPolicyRevision !== intent.policyRevision) {
+        if (loaded.expectedPolicyRevision > intent.policyRevision) {
           return Object.freeze({ status: "conflict" as const });
         }
         const now = dependencies.now();
@@ -475,7 +476,7 @@ export function createProtectedTaskCancellationPreparation(
             descriptorBytes: null,
             acceptedMaterial: null,
           };
-          // Validate the whole stable cancellation identity and same-policy
+          // Validate the whole stable cancellation identity and current-policy
           // replacement before durably fencing the expired old grant.
           buildUnclaimedTaskCancellationAuthorityReplacement({
             expected: rotated,
@@ -560,9 +561,7 @@ export function createProtectedTaskCancellationPreparation(
     if (policy.mode === "plaintext_only") {
       return Object.freeze({ status: "rejected", reason: "not_ready" });
     }
-    let repository:
-      BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository
-      | null = null;
+    let repository: Awaited<ReturnType<Dependencies["repository"]>> | null = null;
     const getRepository = async () => repository ??= await dependencies
       .repository(dependencies.restricted());
     return dependencies.prepareOutput(dependencies.db, {
@@ -589,6 +588,29 @@ export function createProtectedTaskCancellationPreparation(
       return previous.jobAuthorizationRequestId === null
         || settled.recipients.some(recipient =>
           recipient.requestId === previous.jobAuthorizationRequestId);
+    }, async ({ previousIntent }) => {
+      // Task/Run locks fence the old publisher while this cross-role custody
+      // check runs. Refresh only the binding here; replace its request after commit.
+      if (await hasDetachedCancellationPublication(previousIntent)) return false;
+      const record = await (await getRepository()).get(
+        protectedTaskCancellationRequestId(previousIntent.taskRunId),
+      );
+      if (record === null) return true;
+      if (!cancellationRecord(record)
+        || record.snapshot.requestId !== protectedTaskCancellationRequestId(previousIntent.taskRunId)
+        || record.snapshot.workId !== previousIntent.taskRunId
+        || record.snapshot.namespaceId !== previousIntent.contentNamespaceId
+        || record.idempotencyKey !== protectedTaskCancellationIdempotencyKey(previousIntent)
+        || record.expectedPolicyRevision < 1
+        || record.expectedPolicyRevision > previousIntent.policyRevision
+        || record.finishedAt !== null) return false;
+      if (record.snapshot.state === "claimed" || record.snapshot.state === "running") {
+        return record.snapshot.claimExpiresAt !== null
+          && dependencies.now() >= record.snapshot.claimExpiresAt;
+      }
+      return record.snapshot.state === "awaiting_recipient"
+        || record.snapshot.state === "awaiting_device"
+        || record.snapshot.state === "grant_ready";
     });
   }
 
