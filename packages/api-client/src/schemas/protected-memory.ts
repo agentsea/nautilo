@@ -133,7 +133,7 @@ const protectedMemoryNamespaceGenerationAuthorityV1Schema = z.object({
   publicationSetDigestBase64url: base64url,
   audienceFingerprintBase64url: base64url,
 }).strict();
-const protectedMemoryNamespaceAuthorityV1Schema = z.object({
+export const protectedMemoryNamespaceAuthorityV1Schema = z.object({
   sourceRoomId: canonicalLowerUuid,
   namespaceId: canonicalLowerUuid,
   currentGeneration: nonnegativeInteger,

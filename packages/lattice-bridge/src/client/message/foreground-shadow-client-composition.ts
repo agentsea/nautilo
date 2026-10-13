@@ -956,6 +956,17 @@ export function createForegroundHumanTaskRunResultReader(
   const vault = platform.createProfileVault();
   const createStageId = input.createIdempotencyKey
     ?? (() => platform.createId());
+  const authorities = authorityClients(platform, {
+    api: input.api,
+    crypto,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    now: input.now ?? Date.now,
+    createId: createStageId,
+  });
+  if (authorities.namespaceAuthority === undefined) {
+    throw new TypeError("Domain Key V2 Human Task result authority is unavailable");
+  }
   const exactReader = createAuthorizedHumanTaskRunResultReaderV1({
     api: input.api,
     device: createVaultHumanTaskRunResultReaderV1({
@@ -964,6 +975,7 @@ export function createForegroundHumanTaskRunResultReader(
       coordinates: clientIdentity.coordinates,
       subjectHumanId: input.humanActorId,
       now: input.now ?? Date.now,
+      namespaceAuthority: authorities.namespaceAuthority,
       resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
       ...(input.resolveTrustedIssuingDevicePublicKey === undefined ? {} : {
         resolveTrustedIssuingDevicePublicKey:
@@ -1010,6 +1022,17 @@ export function createForegroundHumanTaskClient(
   const journalVault = platform.createPreparedMutationJournalVault();
   const now = input.now ?? Date.now;
   const createId = input.createIdempotencyKey ?? (() => platform.createId());
+  const authorities = authorityClients(platform, {
+    api: input.api,
+    crypto,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    now,
+    createId,
+  });
+  if (authorities.namespaceAuthority === undefined) {
+    throw new TypeError("Domain Key V2 Human Task authority is unavailable");
+  }
   const journal = createPreparedMutationJournal({ vault: journalVault, now });
   const withJournal = async <Result>(use: () => Promise<Result>): Promise<Result> => {
     const current = await journalVault.availability();
@@ -1056,6 +1079,7 @@ export function createForegroundHumanTaskClient(
           contentRevision: envelope.contentRevision,
           cryptoAccessRevision: envelope.cryptoAccessRevision,
           namespaceId: envelope.namespaceId,
+          readAuthority: envelope.readAuthority,
           encryptedPayloadBytes: decodeCanonicalBase64url(
             envelope.encryptedPayloadBytesBase64url,
           ),
@@ -1080,6 +1104,7 @@ export function createForegroundHumanTaskClient(
       coordinates: clientIdentity.coordinates,
       subjectHumanId: input.humanActorId,
       now,
+      namespaceAuthority: authorities.namespaceAuthority,
       resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
       accessAnchors: createClientProfileObjectAccessAnchorPortV4({
         crypto,

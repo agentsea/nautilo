@@ -71,6 +71,7 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   decodeHumanTaskPublicationRequestV1,
+  decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5,
 } from "@nautilo/lattice-crypto/wire";
 import {
@@ -497,6 +498,122 @@ type ProductionDependencies = Readonly<{
   resolveRequesterPrivateRoom?: ProtectedTaskRequesterPrivateRoomResolver;
 }>;
 
+type ProtectedTaskReadAuthorityCoordinate = Readonly<{
+  generation: number;
+  accessRevision: number;
+}>;
+
+type ProtectedTaskNamespaceReadAuthority =
+  ProtectedTaskDefinitionReadReadyEnvelopeV1["readAuthority"];
+
+function toBase64url(value: Uint8Array): string {
+  return Buffer.from(value).toString("base64url");
+}
+
+/** Resolve public Namespace read metadata only while the exact canonical
+ * requester-private Room and its current membership remain established. */
+export function createProtectedTaskPrivateReadAuthorityResolver(input: Readonly<{
+  resolveRequesterPrivateRoom: ProtectedTaskRequesterPrivateRoomResolver;
+  productAuthority: Pick<
+    PostgresNamespaceProductAuthority,
+    "withCurrentPrivateRoom"
+  >;
+  domainKeys: Pick<
+    PostgresDomainKeyAuthorityRepository,
+    "inspectNamespaceGenerationAuthorityMetadata"
+  >;
+}>) {
+  return async (
+    authority: ProtectedTaskRouteAuthority,
+    expectedNamespaceId: string,
+    requested: ProtectedTaskReadAuthorityCoordinate,
+  ): Promise<ProtectedTaskNamespaceReadAuthority | null> => {
+    const privateRoom = await input.resolveRequesterPrivateRoom(
+      authority.userId,
+      authority.agentId,
+      expectedNamespaceId,
+    );
+    if (privateRoom === null
+      || privateRoom.namespaceId !== expectedNamespaceId) return null;
+    return input.productAuthority.withCurrentPrivateRoom({
+      subjectUserId: authority.userId,
+      subjectHumanId: authority.subjectHumanId,
+      roomId: privateRoom.roomId,
+      namespaceId: expectedNamespaceId,
+      use: async () => {
+        const inspected = await input.domainKeys
+          .inspectNamespaceGenerationAuthorityMetadata({
+            namespaceId: expectedNamespaceId,
+            keyClass: "ai",
+            requested: [requested],
+          });
+        if (inspected.status !== "ready") return null;
+        try {
+          if (inspected.namespaceId !== expectedNamespaceId
+            || !inspected.retainedGenerations.some(entry =>
+              entry.generation === inspected.currentGeneration)
+            || !inspected.retainedGenerations.some(entry =>
+              entry.generation === requested.generation
+              && entry.accessRevision === requested.accessRevision)) return null;
+          return Object.freeze({
+            sourceRoomId: privateRoom.roomId,
+            namespaceId: expectedNamespaceId,
+            currentGeneration: inspected.currentGeneration,
+            retainedGenerations:
+              inspected.retainedGenerations.map(entry => Object.freeze({
+                generation: entry.generation,
+                accessRevision: entry.accessRevision,
+                headDigestBase64url: toBase64url(entry.headDigest),
+                publicationDigestBase64url:
+                  toBase64url(entry.publicationDigest),
+                publicationSetDigestBase64url:
+                  toBase64url(entry.publicationSetDigest),
+                audienceFingerprintBase64url:
+                  toBase64url(entry.audienceFingerprint),
+              })),
+          });
+        } finally {
+          inspected.retainedGenerations.forEach(entry => {
+            entry.headDigest.fill(0);
+            entry.publicationDigest.fill(0);
+            entry.publicationSetDigest.fill(0);
+            entry.audienceFingerprint.fill(0);
+          });
+        }
+      },
+    });
+  };
+}
+
+async function resolveProtectedTaskEnvelopeReadAuthority(input: Readonly<{
+  objectId: string;
+  namespaceId: string;
+  envelopeBytes: Uint8Array;
+  authority: ProtectedTaskRouteAuthority;
+  resolveReadAuthority: ReturnType<
+    typeof createProtectedTaskPrivateReadAuthorityResolver
+  >;
+}>): Promise<ProtectedTaskNamespaceReadAuthority | null> {
+  const envelope = decodeNamespaceObjectEnvelopeV2(input.envelopeBytes);
+  try {
+    if (envelope.context.objectId !== input.objectId
+      || envelope.context.namespaceId !== input.namespaceId
+      || envelope.context.keyClass !== "ai") {
+      throw new TypeError("Protected Task Namespace envelope is invalid");
+    }
+    return input.resolveReadAuthority(
+      input.authority,
+      input.namespaceId,
+      {
+        generation: envelope.context.keyGeneration,
+        accessRevision: envelope.context.bindingRevisionAtWrap,
+      },
+    );
+  } finally {
+    envelope.wrappedDek.fill(0);
+  }
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "boolean" || typeof value === "string") {
     return JSON.stringify(value);
@@ -784,6 +901,20 @@ export function createProductionProtectedTaskComposition(
   const productConnection = createPostgresJsBridgeConnection(dependencies.db);
   const resolveRequesterPrivateRoom = dependencies.resolveRequesterPrivateRoom
     ?? createProtectedTaskRequesterPrivateRoomResolver(dependencies.db);
+  const productAuthority = new PostgresNamespaceProductAuthority(
+    productConnection,
+  );
+  const domainKeys = new PostgresDomainKeyAuthorityRepository(
+    dependencies.restricted,
+    dependencies.crypto,
+    dependencies.serverScope,
+  );
+  const resolvePrivateReadAuthority =
+    createProtectedTaskPrivateReadAuthorityResolver({
+      resolveRequesterPrivateRoom,
+      productAuthority,
+      domainKeys,
+    });
 
   const foregroundSignerTransport = async (userId: string) => {
     const product = await createHumanProductTransactionContext(
@@ -951,18 +1082,13 @@ export function createProductionProtectedTaskComposition(
     );
     if (privateRoom === null || (expectedNamespaceId !== undefined
       && privateRoom.namespaceId !== expectedNamespaceId)) return null;
-    return new PostgresNamespaceProductAuthority(productConnection)
-      .withCurrentPrivateRoom({
+    return productAuthority.withCurrentPrivateRoom({
         subjectUserId: authority.userId,
         subjectHumanId: authority.subjectHumanId,
         roomId: privateRoom.roomId,
         namespaceId: privateRoom.namespaceId,
         use: async () => {
-          const domain = await new PostgresDomainKeyAuthorityRepository(
-            dependencies.restricted,
-            dependencies.crypto,
-            dependencies.serverScope,
-          ).inspectForegroundNamespaceAuthority({
+          const domain = await domainKeys.inspectForegroundNamespaceAuthority({
             namespaceId: privateRoom.namespaceId,
             keyClass: "ai",
           });
@@ -1322,7 +1448,9 @@ export function createProductionProtectedTaskComposition(
 
     async readDefinition(input) {
       let task = await getTaskById(dependencies.db, input.taskId);
-      if (task === undefined) {
+      if (task === undefined
+        || task.ownerId !== input.authority.userId
+        || task.requestorId !== input.authority.userId) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
       const taskAuthority = resolveOwnedProtectedTaskAuthority(
@@ -1341,6 +1469,8 @@ export function createProductionProtectedTaskComposition(
         const refreshed = refreshedAccess === "unavailable" ? task
           : await getTaskById(dependencies.db, input.taskId);
         if (refreshed === undefined
+          || refreshed.ownerId !== input.authority.userId
+          || refreshed.requestorId !== input.authority.userId
           || resolveOwnedProtectedTaskAuthority(input.authority, refreshed) === null) {
           throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
         }
@@ -1550,6 +1680,32 @@ export function createProductionProtectedTaskComposition(
           ...agentEvidence,
           ...humanSigners.evidence(),
         ];
+        let readAuthority: ProtectedTaskNamespaceReadAuthority | null;
+        try {
+          readAuthority = await resolveProtectedTaskEnvelopeReadAuthority({
+            objectId: input.objectId,
+            namespaceId: task.contentNamespaceId,
+            envelopeBytes: access.namespaceEnvelopes[0].envelopeBytes,
+            authority: taskAuthority,
+            resolveReadAuthority: resolvePrivateReadAuthority,
+          });
+        } catch (error) {
+          if (error instanceof TypeError) {
+            throw new ProtectedTaskRouteError(
+              409,
+              "task_content_integrity_failure",
+              "Task Namespace envelope is invalid",
+            );
+          }
+          throw error;
+        }
+        if (readAuthority === null) {
+          throw new ProtectedTaskRouteError(
+            403,
+            "task_authority_unavailable",
+            "Task authority is unavailable",
+          );
+        }
         const stableAccess = await storage.getObjectAccessState(input.objectId);
         if (stableAccess === null
           || stableAccess.head.accessRevision !== input.cryptoAccessRevision
@@ -1580,6 +1736,7 @@ export function createProductionProtectedTaskComposition(
           contentRevision: input.contentRevision,
           cryptoAccessRevision: input.cryptoAccessRevision,
           namespaceId: task.contentNamespaceId,
+          readAuthority,
           encryptedPayloadBytesBase64url:
             Buffer.from(object.payloadBytes).toString("base64url"),
           accessManifestBytesBase64url:
@@ -2013,6 +2170,20 @@ export function createProductionProtectedTaskComposition(
           ...agentEvidence,
           ...humanSigners.evidence(),
         ];
+        let readAuthority: ProtectedTaskNamespaceReadAuthority | null;
+        try {
+          readAuthority = await resolveProtectedTaskEnvelopeReadAuthority({
+            objectId: reference.objectId,
+            namespaceId: run.resultContentNamespaceId,
+            envelopeBytes: access.namespaceEnvelopes[0].envelopeBytes,
+            authority: taskAuthority,
+            resolveReadAuthority: resolvePrivateReadAuthority,
+          });
+        } catch (error) {
+          if (error instanceof TypeError) return unavailable("integrity_failure");
+          throw error;
+        }
+        if (readAuthority === null) return unavailable("authority_changed");
         const stableAccess = await storage.getObjectAccessState(reference.objectId);
         if (stableAccess === null
           || stableAccess.head.accessRevision !== run.resultCryptoAccessRevision
@@ -2035,6 +2206,7 @@ export function createProductionProtectedTaskComposition(
           ...reference,
           status: "ready" as const,
           namespaceId: run.resultContentNamespaceId,
+          readAuthority,
           encryptedPayloadBytesBase64url:
             Buffer.from(object.payloadBytes).toString("base64url"),
           accessManifestBytesBase64url:

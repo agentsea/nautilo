@@ -23,6 +23,19 @@ import {
 const TASK_ID = "91000000-0000-4000-8000-000000000001";
 const NAMESPACE_ID = "91000000-0000-4000-8000-000000000002";
 const TASK_RUN_ID = "91000000-0000-4000-8000-000000000003";
+const readAuthority = {
+  sourceRoomId: "91000000-0000-4000-8000-000000000005",
+  namespaceId: NAMESPACE_ID,
+  currentGeneration: 2,
+  retainedGenerations: [1, 2].map(generation => ({
+    generation,
+    accessRevision: generation,
+    headDigestBase64url: "A".repeat(43),
+    publicationDigestBase64url: "A".repeat(43),
+    publicationSetDigestBase64url: "A".repeat(43),
+    audienceFingerprintBase64url: "A".repeat(43),
+  })),
+};
 const historicalRepair = Object.freeze({
   version: 2 as const,
   claimId: "91000000-0000-4000-8000-000000000004",
@@ -147,6 +160,7 @@ describe("protected Task prepared publication schema", () => {
       resultRevision: 1 as const,
       cryptoAccessRevision: 0 as const,
       namespaceId: NAMESPACE_ID,
+      readAuthority,
       encryptedPayloadBytesBase64url: "Y2lwaGVy",
       accessManifestBytesBase64url: "bWFuaWZlc3Q",
       accessManifestProofBytesBase64url: [] as [],
@@ -157,6 +171,12 @@ describe("protected Task prepared publication schema", () => {
       }],
     };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(ready)).toEqual(ready);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready, readAuthority: undefined,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready, readAuthority: { ...readAuthority, namespaceId: TASK_ID },
+    })).toThrow();
     const foreground = {
       ...ready,
       signerEvidence: [{
@@ -502,6 +522,7 @@ describe("Task content v1 response schemas", () => {
       contentRevision: 1,
       cryptoAccessRevision: 0,
       namespaceId: NAMESPACE_ID,
+      readAuthority,
       encryptedPayloadBytesBase64url: "Y2lwaGVy",
       accessManifestBytesBase64url: "bWFuaWZlc3Q",
       accessManifestProofBytesBase64url: [],
@@ -515,6 +536,17 @@ describe("Task content v1 response schemas", () => {
       }],
     } as const;
     expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(ready).status).toBe("ready");
+    for (const authority of [
+      undefined,
+      { ...readAuthority, namespaceId: TASK_ID },
+      { ...readAuthority, currentGeneration: 3 },
+      { ...readAuthority, retainedGenerations: [...readAuthority.retainedGenerations].reverse() },
+      { ...readAuthority, retainedGenerations: [...readAuthority.retainedGenerations, readAuthority.retainedGenerations[1]] },
+    ]) {
+      expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+        ...ready, readAuthority: authority,
+      })).toThrow();
+    }
     const historical = {
       ...ready,
       accessManifestProofBytesBase64url: [] as [],

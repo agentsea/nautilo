@@ -3,6 +3,7 @@ import {
   MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5,
 } from "@nautilo/lattice-crypto/wire-limits";
 import { z } from "zod";
+import { protectedMemoryNamespaceAuthorityV1Schema } from "./protected-memory.ts";
 import {
   SELECTION_PROFILES,
   TASK_FUNDING_FAILURE_CODES,
@@ -494,6 +495,7 @@ const protectedTaskDefinitionReadReadyEnvelopeV1Schema = z.object({
   ...protectedTaskDefinitionReadReferenceV1Fields,
   status: z.literal("ready"),
   namespaceId: canonicalLowerUuid,
+  readAuthority: protectedMemoryNamespaceAuthorityV1Schema,
   encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
   accessManifestProofBytesBase64url: z.array(accessManifestBase64url),
@@ -528,6 +530,11 @@ const protectedTaskDefinitionReadReadyEnvelopeV1Schema = z.object({
     }
   }),
 }).strict().superRefine((value, context) => {
+  if (value.readAuthority.namespaceId !== value.namespaceId) context.addIssue({
+    code: "custom",
+    message: "Task definition read authority must match its Namespace",
+    path: ["readAuthority", "namespaceId"],
+  });
   if (value.accessManifestProofBytesBase64url.length
     !== value.cryptoAccessRevision) context.addIssue({
       code: "custom",
@@ -579,6 +586,7 @@ const protectedTaskRunResultReadReadyEnvelopeV1Schema = z.object({
   ...protectedTaskRunResultReadReferenceV1Fields,
   status: z.literal("ready"),
   namespaceId: canonicalLowerUuid,
+  readAuthority: protectedMemoryNamespaceAuthorityV1Schema,
   encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
   accessManifestProofBytesBase64url: z.array(accessManifestBase64url),
@@ -586,6 +594,11 @@ const protectedTaskRunResultReadReadyEnvelopeV1Schema = z.object({
   historicalRepair: historicalTaskContentRepairV2Schema.optional(),
   signerEvidence: z.array(taskAccessSignerEvidenceV1Schema),
 }).strict().superRefine((value, context) => {
+  if (value.readAuthority.namespaceId !== value.namespaceId) context.addIssue({
+    code: "custom",
+    message: "Task result read authority must match its Namespace",
+    path: ["readAuthority", "namespaceId"],
+  });
   if (value.accessManifestProofBytesBase64url.length
     !== value.cryptoAccessRevision) context.addIssue({
       code: "custom",

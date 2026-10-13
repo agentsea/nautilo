@@ -13,15 +13,24 @@ import {
   deriveTaskHistoricalContentCryptoObjectIdV1,
 } from "@nautilo/lattice-bridge";
 import {
+  accessRevision,
   agentId,
   agentRuntimeGeneration,
   deriveAgentRuntimeObjectSignerPublic,
   LatticeCrypto,
+  namespaceGeneration,
+  namespaceId,
   type HumanTaskPublicationRequest,
 } from "@nautilo/lattice-crypto";
+import type {
+  NamespaceProductAuthoritySnapshot,
+  PostgresDomainKeyAuthorityRepository,
+  PostgresNamespaceProductAuthority,
+} from "@nautilo/lattice-bridge/server";
 
 import {
   ProtectedTaskRouteError,
+  createProtectedTaskPrivateReadAuthorityResolver,
   createProtectedTaskForegroundSignerTransport,
   createProductionProtectedTaskComposition,
   withCurrentProtectedTaskPublicationDeviceAuthority,
@@ -36,6 +45,14 @@ const ROUTE_AUTHORITY = Object.freeze({
   deviceId: "device-1",
   deviceGeneration: 4,
 });
+
+type CurrentPrivateRoomInput<Value> = Readonly<{
+  subjectUserId: string;
+  subjectHumanId: string;
+  roomId: string;
+  namespaceId: string;
+  use: (snapshot: NamespaceProductAuthoritySnapshot) => Promise<Value>;
+}>;
 
 function publicationRequest(
   overrides: Partial<HumanTaskPublicationRequest> = {},
@@ -130,6 +147,215 @@ PostgresJsBridgeConnection {
 }
 
 describe("production protected Task composition", () => {
+  test("exports current and exact historical authority from the canonical private Room", async () => {
+    const roomId = "10000000-0000-4000-8000-000000000006";
+    const expectedNamespaceId = "10000000-0000-4000-8000-000000000005";
+    const requested = { generation: 3, accessRevision: 2 };
+    const inspected: Parameters<
+      PostgresDomainKeyAuthorityRepository[
+        "inspectNamespaceGenerationAuthorityMetadata"
+      ]
+    >[0][] = [];
+    const productInputs: Readonly<{
+      subjectUserId: string;
+      subjectHumanId: string;
+      roomId: string;
+      namespaceId: string;
+    }>[] = [];
+    const digestBytes = Array.from(
+      { length: 8 },
+      (_, index) => new Uint8Array(32).fill(index + 1),
+    );
+    const productAuthority: Pick<
+      PostgresNamespaceProductAuthority,
+      "withCurrentPrivateRoom"
+    > = {
+      async withCurrentPrivateRoom<Value>(
+        input: CurrentPrivateRoomInput<Value>,
+      ) {
+        productInputs.push({
+          subjectUserId: input.subjectUserId,
+          subjectHumanId: input.subjectHumanId,
+          roomId: input.roomId,
+          namespaceId: input.namespaceId,
+        });
+        return input.use(Object.freeze({}) as never);
+      },
+    };
+    const domainKeys: Pick<
+      PostgresDomainKeyAuthorityRepository,
+      "inspectNamespaceGenerationAuthorityMetadata"
+    > = {
+      async inspectNamespaceGenerationAuthorityMetadata(input) {
+        inspected.push(input);
+        return Object.freeze({
+          status: "ready" as const,
+          namespaceId: namespaceId(input.namespaceId),
+          currentGeneration: namespaceGeneration(8),
+          retainedGenerations: Object.freeze([
+            Object.freeze({
+              generation: namespaceGeneration(3),
+              accessRevision: accessRevision(2),
+              headDigest: digestBytes[0]!,
+              publicationDigest: digestBytes[1]!,
+              publicationSetDigest: digestBytes[2]!,
+              audienceFingerprint: digestBytes[3]!,
+            }),
+            Object.freeze({
+              generation: namespaceGeneration(8),
+              accessRevision: accessRevision(5),
+              headDigest: digestBytes[4]!,
+              publicationDigest: digestBytes[5]!,
+              publicationSetDigest: digestBytes[6]!,
+              audienceFingerprint: digestBytes[7]!,
+            }),
+          ]),
+        });
+      },
+    };
+    const resolve = createProtectedTaskPrivateReadAuthorityResolver({
+      resolveRequesterPrivateRoom: async (userId, agent, namespace) => {
+        expect([userId, agent, namespace]).toEqual([
+          ROUTE_AUTHORITY.userId,
+          ROUTE_AUTHORITY.agentId,
+          expectedNamespaceId,
+        ]);
+        return { roomId, namespaceId: expectedNamespaceId };
+      },
+      productAuthority,
+      domainKeys,
+    });
+
+    expect(await resolve(
+      ROUTE_AUTHORITY,
+      expectedNamespaceId,
+      requested,
+    )).toEqual({
+      sourceRoomId: roomId,
+      namespaceId: expectedNamespaceId,
+      currentGeneration: 8,
+      retainedGenerations: [
+        {
+          generation: 3,
+          accessRevision: 2,
+          headDigestBase64url: Buffer.from(
+            new Uint8Array(32).fill(1),
+          ).toString("base64url"),
+          publicationDigestBase64url: Buffer.from(
+            new Uint8Array(32).fill(2),
+          ).toString("base64url"),
+          publicationSetDigestBase64url: Buffer.from(
+            new Uint8Array(32).fill(3),
+          ).toString("base64url"),
+          audienceFingerprintBase64url: Buffer.from(
+            new Uint8Array(32).fill(4),
+          ).toString("base64url"),
+        },
+        {
+          generation: 8,
+          accessRevision: 5,
+          headDigestBase64url: Buffer.from(
+            new Uint8Array(32).fill(5),
+          ).toString("base64url"),
+          publicationDigestBase64url: Buffer.from(
+            new Uint8Array(32).fill(6),
+          ).toString("base64url"),
+          publicationSetDigestBase64url: Buffer.from(
+            new Uint8Array(32).fill(7),
+          ).toString("base64url"),
+          audienceFingerprintBase64url: Buffer.from(
+            new Uint8Array(32).fill(8),
+          ).toString("base64url"),
+        },
+      ],
+    });
+    expect(productInputs).toEqual([{
+      subjectUserId: ROUTE_AUTHORITY.userId,
+      subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
+      roomId,
+      namespaceId: expectedNamespaceId,
+    }]);
+    expect(inspected).toEqual([{
+      namespaceId: expectedNamespaceId,
+      keyClass: "ai",
+      requested: [requested],
+    }]);
+    expect(digestBytes.every(bytes => bytes.every(byte => byte === 0)))
+      .toBe(true);
+  });
+
+  test("fails closed when exact historical Namespace metadata is unavailable", async () => {
+    const expectedNamespaceId = "10000000-0000-4000-8000-000000000005";
+    const resolve = createProtectedTaskPrivateReadAuthorityResolver({
+      resolveRequesterPrivateRoom: async () => ({
+        roomId: "10000000-0000-4000-8000-000000000006",
+        namespaceId: expectedNamespaceId,
+      }),
+      productAuthority: {
+        async withCurrentPrivateRoom<Value>(
+          input: CurrentPrivateRoomInput<Value>,
+        ) {
+          return input.use(Object.freeze({}) as never);
+        },
+      },
+      domainKeys: {
+        async inspectNamespaceGenerationAuthorityMetadata() {
+          return Object.freeze({
+            status: "unavailable" as const,
+            reason: "binding_unavailable",
+          });
+        },
+      },
+    });
+
+    expect(await resolve(ROUTE_AUTHORITY, expectedNamespaceId, {
+      generation: 3,
+      accessRevision: 2,
+    })).toBeNull();
+  });
+
+  test("rejects a foreign Task owner before resolving private read authority", async () => {
+    let authorityCalls = 0;
+    const cryptoActivity = { queries: 0 };
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[{
+        ownerId: "10000000-0000-4000-8000-000000000099",
+        requestorId: "10000000-0000-4000-8000-000000000099",
+        agentId: ROUTE_AUTHORITY.agentId,
+        contentRepresentation: "protected",
+        contentNamespaceId: "10000000-0000-4000-8000-000000000005",
+        cryptoMappingState: "verified",
+      }]], []),
+      restricted: observedRestrictedConnection(cryptoActivity),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+            revalidationToken: 1,
+          }),
+          revalidate: () => Promise.resolve(),
+        },
+      }),
+      observer: { kick() {} },
+      resolveRequesterPrivateRoom: async () => {
+        authorityCalls += 1;
+        return null;
+      },
+    });
+
+    const error = await composition.ports.readRunResult({
+      authority: ROUTE_AUTHORITY,
+      taskId: "10000000-0000-4000-8000-000000000004",
+      taskRunId: "10000000-0000-4000-8000-000000000006",
+    }).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ProtectedTaskRouteError);
+    expect((error as ProtectedTaskRouteError).statusCode).toBe(404);
+    expect(authorityCalls).toBe(0);
+    expect(cryptoActivity.queries).toBe(0);
+  });
+
   test("retains only the exact accepted foreground execution proof for the Task Agent", async () => {
     const crypto = new LatticeCrypto();
     const runtime = {

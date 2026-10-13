@@ -449,7 +449,18 @@ export {
   type HumanRoomMember,
 } from "./tasks/resolve-target-room";
 export { resolveTaskMemoryEnvelope } from "./tasks/resolve-task-memory-envelope";
-export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps, type TaskCreationResult, type ProtectedTaskCreateCandidate } from "./tasks/create-task";
+export {
+  createTask,
+  prepareTaskCreation,
+  computeNextFireAt,
+  type TaskCreateInput,
+  type CreateTaskDeps,
+  type TaskCreationResult,
+  type ProtectedTaskCreateCandidate,
+  type PreparedTaskCreation,
+  type PreparedTaskCreationDeps,
+  type PrepareTaskCreationDeps,
+} from "./tasks/create-task";
 export {
   TaskCreationUnavailableError,
   assertTaskCreationProvenance,

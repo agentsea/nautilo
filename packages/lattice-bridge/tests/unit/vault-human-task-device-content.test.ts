@@ -233,6 +233,7 @@ async function preparedAgentDefinition(
       contentRevision: 1,
       cryptoAccessRevision: 0,
       namespaceId: NAMESPACE_ID,
+      readAuthority: taskReadAuthority(),
       encryptedPayloadBytes: snapshot.object.payloadBytes.ciphertext,
       accessManifestBytes: snapshot.access.manifestBytes,
       accessManifestProofBytes: [] as Uint8Array[],
@@ -257,9 +258,36 @@ function decodeBase64url(value: string): Uint8Array {
   return Uint8Array.from(Buffer.from(value, "base64url"));
 }
 
+function taskReadAuthority() {
+  return {
+    sourceRoomId: ROOM_ID,
+    namespaceId: NAMESPACE_ID,
+    currentGeneration: 3,
+    retainedGenerations: [
+      {
+        generation: 2,
+        accessRevision: 9,
+        headDigestBase64url: base64url(new Uint8Array(32).fill(0x51)),
+        publicationDigestBase64url: base64url(new Uint8Array(32).fill(0x52)),
+        publicationSetDigestBase64url: base64url(new Uint8Array(32).fill(0x53)),
+        audienceFingerprintBase64url: base64url(new Uint8Array(32).fill(0x54)),
+      },
+      {
+        generation: 3,
+        accessRevision: 10,
+        headDigestBase64url: base64url(new Uint8Array(32).fill(0x61)),
+        publicationDigestBase64url: base64url(new Uint8Array(32).fill(0x62)),
+        publicationSetDigestBase64url: base64url(new Uint8Array(32).fill(0x63)),
+        audienceFingerprintBase64url: base64url(new Uint8Array(32).fill(0x64)),
+      },
+    ],
+  };
+}
+
 async function setup(deviceId: string, seed: number, peer?: Readonly<{
   deviceId: string;
   signingPublicKey: Uint8Array;
+  includeLegacyKeyring?: boolean;
 }>) {
   const crypto = new LatticeCrypto({ bytes: seededRng(seed) }, { now: () => NOW });
   const signing = crypto.generateSigningKeyPair();
@@ -282,7 +310,7 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     trustedDeviceRevision: 7,
     trustedHostAuthorizationRevision: 11,
     deliveryHighWatermark: 4,
-    keyringDeliveries: Object.freeze([Object.freeze({
+    keyringDeliveries: Object.freeze(peer?.includeLegacyKeyring === false ? [] : [Object.freeze({
       deliverySequence: 4,
       operationId: "delivery:4",
       namespaceId: NAMESPACE_ID,
@@ -335,6 +363,13 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
   await vault.activateProfile(coordinates, "stage:1");
   profileBytes.fill(0);
   const anchors = new Map<string, TrustedMinimumObjectAccessHead>();
+  const authorityRequests: Array<Parameters<NonNullable<
+    import("../../src/client/message/namespace-authority-client.ts")
+      .NamespaceAuthorityClient["withOpenedGenerations"]
+  >>[0]> = [];
+  let namespaceUnavailable = false;
+  let omitSelectedGeneration = false;
+  let selectedGenerationKey: Uint8Array = NAMESPACE_KEY;
   const contentDependencies = {
     crypto,
     vault,
@@ -349,6 +384,43 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
       deviceGeneration: 1,
       expiresAt: NOW + 60_000,
     }),
+    namespaceAuthority: {
+      ensure: () => Promise.resolve({ status: "ready" as const }),
+      synchronizeRecipients: () => Promise.resolve({ status: "ready" as const }),
+      withOpenedAiGenerations: () => Promise.resolve({
+        status: "unavailable" as const, reason: "unused",
+      }),
+      withOpenedGenerations: async <Value>(request: Parameters<NonNullable<
+        import("../../src/client/message/namespace-authority-client.ts")
+          .NamespaceAuthorityClient["withOpenedGenerations"]
+      >>[0], use: (
+        entries: readonly import("../../src/client/message/namespace-authority-client.ts")
+          .OpenedNamespaceGeneration[],
+      ) => Promise<Value> | Value) => {
+        authorityRequests.push(request);
+        if (namespaceUnavailable) return {
+          status: "unavailable" as const,
+          reason: "bundle_not_ready",
+        };
+        return {
+          status: "opened" as const,
+          value: await use(request.authority.flatMap(authority =>
+          authority.retainedGenerations
+            .filter(entry => !omitSelectedGeneration || entry.generation !== 2)
+            .map(entry => ({
+            namespaceId: namespaceId(authority.namespaceId),
+            keyClass: "ai" as const,
+            accessRevision: accessRevision(entry.accessRevision),
+            generation: namespaceGeneration(entry.generation),
+            generationKey: entry.generation === 2
+              ? selectedGenerationKey : new Uint8Array(32).fill(0x49),
+            audienceFingerprint: entry.audienceFingerprint,
+            headDigest: entry.headDigest,
+          }))
+          )),
+        };
+      },
+    },
     accessAnchors: {
       load: (cryptoObjectId: string) => Promise.resolve(anchors.get(cryptoObjectId) ?? null),
       advance: ({ expected, next }: Readonly<{
@@ -373,6 +445,10 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     contentDependencies,
     vault,
     anchors,
+    authorityRequests,
+    setNamespaceUnavailable(value: boolean) { namespaceUnavailable = value; },
+    setOmitSelectedGeneration(value: boolean) { omitSelectedGeneration = value; },
+    setSelectedGenerationKey(value: Uint8Array) { selectedGenerationKey = value; },
   };
 }
 
@@ -382,6 +458,7 @@ test("vault-backed Task prepare/open authenticates local custody and rejects for
   const trustedReader = await setup("device:trusted-reader", 0x250, {
     deviceId: "device:writer",
     signingPublicKey: writer.signing.publicKey,
+    includeLegacyKeyring: false,
   });
   const prepared = await writer.content.prepareCreate({
     plan: {
@@ -426,6 +503,7 @@ test("vault-backed Task prepare/open authenticates local custody and rejects for
     contentRevision: 1,
     cryptoAccessRevision: 0,
     namespaceId: NAMESPACE_ID,
+    readAuthority: taskReadAuthority(),
     encryptedPayloadBytes: decodeBase64url(prepared.encryptedPayloadBytesBase64url),
     accessManifestBytes: decodeBase64url(prepared.accessManifestBytesBase64url),
     accessManifestProofBytes: [],
@@ -540,6 +618,63 @@ test("vault-backed Task prepare/open authenticates local custody and rejects for
   } finally {
     crossDevice.fill(0);
   }
+  expect(trustedReader.authorityRequests).toHaveLength(1);
+  expect(trustedReader.authorityRequests[0]!.authority[0]!.retainedGenerations
+    .map(entry => entry.generation)).toEqual([2, 3]);
+  expect(trustedReader.authorityRequests[0]!.authority[0]!
+    .retainedGenerations.at(-1)!.accessRevision).toBe(10);
+
+  const pendingReader = await setup("device:pending-reader", 0x251, {
+    deviceId: "device:writer",
+    signingPublicKey: writer.signing.publicKey,
+    includeLegacyKeyring: false,
+  });
+  pendingReader.setNamespaceUnavailable(true);
+  const pending = await pendingReader.content.openExact({ reference, envelope })
+    .catch((cause: unknown) => cause);
+  expect(pending).toBeInstanceOf(ClassifiedDataOperationError);
+  expect((pending as ClassifiedDataOperationError).failureClass).toBe("key_waiting");
+  expect(pendingReader.anchors.has(prepared.cryptoObjectId)).toBe(false);
+
+  const missingReader = await setup("device:missing-reader", 0x256, {
+    deviceId: "device:writer",
+    signingPublicKey: writer.signing.publicKey,
+    includeLegacyKeyring: false,
+  });
+  missingReader.setOmitSelectedGeneration(true);
+  const missing = await missingReader.content.openExact({ reference, envelope })
+    .catch((cause: unknown) => cause);
+  expect(missing).toBeInstanceOf(ClassifiedDataOperationError);
+  expect((missing as ClassifiedDataOperationError).failureClass).toBe("key_waiting");
+  expect(missingReader.anchors.has(prepared.cryptoObjectId)).toBe(false);
+
+  const mismatchReader = await setup("device:mismatch-reader", 0x257, {
+    deviceId: "device:writer",
+    signingPublicKey: writer.signing.publicKey,
+    includeLegacyKeyring: false,
+  });
+  mismatchReader.setSelectedGenerationKey(new Uint8Array(32).fill(0xee));
+  const mismatch = await mismatchReader.content.openExact({ reference, envelope })
+    .catch((cause: unknown) => cause);
+  expect(mismatch).toBeInstanceOf(ClassifiedDataOperationError);
+  expect((mismatch as ClassifiedDataOperationError).failureClass).toBe("integrity");
+  expect(mismatchReader.anchors.has(prepared.cryptoObjectId)).toBe(false);
+
+  pendingReader.setNamespaceUnavailable(false);
+  const wrongAuthority = await pendingReader.content.openExact({
+    reference,
+    envelope: {
+      ...envelope,
+      readAuthority: {
+        ...taskReadAuthority(),
+        namespaceId: "50000000-0000-4000-8000-000000000249",
+      },
+    },
+  }).catch((cause: unknown) => cause);
+  expect(wrongAuthority).toBeInstanceOf(ClassifiedDataOperationError);
+  expect((wrongAuthority as ClassifiedDataOperationError).failureClass)
+    .toBe("integrity");
+  expect(pendingReader.anchors.has(prepared.cryptoObjectId)).toBe(false);
 });
 
 test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime signer", async () => {
@@ -740,6 +875,7 @@ test("vault-backed Task open keeps terminal custody loss classified as key waiti
       contentRevision: 1,
       cryptoAccessRevision: 0,
       namespaceId: NAMESPACE_ID,
+      readAuthority: taskReadAuthority(),
       encryptedPayloadBytes: decodeBase64url(prepared.encryptedPayloadBytesBase64url),
       accessManifestBytes: decodeBase64url(prepared.accessManifestBytesBase64url),
       accessManifestProofBytes: [],

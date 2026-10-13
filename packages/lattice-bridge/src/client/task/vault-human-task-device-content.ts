@@ -68,6 +68,10 @@ import {
 import type {
   HumanTaskDeviceContentPortV1,
 } from "./authorized-human-task-client.ts";
+import type {
+  NamespaceAuthorityClient,
+  NamespaceGenerationAuthority,
+} from "../message/namespace-authority-client.ts";
 import {
   exactForegroundAgentSignerKeysV1,
   foregroundAgentSignerPrincipalKeyV1,
@@ -99,6 +103,7 @@ export interface VaultHumanTaskDeviceContentInputV1 {
       next: TrustedMinimumObjectAccessHead;
     }>): Promise<boolean>;
   }>;
+  readonly namespaceAuthority: NamespaceAuthorityClient;
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -129,12 +134,169 @@ function fromBase64url(label: string, value: string): Uint8Array {
   return bytes;
 }
 
+type TaskReadAuthorityV1 =
+  import("@nautilo/api-client/browser").ProtectedTaskDefinitionReadReadyEnvelopeV1[
+    "readAuthority"
+  ];
+
+function wipeNamespaceAuthority(authority: NamespaceGenerationAuthority): void {
+  for (const entry of authority.retainedGenerations) {
+    entry.headDigest.fill(0);
+    entry.publicationDigest.fill(0);
+    entry.publicationSetDigest.fill(0);
+    entry.audienceFingerprint.fill(0);
+  }
+}
+
+/**
+ * Opens an exact Task Namespace generation through canonical Domain V2
+ * authority. The complete retained set fences today's authority while the
+ * callback selects the historical generation named by the object envelope.
+ */
+export async function withVaultHumanTaskReadAuthorityV1<Value>(input: Readonly<{
+  dependencies: Pick<VaultHumanTaskDeviceContentInputV1,
+    | "coordinates"
+    | "namespaceAuthority"
+    | "resolveDeviceAdmissionStatus"
+    | "subjectHumanId"
+  >;
+  authority: TaskReadAuthorityV1;
+  namespaceId: string;
+  generation: number;
+  accessRevision: number;
+  operation(generationKey: Uint8Array): Promise<Value> | Value;
+}>): Promise<Value> {
+  const authority = input.authority;
+  if (
+    authority.namespaceId !== input.namespaceId
+    || authority.sourceRoomId.length === 0
+    || authority.retainedGenerations.length === 0
+    || authority.retainedGenerations.at(-1)?.generation
+      !== authority.currentGeneration
+    || authority.retainedGenerations.some((entry, index, entries) =>
+      entry.generation < 0
+      || entry.accessRevision < 0
+      || index > 0 && entries[index - 1]!.generation >= entry.generation
+    )
+  ) throw new ClassifiedDataOperationError(
+    "integrity", "Protected Task Namespace read authority is invalid",
+  );
+  const selected = authority.retainedGenerations.find((entry) =>
+    entry.generation === input.generation
+    && entry.accessRevision === input.accessRevision
+  );
+  if (selected === undefined) throw new ClassifiedDataOperationError(
+    "integrity", "Protected Task Namespace read authority was substituted",
+  );
+  const decodedEntries: Array<
+    NamespaceGenerationAuthority["retainedGenerations"][number]
+  > = [];
+  try {
+    for (const entry of authority.retainedGenerations) {
+      const headDigest = fromBase64url(
+        "Protected Task Namespace head", entry.headDigestBase64url,
+      );
+      const publicationDigest = fromBase64url(
+        "Protected Task Namespace publication", entry.publicationDigestBase64url,
+      );
+      const publicationSetDigest = fromBase64url(
+        "Protected Task Namespace publication set",
+        entry.publicationSetDigestBase64url,
+      );
+      const audienceFingerprint = fromBase64url(
+        "Protected Task Namespace audience", entry.audienceFingerprintBase64url,
+      );
+      if ([headDigest, publicationDigest, publicationSetDigest, audienceFingerprint]
+        .some((digest) => digest.length !== 32)) {
+        headDigest.fill(0);
+        publicationDigest.fill(0);
+        publicationSetDigest.fill(0);
+        audienceFingerprint.fill(0);
+        throw new TypeError("Protected Task Namespace authority digest is invalid");
+      }
+      decodedEntries.push(Object.freeze({
+        generation: entry.generation,
+        accessRevision: entry.accessRevision,
+        headDigest,
+        publicationDigest,
+        publicationSetDigest,
+        audienceFingerprint,
+      }));
+    }
+  } catch (cause) {
+    for (const entry of decodedEntries) {
+      entry.headDigest.fill(0);
+      entry.publicationDigest.fill(0);
+      entry.publicationSetDigest.fill(0);
+      entry.audienceFingerprint.fill(0);
+    }
+    throw new ClassifiedDataOperationError(
+      "integrity", "Protected Task Namespace read authority is invalid", { cause },
+    );
+  }
+  const decoded: NamespaceGenerationAuthority = Object.freeze({
+    namespaceId: authority.namespaceId,
+    retainedGenerations: Object.freeze(decodedEntries),
+  });
+  try {
+    const admission = await input.dependencies.resolveDeviceAdmissionStatus();
+    if (
+      admission.status !== "admitted"
+      || admission.deviceId !== input.dependencies.coordinates.deviceId
+    ) throw new ClassifiedDataOperationError(
+      "key_waiting", "Protected Task device admission is unavailable",
+    );
+    if (input.dependencies.namespaceAuthority.withOpenedGenerations === undefined) {
+      throw new ClassifiedDataOperationError(
+      "key_waiting", "Protected Task Namespace authority is unavailable",
+      );
+    }
+    type Selected = Readonly<{ status: "missing" }>
+      | Readonly<{ status: "selected"; value: Value }>;
+    const opened = await input.dependencies.namespaceAuthority
+      .withOpenedGenerations<Selected>({
+      sourceRoomId: authority.sourceRoomId,
+      subjectHumanId: input.dependencies.subjectHumanId,
+      deviceSigningKeyGeneration: admission.deviceGeneration,
+      keyClass: "ai",
+      authority: [decoded],
+    }, async (entries) => {
+      const exact = entries.find((entry) =>
+        entry.namespaceId === input.namespaceId
+        && entry.keyClass === "ai"
+        && entry.generation === input.generation
+        && entry.accessRevision === input.accessRevision
+      );
+      return exact === undefined
+        ? Object.freeze({ status: "missing" as const })
+        : Object.freeze({
+            status: "selected" as const,
+            value: await input.operation(exact.generationKey),
+          });
+    });
+    if (opened.status !== "opened" || opened.value.status === "missing") {
+      throw new ClassifiedDataOperationError(
+        "key_waiting", "Protected Task Namespace key is unavailable",
+      );
+    }
+    return opened.value.value;
+  } catch (cause) {
+    if (cause instanceof ClassifiedDataOperationError) throw cause;
+    if (cause instanceof TypeError) throw new ClassifiedDataOperationError(
+      "integrity", "Protected Task Namespace authority is invalid", { cause },
+    );
+    throw cause;
+  } finally {
+    wipeNamespaceAuthority(decoded);
+  }
+}
+
 async function withProfile<Value>(
   input: VaultHumanTaskDeviceContentInputV1,
   operation: (
     profile: Awaited<ReturnType<typeof authenticateClientDeviceProfileV4>>,
     admission: Extract<DeviceAdmissionStatus, { status: "admitted" }>,
-  ) => Promise<Value>,
+  ) => Promise<Value> | Value,
 ): Promise<Value> {
   await ensureVaultAvailable(input);
   const admission = await input.resolveDeviceAdmissionStatus();
@@ -448,14 +610,13 @@ export function createVaultHumanTaskDeviceContentPortV1(
       }
       let retainedAnchor: TrustedMinimumObjectAccessHead | null;
       let result: Readonly<{
-        plaintext: Uint8Array;
         nextAnchor: TrustedMinimumObjectAccessHead;
       }>;
       try {
       retainedAnchor = await dependencies.accessAnchors.load(
         input.reference.objectId,
       );
-      result = await withProfile(dependencies, async (profileV4) => {
+      result = await withProfile(dependencies, (profileV4) => {
       let canonicalPayload: Uint8Array | undefined;
       let canonicalManifest: Uint8Array | undefined;
       let canonicalEnvelope: Uint8Array | undefined;
@@ -463,7 +624,6 @@ export function createVaultHumanTaskDeviceContentPortV1(
       let envelopeHash: Uint8Array | undefined;
       let humanKeys: Map<string, Uint8Array> | undefined;
       let prepared: ReturnType<typeof prepareTaskAccessManifestChain> | undefined;
-      let plaintext: Uint8Array | undefined;
       try {
         const payload = decodeEncryptedPayloadV2(envelope.encryptedPayloadBytes);
         const manifest = decodeObjectAccessManifestV5(envelope.accessManifestBytes);
@@ -598,36 +758,12 @@ export function createVaultHumanTaskDeviceContentPortV1(
             },
           ),
         });
-        plaintext = await withClientNamespaceKeyring({
-          profile: own,
-          namespaceId: envelope.namespaceId,
-          keyClass: "ai",
-          requiredAccessRevision: namespaceEnvelope.context.bindingRevisionAtWrap,
-          requiredGeneration: namespaceEnvelope.context.keyGeneration,
-          operation: (keyring) => {
-            const generation = keyring.generations.find((entry) =>
-              entry.generation === namespaceEnvelope.context.keyGeneration
-            );
-            if (generation === undefined) return null;
-            return decryptObjectThroughNamespace(
-              dependencies.crypto,
-              generation.key,
-              namespaceEnvelope,
-              payload,
-            );
-          },
-        }) ?? undefined;
-        if (plaintext === undefined) throw new ClassifiedDataOperationError(
-          "key_waiting",
-          "Protected Task Namespace key is unavailable",
-        );
-        return Object.freeze({ plaintext, nextAnchor: Object.freeze({
+        return Object.freeze({ nextAnchor: Object.freeze({
           ...prepared.nextAnchor,
           payloadHash: Uint8Array.from(prepared.nextAnchor.payloadHash),
           manifestHash: Uint8Array.from(prepared.nextAnchor.manifestHash),
         }) });
       } catch (error) {
-        plaintext?.fill(0);
         if (error instanceof ClassifiedDataOperationError) throw error;
         throw new ClassifiedDataOperationError(
           "integrity",
@@ -649,6 +785,45 @@ export function createVaultHumanTaskDeviceContentPortV1(
       } finally {
         foregroundKeys?.forEach(key => key.fill(0));
       }
+      let payload: ReturnType<typeof decodeEncryptedPayloadV2> | undefined;
+      let namespaceEnvelope: ReturnType<typeof decodeNamespaceObjectEnvelopeV2>
+        | undefined;
+      let plaintext: Uint8Array;
+      try {
+        payload = decodeEncryptedPayloadV2(envelope.encryptedPayloadBytes);
+        namespaceEnvelope = decodeNamespaceObjectEnvelopeV2(
+          envelope.namespaceEnvelopeBytes,
+        );
+        plaintext = await withVaultHumanTaskReadAuthorityV1({
+          dependencies,
+          authority: envelope.readAuthority,
+          namespaceId: envelope.namespaceId,
+          generation: namespaceEnvelope.context.keyGeneration,
+          accessRevision: namespaceEnvelope.context.bindingRevisionAtWrap,
+          operation: (generationKey) => {
+            const opened = decryptObjectThroughNamespace(
+              dependencies.crypto,
+              generationKey,
+              namespaceEnvelope!,
+              payload!,
+            );
+            if (opened === null) throw new TypeError(
+              "Protected Task ciphertext authentication failed",
+            );
+            return opened;
+          },
+        });
+      } catch (error) {
+        result.nextAnchor.payloadHash.fill(0);
+        result.nextAnchor.manifestHash.fill(0);
+        if (error instanceof ClassifiedDataOperationError) throw error;
+        throw new ClassifiedDataOperationError(
+          "integrity", "Protected Task content could not be decrypted", { cause: error },
+        );
+      } finally {
+        payload?.ciphertext.fill(0);
+        namespaceEnvelope?.wrappedDek.fill(0);
+      }
       let advanced: boolean;
       try {
         advanced = await dependencies.accessAnchors.advance({
@@ -656,13 +831,13 @@ export function createVaultHumanTaskDeviceContentPortV1(
           next: result.nextAnchor,
         });
       } catch (error) {
-        result.plaintext.fill(0);
+        plaintext.fill(0);
         result.nextAnchor.payloadHash.fill(0);
         result.nextAnchor.manifestHash.fill(0);
         throw error;
       }
       if (!advanced) {
-        result.plaintext.fill(0);
+        plaintext.fill(0);
         result.nextAnchor.payloadHash.fill(0);
         result.nextAnchor.manifestHash.fill(0);
         throw new ClassifiedDataOperationError(
@@ -672,7 +847,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
       }
       result.nextAnchor.payloadHash.fill(0);
       result.nextAnchor.manifestHash.fill(0);
-      return result.plaintext;
+      return plaintext;
     },
   });
 }

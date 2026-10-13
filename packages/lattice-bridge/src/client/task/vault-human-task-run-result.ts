@@ -20,7 +20,6 @@ import {
   type ObjectAccessSignerEvidenceTransportV1,
   type ResolveTrustedObjectAccessEvidenceIssuerV4,
 } from "../../client-vault/ingest-object-access-signer-evidence-v4.ts";
-import { withClientNamespaceKeyring } from "../../device/client-namespace-keyring.ts";
 import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
   "../../task/task-historical-content-identity.ts";
 import {
@@ -46,6 +45,8 @@ import {
   taskHumanSignerCoordinate,
 } from "./task-access-manifest-read.ts";
 import type { VaultHumanTaskDeviceContentInputV1 } from
+  "./vault-human-task-device-content.ts";
+import { withVaultHumanTaskReadAuthorityV1 } from
   "./vault-human-task-device-content.ts";
 
 export type VaultHumanTaskRunResultReaderInputV1 =
@@ -237,7 +238,7 @@ export function createVaultHumanTaskRunResultReaderV1(
             evidence: envelope.signerEvidence, chain: prepared.fullChain,
             expectedHumanId: dependencies.subjectHumanId,
           });
-          opened = await dependencies.vault.withOpenProfile(
+          await dependencies.vault.withOpenProfile(
             dependencies.coordinates,
             async profileBytes => {
               const profile = await authenticateClientDeviceProfileV4({
@@ -288,26 +289,25 @@ export function createVaultHumanTaskRunResultReaderV1(
                     },
                   ),
                 });
-                return withClientNamespaceKeyring({
-                  profile: own, namespaceId: envelope.namespaceId, keyClass: "ai",
-                  requiredAccessRevision: namespaceEnvelope!.context.bindingRevisionAtWrap,
-                  requiredGeneration: namespaceEnvelope!.context.keyGeneration,
-                  operation: keyring => {
-                    const generation = keyring.generations.find(entry =>
-                      entry.generation === namespaceEnvelope!.context.keyGeneration);
-                    return generation === undefined ? null
-                      : decryptObjectThroughNamespace(
-                          dependencies.crypto, generation.key,
-                          namespaceEnvelope!, payload!,
-                        );
-                  },
-                });
               } finally { destroyOpenedClientDeviceProfileV4(profile); }
             },
           );
-          if (opened === null) throw new ClassifiedDataOperationError(
-            "key_waiting", "Protected Task result Namespace key is unavailable",
-          );
+          opened = await withVaultHumanTaskReadAuthorityV1({
+            dependencies,
+            authority: envelope.readAuthority,
+            namespaceId: envelope.namespaceId,
+            generation: namespaceEnvelope.context.keyGeneration,
+            accessRevision: namespaceEnvelope.context.bindingRevisionAtWrap,
+            operation: (generationKey) => {
+              const plaintext = decryptObjectThroughNamespace(
+                dependencies.crypto, generationKey, namespaceEnvelope!, payload!,
+              );
+              if (plaintext === null) throw new TypeError(
+                "Protected Task result ciphertext authentication failed",
+              );
+              return plaintext;
+            },
+          });
           if (!await dependencies.accessAnchors.advance({
             expected: retained, next: prepared.nextAnchor,
           })) throw new ClassifiedDataOperationError(

@@ -36,6 +36,21 @@ export type TaskCreationResult = Readonly<{
   nextFireAt: Date | undefined;
 }>;
 
+export interface PrepareTaskCreationDeps {
+  assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
+  prepareFunding?: typeof prepareTaskCreationFunding;
+  assertServerFunding?: typeof assertCanUseServerProviderCredentials;
+}
+
+function invocationAdmissionInput(input: TaskCreateInput): AgentInvocationAdmissionInput {
+  return {
+    humanUserId: input.requestorId,
+    origin: "task_create",
+    agentId: input.agentId,
+    ...(input.targetRoomId ? { roomId: input.targetRoomId } : {}),
+  };
+}
+
 /** Fully shaped definition handed to the protected repository. Runtime has
  * already bound the trusted funding and local-execution sources at this point. */
 export type ProtectedTaskCreateCandidate = TaskCreateInput & Readonly<{
@@ -73,6 +88,17 @@ export interface CreateTaskDeps<Prepared = unknown> {
     Readonly<{ taskId: string; scheduleReference: Date }>;
 }
 
+export type PreparedTaskCreationDeps<Prepared = unknown> = Omit<
+  CreateTaskDeps<Prepared>,
+  "invocationAuthority" | "provenance" | "assertInvocation" | "assertServerFunding"
+>;
+
+export interface PreparedTaskCreation {
+  create<Prepared = unknown>(
+    deps: PreparedTaskCreationDeps<Prepared>,
+  ): Promise<TaskCreationResult>;
+}
+
 /**
  * Schedule-to-`next_fire_at` computation, extracted from
  * `createTask` so the `task` tool's `update` command + the `PATCH /api/tasks/:id`
@@ -96,16 +122,10 @@ export function computeNextFireAt(
   return nextCronOccurrence(cron, timezone, now);
 }
 
-/**
- * Runtime `createTask` is the shared entry point for Task creation surfaces.
- * It enforces the depth cap, computes `next_fire_at`, inserts the durable
- * `tasks` row through the data-access layer, and kicks the observer for
- * now-tasks so dispatch is near-instant.
- */
-export async function createTask<Prepared = unknown>(
-  deps: CreateTaskDeps<Prepared>,
-  input: TaskCreateInput,
-): Promise<TaskCreationResult> {
+function taskCreationTiming(input: TaskCreateInput): Readonly<{
+  scheduleKind: NonNullable<TaskCreateInput["scheduleKind"]>;
+  nextFireAt: Date;
+}> {
   if (Object.prototype.hasOwnProperty.call(input, "localExecutionDelegation")) {
     throw new TypeError("Task local execution authority must come from its trusted source");
   }
@@ -125,31 +145,126 @@ export async function createTask<Prepared = unknown>(
     input.timezone ?? "UTC",
     now,
   );
+  return { scheduleKind, nextFireAt };
+}
 
-  const invocationAuthority =
-    deps.invocationAuthority ?? getCurrentAcceptedInvocationAuthority();
+function currentTaskCreationAuthority(
+  requestorId: string,
+  supplied?: AcceptedInvocationAuthority,
+): AcceptedInvocationAuthority {
+  const invocationAuthority = supplied ?? getCurrentAcceptedInvocationAuthority();
   if (!invocationAuthority) {
     throw new TypeError("createTask requires accepted invocation authority");
   }
-  assertAcceptedInvocationAuthoritySubject(invocationAuthority, input.requestorId);
-  assertTaskCreationProvenance(deps.provenance, input.ownerId);
-  await (deps.assertInvocation ?? assertCanInvokeAgent)({
-    humanUserId: input.requestorId,
-    origin: "task_create",
-    agentId: input.agentId,
-    ...(input.targetRoomId ? { roomId: input.targetRoomId } : {}),
-  });
-  const callerFunded = await prepareTaskCreationFunding(input, deps.provenance);
+  assertAcceptedInvocationAuthoritySubject(invocationAuthority, requestorId);
+  return invocationAuthority;
+}
+
+/**
+ * Complete global Task-creation checks before borrowing a product transaction.
+ * The returned one-shot creator owns the exact cloned input and trusted
+ * provenance; its transaction call accepts no security-input overrides.
+ */
+export async function prepareTaskCreation(
+  input: TaskCreateInput,
+  provenance: TaskCreationProvenance,
+  deps: PrepareTaskCreationDeps = {},
+): Promise<PreparedTaskCreation> {
+  // Capture the full candidate before the first await. Later mutation of a
+  // tool/request object cannot change either the checks or durable candidate.
+  const candidate = structuredClone(input);
+  taskCreationTiming(candidate);
+  const invocationAuthority = currentTaskCreationAuthority(candidate.requestorId);
+  assertTaskCreationProvenance(provenance, candidate.ownerId);
+  await (deps.assertInvocation ?? assertCanInvokeAgent)(invocationAdmissionInput(candidate));
+  const callerFunded = await (deps.prepareFunding ?? prepareTaskCreationFunding)(candidate, provenance);
   if (!callerFunded) {
     await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
-      input.requestorId, "task_create",
+      candidate.requestorId,
+      "task_create",
     );
   }
 
+  let consumed = false;
+  return Object.freeze({
+    async create<Prepared = unknown>(
+      createDeps: PreparedTaskCreationDeps<Prepared>,
+    ): Promise<TaskCreationResult> {
+      if (consumed) throw new TypeError("Prepared Task creation is already consumed");
+      consumed = true;
+      if (["input", "provenance", "invocationAuthority", "assertInvocation",
+        "prepareFunding", "assertServerFunding"].some(key =>
+        Object.prototype.hasOwnProperty.call(createDeps, key))) {
+        throw new TypeError("Prepared Task creation does not accept security input overrides");
+      }
+      if (getCurrentAcceptedInvocationAuthority() !== invocationAuthority) {
+        throw new TypeError("Prepared Task creation authority changed");
+      }
+      const timing = taskCreationTiming(candidate);
+      assertAcceptedInvocationAuthoritySubject(invocationAuthority, candidate.requestorId);
+      assertTaskCreationProvenance(provenance, candidate.ownerId);
+      return createTaskAfterGlobalChecks(
+        createDeps,
+        candidate,
+        provenance,
+        invocationAuthority,
+        callerFunded,
+        timing,
+      );
+    },
+  });
+}
+
+/**
+ * Runtime `createTask` is the shared entry point for Task creation surfaces.
+ * It enforces the depth cap, computes `next_fire_at`, inserts the durable
+ * `tasks` row through the data-access layer, and kicks the observer for
+ * now-tasks so dispatch is near-instant.
+ */
+export async function createTask<Prepared = unknown>(
+  deps: CreateTaskDeps<Prepared>,
+  input: TaskCreateInput,
+): Promise<TaskCreationResult> {
+  const timing = taskCreationTiming(input);
+  const invocationAuthority = currentTaskCreationAuthority(
+    input.requestorId,
+    deps.invocationAuthority,
+  );
+  assertTaskCreationProvenance(deps.provenance, input.ownerId);
+  await (deps.assertInvocation ?? assertCanInvokeAgent)(invocationAdmissionInput(input));
+  const callerFunded = await prepareTaskCreationFunding(input, deps.provenance);
+  if (!callerFunded) {
+    await (deps.assertServerFunding ?? assertCanUseServerProviderCredentials)(
+      input.requestorId,
+      "task_create",
+    );
+  }
+  return createTaskAfterGlobalChecks(
+    deps,
+    input,
+    deps.provenance,
+    invocationAuthority,
+    callerFunded,
+    timing,
+  );
+}
+
+async function createTaskAfterGlobalChecks<Prepared>(
+  deps: PreparedTaskCreationDeps<Prepared>,
+  input: TaskCreateInput,
+  provenance: TaskCreationProvenance,
+  invocationAuthority: AcceptedInvocationAuthority,
+  callerFunded: boolean,
+  timing: Readonly<{
+    scheduleKind: NonNullable<TaskCreateInput["scheduleKind"]>;
+    nextFireAt: Date;
+  }>,
+): Promise<TaskCreationResult> {
+  const { scheduleKind, nextFireAt } = timing;
   const admission = await deps.admission.admit({
     db: deps.db,
     candidate: input,
-    provenance: deps.provenance,
+    provenance,
     invocationAuthority,
   });
   if (admission.kind === "unavailable") {

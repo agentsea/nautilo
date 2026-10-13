@@ -30,6 +30,12 @@ const DOMAIN = "task-domain:one";
 const HASH = "A".repeat(43);
 const OBJECT = `task:v1:${TASK}:1`;
 const RESULT_OBJECT = `task-run-result:v1:${"a".repeat(64)}`;
+const readAuthority = {
+  sourceRoomId: ROOM, namespaceId: NAMESPACE, currentGeneration: 0,
+  retainedGenerations: [{ generation: 0, accessRevision: 0,
+    headDigestBase64url: HASH, publicationDigestBase64url: HASH,
+    publicationSetDigestBase64url: HASH, audienceFingerprintBase64url: HASH }],
+};
 
 const authority: ProtectedTaskRouteAuthority = Object.freeze({
   userId: HUMAN, subjectHumanId: HUMAN, actorId: ACTOR, agentId: AGENT,
@@ -79,7 +85,7 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
         readVersion: 1, status: "ready", taskId: input.taskId, objectId: input.objectId,
         contentRevision: input.contentRevision,
         cryptoAccessRevision: input.cryptoAccessRevision,
-        namespaceId: NAMESPACE,
+        namespaceId: NAMESPACE, readAuthority,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
         accessManifestProofBytesBase64url: Array.from(
@@ -96,7 +102,7 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
       return {
         readVersion: 1, status: "ready", taskId: input.taskId,
         taskRunId: input.taskRunId, objectId: RESULT_OBJECT,
-        resultRevision: 1, cryptoAccessRevision: 0, namespaceId: NAMESPACE,
+        resultRevision: 1, cryptoAccessRevision: 0, namespaceId: NAMESPACE, readAuthority,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
         accessManifestProofBytesBase64url: [],
@@ -233,7 +239,7 @@ describe("protected Task routes", () => {
     const state = fixture({
       readDefinition: async () => ({
         readVersion: 1, status: "ready", taskId: TASK, objectId: "substituted", contentRevision: 1,
-        cryptoAccessRevision: 0, namespaceId: NAMESPACE,
+        cryptoAccessRevision: 0, namespaceId: NAMESPACE, readAuthority,
         encryptedPayloadBytesBase64url: "YQ", accessManifestBytesBase64url: "YQ",
         accessManifestProofBytesBase64url: [], namespaceEnvelopeBytesBase64url: "YQ",
         signerEvidence: [],

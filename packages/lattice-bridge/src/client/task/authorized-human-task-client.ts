@@ -77,6 +77,7 @@ export type TaskDefinitionReadEnvelopeV1 = Readonly<{
   contentRevision: number;
   cryptoAccessRevision: number;
   namespaceId: string;
+  readAuthority: ProtectedTaskDefinitionReadReadyEnvelopeV1["readAuthority"];
   encryptedPayloadBytes: Uint8Array;
   accessManifestBytes: Uint8Array;
   accessManifestProofBytes: readonly Uint8Array[];

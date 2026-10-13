@@ -520,6 +520,7 @@ import {
   setTaskObserver,
   setTaskRunJobManager,
   createTask as runtimeCreateTask,
+  prepareTaskCreation,
   createAgentTurnTaskCreationProvenance,
   getPlaintextTaskCreationAdmission,
   clearTaskReturnBindings,
@@ -569,6 +570,7 @@ import {
   type WorkstationAccessAuditEvent,
   type WorkstationAdmissionAuditEvent,
   type OrdinaryStenographerIntentAdapterOptions,
+  type PreparedTaskCreationDeps,
   type TaskWriterReviewBinding,
   hasTaskWriterReviewBindingForTaskRun,
 } from "@nautilo/runtime";
@@ -4369,6 +4371,16 @@ export async function createApp(options?: CreateAppOptions) {
         : {}),
     };
     const directDb = getServerDirectDb();
+    const provenance = createAgentTurnTaskCreationProvenance({
+      ownerId: protectedCreation === undefined ? task.ownerId : task.requestorId,
+      invocation: invocationProvenance,
+    });
+    const createInput = protectedCreation === undefined
+      ? taskForCreate
+      : { ...taskForCreate, ownerId: task.requestorId };
+    const preparedCreate = protectedCreation === undefined
+      ? undefined
+      : await prepareTaskCreation(createInput, provenance);
     let bindingTaskId: string | null = null;
     let created: Awaited<ReturnType<typeof runtimeCreateTask>>;
     try {
@@ -4377,15 +4389,10 @@ export async function createApp(options?: CreateAppOptions) {
         // The observer must not see the committed row before its process-local
         // authority is registered. The transaction supplies that ordering;
         // the real kick happens only after commit below.
-        const result = await runtimeCreateTask<ProtectedTaskCreationPlanV1>(
-          {
-            db: tx as unknown as Parameters<typeof runtimeCreateTask>[0]["db"],
-            observer: { kick() {} },
-            provenance: createAgentTurnTaskCreationProvenance({
-              ownerId: protectedCreation === undefined ? task.ownerId : task.requestorId,
-              invocation: invocationProvenance,
-            }),
-            admission: protectedCreation?.admission ?? getPlaintextTaskCreationAdmission(),
+        const createDeps: PreparedTaskCreationDeps<ProtectedTaskCreationPlanV1> = {
+          db: tx as unknown as Parameters<typeof runtimeCreateTask>[0]["db"],
+          observer: { kick() {} },
+          admission: protectedCreation?.admission ?? getPlaintextTaskCreationAdmission(),
             ...(protectedCreation === undefined ? {} : {
               resolveProtectedIdentity: operation => protectedTaskForegroundCreationIdentity({ ...operation,
                 invocation: invocationProvenance }),
@@ -4440,9 +4447,10 @@ export async function createApp(options?: CreateAppOptions) {
                 return descriptor;
               });
             },
-          },
-          protectedCreation === undefined ? taskForCreate : { ...taskForCreate, ownerId: task.requestorId },
-        );
+          };
+        const result = preparedCreate === undefined
+          ? await runtimeCreateTask<ProtectedTaskCreationPlanV1>({ ...createDeps, provenance }, createInput)
+          : await preparedCreate.create<ProtectedTaskCreationPlanV1>(createDeps);
         if (result.publicationDisposition !== "replayed") bindingTaskId = result.taskId;
         if (result.publicationDisposition !== "replayed" && scheduleKind === "now" && task.callingRoomId) {
           const returnContext = getTaskCreationReturnContext();

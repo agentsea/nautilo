@@ -117,6 +117,22 @@ function bytes(value: number): Uint8Array {
   return new Uint8Array(32).fill(value);
 }
 
+function taskReadAuthority() {
+  return {
+    sourceRoomId: RUN_ID,
+    namespaceId: NAMESPACE_ID,
+    currentGeneration: 0,
+    retainedGenerations: [{
+      generation: 0,
+      accessRevision: ACCESS_REVISION,
+      headDigestBase64url: Buffer.from(bytes(0x71)).toString("base64url"),
+      publicationDigestBase64url: Buffer.from(bytes(0x72)).toString("base64url"),
+      publicationSetDigestBase64url: Buffer.from(bytes(0x73)).toString("base64url"),
+      audienceFingerprintBase64url: Buffer.from(bytes(0x74)).toString("base64url"),
+    }],
+  };
+}
+
 function seededRng(seed: number): Rng {
   let state = seed >>> 0;
   return {
@@ -374,7 +390,7 @@ describe("Task Runtime result preparation", () => {
     for (const generation of keyring.generations) generation.key.fill(0);
   });
 
-  test.each([false, true])("a Human vault opens an exact result without an external key resolver (peer device: %s)", async (peerDevice) => {
+  test.each([false, true])("canonical Namespace authority opens an exact result with an empty legacy keyring (peer device: %s)", async (peerDevice) => {
     const scenario = await setup(0x345);
     const prepared = await withTaskRuntimeExecutionEvidenceV1({
       evidence: scenario.evidence,
@@ -412,19 +428,11 @@ describe("Task Runtime result preparation", () => {
       trustedDeviceRevision: 2,
       trustedHostAuthorizationRevision: 5,
       deliveryHighWatermark: 1,
-      keyringDeliveries: Object.freeze([Object.freeze({
-        deliverySequence: 1,
-        operationId: "task-result-keyring",
-        namespaceId: NAMESPACE_ID,
-        keyClass: "ai" as const,
-        domainId: DOMAIN_ID,
-        domainEpoch: 4,
-        accessRevision: ACCESS_REVISION,
-        bindingHash: scenario.trustedHead.bindingHash,
-        currentGeneration: keyring.currentGeneration,
-        generations: keyring.generations,
-      })]),
+      keyringDeliveries: Object.freeze([]),
     });
+    const authorityKey = Uint8Array.from(
+      keyring.generations.find(entry => entry.generation === 0)!.key,
+    );
     const v2Bytes = encodeClientDeviceProfileV2(profile);
     const v3 = await createClientDeviceProfileV3Candidate({
       crypto: scenario.crypto,
@@ -533,6 +541,7 @@ describe("Task Runtime result preparation", () => {
       resultRevision: 1 as const,
       cryptoAccessRevision: 0 as const,
       namespaceId: NAMESPACE_ID,
+      readAuthority: taskReadAuthority(),
       encryptedPayloadBytesBase64url:
         Buffer.from(historicalPayloadBytes).toString("base64url"),
       accessManifestBytesBase64url:
@@ -577,6 +586,7 @@ describe("Task Runtime result preparation", () => {
       resultRevision: 1 as const,
       cryptoAccessRevision: 0 as const,
       namespaceId: NAMESPACE_ID,
+      readAuthority: taskReadAuthority(),
       encryptedPayloadBytesBase64url: Buffer.from(
         snapshot.object.payloadBytes.ciphertext,
       ).toString("base64url"),
@@ -673,6 +683,33 @@ describe("Task Runtime result preparation", () => {
           deviceGeneration: 1,
           expiresAt: NOW + 60_000,
         }),
+        namespaceAuthority: {
+          ensure: () => Promise.resolve({ status: "ready" as const }),
+          synchronizeRecipients: () => Promise.resolve({ status: "ready" as const }),
+          withOpenedAiGenerations: () => Promise.resolve({
+            status: "unavailable" as const, reason: "unused",
+          }),
+          withOpenedGenerations: async <Value>(request: Parameters<NonNullable<
+            import("../../src/client/message/namespace-authority-client.ts")
+              .NamespaceAuthorityClient["withOpenedGenerations"]
+          >>[0], use: (
+            entries: readonly import("../../src/client/message/namespace-authority-client.ts")
+              .OpenedNamespaceGeneration[],
+          ) => Promise<Value> | Value) => ({
+            status: "opened" as const,
+            value: await use(request.authority.flatMap(authority =>
+              authority.retainedGenerations.map(entry => ({
+                namespaceId: namespaceId(authority.namespaceId),
+                keyClass: "ai" as const,
+                accessRevision: accessRevision(entry.accessRevision),
+                generation: namespaceGeneration(entry.generation),
+                generationKey: authorityKey,
+                audienceFingerprint: entry.audienceFingerprint,
+                headDigest: entry.headDigest,
+              }))
+            )),
+          }),
+        },
         createStageId: () => "stage:signer",
         accessAnchors: {
           load: (id) => Promise.resolve(anchors.get(id) ?? null),

@@ -2,7 +2,12 @@ import { describe, test, expect } from "bun:test";
 import { rejects } from "node:assert/strict";
 import type { DirectDatabase, Task } from "@nautilo/db";
 import type { LocalExecutionDelegation } from "@nautilo/types";
-import { createTask, type TaskCreateInput } from "../../src/tasks/create-task";
+import {
+  createTask,
+  prepareTaskCreation,
+  type TaskCreateInput,
+} from "../../src/tasks/create-task";
+import { runWithAcceptedInvocationAuthority } from "../../src/job-manager";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 import {
   createHumanApiTaskCreationProvenance,
@@ -379,6 +384,157 @@ describe("Task creation wrapper", () => {
     }, baseInput()), /funding denied/);
     expect(publications).toBe(0);
     expect(lastValues()).toEqual({});
+  });
+
+  test("prepared protected creation completes global checks before the borrowed transaction", async () => {
+    const { db, lastValues } = fakeDb();
+    const input = baseInput({ metadata: { exact: "candidate" } });
+    const provenance = createHumanApiTaskCreationProvenance({ ownerId: input.ownerId });
+    const authority = accepted();
+    const events: string[] = [];
+    let transactionBorrowed = false;
+    let publishedFunding: string | undefined;
+    let checkedAgentId: string | undefined;
+    let releaseInvocation!: () => void;
+    let markInvocationStarted!: () => void;
+    const invocationStarted = new Promise<void>(resolve => { markInvocationStarted = resolve; });
+    const invocationReleased = new Promise<void>(resolve => { releaseInvocation = resolve; });
+
+    await runWithAcceptedInvocationAuthority(authority, async () => {
+      const pending = prepareTaskCreation(input, provenance, {
+        assertInvocation: async candidate => {
+          expect(transactionBorrowed).toBe(false);
+          checkedAgentId = candidate.agentId;
+          expect(candidate).toEqual({
+            humanUserId: "11111111-1111-1111-1111-111111111111",
+            origin: "task_create",
+            agentId: "22222222-2222-2222-2222-222222222222",
+          });
+          events.push("invocation");
+          markInvocationStarted();
+          await invocationReleased;
+        },
+        prepareFunding: async (candidate, source) => {
+          expect(transactionBorrowed).toBe(false);
+          expect(candidate).not.toBe(input);
+          expect(candidate.agentId).toBe("22222222-2222-2222-2222-222222222222");
+          expect(candidate.metadata).toEqual({ exact: "candidate" });
+          expect(source).toBe(provenance);
+          events.push("funding");
+          return false;
+        },
+        assertServerFunding: async (humanUserId, origin) => {
+          expect(transactionBorrowed).toBe(false);
+          expect([humanUserId, origin]).toEqual([input.requestorId, "task_create"]);
+          events.push("server-funding");
+        },
+      });
+      await invocationStarted;
+      input.agentId = "22222222-2222-2222-2222-222222222299";
+      input.metadata = { exact: "mutated-during-await" };
+      releaseInvocation();
+      const prepared = await pending;
+
+      transactionBorrowed = true;
+      await prepared.create({
+        db,
+        observer: { kick() {} },
+        admission: {
+          admit: async ({ candidate }) => {
+            expect(transactionBorrowed).toBe(true);
+            expect(candidate.agentId).toBe("22222222-2222-2222-2222-222222222222");
+            expect(candidate.metadata).toEqual({ exact: "candidate" });
+            events.push("admission");
+            return { kind: "protected" as const, prepared: Object.freeze({}) };
+          },
+        },
+        publishProtected: async ({ candidate }) => {
+          expect(transactionBorrowed).toBe(true);
+          expect(candidate.agentId).toBe("22222222-2222-2222-2222-222222222222");
+          expect(candidate.metadata).toEqual({ exact: "candidate" });
+          publishedFunding = candidate.fundingMode;
+          events.push("publication");
+          return { taskId: candidate.id, status: candidate.status, nextFireAt: candidate.nextFireAt };
+        },
+      });
+    });
+
+    expect(events).toEqual([
+      "invocation",
+      "funding",
+      "server-funding",
+      "admission",
+      "publication",
+    ]);
+    expect(publishedFunding).toBe("legacy_server");
+    expect(checkedAgentId).toBe("22222222-2222-2222-2222-222222222222");
+    expect(lastValues()).toEqual({});
+  });
+
+  test("prepared creation rejects authority changes, security overrides, and replay before admission", async () => {
+    const { db, lastValues } = fakeDb();
+    const input = baseInput({ metadata: { exact: "candidate" } });
+    const provenance = createHumanApiTaskCreationProvenance({ ownerId: input.ownerId });
+    const authority = accepted();
+    let admissions = 0;
+    const deps = {
+      db,
+      observer: { kick() {} },
+      admission: {
+        admit: async () => {
+          admissions += 1;
+          return { kind: "protected" as const, prepared: Object.freeze({}) };
+        },
+      },
+      publishProtected: async ({ candidate }: { candidate: { id: string; status: "pending"; nextFireAt: Date } }) =>
+        ({ taskId: candidate.id, status: candidate.status, nextFireAt: candidate.nextFireAt }),
+    };
+    const prepare = () => prepareTaskCreation(input, provenance, {
+      assertInvocation: async () => {},
+      prepareFunding: async () => true,
+      assertServerFunding: async () => { throw new Error("caller funding must not use server funding"); },
+    });
+
+    await runWithAcceptedInvocationAuthority(authority, async () => {
+      const overridden = await prepare();
+      await rejects(overridden.create({ ...deps,
+        input: { ...input, agentId: "substituted" },
+        provenance: createHumanApiTaskCreationProvenance({ ownerId: input.ownerId }),
+        assertInvocation: async () => {},
+      } as never), /does not accept security input overrides/u);
+      await rejects(overridden.create(deps), /already consumed/u);
+
+      const wrongAuthority = await prepare();
+      await runWithAcceptedInvocationAuthority(
+        createAcceptedInvocationAuthority(input.requestorId),
+        () => rejects(wrongAuthority.create(deps), /authority changed/u),
+      );
+      await rejects(wrongAuthority.create(deps), /already consumed/u);
+
+      const prepared = await prepare();
+      await prepared.create(deps);
+      await rejects(prepared.create(deps), /already consumed/u);
+    });
+
+    expect(admissions).toBe(1);
+    expect(lastValues()).toEqual({});
+  });
+
+  test("Plain creation keeps invocation and server-funding checks", async () => {
+    const { db } = fakeDb();
+    const events: string[] = [];
+    await createTask({
+      ...taskDeps(db, { kick() {} }),
+      assertInvocation: async () => { events.push("invocation"); },
+      assertServerFunding: async () => { events.push("server-funding"); },
+      admission: {
+        admit: async input => {
+          events.push("admission");
+          return { kind: "ordinary" as const, candidate: input.candidate };
+        },
+      },
+    }, baseInput());
+    expect(events).toEqual(["invocation", "server-funding", "admission"]);
   });
 });
 test("protected retries use the checkpointed identity and schedule before local capture", async () => {

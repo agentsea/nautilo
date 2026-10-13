@@ -26,6 +26,7 @@ export type TaskRunResultReadBytesV1 = Readonly<{
   resultRevision: 1 | 2;
   cryptoAccessRevision: number;
   namespaceId: string;
+  readAuthority: ProtectedTaskRunResultReadReadyEnvelopeV1["readAuthority"];
   encryptedPayloadBytes: Uint8Array;
   accessManifestBytes: Uint8Array;
   accessManifestProofBytes: readonly Uint8Array[];
@@ -192,6 +193,7 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
           resultRevision: response.resultRevision,
           cryptoAccessRevision: response.cryptoAccessRevision,
           namespaceId: response.namespaceId,
+          readAuthority: response.readAuthority,
           encryptedPayloadBytes: decode(response.encryptedPayloadBytesBase64url),
           accessManifestBytes: decode(response.accessManifestBytesBase64url),
           accessManifestProofBytes: response.accessManifestProofBytesBase64url
