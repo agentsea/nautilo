@@ -4,17 +4,36 @@ import {
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
-import { and, eq, isNull, rooms, namespaces, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
-import { assertCanInvokeAgent, getUserCapabilities } from "@nautilo/trust";
+import { and, eq, isNull, rooms, roomMembers, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
+import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@nautilo/trust";
 import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission } from "@nautilo/runtime";
 import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
-import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
+import { usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
 type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
+
+const NATIVE_TASK_METADATA_KEYS = new Set([
+  "preparation", "lastInterruption", "deepResearch", "bringBack",
+  "writerReviewAwaiting", "writerReviewAcceptedReceipt",
+]);
+
+// These fields are durable runtime progress, not admitted prompt, routing, or
+// provider-selection input. They may advance while an approved Task is parked
+// or while its exact run is executing. Every other accepted metadata field is
+// part of the funding source fence below.
+const MUTABLE_TASK_RUNTIME_METADATA_KEYS = new Set([
+  "preparation", "lastInterruption",
+  "writerReviewAwaiting", "writerReviewAcceptedReceipt",
+]);
+
+function fundingRelevantTaskMetadata(metadata: Candidate["metadata"]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(metadata ?? {})
+    .filter(([key]) => !MUTABLE_TASK_RUNTIME_METADATA_KEYS.has(key)));
+}
 
 export function shouldPrepareNativeTaskCallerFunding(
   metadata: Candidate["metadata"],
@@ -40,41 +59,70 @@ function hasAdmittedDeepResearchFunding(metadata: Candidate["metadata"]): boolea
 }
 
 function supportedShape(task: Candidate): boolean {
-  return task.ownerId === task.requestorId && !task.parentTaskId && (task.depth ?? 0) === 0
-    && (task.contentRepresentation ?? "ordinary") === "ordinary"
+  return (task.contentRepresentation ?? "ordinary") === "ordinary"
     && ["none", "auto", "whitelist"].includes(task.toolsMode ?? "auto")
     && (task.toolsWhitelist ?? []).every(isSupportedPersonalTool)
-    && !task.useScope && !task.scopeId && !task.targetChatHandle
-    && (task.preset === "task" || task.preset === "in_background" || task.preset === "schedule")
-    && (task.targetChat === "orphan" || task.targetChat === "last_in_namespace")
-    && (task.targetUserIds ?? []).every((id) => id === task.requestorId)
-    && !task.awaitResponse && Object.keys(task.metadata ?? {}).every((key) => key === "preparation" || key === "deepResearch");
+    && !["ping", "repo_docs"].includes(task.preset ?? "task")
+    && Object.keys(task.metadata ?? {}).every((key) => NATIVE_TASK_METADATA_KEYS.has(key));
 }
 
-async function assertOwnShape(task: Candidate): Promise<void> {
-  if (!supportedShape(task) || !task.callingRoomId
-    || !await isOwnPrivateGenieRoom(task.requestorId, task.callingRoomId, task.agentId)) {
+async function resolveCanonicalLineage(task: Candidate): Promise<Readonly<{
+  sourceRoomId: string;
+  taskIds: readonly string[];
+}>> {
+  let current = task;
+  const seen = new Set<string>();
+  const taskIds = [task.id ?? "candidate"];
+  while (current.parentTaskId) {
+    if (seen.has(current.parentTaskId)) throw new TaskFundingError("unsupported_workload");
+    seen.add(current.parentTaskId);
+    const parent = await getTaskById(getServerDirectDb(), current.parentTaskId);
+    if (!parent || parent.requestorId !== task.requestorId
+      || (current.depth ?? 0) !== parent.depth + 1
+      || !current.callingRoomId
+      || (current.callingRoomId !== parent.callingRoomId && current.callingRoomId !== parent.targetRoomId)
+      || ["cancelled", "errored"].includes(parent.status)) {
+      throw new TaskFundingError("unsupported_workload");
+    }
+    taskIds.push(parent.id);
+    current = parent;
+  }
+  if ((current.depth ?? 0) !== 0 || !current.callingRoomId) {
     throw new TaskFundingError("unsupported_workload");
   }
-  if (task.targetChat === "last_in_namespace" && task.targetRoomId
-    && task.targetRoomId !== task.callingRoomId) {
+  return { sourceRoomId: current.callingRoomId, taskIds };
+}
+
+async function isLiveSourceRoomMember(roomId: string, actorId: string): Promise<boolean> {
+  const [room] = await getServerDirectDb()
+    .select({ id: rooms.id })
+    .from(rooms)
+    .innerJoin(roomMembers, eq(roomMembers.roomId, rooms.id))
+    .where(and(
+      eq(rooms.id, roomId),
+      isNull(rooms.archivedAt),
+      eq(roomMembers.actorId, actorId),
+    ))
+    .limit(1);
+  return room?.id === roomId;
+}
+
+async function assertCanonicalShape(task: Candidate): Promise<void> {
+  if (!supportedShape(task) || !task.callingRoomId) {
     throw new TaskFundingError("unsupported_workload");
   }
-  const [callingRoom] = await getServerDirectDb().select({ id: rooms.id })
-    .from(rooms).innerJoin(namespaces, eq(rooms.namespaceId, namespaces.id))
-    .where(and(eq(rooms.id, task.callingRoomId), eq(rooms.ownerId, task.requestorId),
-      eq(rooms.type, "private"), eq(namespaces.scope, "private"), isNull(rooms.archivedAt))).limit(1);
-  if (!callingRoom) throw new TaskFundingError("unsupported_workload");
-  if (task.targetChat === "orphan" && task.targetRoomId) {
-    const [room] = await getServerDirectDb().select({
-      ownerId: rooms.ownerId, type: rooms.type, kind: rooms.kind,
-      humanActorIds: rooms.humanActorIds, scope: namespaces.scope, label: namespaces.label,
-    }).from(rooms).innerJoin(namespaces, eq(rooms.namespaceId, namespaces.id))
-      .where(and(eq(rooms.id, task.targetRoomId), eq(rooms.ownerId, task.requestorId),
-        isNull(rooms.archivedAt))).limit(1);
-    if (!room || room.type !== "private" || room.kind !== "task"
-      || room.humanActorIds.length !== 0 || room.scope !== "private"
-      || room.label !== `task:${task.id}`) throw new TaskFundingError("unsupported_workload");
+  const lineage = await resolveCanonicalLineage(task);
+  const { sourceRoomId } = lineage;
+  const requestor = await findActorByOwnerId(task.requestorId);
+  if (!requestor) throw new TaskFundingError("unsupported_workload");
+  const requestorActorId = requestor.id;
+  // The calling Room is the causal Human's source. The target Genie can be a
+  // foreign Genie and need not already be a member of that Room; exact-target
+  // invocation admission below owns that social boundary.
+  if (!await isLiveSourceRoomMember(sourceRoomId, requestorActorId)
+    || (task.preset === "schedule" && task.targetRoomId !== null
+      && task.targetRoomId !== undefined && task.targetRoomId !== task.callingRoomId)) {
+    throw new TaskFundingError("unsupported_workload");
   }
   const research = readDeepResearchTaskMetadata(task.metadata);
   if (research && research.version !== 2) throw new TaskFundingError("unsupported_workload");
@@ -89,7 +137,16 @@ async function assertOwnShape(task: Candidate): Promise<void> {
     await session.openService("tavily", research.tavilyFunding);
   }
   await assertCanInvokeAgent({ humanUserId: task.requestorId, origin: "task_dispatch",
-    agentId: task.agentId, roomId: task.callingRoomId });
+    agentId: task.agentId, roomId: sourceRoomId });
+  const [currentLineage, currentCallingRoomLive] = await Promise.all([
+    resolveCanonicalLineage(task),
+    isLiveSourceRoomMember(sourceRoomId, requestorActorId),
+  ]);
+  if (currentLineage.sourceRoomId !== lineage.sourceRoomId
+    || JSON.stringify(currentLineage.taskIds) !== JSON.stringify(lineage.taskIds)
+    || !currentCallingRoomLive) {
+    throw new TaskFundingError("unsupported_workload");
+  }
 }
 
 function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
@@ -212,7 +269,6 @@ export async function isPersonalOnlyNativeTaskSelection(
     toolsWhitelist?: TaskSelection["toolsWhitelist"];
   },
 ): Promise<boolean> {
-  if (!await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) return false;
   const modelId = await selectRunnableTaskModel({ ...input,
     selectionProfile: input.selectionProfile ?? undefined,
     selectionSpec: input.selectionSpec ?? undefined,
@@ -225,7 +281,7 @@ export async function isPersonalOnlyNativeTaskSelection(
 }
 
 async function admit(task: Task, priorRun?: TaskRun): Promise<TaskFundingAdmission> {
-  await assertOwnShape(task);
+  await assertCanonicalShape(task);
   const modelId = await selectTaskModel(task, priorRun);
   const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId,
     workload: "native_text_task", ...(priorRun ? { priorDecision: restoreDecision(task, priorRun) } : {}) });
@@ -238,7 +294,7 @@ function sameBinding(left: unknown, right: unknown): boolean {
 }
 
 async function openSession(task: Task, run: TaskRun, modelId: string, wake: boolean): Promise<ForegroundChatFundingSession> {
-  await assertOwnShape(task);
+  await assertCanonicalShape(task);
   const admitted = restoreDecision(task, run);
   const resolveCandidateUnchecked = async (candidateModelId: string, transport?: "direct" | "surplus") => {
     // Every retry/fallback rechecks exact Room authority and the original revision.
@@ -249,9 +305,25 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
     if (!currentTask || !currentRun || currentTask.fundingMode !== "caller"
       || currentTask.ownerId !== task.ownerId || currentTask.requestorId !== task.requestorId
       || currentTask.agentId !== task.agentId || currentTask.callingRoomId !== task.callingRoomId
+      || currentTask.parentTaskId !== task.parentTaskId || currentTask.depth !== task.depth
+      || currentTask.preset !== task.preset || currentTask.targetChat !== task.targetChat
+      || currentTask.targetChatHandle !== task.targetChatHandle
+      || currentTask.targetRoomId !== task.targetRoomId
+      || JSON.stringify(currentTask.targetUserIds) !== JSON.stringify(task.targetUserIds)
+      || currentTask.resultDelivery !== task.resultDelivery
+      || currentTask.useScope !== task.useScope || currentTask.scopeId !== task.scopeId
+      || currentTask.awaitResponse !== task.awaitResponse
       || currentTask.requestedModelId !== task.requestedModelId
+      || currentTask.selectionProfile !== task.selectionProfile
+      || JSON.stringify(currentTask.selectionSpec) !== JSON.stringify(task.selectionSpec)
       || currentTask.toolsMode !== task.toolsMode
       || JSON.stringify(currentTask.toolsWhitelist) !== JSON.stringify(task.toolsWhitelist)
+      || currentTask.contentRepresentation !== task.contentRepresentation
+      || currentTask.contentNamespaceId !== task.contentNamespaceId
+      || currentTask.contentRevision !== task.contentRevision
+      || currentTask.cryptoObjectId !== task.cryptoObjectId
+      || JSON.stringify(fundingRelevantTaskMetadata(currentTask.metadata))
+        !== JSON.stringify(fundingRelevantTaskMetadata(task.metadata))
       || currentRun.modelId !== run.modelId || currentRun.graphThreadId !== run.graphThreadId
       || currentRun.fundingPredecessorRunId !== run.fundingPredecessorRunId
       || !sameBinding(currentRun.fundingBinding, run.fundingBinding)
@@ -268,7 +340,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
         throw new TaskFundingError("funding_source_changed");
       }
     }
-    await assertOwnShape(currentTask);
+    await assertCanonicalShape(currentTask);
     assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
     if (!wake && task.requestedModelId && task.requestedModelId !== candidateModelId) {
       throw new TaskFundingError("funding_source_changed");
@@ -346,18 +418,25 @@ export const nativeTaskFundingPort: TaskFundingPort = {
       allowPersonalProviderKeys: policy.allowPersonalProviderKeys,
       capabilities: caps,
     })) return false;
+    const inputParentTaskId = input.parentTaskId ?? null;
     const originSupported = provenance.kind === "human_api"
-      ? !provenance.requestedParentTaskId
+      ? provenance.requestedParentTaskId === inputParentTaskId
       : provenance.kind === "agent_turn"
-        && (provenance.entrypoint === "foreground.main" || provenance.entrypoint === "foreground.fork")
-        && provenance.roomId === input.callingRoomId && !provenance.parentTaskId;
-    if (!originSupported || input.targetRoomId || !supportedShape(input)
-      || !input.callingRoomId || !await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) {
+        && provenance.roomId === input.callingRoomId
+        && provenance.parentTaskId === inputParentTaskId
+        && (provenance.parentTaskId === null || provenance.parentTaskRunId !== null);
+    if (!originSupported || !supportedShape(input) || !input.callingRoomId) {
       if (!admittedDeepResearch && caps.includes("use_server_provider_credentials")) return false;
       throw new TaskFundingError("unsupported_workload");
     }
     await fundingBoundary(async () => {
-      await assertOwnShape(input);
+      if (provenance.kind === "agent_turn" && provenance.parentTaskId && provenance.parentTaskRunId) {
+        const parentRun = await getTaskRunForTask(getServerDirectDb(), provenance.parentTaskId, provenance.parentTaskRunId);
+        if (!parentRun || !["running", "awaiting", "completed"].includes(parentRun.status)) {
+          throw new TaskFundingError("unsupported_workload");
+        }
+      }
+      await assertCanonicalShape(input);
       const modelId = await selectTaskModel(input);
       await resolveModelFunding({ humanUserId: input.requestorId, modelId, workload: "native_text_task" });
     });

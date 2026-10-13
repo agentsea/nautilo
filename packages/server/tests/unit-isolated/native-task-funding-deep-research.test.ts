@@ -83,6 +83,8 @@ mock.module("@nautilo/trust", () => ({
   ...actualTrust,
   getUserCapabilities: async () => capabilities,
   assertCanInvokeAgent: async () => undefined,
+  findActorByOwnerId: async () => ({ id: HUMAN }),
+  getRoomDetailForMember: async () => ({ id: ROOM }),
 }));
 
 const directDb = {
@@ -241,7 +243,7 @@ describe("v2 Deep Research task funding", () => {
     },
   );
 
-  test("rejects an admitted v2 task outside the caller-funded shape instead of downgrading it", async () => {
+  test("retains admitted v2 funding for a multi-user namespace target", async () => {
     const task = await produceResearchTask();
     const provenance = createAgentTurnTaskCreationProvenance({
       ownerId: HUMAN,
@@ -255,10 +257,7 @@ describe("v2 Deep Research task funding", () => {
     expect(await nativeTaskFundingPort.prepareCreation({
       ...task,
       targetUserIds: [HUMAN, "another-human"],
-    }, provenance).then(
-      () => null,
-      (error: unknown) => (error as { code?: unknown }).code,
-    )).toBe("unsupported_workload");
+    }, provenance)).toBeTrue();
   });
 
   test("rejects malformed Deep Research metadata instead of persisting a legacy task", async () => {

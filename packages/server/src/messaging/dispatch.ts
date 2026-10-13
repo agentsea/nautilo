@@ -105,7 +105,6 @@ import {
 import {
   normalizeChatAttachments,
   assertChatAttachmentImageSupport,
-  pendingChatAttachmentsAreImages,
   ImageAttachmentModelError,
   parseChatAttachmentRefs,
   validateClientPathSafe,
@@ -120,8 +119,7 @@ import {
 } from "./agent-mediated";
 import { resolveSubthreadRootAffinity } from "../lib/subthread-root-affinity";
 import {
-  callerHasConfiguredPersonalFunding,
-  callerMayUsePersonalChat,
+  openForegroundConductorFundingSession,
 } from "../lib/foreground-chat-funding";
 import { resolveForegroundChatPreflightFunding, resolveForegroundChatPreflightModelId } from "../lib/foreground-chat-preflight";
 import { ModelFundingError } from "../lib/model-funding";
@@ -765,6 +763,20 @@ function strictShadowBoundaryEnforcer(
   return deps.enforceStrictShadowBoundary ?? enforceRegisteredStrictShadowBoundary;
 }
 
+type ConductorPromptInvoker = (prompt: string) => Promise<string>;
+
+/** Pin one lazily admitted funding session to one Floor Manager routing run. */
+export function createRequestLocalConductorInvoker(
+  open: () => Promise<ConductorPromptInvoker>,
+): ConductorPromptInvoker {
+  let pinned: Promise<ConductorPromptInvoker> | undefined;
+  return async (prompt) => {
+    pinned ??= Promise.resolve().then(open);
+    const invoke = await pinned;
+    return invoke(prompt);
+  };
+}
+
 export async function routeConductorWithDataOwner<Result>(input: Readonly<{
   readPolicy: () => Promise<Readonly<{
     mode: "plaintext_only" | "shadow_encryption" | "encrypted_only";
@@ -1260,11 +1272,12 @@ export async function dispatchRoomMessageSend(
       }
     }
 
-    // Check explicitly addressed mixed-Room targets before the personal
-    // workload fence. A Community caller gets the precise foreign-Genie
+    // Check explicitly addressed mixed-Room targets before funding preflight.
+    // A Community caller gets the precise foreign-Genie
     // denial without any Conductor or provider work.
     const explicitTargets = agentMembers.filter((member) =>
         member.agentId && (
+          (handledAgentSlash && member.agentId === skillAgentId) ||
           member.actorId === uiSelectedBotActorId
           || member.actorId === replyTargetActorId
           || (typeof contentRaw === "string"
@@ -1289,39 +1302,32 @@ export async function dispatchRoomMessageSend(
       }
     }
 
-    const ownPrivateDm = isDm && detail.kind === "private"
-      && detail.members.some((member) => member.kind === "user" && member.userId === sessionUserId)
-      && agentMembers[0]?.agentOwnerUserId === sessionUserId
-      && !mentionEveryoneRoutingHint;
-    const hasNonImageAttachments = attachmentRefs.length > 0 && !(await pendingChatAttachmentsAreImages(
-      uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope),
-    ));
-    const hasAuxiliaryWorkload = fullPrepared || hasNonImageAttachments
-      || artifactRefs.length > 0 || focusedResources.length > 0 || activeMiniApp !== null
-      || liveMiniAppSession !== null || handledAgentSlash;
-    let personalChatCandidate = ownPrivateDm
-      && await callerMayUsePersonalChat(sessionUserId);
-    if (personalChatCandidate) {
+    const preflightTargets = isDm ? agentMembers.slice(0, 1) : explicitTargets;
+    const preflightFundingByAgentId = new Map<string, "personal" | "server">();
+    for (const target of preflightTargets) {
+      if (!target.agentId) continue;
       try {
         const funding = await resolveForegroundChatPreflightFunding({
           humanUserId: sessionUserId, roomId: detail.id,
-          agentId: agentMembers[0]!.agentId!, turnModelId: model,
+          agentId: target.agentId, turnModelId: model,
         });
-        personalChatCandidate = funding.kind === "personal";
+        preflightFundingByAgentId.set(target.agentId, funding.kind);
       } catch (error) {
         if (!(error instanceof ModelFundingError)) throw error;
         return reply.code(422).send({ code: error.code, error: "The selected model cannot be funded." });
       }
     }
-    // A personal-only caller cannot fund group routing or another auxiliary
-    // branch. Members with server-funding permission keep those existing paths.
-    if (personalChatCandidate && hasAuxiliaryWorkload) {
+
+    // Protected composition has a separate server-owned authority path. Keep
+    // personal credentials outside it until that path admits them explicitly.
+    if (fullPrepared && [...preflightFundingByAgentId.values()].includes("personal")) {
       return reply.code(422).send({
         code: "unsupported_workload",
-        error: "Personal provider credentials support chat, image attachments, and voice only.",
+        error: "Personal provider credentials do not support protected chat.",
       });
     }
-    if (!personalChatCandidate) {
+
+    if ([...preflightFundingByAgentId.values()].includes("server")) {
       try {
         await (opts.assertCanUseServerProviderCredentials ?? assertCanUseServerProviderCredentials)(
           sessionUserId,
@@ -1329,30 +1335,7 @@ export async function dispatchRoomMessageSend(
         );
       } catch (err) {
         if (!(err instanceof ServerProviderCredentialsDeniedError)) throw err;
-        const personalFundingConfigured = await callerHasConfiguredPersonalFunding(sessionUserId);
-        if (personalFundingConfigured) {
-          return reply.code(422).send({
-            code: "unsupported_workload",
-            error: "Personal provider credentials support only text chat with your own Genie in a private Room.",
-          });
-        }
-        if ((isDm && !audienceOnlyDm) || hasExplicitAgentTarget) {
-          return reply.code(403).send(toActionCapabilityHttpDenial(err));
-        }
-        return dispatchHumanOnlyRoomMessage(request, reply, {
-          detail,
-          chatDeps,
-          alias,
-          sessionUserId,
-          ...(content === undefined ? {} : { content }),
-          attachmentRefs,
-          mentionedHumanUserIds,
-          mentionEveryone,
-          workspaceArtifactExternalIds,
-          ...(canonicalRoomNamespaceId ? { canonicalRoomNamespaceId } : {}),
-          ...(replyToMessageId !== undefined ? { replyToMessageId } : {}),
-          liveShadow: opts.body.liveShadow,
-        });
+        return reply.code(403).send(toActionCapabilityHttpDenial(err));
       }
     }
 
@@ -1371,14 +1354,24 @@ export async function dispatchRoomMessageSend(
           })), silence).map((member) => member.actorId));
           targets = targets.filter((member) => wakeableIds.has(member.actorId));
         }
-        const models = await Promise.all(targets.filter((member) => !!member.agentId).map(async (member) => ({
+        const modelsWithAgents = await Promise.all(targets.filter((member) => !!member.agentId).map(async (member) => ({
+          agentId: member.agentId!,
           id: await resolveForegroundChatPreflightModelId({
             humanUserId: sessionUserId, roomId: detail.id, agentId: member.agentId!, turnModelId: model,
           }),
         })));
+        const fundingKinds = new Set(modelsWithAgents.flatMap(({ agentId }) => {
+          const kind = preflightFundingByAgentId.get(agentId);
+          return kind ? [kind] : [];
+        }));
+        const fundingKind = fundingKinds.size === 1
+          && modelsWithAgents.every(({ agentId }) => preflightFundingByAgentId.has(agentId))
+          ? [...fundingKinds][0]
+          : undefined;
         await assertChatAttachmentImageSupport({
-          ...uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope), models,
-          humanUserId: sessionUserId, fundingKind: personalChatCandidate ? "personal" : "server",
+          ...uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope),
+          models: modelsWithAgents.map(({ id }) => ({ id })),
+          humanUserId: sessionUserId, ...(fundingKind ? { fundingKind } : {}),
         });
       } catch (error) {
         if (!(error instanceof ImageAttachmentModelError)) throw error;
@@ -3771,13 +3764,24 @@ async function runGroupRoomConductorAfterPersist(
             resolveSubthreadRootAffinity(db, subthreadRoomId, currentMessageId),
           floorManager: (fmCtx, extra) => {
             if (protectedAttempt) protectedRoutePath = "floor_manager";
-            return runFloorManager(fmCtx, extra, {
-              invokeModel: createConductorModelInvoker({
+            const invokeModel = createRequestLocalConductorInvoker(async () => {
+              const fundingSession = await openForegroundConductorFundingSession({
+                humanUserId: sessionUserId,
+                modelId: conductorModelId,
+                roomId: detail.id,
+                authority: args.invocationAuthority,
+                ...(protectedAttempt ? { protectedTurn: true } : {}),
+              });
+              return createConductorModelInvoker({
                 modelId: conductorModelId,
                 userId: sessionUserId,
                 agentId: null,
                 laneKey: conductorLaneKey,
-              }),
+                fundingSession,
+              });
+            });
+            return runFloorManager(fmCtx, extra, {
+              invokeModel,
               ...(!protectedAttempt && onDebug
                 ? { onDebug, debugPrompt: debugLevel === "prompt" }
                 : {}),

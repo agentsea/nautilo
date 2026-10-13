@@ -190,8 +190,8 @@ async function assertCapturedParentLineage(
     seen.add(parentId);
     const parent = await getTaskById(db, parentId);
     const inherited = parseLocalExecutionDelegation(parent?.localExecutionDelegation);
-    if (!parent || !inherited || parent.ownerId !== child.ownerId
-      || parent.requestorId !== child.requestorId || inherited.agentId !== parent.agentId
+    if (!parent || !inherited || parent.requestorId !== child.requestorId
+      || inherited.humanUserId !== parent.requestorId || inherited.agentId !== parent.agentId
       || ["cancelled", "paused", "errored"].includes(parent.status)
       || (callingRoomId !== parent.callingRoomId && callingRoomId !== parent.targetRoomId)
       || JSON.stringify({ ...inherited, agentId: delegation.agentId }) !== JSON.stringify(delegation)) throw deny();

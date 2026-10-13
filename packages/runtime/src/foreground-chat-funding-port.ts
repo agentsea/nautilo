@@ -206,7 +206,7 @@ export async function openForegroundChatFundingSessionForInvocation(input: Reado
   return session;
 }
 
-/** Refuse unsupported paid auxiliaries before vision, voice, or chat dispatch. */
+/** Resource access has its own authority; funding retains the protected-turn boundary. */
 export function assertForegroundChatFundingWorkloadSupported(
   session: ForegroundChatFundingSession | null,
   input: Readonly<{
@@ -218,7 +218,7 @@ export function assertForegroundChatFundingWorkloadSupported(
 ): void {
   if (
     session?.kind === "personal"
-    && (input.hasResources || input.protectedTurn)
+    && input.protectedTurn
   ) throw new ForegroundChatFundingUnsupportedWorkloadError();
 }
 

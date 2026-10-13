@@ -291,6 +291,17 @@ export async function dispatchTaskRun(
   }
   const { db, jobManager } = deps;
   const resolver = deps.resolver ?? getPolicyResolver();
+  // Older caller-funded schedules predate creation-time destination pinning.
+  // Their accepted contract still says "report back here": derive the exact
+  // source Room and persist it before invocation/funding admission or any paid
+  // work. This intentionally does not affect generic Task namespace routing.
+  if (task.preset === "schedule" && task.fundingMode === "caller" && !task.targetRoomId) {
+    const resolved = await resolveTargetRoom(task, { db });
+    if (!task.callingRoomId || resolved.roomId !== task.callingRoomId) {
+      throw new Error("Caller-funded schedule destination does not match its source Room");
+    }
+    task = await memoizeTaskExecutionCoordinates(db, task, { targetRoomId: resolved.roomId });
+  }
   // A durable Task never carries creation-time authority. Re-read
   // the requestor's current RBAC state before resolving a Room, Scope, model,
   // TaskRun, or Job. Known absence is a lifecycle outcome; lookup failure is

@@ -3,6 +3,7 @@ import {
   invokeChatModelWithFallback,
   resolveModelRole,
   runWithUsageContext,
+  type ForegroundChatFundingSession,
 } from "@nautilo/agent";
 
 /**
@@ -95,6 +96,7 @@ export function createConductorModelInvoker(opts: {
   userId: string;
   agentId: string | null;
   laneKey: string | null;
+  fundingSession?: ForegroundChatFundingSession;
   /**
    * D421 Phase 2 — exact-model evaluations pass `"none"` so the reported
    * model is the model actually scored. Production callers omit this and keep
@@ -119,6 +121,7 @@ export function createConductorModelInvoker(opts: {
           undefined,
           {
             fundingHumanUserId: opts.userId,
+            ...(opts.fundingSession ? { fundingSession: opts.fundingSession } : {}),
             reasoningOutput: false,
             modelFallbackMode: opts.modelFallbackMode ?? "agent_chain",
           },
