@@ -92,6 +92,12 @@ import {
   type ProtectedTaskTranscriptReadService,
 } from "./protected-task-transcript-read";
 
+import {
+  hasHistoricalTaskDefinitionSummaryProof,
+  readHistoricalTaskDefinitionSummaryProofs,
+  type HistoricalTaskDefinitionSummaryProof,
+} from "./task-historical-definition-summary";
+
 interface TasksRoutesDeps {
   /** The live TaskObserver — kicked for `now` tasks (mirrors app.ts wiring). */
   observer: { kick(): void };
@@ -415,6 +421,7 @@ async function pendingInitialTaskDefinitions(
 function taskDefinitionContentV1(
   task: Task,
   pendingReason?: PendingTaskDefinitionReason,
+  historicalProof?: HistoricalTaskDefinitionSummaryProof,
 ): TaskDefinitionContentV1 {
   if (pendingReason !== undefined) {
     return { dtoVersion: 1, status: "unavailable", reason: pendingReason };
@@ -431,9 +438,10 @@ function taskDefinitionContentV1(
   if (
     task.contentRevision < 1
     || task.contentNamespaceId === null
-    || task.cryptoObjectId !== deriveTaskContentCryptoObjectIdV1({
+    || task.cryptoObjectId === null
+    || (task.cryptoObjectId !== deriveTaskContentCryptoObjectIdV1({
       kind: "definition", taskId: task.id, contentRevision: task.contentRevision,
-    })
+    }) && !hasHistoricalTaskDefinitionSummaryProof(task, historicalProof))
   ) {
     return { dtoVersion: 1, status: "unavailable", reason: "integrity_failure" };
   }
@@ -456,10 +464,11 @@ export function toTaskContentSummaryV1(
     readonly lastModelId: string | null;
     readonly canResumeResearch?: boolean;
     readonly pendingDefinitionReason?: PendingTaskDefinitionReason;
+    readonly historicalDefinitionProof?: HistoricalTaskDefinitionSummaryProof;
   },
   projection: TaskFundingProjectionOptions = {},
 ): TaskContentSummaryV1 {
-  const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason);
+  const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason, enrichment.historicalDefinitionProof);
   const preparation = definition.status === "ordinary"
     ? readTaskPreparation(task.metadata?.["preparation"])
     : null;
@@ -469,7 +478,7 @@ export function toTaskContentSummaryV1(
     depth: task.depth,
     status: task.status,
     preset: task.preset,
-    harnessId: taskHarnessId(task.metadata),
+    harnessId: taskHarnessId(task.metadata, definition.status !== "ordinary"),
     ...(preparation ? { preparation } : {}),
     ...(definition.status === "ordinary" && enrichment.canResumeResearch === true
       ? { canResumeResearch: true } : {}),
@@ -502,37 +511,37 @@ export function toTaskContentSummaryV1(
 export async function listProtectedTaskContentV1(
   ownerId: string,
   query: ListTasksQuery,
-): Promise<readonly TaskContentSummaryV1[]> {
+): Promise<TaskContentSummaryV1[]> {
   const db = getServerDirectDb();
-  const tasks = await listTasksForOwner(db, ownerId, listTaskOptions(query));
+  const tasks = await listTasksForOwner(db, ownerId, listTaskOptions(query), { lifecycleOnly: true });
   const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
-  const protectedTasks = tasks.filter((task) =>
-    task.contentRepresentation !== "ordinary" || pendingDefinitions.has(task.id)
-  );
+  const historicalDefinitions = await readHistoricalTaskDefinitionSummaryProofs(db, ownerId, tasks);
   const [lastModels, agentNames] = await Promise.all([
-    getLatestRunModelByTask(db, protectedTasks.map((task) => task.id)),
+    getLatestRunModelByTask(db, tasks.map((task) => task.id)),
     getOwnerAgentDisplayNamesByAgentId(
       db,
       ownerId,
-      protectedTasks.map((task) => task.agentId),
+      tasks.map((task) => task.agentId),
     ),
   ]);
-  return protectedTasks.map((task) =>
+  return tasks.map((task) =>
     toTaskContentSummaryV1(task, {
+      ...(historicalDefinitions.has(task.id) ? { historicalDefinitionProof: historicalDefinitions.get(task.id)! } : {}),
       agentName: agentNames.get(task.agentId) ?? null,
       lastModelId: lastModels.get(task.id) ?? null,
-      ...(pendingDefinitions.has(task.id)
-        ? { pendingDefinitionReason: pendingDefinitions.get(task.id)! }
+      ...(task.contentRepresentation === "ordinary"
+        ? { pendingDefinitionReason: pendingDefinitions.get(task.id) ?? "waiting_for_authorization" }
         : {}),
     })
   );
 }
 
-function taskHarnessId(metadata: unknown): string | null {
+function taskHarnessId(metadata: unknown, closed = false): string | null {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
   const execution = (metadata as Record<string, unknown>)["execution"];
   if (!execution || typeof execution !== "object" || Array.isArray(execution)) return null;
   const harnessId = (execution as Record<string, unknown>)["harnessId"];
+  if (closed && !["codex", "claude-code", "hermes-acp", "opencode-acp"].includes(harnessId as string)) return null;
   return typeof harnessId === "string" && harnessId.length > 0 && harnessId.length <= 64
     ? harnessId
     : null;
@@ -735,19 +744,20 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
-    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
-
+    const read = async () => {
     const opts = listTaskOptions(request.query);
     const includeFunding = includesTaskFunding(request.query);
     const db = getServerDirectDb();
     const tasks = await listTasksForOwner(db, ownerId, opts);
     const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, tasks);
+    const historicalDefinitions = await readHistoricalTaskDefinitionSummaryProofs(db, ownerId, tasks);
     const [lastModels, agentNames] = await Promise.all([
       getLatestRunModelByTask(db, tasks.map((task) => task.id)),
       getOwnerAgentDisplayNamesByAgentId(db, ownerId, tasks.map((task) => task.agentId)),
     ]);
     return { status: 200, body: await Promise.all(tasks.map(async (task) =>
       toTaskContentSummaryV1(task, {
+        ...(historicalDefinitions.has(task.id) ? { historicalDefinitionProof: historicalDefinitions.get(task.id)! } : {}),
         agentName: agentNames.get(task.agentId) ?? null,
         lastModelId: lastModels.get(task.id) ?? null,
         canResumeResearch: task.contentRepresentation === "ordinary"
@@ -757,7 +767,13 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           : {}),
       }, { includeFunding })
     )) };
+    };
+    const selected = await deps.contentOwner.selectReadMetadata({
+      ordinary: read,
+      fallback: read,
+      protected: async () => ({ status: 200, body: await listProtectedTaskContentV1(ownerId, request.query) }),
     });
+    return reply.status(selected.status).send(selected.body);
   });
 
   app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery }>("/api/tasks/:id/content-v1", async (request, reply) => {
@@ -771,17 +787,22 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     }
     const read = async (allowOrdinary: boolean) => {
       const db = getServerDirectDb();
-      const task = await getTaskById(db, request.params.id);
+      const task = await (allowOrdinary
+        ? getTaskById(db, request.params.id)
+        : getTaskById(db, request.params.id, { lifecycleOnly: true, ownerId }));
       if (!task || task.ownerId !== ownerId) {
         return { status: 404, body: { error: "Task not found" } };
       }
       const pendingDefinitions = await pendingInitialTaskDefinitions(db, ownerId, [task]);
+      const historicalDefinitions = await readHistoricalTaskDefinitionSummaryProofs(db, ownerId, [task]);
 
       const [runs, agentNames] = await Promise.all([
-        getTaskRuns(db, task.id),
+        allowOrdinary ? getTaskRuns(db, task.id)
+          : getTaskRuns(db, task.id, { lifecycleOnly: true }),
         getOwnerAgentDisplayNamesByAgentId(db, ownerId, [task.agentId]),
       ]);
       const { content, ...lifecycle } = toTaskContentSummaryV1(task, {
+        ...(historicalDefinitions.has(task.id) ? { historicalDefinitionProof: historicalDefinitions.get(task.id)! } : {}),
         agentName: agentNames.get(task.agentId) ?? null,
         lastModelId: runs.at(-1)?.modelId ?? null,
         canResumeResearch: allowOrdinary && task.contentRepresentation === "ordinary"

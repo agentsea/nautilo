@@ -24,12 +24,16 @@ const CTX = { ownerId: OWNER_ID, causalHumanUserId: OWNER_ID, agentId: AGENT_ID,
 describe("task intent shortcuts", () => {
   let capturedCreate: TaskToolCreateInput | null = null;
   let capturedHarnessCreate: TaskToolHarnessCreateInput | null = null;
+  let capturedProtectedCreate: TaskToolCreateInput | null = null;
+  let capturedProtectedHarnessCreate: TaskToolHarnessCreateInput | null = null;
   const restores: Array<() => void> = [];
 
   afterEach(() => {
     setTaskToolRuntime(null);
     capturedCreate = null;
     capturedHarnessCreate = null;
+    capturedProtectedCreate = null;
+    capturedProtectedHarnessCreate = null;
     while (restores.length) restores.pop()!();
   });
 
@@ -39,11 +43,15 @@ describe("task intent shortcuts", () => {
     createFailure?: string;
     canUseLegacyTaskContent?: TaskToolRuntime["canUseLegacyTaskContent"];
     createProtectedTask?: TaskToolRuntime["createProtectedTask"];
+    createProtectedHarnessTask?: TaskToolRuntime["createProtectedHarnessTask"];
   }) {
     setTaskToolRuntime({
       db: {} as never,
       ...(options?.canUseLegacyTaskContent ? { canUseLegacyTaskContent: options.canUseLegacyTaskContent } : {}),
       ...(options?.createProtectedTask ? { createProtectedTask: options.createProtectedTask } : {}),
+      ...(options?.createProtectedHarnessTask
+        ? { createProtectedHarnessTask: options.createProtectedHarnessTask }
+        : {}),
       createTask: async (input) => {
         capturedCreate = input;
         if (options?.createFailure) throw new Error(options.createFailure);
@@ -64,6 +72,106 @@ describe("task intent shortcuts", () => {
       stopTask: async () => ({ ok: true, status: "cancelled", message: "" }),
     });
   }
+
+  const shortcutCases = [
+    {
+      name: "schedule",
+      preset: "schedule",
+      invoke: () => createScheduleTool(CTX).invoke({
+        message: "prepare a report",
+        when: { kind: "recurring" as const, cron: "0 9 * * 1-5" },
+      }),
+    },
+    {
+      name: "in_background",
+      preset: "in_background",
+      invoke: () => createInBackgroundTool(CTX).invoke({ brief: "prepare a report" }),
+    },
+    {
+      name: "in_private_namespace",
+      preset: "in_private_namespace",
+      invoke: () => createInPrivateNamespaceTool(CTX).invoke({ brief: "prepare a report" }),
+    },
+    {
+      name: "in_scope",
+      preset: "in_scope",
+      invoke: () => createInScopeTool(CTX).invoke({ brief: "prepare a report", tools: [] }),
+    },
+    {
+      name: "ask_peer",
+      preset: "ask_peer",
+      invoke: () => createAskPeerTool(CTX).invoke({
+        peer_handle: "alex",
+        message_to_peer: "Can you review this?",
+      }),
+    },
+  ] as const;
+
+  for (const shortcut of shortcutCases) {
+    test(`${shortcut.name} keeps ordinary creation in Plain`, async () => {
+      const policy = mock(async () => true);
+      const protectedCreate = mock(async (_input: TaskToolCreateInput) => {
+        throw new Error("protected creator must not run");
+      });
+      stubRuntime({ canUseLegacyTaskContent: policy, createProtectedTask: protectedCreate });
+
+      await shortcut.invoke();
+
+      expect(capturedCreate?.preset).toBe(shortcut.preset);
+      expect(capturedProtectedCreate).toBeNull();
+      expect(protectedCreate).not.toHaveBeenCalled();
+      expect(policy).toHaveBeenCalledTimes(1);
+    });
+
+    test(`${shortcut.name} uses protected creation outside Plain`, async () => {
+      const policy = mock(async () => false);
+      const protectedCreate = mock(async (input: TaskToolCreateInput) => {
+        capturedProtectedCreate = input;
+        return { taskId: "protected-t1", status: "pending" };
+      });
+      stubRuntime({ canUseLegacyTaskContent: policy, createProtectedTask: protectedCreate });
+
+      await shortcut.invoke();
+
+      expect(capturedCreate).toBeNull();
+      expect(capturedProtectedCreate?.preset).toBe(shortcut.preset);
+      expect(protectedCreate).toHaveBeenCalledTimes(1);
+      expect(policy).toHaveBeenCalledTimes(1);
+    });
+  }
+
+  test("shortcut protected creation fails closed when its creator is absent", async () => {
+    stubRuntime({ canUseLegacyTaskContent: async () => false });
+
+    const failure = await createScheduleTool(CTX).invoke({
+      message: "prepare a report",
+      when: { kind: "recurring", cron: "0 9 * * 1-5" },
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("Protected Task creation is unavailable.");
+    expect(capturedCreate).toBeNull();
+  });
+
+  test("shortcut protected creation failure never retries through ordinary creation", async () => {
+    const protectedCreate = mock(async (_input: TaskToolCreateInput) => {
+      throw new Error("protected publication failed");
+    });
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createProtectedTask: protectedCreate,
+    });
+
+    const failure = await createScheduleTool(CTX).invoke({
+      message: "prepare a report",
+      when: { kind: "recurring", cron: "0 9 * * 1-5" },
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("protected publication failed");
+    expect(capturedCreate).toBeNull();
+    expect(protectedCreate).toHaveBeenCalledTimes(1);
+  });
 
   test("security retry without a fresh Desktop origin creates no task", async () => {
     stubRuntime();
@@ -372,6 +480,63 @@ describe("task intent shortcuts", () => {
       status: "pending",
       execution: "codex",
     });
+  });
+
+  test("in_background routes Codex through protected harness creation outside Plain", async () => {
+    const protectedHarnessCreate = mock(async (input: TaskToolHarnessCreateInput) => {
+      capturedProtectedHarnessCreate = input;
+      return { taskId: "protected-codex-t1", status: "pending", execution: "codex" as const };
+    });
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createProtectedHarnessTask: protectedHarnessCreate,
+    });
+
+    const raw = await createInBackgroundTool(CTX).invoke({
+      brief: "refactor the parser",
+      harness: "codex",
+      working_directory: "/projects/nautilo",
+    });
+
+    expect(capturedHarnessCreate).toBeNull();
+    expect(capturedProtectedHarnessCreate).toMatchObject({
+      prompt: "refactor the parser",
+      preset: "in_background",
+      harness: "codex",
+      workingDirectory: "/projects/nautilo",
+    });
+    expect(protectedHarnessCreate).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(raw)).toMatchObject({
+      taskId: "protected-codex-t1",
+      status: "pending",
+      execution: "codex",
+    });
+  });
+
+  test("in_background Codex fails closed when protected harness creation is absent", async () => {
+    stubRuntime({ canUseLegacyTaskContent: async () => false });
+
+    const raw = await createInBackgroundTool(CTX).invoke({ brief: "x", harness: "codex" });
+
+    expect(raw).toContain("Protected harness Task creation is unavailable");
+    expect(capturedHarnessCreate).toBeNull();
+    expect(capturedProtectedHarnessCreate).toBeNull();
+  });
+
+  test("in_background Codex never retries ordinary creation after protected failure", async () => {
+    const protectedHarnessCreate = mock(async (_input: TaskToolHarnessCreateInput) => {
+      throw new Error("protected harness publication failed");
+    });
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createProtectedHarnessTask: protectedHarnessCreate,
+    });
+
+    const raw = await createInBackgroundTool(CTX).invoke({ brief: "x", harness: "codex" });
+
+    expect(raw).toContain("protected harness publication failed");
+    expect(capturedHarnessCreate).toBeNull();
+    expect(protectedHarnessCreate).toHaveBeenCalledTimes(1);
   });
 
   test.each([

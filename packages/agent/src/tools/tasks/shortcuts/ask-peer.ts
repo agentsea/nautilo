@@ -17,6 +17,7 @@ import {
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { grantArtifactExactUserAccess } from "../../file/share-artifact";
 import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
+import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
 
 /**
  * `ask_peer` intent shortcut. Sends the agent to DM another
@@ -268,7 +269,7 @@ export function createAskPeerTool(context?: unknown) {
       };
       let created: Awaited<ReturnType<typeof rt.createTask>>;
       try {
-        created = await rt.createTask(input);
+        created = await createTaskForCurrentContentPolicy(rt, input);
       } catch (error) {
         if (sharedArtifacts.length === 0) throw error;
         return JSON.stringify({

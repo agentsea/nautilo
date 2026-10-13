@@ -897,8 +897,18 @@ export class TaskObserver implements Observer {
     }
     for (const { task } of timedOut) {
       try {
-        await pauseTask({ db: this.db, jobManager: this.jobManager }, task.id, "time_limit");
-        log(`[task-observer] time-limit reached → paused task=${task.id}`);
+        const result = await pauseTask(
+          { db: this.db, jobManager: this.jobManager },
+          task.id,
+          "time_limit",
+        );
+        if (result.status === "paused") {
+          log(`[task-observer] time-limit reached → paused task=${task.id}`);
+        } else if (task.contentRepresentation !== "ordinary") {
+          log("[task-observer] protected time-limit settlement pending code=PROTECTED_TIME_LIMIT_SETTLEMENT_PENDING");
+        } else {
+          log(`[task-observer] time-limit reached → ${result.status} task=${task.id}`);
+        }
       } catch (err) {
         if (task.contentRepresentation !== "ordinary") {
           // Protected diagnostics must not inspect provider/tool error text.

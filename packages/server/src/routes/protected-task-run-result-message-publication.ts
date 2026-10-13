@@ -159,7 +159,7 @@ export function createProtectedTaskRunResultMessagePublication(input: Readonly<{
                   resultTerminalStatus: expected.resultTerminalStatus, resultContentRevision: 1,
                   resultObjectId: intent.result.objectId,
                   resultGenesisManifestHash: bytesToHex(intent.result.genesisManifestHash),
-                  resultCryptoAccessRevision: 0, resultNamespaceId: result.namespaceId,
+                  resultCryptoAccessRevision: intent.result.cryptoAccessRevision, resultNamespaceId: result.namespaceId,
                   resultDomainId: result.domainId, resultNamespaceAccessRevision: result.expectedAccessRevision,
                 });
               };

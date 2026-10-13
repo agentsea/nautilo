@@ -46,7 +46,9 @@ import {
 } from "./postgres-native-task-message-completion.ts";
 
 import { deriveMessageCryptoObjectIdV2 } from "../../message/conversation-repository.ts";
-import { deriveTaskContentCryptoObjectIdV1 } from "../../task/task-content-repository.ts";
+import { decodeObjectAccessManifestV5, decodeEncryptedPayloadV2 } from "@nautilo/lattice-crypto/wire";
+import { readDurableTaskContentPublication } from "./postgres-task-content-crypto-completion.ts";
+import { deriveTaskContentCryptoObjectIdV1, TASK_RUN_RESULT_OBJECT_TYPE_V1 } from "../../task/task-content-repository.ts";
 
 const receipts = taskTerminalMessageCryptoStagingReceipts;
 const encoder = new TextEncoder();
@@ -77,7 +79,7 @@ export type NativeTaskRunResultMessageIntent = Readonly<{
   resultContentRevision: 1;
   resultObjectId: string;
   resultGenesisManifestHash: string;
-  resultCryptoAccessRevision: 0;
+  resultCryptoAccessRevision: number;
   resultNamespaceId: string;
   resultDomainId: string;
   resultNamespaceAccessRevision: number;
@@ -104,7 +106,7 @@ export type NativeTaskRunResultMessageCurrentAuthority = Readonly<{
   resultContentRevision: 1;
   resultObjectId: string;
   resultGenesisManifestHash: string;
-  resultCryptoAccessRevision: 0;
+  resultCryptoAccessRevision: number;
   resultNamespaceId: string;
   resultDomainId: string;
   resultNamespaceAccessRevision: number;
@@ -198,7 +200,7 @@ function retainedIntent(value: unknown): NativeTaskRunResultMessageIntent {
   if (intent.messageId < 1 || intent.revision !== 0 || intent.role !== "assistant"
     || (intent.mode !== "encrypted_only" && intent.mode !== "shadow_encryption")
     || (intent.resultTerminalStatus !== "completed" && intent.resultTerminalStatus !== "errored")
-    || intent.resultContentRevision !== 1 || intent.resultCryptoAccessRevision !== 0
+    || intent.resultContentRevision !== 1
     || intent.publicationPolicyRevision < intent.acceptedPolicyRevision
     || !/^[0-9a-f]{64}$/u.test(intent.payloadDigest)
     || !/^[0-9a-f]{64}$/u.test(intent.resultGenesisManifestHash)
@@ -263,7 +265,7 @@ function intentFromAuthority(
     resultContentRevision: 1,
     resultObjectId: authority.resultObjectId,
     resultGenesisManifestHash: authority.resultGenesisManifestHash,
-    resultCryptoAccessRevision: 0,
+    resultCryptoAccessRevision: authority.resultCryptoAccessRevision,
     resultNamespaceId: authority.resultNamespaceId,
     resultDomainId: authority.resultDomainId,
     resultNamespaceAccessRevision: authority.resultNamespaceAccessRevision,
@@ -313,7 +315,7 @@ function intentFromPreparation(
     resultObjectId: result.objectId,
     resultGenesisManifestHash: Array.from(result.genesisManifestHash, value =>
       value.toString(16).padStart(2, "0")).join(""),
-    resultCryptoAccessRevision: 0,
+    resultCryptoAccessRevision: result.cryptoAccessRevision,
     resultNamespaceId: result.namespace.namespaceId,
     resultDomainId: result.namespace.domainId,
     resultNamespaceAccessRevision: result.namespace.expectedAccessRevision,
@@ -343,7 +345,8 @@ function compatibleCurrent(
     && current.resultContentRevision === 1
     && current.resultObjectId === intent.resultObjectId
     && current.resultGenesisManifestHash === intent.resultGenesisManifestHash
-    && current.resultCryptoAccessRevision === 0
+    && Number.isSafeInteger(current.resultCryptoAccessRevision)
+    && current.resultCryptoAccessRevision >= intent.resultCryptoAccessRevision
     && current.resultNamespaceId === intent.resultNamespaceId
     // Historical source authority describes how the already-staged bytes were
     // read. Current source admission is supplied independently by the held owner.
@@ -461,6 +464,30 @@ export async function inspectStagedTaskRunResultMessagePublication(
         || !equal(bytes(row, "authority_fingerprint"), fingerprint)) {
         conflict("Task result Message staging receipt conflicts with intent");
       }
+      // A retained receipt proves the original read, not a later access head.
+      // Re-authenticate the immutable source chain before adopting a repaired mapping.
+      if (current.resultCryptoAccessRevision !== intent.resultCryptoAccessRevision) {
+        const source = await readDurableTaskContentPublication({ executor: handle,
+          crypto: input.crypto, objectId: current.resultObjectId,
+          resolveHistoricalAgentSignerAuthority: input.resolveHistoricalAgentSignerAuthority });
+        if (source === null) conflict("Task result Message source ciphertext is missing");
+        const payload = decodeEncryptedPayloadV2(source.payloadBytes);
+        try {
+          const genesis = decodeObjectAccessManifestV5(source.genesisManifestBytes);
+          if (source.accessRevision !== current.resultCryptoAccessRevision
+            || source.namespaceId !== current.resultNamespaceId
+            || source.bindingRevisionAtWrap > current.resultNamespaceAccessRevision
+            || payload.context.objectType !== TASK_RUN_RESULT_OBJECT_TYPE_V1
+            || genesis.signer.kind !== "agent_runtime" || genesis.signer.agentId !== intent.signerAgentId
+            || Array.from(source.genesisManifestHash, byte => byte.toString(16).padStart(2, "0")).join("")
+              !== intent.resultGenesisManifestHash) {
+            conflict("Task result Message source access lineage changed");
+          }
+        } finally {
+          payload.ciphertext.fill(0);
+          for (const value of Object.values(source)) if (value instanceof Uint8Array) value.fill(0);
+        }
+      }
       const genesisManifestHash = bytes(row, "genesis_manifest_hash");
       const exists = await inspectNativeTaskMessageOpaquePublication({
         handle,
@@ -534,6 +561,7 @@ export async function stageNativeTaskRunResultMessagePublication(
     await input.assertCurrentClaim();
     const resolved = await input.resolveCurrentDeliveryAuthority(intent);
     if (resolved === null || !compatibleCurrent(intent, resolved)
+      || resolved.resultCryptoAccessRevision !== intent.resultCryptoAccessRevision
       || resolved.currentPolicyRevision !== intent.publicationPolicyRevision
       || resolved.resultDomainId !== intent.resultDomainId
       || resolved.resultNamespaceAccessRevision !== intent.resultNamespaceAccessRevision) {

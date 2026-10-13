@@ -539,17 +539,16 @@ export function createTaskContentBackfillScanService(input: Readonly<{
       policyRevision: number;
     }>) {
       return protectedOperation(() => withDevice(subject, async restricted => {
-        const authorized = await authorize(
-          subject, restricted, request.candidate, "source", () => Promise.resolve(true),
-        );
-        if (authorized !== true) return Object.freeze({ status: "stale" as const });
         const observedAt = now();
         const expiresAt = Math.min(
           observedAt + input.leaseDurationMs,
           subject.admission.expiresAt,
         );
         if (expiresAt <= observedAt) return Object.freeze({ status: "disabled" as const });
-        return dependencies.claim(input.db, {
+        // A structural lease proves current source/scan ownership, without
+        // reading any content. Namespace authority is required before exposing
+        // the claim, but an unavailable Room must not monopolize the sweep.
+        const claimed = await dependencies.claim(input.db, {
           humanActorId: subject.humanActorId,
           requesterUserId: subject.userId,
           deviceId: subject.admission.deviceId,
@@ -559,6 +558,17 @@ export function createTaskContentBackfillScanService(input: Readonly<{
           now: new Date(observedAt),
           expiresAt: new Date(expiresAt),
         });
+        if (claimed.status !== "claimed") return claimed;
+        const authorized = await authorize(
+          subject, restricted, claimed.claim.candidate, "source", () => Promise.resolve(true),
+        );
+        if (authorized === true) return claimed;
+        const advanced = await dependencies.release(input.db, {
+          claim: claimed.claim, now: new Date(now()), advance: true,
+        });
+        // Advancing only this sweep retains the row for the next sweep, when
+        // Room/Domain authority may be available. No permanent failure is set.
+        return Object.freeze({ status: advanced ? "deferred" as const : "stale" as const });
       }));
     },
 

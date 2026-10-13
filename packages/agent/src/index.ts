@@ -154,7 +154,9 @@ export {
   interruptValueToServerEvent,
   collectPendingInterruptEvents,
   protectedTaskInterruptCoordinates,
+  protectedTaskApprovalAllowedVerbs,
   type ProtectedTaskAdditionalAuthorityInterruptCoordinate,
+  type ProtectedTaskInterruptCoordinate,
 } from "./graph/interrupt-mapping";
 export {
   PROTECTED_TASK_ADDITIONAL_AUTHORITY_GRANTED_V1,

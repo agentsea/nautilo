@@ -56,6 +56,17 @@ async function executeWithExecutorLifecycle<Value>(input: Readonly<{
 }
 
 describe("protected checkpoint saver disposal", () => {
+  test("reports a sealed saver with no pending maintenance as physically closed", async () => {
+    let closes = 0;
+    const saver = saverWithClose(async () => { closes += 1; });
+    await saver.quiesce();
+    expect(saver.pendingMaintenanceCount).toBe(0);
+    const report = await disposeProtectedCheckpointSaver({ saver,
+      primaryErrorPresent: false, report: () => {} });
+    expect(report.close).toEqual({ status: "closed", pendingMaintenanceCount: 0 });
+    expect(closes).toBe(1);
+  });
+
   test("does not turn successful durable execution into pool-close failure", async () => {
     const closeFailure = new Error("pool close failed");
     const reports: ProtectedCheckpointSaverDisposalReport[] = [];

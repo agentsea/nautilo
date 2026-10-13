@@ -703,6 +703,7 @@ export {
   sameParkedProtectedTaskHumanContinuation,
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
   PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY,
+  PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
   acceptProtectedTaskHumanContinuation,
   exactProtectedTaskHumanContinuationAcceptanceReceipt,
@@ -809,6 +810,10 @@ export {
   lockParkedProtectedTaskHumanContinuation,
   listProtectedTaskPendingAttentionCandidates,
   readProtectedTaskPendingAttentionCandidate,
+  sealProtectedTaskHumanApprovalPolicy,
+  type ProtectedTaskHumanApprovalPolicy,
+  type SealProtectedTaskHumanApprovalPolicyInput,
+  type SealProtectedTaskHumanApprovalPolicyResult,
   protectedTaskDefinitionHistoricalRepairProjection,
 } from "./queries/tasks";
 export {

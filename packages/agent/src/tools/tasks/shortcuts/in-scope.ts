@@ -14,6 +14,7 @@ import {
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
+import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
 
 /**
  * `in_scope` intent shortcut for asynchronous scoped work.
@@ -98,7 +99,7 @@ export function createInScopeTool(context?: unknown) {
           : {}),
         ...(args.model_id !== undefined ? { requestedModelId: args.model_id } : {}),
       };
-      const { taskId, status } = await rt.createTask(input);
+      const { taskId, status } = await createTaskForCurrentContentPolicy(rt, input);
       return JSON.stringify({
         taskId,
         status,

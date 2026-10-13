@@ -1,8 +1,12 @@
 import { resolveProtectedTaskCheckpointAadBinding } from "./protected-task-checkpoint-aad-binding";
-import { createDedicatedEncryptedCheckpointPool } from "@nautilo/agent";
+import {
+  createDedicatedEncryptedCheckpointPool,
+  protectedTaskApprovalAllowedVerbs,
+} from "@nautilo/agent";
 import {
   createPostgresJsBridgeConnection,
   getEncryptionTransitionPolicy, type DirectDatabase, type PostgresJsBridgeConnection,
+  sealProtectedTaskHumanApprovalPolicy,
   type ProtectedTaskPendingAttentionCandidate,
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
@@ -48,12 +52,21 @@ export function protectedTaskAttentionEvents(
     (event.type === "approval.ask" || event.type === "prove_it.challenge"
       || event.type === "identity.challenge")
     && event.threadId === threadId
-    && event.laneKey === `task:${taskId}`);
+    && event.laneKey === `task:${taskId}`).map(event => event.type !== "approval.ask"
+      ? event
+      : Object.freeze({ ...event, allowedVerbs: protectedTaskApprovalAllowedVerbs({
+          ...event,
+          type: "approval_ask",
+        }) }));
   const coordinates = candidate.pendingAttentionInterrupts;
   if (selected.length !== coordinates.length
     || !coordinates.every(coordinate => selected.filter(event => {
       if (coordinate.kind === "approval") return event.type === "approval.ask"
-        && event.approvalId === coordinate.requestId;
+        && event.approvalId === coordinate.requestId
+        && (coordinate.allowedVerbs === undefined
+          || event.allowedVerbs.length === coordinate.allowedVerbs.length
+            && event.allowedVerbs.every((verb, index) =>
+              verb === coordinate.allowedVerbs![index]));
       if (coordinate.kind === "prove_it") return event.type === "prove_it.challenge"
         && event.challengeId === coordinate.id;
       return event.type === "identity.challenge"
@@ -71,6 +84,30 @@ export function protectedTaskAttentionEvents(
   }));
 }
 
+export function protectedTaskLegacyApprovalPolicies(
+  events: readonly AttentionEvent[],
+  candidate: ProtectedTaskPendingAttentionCandidate,
+) {
+  return Object.freeze(candidate.pendingAttentionInterrupts.flatMap(interrupt => {
+    if (interrupt.kind !== "approval" || interrupt.requestId === undefined
+      || interrupt.allowedVerbs !== undefined) return [];
+    const event = events.find(
+      (value): value is Extract<AttentionEvent, { type: "approval.ask" }> =>
+        value.type === "approval.ask" && value.approvalId === interrupt.requestId,
+    );
+    if (event === undefined) {
+      throw new TypeError("Task approval policy no longer matches its sealed interrupt");
+    }
+    const allowedVerbs = protectedTaskApprovalAllowedVerbs({
+      ...event,
+      type: "approval_ask",
+    });
+    return [Object.freeze({ interruptId: interrupt.id,
+      requestId: interrupt.requestId,
+      allowedVerbs: Object.freeze(allowedVerbs) })];
+  }));
+}
+
 /** One page admits one checkpoint read; continuation is explicit and never truncated. */
 export function createProtectedTaskPendingAttention(input: Readonly<{
   db: DirectDatabase;
@@ -84,6 +121,7 @@ export function createProtectedTaskPendingAttention(input: Readonly<{
   readPolicy: typeof getEncryptionTransitionPolicy;
   inspect(binding: CheckpointReadBinding, locator: Locator): Promise<CheckpointReadSnapshot | null>;
   readEvents: typeof readProtectedPendingInterruptEvents;
+  sealPolicy: typeof sealProtectedTaskHumanApprovalPolicy;
   now(): number;
 }>> = {}) {
   const crypto = new LatticeCrypto();
@@ -96,6 +134,7 @@ export function createProtectedTaskPendingAttention(input: Readonly<{
   const { restricted, serverScope } = input;
   const readPolicy = overrides.readPolicy ?? getEncryptionTransitionPolicy;
   const readEvents = overrides.readEvents ?? readProtectedPendingInterruptEvents;
+  const sealPolicy = overrides.sealPolicy ?? sealProtectedTaskHumanApprovalPolicy;
   const viewer = (binding: CheckpointReadBinding) => ({ userId: binding.userId, humanActorId: binding.humanActorId });
 
   const locate = async (candidate: ProtectedTaskPendingAttentionCandidate): Promise<Locator | null> => {
@@ -234,11 +273,41 @@ export function createProtectedTaskPendingAttention(input: Readonly<{
           }
           const events = await readEvents({ checkpoint, logicalThreadId: locator.checkpointThreadId,
             laneKey: `task:${taskId}` });
-          return protectedTaskAttentionEvents(events, candidate, binding.userId);
+          return Object.freeze({ candidate,
+            events: protectedTaskAttentionEvents(events, candidate, binding.userId) });
         },
       });
-      return result.status === "read" ? { status: "read" as const, events: result.value }
-        : { status: "unavailable" as const, events: [] as readonly AttentionEvent[] };
+      if (result.status !== "read") {
+        return { status: "unavailable" as const, events: [] as readonly AttentionEvent[] };
+      }
+      const legacyApprovals = result.value.candidate.pendingAttentionInterrupts.filter(
+        (interrupt): interrupt is typeof interrupt & Readonly<{
+          kind: "approval"; requestId: string;
+        }> => interrupt.kind === "approval"
+          && interrupt.requestId !== undefined
+          && interrupt.allowedVerbs === undefined,
+      );
+      if (legacyApprovals.length > 0) {
+        const current = await metadata.readCurrent({ viewer: viewer(binding), taskId,
+          taskRunId, expected: result.value.candidate });
+        if (current === null) {
+          return { status: "unavailable" as const, events: [] as readonly AttentionEvent[] };
+        }
+        const policies = protectedTaskLegacyApprovalPolicies(
+          result.value.events,
+          result.value.candidate,
+        );
+        const sealed = await input.owner.runMutation({
+          protected: () => sealPolicy(input.db, { viewer: viewer(binding),
+            candidate: current, policies }),
+          dual: () => sealPolicy(input.db, { viewer: viewer(binding),
+            candidate: current, policies }),
+        });
+        if (sealed.status === "rejected") {
+          return { status: "unavailable" as const, events: [] as readonly AttentionEvent[] };
+        }
+      }
+      return { status: "read" as const, events: result.value.events };
     },
     cancelForDevice: reads.cancelForDevice,
     cancelForClientSession: reads.cancelForClientSession,

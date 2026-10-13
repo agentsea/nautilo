@@ -118,7 +118,7 @@ export const taskContentBackfillClaimResponseSchema = z.union([
     status: z.literal("ready"),
     value: z.discriminatedUnion("status", [
       z.object({ status: z.literal("claimed"), claim: taskContentBackfillClaimSchema }).strict(),
-      z.object({ status: z.enum(["stale", "held", "disabled"]) }).strict(),
+      z.object({ status: z.enum(["stale", "held", "disabled", "deferred"]) }).strict(),
     ]),
   }).strict(),
 ]);

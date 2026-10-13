@@ -56,6 +56,7 @@ export type ProtectedTaskExternalExecutionDependencies = Readonly<{
 }>;
 
 const transientSlot = "protectedTaskExternalExecution";
+const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function publicationFrom(input: Record<string, unknown>): Publication {
   const value = input["protectedTaskResultPublication"];
@@ -143,6 +144,18 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
       const product = await dependencies.product(occurrence.task.requestorId, input.db);
       const transcriptPublisher = dependencies.transcript({ product });
       const issuedTokens = new WeakSet<object>();
+      const timeLimit = new AbortController();
+      const requestCheckpointPause: NonNullable<TaskRuntimeGrantClaimPlan["requestCheckpointPause"]> =
+        (reason, requestId) => {
+          // External providers have no portable checkpoint. Manual Pause keeps
+          // waiting for their natural settlement, while the watchdog's hard
+          // deadline ends the same signal-bound provider custody used for
+          // cancellation and grant expiry.
+          if (reason !== "time_limit" || typeof requestId !== "string"
+            || !canonicalUuid.test(requestId) || timeLimit.signal.aborted) return false;
+          timeLimit.abort(new Error("Protected Task time limit reached"));
+          return true;
+        };
       const openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"] = async grant => {
         assertAuthenticTaskRuntimeExecutionEvidence(grant.evidence);
         assertProtectedTaskJobReferenceV1(grant.reference);
@@ -163,10 +176,12 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
           || grant.record.descriptorBytes === null) {
           throw new TypeError("Protected external Task grant identity changed");
         }
-        grant.signal.throwIfAborted();
+        const authorizationSignal = AbortSignal.any([grant.signal, timeLimit.signal]);
+        authorizationSignal.throwIfAborted();
         const accepted = grant.record.snapshot.acceptedResponse;
         if (accepted?.kind !== "runtime") throw new TypeError("Protected external Task requester authority is unavailable");
-        const beforeStart = await waitForProtectedTaskExternalOperation(grant.signal, input.provider.admit(running.task.requestorId, selection));
+        const beforeStart = await waitForProtectedTaskExternalOperation(authorizationSignal,
+          input.provider.admit(running.task.requestorId, selection));
         if (beforeStart === null) {
           throw new ProtectedTaskExecutionDidNotBeginError();
         }
@@ -178,7 +193,7 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
             }
             used = true;
             const providerLifetime = new AbortController();
-            const combined = AbortSignal.any([grant.signal, signal, providerLifetime.signal]);
+            const combined = AbortSignal.any([authorizationSignal, signal, providerLifetime.signal]);
             const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(grant.record.descriptorBytes!);
             if (request === null || request.requestId !== reference.authorizationRequestId
               || request.workId !== running.run.id || request.sourceRoomId !== grant.evidence.sourceRoomId) {
@@ -339,7 +354,8 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
         await (token as { run(input: Record<string, unknown>, jobId: string, signal: AbortSignal): Promise<void> }).run(transient, jobId, signal);
         yield* [];
       };
-      return Object.freeze({ executor, openTransientInput, modelAttribution: "external" as const });
+      return Object.freeze({ executor, openTransientInput, requestCheckpointPause,
+        modelAttribution: "external" as const });
     };
   };
 }

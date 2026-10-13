@@ -1,3 +1,4 @@
+import { assertApprovalSelectionsAreContentFree, projectApprovalRow, applyApprovalPatch, compileApprovalSelection } from "../fixtures/protected-approval-projection";
 import { encryptionTransitionPolicy } from "../../src/schema/encryption-transition";
 import { protectedTaskRunOutputBindings } from "../../src/schema/protected-task-run-output-bindings";
 import { createHash } from "node:crypto";
@@ -366,6 +367,7 @@ function harness(options: FixtureOptions = {}) {
     ? options.message
     : currentMessage();
   let jobRead = 0;
+  const selections: string[] = [];
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
@@ -401,8 +403,9 @@ function harness(options: FixtureOptions = {}) {
     throw new Error("unexpected table");
   };
   const tx = {
-    select: () => ({
+    select: (selection?: unknown) => ({
       from: (table: unknown) => {
+        if (selection !== undefined && [tasks, taskRuns, jobs].includes(table as typeof tasks)) selections.push(compileApprovalSelection(table, selection));
         let limitValue: number | undefined;
         const query = {
           innerJoin: (_joined: unknown, _condition: unknown) => query,
@@ -414,7 +417,7 @@ function harness(options: FixtureOptions = {}) {
           },
           for: async (kind: string) => {
             locks.push({ table, kind });
-            return rows(table, true);
+            return rows(table, true).map(row => projectApprovalRow(table, row, selection));
           },
           then: <TResult1 = unknown[]>(
             resolve: (value: unknown[]) => TResult1 | PromiseLike<TResult1>,
@@ -432,7 +435,8 @@ function harness(options: FixtureOptions = {}) {
       set: (patch: Record<string, unknown>) => ({
         where: (_condition: unknown) => ({
           returning: async () => {
-            writes.push({ table, patch });
+            writes.push({ table, patch: table === jobs && priorJobRow
+              ? applyApprovalPatch(priorJobRow, patch) : patch });
             if (table === taskRuns) {
               if (options.loseRunUpdate || !runRow) return [];
               runRow = { ...runRow, ...patch } as TaskRun;
@@ -454,7 +458,7 @@ function harness(options: FixtureOptions = {}) {
     transaction: async <T>(operation: (value: typeof tx) => Promise<T>) =>
       operation(tx),
   } as unknown as DirectDatabase;
-  return { db, locks, writes };
+  return { db, locks, writes, selections };
 }
 
 async function expectRejected(
@@ -496,6 +500,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
     expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
       status: "started",
     });
+    assertApprovalSelectionsAreContentFree(fixture.selections);
     expect(fixture.locks).toEqual([
       { table: encryptionTransitionPolicy, kind: "share" },
       { table: tasks, kind: "update" },

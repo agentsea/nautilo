@@ -12,6 +12,7 @@ function fixture(mode: "plaintext_only" | "shadow_encryption" | "encrypted_only"
   const events: string[] = [];
   const accepted: AcceptProtectedTaskHumanContinuationInput[] = [];
   let failure = false;
+  let allowedVerbs: readonly ("once" | "room" | "always" | "deny")[] | undefined = ["once", "deny"];
   let representation: "ordinary" | "dual" | "protected" = mode === "shadow_encryption" ? "dual" : "protected";
   const owner = bindEncryptionDataOperationOwner({ policy: {
     resolve: async () => ({ policy: { mode, shadowBehavior }, revalidationToken: 1 }),
@@ -29,7 +30,9 @@ function fixture(mode: "plaintext_only" | "shadow_encryption" | "encrypted_only"
       return { status: "resolved", input: { taskId: TASK, taskRunId: RUN,
         priorJobId: JOB, executionSegment: 2 } as Omit<AcceptProtectedTaskHumanContinuationInput, "acceptance">,
         interrupt: { id: "interrupt:1", kind: request.interrupt.kind,
-          ...(request.interrupt.requestId === undefined ? {} : { requestId: request.interrupt.requestId }) } };
+          ...(request.interrupt.requestId === undefined ? {} : { requestId: request.interrupt.requestId }),
+          ...(request.interrupt.kind !== "approval" || allowedVerbs === undefined
+            ? {} : { allowedVerbs }) } };
     },
     accept: async (_db, input) => { events.push("accept"); accepted.push(input);
       return { status: "accepted", acceptance: input.acceptance }; },
@@ -40,6 +43,7 @@ function fixture(mode: "plaintext_only" | "shadow_encryption" | "encrypted_only"
   };
   return { events, accepted, respond, request,
     setRepresentation: (value: typeof representation) => { representation = value; },
+    setAllowedVerbs: (value: typeof allowedVerbs) => { allowedVerbs = value; },
     fail: () => { failure = true; }, ordinary: () => { representation = "ordinary"; } };
 }
 
@@ -78,6 +82,20 @@ test("requires a real actor and exact approval request but preserves ordinary Ta
   expect(await f.respond(f.request)).toEqual({ status: "not_applicable" });
 });
 
+test("rejects a disallowed approval before immutable acceptance and keeps legacy deny available", async () => {
+  const f = fixture("encrypted_only");
+  f.setAllowedVerbs(["deny"]);
+  expect(await f.respond(f.request)).toEqual({ status: "rejected", code: "approval_stale" });
+  expect(f.accepted).toEqual([]);
+  expect(await f.respond({ ...f.request,
+    response: { kind: "approval", verb: "deny" } })).toEqual({ status: "accepted" });
+  const legacy = fixture("encrypted_only");
+  legacy.setAllowedVerbs(undefined);
+  expect(await legacy.respond(legacy.request)).toEqual({ status: "rejected", code: "approval_stale" });
+  expect(await legacy.respond({ ...legacy.request,
+    response: { kind: "approval", verb: "deny" } })).toEqual({ status: "accepted" });
+});
+
 
 test.each([
   ["shadow_encryption", "strict"],
@@ -90,12 +108,16 @@ test.each([
 });
 
 
-test.each([
-  ["shadow_encryption", "protected"],
-  ["encrypted_only", "dual"],
-] as const)("%s refuses %s continuation before recording a response", async (mode, representation) => {
-  const f = fixture(mode); f.setRepresentation(representation);
+test("Shadow refuses protected-only continuation before recording a response", async () => {
+  const f = fixture("shadow_encryption"); f.setRepresentation("protected");
   expect(await f.respond(f.request)).toEqual({ status: "rejected", code: "approval_stale" });
   expect(f.accepted).toEqual([]);
   expect(f.events).toEqual(["representation"]);
+});
+
+test("Full accepts an encrypted retained-dual definition through the protected continuation", async () => {
+  const f = fixture("encrypted_only"); f.setRepresentation("dual");
+  expect(await f.respond(f.request)).toEqual({ status: "accepted" });
+  expect(f.events).toEqual(["representation", "resolve", "accept", "wake"]);
+  expect(f.accepted[0]?.acceptance.response).toEqual({ kind: "approval", verb: "once" });
 });

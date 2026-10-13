@@ -54,7 +54,9 @@ export async function disposeProtectedCheckpointSaver(input: Readonly<{
   ];
   let retryFailure: unknown = null;
   try {
-    await input.saver.retryPendingMaintenance();
+    if (input.saver.pendingMaintenanceCount > 0) {
+      await input.saver.retryPendingMaintenance();
+    }
     maintenanceOutcomes.push(...input.saver.takeMaintenanceOutcomes());
   } catch (cause) {
     retryFailure = cause;

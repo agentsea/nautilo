@@ -7,9 +7,15 @@ import {
   agents,
   actors,
   acceptProtectedTaskHumanContinuation,
+  readProtectedTaskPendingAttentionCandidate,
+  resolveParkedProtectedTaskHumanContinuationAcceptance,
+  sealProtectedTaskHumanApprovalPolicy,
+  PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY,
+  PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY,
   createDirectDb,
   cryptoObjects,
   eq,
+  encryptionTransitionPolicy,
   jobs,
   getUnstartedProtectedTaskRunRecoveryBoundary,
   listUnstartedProtectedTaskRunRecoveryCandidates,
@@ -19,6 +25,7 @@ import {
   protectedTaskAdditionalAuthorityContinuationFingerprint,
   protectedTaskSemanticAuthorityRequirementsDigest,
   protectedTaskExecutionSegmentReceipts,
+  protectedTaskRunOutputBindings,
   protectedTaskHumanContinuationAcceptanceId,
   persistJobInTransaction,
   discoverAcceptedParkedProtectedTaskHumanContinuation,
@@ -77,6 +84,7 @@ function semanticAuthorityRequirements(fixture: Fixture) {
 let admin: AdminDb;
 let productA: ProductDb;
 let productB: ProductDb;
+let originalPolicy: typeof encryptionTransitionPolicy.$inferSelect;
 
 function createProductDb() {
   const client = postgres(resolveAppDatabaseConnectionString(), { max: 1 });
@@ -85,15 +93,30 @@ function createProductDb() {
   });
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   bootstrapTestDbInstance();
   admin = createDirectDb(2);
   productA = createProductDb();
   productB = createProductDb();
+  const [policy] = await admin.select().from(encryptionTransitionPolicy)
+    .where(eq(encryptionTransitionPolicy.id, "server"));
+  if (policy === undefined) throw new Error("Fixture policy is missing");
+  originalPolicy = policy;
+  // Start fixtures intentionally exercise a next segment at revision two.
+  // Use a temporary policy only on the explicitly guarded disposable target.
+  await admin.update(encryptionTransitionPolicy).set({ mode: "encrypted_only",
+    shadowBehavior: "strict", revision: 2,
+    shadowEncryptionStartedAt: new Date("2026-10-07T00:00:00.000Z") })
+    .where(eq(encryptionTransitionPolicy.id, "server"));
 });
 
 afterAll(async () => {
-  await Promise.all([productA.end(), productB.end(), admin.end()]);
+  try {
+    if (originalPolicy !== undefined) await admin.update(encryptionTransitionPolicy)
+      .set(originalPolicy).where(eq(encryptionTransitionPolicy.id, "server"));
+  } finally {
+    await Promise.all([productA.end(), productB.end(), admin.end()]);
+  }
 });
 
 function fixtureIds(): Fixture {
@@ -136,10 +159,29 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
     taskDefinitionCryptoRevisions.taskId,
     fixture.taskId,
   ));
-  await admin.delete(cryptoObjects).where(eq(
-    cryptoObjects.objectId,
-    fixture.cryptoObjectId,
-  ));
+  // The parent FK cascade executes as the parent table's owner. Restore the
+  // append-only staging ACL within the same operator-only cleanup transaction.
+  await admin.transaction(async tx => {
+    const [original] = await tx.execute<{ parent_owner: string; allowed: boolean; can_select: boolean }>(sql`
+      select pg_get_userbyid(relowner) as parent_owner,
+        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+      from pg_class where oid = 'public.crypto_objects'::regclass
+    `);
+    if (original?.parent_owner !== "nautilo") throw new Error("Fixture crypto owner is unexpected");
+    if (!original.allowed) await tx.execute(sql`grant delete on public.task_cancellation_crypto_staging_receipts to nautilo`);
+    if (!original.can_select) await tx.execute(sql`grant select on public.task_cancellation_crypto_staging_receipts to nautilo`);
+    await tx.delete(cryptoObjects).where(eq(cryptoObjects.objectId, fixture.cryptoObjectId));
+    if (!original.allowed) await tx.execute(sql`revoke delete on public.task_cancellation_crypto_staging_receipts from nautilo`);
+    if (!original.can_select) await tx.execute(sql`revoke select on public.task_cancellation_crypto_staging_receipts from nautilo`);
+    const [restored] = await tx.execute<{ allowed: boolean; can_select: boolean }>(sql`
+      select has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+    `);
+    if (restored?.allowed !== original.allowed || restored.can_select !== original.can_select) {
+      throw new Error("Fixture staging privileges were not restored");
+    }
+  });
   await admin.delete(namespaces).where(eq(namespaces.id, fixture.namespaceId));
   await admin.delete(actors).where(eq(actors.id, fixture.humanActorId));
   await admin.delete(users).where(eq(users.id, fixture.userId));
@@ -230,6 +272,16 @@ async function createFixture(options: Readonly<{
       jobId: fixture.jobId,
       graphThreadId: fixture.graphThreadId,
       status: "running",
+    });
+    // This database fixture seeds an already-started segment, including the
+    // immutable output coordinates which every legitimate start must retain.
+    await admin.insert(protectedTaskRunOutputBindings).values({
+      taskRunId: fixture.taskRunId, bindingId: `task-run-output:${fixture.taskRunId}`,
+      deliveryMode: "none", resultRevision: 1,
+      resultOperationId: `task-run-result:${fixture.taskRunId}`,
+      resultObjectId: fixture.jobReference.resultObjectId,
+      acceptedPolicyRevision: fixture.jobReference.policyRevision,
+      acceptedAt: new Date("2026-10-07T11:00:00.000Z"),
     });
     return fixture;
   } catch (error) {
@@ -363,6 +415,7 @@ const humanInterrupt = Object.freeze({
   id: "interrupt:approval:1",
   kind: "approval" as const,
   requestId: "approval:1",
+  allowedVerbs: Object.freeze(["once", "deny"] as const),
 });
 
 function humanParkInput(fixture: Fixture): SealAndParkProtectedTaskHumanRunInput {
@@ -434,6 +487,7 @@ function humanReference(
   return Object.freeze({
     ...fixture.jobReference,
     authorizationRequestId: acceptance.acceptanceId,
+    policyRevision: 2,
     executionSegment: 2,
     resumeAcceptanceId: acceptance.acceptanceId,
   });
@@ -1176,3 +1230,136 @@ test("terminal grant settlement cancels an unlinked continuation Job after Stop"
     await cleanupFixture(fixture);
   }
 });
+
+
+const legacyApprovalInterrupt = Object.freeze({
+  id: humanInterrupt.id, kind: humanInterrupt.kind, requestId: humanInterrupt.requestId,
+});
+async function legacyApprovalCandidate(fixture: Fixture) {
+  const parked = humanParkInput(fixture);
+  expect(await sealAndParkProtectedTaskHumanRun(productA, {
+    ...parked, park: { ...parked.park, interrupts: [legacyApprovalInterrupt] },
+  })).toEqual({ status: "parked" });
+  const viewer = { userId: fixture.userId, humanActorId: fixture.humanActorId };
+  const candidate = await readProtectedTaskPendingAttentionCandidate(productA, {
+    viewer, taskId: fixture.taskId, taskRunId: fixture.taskRunId,
+  });
+  if (candidate === null) throw new Error("Expected exact pending legacy approval");
+  return { viewer, candidate, policies: [{ interruptId: humanInterrupt.id,
+    requestId: humanInterrupt.requestId, allowedVerbs: ["once", "deny"] as const }] };
+}
+function legacyApprovalAcceptance(fixture: Fixture, verb: "once" | "deny") {
+  const acceptance = humanAcceptance(fixture, {
+    interrupt: legacyApprovalInterrupt, response: { kind: "approval", verb },
+  });
+  return { ...humanAcceptanceInput(fixture, acceptance), interrupts: [legacyApprovalInterrupt] };
+}
+async function approvalMetadata(fixture: Fixture) {
+  const [row] = await productA.select({ metadata: jobs.metadata }).from(jobs)
+    .where(eq(jobs.id, fixture.jobId));
+  if (row === undefined) throw new Error("Expected parked approval Job");
+  return row.metadata;
+}
+
+test("product role seals legacy approval policy exactly once before acceptance", async () => {
+  const fixture = await createFixture();
+  try {
+    const identities = await productA.execute(sql`SELECT current_user::text AS current_user`);
+    expect(identities[0]?.["current_user"]).toBe("nautilo");
+    const binding = await legacyApprovalCandidate(fixture);
+    const accept = legacyApprovalAcceptance(fixture, "once");
+    expect(await acceptProtectedTaskHumanContinuation(productA, accept))
+      .toEqual({ status: "rejected", reason: "stale" });
+    expect(await approvalMetadata(fixture)).not.toHaveProperty(PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY);
+    expect(await sealProtectedTaskHumanApprovalPolicy(productA, binding)).toEqual({ status: "sealed" });
+    const sealed = await approvalMetadata(fixture);
+    expect(await sealProtectedTaskHumanApprovalPolicy(productB, binding)).toEqual({ status: "exact_replay" });
+    expect(await approvalMetadata(fixture)).toEqual(sealed);
+    expect(await sealProtectedTaskHumanApprovalPolicy(productB, { ...binding,
+      policies: [{ ...binding.policies[0]!, allowedVerbs: ["deny"] }],
+    })).toEqual({ status: "rejected", reason: "conflict" });
+    expect(await approvalMetadata(fixture)).toEqual(sealed);
+    const resolved = await resolveParkedProtectedTaskHumanContinuationAcceptance(productA, {
+      taskId: fixture.taskId, graphThreadId: fixture.graphThreadId, acceptedBy: binding.viewer,
+      interrupt: { kind: "approval", requestId: humanInterrupt.requestId },
+    });
+    expect(resolved).toMatchObject({ status: "resolved", interrupt: { allowedVerbs: ["once", "deny"] } });
+    expect(await acceptProtectedTaskHumanContinuation(productA, accept))
+      .toMatchObject({ status: "accepted" });
+    expect(await acceptProtectedTaskHumanContinuation(productB, accept))
+      .toMatchObject({ status: "exact_replay" });
+  } finally { await cleanupFixture(fixture); }
+});
+
+test("legacy approval rejects stale checkpoint bindings and tampered policy without poisoning acceptance", async () => {
+  const fixture = await createFixture();
+  try {
+    const binding = await legacyApprovalCandidate(fixture);
+    for (const candidate of [
+      { ...binding.candidate, priorJob: { ...binding.candidate.priorJob,
+        generation: binding.candidate.priorJob.generation + 1 } },
+      { ...binding.candidate, checkpointManifest: { ...binding.candidate.checkpointManifest,
+        checkpointOrderedDigest: new Uint8Array(32).fill(0x76) } },
+    ]) {
+      expect(await sealProtectedTaskHumanApprovalPolicy(productA, { ...binding, candidate }))
+        .toEqual({ status: "rejected", reason: "stale" });
+      expect(await approvalMetadata(fixture)).not.toHaveProperty(PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY);
+    }
+    expect(await sealProtectedTaskHumanApprovalPolicy(productA, binding)).toEqual({ status: "sealed" });
+    const original = await approvalMetadata(fixture);
+    const sidecar = original[PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY];
+    if (sidecar === null || typeof sidecar !== "object" || Array.isArray(sidecar)) {
+      throw new Error("Expected sealed policy sidecar");
+    }
+    await admin.update(jobs).set({ metadata: { ...original,
+      [PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY]: { ...sidecar,
+        checkpointManifestDigest: "tampered-checkpoint" },
+    } }).where(eq(jobs.id, fixture.jobId));
+    expect(await sealProtectedTaskHumanApprovalPolicy(productA, binding))
+      .toEqual({ status: "rejected", reason: "conflict" });
+    expect(await acceptProtectedTaskHumanContinuation(productA, legacyApprovalAcceptance(fixture, "once")))
+      .toEqual({ status: "rejected", reason: "stale" });
+    expect(await approvalMetadata(fixture)).not.toHaveProperty(PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY);
+    // Restore only this fixture's exact pre-tamper bytes; a failed attempt has
+    // written no acceptance that could prevent the legitimate Human response.
+    await admin.update(jobs).set({ metadata: original }).where(eq(jobs.id, fixture.jobId));
+    expect(await acceptProtectedTaskHumanContinuation(productA, legacyApprovalAcceptance(fixture, "once")))
+      .toMatchObject({ status: "accepted" });
+  } finally { await cleanupFixture(fixture); }
+});
+
+test("legacy approval remains denyable without a policy sidecar", async () => {
+  const fixture = await createFixture();
+  try {
+    await legacyApprovalCandidate(fixture);
+    expect(await acceptProtectedTaskHumanContinuation(productA, legacyApprovalAcceptance(fixture, "deny")))
+      .toMatchObject({ status: "accepted" });
+    expect(await approvalMetadata(fixture)).not.toHaveProperty(PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY);
+  } finally { await cleanupFixture(fixture); }
+});
+
+for (const allowedVerbs of [["deny"], ["once", "deny"]] as const) {
+  test(`fresh approval policy ${allowedVerbs.join("/")} is enforced before acceptance`, async () => {
+    const fixture = await createFixture();
+    try {
+      const parked = humanParkInput(fixture);
+      const interrupt = { ...humanInterrupt, allowedVerbs };
+      expect(await sealAndParkProtectedTaskHumanRun(productA, {
+        ...parked, park: { ...parked.park, interrupts: [interrupt] },
+      })).toEqual({ status: "parked" });
+      const acceptance = humanAcceptance(fixture, { interrupt });
+      const accepted = await acceptProtectedTaskHumanContinuation(productA, {
+        ...humanAcceptanceInput(fixture, acceptance), interrupts: [interrupt],
+      });
+      if (allowedVerbs.length === 1) {
+        expect(accepted).toEqual({ status: "rejected", reason: "stale" });
+        expect(await approvalMetadata(fixture)).not.toHaveProperty(PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY);
+        const denied = humanAcceptance(fixture, { interrupt, response: { kind: "approval", verb: "deny" } });
+        expect(await acceptProtectedTaskHumanContinuation(productA, {
+          ...humanAcceptanceInput(fixture, denied), interrupts: [interrupt],
+        })).toMatchObject({ status: "accepted" });
+      } else expect(accepted).toMatchObject({ status: "accepted" });
+      expect(await approvalMetadata(fixture)).not.toHaveProperty(PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY);
+    } finally { await cleanupFixture(fixture); }
+  });
+}

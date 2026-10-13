@@ -30,7 +30,7 @@ import {
   encodeEncryptedPayloadV2,
   encodeNamespaceObjectEnvelopeV2,
 } from "@nautilo/lattice-crypto/wire";
-import { createAgentObjectAccessManifestV5 } from
+import { createAgentObjectAccessManifestV5, createHumanObjectAccessManifestV5 } from
   "../../../lattice-crypto/src/format/object-access-manifest-v5.ts";
 import {
   withTaskRuntimeRunResultReadEvidenceV1,
@@ -83,7 +83,7 @@ const AGENT = "task-result-message-agent";
 const SERVER = "https://nautilo.example";
 const bytes = (value: number): Uint8Array => new Uint8Array(32).fill(value);
 
-async function fixture() {
+async function fixture(mappedAccess = 0) {
   const crypto = new LatticeCrypto();
   const issuer = crypto.generateSigningKeyPair();
   const manager = crypto.generateSigningKeyPair();
@@ -155,7 +155,7 @@ async function fixture() {
   });
   const result = {
     taskId: TASK, taskRunId: RUN, terminalStatus: "completed" as const,
-    contentRevision: 1 as const, cryptoAccessRevision: 0 as const,
+    contentRevision: 1 as const, cryptoAccessRevision: mappedAccess,
     objectId: deriveTaskContentCryptoObjectIdV1({
       kind: "run_result", taskId: TASK, taskRunId: RUN, contentRevision: 1,
     }),
@@ -223,6 +223,13 @@ async function fixture() {
         expectedPolicyRevision: 7 },
       domain: destinationNamespace.publicDomain },
   };
+  let sourceHead = mappedAccess;
+  const rewrap = createHumanObjectAccessManifestV5(crypto, {
+    objectId: objectId(result.objectId), payloadHash: crypto.hash(resultPayloadBytes), accessRevision: accessRevision(1),
+    previousManifestHash: resultManifest.hash, envelopeHashes: [crypto.hash(resultEnvelopeBytes)],
+    signer: { kind: "human_device", subjectHumanId: humanId(HUMAN), committerDeviceId: cryptoDeviceId("device") },
+    signerAuthorizationHash: null, hostAuthorizationRevision: authorizationRevision(1),
+  }, issuer.privateKey);
   const manifestRow = { object_id: result.objectId, access_revision: 0,
     manifest_hash: resultManifest.hash, previous_manifest_hash: null,
     payload_hash: crypto.hash(resultPayloadBytes),
@@ -255,13 +262,17 @@ async function fixture() {
         rows = [{ object_id: result.objectId, payload_bytes: resultPayloadBytes,
           payload_hash: crypto.hash(resultPayloadBytes) }];
       } else if (statement.includes('from "object_crypto_access_heads"')) {
-        rows = [manifestRow];
+        rows = sourceHead === 0 ? [manifestRow] : [{ ...manifestRow, access_revision: 1, previous_manifest_hash: resultManifest.hash, manifest_hash: rewrap.hash, manifest_bytes: rewrap.bytes }];
       } else if (statement.includes('from "object_crypto_namespace_envelopes"')) {
-        rows = [{ namespace_id: PRIVATE_NS,
+        rows = [{ object_id: result.objectId, access_revision: sourceHead, ordinal: 0, namespace_id: PRIVATE_NS,
           envelope_hash: crypto.hash(resultEnvelopeBytes),
           envelope_bytes: resultEnvelopeBytes }];
       } else if (statement.includes('from "object_crypto_access_manifests"')) {
-        rows = [manifestRow];
+        rows = sourceHead === 1 && statement.includes("order by")
+          ? [manifestRow, { ...manifestRow, access_revision: 1, previous_manifest_hash: resultManifest.hash,
+            manifest_hash: rewrap.hash, manifest_bytes: rewrap.bytes }] : [manifestRow];
+      } else if (statement.includes('from "human_crypto_devices"')) {
+        rows = [{ device_id: "device", human_id: HUMAN, signing_public_key: issuer.publicKey, state: "active", revision: 1 }];
       } else if (statement.includes('from "agent_crypto_runtime_signers"')) {
         rows = [{ agent_id: AGENT,
           runtime_generation: initialized.runtime.generation,
@@ -327,6 +338,7 @@ async function fixture() {
       }),
     });
   return { crypto, run, allocation, checks, destinationGenerationKey,
+    rewrapSource: () => { sourceHead = 1; }, sourceObjectId: result.objectId, sourceQuery: restricted.query,
     destinationSource,
     controller, evidenceInput, signerPublication: initialized.signerPublication,
     managerPublicKey: manager.publicKey.slice(),
@@ -362,6 +374,8 @@ class ResultMessageCryptoConnection implements CryptoPostgresConnection {
   claim: DatabaseRow | null = null;
   namespaces: readonly DatabaseRow[] = [];
   domains: readonly DatabaseRow[] = [];
+  sourceObjectId: string | undefined;
+  sourceQuery: PostgresJsBridgeConnection["query"] | undefined;
   failReceipt = false;
   claimReads = 0;
   readonly locks: string[] = [];
@@ -388,6 +402,10 @@ class ResultMessageCryptoConnection implements CryptoPostgresConnection {
         statement: string,
         parameters: readonly DatabaseScalar[] = [],
       ): Promise<readonly Row[]> => {
+        if (this.sourceQuery !== undefined && (parameters.includes(this.sourceObjectId ?? "")
+          || statement.includes('from "human_crypto_devices"'))) {
+          return this.sourceQuery<Row>(statement, parameters);
+        }
         const normalized = statement.replaceAll('"', "").toLowerCase();
         if (normalized.includes("current_user::text")) return [{
           current_user: "nautilo_crypto", session_user: "nautilo_crypto",
@@ -494,8 +512,8 @@ async function failure(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe("Task run result Message crypto staging", () => {
-  test("atomically stages, replays and verifies immutable source provenance without a read grant", async () => {
-    const value = await fixture();
+  test.each([0, 1])("atomically stages and recovers authentic result head %s without another read grant", async mappedAccess => {
+    const value = await fixture(mappedAccess);
     const publication = value.signerPublication;
     const connection = new ResultMessageCryptoConnection({
       agent_id: publication.agentId,
@@ -511,6 +529,7 @@ describe("Task run result Message crypto staging", () => {
       typeof inspectStagedTaskRunResultMessagePublication
     >[0]["resolveHistoricalAgentSignerAuthority"]>[0]) => ({ ...context,
       managerSigningPublicKey: value.managerPublicKey.slice() });
+    let retained: { intent: NativeTaskRunResultMessageIntent; current: NativeTaskRunResultMessageCurrentAuthority } | undefined;
     await value.run(async ({ evidence, source, preparation }) => {
       const write = evidence.messageWrite!;
       if (evidence.result.terminalStatus !== "completed"
@@ -577,7 +596,7 @@ describe("Task run result Message crypto staging", () => {
         resultTerminalStatus: evidence.result.terminalStatus,
         resultContentRevision: 1, resultObjectId: evidence.result.objectId,
         resultGenesisManifestHash: hex(evidence.result.genesisManifestHash),
-        resultCryptoAccessRevision: 0,
+        resultCryptoAccessRevision: evidence.result.cryptoAccessRevision,
         resultNamespaceId: evidence.result.namespace.namespaceId,
         resultDomainId: evidence.result.namespace.domainId,
         resultNamespaceAccessRevision:
@@ -598,11 +617,12 @@ describe("Task run result Message crypto staging", () => {
         resultTerminalStatus: intent.resultTerminalStatus,
         resultContentRevision: 1, resultObjectId: intent.resultObjectId,
         resultGenesisManifestHash: intent.resultGenesisManifestHash,
-        resultCryptoAccessRevision: 0,
+        resultCryptoAccessRevision: intent.resultCryptoAccessRevision,
         resultNamespaceId: intent.resultNamespaceId,
         resultDomainId: intent.resultDomainId,
         resultNamespaceAccessRevision: intent.resultNamespaceAccessRevision,
       };
+      retained = { intent, current };
       const stage = () => stageNativeTaskRunResultMessagePublication({
         restricted: connection as unknown as PostgresJsBridgeConnection,
         preparation, resolveHistoricalAgentSignerAuthority: historical,
@@ -692,6 +712,28 @@ describe("Task run result Message crypto staging", () => {
         resolveHistoricalAgentSignerAuthority: historical,
       }))).toBeInstanceOf(Error);
     });
+    // The original grant callback is gone. Recovery uses its durable receipt and
+    // independently verifies the repaired source chain without another read loan.
+    if (retained === undefined) throw new Error("Expected staged result");
+    const retainedIntent = retained.intent;
+    value.rewrapSource();
+    connection.sourceObjectId = value.sourceObjectId;
+    connection.sourceQuery = value.sourceQuery;
+    const handle = await verifyCryptoPostgresHandle(connection);
+    const repaired = { ...retained.current, resultCryptoAccessRevision: 1 };
+    const inspect = (currentAuthority: NativeTaskRunResultMessageCurrentAuthority) => inspectStagedTaskRunResultMessagePublication({
+      handle, crypto: value.crypto, intent: retainedIntent, currentAuthority,
+      resolveHistoricalAgentSignerAuthority: historical,
+    });
+    const recovered = await inspect(repaired);
+    expect(recovered).not.toBeNull();
+    expect(recovered?.intent.resultCryptoAccessRevision).toBe(mappedAccess);
+    expect(() => assertVerifiedStagedTaskRunResultMessagePublication(recovered!, repaired)).not.toThrow();
+    for (const changed of [{ ...repaired, resultCryptoAccessRevision: 2 },
+      { ...repaired, resultGenesisManifestHash: "ab".repeat(32) },
+      { ...repaired, resultNamespaceId: "substituted" }]) {
+      expect(await failure(inspect(changed))).toBeInstanceOf(Error);
+    }
     expect(connection.state.object).not.toBeNull();
     expect(connection.state.receipt).not.toBeNull();
     expect(connection.claimReads).toBeGreaterThan(2);

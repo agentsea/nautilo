@@ -131,6 +131,9 @@ import { withCurrentTaskContentBackfillDevice } from "../../src/routes/task-cont
 import { readTaskContentBackfillSource } from "../../src/routes/task-content-backfill-source";
 import { createHumanProductTransactionContext } from "../../src/routes/human-message-product-store";
 import { createTaskContentBackfillPublication } from "../../src/routes/task-content-backfill-publication";
+import { createTaskContentBackfillScanService } from "../../src/routes/task-content-backfill-scan";
+import { readHistoricalTaskDefinitionSummaryProofs } from "../../src/routes/task-historical-definition-summary";
+import { toTaskContentSummaryV1 } from "../../src/routes/tasks";
 import { createProtectedTaskNativeResultPublication } from
   "../../src/routes/protected-task-native-result-publication";
 import {
@@ -3218,7 +3221,10 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   }, 60_000);
 
-  test.each(["result", "Deep Research Full", "Deep Research Shadow", "Deep Research v2 Full", "Deep Research v2 Shadow", "Codex Full", "Codex Shadow", "Hermes Full", "Hermes Shadow", "OpenCode Full", "OpenCode Shadow", "historical repaired definition", "historical repaired definition Full", "historical repaired error definition", "historical repaired error definition Full", "historical checkpoint pause resume", "scoped result", "caller funded delegated local", "fresh result read", "fresh raw Message publication", "recurring encrypted occurrences", "raw staging compatible-policy restart", "wake foreground full", "wake foreground shadow", "wake projection grant resume", "wake projection rollback recovery", "parked continuation", "checkpoint pause resume", "checkpoint policy refresh resume", "grant refresh resume", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "abandoned running recovery", "cancellation recovery", "cancellation terminal message", "cancellation terminal message shadow", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  const genuineRoleScenarios = ["result", "Deep Research Full", "Deep Research Shadow", "Deep Research v2 Full", "Deep Research v2 Shadow", "Codex Full", "Codex Shadow", "Hermes Full", "Hermes Shadow", "OpenCode Full", "OpenCode Shadow", "historical repaired definition", "historical repaired definition Full", "historical repaired error definition", "historical repaired error definition Full", "historical checkpoint pause resume", "scoped result", "caller funded delegated local", "fresh result read", "fresh raw Message publication", "recurring encrypted occurrences", "raw staging compatible-policy restart", "wake foreground full", "wake foreground shadow", "wake projection grant resume", "wake projection rollback recovery", "parked continuation", "checkpoint pause resume", "checkpoint policy refresh resume", "grant refresh resume", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "abandoned running recovery", "cancellation recovery", "cancellation terminal message", "cancellation terminal message shadow", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const;
+  const executeGenuineRoleScenario = async (
+    scenario: (typeof genuineRoleScenarios)[number],
+  ) => {
     const historicalDefinitionError = scenario === "historical repaired error definition"
       || scenario === "historical repaired error definition Full";
     const historicalDefinitionFull = scenario === "historical repaired definition Full"
@@ -3727,9 +3733,15 @@ describePostgres("sealed protected Task Memory object writer", () => {
       }
       let wakeProjectionModelCalls = 0;
       let wakeProjectionGraphCalls = 0;
+      let wakeProjectionStage = "not_started";
       let wakeProjectionRotationPending = false;
       const additionalProjectionRoom: { current: { roomId: string; namespaceId: string; label: string } | null } = { current: null };
       const activeConnected = connected;
+      if (wakeForegroundScenario) {
+        const wakeJobId = protectedTaskRunWakeJobId(activeConnected.taskRunId);
+        base.jobIds.add(wakeJobId);
+        base.requestIds.add(`task-wake-authorization:${wakeJobId}`);
+      }
       let wakeMemorySelection: ForegroundMemoryRepairSelection | null = null;
       if (wakeForegroundScenario) {
         const memoryScenario = await createScenario(base, {
@@ -4089,6 +4101,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
                 return { reference: prepared.value.reference };
               })
               .addNode("publish", async state => {
+                wakeProjectionStage = "projection_publish";
                 if (state.reference === null) throw new Error("Wake projection reference is missing");
                 if (wakeProjectionRollback && wake.continuation !== undefined && projectionRollback.current === null) {
                   projectionRollback.current = installForegroundProjectionProductRollback({
@@ -4097,6 +4110,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
                   });
                 }
                 const published = await projection.publish({ authority, reference: state.reference });
+                wakeProjectionStage = "projection_publish_returned";
                 if (published.status !== "success") throw new Error(`Wake additional projection failed: ${published.reason}`);
                 return { memoryId: published.value.memoryId };
               })
@@ -4146,7 +4160,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
               }), config);
               projectionRollbackRecovered = true;
             }
+            wakeProjectionStage = "graph_invoke_returned";
             const state = await graph.getState(config);
+            wakeProjectionStage = "graph_state_read";
             const interrupts = protectedTaskInterruptCoordinates(state as never);
             if (interrupts.length > 0) {
               expect(interrupts).toHaveLength(1);
@@ -4167,6 +4183,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
               throw protectedTaskWakeParked();
             }
             expect(wakeProjectionModelCalls).toBe(1);
+            wakeProjectionStage = "memory_receipt_verification";
             expect(wakeProjectionGraphCalls).toBe(wakeProjectionRollback ? 3 : 2);
             if (completed.memoryId === null) throw new Error("Wake projection result is missing");
             base.memoryIds.add(completed.memoryId);
@@ -4207,8 +4224,10 @@ describePostgres("sealed protected Task Memory object writer", () => {
             expect(await base.admin.select({ namespaceId: memoryNamespaces.namespaceId })
               .from(memoryNamespaces).where(eq(memoryNamespaces.memoryId, completed.memoryId)))
               .toEqual([{ namespaceId: destination.namespaceId }]);
+            wakeProjectionStage = "transcript_publication";
             const published = await session.publishMessage({ payload: { role: "assistant",
               content: "The protected Task result is ready." }, stage: "assistant_message", createdAt: Date.now() });
+            wakeProjectionStage = "message_published";
             if (published.status !== "protected") throw new Error("Wake resumed transcript failed");
             wakePublishedMessageId = published.value.reservation.messageId;
             wakeExecutions += 1;
@@ -7255,7 +7274,23 @@ describePostgres("sealed protected Task Memory object writer", () => {
             expect(mappedBinding?.messageId).toBe(messageId);
             expect(mappedBinding?.messagePublishedAt).toBeInstanceOf(Date);
             if (wakeForegroundScenario) {
-              expect(mappedBinding?.completedAt).toBeNull();
+              if (mappedBinding === undefined) throw new Error("Mapped wake binding is missing");
+              // The independent recovery tick may already have queued the
+              // exact wake. Completion of the delivery binding means queued
+              // custody, not execution of that wake.
+              if (mappedBinding.completedAt !== null) {
+                const [queuedWake] = await base.admin.select({
+                  id: jobs.id, status: jobs.status, createdAt: jobs.createdAt,
+                  startedAt: jobs.startedAt, completedAt: jobs.completedAt,
+                  ownerId: jobs.ownerId, roomId: jobs.roomId,
+                }).from(jobs).where(eq(jobs.id, protectedTaskRunWakeJobId(connected.taskRunId)));
+                expect(queuedWake).toEqual({
+                  id: protectedTaskRunWakeJobId(connected.taskRunId), status: "queued",
+                  createdAt: mappedBinding.completedAt, startedAt: null, completedAt: null,
+                  ownerId: base.userId, roomId: base.roomId,
+                });
+                expect(wakeExecutions).toBe(0);
+              }
             } else {
               expect(mappedBinding?.completedAt).toEqual(
                 mappedBinding?.messagePublishedAt,
@@ -7314,13 +7349,46 @@ describePostgres("sealed protected Task Memory object writer", () => {
           const initialWakeGrant = await authorizationRepository.get(wakeRequestId);
           const initialWakeGeneration = initialWakeGrant?.snapshot.recipientGeneration;
           if (initialWakeGeneration === undefined) throw new Error("Wake initial grant missing");
+          const exactWakeDeadline = (
+            record: NonNullable<typeof initialWakeGrant>,
+            expectedGeneration: number,
+          ): number => {
+            const recipientExpiresAt = record.snapshot.recipient?.expiresAt;
+            const authorizationExpiresAt =
+              record.acceptedMaterial?.authorizationExpiresAt;
+            const claimExpiresAt = record.snapshot.claimExpiresAt;
+            // Recipient expiry is the exact signed request deadline. Once
+            // claimed, the durable claim adds the final execution bound.
+            const deadlines = [
+              recipientExpiresAt,
+              authorizationExpiresAt,
+              ...(claimExpiresAt === null ? [] : [claimExpiresAt]),
+            ];
+            if (record.workKind !== "task.delivery_wake"
+              || record.snapshot.recipientGeneration !== expectedGeneration
+              || deadlines.length < 2
+              || deadlines.some(deadline => !Number.isSafeInteger(deadline))) {
+              throw new Error("Wake grant deadline was unavailable");
+            }
+            return Math.min(...deadlines as number[]);
+          };
+          if (initialWakeGrant === null) throw new Error("Wake initial grant missing");
+          let wakeDeadline = exactWakeDeadline(
+            initialWakeGrant,
+            initialWakeGeneration,
+          );
           let additionalWakeGrantIssued = false;
           let additionalNamespacePublished = false;
           // This fixture owns the production coordinator but replaces the
           // outer TaskObserver with a kick counter. Pump the next real pass
           // which the running observer performs after device grant acceptance.
           await composition.coordinator.recoverBeforeObservation(100);
-          const wakeDeadline = Date.now() + (wakeProjectionContinuation ? 90_000 : 45_000);
+          const claimedWakeGrant = await authorizationRepository.get(wakeRequestId);
+          if (claimedWakeGrant === null) throw new Error("Wake claimed grant missing");
+          wakeDeadline = exactWakeDeadline(
+            claimedWakeGrant,
+            initialWakeGeneration,
+          );
           let [settledWake] = await base.admin.select({
             status: jobs.status,
             startedAt: jobs.startedAt,
@@ -7360,6 +7428,15 @@ describePostgres("sealed protected Task Memory object writer", () => {
                   await grantConnectedRequest(wakeRequestId);
                   additionalWakeGrantIssued = true;
                   await composition.coordinator.recoverBeforeObservation(100);
+                  const refreshedWakeGrant =
+                    await authorizationRepository.get(wakeRequestId);
+                  if (refreshedWakeGrant === null) {
+                    throw new Error("Wake refreshed grant missing");
+                  }
+                  wakeDeadline = exactWakeDeadline(
+                    refreshedWakeGrant,
+                    parked.snapshot.recipientGeneration,
+                  );
                 }
               }
             }
@@ -7370,6 +7447,12 @@ describePostgres("sealed protected Task Memory object writer", () => {
             }).from(jobs).where(eq(jobs.id, wakeJobId));
           }
           if (settledWake?.status !== "completed") {
+            const databaseWaits = await base.admin.execute<{ pid: number; state: string;
+              wait_event_type: string | null; wait_event: string | null; blockers: number[] }>(sql`
+              select pid, state, wait_event_type, wait_event, pg_blocking_pids(pid) as blockers
+              from pg_stat_activity where datname = current_database()
+                and pid <> pg_backend_pid() and state <> 'idle'
+            `);
             const finalWakeAuthorization =
               await authorizationRepository.get(wakeRequestId);
             throw new Error(`Protected wake did not complete: ${JSON.stringify({
@@ -7385,6 +7468,16 @@ describePostgres("sealed protected Task Memory object writer", () => {
               additionalRoomPrepared: additionalProjectionRoom.current !== null,
               wakeProjectionModelCalls,
               wakeProjectionGraphCalls,
+              ...(wakeProjectionContinuation ? { wakeProjectionStage } : {}),
+              wakeDeadline,
+              authorizationExpiresAt:
+                finalWakeAuthorization?.acceptedMaterial
+                  ?.authorizationExpiresAt ?? null,
+              recipientExpiresAt:
+                finalWakeAuthorization?.snapshot.recipient?.expiresAt ?? null,
+              claimExpiresAt:
+                finalWakeAuthorization?.snapshot.claimExpiresAt ?? null,
+              databaseWaits,
               wakeExecutions,
               recipientCount: recipients.size,
               nativeErrors,
@@ -8270,7 +8363,16 @@ describePostgres("sealed protected Task Memory object writer", () => {
           { cause: cleanupError },
         );
     }
-  }, 120_000);
+  };
+  for (const scenario of genuineRoleScenarios) {
+    const wakeScenario = scenario === "wake foreground full"
+      || scenario === "wake foreground shadow"
+      || scenario === "wake projection grant resume"
+      || scenario === "wake projection rollback recovery";
+    test(`executes one genuine-role protected Task through ${scenario}`,
+      () => executeGenuineRoleScenario(scenario),
+      wakeScenario ? 2 * TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS : 120_000);
+  }
 
   test("commits under genuine authority and serializes cancellation and expiry", async () => {
     const base = await createBaseFixture();
@@ -10141,9 +10243,74 @@ test.each([
       historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
     }).from(taskDefinitionCryptoRevisions).where(eq(taskDefinitionCryptoRevisions.taskId, taskId));
     expect(ledger).toMatchObject({ completion: "complete", disposition: "mapped", historicalRepair: { version: 2 } });
+    const [current] = await base.admin.select().from(tasks).where(eq(tasks.id, taskId));
+    if (current === undefined) throw new Error("Mapped historical Task is missing");
+    const proofs = await readHistoricalTaskDefinitionSummaryProofs(base.productDb, base.userId, [current]);
+    const historicalDefinitionProof = proofs.get(taskId);
+    if (historicalDefinitionProof === undefined) throw new Error("Mapped historical Task proof is missing");
+    const summary = toTaskContentSummaryV1(current, { agentName: null, lastModelId: null,
+      historicalDefinitionProof });
+    expect(summary.content).toMatchObject({ status: "protected", objectId: historicalObjectId, contentRevision: 1 });
+    expect(JSON.stringify(summary)).not.toContain("Historical private Task");
+    expect(JSON.stringify(summary)).not.toContain("Earlier private Task failure");
   } finally { await base.cleanup(); }
 });
 
+
+test("historical scan defers an unavailable first Room, reaches later work, and retries it next sweep", async () => {
+  const base = await createBaseFixture();
+  const unavailableAgent = randomUUID();
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({ mode: "shadow_encryption",
+      shadowBehavior: "strict", revision: base.policyRevision, shadowEncryptionStartedAt: new Date(NOW),
+      updatedAt: new Date(NOW) }).where(eq(encryptionTransitionPolicy.id, "server"));
+    await base.admin.insert(agents).values({ id: unavailableAgent, handle: `unavailable-task-agent-${unavailableAgent}` });
+    await base.admin.insert(actors).values({ id: randomUUID(), ownerId: base.userId,
+      displayName: "Unavailable Task Agent", trustState: "verified", kind: "agent", agentId: unavailableAgent });
+    const first = randomUUID(); const second = randomUUID();
+    for (const [index, id] of [first, second].entries()) {
+      base.taskIds.add(id);
+      await base.admin.insert(tasks).values({ id, ownerId: base.userId, requestorId: base.userId,
+        agentId: index === 0 ? unavailableAgent : base.productAgentId,
+        prompt: "Historical repair source must remain private", status: "paused",
+        createdAt: new Date(NOW - 2_000 + index), updatedAt: new Date(NOW - 1_000) });
+    }
+    let observedAt = NOW;
+    const service = createTaskContentBackfillScanService({ db: base.productDb, restricted: base.restricted,
+      crypto: base.crypto, serverScope: SERVER_SCOPE, pageLimit: 1, leaseDurationMs: 30_000,
+      sweepIntervalMs: 60_000, now: () => observedAt,
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({ policy: { mode: "shadow_encryption", shadowBehavior: "strict" }, revalidationToken: base.policyRevision }),
+        revalidate: async () => {},
+      } }),
+    });
+    const subject = { userId: base.userId, humanActorId: base.humanActorId,
+      admission: { ...base.currentDevice, headDigest: base.currentDevice.headDigest.slice(), expiresAt: NOW + 120_000 } };
+    const discover = async () => {
+      const found = await service.discover(subject);
+      if (found.status !== "ready" || found.value.status !== "candidate") throw new Error("Historical candidate not ready");
+      return found.value;
+    };
+    const unavailable = await discover();
+    expect(unavailable.candidate.taskId).toBe(first);
+    expect(await service.claim(subject, unavailable)).toEqual({ status: "ready", value: { status: "deferred" } });
+    const available = await discover();
+    expect(available.candidate.taskId).toBe(second);
+    const claimed = await service.claim(subject, available);
+    expect(claimed).toMatchObject({ status: "ready", value: { status: "claimed" } });
+    if (claimed.status !== "ready" || claimed.value.status !== "claimed") throw new Error("Later candidate not claimed");
+    expect(await service.release(subject, claimed.value.claim.claimId, true)).toEqual({ status: "ready", value: true });
+    expect(await service.discover(subject)).toMatchObject({ status: "ready", value: { status: "swept" } });
+    observedAt += 60_001;
+    expect((await discover()).candidate.taskId).toBe(first);
+  } finally {
+    try {
+      await base.admin.delete(tasks).where(eq(tasks.agentId, unavailableAgent));
+      await base.admin.delete(actors).where(eq(actors.agentId, unavailableAgent));
+      await base.admin.delete(agents).where(eq(agents.id, unavailableAgent));
+    } finally { await base.cleanup(); }
+  }
+});
 
 test.each(["definition", "result"] as const)("historical %s scan orders fractional timestamps by its durable cursor", async kind => {
   const base = await createBaseFixture();

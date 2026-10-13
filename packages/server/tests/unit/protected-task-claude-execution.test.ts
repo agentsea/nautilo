@@ -20,6 +20,7 @@ const AGENT = "40000000-0000-4000-8000-000000000004";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
 const JOB = "70000000-0000-4000-8000-000000000007";
+const PAUSE_REQUEST = "71000000-0000-4000-8000-000000000007";
 const ROOM = "80000000-0000-4000-8000-000000000008";
 const NAMESPACE = "90000000-0000-4000-8000-000000000009";
 const DOMAIN = "a0000000-0000-4000-8000-00000000000a";
@@ -153,9 +154,10 @@ async function fixture() {
   const transcripts: unknown[] = [];
   const registrations: Registration[] = [];
   const events: HarnessExecutionOutput[] = [candidate,completed];
+  const providerEntered = Promise.withResolvers<void>();
   const control = {now:NOW,current:true,currentSelection:{...selection},admission:{...selection,scope:{...scope}} as ClaudeExecutionAdmission|null,
     metadata:{} as TaskPayloadV1["protectedMetadata"],liveRequest:true,failTranscript:false,signerCurrent:true,
-    afterOutput: (_output:HarnessExecutionOutput) => {},
+    waitForAbort:false,effectCount:0,costCount:0,afterOutput: (_output:HarnessExecutionOutput) => {},
   };
   const abort = new AbortController();
   // Database/policy objects are inert: each consuming production boundary is overridden below.
@@ -170,7 +172,18 @@ async function fixture() {
       expect(admitted.claude).toEqual(control.admission);
       expect(admitted).toMatchObject({taskId:TASK,taskRunId:RUN,jobId:JOB,requesterId:USER,ownerId:USER,laneKey:`task:${TASK}`});
       calls.push("provider");
-      try {for(const output of events) {yield output;control.afterOutput(output);}}
+      try {
+        if (control.waitForAbort) {
+          providerEntered.resolve();
+          while (true) {
+            admitted.abortSignal.throwIfAborted();
+            control.effectCount += 1;
+            control.costCount += 1;
+            await new Promise(resolve => setTimeout(resolve, 1));
+          }
+        }
+        for(const output of events) {yield output;control.afterOutput(output);}
+      }
       finally {calls.push("provider-close");}
     },hasLiveRequest:()=>control.liveRequest,respond:async()=>{calls.push("respond");}},
     requests:{register:async (entry:Registration)=>{
@@ -203,7 +216,8 @@ async function fixture() {
   };
   const prepare = createProtectedTaskClaudeExecution(input,dependencies)(selection);
   const preparation = {occurrence,predispatch,reference,policy,stableRoutingDigest:bytes(12)};
-  return {prepare,preparation,running,reference,record,evidenceInput,crypto,calls,results,transcripts,registrations,events,control,abort};
+  return {prepare,preparation,running,reference,record,evidenceInput,crypto,calls,results,transcripts,registrations,events,
+    control,abort,providerEntered};
 }
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 async function withPrepared<Value>(f:Fixture,use:(value:{prepared:Awaited<ReturnType<Fixture["prepare"]>>;
@@ -346,6 +360,37 @@ describe("protected Claude execution", () => {
       await Promise.resolve(expect(consume(prepared,transient)).rejects.toThrow("expired"));
       expect(f.results).toEqual([]);expect(f.transcripts).toEqual([]);
       expect(f.calls).toContain("provider-close");
+    });
+  });
+
+  test("time limit ends provider effects without publishing an uncertain result",async()=>{
+    const f=await fixture();
+    f.control.waitForAbort=true;
+    await withPrepared(f,async({prepared,grant})=>{
+      const transient=resultInput(f,await prepared.openTransientInput(grant));
+      const execution=consume(prepared,transient);
+      await f.providerEntered.promise;
+      expect(prepared.requestCheckpointPause?.("time_limit",PAUSE_REQUEST)).toBe(true);
+      await Promise.resolve(expect(execution).rejects.toThrow("time limit reached"));
+      const settledEffects=f.control.effectCount;
+      const settledCost=f.control.costCount;
+      await new Promise(resolve=>setTimeout(resolve,5));
+      expect(f.control.effectCount).toBe(settledEffects);
+      expect(f.control.costCount).toBe(settledCost);
+      expect(settledEffects).toBeGreaterThan(0);
+      expect(f.calls).toContain("provider-close");
+      expect(f.results).toEqual([]);
+      expect(f.transcripts).toEqual([]);
+    });
+  });
+
+  test("manual pause keeps an external provider running to natural settlement",async()=>{
+    const f=await fixture();
+    await withPrepared(f,async({prepared,grant})=>{
+      expect(prepared.requestCheckpointPause?.("manual_pause",PAUSE_REQUEST)).toBe(false);
+      await consume(prepared,resultInput(f,await prepared.openTransientInput(grant)));
+      expect(f.results).toEqual([{formatVersion:1,resultText:"protected answer",lastError:null}]);
+      expect(f.transcripts).toHaveLength(1);
     });
   });
 

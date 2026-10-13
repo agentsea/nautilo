@@ -591,6 +591,14 @@ describe("protected Task native runner", () => {
     ["approval without request id", [
       { id: "interrupt-1", kind: "approval" as const },
     ]],
+    ["approval without categorical authority", [
+      { id: "interrupt-1", kind: "approval" as const,
+        requestId: "approval:1" },
+    ]],
+    ["approval with duplicated categorical authority", [
+      { id: "interrupt-1", kind: "approval" as const,
+        requestId: "approval:1", allowedVerbs: ["once", "once", "deny"] as const },
+    ]],
     ["prove-it with request id", [
       { id: "interrupt-1", kind: "prove_it" as const, requestId: "not-allowed" },
     ]],

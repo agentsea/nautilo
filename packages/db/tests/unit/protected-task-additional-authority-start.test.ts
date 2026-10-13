@@ -1,3 +1,4 @@
+import { assertApprovalSelectionsAreContentFree, projectApprovalRow, compileApprovalSelection } from "../fixtures/protected-approval-projection";
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 
@@ -348,6 +349,7 @@ function harness(options: HarnessOptions = {}) {
     "continuation",
   ) ? options.continuation : continuationReceipt();
   let lockedJobRead = 0;
+  const selections: string[] = [];
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
@@ -379,8 +381,9 @@ function harness(options: HarnessOptions = {}) {
     throw new Error("unexpected table");
   };
   const tx = {
-    select: () => ({
+    select: (selection?: unknown) => ({
       from: (table: unknown) => {
+        if (selection !== undefined && [tasks, taskRuns, jobs].includes(table as typeof tasks)) selections.push(compileApprovalSelection(table, selection));
         let limitValue: number | undefined;
         const query = {
           where: (_condition: unknown) => query,
@@ -391,7 +394,7 @@ function harness(options: HarnessOptions = {}) {
           orderBy: (_order: unknown) => query,
           for: async (kind: string) => {
             locks.push({ table, kind });
-            return rows(table, true);
+            return rows(table, true).map(row => projectApprovalRow(table, row, selection));
           },
           then: <TResult1 = unknown[]>(
             resolve: (value: unknown[]) => TResult1 | PromiseLike<TResult1>,
@@ -430,7 +433,7 @@ function harness(options: HarnessOptions = {}) {
     transaction: async <T>(operation: (value: typeof tx) => Promise<T>) =>
       operation(tx),
   } as unknown as DirectDatabase;
-  return { db, locks, tx, writes };
+  return { db, locks, tx, writes, selections };
 }
 
 async function expectMalformed(promise: Promise<unknown>): Promise<void> {
@@ -465,6 +468,7 @@ describe("protected Task additional-authority segment start CAS", () => {
       fixture.db,
       input(),
     )).toEqual({ status: "started" });
+    assertApprovalSelectionsAreContentFree(fixture.selections);
     expect(fixture.locks).toEqual([
       { table: encryptionTransitionPolicy, kind: "share" },
       { table: tasks, kind: "update" },
@@ -722,6 +726,7 @@ describe("checkpoint-safe parked continuation", () => {
   test("starts under newer same-mode policy while retaining old acceptance and checkpoint identity", async () => {
     const fixture = checkpointHarness();
     expect(await startParkedProtectedTaskCheckpointSegment(fixture.db, checkpointInput())).toEqual({ status: "started" });
+    assertApprovalSelectionsAreContentFree(fixture.selections);
     expect(fixture.locks.slice(0, 5)).toEqual([
       { table: encryptionTransitionPolicy, kind: "share" }, { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" }, { table: jobs, kind: "update" }, { table: jobs, kind: "update" },

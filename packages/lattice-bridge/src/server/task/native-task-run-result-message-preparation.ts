@@ -74,7 +74,7 @@ export type NativeTaskRunResultMessageAuthority = Readonly<{
   resultContentRevision: 1;
   resultObjectId: string;
   resultGenesisManifestHash: string;
-  resultCryptoAccessRevision: 0;
+  resultCryptoAccessRevision: number;
   resultNamespaceId: string;
   resultDomainId: string;
   resultNamespaceAccessRevision: number;
@@ -304,7 +304,7 @@ export async function prepareNativeTaskRunResultMessage(
     resultContentRevision: 1,
     resultObjectId: result.objectId,
     resultGenesisManifestHash: bytesToHex(result.genesisManifestHash),
-    resultCryptoAccessRevision: 0,
+    resultCryptoAccessRevision: result.cryptoAccessRevision,
     resultNamespaceId: result.namespace.namespaceId,
     resultDomainId: result.namespace.domainId,
     resultNamespaceAccessRevision: result.namespace.expectedAccessRevision,

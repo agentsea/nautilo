@@ -1,3 +1,4 @@
+import { assertApprovalSelectionsAreContentFree, projectApprovalRow, applyApprovalPatch, compileApprovalSelection } from "../fixtures/protected-approval-projection";
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
@@ -319,6 +320,7 @@ function harness(options: FixtureOptions = {}) {
   const messageRow = Object.prototype.hasOwnProperty.call(options, "message")
     ? options.message
     : message();
+  const selections: string[] = [];
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<Record<string, unknown>> = [];
 
@@ -336,15 +338,16 @@ function harness(options: FixtureOptions = {}) {
     throw new Error("unexpected table");
   };
   const tx = {
-    select: (_selection?: unknown) => ({
+    select: (selection?: unknown) => ({
       from: (table: unknown) => {
+        if (selection !== undefined && [tasks, taskRuns, jobs].includes(table as typeof tasks)) selections.push(compileApprovalSelection(table, selection));
         const query = {
           innerJoin: (_joined: unknown, _condition: unknown) => query,
           where: (_condition: unknown) => query,
           limit: (_limit: number) => query,
           for: async (kind: string) => {
             locks.push({ table, kind });
-            return rows(table);
+            return rows(table).map(row => projectApprovalRow(table, row, selection));
           },
         };
         return query;
@@ -355,7 +358,7 @@ function harness(options: FixtureOptions = {}) {
         where: (_condition: unknown) => ({
           returning: async () => {
             if (table !== jobs) throw new Error("unexpected update table");
-            writes.push(patch);
+            writes.push(jobRow ? applyApprovalPatch(jobRow, patch) : patch);
             return options.loseUpdate || !jobRow ? [] : [{ ...jobRow, ...patch }];
           },
         }),
@@ -366,7 +369,7 @@ function harness(options: FixtureOptions = {}) {
     transaction: async <T>(operation: (value: typeof tx) => Promise<T>) =>
       operation(tx),
   } as unknown as DirectDatabase;
-  return { db, locks, writes };
+  return { db, locks, writes, selections };
 }
 
 describe("protected Task Human continuation acceptance CAS", () => {
@@ -428,6 +431,7 @@ describe("protected Task Human continuation acceptance CAS", () => {
       status: "accepted",
       acceptance: acceptance(),
     });
+    assertApprovalSelectionsAreContentFree(fixture.selections);
     expect(fixture.locks).toEqual([
       { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" },
@@ -656,4 +660,22 @@ describe("protected Task Human continuation acceptance CAS", () => {
     )).rejects.toThrow("acceptance lost its Job");
   });
 
+});
+
+
+test("categorical acceptance denies malformed or extended stored input before writing", async () => {
+  for (const stored of [null, { ...reference(), prompt: "private-canary" },
+    { ...reference(), taskId: { prompt: "private-canary" } }]) {
+    const fixture = harness({ job: job({ input: stored }) });
+    expect((await acceptProtectedTaskHumanContinuation(fixture.db, input())).status).toBe("rejected");
+    expect(fixture.writes).toEqual([]);
+  }
+});
+
+test("acceptance patches its receipt without replacing unrelated durable metadata", async () => {
+  const fixture = harness({ job: job({ metadata: { [parkKey]: parkReceipt(), unrelated: "private-canary" } }) });
+  expect((await acceptProtectedTaskHumanContinuation(fixture.db, input())).status).toBe("accepted");
+  expect(fixture.writes[0]).toEqual({ metadata: { [parkKey]: parkReceipt(),
+    unrelated: "private-canary", [acceptanceKey]: acceptanceReceipt() } });
+  assertApprovalSelectionsAreContentFree(fixture.selections);
 });

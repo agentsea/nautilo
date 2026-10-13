@@ -11,6 +11,7 @@ import {
   type ProtectedTaskSemanticAuthorityRequirements,
 } from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
+import type { ApprovalReplyVerb } from "@nautilo/types";
 import type {
   ProtectedRepoDocsExecutionPort,
   ProtectedRepoDocsOpenedSelection,
@@ -124,6 +125,7 @@ export type ProtectedTaskNativeInterruptCoordinate = Readonly<{
   kind: "approval" | "prove_it" | "identity" | "await_reply"
     | "additional_authority";
   requestId?: string;
+  allowedVerbs?: readonly ApprovalReplyVerb[];
 }>;
 
 export type ProtectedTaskNativeAdditionalAuthorityContinuation = Readonly<{
@@ -295,6 +297,7 @@ function exactInterruptCoordinates(
     const id = coordinate["id"];
     const kind = coordinate["kind"];
     const requestId = coordinate["requestId"];
+    const allowedVerbs = coordinate["allowedVerbs"];
     if (
       typeof id !== "string"
       || id.trim().length === 0
@@ -313,6 +316,15 @@ function exactInterruptCoordinates(
       || (kind === "approval" && requestId === undefined)
       || ((kind === "prove_it" || kind === "await_reply") && requestId !== undefined)
       || (kind === "additional_authority" && requestId === undefined)
+      || (allowedVerbs !== undefined && kind !== "approval")
+      || (kind === "approval" && (
+        !Array.isArray(allowedVerbs)
+        || allowedVerbs.length === 0
+        || !allowedVerbs.includes("deny")
+        || new Set(allowedVerbs).size !== allowedVerbs.length
+        || allowedVerbs.some(verb =>
+          verb !== "once" && verb !== "room" && verb !== "always" && verb !== "deny")
+      ))
     ) {
       throw new TypeError("Protected native Task interruption has invalid coordinates");
     }
@@ -322,15 +334,27 @@ function exactInterruptCoordinates(
       }
       additionalAuthority = exactAdditionalAuthority(coordinate, id);
     } else if (Object.keys(coordinate).some((key) =>
-      key !== "id" && key !== "kind" && key !== "requestId"
+      key !== "id" && key !== "kind" && key !== "requestId" && key !== "allowedVerbs"
     )) {
       throw new TypeError("Protected native Task interruption has invalid coordinates");
     }
     seenIds.add(id);
+    const copiedAllowedVerbs = Array.isArray(allowedVerbs)
+      ? Object.freeze(allowedVerbs.map(verb => {
+          if (verb === "once") return "once";
+          if (verb === "room") return "room";
+          if (verb === "always") return "always";
+          if (verb === "deny") return "deny";
+          throw new TypeError("Protected native Task interruption has invalid coordinates");
+        }))
+      : undefined;
     coordinates.push(Object.freeze({
       id,
       kind,
       ...(requestId === undefined ? {} : { requestId }),
+      ...(copiedAllowedVerbs === undefined ? {} : {
+        allowedVerbs: copiedAllowedVerbs satisfies readonly ApprovalReplyVerb[],
+      }),
     }));
   }
   coordinates.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);

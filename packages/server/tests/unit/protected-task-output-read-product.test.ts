@@ -834,3 +834,26 @@ test("Full result delivery opens retained dual result metadata but plans protect
     taskId: TASK, taskRunId: RUN, kind: "raw",
   })).toBeNull();
 });
+
+
+test.each(["raw", "wake"] as const)("%s delivery pins a repaired mapped result head independently of immutable genesis", async kind => {
+  const value = fixture({ mode: kind, run: { accessRevision: 2 } });
+  const intent = await readProtectedTaskOutputReadIntent(value.tx, { taskId: TASK, taskRunId: RUN, kind });
+  expect(intent?.result.cryptoAccessRevision).toBe(2);
+  expect(intent?.result.genesisManifestHash).toEqual(GENESIS);
+  const invalidLedger = fixture({ mode: kind, run: { accessRevision: 2 }, ledger: { accessRevision: 2 } });
+  expect(await readProtectedTaskOutputReadIntent(invalidLedger.tx, { taskId: TASK, taskRunId: RUN, kind })).toBeNull();
+  for (const accessRevision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const invalid = fixture({ mode: kind, run: { accessRevision } });
+    expect(await readProtectedTaskOutputReadIntent(invalid.tx, { taskId: TASK, taskRunId: RUN, kind })).toBeNull();
+  }
+});
+
+
+test("a captured result-read intent cannot adopt a later mapped head", async () => {
+  const original = closedIntent("raw");
+  const loader = createProtectedTaskOutputReadProductProofLoader(original);
+  const repaired = fixture({ run: { accessRevision: 1 } });
+  expect(await loader.validateCurrentTaskRun({} as PostgresJsBridgeConnection, repaired.tx)).toBe(false);
+  expect(loader.readCurrent()).toBeNull();
+});

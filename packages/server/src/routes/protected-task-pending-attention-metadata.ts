@@ -34,7 +34,13 @@ function sameInterrupts(
     return candidate !== undefined
       && interrupt.id === candidate.id
       && interrupt.kind === candidate.kind
-      && interrupt.requestId === candidate.requestId;
+      && interrupt.requestId === candidate.requestId
+      && (interrupt.allowedVerbs === undefined
+        ? candidate.allowedVerbs === undefined
+        : candidate.allowedVerbs !== undefined
+          && interrupt.allowedVerbs.length === candidate.allowedVerbs.length
+          && interrupt.allowedVerbs.every((verb, verbIndex) =>
+            verb === candidate.allowedVerbs![verbIndex]));
   });
 }
 

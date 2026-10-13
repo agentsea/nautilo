@@ -139,7 +139,7 @@ function fixture(mode: "plaintext_only" | "shadow_encryption" | "encrypted_only"
     },
     release: async (_db, input) => {
       calls.push(`release.${String(input.advance)}`);
-      return input.claim === claim;
+      return input.claim.claimId === claim.claimId;
     },
     acknowledge: async (_db, input) => {
       calls.push(`ack.${input.outcome}`);
@@ -192,7 +192,7 @@ test("discovery is content-free and admitted-device bound", async () => {
   expect(denied.calls).toEqual(["device"]);
 });
 
-test("claim proves current namespace before CAS and bounds lease by admission", async () => {
+test("claim exposes only current Namespace authority and bounds lease by admission", async () => {
   const f = fixture();
   const result = await f.service.claim(subject, { candidate, policyRevision: 7 });
   expect(result.status).toBe("ready");
@@ -200,13 +200,13 @@ test("claim proves current namespace before CAS and bounds lease by admission", 
   expect(result.value.status).toBe("claimed");
   if (result.value.status !== "claimed") throw new Error("Expected claim");
   expect(result.value.claim.expiresAt.getTime()).toBe(subject.admission.expiresAt);
-  expect(f.calls).toEqual(["device", "authority.source", "claim"]);
+  expect(f.calls).toEqual(["device", "claim", "authority.source"]);
 
   const revoked = fixture();
   revoked.revokeAuthority();
   expect(await revoked.service.claim(subject, { candidate, policyRevision: 7 }))
-    .toEqual({ status: "ready", value: { status: "stale" } });
-  expect(revoked.calls).toEqual(["device", "authority.source"]);
+    .toEqual({ status: "ready", value: { status: "deferred" } });
+  expect(revoked.calls).toEqual(["device", "claim", "authority.source", "release.true"]);
 });
 
 test("release reloads exact server claim and reauthorizes its namespace", async () => {

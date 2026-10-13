@@ -111,7 +111,11 @@ mock.module("../../src/tasks/report-back", () => ({
 mock.module("../../src/tasks/security-report-recovery", () => ({
   resumeReconnectedSecurityResearch: async () => {},
 }));
-const pause = mock(async (_deps: unknown, _taskId: string, _reason: string) => {});
+const pause = mock(async (_deps: unknown, _taskId: string, _reason: string) => ({
+  ok: true,
+  status: "paused",
+  message: "Task paused.",
+}));
 mock.module("../../src/tasks/lifecycle", () => ({ pauseTask: pause }));
 
 const { TaskObserver } = await import("../../src/tasks/task-observer");
@@ -217,7 +221,11 @@ beforeEach(() => {
   listOfflineWaits.mockImplementation(async () => []);
   prepareProtected.mockImplementation(async () => ({ status: "stale" as const }));
   timedOut.mockImplementation(async () => []);
-  pause.mockImplementation(async () => {});
+  pause.mockImplementation(async () => ({
+    ok: true,
+    status: "paused",
+    message: "Task paused.",
+  }));
   interruptedBoundary.mockImplementation(async () => undefined);
   ordinaryDispatch.mockImplementation(async () => ({ kind: "dispatched" as const }));
   listInterrupted.mockImplementation(async () => []);
@@ -754,6 +762,33 @@ test.each(["dual", "protected"] as const)(
     }
   },
 );
+
+test("protected timeout reports pending until durable settlement is complete", async () => {
+  timedOut.mockImplementation(async () => [{
+    task: task({ contentRepresentation: "protected", status: "running" }),
+    run: run(),
+  }]);
+  pause.mockImplementation(async () => ({
+    ok: true,
+    status: "running",
+    message: "Task pause requested; waiting for a safe checkpoint.",
+  }));
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+  });
+  try {
+    await observer.tick();
+    expect(errorSpy.mock.calls.some((call) =>
+      String(call[0]).includes("PROTECTED_TIME_LIMIT_SETTLEMENT_PENDING"))).toBeTrue();
+    expect(errorSpy.mock.calls.some((call) =>
+      String(call[0]).includes("time-limit reached → paused"))).toBeFalse();
+  } finally {
+    errorSpy.mockRestore();
+  }
+});
 
 test("ordinary timeout failure preserves its existing diagnostic", async () => {
   timedOut.mockImplementation(async () => [{

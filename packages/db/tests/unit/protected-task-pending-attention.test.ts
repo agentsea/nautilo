@@ -1,3 +1,9 @@
+import { sql, type SQL } from "drizzle-orm";
+import { QueryBuilder, type PgTable } from "drizzle-orm/pg-core";
+import { actors } from "../../src/schema/trust";
+import { tasks } from "../../src/schema/tasks";
+import { taskRuns } from "../../src/schema/task-runs";
+import { assertApprovalSelectionsAreContentFree } from "../fixtures/protected-approval-projection";
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
@@ -6,6 +12,8 @@ import { protectedTaskRunResultObjectId } from
 import {
   listProtectedTaskPendingAttentionCandidates,
   readProtectedTaskPendingAttentionCandidate,
+  resolveParkedProtectedTaskHumanContinuationAcceptance,
+  sealProtectedTaskHumanApprovalPolicy,
 } from "../../src/queries/tasks";
 
 const ids = {
@@ -211,6 +219,24 @@ describe("protected Task pending-attention discovery", () => {
     )).toBeNull();
   });
 
+  test("preserves categorical approval authority on fresh park coordinates", async () => {
+    const base = row();
+    const interrupts = base.job.parkReceipt.interrupts.map(interrupt =>
+      interrupt.kind === "approval" ? { ...interrupt,
+        allowedVerbs: ["once", "deny"] as const } : interrupt);
+    const current = { ...base, job: { ...base.job, parkReceipt: {
+      ...base.job.parkReceipt, interrupts,
+    } } };
+    const candidate = await readProtectedTaskPendingAttentionCandidate(
+      database([current]),
+      { viewer, taskId: ids.task, taskRunId: ids.run },
+    );
+    expect(candidate?.pendingAttentionInterrupts[0]).toEqual({
+      id: "interrupt:approval", kind: "approval", requestId: "approval:1",
+      allowedVerbs: ["once", "deny"],
+    });
+  });
+
   test("fails closed for accepted, disabled, stale, running, reparked and non-native rows", async () => {
     const base = row();
     const staleRows: unknown[] = [
@@ -279,4 +305,47 @@ describe("protected Task pending-attention discovery", () => {
       after: { startedAt: new Date(Number.NaN), taskRunId: ids.run },
     })).rejects.toThrow("cursor");
   });
+});
+
+
+test("approval seal and resolver compile only closed categorical projections", async () => {
+  const candidate = await readProtectedTaskPendingAttentionCandidate(database([row()]), {
+    viewer, taskId: ids.task, taskRunId: ids.run,
+  });
+  if (candidate === null) throw new Error("Expected authentic parsed test candidate");
+  const statements: string[] = [];
+  const tx = {
+    select: (selection: Record<string, SQL>) => ({
+      from: (table: PgTable) => {
+        let query = new QueryBuilder().select(selection).from(table).$dynamic();
+        const execute = () => {
+          statements.push(query.toSQL().sql);
+          if (table === actors) return [row().human];
+          if (table === tasks && Object.keys(selection).join() === "id") return [{ id: ids.task }];
+          if (table === taskRuns) return [{ id: ids.run }];
+          return [];
+        };
+        const chain = {
+          innerJoin: (joined: PgTable) => { query = query.innerJoin(joined, sql`true`); return chain; },
+          where: () => chain,
+          limit: () => chain,
+          for: async () => execute(),
+          then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(execute()).then(resolve),
+        };
+        return chain;
+      },
+    }),
+  };
+  const db = { ...tx, transaction: async <T>(use: (transaction: typeof tx) => Promise<T>) => use(tx) } as unknown as DirectDatabase;
+  expect(await sealProtectedTaskHumanApprovalPolicy(db, { viewer, candidate,
+    policies: [{ interruptId: "interrupt:approval", requestId: "approval:1", allowedVerbs: ["once", "deny"] }],
+  })).toEqual({ status: "rejected", reason: "not_found" });
+  expect(await resolveParkedProtectedTaskHumanContinuationAcceptance(db, {
+    taskId: ids.task, graphThreadId, acceptedBy: viewer,
+    interrupt: { kind: "approval", requestId: "approval:1" },
+  })).toEqual({ status: "no_match" });
+  assertApprovalSelectionsAreContentFree(statements);
+  const joined = statements.find(statement => statement.includes('inner join "jobs"'));
+  expect(joined).toContain('jsonb_typeof("jobs"."input")');
+  expect(joined).toContain('jsonb_build_object(');
 });

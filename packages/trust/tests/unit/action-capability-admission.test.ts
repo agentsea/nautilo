@@ -804,32 +804,12 @@ const EXECUTION_PRIMITIVE_INVENTORY: ReadonlyArray<{
         classification: "accepted_continuation",
       },
       {
-        file: "packages/agent/src/tools/tasks/shortcuts/ask-peer.ts",
+        file: "packages/agent/src/tools/tasks/policy-aware-create.ts",
         count: 1,
         classification: "accepted_continuation",
       },
       {
         file: "packages/agent/src/tools/tasks/shortcuts/generate-repo-docs.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/in-background.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/in-private-namespace.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/in-scope.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/schedule.ts",
         count: 1,
         classification: "accepted_continuation",
       },

@@ -1,6 +1,6 @@
 export const SOURCE_ALARM_BASELINE = {
-  "count": 3443,
-  "sha256": "9ed2294e1e2325a4e24ceb91c567d56b3117b20b29dcdb57db90a2cbcd250b69"
+  "count": 3436,
+  "sha256": "562a14016dde60c9010d5a581d28c6fd6070188d1bf7fbdea161ad9c53d9e3af"
 } as const;
 
 // Reviewed public-browser receipt constraints (0289–0291), scoped media
@@ -48,13 +48,17 @@ export const MIGRATION_TREE_BASELINE = {
 // routing or lifecycle metadata. No new unresolved writer is admitted. The
 // migration review accounts for 20 added bodies, with all six earlier conversion
 // and funding bodies byte-identical after main's slot reconciliation.
+// Media cancellation adds two UPDATE observations in the canonical
+// media-generations repository: cancellation request and provider acknowledgement.
+// The protected Human-approval branch repair adds one jobs.metadata UPDATE that
+// seals the content-free allowed-verb policy beside the existing park receipt.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1598,
+  "count": 1601,
   "insert": 522,
-  "update": 873,
+  "update": 876,
   "delete": 186,
   "unresolved": 17,
-  "sha256": "bb6cbec94eeef8b96eddeecf55bbe1aaa4253a21c153dff458ee06836a5a9b56"
+  "sha256": "0b4de58aee5b15e2272e73ee71eb5480438b607d0e102a614106c911d74c6604"
 } as const;
 
 /**

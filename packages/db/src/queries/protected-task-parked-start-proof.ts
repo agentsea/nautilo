@@ -180,7 +180,8 @@ function canonicalInterrupts(
   const interrupts = value.map(candidate => {
     if (!isRecord(candidate)) return malformed();
     const keys = Object.keys(candidate).sort().join(",");
-    if ((keys !== "id,kind" && keys !== "id,kind,requestId")
+    if ((keys !== "id,kind" && keys !== "id,kind,requestId"
+        && keys !== "allowedVerbs,id,kind,requestId")
       || typeof candidate["id"] !== "string"
       || !OPAQUE_COORDINATE.test(candidate["id"])
       || ![
@@ -197,7 +198,21 @@ function canonicalInterrupts(
     if (keys === "id,kind") return Object.freeze(common);
     if (typeof candidate["requestId"] !== "string"
       || !OPAQUE_COORDINATE.test(candidate["requestId"])) return malformed();
-    return Object.freeze({ ...common, requestId: candidate["requestId"] });
+    if (keys === "id,kind,requestId") {
+      return Object.freeze({ ...common, requestId: candidate["requestId"] });
+    }
+    const allowedVerbs = candidate["allowedVerbs"];
+    const canonicalOrder = ["once", "room", "always", "deny"] as const;
+    if (candidate["kind"] !== "approval" || !Array.isArray(allowedVerbs)
+      || allowedVerbs.length === 0 || !allowedVerbs.includes("deny")
+      || new Set(allowedVerbs).size !== allowedVerbs.length
+      || allowedVerbs.some((verb, index) => verb !== canonicalOrder.filter(
+        candidateVerb => allowedVerbs.includes(candidateVerb),
+      )[index])) return malformed();
+    const canonicalAllowedVerbs = canonicalOrder.filter(verb =>
+      allowedVerbs.includes(verb));
+    return Object.freeze({ ...common, requestId: candidate["requestId"],
+      allowedVerbs: Object.freeze(canonicalAllowedVerbs) });
   }).sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
   if (interrupts.some((interrupt, index) =>
     index > 0 && interrupts[index - 1]!.id === interrupt.id
@@ -213,13 +228,19 @@ function exactInterrupts(
   return value.every((candidate, index) => {
     if (!isRecord(candidate)) return false;
     const interrupt = expected[index]!;
-    const keys = interrupt.requestId === undefined
-      ? "id,kind"
-      : "id,kind,requestId";
+    const keys = interrupt.allowedVerbs !== undefined
+      ? "allowedVerbs,id,kind,requestId"
+      : interrupt.requestId === undefined ? "id,kind" : "id,kind,requestId";
     return Object.keys(candidate).sort().join(",") === keys
       && candidate["id"] === interrupt.id
       && candidate["kind"] === interrupt.kind
-      && candidate["requestId"] === interrupt.requestId;
+      && candidate["requestId"] === interrupt.requestId
+      && (interrupt.allowedVerbs === undefined
+        ? candidate["allowedVerbs"] === undefined
+        : Array.isArray(candidate["allowedVerbs"])
+          && candidate["allowedVerbs"].length === interrupt.allowedVerbs.length
+          && candidate["allowedVerbs"].every((verb, verbIndex) =>
+            verb === interrupt.allowedVerbs![verbIndex]));
   });
 }
 

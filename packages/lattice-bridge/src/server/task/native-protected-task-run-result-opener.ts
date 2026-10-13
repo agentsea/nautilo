@@ -1,4 +1,4 @@
-import { and, domainKeyHeads, eq, type PostgresJsBridgeConnection } from "@nautilo/db";
+import { and, domainKeyHeads, eq, objectCryptoAccessManifests, type PostgresJsBridgeConnection } from "@nautilo/db";
 import {
   assertAuthenticTaskRuntimeRunResultReadEvidence,
   decryptObjectThroughNamespace,
@@ -9,6 +9,7 @@ import {
   type TaskRuntimeRunResultReadInvocation,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeObjectAccessManifestV5,
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
 } from "@nautilo/lattice-crypto/wire";
@@ -282,7 +283,7 @@ export async function withNativeProtectedTaskRunResultV1<Value>(input: Readonly<
     if (storedObject === null || access === null
       || storedObject.objectId !== occurrence.objectId
       || access.head.objectId !== occurrence.objectId
-      || access.head.accessRevision !== 0
+      || access.head.accessRevision !== occurrence.cryptoAccessRevision
       || access.namespaceEnvelopes.length !== 1
       || access.namespaceEnvelopes[0]?.namespaceId !== occurrence.namespaceId) {
       throw new TypeError("Native Task result ciphertext is incomplete");
@@ -301,7 +302,6 @@ export async function withNativeProtectedTaskRunResultV1<Value>(input: Readonly<
         || payload.context.objectType !== TASK_RUN_RESULT_OBJECT_TYPE_V1
         || payload.context.keyClass !== "ai"
         || !sameBytes(manifestHash, access.head.manifestHash)
-        || !sameBytes(manifestHash, occurrence.genesisManifestHash)
         || !sameBytes(envelopeHash, access.namespaceEnvelopes[0].envelopeHash)
         || envelope.context.objectId !== occurrence.objectId
         || envelope.context.namespaceId !== occurrence.namespaceId
@@ -311,15 +311,36 @@ export async function withNativeProtectedTaskRunResultV1<Value>(input: Readonly<
       }
       const verified = await verifyStoredObjectAccessManifestChainV5({
         executor: handle, crypto: input.crypto, objectId: occurrence.objectId,
-        headAccessRevision: 0, expectedPayloadHash: payloadHash,
+        headAccessRevision: occurrence.cryptoAccessRevision, expectedPayloadHash: payloadHash,
         expectedHeadManifestHash: access.head.manifestHash,
         resolveHistoricalAgentManagerAuthority: input.resolveHistoricalAgentSignerAuthority,
       });
       try {
-        if (verified.headManifest.accessRevision !== 0
-          || verified.headManifest.previousManifestHash !== null
-          || verified.headManifest.signer.kind !== "agent_runtime"
-          || verified.headManifest.signer.agentId !== occurrence.signerAgentId
+        const genesisRows = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
+          manifest_bytes: objectCryptoAccessManifests.manifestBytes,
+          manifest_hash: objectCryptoAccessManifests.manifestHash,
+        }).from(objectCryptoAccessManifests).where(and(
+          eq(objectCryptoAccessManifests.objectId, occurrence.objectId),
+          eq(objectCryptoAccessManifests.accessRevision, 0),
+        )).limit(2));
+        const genesisRow = genesisRows[0];
+        if (genesisRows.length !== 1 || genesisRow === undefined
+          || !(genesisRow.manifest_bytes instanceof Uint8Array)
+          || !(genesisRow.manifest_hash instanceof Uint8Array)) {
+          throw new TypeError("Native Task result genesis is unavailable");
+        }
+        const genesisBytes = Uint8Array.from(genesisRow.manifest_bytes);
+        owned.push(genesisBytes);
+        const genesis = decodeObjectAccessManifestV5(genesisBytes);
+        if (genesis.objectId !== occurrence.objectId || genesis.accessRevision !== 0
+          || genesis.previousManifestHash !== null
+          || genesis.signer.kind !== "agent_runtime"
+          || genesis.signer.agentId !== occurrence.signerAgentId
+          || !sameBytes(input.crypto.hash(genesisBytes), occurrence.genesisManifestHash)
+          || !sameBytes(genesisRow.manifest_hash, occurrence.genesisManifestHash)
+          || !sameBytes(genesis.payloadHash, payloadHash)
+          || (occurrence.cryptoAccessRevision === 0 && !sameBytes(genesisBytes, verified.headManifestBytes))
+          || verified.headManifest.accessRevision !== occurrence.cryptoAccessRevision
           || verified.headManifest.envelopeHashes.length !== 1
           || !sameBytes(verified.headManifest.envelopeHashes[0]!, envelopeHash)) {
           throw new TypeError("Native Task result access manifest is invalid");

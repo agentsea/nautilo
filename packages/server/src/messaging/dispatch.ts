@@ -2156,6 +2156,10 @@ export async function dispatchRoomMessageSend(
           ? {
               humanAlreadyPersisted: true,
               currentMessageId: liveShadowPersistedMessageId,
+              // This authenticated one-Human/one-Genie route already selected
+              // the responder; pre-persisting the protected Human message must
+              // not turn it into an inferred/background wake.
+              explicitlySelected: true,
             }
           : {}),
         ...(liveShadowCapability

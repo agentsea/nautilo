@@ -106,7 +106,7 @@ export function createProtectedTaskRunResultMessageRecovery(input: Readonly<{
             resultTerminalStatus: proof.result.terminalStatus as "completed" | "errored",
             resultContentRevision: 1, resultObjectId: proof.result.objectId,
             resultGenesisManifestHash: bytesToHex(proof.result.genesisManifestHash),
-            resultCryptoAccessRevision: 0, resultNamespaceId: source.namespaceId,
+            resultCryptoAccessRevision: proof.result.cryptoAccessRevision, resultNamespaceId: source.namespaceId,
             resultDomainId: source.domainId, resultNamespaceAccessRevision: source.expectedAccessRevision,
           });
           const signerHistory = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });

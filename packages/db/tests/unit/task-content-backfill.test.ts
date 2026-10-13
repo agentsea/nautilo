@@ -213,6 +213,24 @@ describe("Task content backfill persistence", () => {
     }
   });
 
+  test.each([{ preset: "repo-docs" }, { depth: 1 }, { ownerId: "other-owner" }])("unsupported definition routing %j advances before a later eligible definition", async unsupported => {
+    const row = { taskId: ids.task1, ownerId: ids.user, preset: "task", depth: 0,
+      createdAt: created, updatedAt: updated, status: "paused", contentRevision: 0,
+      parentTaskId: null, failureReason: null, failureSourceRevision: null,
+      failureSourceUpdatedAt: null, failureSourceStatus: null, failurePolicyRevision: null };
+    const fixture = harness({ selects: [
+      [{ mode: "shadow_encryption", revision: 9 }], [{ ownerId: ids.user }],
+      [scan({ throughAt: created, throughTaskId: ids.task2 })],
+      [{ ...row, ...unsupported }, { ...row, taskId: ids.task2 }],
+    ] });
+    const found = await discoverTaskContentBackfill(fixture.database, {
+      humanActorId: ids.human, deviceId: "device-a", now, pageLimit: 4, resumeAt: later,
+    });
+    expect(found).toMatchObject({ status: "candidate", candidate: { taskId: ids.task2 } });
+    expect(fixture.inserts).toContainEqual(expect.objectContaining({ entityId: ids.task1, reason: "unsupported" }));
+    expect(fixture.updates).toContainEqual(expect.objectContaining({ cursorTaskId: ids.task1 }));
+  });
+
   test("definition discovery returns only structural coordinates and fences ordinary source drift with updatedAt", async () => {
     const initial = scan();
     const withThrough = scan({ throughAt: created, throughTaskId: ids.task1 });
@@ -224,6 +242,9 @@ describe("Task content backfill persistence", () => {
         [{ at: created, taskId: ids.task1 }],
         [{
           taskId: ids.task1,
+          ownerId: ids.user,
+          preset: "task",
+          depth: 0,
           createdAt: created,
           updatedAt: updated,
           status: "pending",

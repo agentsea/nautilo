@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { LatticeCrypto, type DomainForegroundAuthorityEntry } from "@nautilo/lattice-crypto";
 import { parseDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
 import type { TaskOutputNamespaceAuthority } from "@nautilo/lattice-bridge/server";
-import { sameTaskRuntimeAuthorityPlan, type TaskRuntimeRecipientCurrentAuthority } from "@nautilo/runtime";
+import { buildUnclaimedTaskOutputReadAuthorityReplacement, sameTaskRuntimeAuthorityPlan, type TaskRuntimeRecipientCurrentAuthority } from "@nautilo/runtime";
 import { createProtectedTaskOutputReadPlan } from "../../src/routes/protected-task-output-read-plan";
 import type { ProtectedTaskOutputReadIntent } from "../../src/routes/protected-task-output-read-product";
 const NOW = 1_800_500_000_000;
@@ -132,4 +132,19 @@ test("wake plans keep a sealed additional destination encrypt-only and outside f
     ...destination, namespaceId: PRIVATE }, namespace: value.authority.resultFact } })).toThrow();
   expect(() => createProtectedTaskOutputReadPlan({ ...value, intent: fixture().intent,
     authority, now: NOW, recipientTtlMs: 60_000 })).toThrow();
+});
+
+
+test.each([false, true])("mapped result head changes only fresh authority, wake=%s", wake => {
+  const value = fixture(wake);
+  const first = value.build();
+  const next = createProtectedTaskOutputReadPlan({ ...value,
+    intent: { ...value.intent, result: { ...value.intent.result, cryptoAccessRevision: 1 } },
+    now: NOW + 1, recipientTtlMs: 60_000 });
+  expect(next.initialRecord.idempotencyKey).toBe(first.initialRecord.idempotencyKey);
+  expect(next.initialRecord.workIdentityHash).not.toEqual(first.initialRecord.workIdentityHash);
+  const replacement = buildUnclaimedTaskOutputReadAuthorityReplacement({
+    expected: first.initialRecord, replacement: next.initialRecord, now: NOW + 1 });
+  expect(replacement.snapshot.recipientGeneration).toBe(first.initialRecord.snapshot.recipientGeneration + 1);
+  expect(replacement.workIdentityHash).toEqual(next.initialRecord.workIdentityHash);
 });

@@ -2,6 +2,7 @@ import {
   acceptProtectedTaskHumanContinuation,
   eq,
   protectedTaskHumanContinuationAcceptanceId,
+  protectedTaskDefinitionSupportsPolicy,
   resolveParkedProtectedTaskHumanContinuationAcceptance,
   tasks,
   type DirectDatabase,
@@ -59,13 +60,13 @@ export function createProtectedTaskHumanResponse(input: Readonly<{
     const ordinaryOnly = new ClassifiedDataOperationError(
       "recoverable_availability", "Task has no protected continuation",
     );
-    const accept = async (expected: "dual" | "protected"): Promise<ProtectedTaskHumanResponseResult> => {
+    const accept = async (mode: "shadow_encryption" | "encrypted_only"): Promise<ProtectedTaskHumanResponseResult> => {
       const task = await dependencies.task(request.taskId);
       if (task?.representation === "ordinary") throw ordinaryOnly;
       if (task === null || request.humanActorId === null) {
         return { status: "rejected", code: "task_approval_not_found" };
       }
-      if (task.representation !== expected) {
+      if (!protectedTaskDefinitionSupportsPolicy(task.representation, mode)) {
         return { status: "rejected", code: "approval_stale" };
       }
       if (request.response.kind !== "identity" && !request.requestId) {
@@ -81,6 +82,13 @@ export function createProtectedTaskHumanResponse(input: Readonly<{
       });
       if (resolved.status !== "resolved") {
         return { status: "rejected", code: "task_approval_not_found" };
+      }
+      if (request.response.kind === "approval") {
+        const allowedVerbs = resolved.interrupt.allowedVerbs ?? ["deny"];
+        if (!allowedVerbs.includes(request.response.verb)
+          || request.response.verb === "room" && task.targetRoomId === null) {
+          return { status: "rejected", code: "approval_stale" };
+        }
       }
       try {
         await dependencies.admit({ humanUserId: request.userId,
@@ -111,8 +119,8 @@ export function createProtectedTaskHumanResponse(input: Readonly<{
       // Only a proven ordinary Task may use the policy owner's Fallback path.
       // Protected acceptance failures must never resume an ordinary graph.
       classifyFailure: error => error === ordinaryOnly ? "recoverable_availability" : "integrity",
-      dual: () => accept("dual"),
-      protected: () => accept("protected"),
+      dual: () => accept("shadow_encryption"),
+      protected: () => accept("encrypted_only"),
     });
   };
 }

@@ -72,7 +72,7 @@ const invalid: Array<[string, (v: Input) => void]> = [
   ["Run UUID", v => { v.result.taskRunId = "bad"; }],
   ["Task UUID suffix", v => { v.result.taskId += "bad"; }],
   ["object", v => { v.result.objectId += "bad"; }],
-  ["access revision", v => { v.result.cryptoAccessRevision = 1 as 0; }],
+  ["access revision", v => { v.result.cryptoAccessRevision = -1; }],
   ["terminal status", v => { v.result.terminalStatus = "running" as "completed"; }],
   ["cancelled rev1", v => { v.result.terminalStatus = "cancelled"; }],
   ["completed rev2", v => { v.result.contentRevision = 2; v.result.objectId = objectId(2); }],

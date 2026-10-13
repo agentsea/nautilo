@@ -2360,6 +2360,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/src/routes/task-content-backfill-scan.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/task-content-backfill-scan.ts -> @nautilo/lattice-bridge/server",
   "packages/server/src/routes/task-content-backfill-source.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/task-historical-definition-summary.ts -> @nautilo/lattice-bridge",
   "packages/server/src/routes/task-occurrence-policy.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/lattice-integration/protected-task-foreground-creation.integration.test.ts -> ../../../lattice-bridge/tests/fixtures/public-room-grant-visibility.ts",
   "packages/server/tests/lattice-integration/protected-task-foreground-creation.integration.test.ts -> @nautilo/lattice-bridge",
@@ -2432,6 +2433,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/tests/unit/task-content-backfill-authority.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/unit/task-content-backfill-routes.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit/task-content-backfill-scan.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/task-historical-definition-summary.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit/task-occurrence-policy.test.ts -> @nautilo/lattice-bridge",
 ] as const;
 

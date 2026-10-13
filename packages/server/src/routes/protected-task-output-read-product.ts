@@ -58,7 +58,7 @@ export type ProtectedTaskOutputReadClosedProof = Readonly<{
     terminalStatus: "completed" | "errored" | "cancelled";
     contentRevision: 1 | 2;
     objectId: string;
-    cryptoAccessRevision: 0;
+    cryptoAccessRevision: number;
     genesisManifestHash: Uint8Array;
     signerAgentId: string;
   }>;
@@ -245,7 +245,7 @@ async function loadProductState(
   if (run === undefined || run.taskId !== task.id || run.completedAt === null
     || !protectedTaskDefinitionSupportsPolicy(run.representation, policy.mode)
     || run.contentNamespaceId !== task.contentNamespaceId
-    || run.accessRevision !== 0 || run.mappingState !== "verified"
+    || !Number.isSafeInteger(run.accessRevision) || run.accessRevision < 0 || run.mappingState !== "verified"
     || !(run.requiredNamespaceFingerprint instanceof Uint8Array)
     || !sameBytes(run.requiredNamespaceFingerprint,
       task.cryptoRequiredNamespaceFingerprint)) return null;
@@ -346,7 +346,7 @@ async function loadProductState(
         terminalStatus,
         contentRevision: revision,
         objectId,
-        cryptoAccessRevision: 0 as const,
+        cryptoAccessRevision: run.accessRevision,
         genesisManifestHash: Uint8Array.from(ledger.requestDigest),
         signerAgentId: task.agentId,
       }),

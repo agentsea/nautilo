@@ -1,4 +1,4 @@
-import { createAgentObjectAccessManifestV5 } from "../../../lattice-crypto/src/format/object-access-manifest-v5.ts";
+import { createAgentObjectAccessManifestV5, createHumanObjectAccessManifestV5 } from "../../../lattice-crypto/src/format/object-access-manifest-v5.ts";
 import { describe, expect, spyOn, test } from "bun:test";
 import type { PostgresJsBridgeConnection, PostgresJsBridgeRow, PostgresJsBridgeScalar } from "@nautilo/db";
 import {
@@ -48,6 +48,7 @@ async function fixture(
     formatVersion: 1, resultText: "A protected result", lastError: null,
   },
   bufferBacked = false,
+  mappedAccess = 0,
 ) {
   const crypto = new LatticeCrypto();
   const issuer = crypto.generateSigningKeyPair();
@@ -88,7 +89,7 @@ async function fixture(
   });
   const result = {
     taskId: TASK, taskRunId: RUN, terminalStatus: revision === 2 ? "cancelled" as const : "completed" as const,
-    signerAgentId: AGENT, contentRevision: revision, cryptoAccessRevision: 0 as const,
+    signerAgentId: AGENT, contentRevision: revision, cryptoAccessRevision: mappedAccess,
     objectId: deriveTaskContentCryptoObjectIdV1({ kind: "run_result", taskId: TASK, taskRunId: RUN, contentRevision: revision }),
     genesisManifestHash: bytes(0), namespace: { namespaceId: NAMESPACE, domainId: DOMAIN,
       operations: ["decrypt"] as const, expectedAccessRevision: currentAccess, expectedPolicyRevision: 3 },
@@ -114,6 +115,12 @@ async function fixture(
       runtimeGeneration: initialized.runtime.generation, signerKeyId: signerPublication.signerKeyId },
     signerAuthorizationHash: null, hostAuthorizationRevision: authorizationRevision(7),
   }, initialized.runtime);
+  const successor = mappedAccess === 0 ? prepared : createHumanObjectAccessManifestV5(crypto, {
+    objectId: objectId(result.objectId), payloadHash: crypto.hash(payloadBytes), accessRevision: accessRevision(1),
+    previousManifestHash: prepared.hash, envelopeHashes: [crypto.hash(envelopeBytes)],
+    signer: { kind: "human_device", subjectHumanId: humanId(HUMAN), committerDeviceId: cryptoDeviceId(DEVICE) },
+    signerAuthorizationHash: null, hostAuthorizationRevision: authorizationRevision(1),
+  }, issuer.privateKey);
   result.genesisManifestHash = bufferBacked
     ? Buffer.from(prepared.hash) : prepared.hash.slice();
   const evidenceInput: TaskRuntimeRunResultReadEvidenceInputV1 = {
@@ -162,11 +169,15 @@ async function fixture(
       } else if (statement.includes('from "crypto_objects"')) {
         stage = "object"; rows = [{ object_id: result.objectId, payload_bytes: payloadBytes, payload_hash: crypto.hash(payloadBytes) }];
       } else if (statement.includes('from "object_crypto_access_heads"')) {
-        stage = "access-head"; rows = [manifest];
+        stage = "access-head"; rows = [{ ...manifest, access_revision: mappedAccess, previous_manifest_hash: mappedAccess === 0 ? null : prepared.hash, manifest_hash: successor.hash, manifest_bytes: successor.bytes }];
       } else if (statement.includes('from "object_crypto_namespace_envelopes"')) {
         stage = "envelope"; rows = [{ namespace_id: NAMESPACE, envelope_hash: crypto.hash(envelopeBytes), envelope_bytes: envelopeBytes }];
       } else if (statement.includes('from "object_crypto_access_manifests"')) {
-        stage = "manifest"; rows = [manifest];
+        stage = "manifest"; rows = mappedAccess !== 0 && statement.includes("order by")
+          ? [manifest, { ...manifest, access_revision: 1, previous_manifest_hash: prepared.hash,
+            manifest_hash: successor.hash, manifest_bytes: successor.bytes }] : [manifest];
+      } else if (statement.includes('from "human_crypto_devices"')) {
+        stage = "human-signer"; rows = [{ device_id: DEVICE, human_id: HUMAN, signing_public_key: issuer.publicKey, state: "active", revision: 1 }];
       } else if (statement.includes('from "agent_crypto_runtime_signers"')) {
         stage = "historical-signer"; rows = [{ agent_id: AGENT, runtime_generation: initialized.runtime.generation,
           authorization_revision: signerPublication.authorizationRevision, transition_kind: signerPublication.transitionKind,
@@ -395,5 +406,24 @@ test("matching caller metadata cannot substitute mapped genesis or expected Agen
       }),
     }));
     expect(called).toBe(false);
+  }
+});
+
+
+test.each([1, 2] as const)("opens mapped result revision %s through an authenticated Human rewrap", async revision => {
+  const value = await fixture(undefined, revision, 2, undefined, false, 1);
+  expect(await value.open(payload => payload.resultText)).toBe("A protected result");
+  expect(value.stages).toContain("human-signer");
+  expect(value.occurrence.result.cryptoAccessRevision).toBe(1);
+});
+
+test("denies substituted mapped head, missing chain, and changed genesis before disclosure", async () => {
+  for (const adjust of [change("access-head", "access_revision", 2),
+    (stage: string, rows: readonly PostgresJsBridgeRow[]) => stage === "manifest" ? rows.slice(1) : rows,
+    change("manifest", "manifest_hash", bytes(0xaa))]) {
+    const value = await fixture(adjust, 1, 2, undefined, false, 1);
+    let disclosed = false;
+    await fails(value.open(() => { disclosed = true; }));
+    expect(disclosed).toBe(false);
   }
 });

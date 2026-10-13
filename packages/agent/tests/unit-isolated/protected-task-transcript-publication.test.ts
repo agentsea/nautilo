@@ -203,7 +203,8 @@ describe("protected Task transcript publication", () => {
         { id: "interrupt-a", kind: "await_reply" },
         { id: "interrupt-b", kind: "prove_it" },
         { id: "interrupt-m", kind: "identity", requestId: "challenge-opaque" },
-        { id: "interrupt-z", kind: "approval", requestId: "approval-opaque" },
+        { id: "interrupt-z", kind: "approval", requestId: "approval-opaque",
+          allowedVerbs: ["once", "room", "always", "deny"] },
       ],
     });
     if (result.status !== "interrupted") throw new Error("expected interruption");

@@ -12,7 +12,7 @@ export type TaskRuntimeRunResultReadProofV1 = Readonly<{
   terminalStatus: "completed" | "errored" | "cancelled";
   contentRevision: 1 | 2;
   objectId: string;
-  cryptoAccessRevision: 0;
+  cryptoAccessRevision: number;
   genesisManifestHash: Uint8Array;
   signerAgentId: string;
   namespace: Readonly<{
@@ -121,7 +121,7 @@ export function snapshotTaskRuntimeRunResultReadEvidenceV1(
     value.recipientGeneration, value.policyRevision, value.hostAuthorizationRevision,
     value.recipientAuthorizationRevision, n.expectedAccessRevision, n.expectedPolicyRevision,
     d.participantCount, d.domainKeyGeneration, d.authorizationRevision,
-    d.activeNamespaceBindingCount]) assertU64Counter("Task result read counter", counter);
+    d.activeNamespaceBindingCount, r.cryptoAccessRevision]) assertU64Counter("Task result read counter", counter);
   if (write !== null) {
     for (const id of [write.taskId, write.taskRunId, write.bindingId,
       write.messageOperationId, write.roomId, write.sessionId,
@@ -142,7 +142,7 @@ export function snapshotTaskRuntimeRunResultReadEvidenceV1(
   )))}`;
   if (value.purpose !== "task.runtime.run_result_read"
     || !UUID.test(r.taskId) || !UUID.test(r.taskRunId)
-    || r.cryptoAccessRevision !== 0 || r.objectId !== expectedObject
+    || r.objectId !== expectedObject
     || (r.terminalStatus === "cancelled" ? r.contentRevision !== 2
       : (r.terminalStatus !== "completed" && r.terminalStatus !== "errored") || r.contentRevision !== 1)
     || invoke.bindingId !== `task-run-output:${r.taskRunId}`

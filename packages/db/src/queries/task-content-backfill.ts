@@ -105,6 +105,9 @@ export interface TaskContentBackfillProgress {
 
 type DefinitionRow = Readonly<{
   taskId: string;
+  ownerId: string;
+  preset: string;
+  depth: number;
   createdAt: Date;
   updatedAt: Date;
   status: string;
@@ -571,6 +574,9 @@ export async function discoverTaskContentBackfill(
         const failure = taskContentBackfillFailures;
         const rows = await tx.select({
           taskId: tasks.id,
+          ownerId: tasks.ownerId,
+          preset: tasks.preset,
+          depth: tasks.depth,
           createdAt: definitionAt,
           updatedAt: tasks.updatedAt,
           status: tasks.status,
@@ -596,7 +602,8 @@ export async function discoverTaskContentBackfill(
             scan = { ...scan, ...cursorUpdate(candidate) };
             continue;
           }
-          if (row.parentTaskId !== null) {
+          if (row.parentTaskId !== null || row.depth !== 0
+            || row.preset !== "task" || row.ownerId !== userId) {
             await upsertFailure(tx, candidate, policy.revision, "unsupported", input.now);
             await tx.update(taskContentBackfillScans).set(cursorUpdate(candidate))
               .where(eq(taskContentBackfillScans.humanActorId, input.humanActorId));

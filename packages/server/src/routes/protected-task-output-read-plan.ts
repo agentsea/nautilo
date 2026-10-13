@@ -89,13 +89,17 @@ export function createProtectedTaskOutputReadPlan(input: Readonly<{
   const workKind = wake ? "task.delivery_wake" : "task.deliver_result";
   const workId = intent.invocation.kind === "wake" ? intent.invocation.jobId : intent.result.taskRunId;
   const requestId = wake ? `task-wake-authorization:${workId}` : `task-run-delivery-result-authorization:${workId}`;
-  const stableIdentity = JSON.stringify([
+  const identity = (accessRevision: number) => JSON.stringify([
     "nautilo/task-output-read/v1", intent.requesterUserId, intent.requesterHumanId,
     intent.agentId, intent.contentNamespaceId, intent.representation, intent.acceptedPolicyRevision,
     intent.result.taskId, intent.result.taskRunId, intent.result.terminalStatus,
-    intent.result.contentRevision, intent.result.objectId, intent.result.cryptoAccessRevision,
+    intent.result.contentRevision, intent.result.objectId, accessRevision,
     Array.from(intent.result.genesisManifestHash), intent.result.signerAgentId, intent.invocation,
   ]);
+  // Access-head changes rotate unclaimed authority, not the durable delivery identity.
+  // Preserve the original head-zero key; the exact current head remains signed in the work hash.
+  const stableIdentity = identity(0);
+  const workIdentity = identity(intent.result.cryptoAccessRevision);
   const continuation = intent.continuation;
   const mutationIdentity = mutation === undefined ? [] : [mutation,
     ...(continuation === undefined ? [] : [[continuation.segment, continuation.priorRecipientGeneration,
@@ -108,7 +112,7 @@ export function createProtectedTaskOutputReadPlan(input: Readonly<{
     snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({ requestId, workId,
       namespaceId: intent.contentNamespaceId, now: input.now }),
     workKind, purpose: workKind,
-    workIdentityHash: createHash("sha256").update(JSON.stringify([stableIdentity, namespaces, domains, ...mutationIdentity])).digest(),
+    workIdentityHash: createHash("sha256").update(JSON.stringify([workIdentity, namespaces, domains, ...mutationIdentity])).digest(),
     idempotencyKey: `task-output-read:${createHash("sha256").update(stableIdentity).digest("hex")}`,
     domainId: privateFact.domainId, expectedDomainEpoch: privateFact.expectedDomainEpoch,
     expectedNamespaceAccessRevision: privateFact.expectedAccessRevision,

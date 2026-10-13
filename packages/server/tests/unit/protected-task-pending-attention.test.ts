@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import type { ServerEvent } from "@nautilo/types";
 import { candidate, ids } from "../fixtures/protected-task-pending-attention";
-import { createProtectedTaskPendingAttention, protectedTaskAttentionEvents } from "../../src/routes/protected-task-pending-attention";
+import {
+  createProtectedTaskPendingAttention,
+  protectedTaskAttentionEvents,
+  protectedTaskLegacyApprovalPolicies,
+} from "../../src/routes/protected-task-pending-attention";
 
 function approval(): Extract<ServerEvent, { type: "approval.ask" }> {
   return { type: "approval.ask", approvalId: "approval:request",
@@ -30,6 +34,37 @@ test("Task attention rejects missing, duplicate, wrong-thread, wrong-lane and wr
     [{ ...approval(), approvalId: "other-request" }]]) {
     expect(() => protectedTaskAttentionEvents(events, candidate(), ids.owner)).toThrow();
   }
+});
+
+test("fresh categorical authority must match the authenticated checkpoint event", () => {
+  const pending = candidate({ pendingAttentionInterrupts: [{
+    id: "interrupt:approval", kind: "approval", requestId: "approval:request",
+    allowedVerbs: ["once", "deny"],
+  }] });
+  expect(protectedTaskAttentionEvents([
+    { ...approval(), allowedVerbs: ["once", "deny"] },
+  ], pending, ids.owner)).toHaveLength(1);
+  expect(() => protectedTaskAttentionEvents([approval()], pending, ids.owner))
+    .toThrow("sealed interrupts");
+});
+
+test("legacy retired publication approvals display and seal deny-only authority", () => {
+  const requestId = "github-publish:historical";
+  const pending = candidate({ pendingAttentionInterrupts: [{
+    id: "interrupt:approval", kind: "approval", requestId,
+  }] });
+  const projected = protectedTaskAttentionEvents([{
+    ...approval(), approvalId: requestId,
+    allowedVerbs: ["once", "room", "always", "deny"],
+  }], pending, ids.owner);
+  expect(projected).toHaveLength(1);
+  expect(projected[0]).toMatchObject({
+    type: "approval.ask", approvalId: requestId, allowedVerbs: ["deny"],
+  });
+  expect(protectedTaskLegacyApprovalPolicies(projected, pending)).toEqual([{
+    interruptId: "interrupt:approval", requestId, allowedVerbs: ["deny"],
+  }]);
+  expect(JSON.stringify(projected)).not.toContain('"once"');
 });
 
 test("Task proof and identity prompts bind sealed interrupt coordinates", () => {
