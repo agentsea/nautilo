@@ -9,6 +9,77 @@ export type ProtectedTaskGraphNodeName =
   | "tools"
   | "await_reply";
 
+export type ProtectedTaskCheckpointPauseReason =
+  | "manual_pause"
+  | "time_limit"
+  | "grant_refresh";
+
+/**
+ * Process-local request to stop admitting protected graph nodes at the next
+ * boundary. The first request owns the reason for this invocation.
+ */
+export interface ProtectedTaskCheckpointPauseController {
+  request(reason: ProtectedTaskCheckpointPauseReason): boolean;
+  currentRequestedReason(): ProtectedTaskCheckpointPauseReason | null;
+}
+
+/** Typed interruption emitted before a paused graph node body is admitted. */
+export type ProtectedTaskCheckpointPauseInterruption = Error & Readonly<{
+  reason: ProtectedTaskCheckpointPauseReason;
+}>;
+
+const checkpointPauseInterruptions = new WeakSet<object>();
+
+function checkpointPauseInterruption(
+  reason: ProtectedTaskCheckpointPauseReason,
+): ProtectedTaskCheckpointPauseInterruption {
+  const interruption = new Error(
+    "Protected Task checkpoint pause requested",
+  ) as ProtectedTaskCheckpointPauseInterruption;
+  interruption.name = "ProtectedTaskCheckpointPauseInterruption";
+  Object.defineProperty(interruption, "reason", {
+    value: reason,
+    enumerable: true,
+    configurable: false,
+    writable: false,
+  });
+  checkpointPauseInterruptions.add(interruption);
+  // LangGraph annotates node failures with `pregelTaskId`. Keep the Error
+  // extensible while the WeakSet brand and immutable reason remain private.
+  return interruption;
+}
+
+/** Refuses lookalike Errors; only this module can mint the interruption. */
+export function isProtectedTaskCheckpointPauseInterruption(
+  value: unknown,
+): value is ProtectedTaskCheckpointPauseInterruption {
+  return typeof value === "object"
+    && value !== null
+    && checkpointPauseInterruptions.has(value);
+}
+
+export function createProtectedTaskCheckpointPauseController():
+ProtectedTaskCheckpointPauseController {
+  let requestedReason: ProtectedTaskCheckpointPauseReason | null = null;
+  return Object.freeze({
+    request(reason: ProtectedTaskCheckpointPauseReason): boolean {
+      if (
+        reason !== "manual_pause"
+        && reason !== "time_limit"
+        && reason !== "grant_refresh"
+      ) {
+        throw new TypeError("Protected Task checkpoint pause reason is invalid");
+      }
+      if (requestedReason !== null) return false;
+      requestedReason = reason;
+      return true;
+    },
+    currentRequestedReason(): ProtectedTaskCheckpointPauseReason | null {
+      return requestedReason;
+    },
+  });
+}
+
 export interface ProtectedTaskNodeSettlementScope {
   /**
    * Admit one graph node body before it starts and retain only its settlement
@@ -25,6 +96,13 @@ export interface ProtectedTaskNodeSettlementScope {
 
 type ScopeState = "open" | "closing" | "closed";
 
+function authorizationAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new Error("Protected Task authorization was revoked", {
+    cause: signal.reason,
+  });
+}
+
 /**
  * Process-local lifetime accounting for one protected Task graph invocation.
  *
@@ -34,7 +112,15 @@ type ScopeState = "open" | "closing" | "closed";
  * it is not a checkpoint or external-effect replay receipt.
  */
 export function createProtectedTaskNodeSettlementScope(signal?: AbortSignal):
-ProtectedTaskNodeSettlementScope {
+ProtectedTaskNodeSettlementScope;
+export function createProtectedTaskNodeSettlementScope(
+  signal: AbortSignal | undefined,
+  pause: ProtectedTaskCheckpointPauseController | undefined,
+): ProtectedTaskNodeSettlementScope;
+export function createProtectedTaskNodeSettlementScope(
+  signal?: AbortSignal,
+  pause?: ProtectedTaskCheckpointPauseController,
+): ProtectedTaskNodeSettlementScope {
   const active = new Set<Promise<void>>();
   let state: ScopeState = "open";
   let closePromise: Promise<void> | null = null;
@@ -57,10 +143,19 @@ ProtectedTaskNodeSettlementScope {
       _name: ProtectedTaskGraphNodeName,
       body: () => Value | PromiseLike<Value>,
     ): Promise<Value> {
+      // Authorization revocation is stronger than a cooperative pause, even
+      // when both become observable before this admission attempt.
+      if (signal?.aborted === true) {
+        return Promise.reject(authorizationAbortError(signal));
+      }
       if (state !== "open") {
         return Promise.reject(new Error(
           "Protected Task graph node started after settlement closed",
         ));
+      }
+      const requestedReason = pause?.currentRequestedReason() ?? null;
+      if (requestedReason !== null) {
+        return Promise.reject(checkpointPauseInterruption(requestedReason));
       }
 
       const settled = Promise.withResolvers<void>();

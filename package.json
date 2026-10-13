@@ -59,7 +59,7 @@
     "office:status": "bun bin/nautilo-dev/src/index.ts office status",
     "oss": "exec bun bin/nautilo-local/src/oss-retired.ts",
     "reset-pin": "bun bin/nautilo-reset-pin/src/index.ts",
-    "lint:unused": "NODE_OPTIONS=--max-old-space-size=6144 NAUTILO_DRIZZLE_OFFLINE=1 knip --cache --no-progress",
+    "lint:unused": "NODE_OPTIONS=--max-old-space-size=6144 NAUTILO_DRIZZLE_OFFLINE=1 knip --no-progress",
     "ci:local": "bash dev/scripts/ci-local.sh",
     "setup": "lefthook install",
     "first-party-apps:install": "bun dev/scripts/install-first-party-apps.ts",

@@ -9035,6 +9035,25 @@ ipcMain.handle("foregroundShadow:messageBackfill:cancel", async (e) => {
   bound.controller.cancelMessageBackfill();
 });
 
+ipcMain.handle("foregroundShadow:taskContentBackfill:progress", async (e) => {
+  const { controller } = await foregroundShadowControllerForSender(e);
+  return controller.getTaskContentBackfillProgress();
+});
+
+ipcMain.handle("foregroundShadow:taskContentBackfill:service", async (e) => {
+  const { controller } = await foregroundShadowControllerForSender(e);
+  return controller.serviceTaskContentBackfill();
+});
+
+ipcMain.handle("foregroundShadow:taskContentBackfill:cancel", async (e) => {
+  const session = resolveSessionFromSender(e);
+  const pending = foregroundShadowControllers.get(e.sender.id);
+  if (pending === undefined) return;
+  const bound = await pending;
+  if (bound.sender !== e.sender || bound.serverScope !== session.scope) return;
+  bound.controller.cancelTaskContentBackfill();
+});
+
 ipcMain.handle("foregroundShadow:history:reconcile", async (e, raw: unknown) => {
   const value = boundedForegroundShadowValue(
     raw,

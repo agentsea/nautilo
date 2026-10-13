@@ -71,7 +71,7 @@ import {
   classifyProtectedTaskMetadataV1,
 } from "@nautilo/types";
 import {
-  and, eq, taskRuns, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
+  and, eq, inArray, sql, taskRuns, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
   createDirectDb,
   prepareProtectedTaskCancellationOutput,
   settleProtectedTaskCancellationOutput,
@@ -79,6 +79,7 @@ import {
   type ProtectedTaskCancellationOutputCandidate,
   type ProtectedTaskCancellationOutputDiscoveryCursor,
 } from "@nautilo/db";
+import { assertFixtureDbMutationAllowed, bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../src/task/task-content-prepared-revision.ts";
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 
@@ -102,6 +103,62 @@ function requiredEnvironment(name: string): string {
 
 function client(url: string): SqlClient {
   return postgres(url, { max: 2, prepare: false, onnotice: () => undefined });
+}
+
+function assertExactCleanupTarget(): void {
+  const instance = process.env["NAUTILO_PROTECTED_TASK_QA_INSTANCE"];
+  const port = process.env["NAUTILO_PROTECTED_TASK_QA_POSTGRES_PORT"];
+  if (!instance || !/^qa-[a-z0-9-]+$/.test(instance)
+    || process.env["NAUTILO_INSTANCE_ID"] !== instance || !port) {
+    throw new Error("Task repository cleanup requires an explicitly bound disposable QA instance and port");
+  }
+  assertFixtureDbMutationAllowed();
+  for (const [value, role] of [[adminUrl, null], [appUrl, "nautilo"], [cryptoUrl, "nautilo_crypto"]] as const) {
+    const url = new URL(value);
+    if (!["postgres:", "postgresql:"].includes(url.protocol)
+      || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)
+      || url.port !== port || url.pathname !== "/nautilo"
+      || !url.username || !url.password || (role !== null && url.username !== role)) {
+      throw new Error("Task repository cleanup requires the exact local QA role connections");
+    }
+  }
+}
+
+async function deleteFixtureCryptoObjects(connection: SqlClient, objectIds: readonly string[]): Promise<void> {
+  assertExactCleanupTarget();
+  if (objectIds.length === 0) return;
+  await drizzle(connection).transaction(async tx => {
+    await tx.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
+      .where(inArray(cryptoObjects.objectId, [...objectIds])).for("update");
+    const [original] = await tx.execute<{ parent_owner: string; allowed: boolean; can_select: boolean }>(sql`
+      select pg_get_userbyid(relowner) as parent_owner,
+        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+      from pg_class where oid = 'public.crypto_objects'::regclass
+    `);
+    if (original?.parent_owner !== "nautilo") throw new Error("Fixture crypto owner is unexpected");
+    // Parent cascades execute as nautilo. Restore these operator-only grants
+    // before commit; any failure rolls back both the grants and fixture deletion.
+    // Forced RLS remains enabled; no persistent receipt privileges change.
+    if (!original.allowed) await tx.execute(sql`grant delete on public.task_cancellation_crypto_staging_receipts to nautilo`);
+    if (!original.can_select) await tx.execute(sql`grant select on public.task_cancellation_crypto_staging_receipts to nautilo`);
+    await tx.delete(objectCryptoAccessHeads).where(inArray(objectCryptoAccessHeads.objectId, [...objectIds]));
+    await tx.delete(objectCryptoNamespaceEnvelopes).where(inArray(objectCryptoNamespaceEnvelopes.objectId, [...objectIds]));
+    await tx.delete(objectCryptoAccessManifests).where(inArray(objectCryptoAccessManifests.objectId, [...objectIds]));
+    await tx.delete(cryptoObjects).where(inArray(cryptoObjects.objectId, [...objectIds]));
+    expect(await tx.select({ requestId: taskCancellationCryptoStagingReceipts.requestId })
+      .from(taskCancellationCryptoStagingReceipts)
+      .where(inArray(taskCancellationCryptoStagingReceipts.cryptoObjectId, [...objectIds]))).toHaveLength(0);
+    expect(await tx.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
+      .where(inArray(cryptoObjects.objectId, [...objectIds]))).toHaveLength(0);
+    if (!original.allowed) await tx.execute(sql`revoke delete on public.task_cancellation_crypto_staging_receipts from nautilo`);
+    if (!original.can_select) await tx.execute(sql`revoke select on public.task_cancellation_crypto_staging_receipts from nautilo`);
+    const [restored] = await tx.execute<{ allowed: boolean; can_select: boolean }>(sql`
+      select has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+    `);
+    expect(restored).toEqual({ allowed: original.allowed, can_select: original.can_select });
+  });
 }
 
 function productExecutor(
@@ -232,11 +289,13 @@ function prepareRevision(input: Readonly<{
 }
 
 beforeAll(() => {
+  bootstrapTestDbInstance();
+  assertExactCleanupTarget();
   admin = client(adminUrl);
 });
 
 afterAll(async () => {
-  await admin.end();
+  if (admin) await admin.end();
 });
 
 describe.serial("Postgres protected Task content repository", () => {
@@ -933,48 +992,37 @@ describe.serial("Postgres protected Task content repository", () => {
         result_text: null,
       });
     } finally {
-      await admin.unsafe("DELETE FROM tasks WHERE id = $1", [taskId]);
-      await admin.unsafe("DELETE FROM jobs WHERE id = $1", [preparedCancellationJobId]);
-      await admin.unsafe(
-        "DELETE FROM task_run_result_crypto_revisions WHERE task_id = $1",
-        [taskId],
-      );
-      await admin.unsafe(
-        "DELETE FROM task_definition_crypto_revisions WHERE task_id = $1",
-        [taskId],
-      );
-      if (objectIds.length > 0) {
+      try {
+        await admin.unsafe("DELETE FROM tasks WHERE id = $1", [taskId]);
+        await admin.unsafe("DELETE FROM jobs WHERE id = $1", [preparedCancellationJobId]);
         await admin.unsafe(
-          "DELETE FROM object_crypto_access_heads WHERE object_id = ANY($1::text[])",
-          [objectIds],
+          "DELETE FROM task_run_result_crypto_revisions WHERE task_id = $1",
+          [taskId],
         );
         await admin.unsafe(
-          "DELETE FROM object_crypto_namespace_envelopes WHERE object_id = ANY($1::text[])",
-          [objectIds],
+          "DELETE FROM task_definition_crypto_revisions WHERE task_id = $1",
+          [taskId],
         );
-        await admin.unsafe(
-          "DELETE FROM object_crypto_access_manifests WHERE object_id = ANY($1::text[])",
-          [objectIds],
-        );
-        await admin.unsafe(
-          "DELETE FROM crypto_objects WHERE object_id = ANY($1::text[])",
-          [objectIds],
-        );
+        await deleteFixtureCryptoObjects(admin, objectIds);
+        await admin.unsafe("DELETE FROM namespaces WHERE id = $1", [namespaceValue]);
+        await admin.unsafe("DELETE FROM agents WHERE id = $1", [agentId]);
+        await admin.unsafe("DELETE FROM actors WHERE id = $1", [humanActorId]);
+        await admin.unsafe("DELETE FROM users WHERE id = $1", [ownerId]);
+      } finally {
+        try {
+          await admin.unsafe(
+            `UPDATE encryption_transition_policy
+             SET mode = $1, revision = $2, shadow_encryption_started_at = $3,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = 'server'`,
+            [originalPolicy.mode, originalPolicy.revision,
+              originalPolicy.shadow_encryption_started_at?.toISOString() ?? null],
+          );
+        } finally {
+          signer.privateKey.fill(0);
+          await Promise.all([app.end(), cryptoDatabase.end(), directDb.end()]);
+        }
       }
-      await admin.unsafe("DELETE FROM namespaces WHERE id = $1", [namespaceValue]);
-      await admin.unsafe("DELETE FROM agents WHERE id = $1", [agentId]);
-      await admin.unsafe("DELETE FROM actors WHERE id = $1", [humanActorId]);
-      await admin.unsafe("DELETE FROM users WHERE id = $1", [ownerId]);
-      await admin.unsafe(
-        `UPDATE encryption_transition_policy
-         SET mode = $1, revision = $2, shadow_encryption_started_at = $3,
-             updated_at = CURRENT_TIMESTAMP
-         WHERE id = 'server'`,
-        [originalPolicy.mode, originalPolicy.revision,
-          originalPolicy.shadow_encryption_started_at],
-      );
-      signer.privateKey.fill(0);
-      await Promise.all([app.end(), cryptoDatabase.end(), directDb.end()]);
     }
   });
 });
@@ -1398,32 +1446,32 @@ async function exerciseNativeCancellationStaging(input: {
       .where(eq(taskCancellationCryptoStagingReceipts.requestId, requestId)));
     expect((await inspect())!.claimId).toBe(staged!.claimId);
   } finally {
-    await database.update(encryptionTransitionPolicy).set({
-      mode: "encrypted_only", revision: 1,
-      shadowEncryptionStartedAt: new Date(),
-      updatedAt: new Date(),
-    }).where(eq(encryptionTransitionPolicy.id, "server"));
-    await database.delete(backgroundCryptoAuthorizationRequests).where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
-    await database.delete(taskRuns).where(eq(taskRuns.id, run));
-    await database.delete(taskRunResultCryptoRevisions).where(eq(taskRunResultCryptoRevisions.taskRunId, run));
-    // Admin cleanup is permitted; the receipt disappears only with its object.
-    await database.delete(objectCryptoAccessHeads).where(eq(objectCryptoAccessHeads.objectId, intent.resultObjectId));
-    await database.delete(objectCryptoNamespaceEnvelopes).where(eq(objectCryptoNamespaceEnvelopes.objectId, intent.resultObjectId));
-    await database.delete(objectCryptoAccessManifests).where(eq(objectCryptoAccessManifests.objectId, intent.resultObjectId));
-    await database.delete(cryptoObjects).where(eq(cryptoObjects.objectId, intent.resultObjectId));
-    expect(await database.select().from(taskCancellationCryptoStagingReceipts)
-      .where(eq(taskCancellationCryptoStagingReceipts.requestId, requestId))).toHaveLength(0);
-    await database.delete(namespaceDomainKeyHeads).where(eq(namespaceDomainKeyHeads.namespaceId, input.namespaceValue));
-    await database.delete(namespaceDomainKeyBindings).where(eq(namespaceDomainKeyBindings.domainId, input.domainId));
-    await database.delete(domainKeyHeads).where(eq(domainKeyHeads.domainId, input.domainId));
-    await database.delete(domainKeyPublicationOperations).where(eq(domainKeyPublicationOperations.domainId, input.domainId));
-    await database.delete(cryptoDomains).where(eq(cryptoDomains.id, input.domainId));
-    await database.delete(agentCryptoRuntimeSigners).where(eq(agentCryptoRuntimeSigners.agentId, input.agentId));
-    await database.delete(agentCryptoRuntimeStates).where(eq(agentCryptoRuntimeStates.agentId, input.agentId));
-    await database.delete(humanCryptoDevices).where(eq(humanCryptoDevices.deviceId, f.DEVICE));
-    await database.delete(humanCryptoCustodies).where(eq(humanCryptoCustodies.humanId, input.humanActorId));
-    f.issuer.privateKey.fill(0);
-    f.manager.privateKey.fill(0);
-    await Promise.all([fixtureAdmin.end(), fixtureApp.end(), fixtureCrypto.end()]);
+    try {
+      await database.delete(backgroundCryptoAuthorizationRequests).where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
+      await database.delete(taskRuns).where(eq(taskRuns.id, run));
+      await database.delete(taskRunResultCryptoRevisions).where(eq(taskRunResultCryptoRevisions.taskRunId, run));
+      await deleteFixtureCryptoObjects(fixtureAdmin, [intent.resultObjectId]);
+      await database.delete(namespaceDomainKeyHeads).where(eq(namespaceDomainKeyHeads.namespaceId, input.namespaceValue));
+      await database.delete(namespaceDomainKeyBindings).where(eq(namespaceDomainKeyBindings.domainId, input.domainId));
+      await database.delete(domainKeyHeads).where(eq(domainKeyHeads.domainId, input.domainId));
+      await database.delete(domainKeyPublicationOperations).where(eq(domainKeyPublicationOperations.domainId, input.domainId));
+      await database.delete(cryptoDomains).where(eq(cryptoDomains.id, input.domainId));
+      await database.delete(agentCryptoRuntimeSigners).where(eq(agentCryptoRuntimeSigners.agentId, input.agentId));
+      await database.delete(agentCryptoRuntimeStates).where(eq(agentCryptoRuntimeStates.agentId, input.agentId));
+      await database.delete(humanCryptoDevices).where(eq(humanCryptoDevices.deviceId, f.DEVICE));
+      await database.delete(humanCryptoCustodies).where(eq(humanCryptoCustodies.humanId, input.humanActorId));
+    } finally {
+      try {
+        await database.update(encryptionTransitionPolicy).set({
+          mode: "encrypted_only", revision: 1,
+          shadowEncryptionStartedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(encryptionTransitionPolicy.id, "server"));
+      } finally {
+        f.issuer.privateKey.fill(0);
+        f.manager.privateKey.fill(0);
+        await Promise.all([fixtureAdmin.end(), fixtureApp.end(), fixtureCrypto.end()]);
+      }
+    }
   }
 }

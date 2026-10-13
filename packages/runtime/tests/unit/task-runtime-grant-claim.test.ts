@@ -25,11 +25,12 @@ import {
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
 import type { PersistJobPayload, StartProtectedTaskRunInput } from "@nautilo/db";
-import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import { deriveTaskContentCryptoObjectIdV1, taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { TaskScopeMemoryBinding } from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../src/job";
 import {
+  cancelBackgroundAuthorizationRequest,
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
 } from "../../src/protected-execution/background-authorization/lifecycle";
@@ -71,6 +72,7 @@ const OPEN_ROOM = "40000000-0000-4000-8000-000000000024";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
 const JOB = "61000000-0000-4000-8000-000000000006";
+const PAUSE_REQUEST = "62000000-0000-4000-8000-000000000006";
 const NAMESPACE = "70000000-0000-4000-8000-000000000007";
 const SCOPE = "80000000-0000-4000-8000-000000000008";
 const MEMORY_ROOM = "90000000-0000-4000-8000-000000000009";
@@ -415,6 +417,7 @@ async function fixture(
   let substitutePlan: ((plan: TaskRuntimeGrantClaimPlan) =>
     TaskRuntimeGrantClaimPlan) | null = null;
   let completionCas: CompletionCas | null = null;
+  let failureCas: CompletionCas | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
   const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
@@ -447,6 +450,11 @@ async function fixture(
       }
       if (input.next.snapshot.state === "completed" && completionCas !== null) {
         return completionCas(input, repository);
+      }
+      if (input.next.snapshot.state === "terminal_failure"
+        && input.next.snapshot.terminalReason === "provider_outcome_unknown"
+        && failureCas !== null) {
+        return failureCas(input, repository);
       }
       return repository.compareAndSwap(input);
     },
@@ -483,7 +491,7 @@ async function fixture(
       kind: "protected_task_run_v1",
       taskId: TASK,
       taskRunId: RUN,
-      inputObjectId: INPUT_OBJECT,
+      inputObjectId: value.task.cryptoObjectId,
       resultObjectId: RESULT_OBJECT,
       authorizationRequestId: REQUEST,
       policyRevision: 7,
@@ -713,6 +721,7 @@ async function fixture(
     },
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
     setCompletionCas: (value: CompletionCas | null) => { completionCas = value; },
+    setFailureCas: (value: CompletionCas | null) => { failureCas = value; },
   };
 }
 
@@ -778,6 +787,9 @@ async function parkedClaimFixture(
     scopeWithSemanticExtra?: boolean;
     humanResumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
     requestWorkKind?: "task.execute" | "task.approval_resume" | "task.await_reply_resume";
+    requestCheckpointPause?: NonNullable<
+      ParkedTaskRuntimeGrantClaimPlan["requestCheckpointPause"]
+    >;
   }> = {},
 ) {
   const value = await fixture(options.requestWorkKind ?? options.humanResumeWorkKind);
@@ -896,6 +908,9 @@ async function parkedClaimFixture(
     }),
     scheduling: base.scheduling,
     executor: base.executor,
+    ...(options.requestCheckpointPause === undefined
+      ? {}
+      : { requestCheckpointPause: options.requestCheckpointPause }),
     ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
     persistJob: async input => {
       persistenceInputs.push(input);
@@ -1135,6 +1150,43 @@ describe("parked Task Runtime authority preparation", () => {
 });
 
 describe("parked Task Runtime grant claim", () => {
+  test("forwards a checkpoint pause only after the exact continuation starts", async () => {
+    const pauses: Array<readonly [string, string | undefined]> = [];
+    const value = await parkedClaimFixture({
+      requestCheckpointPause: (reason, pauseRequestId) => {
+        pauses.push([reason, pauseRequestId]);
+        return true;
+      },
+    });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    const newJobId = "parked-continuation-job";
+    expect(await candidate.persistJob?.(parkedPersistPayload(value.plan.reference)))
+      .toBe(newJobId);
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(await candidate.start(newJobId)).toEqual({ status: "started" });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(true);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+
+    await candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "parked continuation result",
+        lastError: null,
+      });
+    });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+  });
+
   test("waits for authorization when no parked plan is available", async () => {
     const value = await parkedClaimFixture();
     const coordinator = createParkedTaskRuntimeGrantClaim({
@@ -1523,6 +1575,41 @@ describe("exact Task Runtime recipient kernels", () => {
 });
 
 describe("Task Runtime grant claim", () => {
+  test("forwards a checkpoint pause only while the exact execution is live", async () => {
+    const pauses: Array<readonly [string, string | undefined]> = [];
+    const value = await fixture();
+    value.setSubstitutePlan(plan => Object.freeze({
+      ...plan,
+      requestCheckpointPause: (reason, pauseRequestId) => {
+        pauses.push([reason, pauseRequestId]);
+        return true;
+      },
+    }));
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(await candidate.start("protected-job-pause"))
+      .toEqual({ status: "started" });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(true);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+
+    await candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "protected result",
+        lastError: null,
+      });
+    });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+  });
+
   test("preserves the durable initial request key and isolates continuation segments", () => {
     const identity = stableIdentity();
     const initial = taskRuntimeStableIdempotencyKey(identity);
@@ -2425,6 +2512,166 @@ describe("Task Runtime grant claim", () => {
     expect(value.recipients.size).toBe(0);
   });
 
+  test("an execution that fails at its deadline records an uncertain outcome", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-expired"))
+      .toEqual({ status: "started" });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async () => {
+      value.setClock(NOW + 60_000);
+      throw new Error("provider call crossed its grant deadline");
+    })).rejects.toThrow("provider call crossed its grant deadline");
+
+    const terminal = await value.repository.get(REQUEST);
+    expect(terminal?.snapshot.state).toBe("terminal_failure");
+    expect(terminal?.snapshot.terminalReason).toBe("provider_outcome_unknown");
+    expect(terminal?.finishedAt).toBe(NOW + 60_000);
+    expect(terminal?.snapshot.retryCount).toBe(0);
+    expect(value.publishedResults).toEqual([]);
+    expect(value.recipients.size).toBe(0);
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "inactive" });
+    expect(value.claimCasCount()).toBe(1);
+  });
+
+  test("adopts an exact expired-execution failure after the CAS response is lost", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-expired-lost"))
+      .toEqual({ status: "started" });
+    value.setFailureCas(async (input, repository) => {
+      expect(await repository.compareAndSwap(input))
+        .toMatchObject({ status: "updated" });
+      throw new Error("failure response lost");
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async () => {
+      value.setClock(NOW + 60_000);
+      throw new Error("expired provider outcome");
+    })).rejects.toThrow("expired provider outcome");
+    expect(await value.repository.get(REQUEST)).toMatchObject({
+      finishedAt: NOW + 60_000,
+      snapshot: {
+        state: "terminal_failure",
+        terminalReason: "provider_outcome_unknown",
+      },
+    });
+  });
+
+  test("an ordinary abort before the deadline does not claim expiry", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-aborted"))
+      .toEqual({ status: "started" });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async (_input, signal) => {
+      value.recipients.delete(REQUEST, 0);
+      signal.throwIfAborted();
+    })).rejects.toThrow();
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+    expect((await value.repository.get(REQUEST))?.finishedAt).toBeNull();
+  });
+
+  test.each(["completed", "cancelled"] as const)(
+    "does not overwrite a concurrent %s successor at the deadline",
+    async successor => {
+      const value = await fixture();
+      await prepareAndBind(value);
+      await acceptGrant(value);
+      const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+      if (claimed.status !== "claimed") throw new Error("grant not claimed");
+      expect(await claimed.dispatch.candidate.start(
+        `protected-job-expired-${successor}`,
+      )).toEqual({ status: "started" });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(claimed.dispatch.candidate.run(async () => {
+        const running = requiredTaskRuntimeRecord(
+          await value.repository.get(REQUEST),
+        );
+        const finishedAt = NOW + 59_999;
+        const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+          ...running,
+          snapshot: (successor === "completed"
+            ? completeBackgroundAuthorizationRequest(running.snapshot, finishedAt)
+            : cancelBackgroundAuthorizationRequest(
+              running.snapshot,
+              "cancelled",
+              finishedAt,
+            )) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          finishedAt,
+        };
+        expect(await value.repository.compareAndSwap({
+          expectedRequestRevision: running.snapshot.requestRevision,
+          next,
+        })).toMatchObject({ status: "updated" });
+        value.setClock(NOW + 60_000);
+        throw new Error(`concurrent ${successor}`);
+      })).rejects.toThrow(`concurrent ${successor}`);
+      expect(await value.repository.get(REQUEST)).toMatchObject({
+        finishedAt: NOW + 59_999,
+        snapshot: { state: successor },
+      });
+    },
+  );
+
+  test("a park committed at the deadline is completed rather than failed", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-park-deadline"))
+      .toEqual({ status: "started" });
+
+    await claimed.dispatch.candidate.run(async (_input, _signal, settlement) => {
+      value.setClock(NOW + 60_000);
+      await settlement.park(async parkedAt => parkedAt === NOW + 60_000);
+    });
+    expect(await value.repository.get(REQUEST)).toMatchObject({
+      finishedAt: NOW + 60_000,
+      snapshot: { state: "completed" },
+    });
+  });
+
+  test("a started publication is not overwritten by deadline cleanup", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-publish-deadline"))
+      .toEqual({ status: "started" });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(
+      async (_input, _signal, settlement) => {
+        await settlement.publish({
+          formatVersion: 1,
+          resultText: "durable result",
+          lastError: null,
+        });
+        value.setClock(NOW + 60_000);
+        throw new Error("post-publication deadline");
+      },
+    )).rejects.toThrow("post-publication deadline");
+    expect(value.publishedResults).toEqual(["durable result"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+  });
+
   test("a no-publication interrupt stays nonterminal and cannot redispatch", async () => {
     const value = await fixture();
     await prepareAndBind(value);
@@ -2697,6 +2944,22 @@ describe("Task Runtime grant claim", () => {
     }
   });
 
+  test("plans source-versioned historical definitions using closed provenance and exact object identity", async () => {
+    const value = await fixture();
+    const original = occurrence();
+    const provenance = { version: 2, claimId: original.run.id, publisherDeviceId: "history-device",
+      signedRequestDigest: "a".repeat(64), sourceDigest: "b".repeat(64), sourcePayloadHash: "c".repeat(64),
+      sourceRevision: 0, genesisManifestHash: "d".repeat(64) } as const;
+    const historical: ProtectedTaskOccurrence = { ...original, task: { ...original.task, contentRevision: 1,
+      definitionHistoricalRepair: provenance, cryptoObjectId: taskContentRevisionObjectIdV1({
+        coordinate: { kind: "definition", taskId: original.task.id, contentRevision: 1 },
+        namespaceId: original.task.contentNamespaceId, historicalRepair: provenance }) } };
+    expect(await value.coordinator.prepareOrClaimExact(historical)).toEqual({ status: "awaiting_authorization" });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact({ ...historical, task: { ...historical.task,
+      definitionHistoricalRepair: { ...provenance, sourceDigest: "e".repeat(64) } } })).rejects.toThrow();
+  });
+
   test("keeps the definition object revision separate from Namespace authority", async () => {
     const value = await fixture();
     expect(occurrence().task.cryptoAccessRevision).toBe(0);
@@ -2709,10 +2972,13 @@ describe("Task Runtime grant claim", () => {
       }),
     });
 
+    expect(await value.coordinator.prepareOrClaimExact(substituted)).toEqual({ status: "awaiting_authorization" });
+    const record = requiredTaskRuntimeRecord(await value.repository.get(REQUEST));
+    expect(record.expectedNamespaceAccessRevision).toBe(3);
+    expect(record.idempotencyKey).toBe(taskRuntimeStableIdempotencyKey(value.plan(substituted).stableIdentity));
+    // A later caller cannot substitute the old captured head into this exact request.
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-    await expect(value.coordinator.prepareOrClaimExact(substituted))
-      .rejects.toThrow("disagrees with its occurrence");
-    expect(await value.repository.get(REQUEST)).toBeNull();
+    await expect(value.coordinator.prepareOrClaimExact(occurrence())).rejects.toThrow();
   });
 
   test("rejects stale proven output Namespace facts before the durable claim", async () => {

@@ -146,6 +146,59 @@ async function expectRejected(
 }
 
 describe("protected Task native runner", () => {
+  test("passes the exact delegated local execution port without serializing it", async () => {
+    const port = Object.freeze({ taskId: TASK_ID, taskRunId: RUN_ID,
+      signal: new AbortController().signal,
+      withAdmission: async <T>(_operation: "read", work: (value: never) => Promise<T>) => work({} as never) });
+    const base = fixture();
+    const scenario = fixture({ execution: { ...base.input.execution,
+      delegatedLocalExecutionPort: port } });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return { status: "completed", threadId: GRAPH_THREAD_ID,
+          finalText: "internal", finalResponseText: "complete" };
+      },
+    });
+    expect(captured?.delegatedLocalExecutionPort).toBe(port);
+    expect(scenario.input.transientInput).not.toHaveProperty("delegatedLocalExecutionPort");
+  });
+  test("passes process-local caller funding custody to the graph without copying it", async () => {
+    const fundingSession = Object.freeze({
+      kind: "personal" as const,
+      recheckAttempt: async () => {},
+      runAttempt: async <T>(
+        _modelId: string,
+        callback: (attempt: never) => Promise<T>,
+      ) => callback({} as never),
+    });
+    const base = fixture();
+    const scenario = fixture({
+      execution: {
+        ...base.input.execution,
+        foregroundChatFundingSession: fundingSession,
+      },
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return {
+          status: "completed",
+          threadId: GRAPH_THREAD_ID,
+          finalText: "internal",
+          finalResponseText: "complete",
+        };
+      },
+    });
+
+    expect(captured?.foregroundChatFundingSession).toBe(fundingSession);
+    expect(scenario.input.transientInput).not.toHaveProperty(
+      "foregroundChatFundingSession",
+    );
+  });
+
   test("passes the exact protected Task authority and returns the canonical result without terminalizing", async () => {
     const scenario = fixture();
     let captured: RunScopeSubagentOpts | undefined;
@@ -362,6 +415,27 @@ describe("protected Task native runner", () => {
     expect(abortedResult).toEqual({ status: "aborted" });
     expect(calls).toBe(1);
     expect(aborted.published).toEqual([]);
+  });
+
+  test("passes through a cooperative checkpoint pause without publishing a result", async () => {
+    const controller = {
+      request: () => true,
+      currentRequestedReason: () => "manual_pause" as const,
+    };
+    const scenario = fixture({
+      protectedTaskCheckpointPauseController: controller,
+    });
+    const result = await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        expect(options.protectedTaskCheckpointPauseController)
+          .toBe(controller);
+        return { status: "checkpoint_paused", threadId: GRAPH_THREAD_ID,
+          reason: "manual_pause" };
+      },
+    });
+    expect(result).toEqual({ status: "checkpoint_paused",
+      threadId: GRAPH_THREAD_ID, reason: "manual_pause" });
+    expect(scenario.published).toEqual([]);
   });
 
   test("extracts one detached pre-effect additional-authority continuation", async () => {

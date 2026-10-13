@@ -21,6 +21,7 @@ const task = {
   requestorId: "20000000-0000-4000-8000-000000000002",
   status: "running",
   fundingMode: "caller",
+  contentRepresentation: "ordinary",
   fireLockId: null,
   fireLockedAt: null,
 } as Task;
@@ -35,6 +36,7 @@ const run = {
   fundingBinding: { kind: "server", providerRoute: "openai" },
   fundingPredecessorRunId: null,
   startedAt: new Date("2026-10-03T12:00:00.000Z"),
+  resultRepresentation: "ordinary",
   resultText: null,
   lastError: null,
 } as TaskRun;
@@ -259,6 +261,9 @@ describe("funding-denied Task claim pause", () => {
     expect(rendered.sql).toContain('"task_runs"."started_at" >');
     expect(rendered.sql).toContain('"task_runs"."started_at" <');
     expect(rendered.sql).toContain('"task_runs"."id" <=');
+    expect(rendered.sql).toContain('"tasks"."content_representation" =');
+    expect(rendered.sql).toContain('"task_runs"."result_representation" =');
+    expect(rendered.params.filter(value => value === "ordinary")).toHaveLength(2);
     expect(rendered.params).toContain("caller");
     expect(rendered.params).toContain("running");
     expect(await listCallerFundedRunningTaskRunsForRestart(db, {
@@ -286,6 +291,9 @@ describe("funding-denied Task claim pause", () => {
 
     expect(await getCallerFundedRunningTaskRunRestartBoundary(db)).toEqual(boundary);
     const rendered = new PgDialect().sqlToQuery(whereSql!);
+    expect(rendered.sql).toContain('"tasks"."content_representation" =');
+    expect(rendered.sql).toContain('"task_runs"."result_representation" =');
+    expect(rendered.params.filter(value => value === "ordinary")).toHaveLength(2);
     expect(rendered.params).toContain("caller");
     expect(rendered.params).toContain("running");
   });
@@ -722,4 +730,20 @@ describe("funding-denied Task claim pause", () => {
     expect(harness.writes.filter((write) => write.table !== llmUsageEvents)).toHaveLength(1);
     expect(harness.writes[0]?.table).toBe(taskRuns);
   });
+});
+
+
+test("legacy funding restart never terminalizes protected definitions or results", async () => {
+  for (const representation of ["dual", "protected"] as const) {
+    for (const protectedSource of ["task", "run"] as const) {
+      const h = aggregateHarness({
+        task: protectedSource === "task" ? { ...task, contentRepresentation: representation } : task,
+        run: protectedSource === "run" ? { ...run, resultRepresentation: representation } : run,
+      });
+      expect((await reconcileCallerFundedTaskRunAfterRestart(h.db, {
+        taskId: task.id, taskRunId: run.id,
+      })).transitioned).toBe(false);
+      expect(h.writes).toEqual([]);
+    }
+  }
 });

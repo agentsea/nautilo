@@ -1,3 +1,5 @@
+import { setup as mappedHeadFixture, replanFixture } from "../../../lattice-bridge/tests/fixtures/human-task-mapped-content";
+import { refreshHumanMappedTaskContentAccessHead } from "@nautilo/lattice-bridge/server";
 import { createHash } from "node:crypto";
 
 import { expect, test } from "bun:test";
@@ -623,6 +625,7 @@ test("binds distinct per-occurrence executors and transient openers", async () =
   const secondExecutor = async function* () { yield* []; };
   const firstOpener = async () => ({ message: "first" });
   const secondOpener = async () => ({ message: "second" });
+  const firstPause = () => true;
   const prepared: string[] = [];
   const routingDigests = new Map<string, Uint8Array>();
   const build = createProtectedTaskRuntimeGrantPlanBuilder({
@@ -656,7 +659,11 @@ test("binds distinct per-occurrence executors and transient openers", async () =
       prepared.push(value.run.id);
       routingDigests.set(value.run.id, stableRoutingDigest.slice());
       return value.run.id === RUN
-        ? { executor: firstExecutor, openTransientInput: firstOpener }
+        ? {
+            executor: firstExecutor,
+            openTransientInput: firstOpener,
+            requestCheckpointPause: firstPause,
+          }
         : {
             executor: secondExecutor,
             openTransientInput: secondOpener,
@@ -683,10 +690,54 @@ test("binds distinct per-occurrence executors and transient openers", async () =
   expect(routingDigests.get(RUN)).not.toEqual(routingDigests.get(RUN_TWO));
   expect(firstPlan.executor).toBe(firstExecutor);
   expect(firstPlan.openTransientInput).toBe(firstOpener);
+  expect(firstPlan.requestCheckpointPause).toBe(firstPause);
   expect(firstPlan.modelAttribution).toBeUndefined();
   expect(secondPlan.executor).toBe(secondExecutor);
   expect(secondPlan.openTransientInput).toBe(secondOpener);
   expect(secondPlan.modelAttribution).toBe("external");
+  expect(secondPlan.requestCheckpointPause).toBeUndefined();
+});
+
+test("rejects substituted execution preparation fields and pause callbacks", async () => {
+  for (const prepared of [
+    {
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+      requestCheckpointPause: undefined,
+    },
+    {
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+      requestCheckpointPause: "not-a-function",
+    },
+    {
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+      requestCheckpointPause: () => true,
+      unexpected: true,
+    },
+  ]) {
+    const build = createProtectedTaskRuntimeGrantPlanBuilder({
+      crypto: new LatticeCrypto(),
+      recipientTtlMs: 60_000,
+      now: () => NOW,
+      predispatch: async value => predispatch(value),
+      ...outputPorts(),
+      resolveNamespaceAuthority: async () => ({
+        sourceRoomId: SOURCE_ROOM,
+        sourceNamespaceId: CONTENT,
+        policy: memoryPolicy(),
+        facts: facts(),
+      }),
+      prepareExecution: async () => prepared as never,
+      startProtectedTaskRun: async () => ({ status: "started" }),
+      publishResult: async () => {},
+    });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(build(occurrence())).rejects.toThrow(
+      "execution preparation is invalid",
+    );
+  }
 });
 
 test("commits the wide primary write target outside the stable request key", async () => {
@@ -828,10 +879,15 @@ test("keeps object access revision independent from Namespace access revision", 
     ...value,
     task: Object.freeze({ ...value.task, cryptoAccessRevision: 3 }),
   });
-  // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-  await expect(builder()(substituted)).rejects.toThrow(
-    "definition coordinates are invalid",
-  );
+  const refreshed = await builder()(substituted);
+  expect(refreshed.stableIdentity.contentAccessRevision).toBe(3);
+  expect(refreshed.initialRecord.expectedNamespaceAccessRevision).toBe(3);
+  expect(refreshed.initialRecord.idempotencyKey).not.toBe(plan.initialRecord.idempotencyKey);
+  for (const cryptoAccessRevision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(builder()({ ...value, task: { ...value.task, cryptoAccessRevision } }))
+      .rejects.toThrow("definition coordinates are invalid");
+  }
 });
 
 test("includes the exact Scope origin and distinct output Namespaces", async () => {
@@ -1289,4 +1345,36 @@ test("binds parked wide bring-back only when it changes the primary write Namesp
     ...noCallingRoomCurrent,
     wideBringBack: true,
   })).toBe(true);
+});
+
+
+test("checkpoint routing retains its old receipt while a genuine verified mapped descendant uses the fresh head", async () => {
+  const fixture = await mappedHeadFixture();
+  try {
+    await refreshHumanMappedTaskContentAccessHead({ ...fixture.input, withMappedHead: async held => {
+      const input = replanFixture(held);
+      const identity = input.stableIdentity;
+      const stableRoutingDigest = taskRuntimeStableRoutingDigest({ ...identity, contentAccessRevision: 0, widePrimaryWriteNamespaceId: null });
+      // This comparator consumes the already-proved closed checkpoint's routing fields only.
+      const expected = { occurrence: { task: { callingRoomId: null }, run: { id: identity.taskRunId } },
+        priorJob: { reference: { resultObjectId: "exact-result" } }, stableRoutingDigest,
+      } as unknown as Parameters<typeof createParkedTaskRuntimeRoutingValidator>[0]["expected"];
+      const output = { taskRunId: identity.taskRunId, bindingId: `task-run-output:${identity.taskRunId}`,
+        resultOperationId: `task-run-result:${identity.taskRunId}`, resultObjectId: "exact-result",
+        destinationRoomId: null, destinationNamespaceId: null, deliveryMode: "none",
+      } as Parameters<typeof createParkedTaskRuntimeRoutingValidator>[0]["output"];
+      const facts = { ...identity, startedAt: new Date(identity.startedAt),
+        requiredNamespaceFingerprint: Uint8Array.from(input.lifecycle.requiredNamespaceFingerprint), wideBringBack: false };
+      expect(createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: null })(facts)).toBe(false);
+      const validate = createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: null, accessLineage: input.lineage });
+      expect(validate(facts)).toBe(true);
+      expect(validate({ ...facts, contentAccessRevision: 2 })).toBe(false);
+      expect(validate({ ...facts, targetRoomId: "other-room" })).toBe(false);
+      expect(validate({ ...facts, taskRunId: "other-run" })).toBe(false);
+      expect(validate({ ...facts, requiredNamespaceFingerprint: new Uint8Array(32) })).toBe(false);
+      expect(createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: null,
+        accessLineage: structuredClone(input.lineage) })(facts)).toBe(false);
+      expect("stableRoutingDigest" in expected ? expected.stableRoutingDigest : null).toEqual(stableRoutingDigest);
+    } });
+  } finally { fixture.cleanup(); }
 });

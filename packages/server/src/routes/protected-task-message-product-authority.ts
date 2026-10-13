@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import {
   and,
   encryptionTransitionPolicy,
@@ -46,6 +47,7 @@ export type ProtectedTaskMessageProductAuthority = Readonly<{
   resumeAcceptanceId?: string;
   resumeContinuationFingerprint?: string;
   policyRevision: number;
+  definitionRepresentation: "dual" | "protected";
   representation: "dual" | "protected";
   authorizationExpiresAt: number;
   signal: AbortSignal;
@@ -149,6 +151,8 @@ export function createProtectedTaskMessageProductGuard(
     expected.sessionOwnerId, expected.roomId, expected.namespaceId,
     expected.contentNamespaceId,
     expected.agentId, expected.requestorId].some((value) => !UUID.test(value))
+    || !["dual", "protected"].includes(expected.representation)
+    || !["dual", "protected"].includes(expected.definitionRepresentation)
     || expected.graphThreadId.length === 0
     || !Number.isSafeInteger(expected.contentRevision)
     || expected.contentRevision < 1
@@ -190,6 +194,11 @@ export function createProtectedTaskMessageProductGuard(
         || input.revision !== 0
         || !exactAppend(input, asserted)) reject();
 
+      const [policy] = await tx.select().from(encryptionTransitionPolicy)
+        .where(eq(encryptionTransitionPolicy.id, "server"))
+        .limit(1).for("share");
+      if (!policy) reject();
+
       const [task] = await tx.select().from(tasks)
         .where(eq(tasks.id, asserted.taskId)).limit(1).for("share");
       if (!task) reject();
@@ -207,16 +216,12 @@ export function createProtectedTaskMessageProductGuard(
       const [room] = await tx.select().from(rooms)
         .where(eq(rooms.id, asserted.roomId)).limit(1).for("share");
       if (!room) reject();
-      const [policy] = await tx.select().from(encryptionTransitionPolicy)
-        .where(eq(encryptionTransitionPolicy.id, "server"))
-        .limit(1).for("share");
-      if (!policy) reject();
 
       if (task.ownerId !== asserted.taskOwnerId
         || task.requestorId !== asserted.requestorId
         || task.agentId !== asserted.agentId
         || task.targetRoomId !== asserted.roomId
-        || task.contentRepresentation !== asserted.representation
+        || task.contentRepresentation !== asserted.definitionRepresentation
         || task.contentNamespaceId !== asserted.contentNamespaceId
         || task.contentRevision !== asserted.contentRevision
         || task.cryptoRequiredNamespaceFingerprint?.length !== 32
@@ -246,6 +251,7 @@ export function createProtectedTaskMessageProductGuard(
         || session.threadId !== asserted.graphThreadId
         || session.roomId !== asserted.roomId
         || room.namespaceId !== asserted.namespaceId
+        || !protectedTaskDefinitionSupportsPolicy(task.contentRepresentation, policy.mode)
         || policy.revision !== asserted.policyRevision
         || policy.mode !== (asserted.representation === "dual"
           ? "shadow_encryption"

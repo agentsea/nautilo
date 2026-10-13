@@ -84,13 +84,118 @@ describe("task tool", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  test("Agent create obeys the injected non-Plain publication fence", async () => {
+  test("non-Plain native create fails closed when protected publication is unavailable", async () => {
     const canUseLegacyTaskContent = async () => false;
     stubRuntime({ canUseLegacyTaskContent });
     expect(await dispatchTaskCommand({
       command: "create", prompt: "must be protected",
     }, CTX)).toBe("Cannot create task: protected Task creation is not yet available from this Agent tool.");
     expect(capturedCreate).toBeNull();
+  });
+
+  test("non-Plain native create uses only the protected publication callback", async () => {
+    let ordinaryCalls = 0;
+    let protectedInput: TaskToolCreateInput | null = null;
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createTask: async () => {
+        ordinaryCalls += 1;
+        return { taskId: "ordinary", status: "pending" };
+      },
+      createProtectedTask: async (input) => {
+        protectedInput = input;
+        return { taskId: "protected", status: "pending" };
+      },
+    });
+
+    const created = JSON.parse(await dispatchTaskCommand({
+      command: "create",
+      prompt: "keep this private",
+    }, CTX)) as { taskId: string; status: string };
+
+    expect(created).toMatchObject({ taskId: "protected", status: "pending" });
+    expect(protectedInput).toMatchObject({
+      ownerId: OWNER_ID,
+      requestorId: OWNER_ID,
+      agentId: AGENT_ID,
+      callingRoomId: ROOM_ID,
+      prompt: "keep this private",
+    });
+    expect(ordinaryCalls).toBe(0);
+    expect(capturedCreate).toBeNull();
+  });
+
+  test("non-Plain external create is rejected before any creation callback", async () => {
+    let ordinaryCalls = 0;
+    let protectedCalls = 0;
+    let harnessCalls = 0;
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createTask: async () => {
+        ordinaryCalls += 1;
+        return { taskId: "ordinary", status: "pending" };
+      },
+      createProtectedTask: async () => {
+        protectedCalls += 1;
+        return { taskId: "protected", status: "pending" };
+      },
+      createHarnessTask: async () => {
+        harnessCalls += 1;
+        return { taskId: "harness", status: "pending", execution: "codex" };
+      },
+    });
+
+    expect(await dispatchTaskCommand({
+      command: "create",
+      prompt: "external",
+      harness: "codex",
+      collaboration_mode: "work",
+    }, CTX)).toBe("Cannot create task: protected Task creation is not yet available from this Agent tool.");
+    expect({ ordinaryCalls, protectedCalls, harnessCalls }).toEqual({
+      ordinaryCalls: 0,
+      protectedCalls: 0,
+      harnessCalls: 0,
+    });
+  });
+
+  test("Plain create preserves native and external callback selection", async () => {
+    let ordinaryCalls = 0;
+    let protectedCalls = 0;
+    let harnessCalls = 0;
+    stubRuntime({
+      canUseLegacyTaskContent: async () => true,
+      createTask: async () => {
+        ordinaryCalls += 1;
+        return { taskId: "ordinary", status: "pending" };
+      },
+      createProtectedTask: async () => {
+        protectedCalls += 1;
+        return { taskId: "protected", status: "pending" };
+      },
+      createHarnessTask: async () => {
+        harnessCalls += 1;
+        return { taskId: "harness", status: "pending", execution: "codex" };
+      },
+    });
+
+    const native = JSON.parse(await dispatchTaskCommand({
+      command: "create",
+      prompt: "native",
+    }, CTX)) as { taskId: string };
+    const external = JSON.parse(await dispatchTaskCommand({
+      command: "create",
+      prompt: "external",
+      harness: "codex",
+      collaboration_mode: "work",
+    }, CTX)) as { taskId: string };
+
+    expect(native.taskId).toBe("ordinary");
+    expect(external.taskId).toBe("harness");
+    expect({ ordinaryCalls, protectedCalls, harnessCalls }).toEqual({
+      ordinaryCalls: 1,
+      protectedCalls: 0,
+      harnessCalls: 1,
+    });
   });
 
   test("non-Plain policy fences ordinary legacy Agent read, list, and update", async () => {

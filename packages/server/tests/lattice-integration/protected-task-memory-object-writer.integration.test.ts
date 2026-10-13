@@ -1,11 +1,33 @@
 import { assertFixtureDbMutationAllowed } from "@nautilo/db/testing";
+import { installForegroundProjectionProductRollback } from "./foreground-projection-product-rollback-fixture";
+import {
+  installConnectedDelegatedLocalExecution,
+  installSyntheticPersonalOpenRouter,
+  type ConnectedDelegatedLocalExecutionFixture,
+} from "./protected-task-caller-local-execution-fixture";
 import { createHash, randomUUID } from "node:crypto";
 
 import { beforeEach, describe, expect, test } from "bun:test";
-import { resolveModelRole, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+import { HumanMessage } from "@langchain/core/messages";
+import { Annotation, Command, END, START, StateGraph } from "@langchain/langgraph";
+import { resolveModelRole, protectedMemoryAuthorityFromEnvelope, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
+  lockAtomicProjectionDestinationAuthority, fingerprintProjectionAudience,
+  protectedTaskInterruptCoordinates, createProtectedTaskAdditionalAuthorityResumeMapV1,
+  invokeChatModelWithFallback,
   type ProtectedTaskMemoryAccessHandoff,
 } from "@nautilo/agent";
+import { createLiveShadowCheckpointSaver } from
+  "../../../runtime/src/conversation/live-shadow-checkpoint-saver";
+import { disposeProtectedCheckpointSaver } from
+  "../../../runtime/src/conversation/protected-checkpoint-saver-disposal";
+import { sealProtectedTaskWakeCheckpointManifest } from
+  "../../../runtime/src/tasks/protected-task-wake-checkpoint-manifest";
+import { getCurrentProtectedTaskWakeExecutionCustody } from
+  "../../../runtime/src/tasks/protected-task-wake-foreground-context";
+import { protectedTaskWakeParked, isProtectedTaskWakeParked } from
+  "../../../runtime/src/tasks/protected-task-wake-execution-candidate";
 import {
+  PROTECTED_TASK_CANCELLED_RESULT,
   actors,
   agentCryptoRuntimeChallenges,
   agentCryptoRuntimeConfigObjects,
@@ -21,6 +43,11 @@ import {
   createPostgresJsBridgeConnection,
   cryptoDomains,
   cryptoObjects,
+  foregroundMemoryCryptoPublicationReceipts,
+  discoverTaskContentBackfill,
+  claimTaskContentBackfill,
+  releaseTaskContentBackfillLease,
+  discoverParkedProtectedTaskCheckpointContinuation,
   discoverParkedProtectedTaskAdditionalAuthority,
   domainKeyEnvelopeAcknowledgements,
   domainKeyHeads,
@@ -59,19 +86,28 @@ import {
   objectCryptoAccessHeads,
   objectCryptoAccessManifests,
   objectCryptoNamespaceEnvelopes,
+  PROTECTED_TASK_RUN_ABANDONMENT_RECEIPT_METADATA_KEY,
+  PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
+  protectedTaskContinuationReceipts,
+  protectedTaskExecutionSegmentReceipts,
   protectedTaskRunOutputBindings,
+  protectedTaskRunWakeJobId,
+  protectedTaskRunWakeOperationId,
   protectedTaskSemanticAuthorityRequirementsDigest,
   resolveAppDatabaseConnectionString,
   roomMembers,
   rooms,
+  sessionMessageCryptoRevisions,
   sessionMessages,
   sessions,
   serverAdmission,
   sql,
   taskDefinitionCryptoRevisions,
   taskCancellationCryptoStagingReceipts,
+  taskRunMessageAssociations,
   taskRunResultCryptoRevisions,
   taskRuns,
+  taskTerminalMessageCryptoStagingReceipts,
   tasks,
   transitionTaskLifecycleTerminal,
   users,
@@ -86,6 +122,10 @@ import {
   settleProtectedTaskJobTerminalWithDatabase,
   updateJobStatusWithDatabase,
 } from "../../../db/src/queries/jobs.ts";
+import { withCurrentTaskContentBackfillDevice } from "../../src/routes/task-content-backfill-authority";
+import { readTaskContentBackfillSource } from "../../src/routes/task-content-backfill-source";
+import { createHumanProductTransactionContext } from "../../src/routes/human-message-product-store";
+import { createTaskContentBackfillPublication } from "../../src/routes/task-content-backfill-publication";
 import { createProtectedTaskNativeResultPublication } from
   "../../src/routes/protected-task-native-result-publication";
 import {
@@ -117,6 +157,7 @@ import {
   prepareDomainKeyRecipientAuthorization,
   prepareDomainKeyRecipientEnvelope,
   prepareDomainNamespaceBundle,
+  prepareHumanExistingTaskRepresentationPublicationRequestV1,
   prepareHumanObjectAccessManifestGenesisSet,
   TaskRuntimeRecipientRegistry,
   unixTimestamp,
@@ -147,6 +188,7 @@ import {
   createDormantTaskContentShadowRepository,
   createPreparedHumanTaskContentCryptoRevisionV1,
   deriveMemoryCryptoObjectIdV1,
+  deriveLiveShadowMessageCryptoObjectIdV1,
   deriveTaskContentCryptoObjectIdV1,
   encodeMemoryPayloadV1,
   encodeTaskPayloadV1,
@@ -155,7 +197,9 @@ import {
   prepareTaskRuntimeAgentObject,
   TASK_CONTENT_RECONCILE_MAX_ATTEMPTS,
   taskContentObjectTypeV1,
+  type ForegroundMemoryRepairSelection,
   type ProtectedAgentMemoryRepository,
+  type ProtectedAgentMemoryProjectionPort,
   type ProtectedMemoryAuthority,
   type TaskRuntimeAgentObjectNamespaceMaterial,
 } from "@nautilo/lattice-bridge";
@@ -163,6 +207,7 @@ import {
   PostgresDeviceAdmissionRepository,
   PostgresDomainKeyAuthorityRepository,
   PostgresHumanDeviceGroupRepository,
+  PostgresHumanDeviceSignerHistory,
   PostgresLatticeStorage,
   PostgresTaskContentProductStore,
   bindDurableTaskContentRepositoryV1,
@@ -174,12 +219,14 @@ import {
   verifyCryptoPostgresHandle,
   withTaskContentNamespaceAuthority,
   withNativeProtectedTaskDefinitionV1,
+  withNativeProtectedTaskRunResultMessageSourceV1,
   type ConversationProductCanonicalTransactionRunner,
   type CryptoPostgresHandle,
   type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
+  JobExecutor,
   ProtectedTaskJobReferenceV1,
   ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
@@ -188,6 +235,9 @@ import {
   JobManager,
   TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   createTaskRuntimeDomainMemoryCryptoSession,
+  getCurrentLiveShadowTurnContext,
+  pauseTask,
+  unpauseTask,
   withNativeProtectedTaskCheckpointManifest,
 } from "@nautilo/runtime";
 import {
@@ -195,6 +245,7 @@ import {
   findActorByOwnerId,
 } from "@nautilo/trust";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
+import type { LocalExecutionDelegation } from "@nautilo/types";
 import {
   withTaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionEvidenceInputV1,
@@ -260,6 +311,26 @@ import { createProtectedTaskCancellationPublicationRecovery } from
   "../../src/routes/protected-task-cancellation-publication-recovery.ts";
 import { createProtectedTaskCancellationSettlement } from
   "../../src/routes/protected-task-cancellation-settlement.ts";
+import { createProtectedTaskTerminalMessageComposition } from
+  "../../src/routes/protected-task-terminal-message-composition.ts";
+import { createProtectedTaskOutputReadComposition } from
+  "../../src/routes/protected-task-output-read-composition.ts";
+import { createProtectedTaskOutputReadClaim } from
+  "../../src/routes/protected-task-output-read-claim.ts";
+import { createProtectedTaskRunResultMessagePublication } from
+  "../../src/routes/protected-task-run-result-message-publication.ts";
+import { createProtectedTaskRunResultMessageRecovery } from
+  "../../src/routes/protected-task-run-result-message-recovery.ts";
+import { acceptedTaskRuntimeRecord, destroyAcceptedTaskRuntimeRecord } from
+  "../../src/routes/task-runtime-current-authority.ts";
+import { createProtectedTaskTerminalMessageAuthorityPort } from
+  "../../src/routes/protected-task-terminal-message-authority.ts";
+import { createProtectedTaskTerminalMessageClaim } from
+  "../../src/routes/protected-task-terminal-message-claim.ts";
+import { createProtectedTaskTerminalMessagePreparation } from
+  "../../src/routes/protected-task-terminal-message-preparation.ts";
+import { createProtectedTaskTerminalMessagePublication } from
+  "../../src/routes/protected-task-terminal-message-publication.ts";
 
 const ENABLE_ENV = "NAUTILO_PROTECTED_TASK_MEMORY_WRITER_INTEGRATION";
 // The caller must first verify ownership of the disposable clone, then bind
@@ -270,6 +341,7 @@ const FIXED_NOW = Date.parse("2042-07-08T09:00:00.000Z");
 let NOW = FIXED_NOW;
 let EXPIRES_AT = FIXED_NOW + 60_000;
 const SERVER_SCOPE = "https://task-memory.integration.test";
+const CALLER_LOCAL_MODEL_ID = "openrouter:moonshotai/kimi-k3";
 
 class CrashAfterTaskResultCryptoStore extends PostgresTaskContentProductStore {
   override async compareAndSwapCryptoMapping(
@@ -645,14 +717,14 @@ async function waitForBlockedContender(
 }
 
 async function createBaseFixture(
-  options: Readonly<{ connectedExecution?: boolean }> = {},
+  options: Readonly<{ connectedExecution?: boolean; cryptoNow?: () => number }> = {},
 ) {
   const admin = createDirectDb(5);
   const productDb = getSharedDirectDb();
   const cryptoDb = getSharedDirectCryptoDb();
   const restricted = createPostgresJsBridgeConnection(cryptoDb);
   const cryptoHandle = await verifyCryptoPostgresHandle(restricted);
-  const crypto = new LatticeCrypto(undefined, { now: () => NOW });
+  const crypto = new LatticeCrypto(undefined, { now: options.cryptoNow ?? (() => NOW) });
   const userId = randomUUID();
   const humanActorId = randomUUID();
   const agentActorId = randomUUID();
@@ -681,6 +753,9 @@ async function createBaseFixture(
   const taskIds = new Set<string>();
   const jobIds = new Set<string>();
   const scopeIds = new Set<string>();
+  const fixtureRoomIds = new Set([roomId, seedRoomId]);
+  const fixtureNamespaceIds = new Set([namespaceValue, seedNamespaceValue]);
+  const additionalNamespaceKeys = new Set<Uint8Array>();
   const sessionThreadIds = new Set<string>();
 
   const [originalPolicy] = await admin.select().from(encryptionTransitionPolicy)
@@ -710,6 +785,11 @@ async function createBaseFixture(
       ...attachedMemories.map(row => row.memoryId),
     ])];
     const createdTaskIds = [...taskIds];
+    if (createdTaskIds.length > 0) {
+      const createdScopes = await admin.select({ scopeId: tasks.scopeId }).from(tasks)
+        .where(inArray(tasks.id, createdTaskIds));
+      for (const row of createdScopes) if (row.scopeId !== null) scopeIds.add(row.scopeId);
+    }
     const taskJobRows = createdTaskIds.length === 0 ? [] : await admin.select({
       jobId: taskRuns.jobId,
     }).from(taskRuns).where(inArray(taskRuns.taskId, createdTaskIds));
@@ -719,23 +799,21 @@ async function createBaseFixture(
     ])];
     const createdRequestIds = [...requestIds];
     try {
-      if (sessionThreadIds.size > 0) {
-        const createdSessions = await admin.select({ id: sessions.id })
-          .from(sessions).where(inArray(
-            sessions.threadId,
-            [...sessionThreadIds],
-          ));
-        const createdSessionIds = createdSessions.map(row => row.id);
-        if (createdSessionIds.length > 0) {
-          await admin.delete(sessionMessages).where(inArray(
-            sessionMessages.sessionId,
-            createdSessionIds,
-          ));
-          await admin.delete(sessions).where(inArray(
-            sessions.id,
-            createdSessionIds,
-          ));
-        }
+      const createdSessions = await admin.select({ id: sessions.id })
+        .from(sessions).where(or(
+          sessionThreadIds.size === 0 ? undefined : inArray(sessions.threadId, [...sessionThreadIds]),
+          inArray(sessions.roomId, [...fixtureRoomIds]),
+        ));
+      const createdSessionIds = createdSessions.map(row => row.id);
+      if (createdSessionIds.length > 0) {
+        await admin.delete(sessionMessages).where(inArray(
+          sessionMessages.sessionId,
+          createdSessionIds,
+        ));
+        await admin.delete(sessions).where(inArray(
+          sessions.id,
+          createdSessionIds,
+        ));
       }
       if (createdRequestIds.length > 0 || writtenObjectIds.length > 0) {
         await admin.delete(taskCancellationCryptoStagingReceipts).where(or(
@@ -792,11 +870,11 @@ async function createBaseFixture(
       }
       await admin.delete(namespaceDomainKeyHeads).where(inArray(
         namespaceDomainKeyHeads.namespaceId,
-        [namespaceValue, seedNamespaceValue],
+        [...fixtureNamespaceIds],
       ));
       await admin.delete(namespaceDomainKeyBindings).where(inArray(
         namespaceDomainKeyBindings.namespaceId,
-        [namespaceValue, seedNamespaceValue],
+        [...fixtureNamespaceIds],
       ));
       await admin.delete(domainKeyEnvelopeAcknowledgements).where(
         eq(domainKeyEnvelopeAcknowledgements.recipientDeviceId, deviceId),
@@ -871,21 +949,60 @@ async function createBaseFixture(
         ));
       }
       if (writtenObjectIds.length > 0) {
-        await admin.delete(cryptoObjects).where(
-          inArray(cryptoObjects.objectId, writtenObjectIds),
-        );
+        // The FK cascade executes as the parent table owner, whose SELECT/DELETE
+        // privileges on the append-only staging table is deliberately revoked.
+        // Keep this operator-only cleanup grant invisible outside this
+        // transaction and restore it before committing exact fixture deletion.
+        await admin.transaction(async tx => {
+          await tx.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
+            .where(inArray(cryptoObjects.objectId, writtenObjectIds)).for("update");
+          const children = await tx.select({ requestId: taskCancellationCryptoStagingReceipts.requestId })
+            .from(taskCancellationCryptoStagingReceipts)
+            .where(inArray(taskCancellationCryptoStagingReceipts.cryptoObjectId, writtenObjectIds)).limit(1);
+          if (children.length !== 0) throw new Error("Fixture staging cleanup is incomplete");
+          const [original] = await tx.execute<{ parent_owner: string; allowed: boolean; can_select: boolean }>(sql`
+            select pg_get_userbyid(relowner) as parent_owner,
+              has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+              has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+            from pg_class where oid = 'public.crypto_objects'::regclass
+          `);
+          if (original?.parent_owner !== "nautilo") throw new Error("Fixture crypto owner is unexpected");
+          if (!original.allowed) {
+            await tx.execute(sql`grant delete on public.task_cancellation_crypto_staging_receipts to nautilo`);
+          }
+          if (!original.can_select) {
+            await tx.execute(sql`grant select on public.task_cancellation_crypto_staging_receipts to nautilo`);
+          }
+          await tx.delete(cryptoObjects).where(inArray(cryptoObjects.objectId, writtenObjectIds));
+          if (!original.allowed) {
+            await tx.execute(sql`revoke delete on public.task_cancellation_crypto_staging_receipts from nautilo`);
+          }
+          if (!original.can_select) {
+            await tx.execute(sql`revoke select on public.task_cancellation_crypto_staging_receipts from nautilo`);
+          }
+          const [restored] = await tx.execute<{ allowed: boolean; can_select: boolean }>(sql`
+            select has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+              has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+          `);
+          if (restored?.allowed !== original.allowed || restored.can_select !== original.can_select) {
+            throw new Error("Fixture staging privileges were not restored");
+          }
+          const remaining = await tx.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
+            .where(inArray(cryptoObjects.objectId, writtenObjectIds)).limit(1);
+          if (remaining.length !== 0) throw new Error("Fixture crypto cleanup is incomplete");
+        });
       }
       await admin.delete(roomMembers).where(inArray(
         roomMembers.roomId,
-        [roomId, seedRoomId],
+        [...fixtureRoomIds],
       ));
       await admin.delete(rooms).where(inArray(
         rooms.id,
-        [roomId, seedRoomId],
+        [...fixtureRoomIds],
       ));
       await admin.delete(namespaces).where(inArray(
         namespaces.id,
-        [namespaceValue, seedNamespaceValue],
+        [...fixtureNamespaceIds],
       ));
       await admin.delete(groupMembers).where(eq(groupMembers.userId, userId));
       await admin.delete(actors).where(eq(actors.ownerId, userId));
@@ -904,6 +1021,7 @@ async function createBaseFixture(
       } finally {
         namespaceKey?.fill(0);
         seedNamespaceKey?.fill(0);
+        for (const key of additionalNamespaceKeys) key.fill(0);
         domainKey?.fill(0);
         runtime?.runtime.key.fill(0);
         signing.privateKey.fill(0);
@@ -1480,6 +1598,13 @@ async function createBaseFixture(
       jobIds,
       scopeIds,
       sessionThreadIds,
+      fixtureRoomIds,
+      fixtureNamespaceIds,
+      publishAdditionalNamespaceBundle: async (roomId: string, namespaceId: string) => {
+        const value = await publishNamespaceBundle(roomId, namespaceId);
+        additionalNamespaceKeys.add(value.key);
+        return value;
+      },
       cleanup,
     };
   } catch (error) {
@@ -2077,6 +2202,8 @@ async function createScenario(
     return Object.freeze({
       taskId,
       taskRunId,
+      jobId,
+      memoryId,
       memoryObjectId,
       requestId,
       domainSecret: scenarioDomainSecret,
@@ -2211,13 +2338,200 @@ async function objectRowCounts(
   });
 }
 
-async function createConnectedProtectedTask(
-  base: BaseFixture,
-  options: Readonly<{ noDelivery?: boolean }> = {},
-) {
+async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
+  repairOptions: Readonly<{ expireAfterStage?: boolean; now?: () => number; afterStage?: () => void }> = {},
+): Promise<string> {
+  const discovery = await discoverTaskContentBackfill(base.admin, {
+    humanActorId: base.humanActorId, deviceId: base.deviceId, now: new Date(NOW),
+    pageLimit: 64, resumeAt: new Date(NOW + 60_000),
+  });
+  if (discovery.status !== "candidate") throw new Error(`Missing historical candidate: ${discovery.status}`);
+  expect(discovery.candidate.taskId).toBe(taskId);
+  const claimed = await claimTaskContentBackfill(base.admin, {
+    humanActorId: base.humanActorId, requesterUserId: base.userId,
+    deviceId: base.deviceId, claimId: randomUUID(), policyRevision: base.policyRevision,
+    candidate: discovery.candidate, now: new Date(NOW), expiresAt: new Date(NOW + 30_000),
+  });
+  if (claimed.status !== "claimed") throw new Error(`Historical claim failed: ${claimed.status}`);
+  const subject = Object.freeze({ userId: base.userId, humanActorId: base.humanActorId,
+    admission: Object.freeze({ ...base.currentDevice, headDigest: base.currentDevice.headDigest.slice(),
+      expiresAt: NOW + 20_000 }),
+  });
+  expect(await withCurrentTaskContentBackfillDevice({ restricted: base.restricted,
+    crypto: base.crypto, subject, now: () => NOW,
+    use: () => Promise.resolve(true),
+  })).toBe(true);
+  const context = await createHumanProductTransactionContext(base.userId, base.productDb);
+  await context.canonicalRunner.transaction(async tx => {
+    const historicalSource = await readTaskContentBackfillSource(tx, claimed.claim);
+    expect(historicalSource?.classification.status).toBe("supported");
+  }, { isolationLevel: "read committed" });
+  const stageConnection: PostgresJsBridgeConnection = {
+    query: base.restricted.query.bind(base.restricted),
+    transaction: async (use, options) => {
+      let insertedReceipt = false;
+      const value = await base.restricted.transaction(async tx => use({
+        query: async <Row extends PostgresJsBridgeRow = PostgresJsBridgeRow>(statement: string, parameters?: readonly PostgresJsBridgeScalar[]) => {
+          const rows = await tx.query<Row>(statement, parameters);
+          if (statement.replaceAll('"', "").toLowerCase()
+            .includes("insert into task_historical_content_crypto_staging_receipts")) insertedReceipt = true;
+          return rows;
+        },
+      }), options);
+      if (repairOptions.expireAfterStage === true && insertedReceipt) repairOptions.afterStage?.();
+      return value;
+    },
+    transactionOnce: async (use, options) => stageConnection.transaction(use, options),
+  };
+  const publication = createTaskContentBackfillPublication({
+    db: base.productDb, restricted: stageConnection, crypto: base.crypto,
+    serverScope: SERVER_SCOPE, now: repairOptions.now ?? (() => NOW),
+    owner: bindEncryptionDataOperationOwner({ policy: {
+      resolve: async () => ({ policy: { mode: "shadow_encryption", shadowBehavior: "strict" },
+        revalidationToken: base.policyRevision }),
+      revalidate: async () => {},
+    } }),
+  });
+  const source = await publication.source(subject, claimed.claim.claimId);
+  if (source?.status !== "source" || !("plan" in source)) throw new Error("Historical source was unavailable");
+  const plan = source.plan;
+  const renewedSubject = Object.freeze({ ...subject,
+    admission: Object.freeze({ ...subject.admission, expiresAt: NOW + 60_000 }),
+  });
+  const renewedSource = await publication.source(renewedSubject, claimed.claim.claimId);
+  if (renewedSource?.status !== "source") throw new Error("Renewed device source was unavailable");
+  expect(renewedSource.plan.expiresAt).toBeGreaterThan(plan.expiresAt);
+  expect(renewedSource.plan.planDigestBase64url).toBe(plan.planDigestBase64url);
+  base.objectIds.add(plan.objectId);
+  const plaintext = Buffer.from(source.payloadBytesBase64url, "base64url");
+  const encrypted = encryptObjectPayload(base.crypto, {
+    objectId: objectId(plan.objectId), keyClass: "ai", objectType: "nautilo-task-definition-v1",
+    createdAt: unixTimestamp(NOW),
+  }, plaintext);
+  plaintext.fill(0);
+  const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
+  const envelopeBytes = encodeNamespaceObjectEnvelopeV2(wrapObjectDekForNamespace(
+    base.crypto, base.namespace.key, {
+      objectId: objectId(plan.objectId), namespaceId: namespaceId(plan.namespaceId),
+      keyClass: "ai", keyGeneration: namespaceGeneration(plan.keyGeneration),
+      bindingRevisionAtWrap: accessRevision(plan.expectedAccessRevision),
+    }, encrypted.dek,
+  ));
+  encrypted.dek.fill(0);
+  const access = prepareHumanObjectAccessManifestGenesisSet(base.crypto, {
+    objectId: plan.objectId, payloadHash: base.crypto.hash(payloadBytes), envelopeBytes: [envelopeBytes],
+    sourceAuthorized: true, targetAuthorized: true, subjectHumanId: base.humanActorId,
+    committerDeviceId: base.deviceId, hostAuthorizationRevision: plan.hostAuthorizationRevision,
+    committerSigningPublicKey: base.currentDevice.signingPublicKey,
+    committerSigningPrivateKey: base.signingPrivateKey,
+  });
+  const signed = prepareHumanExistingTaskRepresentationPublicationRequestV1(base.crypto, {
+    kind: "definition", entityId: taskId, taskId, claimId: plan.claimId, operationId: plan.operationId,
+    cryptoObjectId: plan.objectId, sourceDigest: Buffer.from(plan.sourceDigestBase64url, "base64url"),
+    sourcePayloadHash: Buffer.from(plan.sourcePayloadHashBase64url, "base64url"),
+    planDigest: Buffer.from(plan.planDigestBase64url, "base64url"),
+    operationalFieldsDigest: Buffer.from(plan.operationalFieldsDigestBase64url, "base64url"),
+    expectedContentRevision: 0, nextContentRevision: 1, expectedCryptoAccessRevision: 0,
+    resultCryptoAccessRevision: 0, subjectHumanId: plan.requesterHumanId,
+    committerDeviceId: plan.deviceId, hostAuthorizationRevision: plan.hostAuthorizationRevision,
+    namespaceId: plan.namespaceId, domainId: plan.domainId,
+    expectedNamespaceAccessRevision: plan.expectedAccessRevision,
+    expectedPolicyRevision: plan.expectedPolicyRevision,
+    bindingHash: Buffer.from(plan.bindingHashBase64url, "base64url"), keyGeneration: plan.keyGeneration,
+    payloadHash: base.crypto.hash(payloadBytes), manifestHash: base.crypto.hash(access.manifestBytes),
+    envelopeHash: base.crypto.hash(envelopeBytes), issuedAt: NOW, deadlineAt: plan.expiresAt,
+    committerSigningPublicKey: base.currentDevice.signingPublicKey,
+    committerSigningPrivateKey: base.signingPrivateKey,
+  });
+  const upload = { payloadBytes, manifestBytes: access.manifestBytes,
+    envelopeBytes, signedPublicationRequestBytes: signed.bytes };
+  if (repairOptions.expireAfterStage === true) {
+    // Expiry after independent crypto commit must roll back only product
+    // mapping. A fresh admitted device session can reuse the durable copy.
+    let failure: unknown;
+    try { await publication.publish(subject, plan.claimId, upload); }
+    catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(repairOptions.now?.()).toBe(NOW + 25_000);
+    expect(await base.admin.select({ representation: tasks.contentRepresentation,
+      revision: tasks.contentRevision }).from(tasks).where(eq(tasks.id, taskId)))
+      .toEqual([{ representation: "ordinary", revision: 0 }]);
+    expect(await base.admin.select({ taskId: taskDefinitionCryptoRevisions.taskId })
+      .from(taskDefinitionCryptoRevisions).where(eq(taskDefinitionCryptoRevisions.taskId, taskId)))
+      .toHaveLength(0);
+    expect(await base.admin.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
+      .where(eq(cryptoObjects.objectId, plan.objectId))).toHaveLength(1);
+    expect(await publication.recover(renewedSubject, plan.claimId)).toBe(true);
+  } else {
+    expect(await publication.publish(renewedSubject, plan.claimId, upload)).toBe(true);
+  }
+  return plan.objectId;
+}
+
+async function createConnectedHistoricalTask(base: BaseFixture) {
   const taskId = randomUUID();
   const taskRunId = randomUUID();
   const graphThreadId = `subagent:task:${taskId}:${taskRunId}`;
+  const requestedModelId = resolveModelRole("chat");
+  base.taskIds.add(taskId);
+  base.requestIds.add(`task-run-authorization:${taskRunId}`);
+  base.requestIds.add(`task-run-delivery-result-authorization:${taskRunId}`);
+  base.sessionThreadIds.add(graphThreadId);
+  await base.admin.insert(tasks).values({
+    id: taskId, ownerId: base.userId, requestorId: base.userId, agentId: base.productAgentId,
+    prompt: "Complete the connected protected Task", expectedOutput: null,
+    preset: "task", scheduleKind: "now", callingRoomId: base.roomId,
+    resultDelivery: "wake", targetChat: "last_in_namespace", targetRoomId: base.roomId,
+    targetUserIds: [base.userId], useScope: false, toolsMode: "none",
+    fundingMode: "legacy_server", requestedModelId, status: "pending", metadata: {},
+  });
+  const inputObjectId = await repairHistoricalTaskDefinition(base, taskId);
+  expect(inputObjectId).toMatch(/^task-historical:v1:[0-9a-f]{64}$/u);
+  const [mapped] = await base.admin.select({ objectId: tasks.cryptoObjectId,
+    revision: tasks.contentRevision, representation: tasks.contentRepresentation,
+    prompt: tasks.prompt, status: tasks.status }).from(tasks).where(eq(tasks.id, taskId));
+  expect(mapped).toEqual({ objectId: inputObjectId, revision: 1, representation: "dual",
+    prompt: "Complete the connected protected Task", status: "pending" });
+  const startedAt = new Date(NOW);
+  await base.admin.transaction(async tx => {
+    await tx.update(tasks).set({ status: "awaiting" }).where(eq(tasks.id, taskId));
+    await tx.insert(taskRuns).values({ id: taskRunId, taskId, graphThreadId, status: "awaiting", startedAt });
+  });
+  return Object.freeze({ taskId, taskRunId, graphThreadId, startedAt, inputObjectId,
+    resultObjectId: deriveTaskContentCryptoObjectIdV1({ kind: "run_result", taskId, taskRunId, contentRevision: 1 }),
+    requestedModelId });
+}
+
+async function createConnectedProtectedTask(
+  base: BaseFixture,
+  options: Readonly<{
+    noDelivery?: boolean;
+    resultDelivery?: "wake" | "raw" | "raw_and_wake";
+    representation?: "protected" | "dual";
+    useScope?: boolean;
+    fundingMode?: "legacy_server" | "caller";
+    requestedModelId?: string;
+    tools?: readonly string[];
+    createLocalExecutionDelegation?(input: Readonly<{
+      taskId: string;
+      taskRunId: string;
+      roomId: string;
+      roomGraphThreadId: string;
+    }>): Promise<LocalExecutionDelegation>;
+  }> = {},
+) {
+  const representation = options.representation ?? "protected";
+  const taskId = randomUUID();
+  const taskRunId = randomUUID();
+  const graphThreadId = `subagent:task:${taskId}:${taskRunId}`;
+  const roomGraphThreadId = `task-memory-writer:${base.roomId}`;
+  const localExecutionDelegation =
+    await options.createLocalExecutionDelegation?.({
+      taskId,
+      taskRunId,
+      roomId: base.roomId,
+      roomGraphThreadId,
+    }) ?? null;
   const coordinate = Object.freeze({
     kind: "definition" as const,
     taskId,
@@ -2299,17 +2613,18 @@ async function createConnectedProtectedTask(
   // process-global server default. Persist one exact, currently runnable
   // selection so an asynchronous server-config cache refresh from an earlier
   // case cannot change this Task's model between admission and execution.
-  const requestedModelId = resolveModelRole("chat");
+  const requestedModelId = options.requestedModelId ?? resolveModelRole("chat");
   base.taskIds.add(taskId);
   base.objectIds.add(cryptoObjectId);
   base.requestIds.add(`task-run-authorization:${taskRunId}`);
+  base.requestIds.add(`task-run-delivery-result-authorization:${taskRunId}`);
   base.sessionThreadIds.add(graphThreadId);
   expect(await repository.reserveRevision({
     operationId: `connected-task-definition:${taskId}`,
     requestDigest: base.crypto.hash(new TextEncoder().encode(
       `connected-task-definition:${taskId}`,
     )),
-    representation: "protected",
+    representation,
     authority,
     prepared,
     operationalMetadata: classified.operational,
@@ -2319,17 +2634,20 @@ async function createConnectedProtectedTask(
     ownerId: base.userId,
     requestorId: base.userId,
     agentId: base.productAgentId,
-    prompt: "",
+    prompt: representation === "dual" ? "Complete the connected protected Task" : "",
     preset: "in_background",
     scheduleKind: "now",
     callingRoomId: options.noDelivery === true ? null : base.roomId,
+    resultDelivery: options.resultDelivery ?? "wake",
     targetChat: "last_in_namespace",
     targetRoomId: base.roomId,
     targetUserIds: [base.userId],
-    useScope: false,
-    toolsMode: "none",
-    fundingMode: "legacy_server",
+    useScope: options.useScope ?? false,
+    toolsMode: options.tools === undefined ? "none" : "whitelist",
+    toolsWhitelist: [...(options.tools ?? [])],
+    fundingMode: options.fundingMode ?? "legacy_server",
     requestedModelId,
+    localExecutionDelegation,
     status: "pending",
     metadata: classified.operational,
   });
@@ -2485,6 +2803,63 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
+  test("concurrent protected projections retain shared Agent identity without lock upgrade", async () => {
+    const base = await createBaseFixture({ connectedExecution: true });
+    const peerUserId = randomUUID();
+    const peerActorId = randomUUID();
+    try {
+      await base.admin.insert(users).values({ id: peerUserId, name: "Projection lock peer" });
+      await base.admin.insert(actors).values({ id: peerActorId, ownerId: peerUserId,
+        kind: "user", trustState: "verified", displayName: "Projection lock peer" });
+      const [owners] = await base.admin.select({ id: groups.id }).from(groups)
+        .where(eq(groups.type, "owners")).limit(1);
+      if (owners === undefined) throw new Error("Missing owners Group");
+      await base.admin.insert(groupMembers).values({ groupId: owners.id,
+        userId: peerUserId, grantedBy: base.humanActorId });
+      await base.admin.delete(roomMembers).where(and(
+        eq(roomMembers.roomId, base.seedRoomId), eq(roomMembers.actorId, base.humanActorId),
+      ));
+      await base.admin.insert(roomMembers).values({ roomId: base.seedRoomId,
+        actorId: peerActorId, roomRole: "admin" });
+      const [sharedAgent] = await base.admin.select({ id: actors.id }).from(actors)
+        .where(eq(actors.agentId, base.productAgentId)).limit(1);
+      if (sharedAgent === undefined) throw new Error("Missing fixture Agent Actor");
+      const barrier = deferred();
+      let entered = 0;
+      const project = async (roomId: string, requesterActorId: string, userId: string) => {
+        const [room] = await base.admin.select().from(rooms).where(eq(rooms.id, roomId));
+        if (room === undefined) throw new Error("Missing fixture Room");
+        const members = await base.admin.select({ actorId: actors.id, kind: actors.kind,
+          ownerId: actors.ownerId }).from(roomMembers)
+          .innerJoin(actors, eq(actors.id, roomMembers.actorId))
+          .where(eq(roomMembers.roomId, roomId)).orderBy(actors.kind, actors.ownerId, actors.id);
+        const audienceFingerprint = fingerprintProjectionAudience(roomId, members
+          .map(member => `${member.kind}:${member.ownerId}:${member.actorId}`).join("\n"));
+        return base.admin.transaction(async transaction => {
+          await transaction.execute(sql`SET LOCAL lock_timeout = '3s'`);
+          await transaction.select().from(actors).where(eq(actors.id, sharedAgent.id)).for("share");
+          entered += 1;
+          if (entered === 2) barrier.resolve();
+          await barrier.promise;
+          return lockAtomicProjectionDestinationAuthority(transaction, {
+            roomId, namespaceId: room.namespaceId, roomLabel: room.label,
+            roomKind: room.kind, requesterActorId, userId, audienceFingerprint,
+          }, { actorIdentityLock: "share" });
+        });
+      };
+      expect(await Promise.all([
+        project(base.roomId, base.humanActorId, base.userId),
+        project(base.seedRoomId, peerActorId, peerUserId),
+      ])).toEqual([null, null]);
+    } finally {
+      await base.admin.delete(roomMembers).where(eq(roomMembers.actorId, peerActorId));
+      await base.admin.delete(groupMembers).where(eq(groupMembers.userId, peerUserId));
+      await base.admin.delete(actors).where(eq(actors.id, peerActorId));
+      await base.admin.delete(users).where(eq(users.id, peerUserId));
+      await base.cleanup();
+    }
+  });
+
   test.each([
     { label: "Full mapped source", mode: "encrypted_only", shadowBehavior: "strict", ordinary: false },
     { label: "Full ordinary source rejected", mode: "encrypted_only", shadowBehavior: "strict", ordinary: true },
@@ -2728,6 +3103,13 @@ describePostgres("sealed protected Task Memory object writer", () => {
           publicationPolicy,
         });
         base.jobIds.add(jobId);
+        // Model the canonical Task start commit before crossing the Job fence.
+        // A merely queued, unattached Job is deliberately not executable.
+        await base.admin.update(tasks).set({ status: "running" })
+          .where(eq(tasks.id, connected.taskId));
+        await base.admin.update(taskRuns).set({ status: "running", jobId })
+          .where(and(eq(taskRuns.id, connected.taskRunId),
+            eq(taskRuns.taskId, connected.taskId)));
         return jobId;
       };
       const runningId = await persist();
@@ -2784,7 +3166,15 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   }, 60_000);
 
-  test.each(["result", "parked continuation", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "cancellation recovery", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+  test.each(["result", "historical repaired definition", "historical repaired definition Full", "historical checkpoint pause resume", "scoped result", "caller funded delegated local", "fresh result read", "fresh raw Message publication", "raw staging compatible-policy restart", "wake foreground full", "wake foreground shadow", "wake projection grant resume", "wake projection rollback recovery", "parked continuation", "checkpoint pause resume", "checkpoint policy refresh resume", "grant refresh resume", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "abandoned running recovery", "cancellation recovery", "cancellation terminal message", "cancellation terminal message shadow", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+    const historicalDefinitionFull = scenario ===
+      "historical repaired definition Full";
+    const historicalCheckpointPauseResume = scenario ===
+      "historical checkpoint pause resume";
+    const historicalDefinition = scenario === "historical repaired definition"
+      || historicalDefinitionFull || historicalCheckpointPauseResume;
+    const scopedResult = scenario === "scoped result";
+    const callerLocalExecution = scenario === "caller funded delegated local";
     const unmappedRecovery = scenario === "unmapped recovery"
       || scenario === "unmapped expired grant recovery";
     const missingCiphertextRecovery = scenario === "missing ciphertext recovery";
@@ -2796,16 +3186,49 @@ describePostgres("sealed protected Task Memory object writer", () => {
         : null;
     const cancellationProductRollback = scenario ===
       "cancellation settlement product rollback recovery";
+    const cancellationTerminalShadow = scenario ===
+      "cancellation terminal message shadow";
+    const cancellationTerminalMessage = scenario ===
+      "cancellation terminal message" || cancellationTerminalShadow;
+    const freshResultRead = scenario === "fresh result read";
+    const checkpointPolicyRefreshResume = scenario ===
+      "checkpoint policy refresh resume";
+    const checkpointPauseResume = scenario === "checkpoint pause resume"
+      || checkpointPolicyRefreshResume || historicalCheckpointPauseResume;
+    const grantRefreshResume = scenario === "grant refresh resume";
+    const checkpointContinuationScenario = checkpointPauseResume
+      || grantRefreshResume;
+    const continuedExecution = scenario === "parked continuation"
+      || checkpointContinuationScenario;
+    const rawStagingCompatiblePolicyRestart = scenario ===
+      "raw staging compatible-policy restart";
+    const wakeForegroundShadow = scenario === "wake foreground shadow";
+    const wakeProjectionRollback = scenario === "wake projection rollback recovery";
+    const wakeProjectionContinuation = scenario === "wake projection grant resume" || wakeProjectionRollback;
+    const wakeForegroundScenario = scenario === "wake foreground full"
+      || wakeForegroundShadow || wakeProjectionContinuation;
+    const freshRawMessagePublication = scenario ===
+      "fresh raw Message publication" || rawStagingCompatiblePolicyRestart
+      || wakeForegroundScenario;
+    const freshOutputRead = freshResultRead || freshRawMessagePublication;
+    const liveOutputClock = cancellationTerminalMessage || freshOutputRead
+      || wakeForegroundScenario;
     const cancellationArchiveScenario = cancellationArchivePhase !== null
       || cancellationProductRollback
+      || cancellationTerminalMessage
       || scenario === "cancellation archive-first denial";
-    if (cancellationArchiveScenario) {
+    if (cancellationArchiveScenario || freshOutputRead) {
       NOW = Date.now();
       EXPIRES_AT = NOW + 60_000;
     }
-    const base = await createBaseFixture({ connectedExecution: true });
+    let recoveryNow = NOW;
+    const base = await createBaseFixture({ connectedExecution: true,
+      ...(liveOutputClock ? { cryptoNow: Date.now }
+        : grantRefreshResume ? { cryptoNow: () => recoveryNow } : {}),
+    });
     const recipients = new TaskRuntimeRecipientRegistry(base.crypto, {
-      now: () => NOW,
+      now: liveOutputClock ? Date.now
+        : grantRefreshResume ? () => recoveryNow : () => NOW,
     });
     const cancellationGate = cancellationArchivePhase === null
       ? null
@@ -2815,7 +3238,6 @@ describePostgres("sealed protected Task Memory object writer", () => {
     const cancellationRollbackAuthority = cancellationProductRollback
       ? failProtectedTaskCancellationAuthorityAfterCallback(2)
       : null;
-    let recoveryNow = NOW;
     let testError: unknown;
     let cleanupError: unknown;
     let connected: Awaited<ReturnType<
@@ -2824,19 +3246,232 @@ describePostgres("sealed protected Task Memory object writer", () => {
     let connectedJobId: string | null = null;
     let parkedPriorJobId: string | null = null;
     let jobManager: JobManager | null = null;
+    let closeComposition: (() => Promise<void>) | null = null;
+    let callerFunding: Awaited<ReturnType<
+      typeof installSyntheticPersonalOpenRouter
+    >> | null = null;
+    const delegatedLocal: {
+      current: ConnectedDelegatedLocalExecutionFixture | null;
+    } = { current: null };
+    const projectionRollback: { current: ReturnType<typeof installForegroundProjectionProductRollback> | null } = { current: null };
+    const projectionCiphertextHash: { current: Uint8Array | null } = { current: null };
+    let projectionRollbackRecovered = false;
+    const wakeProjectionRoomLabel = `Task wake projection ${base.roomId}`;
     try {
-      connected = await createConnectedProtectedTask(base, {
+      if (wakeForegroundScenario) {
+        await base.admin.update(rooms).set({ label: wakeProjectionRoomLabel })
+          .where(eq(rooms.id, base.roomId));
+      }
+      if (cancellationTerminalShadow || wakeForegroundShadow || historicalDefinition) {
+        await base.admin.update(encryptionTransitionPolicy).set({
+          mode: "shadow_encryption", shadowBehavior: "strict",
+          shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW),
+        }).where(eq(encryptionTransitionPolicy.id, "server"));
+      }
+      if (callerLocalExecution) {
+        // Caller-funded native Tasks are intentionally restricted to the
+        // requester's canonical private Genie Room. The broad crypto fixture
+        // normally labels this Namespace as a shared Room Namespace, so make
+        // this one scenario model the real private-room product shape.
+        expect(await base.admin.update(namespaces).set({ scope: "private" })
+          .where(eq(namespaces.id, base.namespaceValue))
+          .returning({ scope: namespaces.scope }))
+          .toEqual([{ scope: "private" }]);
+        callerFunding = await installSyntheticPersonalOpenRouter({
+          database: base.admin,
+          userId: base.userId,
+          responseText: "Synthetic caller-funded protected response.",
+        });
+      }
+      connected = historicalDefinition ? await createConnectedHistoricalTask(base) : await createConnectedProtectedTask(base, {
+        useScope: scopedResult,
         noDelivery: scenario === "publication recovery"
-          || unmappedRecovery
-          || missingCiphertextRecovery,
+          || unmappedRecovery || missingCiphertextRecovery,
+        ...(liveOutputClock ? { resultDelivery: wakeForegroundScenario
+          ? "raw_and_wake" as const : "raw" as const } : {}),
+        ...(cancellationTerminalShadow || wakeForegroundShadow || historicalDefinition
+          ? { representation: "dual" as const } : {}),
+        ...(callerLocalExecution ? {
+          fundingMode: "caller" as const,
+          requestedModelId: CALLER_LOCAL_MODEL_ID,
+          tools: ["exec_command", "write_stdin"],
+          createLocalExecutionDelegation: async coordinates => {
+            delegatedLocal.current =
+              await installConnectedDelegatedLocalExecution({
+              humanUserId: base.userId,
+              agentId: base.productAgentId,
+              ...coordinates,
+            });
+            return delegatedLocal.current.delegation;
+          },
+        } : {}),
       });
+      if (historicalDefinitionFull) {
+        const [transitionedPolicy] = await base.admin
+          .update(encryptionTransitionPolicy).set({
+          mode: "encrypted_only",
+          shadowBehavior: "strict",
+          revision: base.policyRevision + 1,
+          updatedAt: new Date(NOW + 1),
+        }).where(and(
+          eq(encryptionTransitionPolicy.id, "server"),
+          eq(encryptionTransitionPolicy.revision, base.policyRevision),
+        )).returning({ revision: encryptionTransitionPolicy.revision });
+        if (transitionedPolicy?.revision !== base.policyRevision + 1) {
+          throw new Error("Historical Task Full policy transition lost its CAS");
+        }
+        base.policyRevision = transitionedPolicy.revision;
+      }
+      let wakeProjectionModelCalls = 0;
+      let wakeProjectionGraphCalls = 0;
+      let wakeProjectionRotationPending = false;
+      const additionalProjectionRoom: { current: { roomId: string; namespaceId: string; label: string } | null } = { current: null };
       const activeConnected = connected;
+      let wakeMemorySelection: ForegroundMemoryRepairSelection | null = null;
+      if (wakeForegroundScenario) {
+        const memoryScenario = await createScenario(base, {
+          ...(wakeForegroundShadow
+            ? { contentRepresentation: "dual" as const }
+            : {}),
+        });
+        const memoryAuthority = Object.freeze({
+          mode: "namespace" as const,
+          subjectUserId: base.userId,
+          agentId: base.productAgentId,
+          readableNamespaceIds: Object.freeze([base.namespaceValue]),
+          mutableNamespaceIds: Object.freeze([base.namespaceValue]),
+          writableNamespaceId: base.namespaceValue,
+        });
+        const wakeMemory = await memoryScenario.withAuthority(
+          () => NOW + 5,
+          async ({ writer }) => withProtectedTaskNativeMemoryRepository({
+            authority: memoryAuthority,
+            policy: Object.freeze({
+              mode: wakeForegroundShadow
+                ? "shadow_encryption" as const
+                : "encrypted_only" as const,
+              shadowBehavior: "strict" as const,
+              revision: base.policyRevision,
+            }),
+            current: writer,
+            domains: Object.freeze([memoryScenario.domainSecret]),
+            signer: Object.freeze({
+              agentAuthorizationRevision: 7,
+              runtime: base.runtime.runtime,
+              signerPublication: base.runtime.signerPublication,
+            }),
+            resolveHistoricalSignerPublicationManager: () =>
+              base.currentDevice.signingPublicKey,
+            product: base.product,
+            agentProduct: base.agentProduct,
+            owner: bindEncryptionDataOperationOwner({
+              policy: {
+                resolve: async () => Object.freeze({
+                  policy: Object.freeze({
+                    mode: wakeForegroundShadow
+                      ? "shadow_encryption" as const
+                      : "encrypted_only" as const,
+                    shadowBehavior: "strict" as const,
+                  }),
+                  revalidationToken: base.policyRevision,
+                }),
+                revalidate: async token => {
+                  if (token !== base.policyRevision) {
+                    throw new TypeError("Task Memory policy token changed");
+                  }
+                },
+              },
+            }),
+            embedding: Object.freeze({
+              embed: async () => Object.freeze({
+                status: "success" as const,
+                value: Object.freeze({
+                  vector: Object.freeze(new Array<number>(1536).fill(0.25)),
+                  provider: "openai",
+                  canonicalModel: "text-embedding-3-small",
+                  dimensions: 1536 as const,
+                  contractVersion: 1,
+                }),
+              }),
+            }),
+            execute: async repository => {
+              const saved = await repository.save({
+                operationId: `wake-task-memory-save:${randomUUID()}`,
+                authority: memoryAuthority,
+                type: "fact",
+                content: "Protected wake Memory context",
+                importance: 0.8,
+              });
+              if (saved.status !== "success") {
+                throw new Error(
+                  `Protected wake Memory save failed: ${saved.reason}`,
+                );
+              }
+              return saved.value;
+            },
+          }),
+        );
+        base.memoryIds.add(wakeMemory.id);
+        base.objectIds.add(deriveMemoryCryptoObjectIdV1({
+          memoryId: wakeMemory.id,
+          contentRevision: 1,
+        }));
+        const completedAt = new Date(NOW + 6);
+        await base.admin.transaction(async tx => {
+          await tx.update(tasks).set({
+            status: "completed",
+          }).where(eq(tasks.id, memoryScenario.taskId));
+          await tx.update(taskRuns).set({
+            status: "completed",
+            completedAt,
+          }).where(eq(taskRuns.id, memoryScenario.taskRunId));
+          await tx.update(jobs).set({
+            status: "completed",
+            completedAt,
+          }).where(eq(jobs.id, memoryScenario.jobId));
+        });
+        const [memory] = await base.admin.select({
+          id: memories.id,
+          type: memories.type,
+          content: memories.content,
+          importance: memories.importance,
+          tier: memories.tier,
+          createdAt: memories.createdAt,
+          contentRevision: memories.contentRevision,
+          cryptoObjectId: memories.cryptoObjectId,
+          cryptoMappingState: memories.cryptoMappingState,
+        }).from(memories).where(eq(memories.id, wakeMemory.id));
+        if (memory === undefined || memory.cryptoObjectId === null
+          || memory.cryptoMappingState !== "verified") {
+          throw new Error("Protected wake Memory source was unavailable");
+        }
+        wakeMemorySelection = memory.content === null || memory.type === null
+          ? Object.freeze({
+              representation: "structural" as const,
+              id: memory.id,
+              type: memory.type,
+              importance: memory.importance,
+              tier: memory.tier,
+              createdAt: memory.createdAt,
+            })
+          : Object.freeze({
+              id: memory.id,
+              type: memory.type,
+              content: memory.content,
+              importance: memory.importance,
+              tier: memory.tier,
+              createdAt: memory.createdAt,
+            });
+      }
       const segmentCalls: Array<Readonly<{
         taskId: string;
         taskRunId: string;
         graphThreadId: string;
       }>> = [];
       const segmentContinuationModes: boolean[] = [];
+      const firstCheckpointSegmentEntered = deferred();
+      let checkpointContinuationAuthorizationRequestId: string | null = null;
+      let refreshAuthorizationExpiresAt: number | null = null;
       let controlledEffectExecutions = 0;
       const continuationAuthorizationRequestId =
         `task-run-authorization:${activeConnected.taskRunId}:segment:2`;
@@ -2919,8 +3554,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
               taskPatch: { cancelledAt: new Date(NOW) },
               runStatus: "cancelled",
             })).toMatchObject({ transitioned: true,
-              task: { status: "cancelled" },
-              run: { status: "cancelled", jobId } });
+              task: undefined, run: undefined,
+              protectedTask: { status: "cancelled" },
+              protectedRun: { status: "cancelled", jobId } });
           }
           return startProtectedTaskJobWithDatabase(
             base.productDb, jobId, expectedReference, publicationPolicy,
@@ -2936,15 +3572,353 @@ describePostgres("sealed protected Task Memory object writer", () => {
           );
           if (jobId === connectedJobId && result.kind !== "rejected"
             && (scenario !== "parked continuation"
+              && !checkpointContinuationScenario
               || reference.executionSegment === 2)) notifyTerminal();
           return result;
         },
       });
+      const wakeHistoryMessageIds: number[] = [];
+      let wakeExecutions = 0;
+
+      let wakePublishedMessageId: number | null = null;
+      const wakeExecutor: JobExecutor = async function* (
+        transient,
+        jobId,
+        laneKey,
+        signal,
+      ) {
+        try {
+        if (!wakeForegroundScenario) {
+          throw new Error("Unexpected protected wake execution");
+        }
+        expect(jobId).toBe(protectedTaskRunWakeJobId(activeConnected.taskRunId));
+        expect(laneKey).toBe(`room:${base.roomId}`);
+        expect(transient["message"]).toBe("");
+        const turn = getCurrentLiveShadowTurnContext();
+        const wake = turn?.taskWake;
+        const session = turn?.session;
+        if (wake === undefined || session === null || session === undefined
+          || wakeMemorySelection === null
+          || session.protectForegroundHistory === undefined
+          || session.protectForegroundMemories === undefined) {
+          throw new Error("Protected wake foreground context was unavailable");
+        }
+        expect(wake.result).toEqual({
+          formatVersion: 1,
+          resultText: "Connected protected result",
+          lastError: null,
+        });
+        expect(wake.scheduling.taskId).toBe(activeConnected.taskId);
+        expect(wake.scheduling.taskRunId).toBe(activeConnected.taskRunId);
+        const history = await session.protectForegroundHistory({
+          messageIds: wakeHistoryMessageIds,
+          signal,
+        });
+        expect(history).toMatchObject({ status: "verified" });
+        if (history.status === "verified") {
+          expect(history.messages.map(message => message.payload.content))
+            .toEqual(["Connected protected result"]);
+        }
+        const memory = await session.protectForegroundMemories({
+          memories: [wakeMemorySelection],
+          signal,
+        });
+        expect(memory).toMatchObject({ status: "verified" });
+        if (memory.status === "verified") {
+          expect(memory.memories).toHaveLength(1);
+          expect(memory.memories[0]?.id).toBe(wakeMemorySelection.id);
+        }
+        if (wakeProjectionContinuation) {
+          if (additionalProjectionRoom.current === null) {
+            const roomId = randomUUID();
+            const namespaceId = randomUUID();
+            const label = `Wake additional projection ${roomId}`;
+            base.fixtureRoomIds.add(roomId);
+            base.fixtureNamespaceIds.add(namespaceId);
+            await base.admin.insert(namespaces).values({ id: namespaceId, scope: "room", label });
+            await base.admin.insert(rooms).values({ id: roomId, ownerId: base.userId,
+              type: "group", kind: "group", namespaceId, label,
+              humanActorIds: [base.humanActorId], graphThreadId: `wake-additional:${roomId}` });
+            const [actor] = await base.admin.select({ id: actors.id }).from(actors)
+              .where(eq(actors.agentId, base.productAgentId)).limit(1);
+            if (actor === undefined) throw new Error("Fixture Agent Actor is unavailable");
+            await base.admin.insert(roomMembers).values([
+              { roomId, actorId: base.humanActorId, roomRole: "admin" },
+              { roomId, actorId: actor.id, roomRole: "member" },
+            ]);
+            additionalProjectionRoom.current = { roomId, namespaceId, label };
+          }
+          const destination = additionalProjectionRoom.current;
+          if (session.checkpoint === undefined
+            || session.createForegroundMemoryProjectionPort === undefined) {
+            throw new Error("Wake projection continuation fixture is unavailable");
+          }
+          const authority = protectedMemoryAuthorityFromEnvelope(wake.memoryAccessEnvelope);
+          if (authority === null) throw new Error("Wake projection source authority is unavailable");
+          expect(authority.mode).toBe("namespace");
+          if (authority.mode !== "namespace") throw new Error("Unexpected Scope source");
+          expect(authority.readableNamespaceIds).not.toContain(destination.namespaceId);
+          let projection = await session.createForegroundMemoryProjectionPort(wake.memoryAccessEnvelope);
+          type Reference = Parameters<ProtectedAgentMemoryProjectionPort["publish"]>[0]["reference"];
+          const State = Annotation.Root({
+            reference: Annotation<Reference | null>({ reducer: (_old, next) => next, default: () => null }),
+            memoryId: Annotation<string | null>({ reducer: (_old, next) => next, default: () => null }),
+          });
+          const checkpointThreadId = `protected-task-wake:${jobId}`;
+          let saver = createLiveShadowCheckpointSaver({ logicalThreadId: checkpointThreadId,
+            checkpoint: session.checkpoint });
+          let primaryErrorPresent = false;
+          try {
+            const buildGraph = (currentSaver: typeof saver) => new StateGraph(State)
+              .addNode("prepare", async () => {
+                wakeProjectionModelCalls += 1;
+                const prepared = await projection.prepare({
+                  operationId: `memory:v1:wake-additional:${activeConnected.taskRunId}`,
+                  toolCallId: `wake-additional:${activeConnected.taskRunId}`,
+                  authority, requesterActorId: base.humanActorId,
+                  sourceMemoryIds: [wakeMemorySelection.id],
+                  proposedContent: "Protected wake shared with a newly available Room",
+                  targetRoomName: destination.label,
+                });
+                if (prepared.status !== "success" || prepared.value.kind !== "prepared") {
+                  throw new Error("Wake additional projection preparation failed");
+                }
+                return { reference: prepared.value.reference };
+              })
+              .addNode("publish", async state => {
+                if (state.reference === null) throw new Error("Wake projection reference is missing");
+                if (wakeProjectionRollback && wake.continuation !== undefined && projectionRollback.current === null) {
+                  projectionRollback.current = installForegroundProjectionProductRollback({
+                    database: getSharedDirectAgentDb(),
+                    operationId: `memory:v1:wake-additional:${activeConnected.taskRunId}`,
+                  });
+                }
+                const published = await projection.publish({ authority, reference: state.reference });
+                if (published.status !== "success") throw new Error(`Wake additional projection failed: ${published.reason}`);
+                return { memoryId: published.value.memoryId };
+              })
+              .addEdge(START, "prepare").addEdge("prepare", "publish").addEdge("publish", END)
+              .compile({ checkpointer: currentSaver });
+            let graph = buildGraph(saver);
+            const config = { configurable: { thread_id: checkpointThreadId } };
+            wakeProjectionGraphCalls += 1;
+            let completed: Awaited<ReturnType<typeof graph.invoke>>;
+            try {
+              completed = await graph.invoke(wake.continuation === undefined
+                ? { reference: null, memoryId: null }
+                : new Command({ resume: createProtectedTaskAdditionalAuthorityResumeMapV1(wake.continuation.resume) }), config);
+            } catch (error) {
+              if (!wakeProjectionRollback || projectionRollback.current?.observed() !== true
+                || wake.continuation === undefined) throw error;
+              projectionRollback.current.restore();
+              const [receipt] = await base.admin.select({
+                memoryId: foregroundMemoryCryptoPublicationReceipts.memoryId,
+                objectId: foregroundMemoryCryptoPublicationReceipts.cryptoObjectId,
+              }).from(foregroundMemoryCryptoPublicationReceipts).where(eq(
+                foregroundMemoryCryptoPublicationReceipts.operationId,
+                `memory:v1:wake-additional:${activeConnected.taskRunId}`,
+              ));
+              if (receipt === undefined) throw new Error("Interrupted projection ciphertext receipt is missing");
+              base.memoryIds.add(receipt.memoryId);
+              base.objectIds.add(receipt.objectId);
+              expect(await base.admin.select({ id: memories.id }).from(memories)
+                .where(eq(memories.id, receipt.memoryId))).toEqual([]);
+              expect(await base.admin.select({ id: memoryNamespaces.memoryId }).from(memoryNamespaces)
+                .where(eq(memoryNamespaces.memoryId, receipt.memoryId))).toEqual([]);
+              const [ciphertext] = await base.admin.select({ hash: cryptoObjects.payloadHash }).from(cryptoObjects)
+                .where(eq(cryptoObjects.objectId, receipt.objectId));
+              if (ciphertext === undefined) throw new Error("Interrupted projection ciphertext is missing");
+              projectionCiphertextHash.current = Uint8Array.from(ciphertext.hash);
+              expect(projectionCiphertextHash.current.byteLength).toBe(32);
+              await disposeProtectedCheckpointSaver({ saver, primaryErrorPresent: true });
+              // Drop the failed publication/session custody. The next adapter
+              // must prove the durable receipt, never reuse a prepared token.
+              projection = await session.createForegroundMemoryProjectionPort(wake.memoryAccessEnvelope);
+              saver = createLiveShadowCheckpointSaver({ logicalThreadId: checkpointThreadId,
+                checkpoint: session.checkpoint });
+              graph = buildGraph(saver);
+              wakeProjectionGraphCalls += 1;
+              completed = await graph.invoke(new Command({
+                resume: createProtectedTaskAdditionalAuthorityResumeMapV1(wake.continuation.resume),
+              }), config);
+              projectionRollbackRecovered = true;
+            }
+            const state = await graph.getState(config);
+            const interrupts = protectedTaskInterruptCoordinates(state as never);
+            if (interrupts.length > 0) {
+              expect(interrupts).toHaveLength(1);
+              const coordinate = interrupts[0]!;
+              expect(coordinate.kind).toBe("additional_authority");
+              if (coordinate.kind !== "additional_authority") throw new Error("Wrong wake interrupt kind");
+              const custody = getCurrentProtectedTaskWakeExecutionCustody();
+              if (custody === undefined) throw new Error("Wake park custody missing");
+              const checkpoint = await sealProtectedTaskWakeCheckpointManifest({ saver, checkpointThreadId });
+              const parked = await custody.park({
+                interruptId: coordinate.id, additionalAuthorizationRequestId: coordinate.requestId,
+                effectDisposition: coordinate.effectDisposition, operationId: coordinate.operationId,
+                requestDigest: coordinate.requestDigest, requiredAuthorityDigest: coordinate.requiredAuthorityDigest,
+                semanticAuthorityRequirements: coordinate.semanticAuthorityRequirements,
+                checkpointBinding: wake.checkpointBinding, checkpointThreadId, checkpoint,
+              });
+              expect(parked.status).toBe("parked");
+              throw protectedTaskWakeParked();
+            }
+            expect(wakeProjectionModelCalls).toBe(1);
+            expect(wakeProjectionGraphCalls).toBe(wakeProjectionRollback ? 3 : 2);
+            if (completed.memoryId === null) throw new Error("Wake projection result is missing");
+            base.memoryIds.add(completed.memoryId);
+            const [stored] = await base.admin.select({ content: memories.content,
+              objectId: memories.cryptoObjectId }).from(memories).where(eq(memories.id, completed.memoryId));
+            expect(stored?.content).toBeNull();
+            if (stored?.objectId === null || stored?.objectId === undefined) throw new Error("Wake projection ciphertext is missing");
+            base.objectIds.add(stored.objectId);
+            const receipts = await base.admin.select({
+              operationId: foregroundMemoryCryptoPublicationReceipts.operationId,
+              memoryId: foregroundMemoryCryptoPublicationReceipts.memoryId,
+              contentRevision: foregroundMemoryCryptoPublicationReceipts.contentRevision,
+              agentId: foregroundMemoryCryptoPublicationReceipts.agentId,
+              reservationDigest: foregroundMemoryCryptoPublicationReceipts.reservationDigest,
+              namespaceFingerprint: foregroundMemoryCryptoPublicationReceipts.requiredNamespaceFingerprint,
+              genesisHash: foregroundMemoryCryptoPublicationReceipts.genesisManifestHash,
+            }).from(foregroundMemoryCryptoPublicationReceipts)
+              .where(eq(foregroundMemoryCryptoPublicationReceipts.cryptoObjectId, stored.objectId));
+            expect(receipts).toHaveLength(1);
+            expect(receipts[0]).toMatchObject({
+              operationId: `memory:v1:wake-additional:${activeConnected.taskRunId}`,
+              memoryId: completed.memoryId, contentRevision: 1, agentId: base.productAgentId,
+            });
+            expect(receipts[0]?.reservationDigest.byteLength).toBe(32);
+            expect(receipts[0]?.namespaceFingerprint.byteLength).toBe(32);
+            expect(receipts[0]?.genesisHash.byteLength).toBe(32);
+            if (wakeProjectionRollback) {
+              expect(projectionRollbackRecovered).toBeTrue();
+              expect(projectionRollback.current?.observed()).toBeTrue();
+              const [ciphertext] = await base.admin.select({ hash: cryptoObjects.payloadHash }).from(cryptoObjects)
+                .where(eq(cryptoObjects.objectId, stored.objectId));
+              if (projectionCiphertextHash.current === null) throw new Error("Interrupted projection ciphertext hash is missing");
+              expect(ciphertext?.hash).toEqual(projectionCiphertextHash.current);
+              expect(await objectRowCounts(base, stored.objectId)).toEqual({
+                payload: 1, head: 1, manifest: 1, envelope: 1,
+              });
+            }
+            expect(await base.admin.select({ namespaceId: memoryNamespaces.namespaceId })
+              .from(memoryNamespaces).where(eq(memoryNamespaces.memoryId, completed.memoryId)))
+              .toEqual([{ namespaceId: destination.namespaceId }]);
+            const published = await session.publishMessage({ payload: { role: "assistant",
+              content: "The protected Task result is ready." }, stage: "assistant_message", createdAt: Date.now() });
+            if (published.status !== "protected") throw new Error("Wake resumed transcript failed");
+            wakePublishedMessageId = published.value.reservation.messageId;
+            wakeExecutions += 1;
+            return;
+          } catch (error) {
+            primaryErrorPresent = true;
+            throw error;
+          } finally {
+            await disposeProtectedCheckpointSaver({ saver, primaryErrorPresent });
+          }
+        }
+        if (session.createForegroundMemoryRepository === undefined) {
+          throw new Error("Protected wake Memory repository was unavailable");
+        }
+        const repository = await session.createForegroundMemoryRepository(wake.memoryAccessEnvelope);
+        const memoryAuthority = protectedMemoryAuthorityFromEnvelope(wake.memoryAccessEnvelope);
+        if (memoryAuthority === null) throw new Error("Wake Memory authority is unavailable");
+        const saved = await repository.save({
+          operationId: `wake-foreground-memory:${activeConnected.taskRunId}`,
+          authority: memoryAuthority,
+          type: "fact", content: "Protected wake created Memory", importance: 0.8,
+        });
+        expect(saved.status).toBe("success");
+        if (saved.status !== "success") throw new Error(`Wake Memory write failed: ${saved.reason}`);
+        base.memoryIds.add(saved.value.id);
+        const [storedMemory] = await base.admin.select({ content: memories.content,
+          objectId: memories.cryptoObjectId, contentRevision: memories.contentRevision })
+          .from(memories).where(eq(memories.id, saved.value.id));
+        expect(storedMemory).toBeDefined();
+        if (storedMemory === undefined) throw new Error("Saved wake Memory was not persisted");
+        const savedObjectId = deriveMemoryCryptoObjectIdV1({ memoryId: saved.value.id,
+          contentRevision: storedMemory.contentRevision });
+        base.objectIds.add(savedObjectId);
+        expect(storedMemory.contentRevision).toBeGreaterThan(0);
+        expect({ content: storedMemory.content, objectId: storedMemory.objectId })
+          .toEqual({ content: wakeForegroundShadow ? "Protected wake created Memory" : null,
+          objectId: savedObjectId });
+        if (session.createForegroundMemoryProjectionPort === undefined) {
+          throw new Error("Protected wake Memory projection port was unavailable");
+        }
+        const projection = await session.createForegroundMemoryProjectionPort(wake.memoryAccessEnvelope);
+        const preparedProjection = await projection.prepare({
+          operationId: `memory:v1:wake-projection:${activeConnected.taskRunId}`,
+          toolCallId: `wake-projection:${activeConnected.taskRunId}`,
+          authority: memoryAuthority,
+          requesterActorId: base.humanActorId,
+          sourceMemoryIds: [saved.value.id],
+          proposedContent: "Protected wake projected Memory",
+          targetRoomName: wakeProjectionRoomLabel,
+        });
+        expect(preparedProjection.status).toBe("success");
+        if (preparedProjection.status !== "success"
+          || preparedProjection.value.kind !== "prepared") {
+          throw new Error("Protected wake Memory projection preparation failed");
+        }
+        const projected = await projection.publish({ authority: memoryAuthority,
+          reference: preparedProjection.value.reference });
+        expect(projected.status).toBe("success");
+        if (projected.status !== "success") {
+          throw new Error(`Protected wake Memory projection failed: ${projected.reason}`);
+        }
+        base.memoryIds.add(projected.value.memoryId);
+        const [projectedMemory] = await base.admin.select({ content: memories.content,
+          objectId: memories.cryptoObjectId, contentRevision: memories.contentRevision })
+          .from(memories).where(eq(memories.id, projected.value.memoryId));
+        expect(projectedMemory).toBeDefined();
+        if (projectedMemory === undefined) throw new Error("Projected wake Memory was not persisted");
+        const projectedObjectId = deriveMemoryCryptoObjectIdV1({
+          memoryId: projected.value.memoryId, contentRevision: projectedMemory.contentRevision });
+        base.objectIds.add(projectedObjectId);
+        expect(projected.value).toEqual({ status: "created", memoryId: projected.value.memoryId,
+          roomLabel: wakeProjectionRoomLabel });
+        expect({ content: projectedMemory.content, objectId: projectedMemory.objectId })
+          .toEqual({ content: wakeForegroundShadow ? "Protected wake projected Memory" : null,
+            objectId: projectedObjectId });
+        expect(await projection.publish({ authority: memoryAuthority,
+          reference: preparedProjection.value.reference })).toEqual({ status: "success",
+          value: { status: "replayed", memoryId: projected.value.memoryId,
+            roomLabel: wakeProjectionRoomLabel } });
+        const published = await session.publishMessage({
+          payload: {
+            role: "assistant",
+            content: "The protected Task result is ready.",
+          },
+          stage: "assistant_message",
+          createdAt: Date.now(),
+        });
+        expect(published).toMatchObject({ status: "protected" });
+        if (published.status !== "protected") {
+          throw new Error("Protected wake transcript publication failed");
+        }
+        wakePublishedMessageId = published.value.reservation.messageId;
+        wakeExecutions += 1;
+        yield {
+          type: "message.tokens",
+          laneKey: `room:${base.roomId}`,
+          content: "The protected Task result is ready.",
+          chunkSequence: 1,
+          done: true,
+        };
+        } catch (error) {
+          if (isProtectedTaskWakeParked(error)) throw error;
+          recordNativeError("execute", error); throw error;
+        }
+      };
       const owner = bindEncryptionDataOperationOwner({
         policy: {
           resolve: () => Promise.resolve({
             policy: {
-              mode: "encrypted_only" as const,
+              mode: cancellationTerminalShadow || wakeForegroundShadow
+                || historicalDefinition && !historicalDefinitionFull
+                ? "shadow_encryption" as const
+                : "encrypted_only" as const,
               shadowBehavior: "strict" as const,
             },
             revalidationToken: base.policyRevision,
@@ -2974,7 +3948,28 @@ describePostgres("sealed protected Task Memory object writer", () => {
         restricted: base.restricted,
         crypto: base.crypto,
         serverScope: SERVER_SCOPE,
-        now: () => recoveryNow,
+        now: liveOutputClock ? Date.now : () => recoveryNow,
+        ...(wakeForegroundScenario || scopedResult ? {
+          embedding: { embed: async () => ({ status: "success" as const,
+            value: { vector: new Array<number>(1536).fill(0.25), provider: "openai",
+              canonicalModel: "text-embedding-3-small", dimensions: 1536 as const, contractVersion: 1 } }) },
+          ...(wakeForegroundScenario ? { wakeForeground: {
+            onDiagnostic: (_stage, error) => {
+              const cause = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+              if (wakeProjectionContinuation && cause instanceof Error
+                && cause.message === "Task wake park authorization rotation is pending") {
+                // The new Room has no crypto bundle yet. This diagnostic is
+                // emitted after the old grant callback has unwound.
+                wakeProjectionRotationPending = true;
+                return;
+              }
+              recordNativeError("transcript", cause);
+            },
+            jobManager,
+            executor: wakeExecutor,
+            wakeEffectRecovery: () => undefined,
+          } } : {}),
+        } : {}),
       }, {
         nativeExecution: input => {
           const native = createProductionProtectedTaskNativeExecution(input, {
@@ -3030,8 +4025,97 @@ describePostgres("sealed protected Task Memory object writer", () => {
                     graphThreadId: segment.graphThreadId,
                   }));
                   segmentContinuationModes.push(
-                    segment.execution.resume !== undefined,
+                    segment.execution.resume !== undefined
+                      || segment.execution.continueFromCheckpoint === true,
                   );
+                  if (scopedResult) {
+                    const authority = protectedMemoryAuthorityFromEnvelope(segment.execution.subEnvelope);
+                    if (authority === null || authority.mode !== "scope") {
+                      throw new Error("Protected scoped occurrence lost its Scope authority");
+                    }
+                    base.scopeIds.add(authority.scopeId);
+                    const [scope] = await base.admin.select({ parentAgentId: agentScopes.parentAgentId,
+                      speakerUserId: agentScopes.speakerUserId, name: agentScopes.name })
+                      .from(agentScopes).where(eq(agentScopes.id, authority.scopeId));
+                    expect(scope).toEqual({ parentAgentId: base.productAgentId,
+                      speakerUserId: base.userId, name: `task:${activeConnected.taskId}` });
+                    const saved = await segment.memoryHandoff.repository.save({
+                      operationId: `connected-scope-save:${activeConnected.taskRunId}`,
+                      authority, type: "fact", content: "Memory from one protected Scope occurrence", importance: 0.8,
+                    });
+                    if (saved.status !== "success") throw new Error(`Protected scoped save failed: ${saved.reason}`);
+                    base.memoryIds.add(saved.value.id);
+                    const [stored] = await base.admin.select({ content: memories.content, objectId: memories.cryptoObjectId })
+                      .from(memories).where(eq(memories.id, saved.value.id));
+                    expect(stored?.content).toBeNull();
+                    if (stored?.objectId === null || stored?.objectId === undefined) throw new Error("Scoped Memory ciphertext missing");
+                    base.objectIds.add(stored.objectId);
+                    expect(await base.admin.select({ scopeId: memoryScopes.scopeId }).from(memoryScopes)
+                      .where(eq(memoryScopes.memoryId, saved.value.id))).toEqual([{ scopeId: authority.scopeId }]);
+                  }
+                  if (checkpointContinuationScenario
+                    && segment.execution.continueFromCheckpoint !== true) {
+                    firstCheckpointSegmentEntered.resolve();
+                    const expectedReason = grantRefreshResume
+                      ? "grant_refresh" as const
+                      : "manual_pause" as const;
+                    if (grantRefreshResume) {
+                      if (refreshAuthorizationExpiresAt === null) {
+                        throw new Error(
+                          "Protected Task refresh deadline was unavailable",
+                        );
+                      }
+                      // The production scheduler already armed against the
+                      // authentic grant. Move its injected clock across that
+                      // grant's pause threshold while the real timer remains
+                      // responsible for requesting the checkpoint.
+                      recoveryNow = refreshAuthorizationExpiresAt - 999;
+                    }
+                    const deadline = Date.now() + 10_000;
+                    while (segment.protectedTaskCheckpointPauseController
+                      ?.currentRequestedReason() !== expectedReason
+                      && Date.now() < deadline) {
+                      segment.signal.throwIfAborted();
+                      await new Promise<void>(resolve => setTimeout(resolve, 10));
+                    }
+                    expect(segment.protectedTaskCheckpointPauseController
+                      ?.currentRequestedReason()).toBe(expectedReason);
+                    expect(segment.execution.resume).toBeUndefined();
+                    expect(segment.execution.protectedTaskHumanResume)
+                      .toBeUndefined();
+                    await segment.checkpointSaver.put({
+                      configurable: {
+                        thread_id: segment.graphThreadId,
+                        checkpoint_ns: "",
+                      },
+                    }, {
+                      v: 4,
+                      id: randomUUID(),
+                      ts: new Date(NOW).toISOString(),
+                      channel_values: {
+                        protected_task_state: {
+                          phase: expectedReason,
+                        },
+                      },
+                      channel_versions: { protected_task_state: 1 },
+                      versions_seen: {},
+                    }, {
+                      source: "loop",
+                      step: 1,
+                      parents: {},
+                    }, { protected_task_state: 1 });
+                    return Object.freeze({
+                      status: "checkpoint_paused" as const,
+                      threadId: segment.graphThreadId,
+                      reason: expectedReason,
+                    });
+                  }
+                  if (checkpointContinuationScenario) {
+                    expect(segment.execution.continueFromCheckpoint).toBe(true);
+                    expect(segment.execution.resume).toBeUndefined();
+                    expect(segment.execution.protectedTaskHumanResume)
+                      .toBeUndefined();
+                  }
                   if (scenario === "parked continuation"
                     && segment.execution.resume === undefined) {
                     await segment.checkpointSaver.put({
@@ -3099,6 +4183,61 @@ describePostgres("sealed protected Task Memory object writer", () => {
                     );
                     controlledEffectExecutions += 1;
                   }
+                  if (callerLocalExecution) {
+                    const funding =
+                      segment.execution.foregroundChatFundingSession;
+                    const local = delegatedLocal.current;
+                    const localPort =
+                      segment.execution.delegatedLocalExecutionPort;
+                    if (funding === undefined || local === null
+                      || localPort === undefined || callerFunding === null) {
+                      throw new Error(
+                        "Caller-funded delegated Task execution was unavailable",
+                      );
+                    }
+                    expect(segment.execution.modelId).toBe(
+                      CALLER_LOCAL_MODEL_ID,
+                    );
+                    expect(funding).toMatchObject({
+                      kind: "personal",
+                      capabilityFunding: {
+                        humanUserId: base.userId,
+                        parentFundingKind: "personal",
+                      },
+                    });
+                    const model = await invokeChatModelWithFallback(
+                      [new HumanMessage(
+                        "Return the deterministic protected fixture response.",
+                      )],
+                      [],
+                      segment.execution.modelId,
+                      base.userId,
+                      base.productAgentId,
+                      null,
+                      undefined,
+                      {
+                        fundingHumanUserId: base.userId,
+                        fundingSession: funding,
+                        modelFallbackMode: "none",
+                        sameModelRetryMode: "none",
+                      },
+                    );
+                    const responseText = model.response.content;
+                    expect(responseText).toBe(
+                      "Synthetic caller-funded protected response.",
+                    );
+                    if (typeof responseText !== "string") {
+                      throw new Error(
+                        "Synthetic caller-funded response was not textual",
+                      );
+                    }
+                    await local.invoke(localPort, funding);
+                    return Object.freeze({
+                      formatVersion: 1 as const,
+                      resultText: responseText,
+                      lastError: null,
+                    });
+                  }
                   return Object.freeze({
                     formatVersion: 1 as const,
                     resultText: "Connected protected result",
@@ -3139,10 +4278,24 @@ describePostgres("sealed protected Task Memory object writer", () => {
                     throw error;
                   }
                 };
-              return Object.freeze({ executor, openTransientInput });
+              return Object.freeze({
+                executor,
+                openTransientInput,
+                ...(prepared.requestCheckpointPause === undefined
+                  ? {}
+                  : {
+                      requestCheckpointPause:
+                        prepared.requestCheckpointPause,
+                    }),
+              });
             },
             publishResult: async publication => {
               try {
+                if (scenario === "abandoned running recovery") {
+                  throw new Error(
+                    "synthetic provider loss before protected result publication",
+                  );
+                }
                 await native.publishResult(publication);
                 if (scenario === "publication recovery") {
                   throw new Error("synthetic loss after result attachment");
@@ -3155,6 +4308,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           });
         },
       });
+      closeComposition = composition.close;
       const occurrence = await loadInitialProtectedTaskOccurrence(
         base.productDb,
         {
@@ -3165,6 +4319,11 @@ describePostgres("sealed protected Task Memory object writer", () => {
       );
       if (occurrence === null) {
         throw new Error("Connected protected Task occurrence was unavailable");
+      }
+      if (historicalDefinition) {
+        expect(occurrence.task.cryptoObjectId).toBe(connected.inputObjectId);
+        expect(occurrence.task.definitionHistoricalRepair).toMatchObject({ version: 2 });
+        expect(occurrence.task.cryptoAccessRevision).toBe(0);
       }
       const [currentPolicy, requesterHuman, requesterPrivateRoom] =
         await Promise.all([
@@ -3177,7 +4336,10 @@ describePostgres("sealed protected Task Memory object writer", () => {
           ),
         ]);
       expect(currentPolicy).toMatchObject({
-        mode: "encrypted_only",
+        mode: cancellationTerminalShadow || wakeForegroundShadow
+          || historicalDefinition && !historicalDefinitionFull
+          ? "shadow_encryption"
+          : "encrypted_only",
         shadowBehavior: "strict",
         revision: base.policyRevision,
       });
@@ -3186,13 +4348,35 @@ describePostgres("sealed protected Task Memory object writer", () => {
         roomId: base.roomId,
         namespaceId: base.namespaceValue,
       });
+      if (callerLocalExecution) {
+        if (delegatedLocal.current === null || callerFunding === null) {
+          throw new Error("Caller/local protected Task fixture was unavailable");
+        }
+        await delegatedLocal.current.disconnect();
+        await composition.coordinator.observeProtectedTaskOccurrence(occurrence);
+        expect(await base.admin.select({ id: jobs.id }).from(jobs).where(eq(
+          jobs.laneKey,
+          `task:${connected.taskId}`,
+        ))).toHaveLength(0);
+        expect(await base.admin.select({
+          requestId: backgroundCryptoAuthorizationRequests.requestId,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          `task-run-authorization:${connected.taskRunId}`,
+        ))).toHaveLength(0);
+        expect(recipients.size).toBe(0);
+        expect(callerFunding.requests).toHaveLength(0);
+        expect(delegatedLocal.current.messages).toHaveLength(0);
+        await delegatedLocal.current.connect();
+      }
       await composition.coordinator.observeProtectedTaskOccurrence(occurrence);
       expect(recipients.size).toBe(0);
 
       const deviceService = createProductionBackgroundAuthorizationComposition({
         crypto: base.crypto,
         serverScope: SERVER_SCOPE,
-        now: () => NOW,
+        now: liveOutputClock ? Date.now
+          : grantRefreshResume ? () => recoveryNow : () => NOW,
         restricted: () => base.restricted,
         bindTaskRecipient: composition.bindTaskRecipient,
         withTaskAuthority: composition.withTaskAuthority,
@@ -3209,13 +4393,18 @@ describePostgres("sealed protected Task Memory object writer", () => {
           epoch: base.currentDevice.epoch,
           securityRevision: base.currentDevice.securityRevision,
           headDigest: base.currentDevice.headDigest.slice(),
-          expiresAt: NOW + 60_000,
+          expiresAt: NOW + (grantRefreshResume
+            ? 2 * TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS
+            : wakeProjectionContinuation ? 180_000 : 60_000),
         }),
       });
-      const grantConnectedRequest = async (
+      const grantRequest = async (
+        service: ReturnType<
+          typeof createProductionBackgroundAuthorizationComposition
+        >,
         expectedRequestId: string,
       ): Promise<void> => {
-        const page = await deviceService.list(subject, {});
+        const page = await service.list(subject, {});
         let selected: ReturnType<
           typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1
         > = null;
@@ -3224,8 +4413,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
             candidate.requestBytes,
           );
-          if (decoded?.workId === activeConnected.taskRunId
-            && decoded.requestId === expectedRequestId) {
+          if (decoded?.requestId === expectedRequestId) {
             selected = decoded;
             selectedBytes = candidate.requestBytes;
             break;
@@ -3267,7 +4455,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
             responseBytes = serializeDomainForegroundAuthorizationV2(
               authorization,
             );
-            expect(await deviceService.respond(subject, { responseBytes }))
+            expect(await service.respond(subject, { responseBytes }))
               .toEqual({ status: "accepted" });
           } finally {
             destroyDomainForegroundAuthorizationV2(authorization);
@@ -3280,11 +4468,27 @@ describePostgres("sealed protected Task Memory object writer", () => {
           destroyTaskRuntimeBackgroundAuthorizationRequestV1(selected);
         }
       };
+      const grantConnectedRequest = (expectedRequestId: string) =>
+        grantRequest(deviceService, expectedRequestId);
       await grantConnectedRequest(
         `task-run-authorization:${connected.taskRunId}`,
       );
       expect(recipients.size).toBe(1);
       expect(kicks).toBe(1);
+      if (grantRefreshResume) {
+        const [authorization] = await base.admin.select({
+          expiresAt:
+            backgroundCryptoAuthorizationRequests.authorizationExpiresAt,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          `task-run-authorization:${connected.taskRunId}`,
+        ));
+        if (!(authorization?.expiresAt instanceof Date)) {
+          throw new Error("Protected Task refresh grant expiry was unavailable");
+        }
+        refreshAuthorizationExpiresAt = authorization.expiresAt.getTime();
+        recoveryNow = refreshAuthorizationExpiresAt - 4_000;
+      }
 
       if (cancellationArchiveScenario) {
         const initialRequestId = `task-run-authorization:${connected.taskRunId}`;
@@ -3298,20 +4502,22 @@ describePostgres("sealed protected Task Memory object writer", () => {
         });
         base.requestIds.add(cancellationRequestId);
         base.objectIds.add(cancellationObjectId);
+        const cancellationStoppedAt = new Date(liveOutputClock ? Date.now() : NOW);
         expect(await transitionTaskLifecycleTerminal(base.productDb, {
           taskId: connected.taskId,
           taskStatus: "cancelled",
-          taskPatch: { cancelledAt: new Date(NOW) },
+          taskPatch: { cancelledAt: cancellationStoppedAt },
           runId: connected.taskRunId,
           runStatus: "cancelled",
         })).toMatchObject({
           transitioned: true,
-          task: { status: "cancelled" },
-          run: { status: "cancelled", jobId: null },
+          task: undefined, run: undefined,
+          protectedTask: { status: "cancelled" },
+          protectedRun: { status: "cancelled", jobId: null },
         });
         const cancellationCandidates = await listProtectedTaskCancellationOutputCandidates(
           base.productDb,
-          { limit: 2, throughTime: new Date(recoveryNow) },
+          { limit: 2, throughTime: new Date(liveOutputClock ? Date.now() : recoveryNow) },
         );
         expect(cancellationCandidates.candidates.map(candidate => ({
           taskId: candidate.taskId,
@@ -3355,7 +4561,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           restricted: () => base.restricted,
           crypto: base.crypto,
           serverScope: SERVER_SCOPE,
-          now: () => recoveryNow,
+          now: liveOutputClock ? Date.now : () => recoveryNow,
         });
         const cancellationPreparation = createProtectedTaskCancellationPreparation({
           db: base.productDb,
@@ -3364,7 +4570,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           serverScope: SERVER_SCOPE,
           recipients,
           recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
-          now: () => recoveryNow,
+          now: liveOutputClock ? Date.now : () => recoveryNow,
         });
         const granted = await cancellationRepository.get(cancellationRequestId);
         if (granted?.snapshot.formatVersion !== 3
@@ -3387,7 +4593,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           owner,
           serverScope: SERVER_SCOPE,
           authority: cancellationAuthority,
-          now: () => recoveryNow,
+          now: liveOutputClock ? Date.now : () => recoveryNow,
         }, {
           recover: () => {
             throw new Error("synthetic loss after cancellation stage");
@@ -3400,7 +4606,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
             await verifyCryptoPostgresHandle(connection),
           ),
           publish: stageOnlyPublication,
-          now: () => recoveryNow,
+          now: liveOutputClock ? Date.now : () => recoveryNow,
         });
         let stageError: unknown;
         try {
@@ -3463,7 +4669,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
             await verifyCryptoPostgresHandle(context.restricted),
           ),
           recipients: settlementRecipients,
-          now: () => recoveryNow,
+          now: liveOutputClock ? Date.now : () => recoveryNow,
           deferRecipientCleanup: context.deferRecipientCleanup,
         });
         const cancellationRecovery = createProtectedTaskCancellationPublicationRecovery({
@@ -3575,8 +4781,309 @@ describePostgres("sealed protected Task Memory object writer", () => {
             protectedTaskRunOutputBindings.taskRunId,
             connected.taskRunId,
           ));
-          expect(attached?.attachedAt).toEqual(new Date(NOW));
+          expect(attached?.attachedAt).toEqual(cancellationStoppedAt);
           expect(settlementReleaseCalls).toBe(1);
+          expect(segmentCalls).toEqual([]);
+        } else if (cancellationTerminalMessage) {
+          const cancellationRecovered = await cancellationRecovery({
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+          });
+          if (cancellationRecovered !== "mapped") {
+            const [ledger, run, binding, authorization] = await Promise.all([
+              base.admin.select({ completion: taskRunResultCryptoRevisions.completion,
+                disposition: taskRunResultCryptoRevisions.disposition,
+              }).from(taskRunResultCryptoRevisions).where(and(
+                eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+                eq(taskRunResultCryptoRevisions.resultRevision, 2),
+              )),
+              base.admin.select({ revision: taskRuns.resultRevision,
+                mapping: taskRuns.resultCryptoMappingState,
+              }).from(taskRuns).where(eq(taskRuns.id, connected.taskRunId)),
+              base.admin.select({ attachedAt: protectedTaskRunOutputBindings.resultAttachedAt,
+                completedAt: protectedTaskRunOutputBindings.completedAt,
+              }).from(protectedTaskRunOutputBindings).where(eq(
+                protectedTaskRunOutputBindings.taskRunId, connected.taskRunId,
+              )),
+              base.admin.select({ state: backgroundCryptoAuthorizationRequests.state,
+                finishedAt: backgroundCryptoAuthorizationRequests.finishedAt,
+              }).from(backgroundCryptoAuthorizationRequests).where(eq(
+                backgroundCryptoAuthorizationRequests.requestId, cancellationRequestId,
+              )),
+            ]);
+            console.error("Cancellation recovery state", {
+              outcome: cancellationRecovered, ledger, run, binding, authorization,
+            });
+          }
+          expect(cancellationRecovered).toBe("mapped");
+          const deliveryRequestId =
+            `task-run-delivery-message-authorization:${connected.taskRunId}`;
+          base.requestIds.add(deliveryRequestId);
+          const terminalMessages = createProtectedTaskTerminalMessageComposition({
+            db: base.productDb,
+            restricted: base.restricted,
+            crypto: base.crypto,
+            owner,
+            serverScope: SERVER_SCOPE,
+            recipients,
+            recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
+            now: Date.now,
+          });
+          const terminalDevice = createProductionBackgroundAuthorizationComposition({
+            crypto: base.crypto,
+            serverScope: SERVER_SCOPE,
+            now: Date.now,
+            restricted: () => base.restricted,
+            bindTaskRecipient: terminalMessages.bindTaskRecipient,
+            withTaskAuthority: terminalMessages.withTaskAuthority,
+            isTaskRecipientActive: terminalMessages.isTaskRecipientActive,
+            wakeProtectedTask: () => undefined,
+          });
+          expect(await terminalMessages.recoverPage({ limit: 10 }))
+            .toMatchObject({ attempted: 1, published: 0, pending: 1,
+              failures: 0 });
+          const [awaitingDelivery] = await base.admin.select({
+            state: backgroundCryptoAuthorizationRequests.state,
+          }).from(backgroundCryptoAuthorizationRequests).where(eq(
+            backgroundCryptoAuthorizationRequests.requestId,
+            deliveryRequestId,
+          ));
+          expect(awaitingDelivery).toEqual({ state: "awaiting_recipient" });
+          if (!cancellationTerminalShadow) {
+            await base.admin.update(encryptionTransitionPolicy).set({
+              mode: "shadow_encryption",
+              shadowBehavior: "strict",
+              shadowEncryptionStartedAt: new Date(recoveryNow),
+              updatedAt: new Date(recoveryNow),
+            }).where(eq(encryptionTransitionPolicy.id, "server"));
+            expect(await terminalMessages.recoverPage({ limit: 10 }))
+              .toMatchObject({ attempted: 1, published: 0, pending: 1,
+                failures: 0 });
+            expect(await base.admin.select({
+              requestId: taskTerminalMessageCryptoStagingReceipts.requestId,
+            }).from(taskTerminalMessageCryptoStagingReceipts).where(eq(
+              taskTerminalMessageCryptoStagingReceipts.requestId,
+              deliveryRequestId,
+            ))).toHaveLength(0);
+            await base.admin.update(encryptionTransitionPolicy).set({
+              mode: "encrypted_only",
+              shadowBehavior: "strict",
+              shadowEncryptionStartedAt: new Date(NOW),
+              updatedAt: new Date(recoveryNow),
+            }).where(eq(encryptionTransitionPolicy.id, "server"));
+          }
+          await grantRequest(terminalDevice, deliveryRequestId);
+          expect(recipients.size).toBe(1);
+
+          if (!cancellationTerminalShadow) {
+            const terminalRepository = new PostgresBackgroundAuthorizationRepository(
+              base.cryptoHandle,
+            );
+            const terminalAuthority = createProtectedTaskTerminalMessageAuthorityPort({
+              db: base.productDb,
+              restricted: () => base.restricted,
+              crypto: base.crypto,
+              serverScope: SERVER_SCOPE,
+              now: Date.now,
+            });
+            const terminalPreparation = createProtectedTaskTerminalMessagePreparation({
+              db: base.productDb,
+              restricted: () => base.restricted,
+              crypto: base.crypto,
+              owner,
+              serverScope: SERVER_SCOPE,
+              recipients,
+              recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
+              now: Date.now,
+            });
+            const granted = await terminalRepository.get(deliveryRequestId);
+            if (granted?.snapshot.formatVersion !== 3
+              || granted.snapshot.credentialSubject.kind !== "runtime"
+              || granted.snapshot.credentialSubject.runtimeKind !== "task"
+              || granted.snapshot.credentialSubject.runtimeVersion !== 1
+              || granted.workKind !== "task.deliver_message"
+              || granted.purpose !== "task.deliver_message"
+              || granted.snapshot.state !== "grant_ready") {
+              throw new Error("Terminal Message authorization was not grant-ready");
+            }
+            const grantedTerminal = granted as BackgroundAuthorizationTaskRuntimeRecordV3;
+            const terminalPlan = await terminalPreparation.resolvePlan(grantedTerminal);
+            if (terminalPlan === null) {
+              throw new Error("Terminal Message authorization plan was unavailable");
+            }
+            const stageOnlyPublication = createProtectedTaskTerminalMessagePublication({
+              restricted: base.restricted,
+              crypto: base.crypto,
+              owner,
+              serverScope: SERVER_SCOPE,
+              authority: terminalAuthority,
+              recover: () => {
+                throw new Error("synthetic loss after terminal Message stage");
+              },
+            });
+            const stageOnlyClaim = createProtectedTaskTerminalMessageClaim({
+              crypto: base.crypto,
+              authority: terminalAuthority,
+              recipients,
+              repository: async connection =>
+                new PostgresBackgroundAuthorizationRepository(
+                  await verifyCryptoPostgresHandle(connection),
+                ),
+              publish: stageOnlyPublication,
+              now: Date.now,
+            });
+            let stageError: unknown;
+            try {
+              await stageOnlyClaim({
+                plan: terminalPlan,
+                record: grantedTerminal,
+                restricted: base.restricted,
+                signal: new AbortController().signal,
+              });
+            } catch (error) {
+              if (!(error instanceof Error)
+                || error.message !== "synthetic loss after terminal Message stage") {
+                throw error;
+              }
+              stageError = error;
+            }
+            expect(stageError).toBeInstanceOf(Error);
+            expect(recipients.size).toBe(0);
+            expect(await base.admin.select({
+              requestId: taskTerminalMessageCryptoStagingReceipts.requestId,
+            }).from(taskTerminalMessageCryptoStagingReceipts).where(eq(
+              taskTerminalMessageCryptoStagingReceipts.requestId,
+              deliveryRequestId,
+            ))).toEqual([{ requestId: deliveryRequestId }]);
+            await base.admin.delete(
+              backgroundCryptoAuthorizationNamespaceRequirements,
+            ).where(eq(
+              backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+              deliveryRequestId,
+            ));
+            await base.admin.delete(
+              backgroundCryptoAuthorizationDomainRequirements,
+            ).where(eq(
+              backgroundCryptoAuthorizationDomainRequirements.requestId,
+              deliveryRequestId,
+            ));
+            await base.admin.delete(backgroundCryptoAuthorizationRequests)
+              .where(eq(
+                backgroundCryptoAuthorizationRequests.requestId,
+                deliveryRequestId,
+              ));
+          }
+          expect(await terminalMessages.recoverPage({ limit: 10 }))
+            .toMatchObject({ attempted: 1, published: 1, pending: 0,
+              failures: 0 });
+
+          const [binding] = await base.admin.select().from(
+            protectedTaskRunOutputBindings,
+          ).where(eq(
+            protectedTaskRunOutputBindings.taskRunId,
+            connected.taskRunId,
+          ));
+          expect(binding).toMatchObject({
+            deliveryMode: "raw",
+            resultRevision: 2,
+            destinationRoomId: base.roomId,
+          });
+          expect(binding?.resultAttachedAt).toEqual(cancellationStoppedAt);
+          expect(binding?.messageId).toBeNumber();
+          expect(binding?.messagePublishedAt).toBeInstanceOf(Date);
+          expect(binding?.completedAt).toEqual(binding?.messagePublishedAt);
+          const sessionRows = await base.admin.select({
+            id: sessions.id,
+            threadId: sessions.threadId,
+            roomId: sessions.roomId,
+            ownerId: sessions.ownerId,
+          }).from(sessions).where(eq(sessions.roomId, base.roomId));
+          const publishedSession = sessionRows.find(row =>
+            row.id !== undefined && row.ownerId === base.userId);
+          expect(publishedSession).toBeDefined();
+          if (typeof binding?.messageId !== "number"
+            || publishedSession === undefined) {
+            throw new Error("Terminal Message allocation was unavailable");
+          }
+          base.sessionThreadIds.add(publishedSession.threadId);
+          const publishedMessageId = binding.messageId;
+          const [message] = await base.admin.select({
+            id: sessionMessages.id,
+            sessionId: sessionMessages.sessionId,
+            role: sessionMessages.role,
+            content: sessionMessages.content,
+            objectId: sessionMessages.cryptoObjectId,
+          }).from(sessionMessages).where(and(
+            eq(sessionMessages.id, publishedMessageId),
+            eq(sessionMessages.sessionId, publishedSession.id),
+          ));
+          expect(message).toMatchObject({
+            role: "assistant",
+            content: cancellationTerminalShadow
+              ? PROTECTED_TASK_CANCELLED_RESULT
+              : null,
+          });
+          if (typeof message?.objectId !== "string"
+            || typeof binding?.messageOperationId !== "string") {
+            throw new Error("Mapped terminal Message identity was unavailable");
+          }
+          const messageObjectId = message.objectId;
+          const messageOperationId = binding.messageOperationId;
+          expect(messageObjectId).toMatch(/^message:v2:[0-9a-f]{64}$/u);
+          const [revision, association, receipt, authorization] =
+            await Promise.all([
+              base.admin.select({
+                completion: sessionMessageCryptoRevisions.completion,
+                disposition: sessionMessageCryptoRevisions.disposition,
+                objectId: sessionMessageCryptoRevisions.cryptoObjectId,
+              }).from(sessionMessageCryptoRevisions).where(and(
+                eq(sessionMessageCryptoRevisions.sessionId,
+                  publishedSession.id),
+                eq(sessionMessageCryptoRevisions.messageId,
+                  publishedMessageId),
+              )).then(rows => rows[0]),
+              base.admin.select({
+                kind: taskRunMessageAssociations.kind,
+                publicationKey: taskRunMessageAssociations.publicationKey,
+              }).from(taskRunMessageAssociations).where(eq(
+                taskRunMessageAssociations.taskRunId,
+                connected.taskRunId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                requestId: taskTerminalMessageCryptoStagingReceipts.requestId,
+                objectId:
+                  taskTerminalMessageCryptoStagingReceipts.cryptoObjectId,
+              }).from(taskTerminalMessageCryptoStagingReceipts).where(eq(
+                taskTerminalMessageCryptoStagingReceipts.requestId,
+                deliveryRequestId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                state: backgroundCryptoAuthorizationRequests.state,
+              }).from(backgroundCryptoAuthorizationRequests).where(eq(
+                backgroundCryptoAuthorizationRequests.requestId,
+                deliveryRequestId,
+              )).then(rows => rows[0]),
+            ]);
+          expect(revision).toEqual({
+            completion: "complete",
+            disposition: "mapped",
+            objectId: messageObjectId,
+          });
+          expect(association).toEqual({
+            kind: "raw_delivery",
+            publicationKey: messageOperationId,
+          });
+          expect(receipt).toEqual({
+            requestId: deliveryRequestId,
+            objectId: messageObjectId,
+          });
+          expect(authorization).toEqual(cancellationTerminalShadow
+            ? { state: "completed" }
+            : undefined);
+          expect(recipients.size).toBe(0);
+          expect(await terminalMessages.recoverPage({ limit: 10 }))
+            .toMatchObject({ attempted: 0, published: 0, pending: 0,
+              failures: 0 });
           expect(segmentCalls).toEqual([]);
         } else {
           if (cancellationGate === null) {
@@ -3671,7 +5178,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
             expect(unchanged?.attachedAt).toBeNull();
             expect(settlementReleaseCalls).toBe(0);
           } else {
-            expect(binding?.attachedAt).toEqual(new Date(NOW));
+            expect(binding?.attachedAt).toEqual(cancellationStoppedAt);
             expect(request).toEqual({ state: "completed" });
             expect(settlementReleaseCalls).toBe(1);
           }
@@ -3712,7 +5219,8 @@ describePostgres("sealed protected Task Memory object writer", () => {
           taskPatch: { cancelledAt: new Date(NOW) },
           runStatus: "cancelled",
         })).toMatchObject({ transitioned: true,
-          task: { status: "cancelled" }, run: { status: "cancelled", jobId: null } });
+          task: undefined, run: undefined,
+          protectedTask: { status: "cancelled" }, protectedRun: { status: "cancelled", jobId: null } });
         await composition.coordinator.recoverBeforeObservation(100);
         expect(recipients.size).toBe(0);
         const [grant] = await base.admin.select({
@@ -3754,7 +5262,313 @@ describePostgres("sealed protected Task Memory object writer", () => {
         throw new Error("Accepted protected Task occurrence was unavailable");
       }
       await composition.coordinator.observeProtectedTaskOccurrence(claimable);
-      if (scenario === "parked continuation") {
+      if (checkpointPauseResume) {
+        const parkedPolicyRevision = base.policyRevision;
+        const entered = await Promise.race([
+          firstCheckpointSegmentEntered.promise.then(() => true),
+          new Promise<false>(resolve => setTimeout(() => resolve(false), 10_000)),
+        ]);
+        if (!entered || connectedJobId === null) {
+          throw new Error("Connected protected Task did not enter its first segment");
+        }
+        parkedPriorJobId = connectedJobId;
+        expect(await pauseTask({
+          db: base.productDb,
+          jobManager,
+          observer: { kick: () => { kicks += 1; } },
+        }, connected.taskId)).toEqual({
+          ok: true,
+          status: "paused",
+          message: "Task paused.",
+        });
+        const [[pausedTask], [pausedRun], [parkedJob], segmentReceipts,
+          continuationReceipts] = await Promise.all([
+          base.admin.select({
+            status: tasks.status,
+            pauseRequestId: tasks.pauseRequestId,
+            pauseRequestedAt: tasks.pauseRequestedAt,
+            pauseReason: tasks.pauseReason,
+          }).from(tasks).where(eq(tasks.id, connected.taskId)),
+          base.admin.select({
+            status: taskRuns.status,
+            jobId: taskRuns.jobId,
+            graphThreadId: taskRuns.graphThreadId,
+            resultText: taskRuns.resultText,
+            lastError: taskRuns.lastError,
+            resultRevision: taskRuns.resultRevision,
+          }).from(taskRuns).where(eq(taskRuns.id, connected.taskRunId)),
+          base.admin.select({
+            status: jobs.status,
+            result: jobs.result,
+            message: jobs.message,
+            metadata: jobs.metadata,
+            input: jobs.input,
+            completedAt: jobs.completedAt,
+          }).from(jobs).where(eq(jobs.id, parkedPriorJobId)),
+          base.admin.select().from(protectedTaskExecutionSegmentReceipts)
+            .where(and(
+              eq(protectedTaskExecutionSegmentReceipts.taskRunId,
+                connected.taskRunId),
+              eq(protectedTaskExecutionSegmentReceipts.executionSegment, 1),
+            )),
+          base.admin.select().from(protectedTaskContinuationReceipts)
+            .where(and(
+              eq(protectedTaskContinuationReceipts.taskRunId,
+                connected.taskRunId),
+              eq(protectedTaskContinuationReceipts.executionSegment, 1),
+            )),
+        ]);
+        expect(pausedTask).toMatchObject({
+          status: "paused",
+          pauseReason: "manual_pause",
+        });
+        expect(pausedTask?.pauseRequestId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+        );
+        expect(pausedTask?.pauseRequestedAt).toBeInstanceOf(Date);
+        expect(pausedRun).toEqual({
+          status: "awaiting",
+          jobId: parkedPriorJobId,
+          graphThreadId: connected.graphThreadId,
+          resultText: null,
+          lastError: null,
+          resultRevision: 0,
+        });
+        expect(parkedJob).toMatchObject({
+          status: "completed",
+          result: null,
+          message: null,
+          input: {
+            kind: "protected_task_run_v1",
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+            policyRevision: parkedPolicyRevision,
+            executionSegment: 1,
+          },
+        });
+        expect(parkedJob?.completedAt).toBeInstanceOf(Date);
+        expect(parkedJob?.metadata).toMatchObject({
+          [PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY]: {
+            version: 1,
+            taskId: connected.taskId,
+            taskRunId: connected.taskRunId,
+            jobId: parkedPriorJobId,
+            graphThreadId: connected.graphThreadId,
+            executionSegment: 1,
+            interrupts: [],
+          },
+        });
+        expect(segmentReceipts).toHaveLength(1);
+        expect(segmentReceipts[0]).toMatchObject({
+          jobId: parkedPriorJobId,
+          route: "native_langgraph_v1",
+          checkpointContract: "encrypted_langgraph_v1",
+          expectedCheckpointCount: 1,
+        });
+        expect(segmentReceipts[0]?.checkpointDigest).toBeInstanceOf(Uint8Array);
+        expect(continuationReceipts).toHaveLength(1);
+        expect(continuationReceipts[0]).toMatchObject({
+          jobId: parkedPriorJobId,
+          kind: "checkpoint_safe_v1",
+          reason: "manual_pause",
+          effectDisposition: "none_v1",
+        });
+        expect(segmentContinuationModes).toEqual([false]);
+
+        if (checkpointPolicyRefreshResume) {
+          const [transitionedPolicy] = await base.admin
+            .update(encryptionTransitionPolicy).set({
+              revision: parkedPolicyRevision + 1,
+              updatedAt: new Date(NOW + 1),
+            }).where(and(
+              eq(encryptionTransitionPolicy.id, "server"),
+              eq(encryptionTransitionPolicy.mode, "encrypted_only"),
+              eq(encryptionTransitionPolicy.revision, parkedPolicyRevision),
+            )).returning({
+              mode: encryptionTransitionPolicy.mode,
+              revision: encryptionTransitionPolicy.revision,
+            });
+          expect(transitionedPolicy).toEqual({
+            mode: "encrypted_only",
+            revision: parkedPolicyRevision + 1,
+          });
+          if (transitionedPolicy === undefined) throw new Error("Checkpoint policy CAS failed");
+          base.policyRevision = transitionedPolicy.revision;
+        }
+
+        const kicksBeforeResume = kicks;
+        expect(await unpauseTask({
+          db: base.productDb,
+          jobManager,
+          observer: { kick: () => { kicks += 1; } },
+        }, connected.taskId)).toEqual({
+          ok: true,
+          status: "awaiting",
+          message: "Task resumed.",
+        });
+        expect(kicks).toBe(kicksBeforeResume + 1);
+        const [resumedTask] = await base.admin.select({
+          status: tasks.status,
+          pauseRequestId: tasks.pauseRequestId,
+          pauseRequestedAt: tasks.pauseRequestedAt,
+          pauseReason: tasks.pauseReason,
+        }).from(tasks).where(eq(tasks.id, connected.taskId));
+        expect(resumedTask).toEqual({
+          status: "awaiting",
+          pauseRequestId: null,
+          pauseRequestedAt: null,
+          pauseReason: null,
+        });
+
+        const parked = await discoverParkedProtectedTaskCheckpointContinuation(
+          base.productDb,
+          { taskRunId: connected.taskRunId },
+        );
+        if (parked === null) {
+          throw new Error("Protected checkpoint continuation was unavailable");
+        }
+        checkpointContinuationAuthorizationRequestId =
+          parked.authorizationRequestId;
+        base.requestIds.add(parked.authorizationRequestId);
+        expect(parked.occurrence.run.id).toBe(connected.taskRunId);
+        expect(parked.occurrence.run.graphThreadId)
+          .toBe(connected.graphThreadId);
+        expect(parked.nextExecutionSegment).toBe(2);
+        expect(parked.proof.continuation).toMatchObject({
+          kind: "checkpoint_safe_v1",
+          reason: "manual_pause",
+          effectDisposition: "none_v1",
+        });
+        expect(parked.priorJob.reference.policyRevision)
+          .toBe(parkedPolicyRevision);
+        expect(parked.priorJob.checkpointAadBinding).toMatchObject({
+          policyRevision: parkedPolicyRevision,
+        });
+        await composition.coordinator.observeProtectedTaskOccurrence(
+          parked.occurrence,
+        );
+        await grantConnectedRequest(parked.authorizationRequestId);
+        const continuationGrant = await new PostgresBackgroundAuthorizationRepository(
+          base.cryptoHandle,
+        ).get(parked.authorizationRequestId);
+        expect(continuationGrant?.expectedPolicyRevision)
+          .toBe(base.policyRevision);
+        expect(continuationGrant?.authoritySet?.namespaceRequirements.every(
+          requirement => requirement.expectedPolicyRevision === base.policyRevision,
+        )).toBeTrue();
+        expect(recipients.size).toBe(1);
+        await composition.coordinator.observeProtectedTaskOccurrence(
+          parked.occurrence,
+        );
+      } else if (grantRefreshResume) {
+        const entered = await Promise.race([
+          firstCheckpointSegmentEntered.promise.then(() => true),
+          new Promise<false>(resolve => setTimeout(() => resolve(false), 10_000)),
+        ]);
+        if (!entered) {
+          throw new Error("Protected Task refresh segment did not start");
+        }
+        const deadline = Date.now() + 10_000;
+        let parked = null as Awaited<ReturnType<
+          typeof discoverParkedProtectedTaskCheckpointContinuation
+        >>;
+        while (Date.now() < deadline) {
+          parked = await discoverParkedProtectedTaskCheckpointContinuation(
+            base.productDb,
+            { taskRunId: connected.taskRunId },
+          );
+          if (parked !== null && connectedJobId !== null) break;
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+        }
+        if (parked === null || connectedJobId === null) {
+          throw new Error("Protected Task refresh did not durably park");
+        }
+        parkedPriorJobId = connectedJobId;
+        const [[awaitingTask], [awaitingRun], [parkedJob], continuationRows] =
+          await Promise.all([
+            base.admin.select({
+              status: tasks.status,
+              pauseRequestId: tasks.pauseRequestId,
+              pauseRequestedAt: tasks.pauseRequestedAt,
+              pauseReason: tasks.pauseReason,
+            }).from(tasks).where(eq(tasks.id, connected.taskId)),
+            base.admin.select({
+              status: taskRuns.status,
+              jobId: taskRuns.jobId,
+              graphThreadId: taskRuns.graphThreadId,
+              resultText: taskRuns.resultText,
+              lastError: taskRuns.lastError,
+              resultRevision: taskRuns.resultRevision,
+            }).from(taskRuns).where(eq(taskRuns.id, connected.taskRunId)),
+            base.admin.select({
+              status: jobs.status,
+              result: jobs.result,
+              message: jobs.message,
+              metadata: jobs.metadata,
+            }).from(jobs).where(eq(jobs.id, parkedPriorJobId)),
+            base.admin.select().from(protectedTaskContinuationReceipts)
+              .where(and(
+                eq(protectedTaskContinuationReceipts.taskRunId,
+                  connected.taskRunId),
+                eq(protectedTaskContinuationReceipts.executionSegment, 1),
+              )),
+          ]);
+        expect(awaitingTask).toEqual({
+          status: "awaiting",
+          pauseRequestId: null,
+          pauseRequestedAt: null,
+          pauseReason: null,
+        });
+        expect(awaitingRun).toEqual({
+          status: "awaiting",
+          jobId: parkedPriorJobId,
+          graphThreadId: connected.graphThreadId,
+          resultText: null,
+          lastError: null,
+          resultRevision: 0,
+        });
+        expect(parkedJob).toMatchObject({
+          status: "completed",
+          result: null,
+          message: null,
+          metadata: {
+            [PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY]: {
+              version: 1,
+              taskId: connected.taskId,
+              taskRunId: connected.taskRunId,
+              jobId: parkedPriorJobId,
+              graphThreadId: connected.graphThreadId,
+              executionSegment: 1,
+              interrupts: [],
+            },
+          },
+        });
+        expect(continuationRows).toHaveLength(1);
+        expect(continuationRows[0]).toMatchObject({
+          jobId: parkedPriorJobId,
+          kind: "checkpoint_safe_v1",
+          reason: "grant_refresh",
+          effectDisposition: "none_v1",
+        });
+        expect(parked.occurrence.run.id).toBe(connected.taskRunId);
+        expect(parked.occurrence.run.graphThreadId)
+          .toBe(connected.graphThreadId);
+        expect(parked.nextExecutionSegment).toBe(2);
+        expect(parked.proof.continuation.reason).toBe("grant_refresh");
+        checkpointContinuationAuthorizationRequestId =
+          parked.authorizationRequestId;
+        base.requestIds.add(parked.authorizationRequestId);
+        await composition.coordinator.observeProtectedTaskOccurrence(
+          parked.occurrence,
+        );
+        await grantConnectedRequest(parked.authorizationRequestId);
+        expect(recipients.size).toBe(1);
+        // No Human lifecycle call is involved: accepted fresh authority alone
+        // wakes the exact parked continuation.
+        await composition.coordinator.observeProtectedTaskOccurrence(
+          parked.occurrence,
+        );
+      } else if (scenario === "parked continuation") {
         const deadline = Date.now() + 10_000;
         let parked = null as Awaited<ReturnType<
           typeof discoverParkedProtectedTaskAdditionalAuthority
@@ -3889,12 +5703,164 @@ describePostgres("sealed protected Task Memory object writer", () => {
           request.requestBytes.fill(0);
         }
         expect(freshGeneration).toBe(1);
+      } else if (scenario === "abandoned running recovery") {
+        const before = await waitForConnectedCompletion(
+          base,
+          connected.taskRunId,
+          terminalStatus,
+        );
+        expect(before.job).toMatchObject({
+          status: "failed",
+          result: null,
+          message: null,
+        });
+        expect(before.job.startedAt).toBeInstanceOf(Date);
+        expect(before.job.completedAt).toBeInstanceOf(Date);
+        expect(before.run).toMatchObject({
+          status: "running",
+          jobId: before.job.id,
+          completedAt: null,
+          resultText: null,
+          lastError: null,
+          resultRepresentation: "ordinary",
+          resultContentNamespaceId: null,
+          resultRevision: 0,
+          resultCryptoObjectId: null,
+          resultCryptoAccessRevision: 0,
+          resultCryptoRequiredNamespaceFingerprint: null,
+          resultCryptoMappingState: "unmapped",
+        });
+        expect(nativeErrors).toEqual([{
+          stage: "publish_result",
+          name: "Error",
+          message: "synthetic provider loss before protected result publication",
+        }, {
+          stage: "execute",
+          name: "Error",
+          message: "synthetic provider loss before protected result publication",
+        }]);
+        const requestId = `task-run-authorization:${connected.taskRunId}`;
+        const [runningGrant] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+          terminalReason: backgroundCryptoAuthorizationRequests.terminalReason,
+          finishedAt: backgroundCryptoAuthorizationRequests.finishedAt,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          requestId,
+        ));
+        expect(runningGrant).toEqual({
+          state: "running",
+          terminalReason: null,
+          finishedAt: null,
+        });
+        expect(await base.admin.select({
+          sequence: taskRunResultCryptoRevisions.sequence,
+        }).from(taskRunResultCryptoRevisions).where(and(
+          eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+          eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+          eq(taskRunResultCryptoRevisions.resultRevision, 1),
+        ))).toEqual([]);
+
+        await composition.coordinator.recoverBeforeObservation(100);
+        const [settledTask] = await base.admin.select({
+          status: tasks.status,
+          prompt: tasks.prompt,
+          expectedOutput: tasks.expectedOutput,
+          lastError: tasks.lastError,
+        }).from(tasks).where(eq(tasks.id, connected.taskId));
+        const [settledRun] = await base.admin.select().from(taskRuns)
+          .where(eq(taskRuns.id, connected.taskRunId));
+        const [settledJob] = await base.admin.select().from(jobs)
+          .where(eq(jobs.id, before.job.id));
+        const [settledGrant] = await base.admin.select({
+          state: backgroundCryptoAuthorizationRequests.state,
+          terminalReason: backgroundCryptoAuthorizationRequests.terminalReason,
+          finishedAt: backgroundCryptoAuthorizationRequests.finishedAt,
+          updatedAt: backgroundCryptoAuthorizationRequests.updatedAt,
+        }).from(backgroundCryptoAuthorizationRequests).where(eq(
+          backgroundCryptoAuthorizationRequests.requestId,
+          requestId,
+        ));
+        expect(settledTask).toEqual({
+          status: "errored",
+          prompt: "",
+          expectedOutput: null,
+          lastError: null,
+        });
+        expect(settledRun).toMatchObject({
+          id: connected.taskRunId,
+          taskId: connected.taskId,
+          jobId: before.job.id,
+          status: "errored",
+          resultText: null,
+          lastError: null,
+          resultRepresentation: "ordinary",
+          resultContentNamespaceId: null,
+          resultRevision: 0,
+          resultCryptoObjectId: null,
+          resultCryptoAccessRevision: 0,
+          resultCryptoRequiredNamespaceFingerprint: null,
+          resultCryptoMappingState: "unmapped",
+        });
+        expect(settledRun?.completedAt).toBeInstanceOf(Date);
+        expect(settledJob).toMatchObject({
+          id: before.job.id,
+          status: "failed",
+          result: null,
+          message: null,
+          metadata: {
+            [PROTECTED_TASK_RUN_ABANDONMENT_RECEIPT_METADATA_KEY]: {
+              version: 1,
+              taskId: connected.taskId,
+              taskRunId: connected.taskRunId,
+              authorizationRequestId: requestId,
+              executionSegment: 1,
+              reason: "provider_outcome_unknown",
+              parentTaskTerminalized: true,
+            },
+          },
+        });
+        expect(settledGrant).toMatchObject({
+          state: "terminal_failure",
+          terminalReason: "provider_outcome_unknown",
+        });
+        expect(settledGrant?.finishedAt).toBeInstanceOf(Date);
+        expect(settledGrant?.finishedAt).toEqual(settledGrant?.updatedAt);
+        expect(await base.admin.select({
+          sequence: taskRunResultCryptoRevisions.sequence,
+        }).from(taskRunResultCryptoRevisions).where(and(
+          eq(taskRunResultCryptoRevisions.taskId, connected.taskId),
+          eq(taskRunResultCryptoRevisions.taskRunId, connected.taskRunId),
+          eq(taskRunResultCryptoRevisions.resultRevision, 1),
+        ))).toEqual([]);
+        expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
+          payload: 0,
+          head: 0,
+          manifest: 0,
+          envelope: 0,
+        });
+        expect(await base.admin.select({ id: taskRuns.id })
+          .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId)))
+          .toEqual([{ id: connected.taskRunId }]);
+        expect(await base.admin.select({ id: jobs.id })
+          .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`)))
+          .toEqual([{ id: before.job.id }]);
+        expect(segmentCalls).toEqual([{
+          taskId: connected.taskId,
+          taskRunId: connected.taskRunId,
+          graphThreadId: connected.graphThreadId,
+        }]);
+        expect(recipients.size).toBe(0);
+
+        await composition.coordinator.recoverBeforeObservation(100);
+        expect(segmentCalls).toHaveLength(1);
+        expect(recipients.size).toBe(0);
       } else {
       let terminal = await waitForConnectedCompletion(
         base,
         connected.taskRunId,
         terminalStatus,
-        scenario === "parked continuation" ? 2 : undefined,
+        continuedExecution ? 2 : undefined,
       );
       if (missingCiphertextRecovery) {
         expect(terminal.job.status).toBe("failed");
@@ -4150,6 +6116,8 @@ describePostgres("sealed protected Task Memory object writer", () => {
           base,
           scenario === "parked continuation"
             ? continuationAuthorizationRequestId
+            : checkpointContinuationScenario
+              ? checkpointContinuationAuthorizationRequestId!
             : `task-run-authorization:${connected.taskRunId}`,
           recipients,
         );
@@ -4178,11 +6146,13 @@ describePostgres("sealed protected Task Memory object writer", () => {
           resultObjectId: connected.resultObjectId,
           authorizationRequestId: scenario === "parked continuation"
             ? continuationAuthorizationRequestId
+            : checkpointContinuationScenario
+              ? checkpointContinuationAuthorizationRequestId
             : `task-run-authorization:${connected.taskRunId}`,
           policyRevision: base.policyRevision,
-          executionSegment: scenario === "parked continuation" ? 2 : 1,
+          executionSegment: continuedExecution ? 2 : 1,
         });
-        if (scenario === "parked continuation") {
+        if (continuedExecution) {
           expect("resumeContinuationFingerprint" in terminalReference)
             .toBe(true);
         } else {
@@ -4220,30 +6190,568 @@ describePostgres("sealed protected Task Memory object writer", () => {
           taskId: connected.taskId,
           jobId: terminal.job.id,
           status: "completed",
-          resultRepresentation: "protected",
+          resultRepresentation: wakeForegroundShadow
+            || historicalDefinition && !historicalDefinitionFull
+            ? "dual"
+            : "protected",
           resultContentNamespaceId: base.namespaceValue,
           resultRevision: 1,
           resultCryptoObjectId: connected.resultObjectId,
           resultCryptoAccessRevision: 0,
           resultCryptoMappingState: "verified",
-          resultText: null,
+          resultText: wakeForegroundShadow
+            || historicalDefinition && !historicalDefinitionFull
+            ? "Connected protected result"
+            : null,
           lastError: null,
           modelId: connected.requestedModelId,
+          ...(callerLocalExecution && callerFunding !== null ? {
+            fundingBinding: {
+              kind: "personal",
+              providerRoute: "openrouter",
+              credentialId: callerFunding.credentialId,
+              credentialRevision: callerFunding.credentialRevision,
+            },
+          } : {}),
         });
+        if (freshOutputRead) {
+          const output = createProtectedTaskOutputReadComposition({ db: base.productDb,
+            restricted: base.restricted, crypto: base.crypto, owner, serverScope: SERVER_SCOPE,
+            recipients, recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now: Date.now });
+          const prepared = await output.preparation.prepare({ taskId: connected.taskId,
+            taskRunId: connected.taskRunId, kind: "raw" });
+          expect(prepared.status).toBe("exact_replay");
+          const outputRequestId = `task-run-delivery-result-authorization:${connected.taskRunId}`;
+          const outputDevice = createProductionBackgroundAuthorizationComposition({ crypto: base.crypto,
+            serverScope: SERVER_SCOPE, now: Date.now, restricted: () => base.restricted,
+            bindTaskRecipient: output.bindTaskRecipient, withTaskAuthority: output.withTaskAuthority,
+            isTaskRecipientActive: output.isTaskRecipientActive, wakeProtectedTask: () => undefined });
+          await grantRequest(outputDevice, outputRequestId);
+          const readRecord = await new PostgresBackgroundAuthorizationRepository(base.cryptoHandle).get(outputRequestId);
+          expect(readRecord?.snapshot.state).toBe("grant_ready");
+          expect(readRecord?.workKind).toBe("task.deliver_result");
+          expect(readRecord?.authoritySet?.namespaceRequirements).toHaveLength(1);
+          expect(readRecord?.authoritySet?.namespaceRequirements[0]?.operations).toEqual(["decrypt", "encrypt"]);
+          expect(recipients.size).toBe(1);
+          expect(segmentCalls).toHaveLength(1);
+          if (prepared.status !== "created" && prepared.status !== "exact_replay"
+            || readRecord?.snapshot.formatVersion !== 3) throw new Error("Fresh read grant not ready");
+          let openedResultCalls = 0;
+          const recoverResultMessage = createProtectedTaskRunResultMessageRecovery({
+            db: base.productDb,
+            restricted: base.restricted,
+            crypto: base.crypto,
+            owner,
+            serverScope: SERVER_SCOPE,
+          });
+          const publishResultMessage = createProtectedTaskRunResultMessagePublication({
+            restricted: base.restricted,
+            crypto: base.crypto,
+            owner,
+            serverScope: SERVER_SCOPE,
+            authority: output.authority,
+            recover: rawStagingCompatiblePolicyRestart
+              ? async () => "pending"
+              : async coordinates =>
+                  await recoverResultMessage(coordinates) === "mapped"
+                    ? "mapped"
+                    : "pending",
+          });
+          const claimRead = createProtectedTaskOutputReadClaim({ workKind: "task.deliver_result",
+            authority: output.authority, recipients, now: Date.now,
+            repository: async connection => new PostgresBackgroundAuthorizationRepository(await verifyCryptoPostgresHandle(connection)),
+            publish: freshRawMessagePublication ? publishResultMessage : async publication => {
+              const accepted = acceptedTaskRuntimeRecord(publication.record);
+              if (accepted === null) throw new Error("Fresh result-read authorization absent");
+              try {
+                const history = new PostgresHumanDeviceSignerHistory({ handle: base.cryptoHandle, crypto: base.crypto });
+                const source = await withNativeProtectedTaskRunResultMessageSourceV1({ restricted: base.restricted,
+                  crypto: base.crypto, serverScope: SERVER_SCOPE, evidence: publication.evidence,
+                  domains: publication.partitions.resultDomains, signal: publication.signal,
+                  resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
+                  loadCurrentResult: () => output.authority.withAccepted({ intent: publication.plan.intent,
+                    accepted, restricted: base.restricted, signal: publication.signal,
+                    subject: { userId: base.userId, humanActorId: accepted.issuingHumanId, deviceId: accepted.issuingDeviceId },
+                    validateBeforeCommit: publication.assertCurrentClaim,
+                    use: current => current.occurrence }),
+                  execute: async (messageSource, assertCurrentSource) => {
+                    await assertCurrentSource(); await publication.assertCurrentClaim();
+                    expect(messageSource.payload.role).toBe("assistant");
+                    expect(messageSource.payload.content).toBe("Connected protected result");
+                    openedResultCalls += 1;
+                  } });
+                expect(source.status).toBe("available");
+              } finally { destroyAcceptedTaskRuntimeRecord(accepted); }
+            } });
+          const claimInput = { plan: prepared.plan,
+            record: readRecord as BackgroundAuthorizationTaskRuntimeRecordV3,
+            restricted: base.restricted, signal: new AbortController().signal };
+          if (rawStagingCompatiblePolicyRestart) {
+            let claimError: unknown;
+            try { await claimRead(claimInput); } catch (error) { claimError = error; }
+            expect(claimError).toBeInstanceOf(Error);
+            expect((claimError as Error).message).toBe(
+              "Task result Message requires publication reconciliation",
+            );
+          } else {
+            expect((await claimRead(claimInput))?.snapshot.state).toBe("completed");
+          }
+          expect(openedResultCalls).toBe(freshRawMessagePublication ? 0 : 1);
+          if (!rawStagingCompatiblePolicyRestart) expect(recipients.size).toBe(0);
+          if (freshRawMessagePublication) {
+            const sessionId = prepared.plan.intent.invocation.sessionId;
+            const [binding] = await base.admin.select().from(
+              protectedTaskRunOutputBindings,
+            ).where(eq(
+              protectedTaskRunOutputBindings.taskRunId,
+              connected.taskRunId,
+            ));
+            expect(binding).toMatchObject({
+              deliveryMode: wakeForegroundScenario
+                ? "raw_and_wake"
+                : "raw",
+              destinationRoomId: base.roomId,
+              destinationNamespaceId: base.namespaceValue,
+              resultRevision: 1,
+            });
+            expect(binding?.resultAttachedAt).toEqual(terminal.run.completedAt);
+            if (typeof binding?.messageOperationId !== "string") {
+              throw new Error("Fresh Task result Message operation was unavailable");
+            }
+            const allocatedMessages = await base.admin.select({
+              id: sessionMessages.id,
+              sessionId: sessionMessages.sessionId,
+              role: sessionMessages.role,
+              content: sessionMessages.content,
+              toolCalls: sessionMessages.toolCalls,
+              toolName: sessionMessages.toolName,
+              fingerprint: sessionMessages.fingerprint,
+              humanTurnId: sessionMessages.humanTurnId,
+              objectId: sessionMessages.cryptoObjectId,
+            }).from(sessionMessages).where(eq(
+              sessionMessages.sessionId,
+              sessionId,
+            ));
+            expect(allocatedMessages).toHaveLength(1);
+            const message = allocatedMessages[0];
+            if (message === undefined) {
+              throw new Error("Fresh Task result Message allocation was unavailable");
+            }
+            const messageId = message.id;
+            if (wakeForegroundScenario) {
+              wakeHistoryMessageIds.push(messageId);
+            }
+            const [revision, association, receipt] = await Promise.all([
+              base.admin.select({
+                completion: sessionMessageCryptoRevisions.completion,
+                disposition: sessionMessageCryptoRevisions.disposition,
+                parityStatus: sessionMessageCryptoRevisions.parityStatus,
+                objectId: sessionMessageCryptoRevisions.cryptoObjectId,
+              }).from(sessionMessageCryptoRevisions).where(and(
+                eq(sessionMessageCryptoRevisions.sessionId, sessionId),
+                eq(sessionMessageCryptoRevisions.messageId,
+                  messageId),
+              )).then(rows => rows[0]),
+              base.admin.select({
+                kind: taskRunMessageAssociations.kind,
+                publicationKey: taskRunMessageAssociations.publicationKey,
+              }).from(taskRunMessageAssociations).where(eq(
+                taskRunMessageAssociations.taskRunId,
+                connected.taskRunId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                requestId: taskTerminalMessageCryptoStagingReceipts.requestId,
+                objectId: taskTerminalMessageCryptoStagingReceipts.cryptoObjectId,
+                acceptedPolicyRevision:
+                  taskTerminalMessageCryptoStagingReceipts.acceptedPolicyRevision,
+                publicationPolicyRevision:
+                  taskTerminalMessageCryptoStagingReceipts.publicationPolicyRevision,
+                genesisManifestHash:
+                  taskTerminalMessageCryptoStagingReceipts.genesisManifestHash,
+                retainedIntent:
+                  taskTerminalMessageCryptoStagingReceipts.rawResultMessageIntent,
+              }).from(taskTerminalMessageCryptoStagingReceipts).where(eq(
+                taskTerminalMessageCryptoStagingReceipts.requestId,
+                outputRequestId,
+              )).then(rows => rows[0]),
+            ]);
+            if (receipt === undefined || typeof receipt.objectId !== "string") {
+              throw new Error("Fresh Task result Message receipt was unavailable");
+            }
+            const messageObjectId = receipt.objectId;
+            expect(message.objectId).toBe(
+              rawStagingCompatiblePolicyRestart ? null : messageObjectId,
+            );
+            expect(message).toMatchObject({
+              id: messageId,
+              sessionId,
+              role: "assistant",
+              content: wakeForegroundShadow
+                ? "Connected protected result"
+                : null,
+              toolCalls: null,
+              toolName: null,
+              fingerprint: null,
+              humanTurnId: null,
+            });
+            expect(messageObjectId).toMatch(/^message:v2:[0-9a-f]{64}$/u);
+            expect(receipt).toMatchObject({
+              requestId: outputRequestId,
+              objectId: messageObjectId,
+              acceptedPolicyRevision: base.policyRevision,
+              publicationPolicyRevision: base.policyRevision,
+            });
+            expect(receipt?.retainedIntent).not.toBeNull();
+            expect(await objectRowCounts(base, messageObjectId)).toEqual({
+              payload: 1,
+              head: 1,
+              manifest: 1,
+              envelope: 1,
+            });
+            if (rawStagingCompatiblePolicyRestart) {
+              expect(binding).toMatchObject({
+                messageId: null,
+                messagePublishedAt: null,
+                completedAt: null,
+              });
+              expect(revision).toEqual({
+                completion: "pending",
+                disposition: "active",
+                parityStatus: "pending",
+                objectId: messageObjectId,
+              });
+              expect(association).toBeUndefined();
+              expect(recipients.size).toBe(0);
+            }
+
+            await base.admin.delete(
+              backgroundCryptoAuthorizationNamespaceRequirements,
+            ).where(eq(
+              backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+              outputRequestId,
+            ));
+            await base.admin.delete(
+              backgroundCryptoAuthorizationDomainRequirements,
+            ).where(eq(
+              backgroundCryptoAuthorizationDomainRequirements.requestId,
+              outputRequestId,
+            ));
+            await base.admin.delete(backgroundCryptoAuthorizationRequests)
+              .where(eq(
+                backgroundCryptoAuthorizationRequests.requestId,
+                outputRequestId,
+              ));
+            expect(await new PostgresBackgroundAuthorizationRepository(
+              base.cryptoHandle,
+            ).get(outputRequestId)).toBeNull();
+            if (rawStagingCompatiblePolicyRestart) {
+              const beforePolicy = await getEncryptionTransitionPolicy(base.productDb);
+              expect(beforePolicy).toMatchObject({
+                mode: "encrypted_only",
+                revision: base.policyRevision,
+              });
+              await base.admin.update(encryptionTransitionPolicy).set({
+                revision: base.policyRevision + 1,
+                updatedAt: new Date(Date.now()),
+              }).where(eq(encryptionTransitionPolicy.id, "server"));
+              expect(await getEncryptionTransitionPolicy(base.productDb)).toMatchObject({
+                mode: "encrypted_only",
+                revision: base.policyRevision + 1,
+              });
+            }
+            expect(await recoverResultMessage({ taskId: connected.taskId,
+              taskRunId: connected.taskRunId })).toBe("mapped");
+            expect(await recoverResultMessage({ taskId: connected.taskId,
+              taskRunId: connected.taskRunId })).toBe("mapped");
+            const [mappedBinding, mappedRevision, mappedAssociation, retainedReceipt] = await Promise.all([
+              base.admin.select({
+                messageId: protectedTaskRunOutputBindings.messageId,
+                messagePublishedAt: protectedTaskRunOutputBindings.messagePublishedAt,
+                completedAt: protectedTaskRunOutputBindings.completedAt,
+              }).from(protectedTaskRunOutputBindings).where(eq(
+                protectedTaskRunOutputBindings.taskRunId,
+                connected.taskRunId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                completion: sessionMessageCryptoRevisions.completion,
+                disposition: sessionMessageCryptoRevisions.disposition,
+                objectId: sessionMessageCryptoRevisions.cryptoObjectId,
+              }).from(sessionMessageCryptoRevisions).where(and(
+                eq(sessionMessageCryptoRevisions.sessionId, sessionId),
+                eq(sessionMessageCryptoRevisions.messageId, messageId),
+              )).then(rows => rows[0]),
+              base.admin.select({
+                kind: taskRunMessageAssociations.kind,
+                publicationKey: taskRunMessageAssociations.publicationKey,
+              }).from(taskRunMessageAssociations).where(eq(
+                taskRunMessageAssociations.taskRunId,
+                connected.taskRunId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                requestId: taskTerminalMessageCryptoStagingReceipts.requestId,
+                objectId: taskTerminalMessageCryptoStagingReceipts.cryptoObjectId,
+                acceptedPolicyRevision:
+                  taskTerminalMessageCryptoStagingReceipts.acceptedPolicyRevision,
+                publicationPolicyRevision:
+                  taskTerminalMessageCryptoStagingReceipts.publicationPolicyRevision,
+                genesisManifestHash:
+                  taskTerminalMessageCryptoStagingReceipts.genesisManifestHash,
+                retainedIntent:
+                  taskTerminalMessageCryptoStagingReceipts.rawResultMessageIntent,
+              }).from(taskTerminalMessageCryptoStagingReceipts).where(eq(
+                taskTerminalMessageCryptoStagingReceipts.requestId,
+                outputRequestId,
+              )).then(rows => rows[0]),
+            ]);
+            expect(mappedBinding?.messageId).toBe(messageId);
+            expect(mappedBinding?.messagePublishedAt).toBeInstanceOf(Date);
+            if (wakeForegroundScenario) {
+              expect(mappedBinding?.completedAt).toBeNull();
+            } else {
+              expect(mappedBinding?.completedAt).toEqual(
+                mappedBinding?.messagePublishedAt,
+              );
+            }
+            expect(mappedRevision).toEqual({
+              completion: "complete",
+              disposition: "mapped",
+              objectId: messageObjectId,
+            });
+            expect(mappedAssociation).toEqual({
+              kind: "raw_delivery",
+              publicationKey: binding.messageOperationId,
+            });
+            expect(retainedReceipt).toEqual(receipt);
+            expect(await base.admin.select({ id: sessionMessages.id })
+              .from(sessionMessages).where(eq(
+                sessionMessages.sessionId,
+                sessionId,
+              ))).toEqual([{ id: messageId }]);
+          }
+        }
+        if (wakeForegroundScenario) {
+          const wakeJobId = protectedTaskRunWakeJobId(connected.taskRunId);
+          const wakeRequestId = `task-wake-authorization:${wakeJobId}`;
+          base.jobIds.add(wakeJobId);
+          base.requestIds.add(wakeRequestId);
+
+          // The first pass records the stable content-free wake Job. The
+          // second prepares its fresh destination grant; neither may infer.
+          await composition.coordinator.recoverBeforeObservation(100);
+          await composition.coordinator.recoverBeforeObservation(100);
+          const authorizationRepository =
+            new PostgresBackgroundAuthorizationRepository(base.cryptoHandle);
+          let awaitingWake = await authorizationRepository.get(wakeRequestId);
+          const preparationDeadline = Date.now() + 10_000;
+          while (awaitingWake === null && Date.now() < preparationDeadline) {
+            await new Promise<void>(resolve => setTimeout(resolve, 10));
+            awaitingWake = await authorizationRepository.get(wakeRequestId);
+          }
+          expect(awaitingWake?.snapshot.state).toBe("awaiting_recipient");
+          expect(awaitingWake?.workKind).toBe("task.delivery_wake");
+          expect(wakeExecutions).toBe(0);
+          expect(await base.admin.select({
+            status: jobs.status,
+            startedAt: jobs.startedAt,
+            completedAt: jobs.completedAt,
+          }).from(jobs).where(eq(jobs.id, wakeJobId))).toEqual([{
+            status: "queued",
+            startedAt: null,
+            completedAt: null,
+          }]);
+
+          await grantConnectedRequest(wakeRequestId);
+          const initialWakeGrant = await authorizationRepository.get(wakeRequestId);
+          const initialWakeGeneration = initialWakeGrant?.snapshot.recipientGeneration;
+          if (initialWakeGeneration === undefined) throw new Error("Wake initial grant missing");
+          let additionalWakeGrantIssued = false;
+          let additionalNamespacePublished = false;
+          // This fixture owns the production coordinator but replaces the
+          // outer TaskObserver with a kick counter. Pump the next real pass
+          // which the running observer performs after device grant acceptance.
+          await composition.coordinator.recoverBeforeObservation(100);
+          const wakeDeadline = Date.now() + (wakeProjectionContinuation ? 90_000 : 45_000);
+          let [settledWake] = await base.admin.select({
+            status: jobs.status,
+            startedAt: jobs.startedAt,
+            completedAt: jobs.completedAt,
+          }).from(jobs).where(eq(jobs.id, wakeJobId));
+          while (settledWake?.status !== "completed"
+            && settledWake?.status !== "failed"
+            && Date.now() < wakeDeadline) {
+            await new Promise<void>(resolve => setTimeout(resolve, 100));
+            if (settledWake?.status === "queued") {
+              await composition.coordinator.recoverBeforeObservation(100);
+              if (wakeProjectionContinuation && !additionalWakeGrantIssued) {
+                if (wakeProjectionRotationPending && !additionalNamespacePublished) {
+                  const destination = additionalProjectionRoom.current;
+                  if (destination === null) throw new Error("Wake destination missing");
+                  expect(wakeProjectionModelCalls).toBe(1);
+                  expect(wakeExecutions).toBe(0);
+                  expect(await base.admin.select({ memoryId: memoryNamespaces.memoryId })
+                    .from(memoryNamespaces).where(eq(memoryNamespaces.namespaceId, destination.namespaceId))).toEqual([]);
+                  await base.publishAdditionalNamespaceBundle(destination.roomId, destination.namespaceId);
+                  additionalNamespacePublished = true;
+                  await composition.coordinator.recoverBeforeObservation(100);
+                }
+                const parked = await authorizationRepository.get(wakeRequestId);
+                if (parked?.snapshot.state === "awaiting_recipient"
+                  && parked.snapshot.recipientGeneration > initialWakeGeneration) {
+                  const destination = additionalProjectionRoom.current;
+                  if (destination === null) throw new Error("Wake destination missing");
+                  expect(await base.admin.select({ memoryId: memoryNamespaces.memoryId })
+                    .from(memoryNamespaces).where(eq(memoryNamespaces.namespaceId, destination.namespaceId)))
+                    .toEqual([]);
+                  expect(wakeProjectionModelCalls).toBe(1);
+                  expect(wakeExecutions).toBe(0);
+                  expect(additionalNamespacePublished).toBeTrue();
+                  // A new graph/saver/session is constructed on the next
+                  // adopted Job; only the encrypted durable state survives.
+                  await grantConnectedRequest(wakeRequestId);
+                  additionalWakeGrantIssued = true;
+                  await composition.coordinator.recoverBeforeObservation(100);
+                }
+              }
+            }
+            [settledWake] = await base.admin.select({
+              status: jobs.status,
+              startedAt: jobs.startedAt,
+              completedAt: jobs.completedAt,
+            }).from(jobs).where(eq(jobs.id, wakeJobId));
+          }
+          if (settledWake?.status !== "completed" && nativeErrors.length > 0) {
+            throw new Error(`Protected wake failed: ${JSON.stringify(nativeErrors)}`);
+          }
+          expect(settledWake?.status).toBe("completed");
+          expect(settledWake?.startedAt).toBeInstanceOf(Date);
+          expect(settledWake?.completedAt).toBeInstanceOf(Date);
+          expect(wakeExecutions).toBe(1);
+          if (wakeProjectionContinuation) {
+            expect(additionalWakeGrantIssued).toBeTrue();
+            expect(wakeProjectionModelCalls).toBe(1);
+            expect(wakeProjectionGraphCalls).toBe(wakeProjectionRollback ? 3 : 2);
+          }
+          expect(wakePublishedMessageId).not.toBeNull();
+          if (wakePublishedMessageId === null) {
+            throw new Error("Protected wake transcript Message was unavailable");
+          }
+          const wakeMessageId = wakePublishedMessageId;
+          const [wakeMessage] = await base.admin.select({
+            id: sessionMessages.id,
+            sessionId: sessionMessages.sessionId,
+            role: sessionMessages.role,
+            content: sessionMessages.content,
+            objectId: sessionMessages.cryptoObjectId,
+          }).from(sessionMessages).where(eq(
+            sessionMessages.id,
+            wakeMessageId,
+          ));
+          expect(wakeMessage).toMatchObject({
+            id: wakeMessageId,
+            role: "assistant",
+            content: wakeForegroundShadow
+              ? "The protected Task result is ready."
+              : null,
+          });
+          expect(wakeMessage?.objectId).toBe(deriveLiveShadowMessageCryptoObjectIdV1({
+            operationId: protectedTaskRunWakeOperationId(connected.taskRunId),
+            sessionId: wakeMessage!.sessionId, messageId: wakeMessageId,
+            revision: 0, transcriptOrdinal: 2, authorRole: "assistant",
+          }));
+          if (typeof wakeMessage?.objectId !== "string") {
+            throw new Error("Protected wake transcript object was unavailable");
+          }
+          const wakeMessageObjectId = wakeMessage.objectId;
+          const [wakeRevision] = await base.admin.select({
+            completion: sessionMessageCryptoRevisions.completion,
+            disposition: sessionMessageCryptoRevisions.disposition,
+            objectId: sessionMessageCryptoRevisions.cryptoObjectId,
+          }).from(sessionMessageCryptoRevisions).where(and(
+            eq(sessionMessageCryptoRevisions.sessionId,
+              wakeMessage.sessionId),
+            eq(sessionMessageCryptoRevisions.messageId,
+              wakeMessageId),
+          ));
+          expect(wakeRevision).toEqual({
+            completion: "complete",
+            disposition: "mapped",
+            objectId: wakeMessageObjectId,
+          });
+          // Job settlement commits before the grant callback finishes wiping
+          // its opened keys and completing the authorization claim.
+          const wakeSettlementDeadline = Date.now() + 10_000;
+          let settledAuthorization = await authorizationRepository.get(wakeRequestId);
+          while (settledAuthorization?.snapshot.state === "running"
+            && Date.now() < wakeSettlementDeadline && nativeErrors.length === 0) {
+            await new Promise<void>(resolve => setTimeout(resolve, 10));
+            settledAuthorization = await authorizationRepository.get(wakeRequestId);
+          }
+          if (nativeErrors.length > 0) {
+            throw new Error(`Protected wake completion failed: ${JSON.stringify(nativeErrors)}`);
+          }
+          expect(settledAuthorization?.snapshot).toMatchObject({ state: "completed" });
+          expect(recipients.size).toBe(0);
+
+          await composition.coordinator.recoverBeforeObservation(100);
+          await composition.coordinator.recoverBeforeObservation(100);
+          expect(wakeExecutions).toBe(1);
+          expect(await base.admin.select({
+            requestId: backgroundCryptoAuthorizationRequests.requestId,
+          }).from(backgroundCryptoAuthorizationRequests).where(eq(
+            backgroundCryptoAuthorizationRequests.requestId,
+            wakeRequestId,
+          ))).toEqual([{ requestId: wakeRequestId }]);
+        }
         const exactRuns = await base.admin.select({ id: taskRuns.id })
           .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId));
         const exactJobs = await base.admin.select({ id: jobs.id })
           .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`));
         expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
-        if (scenario === "parked continuation") {
+        if (continuedExecution) {
           expect(parkedPriorJobId).not.toBeNull();
           expect(terminal.job.id).not.toBe(parkedPriorJobId);
           expect(exactJobs.map(job => job.id).sort()).toEqual([
             parkedPriorJobId!,
             terminal.job.id,
           ].sort());
-          expect(controlledEffectExecutions).toBe(1);
+          expect(controlledEffectExecutions)
+            .toBe(scenario === "parked continuation" ? 1 : 0);
           expect(segmentContinuationModes).toEqual([false, true]);
+          if (checkpointContinuationScenario) {
+            const checkpointRequestId =
+              checkpointContinuationAuthorizationRequestId;
+            if (checkpointRequestId === null) {
+              throw new Error("Checkpoint continuation grant was unavailable");
+            }
+            expect(checkpointRequestId)
+              .not.toBe(`task-run-authorization:${connected.taskRunId}`);
+            const authorizationRows = await base.admin.select({
+              requestId: backgroundCryptoAuthorizationRequests.requestId,
+              state: backgroundCryptoAuthorizationRequests.state,
+              workId: backgroundCryptoAuthorizationRequests.workId,
+            }).from(backgroundCryptoAuthorizationRequests).where(inArray(
+              backgroundCryptoAuthorizationRequests.requestId,
+              [
+                `task-run-authorization:${connected.taskRunId}`,
+                checkpointRequestId,
+              ],
+            ));
+            expect(authorizationRows.sort((left, right) =>
+              left.requestId.localeCompare(right.requestId))).toEqual([
+              {
+                requestId:
+                  `task-run-authorization:${connected.taskRunId}`,
+                state: "completed",
+                workId: connected.taskRunId,
+              },
+              {
+                requestId: checkpointRequestId,
+                state: "completed",
+                workId: connected.taskRunId,
+              },
+            ].sort((left, right) =>
+              left.requestId.localeCompare(right.requestId)));
+          }
         } else {
           expect(exactJobs).toEqual([{ id: terminal.job.id }]);
         }
@@ -4255,18 +6763,83 @@ describePostgres("sealed protected Task Memory object writer", () => {
         }).from(tasks).where(eq(tasks.id, connected.taskId));
         expect(terminalTask).toEqual({
           status: "completed",
-          prompt: "",
+          prompt: wakeForegroundShadow || historicalDefinition
+            ? "Complete the connected protected Task"
+            : "",
           expectedOutput: null,
           lastError: null,
         });
+        if (historicalDefinition) {
+          const [retained] = await base.admin.select({
+            objectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+            provenance: taskDefinitionCryptoRevisions.historicalRepair,
+            requestDigest: taskDefinitionCryptoRevisions.requestDigest,
+            completion: taskDefinitionCryptoRevisions.completion,
+            disposition: taskDefinitionCryptoRevisions.disposition,
+          }).from(taskDefinitionCryptoRevisions).where(eq(taskDefinitionCryptoRevisions.taskId, connected.taskId));
+          expect(retained).toMatchObject({ objectId: connected.inputObjectId,
+            provenance: occurrence.task.definitionHistoricalRepair,
+            completion: "complete", disposition: "mapped" });
+          const retainedSignedRequestDigest =
+            occurrence.task.definitionHistoricalRepair
+              ?.["signedRequestDigest"];
+          if (typeof retainedSignedRequestDigest !== "string") {
+            throw new Error(
+              "Historical Task definition signed request digest was unavailable",
+            );
+          }
+          expect(Buffer.from(retained!.requestDigest).toString("hex"))
+            .toBe(retainedSignedRequestDigest);
+          expect(await objectRowCounts(base, connected.inputObjectId))
+            .toEqual({ payload: 1, head: 1, manifest: 1, envelope: 1 });
+        }
         expect(segmentCalls).toEqual(Array.from(
-          { length: scenario === "parked continuation" ? 2 : 1 },
+          { length: continuedExecution ? 2 : 1 },
           () => ({
             taskId: activeConnected.taskId,
             taskRunId: activeConnected.taskRunId,
             graphThreadId: activeConnected.graphThreadId,
           }),
         ));
+        if (callerLocalExecution) {
+          if (callerFunding === null || delegatedLocal.current === null) {
+            throw new Error("Caller/local protected Task fixture was unavailable");
+          }
+          expect(callerFunding.requests).toHaveLength(1);
+          expect(callerFunding.requests[0]).toMatchObject({
+            authorization: `Bearer ${callerFunding.apiKey}`,
+            url: "https://openrouter.ai/api/v1/chat/completions",
+          });
+          expect(callerFunding.requests[0]?.body)
+            .not.toContain(callerFunding.apiKey);
+          const dispatches = delegatedLocal.current.messages.filter(
+            message => message.type === "relay:dispatch",
+          );
+          expect(dispatches).toHaveLength(1);
+          expect(dispatches[0]).toMatchObject({
+            type: "relay:dispatch",
+            toolName: "exec_command",
+            args: { cmd: "printf protected-task-local" },
+            localExecutionBinding: {
+              version: 4,
+              operation: "start",
+              authority: {
+                kind: "delegated",
+                taskId: activeConnected.taskId,
+                taskRunId: activeConnected.taskRunId,
+                roomId: base.roomId,
+                delegation: {
+                  target: {
+                    pairingGeneration:
+                      delegatedLocal.current.delegation.target
+                        .pairingGeneration,
+                  },
+                },
+              },
+            },
+          });
+          expect(JSON.stringify(dispatches)).not.toContain(callerFunding.apiKey);
+        }
         expect(await objectRowCounts(base, connected.resultObjectId)).toEqual({
           payload: 1,
           head: 1,
@@ -4292,13 +6865,21 @@ describePostgres("sealed protected Task Memory object writer", () => {
           .from(sessionMessages).where(eq(
             sessionMessages.sessionId,
             sessionRows[0]!.id,
-          ))).toEqual([]);
+          ))).toHaveLength(0);
         expect(recipients.size).toBe(0);
       }
       }
       }
     } catch (error) {
       testError = error;
+    }
+    projectionRollback.current?.restore();
+    if (closeComposition !== null) {
+      try {
+        await closeComposition();
+      } catch (error) {
+        cleanupError = error;
+      }
     }
     if (connected !== null && connectedJobId !== null && jobManager !== null) {
       try {
@@ -4311,12 +6892,27 @@ describePostgres("sealed protected Task Memory object writer", () => {
         cleanupError = error;
       }
     }
+    if (delegatedLocal.current !== null) {
+      try {
+        await delegatedLocal.current.restore();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (callerFunding !== null) {
+      try {
+        await callerFunding.restore();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
     try {
       recipients.close();
       await base.cleanup();
     } catch (error) {
       cleanupError ??= error;
     }
+    projectionCiphertextHash.current?.fill(0);
     if (testError !== undefined && cleanupError !== undefined) {
       throw new AggregateError(
         [testError, cleanupError],
@@ -4338,7 +6934,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           { cause: cleanupError },
         );
     }
-  }, 60_000);
+  }, 120_000);
 
   test("commits under genuine authority and serializes cancellation and expiry", async () => {
     const base = await createBaseFixture();
@@ -6168,4 +8764,100 @@ describePostgres("sealed protected Task Memory object writer", () => {
         });
     }
   });
+});
+
+
+test.each([false, true])("historical Task repair stages and maps atomically (expired admission after crypto commit: %s)", async expireAfterStage => {
+  let currentNow = NOW;
+  const base = await createBaseFixture({ cryptoNow: () => currentNow });
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", shadowBehavior: "strict", revision: base.policyRevision,
+      shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    await base.admin.insert(tasks).values({
+      id: taskId, ownerId: base.userId, requestorId: base.userId,
+      agentId: base.productAgentId, prompt: "Historical private Task",
+      expectedOutput: "Preserve this output", scheduleKind: "now",
+      status: "paused", callingRoomId: base.roomId, targetChat: "orphan",
+      useScope: false, scopeId: null,
+    });
+    const historicalObjectId = await repairHistoricalTaskDefinition(base, taskId, {
+      expireAfterStage, now: () => currentNow, afterStage: () => { currentNow = NOW + 25_000; },
+    });
+    const [mapped] = await base.admin.select({ prompt: tasks.prompt, expectedOutput: tasks.expectedOutput,
+      status: tasks.status, representation: tasks.contentRepresentation,
+      revision: tasks.contentRevision, objectId: tasks.cryptoObjectId, mapping: tasks.cryptoMappingState,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    expect(mapped).toEqual({ prompt: "Historical private Task", expectedOutput: "Preserve this output",
+      status: "paused", representation: "dual", revision: 1, objectId: historicalObjectId, mapping: "verified" });
+    const [ledger] = await base.admin.select({ completion: taskDefinitionCryptoRevisions.completion,
+      disposition: taskDefinitionCryptoRevisions.disposition,
+      historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+    }).from(taskDefinitionCryptoRevisions).where(eq(taskDefinitionCryptoRevisions.taskId, taskId));
+    expect(ledger).toMatchObject({ completion: "complete", disposition: "mapped", historicalRepair: { version: 2 } });
+  } finally { await base.cleanup(); }
+});
+
+
+test.each(["definition", "result"] as const)("historical %s scan orders fractional timestamps by its durable cursor", async kind => {
+  const base = await createBaseFixture();
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", shadowBehavior: "strict", revision: base.policyRevision,
+      shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const ids = [randomUUID(), randomUUID()].sort();
+    let parentTaskId: string | null = null;
+    if (kind === "result") {
+      const parent = await createScenario(base, { contentRepresentation: "dual" });
+      parentTaskId = parent.taskId;
+      await base.admin.update(tasks).set({ status: "completed" }).where(eq(tasks.id, parent.taskId));
+    }
+    for (const [index, id] of ids.entries()) {
+      // Deliberately reverse the microseconds against the ID order in one
+      // millisecond; cursor JSON retains only milliseconds.
+      const fractional = index === 0
+        ? sql`'2026-10-11T09:00:00.123999Z'::timestamptz`
+        : sql`'2026-10-11T09:00:00.123111Z'::timestamptz`;
+      if (kind === "definition") {
+        base.taskIds.add(id);
+        await base.admin.insert(tasks).values({ id, ownerId: base.userId, requestorId: base.userId,
+          agentId: base.productAgentId, prompt: "Historical scan fixture", status: "paused",
+          createdAt: fractional, updatedAt: new Date(NOW), callingRoomId: base.roomId,
+        });
+      } else {
+        await base.admin.insert(taskRuns).values({ id, taskId: parentTaskId!, status: "completed",
+          graphThreadId: `historical-scan:${id}`,
+          startedAt: new Date("2026-10-11T08:00:00Z"), completedAt: fractional, resultText: "Historical scan result",
+        });
+      }
+    }
+    const found: string[] = [];
+    for (const id of ids) {
+      const next = await discoverTaskContentBackfill(base.admin, {
+        humanActorId: base.humanActorId, deviceId: base.deviceId, now: new Date(NOW),
+        pageLimit: 1, resumeAt: new Date(NOW + 60_000),
+      });
+      if (next.status !== "candidate") throw new Error(`Historical scan unexpectedly ${next.status}`);
+      found.push(next.candidate.kind === "definition" ? next.candidate.taskId : next.candidate.taskRunId);
+      expect(found.at(-1)).toBe(id);
+      const installed = await claimTaskContentBackfill(base.admin, {
+        humanActorId: base.humanActorId, requesterUserId: base.userId, deviceId: base.deviceId,
+        claimId: randomUUID(), policyRevision: base.policyRevision, candidate: next.candidate,
+        now: new Date(NOW), expiresAt: new Date(NOW + 30_000),
+      });
+      if (installed.status !== "claimed") throw new Error(`Historical scan claim ${installed.status}`);
+      expect(await releaseTaskContentBackfillLease(base.admin, {
+        claim: installed.claim, now: new Date(NOW), advance: true,
+      })).toBe(true);
+    }
+    expect(found).toEqual(ids);
+    expect(await discoverTaskContentBackfill(base.admin, {
+      humanActorId: base.humanActorId, deviceId: base.deviceId, now: new Date(NOW),
+      pageLimit: 1, resumeAt: new Date(NOW + 60_000),
+    })).toMatchObject({ status: "swept" });
+  } finally { await base.cleanup(); }
 });

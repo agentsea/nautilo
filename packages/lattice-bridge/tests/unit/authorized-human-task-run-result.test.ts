@@ -8,6 +8,8 @@ import { createAuthorizedHumanTaskRunResultReaderV1 } from
   "../../src/client/task/authorized-human-task-run-result.ts";
 import { deriveTaskContentCryptoObjectIdV1 } from
   "../../src/task/task-content-repository.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
+  "../../src/task/task-historical-content-identity.ts";
 import { encodeTaskRunResultPayloadV1 } from
   "../../src/task/task-payload-v1.ts";
 import { ClassifiedDataOperationError } from
@@ -92,6 +94,77 @@ test("exact protected result read decodes large ciphertext and wipes it after de
     bytes.every((byte) => byte === 0))).toBe(true);
 });
 
+test("accepted foreground signer proof reaches the authentic device boundary", async () => {
+  const foreground = {
+    ...ready(),
+    signerEvidence: [{
+      kind: "foreground_agent_accepted_execution" as const,
+      planBytesBase64url: base64url(new Uint8Array([11, 12])),
+      planDigestBase64url: base64url(new Uint8Array(32).fill(13)),
+    }],
+  };
+  let received: Extract<ProtectedTaskRunResultReadEnvelopeV1,
+    { status: "ready" }>["signerEvidence"] | undefined;
+  const reader = createAuthorizedHumanTaskRunResultReaderV1({
+    api: api(foreground),
+    device: {
+      openExact: ({ envelope }) => {
+        received = envelope.signerEvidence;
+        return Promise.resolve(encodeTaskRunResultPayloadV1({
+          formatVersion: 1,
+          resultText: "foreground result",
+          lastError: null,
+        }));
+      },
+    },
+  });
+  expect(await reader.read(request)).toMatchObject({
+    status: "ready",
+    payload: { resultText: "foreground result" },
+  });
+  expect(received).toEqual(foreground.signerEvidence);
+});
+
+test("dynamic result access history reaches the authentic device boundary", async () => {
+  const response = {
+    ...ready(),
+    cryptoAccessRevision: 2,
+    accessManifestProofBytesBase64url: [
+      base64url(new Uint8Array([21])),
+      base64url(new Uint8Array([22])),
+    ],
+    signerEvidence: [
+      ...ready().signerEvidence,
+      {
+        kind: "human_device" as const,
+        subjectHumanId: TASK_ID,
+        committerDeviceId: "device:rewrap",
+        hostAuthorizationRevision: 4,
+        signingPublicKeyBase64url: base64url(new Uint8Array(32).fill(23)),
+      },
+    ],
+  };
+  let receivedRevision = -1;
+  const reader = createAuthorizedHumanTaskRunResultReaderV1({
+    api: api(response),
+    device: {
+      openExact: ({ envelope }) => {
+        receivedRevision = envelope.cryptoAccessRevision;
+        expect(envelope.accessManifestProofBytes).toHaveLength(2);
+        return Promise.resolve(encodeTaskRunResultPayloadV1({
+          formatVersion: 1,
+          resultText: "rewrapped result",
+          lastError: null,
+        }));
+      },
+    },
+  });
+  expect(await reader.read(request)).toMatchObject({
+    status: "ready", payload: { resultText: "rewrapped result" },
+  });
+  expect(receivedRevision).toBe(2);
+});
+
 test("waiting result remains explicit and never enters the device", async () => {
   const reader = createAuthorizedHumanTaskRunResultReaderV1({
     api: api({
@@ -150,6 +223,75 @@ test("revision-2 response with the revision-1 object is refused before device op
     },
   );
   expect(opens).toBe(0);
+});
+
+test("historical result binds its source-derived object and Human signer metadata", async () => {
+  const sourceDigest = new Uint8Array(32).fill(0x42);
+  const historicalRepair = {
+    version: 2 as const,
+    claimId: "50000000-0000-4000-8000-000000000123",
+    publisherDeviceId: "historical-device.1",
+    signedRequestDigest: "11".repeat(32),
+    sourceDigest: Buffer.from(sourceDigest).toString("hex"),
+    sourcePayloadHash: "22".repeat(32),
+    sourceRevision: 0 as const,
+    genesisManifestHash: "33".repeat(32),
+  };
+  const objectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+    coordinate: {
+      kind: "run_result", taskId: TASK_ID, taskRunId: RUN_ID,
+      contentRevision: 1,
+    },
+    namespaceId: NAMESPACE_ID,
+    sourceDigest,
+  });
+  const response = {
+    ...ready(),
+    objectId,
+    historicalRepair,
+    signerEvidence: [{
+      kind: "human_device" as const,
+      subjectHumanId: TASK_ID,
+      committerDeviceId: historicalRepair.publisherDeviceId,
+      hostAuthorizationRevision: 4,
+      signingPublicKeyBase64url: base64url(new Uint8Array(32).fill(9)),
+    }],
+  };
+  let opens = 0;
+  const reader = createAuthorizedHumanTaskRunResultReaderV1({
+    api: api(response),
+    device: {
+      openExact: ({ envelope }) => {
+        opens += 1;
+        expect(envelope.historicalRepair).toEqual(historicalRepair);
+        expect(envelope.objectId).toBe(objectId);
+        return Promise.resolve(encodeTaskRunResultPayloadV1({
+          formatVersion: 1, resultText: "historical", lastError: null,
+        }));
+      },
+    },
+  });
+  expect(await reader.read(request)).toMatchObject({
+    status: "ready", payload: { resultText: "historical" },
+  });
+  expect(opens).toBe(1);
+
+  for (const changed of [
+    { objectId: OBJECT_ID },
+    { historicalRepair: { ...historicalRepair, sourceDigest: "44".repeat(32) } },
+    { signerEvidence: ready().signerEvidence },
+  ]) {
+    const rejected = createAuthorizedHumanTaskRunResultReaderV1({
+      api: api({ ...response, ...changed }),
+      device: { openExact: () => {
+        throw new Error("historical substitution reached device");
+      } },
+    });
+    await rejected.read(request).then(
+      () => { throw new Error("historical substitution was accepted"); },
+      error => expect(error).toBeInstanceOf(ClassifiedDataOperationError),
+    );
+  }
 });
 
 test("substituted result coordinate and noncanonical ciphertext fail before device open", async () => {

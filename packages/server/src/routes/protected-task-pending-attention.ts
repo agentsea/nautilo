@@ -1,3 +1,4 @@
+import { resolveProtectedTaskCheckpointAadBinding } from "./protected-task-checkpoint-aad-binding";
 import { createDedicatedEncryptedCheckpointPool } from "@nautilo/agent";
 import {
   createPostgresJsBridgeConnection,
@@ -11,9 +12,10 @@ import {
   inspectDomainKeyV2CryptoAuthority,
   LIVE_SHADOW_FOREGROUND_AUTHORIZATION_TTL_MS,
   PostgresDomainKeyAuthorityRepository, PostgresNamespaceProductAuthority,
+  verifyCryptoPostgresHandle,
   type LiveShadowRecipientRegistry,
 } from "@nautilo/lattice-bridge/server";
-import { patchTaskApprovalEvent, readProtectedPendingInterruptEvents } from "@nautilo/runtime";
+import { PostgresBackgroundAuthorizationRepository, patchTaskApprovalEvent, readProtectedPendingInterruptEvents } from "@nautilo/runtime";
 import { envelopeReadableNamespaces, getPolicyResolver } from "@nautilo/trust";
 import type { ServerEvent } from "@nautilo/types";
 import {
@@ -171,14 +173,19 @@ export function createProtectedTaskPendingAttention(input: Readonly<{
     withCheckpoint: async (context, use) => {
       const { candidate } = context.locator;
       const namespace = context.snapshot.namespaceAuthority;
+      const checkpointAadBinding = await resolveProtectedTaskCheckpointAadBinding(candidate,
+        { get: async requestId => new PostgresBackgroundAuthorizationRepository(
+          await verifyCryptoPostgresHandle(restricted)).get(requestId) });
+      if (checkpointAadBinding === null) throw new TypeError("Task checkpoint retained ciphertext binding is unavailable");
       const cell = createHumanTaskCheckpointCellReader({
+        checkpointAadBinding,
         crypto, restricted, serverScope, domains: context.domains, signal: context.signal,
         deadlineAt: context.deadlineAt, now, assertCurrentTaskAuthority: context.assertCurrentAuthority,
         identity: { taskId: candidate.occurrence.task.id, taskRunId: candidate.occurrence.run.id,
           sourceRoomId: context.locator.topLevelRoomId, graphThreadId: context.locator.checkpointThreadId,
           namespaceId: context.locator.namespaceId, domainId: namespace.domainId,
           expectedAccessRevision: namespace.namespaceAccessRevision,
-          expectedPolicyRevision: candidate.priorJob.reference.policyRevision },
+          expectedPolicyRevision: context.snapshot.policyRevision },
       });
       if (cell.scope.authorizationSession === null
         || typeof cell.scope.authorizationSession !== "object") {

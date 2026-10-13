@@ -20,6 +20,8 @@ export { MAX_HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_WIRE_BYTES_V1 } from
   "./message/history-read-acknowledgement-v1.ts";
 export { MAX_HUMAN_EXISTING_MESSAGE_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1 } from
   "./message/existing-representation-publication-request-v1.ts";
+export { MAX_HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1 } from
+  "./task/existing-representation-publication-request-v1.ts";
 export { MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2, MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2 } from
   "./format/object-v2.ts";
 export { LATTICE_LIMITS } from "./limits.ts";

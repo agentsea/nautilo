@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import { createHash, randomUUID } from "node:crypto";
 
 import {
@@ -13,7 +14,6 @@ import {
   memories,
   memoryNamespaces,
   protectedTaskSemanticAuthorityRequirementsDigest,
-  sameProtectedTaskSemanticAuthorityRequirements,
   type ProtectedTaskSemanticAuthorityRequirements,
 } from "@nautilo/db";
 import {
@@ -52,6 +52,13 @@ import {
   type CurrentProtectedTaskMemoryPolicy,
   type ProtectedTaskMemoryAuthorityInput,
 } from "./current-protected-task-memory-authority";
+import {
+  createProtectedTaskProjectionAuthorityPlan,
+  deserializeProtectedTaskProjectionAuthorityPlan,
+  sameProtectedTaskProjectionAuthorityPlan,
+  serializeProtectedTaskProjectionAuthorityPlan,
+  type SerializedProtectedTaskProjectionAuthorityPlan,
+} from "./protected-task-memory-projection-plan";
 
 const REQUEST_DOMAIN = "nautilo/protected-task-memory-projection-request/v1";
 const AUTHORIZATION_DOMAIN =
@@ -199,11 +206,6 @@ type Dependencies = Readonly<{
   }>): AgentMemoryProjectionContinuationCapsule;
 }>;
 
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.length === right.length
-    && left.every((entry, index) => entry === right[index]);
-}
-
 function sameAuthority(
   left: ProtectedMemoryAuthority,
   right: ProtectedMemoryAuthority,
@@ -278,61 +280,22 @@ function evidenceCovers(
 }
 
 function serializePlan(plan: ProtectedTaskProjectionAuthorityPlan) {
-  const common = {
-    planVersion: 1 as const,
-    operationId: plan.operationId,
-    requestDigest: hex(plan.requestDigest),
-    semanticAuthorityRequirements: plan.semanticAuthorityRequirements,
-  };
-  return plan.kind === "current_v1"
-    ? Object.freeze({ ...common, kind: "current_v1" as const })
-    : Object.freeze({
-        ...common,
-        kind: "additional_authority_v1" as const,
-        authorizationRequestId: plan.authorizationRequestId,
-        effectDisposition: "not_started_v1" as const,
-      });
+  return serializeProtectedTaskProjectionAuthorityPlan(plan);
 }
 
 function deserializePlan(
   value: z.infer<typeof planSchema>,
 ): ProtectedTaskProjectionAuthorityPlan {
-  const common = Object.freeze({
-    planVersion: 1 as const,
-    operationId: value.operationId,
-    requestDigest: bytes(value.requestDigest),
-    semanticAuthorityRequirements:
-      canonicalProtectedTaskSemanticAuthorityRequirements(
-        value.semanticAuthorityRequirements,
-      ),
-  });
-  return value.kind === "current_v1"
-    ? Object.freeze({ ...common, kind: "current_v1" as const })
-    : Object.freeze({
-        ...common,
-        kind: "additional_authority_v1" as const,
-        authorizationRequestId: value.authorizationRequestId,
-        effectDisposition: "not_started_v1" as const,
-      });
+  return deserializeProtectedTaskProjectionAuthorityPlan(
+    value as SerializedProtectedTaskProjectionAuthorityPlan,
+  );
 }
 
 function samePlan(
   left: ProtectedTaskProjectionAuthorityPlan,
   right: ProtectedTaskProjectionAuthorityPlan,
 ): boolean {
-  return left.kind === right.kind
-    && left.planVersion === right.planVersion
-    && left.operationId === right.operationId
-    && sameBytes(left.requestDigest, right.requestDigest)
-    && sameProtectedTaskSemanticAuthorityRequirements(
-      left.semanticAuthorityRequirements,
-      right.semanticAuthorityRequirements,
-    )
-    && (left.kind === "current_v1" && right.kind === "current_v1"
-      || left.kind === "additional_authority_v1"
-        && right.kind === "additional_authority_v1"
-        && left.authorizationRequestId === right.authorizationRequestId
-        && left.effectDisposition === right.effectDisposition);
+  return sameProtectedTaskProjectionAuthorityPlan(left, right);
 }
 
 function planBase(input: Readonly<{
@@ -415,11 +378,18 @@ function makePlan(input: Readonly<{
   state: PreparedProjectionState;
   current: ProtectedTaskMemoryAuthorityInput;
 }>): ProtectedTaskProjectionAuthorityPlan {
-  const common = planBase(input);
-  if (evidenceCovers(input.current, common.semanticAuthorityRequirements)) {
-    return Object.freeze({ ...common, kind: "current_v1" as const });
-  }
-  return additionalPlan(common, input.current.occurrence.run.id);
+  return createProtectedTaskProjectionAuthorityPlan({
+    taskId: input.current.occurrence.task.id,
+    taskRunId: input.current.occurrence.run.id,
+    graphThreadId: input.current.occurrence.run.graphThreadId,
+    reference: input.reference,
+    operationId: input.prepared.operationId,
+    sources: input.state.sources,
+    destination: input.state.destination,
+    proposalDigest: input.state.proposalDigest,
+    effectDigest: input.state.effectDigest,
+    availableAuthority: input.current.evidence.namespaceRequirements,
+  });
 }
 
 function createProjectionCapsule(input: Readonly<{
@@ -488,11 +458,7 @@ export function createProtectedTaskMemoryProjection(
     || current.subject.humanActorId.length === 0
     || task.contentNamespaceId.length === 0
     || run.graphThreadId.length === 0
-    || (task.contentRepresentation === "dual"
-      ? input.policy.mode !== "shadow_encryption"
-      : task.contentRepresentation === "protected"
-        ? input.policy.mode !== "encrypted_only"
-        : true)) {
+    || !protectedTaskDefinitionSupportsPolicy(task.contentRepresentation, input.policy.mode)) {
     throw new TypeError("Protected Task projection identity is unavailable");
   }
   const fixedAuthority = input.authority;

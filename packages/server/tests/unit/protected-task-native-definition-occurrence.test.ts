@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import { deriveTaskContentCryptoObjectIdV1, taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
   authorizationRevision,
   cryptoDeviceId,
@@ -235,7 +235,7 @@ describe("native protected Task definition occurrence loader", () => {
     }
   });
 
-  test("rejects substituted encrypted definition object or access revision", async () => {
+  test("rejects substituted encrypted definition object or malformed access revision", async () => {
     let authorityCalls = 0;
     const withCurrentAuthority: CurrentProtectedTaskRuntimeAuthorityPort =
       async value => {
@@ -248,11 +248,24 @@ describe("native protected Task definition occurrence loader", () => {
     const wrongObject = occurrence({
       cryptoObjectId: `task-definition:v1:${"a".repeat(64)}`,
     });
-    const wrongRevision = occurrence({ cryptoAccessRevision: 1 });
-
     expect(await loader(input(wrongObject))).toBeNull();
-    expect(await loader(input(wrongRevision))).toBeNull();
+    for (const revision of [-1, 0.5, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(await loader(input(occurrence({ cryptoAccessRevision: revision })))).toBeNull();
+    }
     expect(authorityCalls).toBe(0);
+  });
+
+  test("carries the exact current mapped rewrap revision through genuine runtime authority", async () => {
+    const value = occurrence({ cryptoAccessRevision: 3 });
+    const loader = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader({
+      withCurrentAuthority: async request => {
+        expect(request.occurrence.task.cryptoAccessRevision).toBe(3);
+        return request.use(held());
+      },
+    });
+    const opened = await loader(input(value));
+    expect(opened?.cryptoAccessRevision).toBe(3);
+    expect(opened?.expectedAccessRevision).toBe(3);
   });
 
   test("requires an explicit current native route only when requested", async () => {
@@ -278,4 +291,21 @@ describe("native protected Task definition occurrence loader", () => {
     });
     expect(await compatible(input())).not.toBeNull();
   });
+});
+
+
+test("native occurrence loader preserves exact historical provenance for the full-chain opener", async () => {
+  const provenance = { version: 2, claimId: RUN, publisherDeviceId: DEVICE, signedRequestDigest: "a".repeat(64),
+    sourceDigest: "b".repeat(64), sourcePayloadHash: "c".repeat(64), sourceRevision: 0,
+    genesisManifestHash: "d".repeat(64) } as const;
+  const current = input();
+  const historical = occurrence({ contentRevision: 1, definitionHistoricalRepair: provenance,
+    cryptoObjectId: taskContentRevisionObjectIdV1({ coordinate: { kind: "definition", taskId: TASK, contentRevision: 1 },
+      namespaceId: NAMESPACE, historicalRepair: provenance }) });
+  const loader = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader({ withCurrentAuthority: port(held()) });
+  const result = await loader({ ...current, occurrence: historical });
+  expect(result?.definitionHistoricalRepair).toEqual(provenance);
+  expect(result?.objectId).toBe(historical.task.cryptoObjectId);
+  expect(await loader({ ...current, occurrence: { ...historical, task: { ...historical.task,
+    definitionHistoricalRepair: null } } })).toBeNull();
 });

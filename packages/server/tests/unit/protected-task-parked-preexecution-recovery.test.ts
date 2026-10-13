@@ -24,7 +24,7 @@ const RUN = "50000000-0000-4000-8000-000000000005";
 const REQUEST = "task-run-authorization:v2:parked-recovery";
 const CLAIM = "parked-recovery-claim";
 
-function claimedRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
+function claimedRecord(requestId = REQUEST): BackgroundAuthorizationTaskRuntimeRecordV3 {
   const descriptorBytes = new Uint8Array([1, 2, 3]);
   const descriptorDigest = createHash("sha256")
     .update(descriptorBytes)
@@ -32,7 +32,7 @@ function claimedRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   const recipientPublicKey = Buffer.from(new Uint8Array(65).fill(4))
     .toString("base64url");
   const initial = createBackgroundAuthorizationTaskRuntimeRequestV3({
-    requestId: REQUEST,
+    requestId,
     workId: RUN,
     namespaceId: "70000000-0000-4000-8000-000000000007",
     now: NOW,
@@ -47,7 +47,7 @@ function claimedRecord(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   });
   const ready = markBackgroundAuthorizationGrantReady(awaitingDevice, {
     kind: "runtime",
-    requestId: REQUEST,
+    requestId,
     descriptorDigest,
     recipientKeyId: "parked-recovery-recipient",
     recipientPublicKey,
@@ -366,3 +366,30 @@ test.each(["approval", "await_reply"] as const)(
     expect(cancellations).toBe(1);
     expect((await repository.get(REQUEST))?.snapshot.state).toBe("awaiting_recipient");
   });
+
+test("checkpoint recovery retains its task.execute purpose and exact fingerprint through defer", async () => {
+  const fingerprint = "c".repeat(43);
+  const requestId = `task-checkpoint-continuation:${RUN}:2:${fingerprint}`;
+  const claimed = claimedRecord(requestId);
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(claimed);
+  const { expected: base } = parkedClaimProof();
+  const expected = { ...base, stableRoutingDigest: new Uint8Array(32),
+    authorizationRequestId: requestId, continuationFingerprint: fingerprint };
+  const reference = { ...parkedClaimProof().jobReference, authorizationRequestId: requestId,
+    resumeContinuationFingerprint: fingerprint };
+  let proofs = 0;
+  const owner = createProtectedTaskParkedPreexecutionRecovery({ db: {} as never, repository,
+    now: () => NOW + 30_000,
+  }, undefined, { discover: async () => expected,
+    recoverClaim: async (_db, selected, _at, defer) => {
+      expect(selected.expected).toEqual(expected); expect(selected.jobReference).toEqual(reference);
+      proofs++; return await defer() ? { status: "recovered" } : { status: "stale" };
+    },
+  });
+  expect(await owner.recoverExpiredClaim(expected.occurrence)).toBe(true);
+  expect(proofs).toBe(1);
+  const result = await repository.get(requestId);
+  expect(result?.workKind).toBe("task.execute");
+  expect(result?.snapshot).toMatchObject({ state: "awaiting_recipient", recipientGeneration: 1, retryCount: 0 });
+});

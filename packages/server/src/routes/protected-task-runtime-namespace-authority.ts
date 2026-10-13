@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import {
   createPostgresJsBridgeConnection,
   getEncryptionTransitionPolicy,
@@ -87,12 +88,7 @@ function executionModeMatchesDefinition(
   representation: ProtectedTaskOccurrence["task"]["contentRepresentation"],
   mode: "plaintext_only" | "shadow_encryption" | "encrypted_only",
 ): boolean {
-  // The current result terminal CAS requires the Task definition and result
-  // to share a representation. A retained dual definition cannot execute
-  // after a switch to Full until the Task itself has been migrated.
-  return representation === "dual"
-    ? mode === "shadow_encryption"
-    : mode === "encrypted_only";
+  return protectedTaskDefinitionSupportsPolicy(representation, mode);
 }
 
 /**

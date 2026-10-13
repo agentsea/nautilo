@@ -47,8 +47,9 @@ describe("M301 foreground Agent execution result wiring", () => {
     expect(start).toBeGreaterThan(runAgentStart);
     expect(end).toBeGreaterThan(start);
     expect(foregroundExecution).toMatch(
-      /const value = await input\.work\(\s+session,/u,
+      /const work = \(\) => input\.work\(\s+session,/u,
     );
+    expect(foregroundExecution).toContain("ordinary: work, dual: createProtected, protected: createProtected");
     expect(foregroundExecution).toContain("return Object.freeze({\n                              value,");
     expect(foregroundExecution).toContain("value: executed.value.value,");
     expect(foregroundExecution).not.toContain(

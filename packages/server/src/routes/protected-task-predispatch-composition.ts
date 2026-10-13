@@ -1,3 +1,4 @@
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import {
   actors,
   agentScopes,
@@ -291,6 +292,7 @@ function sameTargetAndMemoryInputs(
     && after.targetChatHandle === before.targetChatHandle
     && after.useScope === before.useScope
     && after.scopeId === before.scopeId
+    && after.fundingMode === before.fundingMode
     && after.contentRepresentation === before.contentRepresentation
     && after.contentNamespaceId === before.contentNamespaceId
     && after.contentRevision === before.contentRevision
@@ -339,6 +341,16 @@ export function createProductionProtectedTaskPredispatch(
     agentId: string;
     memoizedRoomId: string | null;
   }>): Promise<void> => {
+    const currentTask = await readTask(dependencies.db, authority.taskId);
+    if (currentTask === undefined
+      || currentTask.requestorId !== authority.requestorId
+      || currentTask.agentId !== authority.agentId
+      || (authority.memoizedRoomId !== null
+        && currentTask.targetRoomId !== authority.memoizedRoomId)
+      || currentTask.fundingMode !== "legacy_server"
+        && currentTask.fundingMode !== "caller") {
+      throw new TypeError("Protected Task operational authority changed");
+    }
     await assertInvocation({
       humanUserId: authority.requestorId,
       origin: "task_dispatch",
@@ -348,7 +360,9 @@ export function createProductionProtectedTaskPredispatch(
         ? { roomId: authority.memoizedRoomId }
         : {}),
     });
-    await assertFunding(authority.requestorId, "task_dispatch");
+    if (currentTask.fundingMode === "legacy_server") {
+      await assertFunding(authority.requestorId, "task_dispatch");
+    }
   };
 
   return async occurrence => {
@@ -382,7 +396,9 @@ export function createProductionProtectedTaskPredispatch(
     let currentTask = task;
     let targetResolved = false;
     return planProtectedTaskPredispatch({
-      task,
+      task: { ...task, ...(occurrence.task.definitionHistoricalRepair == null ? {} : {
+        definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair),
+      }) },
       run,
       ports: {
         assertCurrentAuthority: assertOperationalAuthority,
@@ -468,9 +484,7 @@ export function createProductionProtectedTaskPredispatch(
             roomId: string;
             namespaceId: string;
           }> | null = null;
-          if (currentTask.useScope
-            && currentTask.targetChat === "orphan"
-            && sessionRoomId.length === 0) {
+          if (currentTask.useScope) {
             if (currentTask.contentNamespaceId === null) {
               throw new TypeError(
                 "Protected Task Scope Memory origin is unavailable",
@@ -496,16 +510,32 @@ export function createProductionProtectedTaskPredispatch(
             laneKey: input.laneKey,
             sessionRoomId,
             targetUserIds: input.targetUserIds,
+            ...(scopeOrigin === null ? {} : {
+              protectedScopeOrigin: scopeOrigin,
+            }),
           });
-          if (scopeOrigin !== null
-            && (resolved.envelope.memoryMode !== "scope"
-              || resolved.envelope.roomId !== scopeOrigin.roomId
-              || !("originWritableNamespaceId" in resolved.envelope)
-              || resolved.envelope.originWritableNamespaceId
-                !== scopeOrigin.namespaceId)) {
-            throw new TypeError(
-              "Protected Task Scope Memory origin changed",
-            );
+          if (scopeOrigin !== null) {
+            if (resolved.envelope.memoryMode !== "scope") {
+              throw new TypeError(
+                "Protected Task Scope Memory mode changed",
+              );
+            }
+            if (resolved.envelope.roomId !== scopeOrigin.roomId) {
+              throw new TypeError(
+                "Protected Task Scope Memory Room changed",
+              );
+            }
+            if (!("originWritableNamespaceId" in resolved.envelope)) {
+              throw new TypeError(
+                "Protected Task Scope Memory origin is missing",
+              );
+            }
+            if (resolved.envelope.originWritableNamespaceId
+              !== scopeOrigin.namespaceId) {
+              throw new TypeError(
+                "Protected Task Scope Memory Namespace changed",
+              );
+            }
           }
           const [refreshedTask, refreshedRun] = await Promise.all([
             readTask(dependencies.db, occurrence.task.id),
@@ -524,7 +554,12 @@ export function createProductionProtectedTaskPredispatch(
             )) {
             throw new TypeError("Protected Task Memory resolution drifted");
           }
-          return resolved;
+          return scopeOrigin === null
+            ? resolved
+            : Object.freeze({
+                ...resolved,
+                scopeOrigin: Object.freeze({ ...scopeOrigin }),
+              });
         },
       },
     });

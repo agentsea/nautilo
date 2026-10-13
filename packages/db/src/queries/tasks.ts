@@ -1,3 +1,5 @@
+import { parseProtectedTaskCheckpointAadBinding, sameProtectedTaskCheckpointAadBinding, type ProtectedTaskCheckpointAadBinding } from "./protected-task-checkpoint-aad-binding";
+import { protectedTaskDefinitionSupportsPolicy } from "../utils/encryption-transition-queries";
 import { createHash } from "node:crypto";
 import {
   parseTaskFundingBinding,
@@ -14,7 +16,7 @@ import {
  * DirectDatabase or a transaction-scoped handle. No singleton is required.
  */
 import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { alias, QueryBuilder } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
 import { llmUsageEvents } from "../schema/llm-usage";
@@ -196,8 +198,10 @@ export async function createTask(db: DirectDatabase, input: NewTask): Promise<Ta
 export async function getTaskById(
   db: DirectDatabase,
   id: string,
+  options?: Readonly<{ ordinaryOnly?: boolean }>,
 ): Promise<Task | undefined> {
-  const [row] = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+  const [row] = await db.select().from(tasks).where(and(eq(tasks.id, id),
+    ...(options?.ordinaryOnly === true ? [eq(tasks.contentRepresentation, "ordinary")] : []))).limit(1);
   return row;
 }
 
@@ -210,6 +214,7 @@ export async function getTaskById(
 export async function getTaskByIdWithMutationVersion(
   db: DirectDatabase,
   id: string,
+  options?: Readonly<{ ordinaryOnly?: boolean }>,
 ): Promise<(Task & { mutationVersion: string }) | undefined> {
   const [row] = await db
     .select({
@@ -217,7 +222,8 @@ export async function getTaskByIdWithMutationVersion(
       mutationVersion: sql<string>`${tasks}.xmin::text`,
     })
     .from(tasks)
-    .where(eq(tasks.id, id))
+    .where(and(eq(tasks.id, id),
+      ...(options?.ordinaryOnly === true ? [eq(tasks.contentRepresentation, "ordinary")] : [])))
     .limit(1);
   return row;
 }
@@ -745,6 +751,22 @@ export async function getActiveTaskRun(
   return row;
 }
 
+/** Content-free state returned by protected lifecycle controls. */
+export type ProtectedTaskLifecycleTaskState = Pick<Task,
+  "id" | "ownerId" | "requestorId" | "status" | "contentRepresentation"
+  | "pauseRequestId" | "pauseRequestedAt" | "pauseReason">;
+export type ProtectedTaskLifecycleRunState = Pick<TaskRun, "id" | "taskId" | "jobId" | "status">;
+
+const protectedTaskLifecycleStateProjection = {
+  id: tasks.id, ownerId: tasks.ownerId, requestorId: tasks.requestorId,
+  status: tasks.status, contentRepresentation: tasks.contentRepresentation,
+  pauseRequestId: tasks.pauseRequestId, pauseRequestedAt: tasks.pauseRequestedAt,
+  pauseReason: tasks.pauseReason,
+};
+const protectedTaskLifecycleRunProjection = {
+  id: taskRuns.id, taskId: taskRuns.taskId, jobId: taskRuns.jobId, status: taskRuns.status,
+};
+
 /** Pause shares the parent-row lock with resume admission and finalization. */
 export async function transitionTaskLifecyclePaused(
   db: DirectDatabase,
@@ -752,12 +774,24 @@ export async function transitionTaskLifecyclePaused(
 ): Promise<{
   task: Task | undefined;
   run: TaskRun | undefined;
+  protectedTask?: ProtectedTaskLifecycleTaskState;
   transitioned: boolean;
-  outcome: "transitioned" | "not_found" | "already_paused" | "task_terminal" | "writer_review_pending";
+  outcome: "transitioned" | "not_found" | "already_paused" | "task_terminal"
+    | "writer_review_pending" | "protected_checkpoint_required";
 }> {
   return db.transaction(async (tx) => {
-    const [task] = await tx.select().from(tasks).where(eq(tasks.id, taskId)).limit(1).for("update");
-    if (!task) return { task, run: undefined, transitioned: false, outcome: "not_found" };
+    const [locked] = await tx.select(protectedTaskLifecycleStateProjection).from(tasks)
+      .where(eq(tasks.id, taskId)).limit(1).for("update");
+    if (!locked) return { task: undefined, run: undefined, transitioned: false, outcome: "not_found" };
+    // Conversion and lifecycle controls share this lock. A stale ordinary
+    // caller receives only structural protected state, never Shadow siblings.
+    if (locked.contentRepresentation !== "ordinary") {
+      return { task: undefined, run: undefined, protectedTask: locked, transitioned: false,
+        outcome: "protected_checkpoint_required" };
+    }
+    const [task] = await tx.select().from(tasks).where(and(eq(tasks.id, taskId),
+      eq(tasks.contentRepresentation, "ordinary"))).limit(1);
+    if (!task) throw new Error("pause lost its locked ordinary Task");
     if (task.status === "paused") {
       // Explicit Pause disables automatic reconnect, while preserving the
       // original Run for a later explicit Resume.
@@ -778,12 +812,17 @@ export async function transitionTaskLifecyclePaused(
     }
     // Select newest first: never revive an older run behind a newer terminal
     // run. Awaiting checkpoints and resumed null-job runs are pauseable too.
-    const [latest] = await tx.select().from(taskRuns).where(eq(taskRuns.taskId, taskId))
+    const [latest] = await tx.select({ id: taskRuns.id, status: taskRuns.status,
+      resultRepresentation: taskRuns.resultRepresentation }).from(taskRuns).where(eq(taskRuns.taskId, taskId))
       .orderBy(desc(taskRuns.startedAt)).limit(1).for("update");
+    if (latest !== undefined && latest.resultRepresentation !== "ordinary") {
+      return { task: undefined, run: undefined, protectedTask: locked, transitioned: false,
+        outcome: "protected_checkpoint_required" };
+    }
     let run: TaskRun | undefined;
     if (latest?.status === "running" || latest?.status === "awaiting") {
       [run] = await tx.update(taskRuns).set({ status: "paused" })
-        .where(eq(taskRuns.id, latest.id)).returning();
+        .where(and(eq(taskRuns.id, latest.id), eq(taskRuns.resultRepresentation, "ordinary"))).returning();
       if (!run) throw new Error("pause lost TaskRun after row lock");
     }
     const [updatedTask] = await tx.update(tasks).set({
@@ -798,6 +837,8 @@ export async function transitionTaskLifecyclePaused(
 export interface TerminalTaskLifecycleTransition {
   task: Task | undefined;
   run: TaskRun | undefined;
+  protectedTask?: ProtectedTaskLifecycleTaskState;
+  protectedRun?: ProtectedTaskLifecycleRunState;
   /** True only for the transaction which won the Task-row terminal transition. */
   transitioned: boolean;
   /** Distinguishes a same-terminal report-back retry from a Stop winner. */
@@ -975,6 +1016,99 @@ async function cancelProtectedTaskLifecycleJob(
   return cancelledJob !== undefined;
 }
 
+/** Stop needs structural state only; ordinary result writers never enter here. */
+async function transitionProtectedTaskLifecycleStop(
+  tx: Pick<DirectDatabase, "select" | "update" | "insert">,
+  task: ProtectedTaskLifecycleTaskState & Pick<Task, "cryptoObjectId"> & Readonly<{
+    requiresLocalRecapture: boolean; writerReviewPending: boolean;
+  }>,
+  input: TransitionTaskLifecycleTerminalInput,
+): Promise<TerminalTaskLifecycleTransition> {
+  let state: ProtectedTaskLifecycleTaskState = {
+    id: task.id, ownerId: task.ownerId, requestorId: task.requestorId, status: task.status,
+    contentRepresentation: task.contentRepresentation, pauseRequestId: task.pauseRequestId,
+    pauseRequestedAt: task.pauseRequestedAt, pauseReason: task.pauseReason,
+  };
+  let run: ProtectedTaskLifecycleRunState | undefined;
+  const result = (outcome: TerminalTaskLifecycleTransition["outcome"], transitioned = false): TerminalTaskLifecycleTransition => ({
+    task: undefined, run: undefined, protectedTask: state,
+    ...(run === undefined ? {} : { protectedRun: run }), transitioned, outcome,
+  });
+  if (input.taskStatus !== "cancelled" || input.runStatus !== "cancelled"
+    || input.runPatch?.resultText !== undefined || input.runPatch?.lastError !== undefined
+    || input.taskPatch?.lastError !== undefined) return result("authority_changed");
+  let expectedJob: (ProtectedTaskLifecycleJob & { input: ProtectedTaskDurableJobReference }) | undefined;
+  if (input.expectedInvocation) {
+    const expectedJobId = input.expectedInvocation.jobId;
+    const predicate = and(eq(taskRuns.taskId, task.id), eq(taskRuns.id, input.expectedInvocation.taskRunId));
+    const [expected]: Array<Pick<TaskRun, "id"> & { jobId?: string | null }> = expectedJobId === undefined
+      ? await tx.select({ id: taskRuns.id }).from(taskRuns).where(predicate).for("update")
+      : await tx.select({ id: taskRuns.id, jobId: taskRuns.jobId }).from(taskRuns).where(predicate).for("update");
+    const [newer] = expected ? await tx.select({ id: taskRuns.id }).from(taskRuns).where(and(
+      eq(taskRuns.taskId, task.id), sql`${taskRuns.id} <> ${expected.id}::uuid`,
+      sql`${taskRuns.startedAt} >= (SELECT started_at FROM task_runs WHERE id = ${expected.id}::uuid)`,
+    )).limit(1) : [];
+    if (task.requestorId !== input.expectedInvocation.humanUserId || !expected || newer
+      || expectedJobId !== undefined && expected.jobId !== expectedJobId) return result("authority_changed");
+    if (expectedJobId !== undefined) {
+      const job = await lockProtectedTaskLifecycleJob(tx, expectedJobId);
+      if (!job || !exactProtectedTaskLifecycleJob(task, { id: expected.id, jobId: expectedJobId }, job, expectedJobId)) return result("authority_changed");
+      expectedJob = job;
+    }
+  }
+  if (input.blockPendingWriterWorkspaceAcceptance === true && task.writerReviewPending) return result("writer_review_pending");
+  if (input.runId) {
+    [run] = await tx.select(protectedTaskLifecycleRunProjection).from(taskRuns)
+      .where(and(eq(taskRuns.id, input.runId), eq(taskRuns.taskId, input.taskId))).limit(1).for("update");
+  } else {
+    [run] = await tx.select(protectedTaskLifecycleRunProjection).from(taskRuns)
+      .where(and(eq(taskRuns.taskId, input.taskId),
+        sql`${taskRuns.status} NOT IN ('completed', 'cancelled', 'errored')`))
+      .orderBy(desc(taskRuns.startedAt)).limit(1).for("update");
+  }
+  if (typeof run?.jobId === "string" && expectedJob === undefined) {
+    const linked = await lockProtectedTaskLifecycleJob(tx, run.jobId);
+    if (!linked || !exactProtectedTaskLifecycleJobIdentity(task, run, linked, run.jobId)) return result("authority_changed");
+    const disposition = protectedTaskLifecycleJobDisposition(linked);
+    if (disposition === "active" || disposition === "cancelled") expectedJob = linked;
+    else if (disposition !== "completed" && disposition !== "failed" && disposition !== "timed_out") return result("authority_changed");
+  }
+  const cancelJob = async () => {
+    if (expectedJob !== undefined && expectedJob.status !== "cancelled"
+      && !await cancelProtectedTaskLifecycleJob(tx, expectedJob)) throw new Error("Task stop lost its locked protected Job");
+  };
+  if (TERMINAL_TASK_STATUSES.includes(task.status as (typeof TERMINAL_TASK_STATUSES)[number])) {
+    const same = Boolean(input.runId) && task.status === input.taskStatus && run?.status === input.runStatus;
+    if (same && expectedJob !== undefined && expectedJob.status !== "cancelled") {
+      await cancelJob();
+      return result("transitioned", true);
+    }
+    return result(same ? "same_terminal" : "task_terminal");
+  }
+  if (input.runId && task.requiresLocalRecapture) return result("authority_changed");
+  if (input.requireRunningPair && (task.status !== "running" || run?.status !== "running")) return result("not_running");
+  if (input.runId && (!run || TERMINAL_TASK_RUN_STATUSES.includes(run.status as (typeof TERMINAL_TASK_RUN_STATUSES)[number])
+    && run.status !== input.runStatus)) return result("run_terminal");
+  await cancelJob();
+  const stoppedAt = input.taskPatch?.cancelledAt ?? new Date();
+  if (!run) {
+    const [inserted] = await tx.insert(taskRuns).values({ taskId: task.id,
+      graphThreadId: `task-cancelled:${task.id}`, status: "cancelled", startedAt: stoppedAt,
+      completedAt: stoppedAt }).returning(protectedTaskLifecycleRunProjection);
+    if (!inserted) throw new Error("Protected Task Stop lost its history receipt");
+    run = inserted;
+  } else if (run.status !== "cancelled") {
+    const [updated] = await tx.update(taskRuns).set({ status: "cancelled", completedAt: stoppedAt })
+      .where(eq(taskRuns.id, run.id)).returning(protectedTaskLifecycleRunProjection);
+    run = updated ?? run;
+  }
+  const [updated] = await tx.update(tasks).set({ ...input.taskPatch, status: "cancelled",
+    cancelledAt: stoppedAt, pauseRequestId: null, pauseRequestedAt: null, pauseReason: null,
+    updatedAt: new Date() }).where(eq(tasks.id, task.id)).returning(protectedTaskLifecycleStateProjection);
+  state = updated ?? state;
+  return result("transitioned", true);
+}
+
 /**
  * Serialize terminal lifecycle writers on the parent Task row.
  *
@@ -1000,16 +1134,21 @@ export async function transitionTaskLifecycleTerminal(
     throw new TypeError("Recurring completion requires an exact running pair");
   }
   return db.transaction(async (tx) => {
-    const [task] = await tx
-      .select()
-      .from(tasks)
-      .where(eq(tasks.id, input.taskId))
-      .limit(1)
-      .for("update");
-    if (!task) return { task: undefined, run: undefined, transitioned: false, outcome: "not_found" };
-    let expectedJob: (ProtectedTaskLifecycleJob & {
-      input: ProtectedTaskDurableJobReference;
-    }) | undefined;
+    const [locked] = await tx.select({ ...protectedTaskLifecycleStateProjection,
+      cryptoObjectId: tasks.cryptoObjectId,
+      requiresLocalRecapture: sql<boolean>`(${tasks.localExecutionDelegation} IS NULL AND ${tasks.lastError} IS NOT DISTINCT FROM ${TASK_LOCAL_EXECUTION_RECREATE_TEXT})`,
+      writerReviewPending: sql<boolean>`coalesce((
+        ${tasks.metadata}->${WRITER_REVIEW_AWAITING_METADATA_KEY}->'version' = '1'::jsonb
+        AND jsonb_typeof(${tasks.metadata}->${WRITER_REVIEW_AWAITING_METADATA_KEY}->'pendingWorkspaceOperationId') = 'string'
+        AND jsonb_typeof(${tasks.metadata}->${WRITER_REVIEW_AWAITING_METADATA_KEY}->'pendingWorkspaceClientMutationId') = 'string'), false)`,
+    }).from(tasks).where(eq(tasks.id, input.taskId)).limit(1).for("update");
+    if (!locked) return { task: undefined, run: undefined, transitioned: false, outcome: "not_found" };
+    if (locked.contentRepresentation !== "ordinary") {
+      return transitionProtectedTaskLifecycleStop(tx, locked, input);
+    }
+    const [task] = await tx.select().from(tasks).where(and(eq(tasks.id, input.taskId),
+      eq(tasks.contentRepresentation, "ordinary"))).limit(1);
+    if (!task) throw new Error("terminal transition lost its locked ordinary Task");
     if (input.expectedInvocation) {
       const expectedJobId = input.expectedInvocation.jobId;
       const expectedRunPredicate = and(
@@ -1037,18 +1176,8 @@ export async function transitionTaskLifecycleTerminal(
       ) {
         return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
       }
-      if (expectedJobId !== undefined) {
-        const job = await lockProtectedTaskLifecycleJob(tx, expectedJobId);
-        if (!job || !exactProtectedTaskLifecycleJob(
-          task,
-          { id: expected.id, jobId: expectedJobId },
-          job,
-          expectedJobId,
-        )) {
-          return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
-        }
-        expectedJob = job;
-      }
+      // A Job-bound invocation is exclusively a protected execution Stop.
+      if (expectedJobId !== undefined) return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
     }
     // Older callers and narrow test fixtures may not hydrate JSON metadata.
     // Treat that as no reservation; canonical persisted rows always carry it.
@@ -1065,24 +1194,17 @@ export async function transitionTaskLifecycleTerminal(
       return { task, run: undefined, transitioned: false, outcome: "writer_review_pending" };
     }
 
-    const cancelExpectedProtectedJob = async (): Promise<void> => {
-      if (expectedJob === undefined || expectedJob.status === "cancelled") return;
-      if (!await cancelProtectedTaskLifecycleJob(tx, expectedJob)) {
-        throw new Error("Task stop lost its locked protected Job");
-      }
-    };
-
-    let run: TaskRun | undefined;
+    let selectedRun: Pick<TaskRun, "id" | "resultRepresentation"> | undefined;
     if (input.runId) {
-      [run] = await tx
-        .select()
+      [selectedRun] = await tx
+        .select({ id: taskRuns.id, resultRepresentation: taskRuns.resultRepresentation })
         .from(taskRuns)
         .where(and(eq(taskRuns.id, input.runId), eq(taskRuns.taskId, input.taskId)))
         .limit(1)
         .for("update");
     } else if (input.runStatus) {
-      [run] = await tx
-        .select()
+      [selectedRun] = await tx
+        .select({ id: taskRuns.id, resultRepresentation: taskRuns.resultRepresentation })
         .from(taskRuns)
         .where(
           and(
@@ -1095,30 +1217,13 @@ export async function transitionTaskLifecycleTerminal(
         .for("update");
     }
 
-    const protectedStop = input.taskStatus === "cancelled"
-      && input.runStatus === "cancelled"
-      && (task.contentRepresentation === "dual"
-        || task.contentRepresentation === "protected");
-    if (protectedStop && typeof run?.jobId === "string"
-      && expectedJob === undefined) {
-      const linkedJob = await lockProtectedTaskLifecycleJob(tx, run.jobId);
-      if (!linkedJob || !exactProtectedTaskLifecycleJobIdentity(
-        task,
-        { id: run.id, jobId: run.jobId },
-        linkedJob,
-        run.jobId,
-      )) {
-        return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
-      }
-      const disposition = protectedTaskLifecycleJobDisposition(linkedJob);
-      if (disposition === "active" || disposition === "cancelled") {
-        expectedJob = linkedJob;
-      } else if (disposition !== "completed"
-        && disposition !== "failed"
-        && disposition !== "timed_out") {
-        return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
-      }
+    if (selectedRun !== undefined && selectedRun.resultRepresentation !== "ordinary") {
+      return { task, run: undefined, transitioned: false, outcome: "authority_changed" };
     }
+    const [run] = selectedRun === undefined ? [] : await tx.select().from(taskRuns)
+      .where(and(eq(taskRuns.id, selectedRun.id), eq(taskRuns.taskId, input.taskId),
+        eq(taskRuns.resultRepresentation, "ordinary"))).limit(1).for("update");
+    if (selectedRun !== undefined && run === undefined) throw new Error("terminal transition lost its locked ordinary Run");
 
     const taskIsTerminal = TERMINAL_TASK_STATUSES.includes(
       task.status as (typeof TERMINAL_TASK_STATUSES)[number],
@@ -1132,18 +1237,6 @@ export async function transitionTaskLifecycleTerminal(
         Boolean(input.runId) &&
         task.status === input.taskStatus &&
         run?.status === input.runStatus;
-      if (isSameTerminal && expectedJob !== undefined
-        && expectedJob.status !== "cancelled") {
-        // Repair an older split Stop outcome only when all three immutable
-        // identities still match and Task + Run already prove cancellation.
-        await cancelExpectedProtectedJob();
-        return {
-          task,
-          run,
-          transitioned: true,
-          outcome: "transitioned",
-        };
-      }
       return {
         task,
         run,
@@ -1195,33 +1288,12 @@ export async function transitionTaskLifecycleTerminal(
       }
     }
 
-    await cancelExpectedProtectedJob();
-
-    const stoppedAt = protectedStop
-      ? input.taskPatch?.cancelledAt ?? new Date()
-      : null;
     let nextRun = run;
-    // A protected Task stopped before dispatch still needs a durable history
-    // occurrence for its eventual encrypted cancellation result. This is a
-    // terminal receipt, never an executable occurrence or a model invocation.
-    if (protectedStop && !run) {
-      const [cancelledRun] = await tx.insert(taskRuns).values({
-        taskId: task.id,
-        graphThreadId: `task-cancelled:${task.id}`,
-        status: "cancelled",
-        startedAt: stoppedAt!,
-        completedAt: stoppedAt!,
-      }).returning();
-      if (!cancelledRun) throw new Error("Protected Task Stop lost its history receipt");
-      nextRun = cancelledRun;
-    }
     if (run && input.runStatus && run.status !== input.runStatus) {
       const [updatedRun] = await tx
         .update(taskRuns)
-        .set({ status: input.runStatus, ...input.runPatch,
-          ...(protectedStop ? { completedAt: stoppedAt! } : {}),
-        })
-        .where(eq(taskRuns.id, run.id))
+        .set({ status: input.runStatus, ...input.runPatch })
+        .where(and(eq(taskRuns.id, run.id), eq(taskRuns.resultRepresentation, "ordinary")))
         .returning();
       nextRun = updatedRun ?? run;
     }
@@ -1231,11 +1303,10 @@ export async function transitionTaskLifecycleTerminal(
       const [updatedTask] = await tx
         .update(tasks)
         .set({ ...input.taskPatch,
-          ...(protectedStop ? { cancelledAt: stoppedAt! } : {}),
           ...(input.returnRecurringTaskToPending
             ? { status: "pending" as const, fireLockId: null, fireLockedAt: null }
             : { status: input.taskStatus! }), updatedAt: new Date() })
-        .where(eq(tasks.id, task.id))
+        .where(and(eq(tasks.id, task.id), eq(tasks.contentRepresentation, "ordinary")))
         .returning();
       nextTask = updatedTask ?? task;
     }
@@ -1265,7 +1336,7 @@ export interface ActiveTaskWorkCounts {
 }
 
 export async function countActiveTaskWorkWith(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "select">,
 ): Promise<ActiveTaskWorkCounts> {
   const [running, claimed] = await Promise.all([
     db
@@ -1820,6 +1891,8 @@ export async function listAwaitingWriterReviewTasks(
     .from(tasks)
     .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
     .where(and(
+      eq(tasks.contentRepresentation, "ordinary"),
+      eq(taskRuns.resultRepresentation, "ordinary"),
       writerReviewAwaitingPredicate(),
       or(
         and(eq(tasks.status, "awaiting"), eq(taskRuns.status, "awaiting")),
@@ -1861,6 +1934,8 @@ export async function listPendingWriterReviewVerificationTasks(
     .from(tasks)
     .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
     .where(and(
+      eq(tasks.contentRepresentation, "ordinary"),
+      eq(taskRuns.resultRepresentation, "ordinary"),
       eq(tasks.status, "pending"),
       eq(taskRuns.status, "completed"),
       writerReviewAcceptedRequeuePredicate(),
@@ -1893,6 +1968,8 @@ export async function listRunningWriterReviewVerificationTasks(
     .from(tasks)
     .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
     .where(and(
+      eq(tasks.contentRepresentation, "ordinary"),
+      eq(taskRuns.resultRepresentation, "ordinary"),
       eq(tasks.status, "running"),
       eq(taskRuns.status, "running"),
       writerReviewVerificationRunPredicate(),
@@ -2120,9 +2197,9 @@ export async function listAwaitingTaskRunsForOwner(
 export async function findTimedOutRunningTasks(
   db: DirectDatabase,
   now: Date,
-): Promise<Array<{ task: Task; run: TaskRun }>> {
+): Promise<Array<{ task: Pick<Task, "id" | "contentRepresentation"> }>> {
   const rows = await db
-    .select({ task: tasks, run: taskRuns })
+    .select({ task: { id: tasks.id, contentRepresentation: tasks.contentRepresentation } })
     .from(tasks)
     .innerJoin(taskRuns, eq(taskRuns.taskId, tasks.id))
     .where(
@@ -2214,6 +2291,7 @@ export async function claimDueProtectedTasks(
       .where(
         and(
           eq(tasks.status, "pending"),
+          isNull(tasks.pauseRequestId),
           inArray(tasks.contentRepresentation, ["dual", "protected"]),
           eq(tasks.cryptoMappingState, "verified"),
           protectedTaskPublicationIdlePredicate(db),
@@ -2251,8 +2329,34 @@ export type PrepareClaimedProtectedTaskOccurrenceInput = Readonly<{
 }>;
 
 export type PrepareClaimedProtectedTaskOccurrenceResult =
-  | Readonly<{ status: "prepared"; task: Task; run: TaskRun }>
+  | Readonly<{ status: "prepared"; task: Task & ProtectedDefinitionHistoricalMetadata; run: TaskRun }>
   | Readonly<{ status: "stale" }>;
+
+/** Exact mapped ledger metadata; no ciphertext or source text enters occurrence discovery. */
+export const protectedTaskDefinitionHistoricalRepairProjection = sql<TaskDefinitionCryptoRevision["historicalRepair"]>`(${new QueryBuilder()
+  .select({ historicalRepair: taskDefinitionCryptoRevisions.historicalRepair })
+  .from(taskDefinitionCryptoRevisions).where(and(
+    eq(taskDefinitionCryptoRevisions.taskId, tasks.id),
+    eq(taskDefinitionCryptoRevisions.contentRevision, tasks.contentRevision),
+    eq(taskDefinitionCryptoRevisions.contentNamespaceId, tasks.contentNamespaceId),
+    eq(taskDefinitionCryptoRevisions.cryptoObjectId, tasks.cryptoObjectId),
+    eq(taskDefinitionCryptoRevisions.cryptoAccessRevision, 0),
+    eq(taskDefinitionCryptoRevisions.representation, tasks.contentRepresentation),
+    eq(taskDefinitionCryptoRevisions.requiredNamespaceFingerprint, tasks.cryptoRequiredNamespaceFingerprint),
+    eq(taskDefinitionCryptoRevisions.completion, "complete"),
+    eq(taskDefinitionCryptoRevisions.disposition, "mapped"),
+    isNull(taskDefinitionCryptoRevisions.failureCode),
+  )).limit(1)})`;
+
+type ProtectedDefinitionHistoricalMetadata = Readonly<{
+  definitionHistoricalRepair?: Readonly<Record<string, unknown>> | null;
+}>;
+
+function copyDefinitionHistoricalMetadata(task: ProtectedDefinitionHistoricalMetadata): ProtectedDefinitionHistoricalMetadata {
+  return task.definitionHistoricalRepair == null ? {} : {
+    definitionHistoricalRepair: Object.freeze(structuredClone(task.definitionHistoricalRepair)),
+  };
+}
 
 export type ProtectedAwaitingTaskRunCursor = Readonly<{
   taskRunId: string;
@@ -2272,7 +2376,7 @@ export type ProtectedAwaitingTaskRunForAuthorization = Readonly<{
     | "cryptoObjectId"
     | "cryptoAccessRevision"
     | "cryptoRequiredNamespaceFingerprint"
-  >;
+  > & ProtectedDefinitionHistoricalMetadata;
   run: Pick<TaskRun,
     | "id"
     | "taskId"
@@ -2296,7 +2400,7 @@ export async function listProtectedAwaitingTaskRunsForAuthorization(
   after?: ProtectedAwaitingTaskRunCursor,
 ): Promise<ProtectedAwaitingTaskRunForAuthorization[]> {
   if (batch <= 0) return [];
-  return db
+  const rows = await db
     .select({
       task: {
         id: tasks.id,
@@ -2309,6 +2413,7 @@ export async function listProtectedAwaitingTaskRunsForAuthorization(
         contentNamespaceId: tasks.contentNamespaceId,
         contentRevision: tasks.contentRevision,
         cryptoObjectId: tasks.cryptoObjectId,
+        definitionHistoricalRepair: protectedTaskDefinitionHistoricalRepairProjection,
         cryptoAccessRevision: tasks.cryptoAccessRevision,
         cryptoRequiredNamespaceFingerprint:
           tasks.cryptoRequiredNamespaceFingerprint,
@@ -2326,6 +2431,7 @@ export async function listProtectedAwaitingTaskRunsForAuthorization(
     .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
     .where(and(
       eq(taskRuns.status, "awaiting"),
+      isNull(tasks.pauseRequestId),
       inArray(tasks.status, ["pending", "awaiting", "running"]),
       inArray(tasks.contentRepresentation, ["dual", "protected"]),
       eq(tasks.cryptoMappingState, "verified"),
@@ -2333,6 +2439,10 @@ export async function listProtectedAwaitingTaskRunsForAuthorization(
     ))
     .orderBy(asc(taskRuns.id))
     .limit(batch);
+  return rows.map(({ task, run }) => {
+    const { definitionHistoricalRepair, ...ordinaryShape } = task;
+    return { task: { ...ordinaryShape, ...copyDefinitionHistoricalMetadata({ definitionHistoricalRepair }) }, run };
+  });
 }
 
 /**
@@ -2354,11 +2464,12 @@ export async function prepareClaimedProtectedTaskOccurrence(
   }
   return db.transaction(async (tx) => {
     const [task] = await tx
-      .select()
+      .select({ ...getTableColumns(tasks), definitionHistoricalRepair: protectedTaskDefinitionHistoricalRepairProjection })
       .from(tasks)
       .where(and(
         eq(tasks.id, input.taskId),
         eq(tasks.status, "pending"),
+        isNull(tasks.pauseRequestId),
         eq(tasks.fireLockId, input.fireLockId),
         eq(tasks.contentRepresentation, input.contentRepresentation),
         eq(tasks.cryptoMappingState, "verified"),
@@ -2373,7 +2484,7 @@ export async function prepareClaimedProtectedTaskOccurrence(
       ))
       .limit(1)
       .for("update");
-    if (!task) return { status: "stale" } as const;
+    if (!task || task.pauseRequestId != null) return { status: "stale" } as const;
 
     const isCron = task.scheduleKind === "cron";
     if (
@@ -2427,7 +2538,7 @@ export async function prepareClaimedProtectedTaskOccurrence(
     if (!updatedTask) {
       throw new Error("Protected Task occurrence lost its locked Task");
     }
-    return { status: "prepared", task: updatedTask, run } as const;
+    return { status: "prepared", task: { ...updatedTask, ...copyDefinitionHistoricalMetadata(task) }, run } as const;
   });
 }
 
@@ -2808,7 +2919,8 @@ export async function startProtectedTaskRun(
       ? "pending"
       : "awaiting";
     if (
-      task.status !== expectedTaskStatus
+      task.pauseRequestId != null
+      || task.status !== expectedTaskStatus
       || task.contentRepresentation !== input.contentRepresentation
       || task.contentNamespaceId !== input.contentNamespaceId
       || task.contentRevision !== input.contentRevision
@@ -3153,6 +3265,7 @@ export type ProtectedTaskHumanContinuationAcceptance = Readonly<{
 }>;
 
 export type AcceptProtectedTaskHumanContinuationInput = Readonly<{
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   taskId: string;
   taskRunId: string;
   graphThreadId: string;
@@ -3210,6 +3323,7 @@ type ResolvedPublishedProtectedTaskAwaitReplyInput = Extract<
 >["input"];
 
 export type ParkProtectedTaskRunInput = Readonly<{
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   taskId: string;
   taskRunId: string;
   graphThreadId: string;
@@ -3257,6 +3371,18 @@ export type SealAndParkProtectedTaskRunInput = Readonly<{
   continuation: SealAndParkProtectedTaskRunContinuation;
 }>;
 
+export type SealAndParkProtectedTaskCheckpointRunInput = Readonly<{
+  park: Omit<ParkProtectedTaskRunInput, "interrupts"> & Readonly<{ interrupts: readonly [] }>;
+  segment: SegmentReceiptEvidence;
+  continuation: Readonly<{
+    kind: "checkpoint_safe_v1";
+    reason: "manual_pause" | "time_limit" | "grant_refresh";
+    effectDisposition: "none_v1";
+  }>;
+  pauseRequestId: string | null;
+  stableRoutingDigest: Uint8Array;
+}>;
+
 export type SealAndParkProtectedTaskHumanRunInput = Readonly<{
   park: ParkProtectedTaskRunInput;
   segment: SegmentReceiptEvidence;
@@ -3293,7 +3419,7 @@ export type SealAndParkProtectedTaskHumanRunResult = Exclude<
 >;
 
 /** Content-free Task projection accepted by parked-authority discovery. */
-export type ParkedProtectedTaskAdditionalAuthorityTaskRow = Readonly<{
+export type ParkedProtectedTaskAdditionalAuthorityTaskRow = ProtectedDefinitionHistoricalMetadata & Readonly<{
   id: string;
   ownerId: string;
   requestorId: string;
@@ -3353,7 +3479,7 @@ export type ParkedProtectedTaskAdditionalAuthorityProof = Readonly<{
 
 export type ParkedProtectedTaskAdditionalAuthority = Readonly<{
   occurrence: Readonly<{
-    task: Readonly<{
+    task: ProtectedDefinitionHistoricalMetadata & Readonly<{
       id: string;
       ownerId: string;
       requestorId: string;
@@ -3378,6 +3504,7 @@ export type ParkedProtectedTaskAdditionalAuthority = Readonly<{
     }>;
   }>;
   priorJob: Readonly<{
+    checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
     id: string;
     generation: number;
     parkedAt: Date;
@@ -3411,6 +3538,25 @@ export type ParkedProtectedTaskHumanContinuation = Readonly<{
   authorizationRequestId: string;
   nextExecutionSegment: number;
 }>;
+
+export type ParkedProtectedTaskCheckpointContinuation = Readonly<{
+  occurrence: ParkedProtectedTaskAdditionalAuthority["occurrence"];
+  priorJob: ParkedProtectedTaskAdditionalAuthority["priorJob"];
+  proof: ProtectedTaskExecutionContinuationProof;
+  stableRoutingDigest: Uint8Array;
+  continuationFingerprint: string;
+  authorizationRequestId: string;
+  nextExecutionSegment: number;
+}>;
+
+export type StartParkedProtectedTaskCheckpointSegmentInput = Readonly<
+  Omit<StartParkedProtectedTaskHumanRunSegmentInput, "acceptance" | "interrupts"> & {
+    interrupts: readonly [];
+    continuationFingerprint: string;
+  }
+>;
+export type StartParkedProtectedTaskCheckpointSegmentResult =
+  StartParkedProtectedTaskHumanRunSegmentResult;
 
 export type ProtectedTaskPendingAttentionViewer = Readonly<{
   userId: string;
@@ -3456,6 +3602,7 @@ export type ProtectedTaskPendingAttentionPage = Readonly<{
 }>;
 
 export type StartParkedProtectedTaskHumanRunSegmentInput = Readonly<{
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   taskId: string;
   taskRunId: string;
   graphThreadId: string;
@@ -3502,6 +3649,7 @@ export type StartParkedProtectedTaskRunAdditionalAuthoritySegmentResult =
   StartParkedProtectedTaskHumanRunSegmentResult;
 
 type ProtectedTaskRunParkReceipt = Readonly<{
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   version: 1;
   taskId: string;
   taskRunId: string;
@@ -3703,8 +3851,9 @@ function decodeRoutingDigest(value: unknown): Uint8Array | null {
 
 function canonicalInterruptCoordinates(
   value: readonly ProtectedTaskRunInterruptCoordinate[],
+  allowCheckpointEmpty = false,
 ): readonly ProtectedTaskRunInterruptCoordinate[] {
-  if (!Array.isArray(value) || value.length === 0) {
+  if (!Array.isArray(value) || (!allowCheckpointEmpty && value.length === 0)) {
     throw new TypeError("Protected Task park binding is malformed");
   }
   const coordinates = value.map((candidate) => {
@@ -3746,19 +3895,37 @@ function canonicalInterruptCoordinates(
   return Object.freeze(coordinates);
 }
 
+function parkAadFields(
+  value: Readonly<Record<string, unknown>>,
+  namespaceId?: string | null,
+  maximumPolicyRevision?: number,
+): Readonly<{ checkpointAadBinding?: ProtectedTaskCheckpointAadBinding }> {
+  const binding = parseProtectedTaskCheckpointAadBinding(value["checkpointAadBinding"]);
+  return binding === null || namespaceId !== undefined && binding.namespaceId !== namespaceId
+    || maximumPolicyRevision !== undefined && binding.policyRevision > maximumPolicyRevision
+    ? {} : { checkpointAadBinding: binding };
+}
+
+function parkKeys(value: Readonly<Record<string, unknown>>): string {
+  return Object.keys(value).filter(key => key !== "checkpointAadBinding"
+    || parseProtectedTaskCheckpointAadBinding(value[key]) === null).sort().join(",");
+}
+
 function parkReceipt(
   input: ParkProtectedTaskRunInput,
   stableRoutingDigest?: Uint8Array,
+  allowCheckpointEmpty = false,
 ): ProtectedTaskRunParkReceipt {
   return Object.freeze({
     version: 1,
+    ...parkAadFields(input),
     taskId: input.taskId,
     taskRunId: input.taskRunId,
     jobId: input.jobId,
     graphThreadId: input.graphThreadId,
     generation: input.generation,
     executionSegment: input.executionSegment,
-    interrupts: canonicalInterruptCoordinates(input.interrupts),
+    interrupts: canonicalInterruptCoordinates(input.interrupts, allowCheckpointEmpty),
     parkedAt: input.parkedAt.toISOString(),
     ...(stableRoutingDigest === undefined
       ? {}
@@ -3861,7 +4028,11 @@ function exactParkReceipt(
   const expectedKeys = expected.stableRoutingDigest === undefined
     ? "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
     : "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version";
-  return Object.keys(value).sort().join(",") === expectedKeys
+  return parkKeys(value) === expectedKeys
+    && sameProtectedTaskCheckpointAadBinding(
+      value["checkpointAadBinding"] === undefined ? undefined
+        : parseProtectedTaskCheckpointAadBinding(value["checkpointAadBinding"]) ?? undefined,
+      expected.checkpointAadBinding)
     && value["version"] === expected.version
     && value["taskId"] === expected.taskId
     && value["taskRunId"] === expected.taskRunId
@@ -4041,6 +4212,7 @@ type LockedProtectedTaskParkRows = Readonly<{
 function prepareProtectedTaskParkReceipt(
   input: ParkProtectedTaskRunInput,
   stableRoutingDigest?: Uint8Array,
+  allowCheckpointEmpty = false,
 ): ProtectedTaskRunParkReceipt {
   if (
     !input.taskId
@@ -4070,7 +4242,12 @@ function prepareProtectedTaskParkReceipt(
   ) {
     throw new TypeError("Protected Task park binding is malformed");
   }
-  return parkReceipt(input, stableRoutingDigest);
+  if (input.checkpointAadBinding !== undefined && (
+    parseProtectedTaskCheckpointAadBinding(input.checkpointAadBinding) === null
+    || input.checkpointAadBinding.policyRevision > input.jobReference.policyRevision)) {
+    throw new TypeError("Protected Task checkpoint ciphertext binding is malformed");
+  }
+  return parkReceipt(input, stableRoutingDigest, allowCheckpointEmpty);
 }
 
 async function lockProtectedTaskParkRows(
@@ -4102,6 +4279,7 @@ async function parkProtectedTaskRunWithLockedRows(
   input: ParkProtectedTaskRunInput,
   receipt: ProtectedTaskRunParkReceipt,
   rows: LockedProtectedTaskParkRows,
+  allowPausedCheckpointReplay = false,
 ): Promise<ParkProtectedTaskRunResult> {
   const { task, run, job } = rows;
   const metadata = isRecord(job.metadata) ? job.metadata : {};
@@ -4122,7 +4300,9 @@ async function parkProtectedTaskRunWithLockedRows(
       task.prompt === ""
       && task.expectedOutput === null
     ));
-  const exactRunIdentity = run.graphThreadId === input.graphThreadId
+  const exactRunIdentity = (receipt.checkpointAadBinding === undefined
+      || receipt.checkpointAadBinding.namespaceId === task.contentNamespaceId)
+    && run.graphThreadId === input.graphThreadId
     && run.jobId === input.jobId
     && pristineProtectedTaskRun(run);
   const exactJobIdentity = job.ownerId === task.requestorId
@@ -4139,7 +4319,8 @@ async function parkProtectedTaskRunWithLockedRows(
     ? "pending"
     : "awaiting";
   if (
-    task.status === expectedTaskParkedStatus
+    (task.status === expectedTaskParkedStatus
+      || allowPausedCheckpointReplay && task.status === "paused")
     && run.status === "awaiting"
     && run.jobId === job.id
     && job.status === "completed"
@@ -4533,6 +4714,142 @@ export async function sealAndParkProtectedTaskHumanRun(
   }
 }
 
+/** Seal an explicit cooperative checkpoint before parking its exact Run. */
+export async function sealAndParkProtectedTaskCheckpointRun(
+  db: DirectDatabase,
+  input: SealAndParkProtectedTaskCheckpointRunInput,
+): Promise<SealAndParkProtectedTaskRunResult> {
+  if (!(input.stableRoutingDigest instanceof Uint8Array)
+    || input.stableRoutingDigest.length !== 32 || input.park.interrupts.length !== 0
+    || input.continuation.kind !== "checkpoint_safe_v1"
+    || input.continuation.effectDisposition !== "none_v1"
+    || !["manual_pause", "time_limit", "grant_refresh"].includes(input.continuation.reason)
+    || (input.continuation.reason === "grant_refresh"
+      ? input.pauseRequestId !== null : !input.pauseRequestId)) {
+    throw new TypeError("Protected Task checkpoint pause input is malformed");
+  }
+  const continuation = Object.freeze({ ...input.continuation });
+  const pauseRequestId = input.pauseRequestId;
+  const routingDigest = Uint8Array.from(input.stableRoutingDigest);
+  const parkReceiptValue = prepareProtectedTaskParkReceipt(
+    input.park,
+    routingDigest,
+    true,
+  );
+  const park = Object.freeze({
+    ...input.park,
+    interrupts: parkReceiptValue.interrupts,
+    parkedAt: new Date(input.park.parkedAt.getTime()),
+    jobReference: Object.freeze({ ...input.park.jobReference }),
+  });
+  const segment = input.segment;
+  if (segment.route !== "native_langgraph_v1"
+    || segment.checkpoint.contract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(segment.checkpoint.expectedCheckpointCount)
+    || segment.checkpoint.expectedCheckpointCount < 1) {
+    throw new TypeError("Protected Task checkpoint seal-and-park input is malformed");
+  }
+  const segmentSnapshot = Object.freeze({
+    route: segment.route,
+    checkpoint: Object.freeze({
+      ...segment.checkpoint,
+      checkpointOrderedDigest:
+        segment.checkpoint.checkpointOrderedDigest?.slice() ?? null,
+      blobOrderedDigest: segment.checkpoint.blobOrderedDigest?.slice() ?? null,
+      pendingWriteOrderedDigest:
+        segment.checkpoint.pendingWriteOrderedDigest?.slice() ?? null,
+    }),
+  });
+
+  try {
+    return await db.transaction(async tx => {
+      const locked = await lockProtectedTaskParkRows(tx, park);
+      if (locked.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: locked.reason,
+        });
+      }
+      // A refresh checkpoint may finish after a manual pause request arrives.
+      // It only parks this segment; the independent Task intent still fences
+      // scheduling and every successor start until aggregate unpause.
+      if (continuation.reason !== "grant_refresh" && (
+        locked.task.pauseRequestId !== pauseRequestId
+        || locked.task.pauseReason !== continuation.reason
+        || locked.task.pauseRequestedAt === null
+        || locked.task.pauseRequestedAt.getTime() > park.parkedAt.getTime()
+      )) {
+        return rollbackSealAndPark({ status: "rejected", stage: "park", reason: "stale" });
+      }
+      const transcript = await readProtectedTaskTranscriptManifestInTx(tx, {
+        taskId: park.taskId,
+        taskRunId: park.taskRunId,
+        graphThreadId: park.graphThreadId,
+      });
+      const segmentResult = await sealProtectedTaskExecutionSegmentReceiptInTx(
+        tx,
+        {
+          ...segmentSnapshot,
+          taskId: park.taskId,
+          taskRunId: park.taskRunId,
+          jobId: park.jobId,
+          executionSegment: park.executionSegment,
+          transcript,
+          sealedAt: new Date(park.parkedAt.getTime()),
+        },
+      );
+      if (segmentResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "segment",
+          reason: segmentResult.reason,
+        });
+      }
+      const continuationResult = await sealProtectedTaskContinuationReceiptInTx(tx, {
+        ...continuation,
+        taskId: park.taskId, taskRunId: park.taskRunId, jobId: park.jobId,
+        executionSegment: park.executionSegment,
+        sealedAt: new Date(park.parkedAt.getTime()),
+      });
+      if (continuationResult.status === "rejected") {
+        return rollbackSealAndPark({ status: "rejected", stage: "continuation", reason: continuationResult.reason });
+      }
+      const parkResult = await parkProtectedTaskRunWithLockedRows(
+        tx,
+        park,
+        parkReceiptValue,
+        locked,
+        true,
+      );
+      if (parkResult.status === "rejected") {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: parkResult.reason,
+        });
+      }
+      if (parkResult.status === "exact_replay"
+        && (segmentResult.status !== "exact_replay"
+          || continuationResult.status !== "exact_replay")) {
+        return rollbackSealAndPark({
+          status: "rejected",
+          stage: "park",
+          reason: "conflict",
+        });
+      }
+      return Object.freeze({ status: parkResult.status });
+    });
+  } catch (error) {
+    if (error instanceof SealAndParkRollback) {
+      return error.rejection;
+    }
+    throw error;
+  } finally {
+    routingDigest.fill(0);
+  }
+}
+
 function cloneProtectedTaskExecutionSegment(
   segment: ProtectedTaskExecutionSegmentReceipt,
 ): ProtectedTaskExecutionSegmentReceipt {
@@ -4693,7 +5010,7 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
   const parkedAt = typeof parkedAtText === "string"
     ? new Date(parkedAtText)
     : new Date(Number.NaN);
-  if (Object.keys(rawReceipt).sort().join(",")
+  if (parkKeys(rawReceipt)
       !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
     || rawReceipt["version"] !== 1
     || !Number.isSafeInteger(rawReceipt["generation"])
@@ -4713,6 +5030,7 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
   }
   const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
     version: 1,
+    ...parkAadFields(rawReceipt, task.contentNamespaceId, reference.policyRevision),
     taskId: task.id,
     taskRunId: run.id,
     jobId: job.id,
@@ -4819,6 +5137,7 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
         contentNamespaceId: task.contentNamespaceId,
         contentRevision: task.contentRevision,
         cryptoObjectId: task.cryptoObjectId,
+        ...copyDefinitionHistoricalMetadata(task),
         cryptoAccessRevision: task.cryptoAccessRevision,
         cryptoRequiredNamespaceFingerprint:
           task.cryptoRequiredNamespaceFingerprint.slice(),
@@ -4833,6 +5152,7 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
       }),
     }),
     priorJob: Object.freeze({
+      ...parkAadFields(receipt),
       id: job.id,
       generation: receipt.generation,
       parkedAt: new Date(parkedAt.getTime()),
@@ -4840,6 +5160,231 @@ export function parseParkedProtectedTaskAdditionalAuthority(input: Readonly<{
       reference: copiedReference,
     }),
     proof: copiedProof,
+    authorizationRequestId,
+    continuationFingerprint,
+    nextExecutionSegment: reference.executionSegment + 1,
+  });
+}
+
+function checkpointContinuationFingerprint(
+  proof: ProtectedTaskExecutionContinuationProof,
+  stableRoutingDigest: Uint8Array,
+): string {
+  const s = proof.segment;
+  const c = proof.continuation;
+  return createHash("sha256").update(JSON.stringify([
+    "nautilo.protected-task-checkpoint-continuation.v1",
+    s.taskRunId, s.executionSegment, s.jobId, s.route,
+    s.transcriptContract, s.expectedTranscriptAssociationCount,
+    s.transcriptAssociationDigest === null ? null : encodeRoutingDigest(s.transcriptAssociationDigest),
+    s.checkpointContract, s.expectedCheckpointCount,
+    s.checkpointDigest === null ? null : encodeRoutingDigest(s.checkpointDigest),
+    s.expectedCheckpointBlobCount, s.checkpointBlobDigest === null ? null : encodeRoutingDigest(s.checkpointBlobDigest),
+    s.expectedPendingWriteCount, s.pendingWriteDigest === null ? null : encodeRoutingDigest(s.pendingWriteDigest),
+    s.sealedAt.toISOString(), c.taskRunId, c.executionSegment, c.jobId,
+    c.kind, c.reason, c.effectDisposition, c.interruptId, c.operationId,
+    c.requestDigest, c.requiredAuthorityDigest, c.stableRoutingDigest,
+    c.semanticAuthorityRequirements, c.sealedAt.toISOString(),
+    encodeRoutingDigest(stableRoutingDigest),
+  ])).digest("base64url");
+}
+
+export function parseParkedProtectedTaskCheckpointContinuation(input: Readonly<{
+  task: ParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{ pauseRequestId?: string | null }>;
+  run: ParkedProtectedTaskAdditionalAuthorityRunRow;
+  job: ParkedProtectedTaskAdditionalAuthorityJobRow;
+  proof: ProtectedTaskExecutionContinuationProof | null;
+}>): ParkedProtectedTaskCheckpointContinuation | null {
+  const { task, run, job, proof } = input;
+  if (task.pauseRequestId != null
+    || !CANONICAL_UUID.test(task.id)
+    || !CANONICAL_UUID.test(task.ownerId)
+    || !CANONICAL_UUID.test(task.requestorId)
+    || !CANONICAL_UUID.test(task.agentId)
+    || task.callingRoomId !== null
+      && !CANONICAL_UUID.test(task.callingRoomId)
+    || task.scheduleKind !== "now"
+      && task.scheduleKind !== "one_shot"
+      && task.scheduleKind !== "cron"
+    || task.status !== (task.scheduleKind === "cron" ? "pending" : "awaiting")
+    || task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected"
+    || task.contentNamespaceId === null
+    || !CANONICAL_UUID.test(task.contentNamespaceId)
+    || !Number.isSafeInteger(task.contentRevision)
+    || task.contentRevision < 1
+    || task.cryptoObjectId === null
+    || task.cryptoObjectId.length === 0
+    || !Number.isSafeInteger(task.cryptoAccessRevision)
+    || task.cryptoAccessRevision < 0
+    || !(task.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || task.cryptoRequiredNamespaceFingerprint.length !== 32
+    || task.cryptoMappingState !== "verified"
+    || task.contentPristine !== true
+    || !CANONICAL_UUID.test(run.id)
+    || run.taskId !== task.id
+    || run.jobId !== job.id
+    || typeof run.graphThreadId !== "string"
+    || run.graphThreadId.length === 0
+    || run.status !== "awaiting"
+    || !(run.startedAt instanceof Date)
+    || !Number.isFinite(run.startedAt.getTime())
+    || run.pristine !== true
+    || !CANONICAL_UUID.test(job.id)
+    || job.ownerId !== task.requestorId
+    || job.requestorId !== task.requestorId
+    || job.laneKey !== `task:${task.id}`
+    || job.type !== "foreground"
+    || job.status !== "completed"
+    || !(job.startedAt instanceof Date)
+    || !Number.isFinite(job.startedAt.getTime())
+    || !(job.completedAt instanceof Date)
+    || !Number.isFinite(job.completedAt.getTime())
+    || job.pristine !== true
+    || !isRecord(job.reference)
+    || !isRecord(job.parkReceipt)
+    || proof === null) return null;
+
+  const reference = job.reference as ProtectedTaskDurableJobReference;
+  if (reference.kind !== "protected_task_run_v1"
+    || !exactProtectedTaskJobReference(job.reference, reference)
+    || reference.taskId !== task.id
+    || reference.taskRunId !== run.id
+    || reference.inputObjectId !== task.cryptoObjectId
+    || reference.resultObjectId !== protectedTaskRunResultObjectId(task.id, run.id)
+    || !opaqueCheckpointCoordinate(reference.authorizationRequestId)
+    || !Number.isSafeInteger(reference.policyRevision)
+    || reference.policyRevision < 1
+    || !Number.isSafeInteger(reference.executionSegment)
+    || reference.executionSegment < 1
+    || reference.executionSegment === Number.MAX_SAFE_INTEGER) return null;
+
+  const rawReceipt = job.parkReceipt;
+  const parkedAtText = rawReceipt["parkedAt"];
+  const parkedAt = typeof parkedAtText === "string"
+    ? new Date(parkedAtText)
+    : new Date(Number.NaN);
+  if (parkKeys(rawReceipt)
+      !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version"
+    || rawReceipt["version"] !== 1
+    || !Number.isSafeInteger(rawReceipt["generation"])
+    || (rawReceipt["generation"] as number) < 0
+    || rawReceipt["executionSegment"] !== reference.executionSegment
+    || !Number.isFinite(parkedAt.getTime())
+    || parkedAt.toISOString() !== parkedAtText
+    || job.completedAt.getTime() !== parkedAt.getTime()) return null;
+
+  const stableRoutingDigest = decodeRoutingDigest(rawReceipt["stableRoutingDigest"]);
+  if (stableRoutingDigest === null || !Array.isArray(rawReceipt["interrupts"])
+    || rawReceipt["interrupts"].length !== 0) return null;
+  const interrupts = Object.freeze([]);
+  const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
+    version: 1,
+    ...parkAadFields(rawReceipt, task.contentNamespaceId, reference.policyRevision),
+    taskId: task.id,
+    taskRunId: run.id,
+    jobId: job.id,
+    graphThreadId: run.graphThreadId,
+    generation: rawReceipt["generation"] as number,
+    executionSegment: reference.executionSegment,
+    interrupts,
+    parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: encodeRoutingDigest(stableRoutingDigest),
+  });
+  const continuation = proof.continuation;
+  const segment = proof.segment;
+  if (!exactParkReceipt(rawReceipt, receipt)
+    || segment.taskRunId !== run.id
+    || segment.jobId !== job.id
+    || segment.executionSegment !== reference.executionSegment
+    || segment.route !== "native_langgraph_v1"
+    || segment.transcriptContract !== "protected_message_associations_v1"
+    || !Number.isSafeInteger(segment.expectedTranscriptAssociationCount)
+    || segment.expectedTranscriptAssociationCount < 0
+    || !(segment.transcriptAssociationDigest instanceof Uint8Array)
+    || segment.transcriptAssociationDigest.length !== 32
+    || segment.checkpointContract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(segment.expectedCheckpointCount)
+    || segment.expectedCheckpointCount < 1
+    || !(segment.checkpointDigest instanceof Uint8Array)
+    || segment.checkpointDigest.length !== 32
+    || !Number.isSafeInteger(segment.expectedCheckpointBlobCount)
+    || segment.expectedCheckpointBlobCount < 0
+    || !(segment.checkpointBlobDigest instanceof Uint8Array)
+    || segment.checkpointBlobDigest.length !== 32
+    || !Number.isSafeInteger(segment.expectedPendingWriteCount)
+    || segment.expectedPendingWriteCount < 0
+    || !(segment.pendingWriteDigest instanceof Uint8Array)
+    || segment.pendingWriteDigest.length !== 32
+    || !(segment.sealedAt instanceof Date)
+    || segment.sealedAt.getTime() !== parkedAt.getTime()
+    || continuation.taskRunId !== run.id
+    || continuation.jobId !== job.id
+    || continuation.executionSegment !== reference.executionSegment
+    || continuation.kind !== "checkpoint_safe_v1"
+    || !["manual_pause", "time_limit", "grant_refresh"].includes(continuation.reason)
+    || continuation.effectDisposition !== "none_v1"
+    || continuation.interruptId !== null || continuation.operationId !== null
+    || continuation.requestDigest !== null || continuation.requiredAuthorityDigest !== null
+    || continuation.stableRoutingDigest !== null
+    || continuation.semanticAuthorityRequirements !== null
+    || !(continuation.sealedAt instanceof Date)
+    || continuation.sealedAt.getTime() !== parkedAt.getTime()) return null;
+
+  const copiedProof = Object.freeze({
+    segment: Object.freeze({ ...segment,
+      transcriptAssociationDigest: Uint8Array.from(segment.transcriptAssociationDigest),
+      checkpointDigest: Uint8Array.from(segment.checkpointDigest),
+      checkpointBlobDigest: Uint8Array.from(segment.checkpointBlobDigest),
+      pendingWriteDigest: Uint8Array.from(segment.pendingWriteDigest),
+      sealedAt: new Date(segment.sealedAt.getTime()),
+    }),
+    continuation: Object.freeze({ ...continuation,
+      sealedAt: new Date(continuation.sealedAt.getTime()),
+    }),
+  });
+  const continuationFingerprint = checkpointContinuationFingerprint(copiedProof, stableRoutingDigest);
+  const authorizationRequestId = `task-checkpoint-continuation:${run.id}:${reference.executionSegment + 1}:${continuationFingerprint}`;
+  if (authorizationRequestId === reference.authorizationRequestId) return null;
+  const copiedReference = Object.freeze({ ...reference });
+  return Object.freeze({
+    occurrence: Object.freeze({
+      task: Object.freeze({
+        id: task.id,
+        ownerId: task.ownerId,
+        requestorId: task.requestorId,
+        agentId: task.agentId,
+        callingRoomId: task.callingRoomId,
+        scheduleKind: task.scheduleKind,
+        status: task.status,
+        contentRepresentation: task.contentRepresentation,
+        contentNamespaceId: task.contentNamespaceId,
+        contentRevision: task.contentRevision,
+        cryptoObjectId: task.cryptoObjectId,
+        ...copyDefinitionHistoricalMetadata(task),
+        cryptoAccessRevision: task.cryptoAccessRevision,
+        cryptoRequiredNamespaceFingerprint:
+          Uint8Array.from(task.cryptoRequiredNamespaceFingerprint),
+      }),
+      run: Object.freeze({
+        id: run.id,
+        taskId: run.taskId,
+        jobId: job.id,
+        graphThreadId: run.graphThreadId,
+        status: "awaiting" as const,
+        startedAt: new Date(run.startedAt.getTime()),
+      }),
+    }),
+    priorJob: Object.freeze({
+      ...parkAadFields(receipt),
+      id: job.id,
+      generation: receipt.generation,
+      parkedAt: new Date(parkedAt.getTime()),
+      interrupts: copyProtectedTaskInterrupts(interrupts),
+      reference: copiedReference,
+    }),
+    proof: copiedProof,
+    stableRoutingDigest: Uint8Array.from(stableRoutingDigest),
     authorizationRequestId,
     continuationFingerprint,
     nextExecutionSegment: reference.executionSegment + 1,
@@ -4913,6 +5458,7 @@ export function parseParkedProtectedTaskHumanContinuation(input: Readonly<{
   }
   const park: ProtectedTaskRunParkReceipt = Object.freeze({
     version: 1,
+    ...parkAadFields(rawPark, task.contentNamespaceId, reference.policyRevision),
     taskId: task.id,
     taskRunId: run.id,
     jobId: job.id,
@@ -5010,6 +5556,7 @@ export function parseParkedProtectedTaskHumanContinuation(input: Readonly<{
         contentNamespaceId: task.contentNamespaceId,
         contentRevision: task.contentRevision,
         cryptoObjectId: task.cryptoObjectId,
+        ...copyDefinitionHistoricalMetadata(task),
         cryptoAccessRevision: task.cryptoAccessRevision,
         cryptoRequiredNamespaceFingerprint:
           task.cryptoRequiredNamespaceFingerprint.slice(),
@@ -5024,6 +5571,7 @@ export function parseParkedProtectedTaskHumanContinuation(input: Readonly<{
       }),
     }),
     priorJob: Object.freeze({
+      ...parkAadFields(park),
       id: job.id,
       generation: park.generation,
       parkedAt: new Date(parkedAt.getTime()),
@@ -5075,6 +5623,7 @@ export function sameParkedProtectedTaskAdditionalAuthority(
     && leftTask.contentNamespaceId === rightTask.contentNamespaceId
     && leftTask.contentRevision === rightTask.contentRevision
     && leftTask.cryptoObjectId === rightTask.cryptoObjectId
+    && JSON.stringify(leftTask.definitionHistoricalRepair ?? null) === JSON.stringify(rightTask.definitionHistoricalRepair ?? null)
     && leftTask.cryptoAccessRevision === rightTask.cryptoAccessRevision
     && sameBytes(
       leftTask.cryptoRequiredNamespaceFingerprint,
@@ -5086,6 +5635,7 @@ export function sameParkedProtectedTaskAdditionalAuthority(
     && leftRun.graphThreadId === rightRun.graphThreadId
     && leftRun.status === rightRun.status
     && leftRun.startedAt.getTime() === rightRun.startedAt.getTime()
+    && sameProtectedTaskCheckpointAadBinding(leftJob.checkpointAadBinding, rightJob.checkpointAadBinding)
     && leftJob.id === rightJob.id
     && leftJob.generation === rightJob.generation
     && leftJob.parkedAt.getTime() === rightJob.parkedAt.getTime()
@@ -5169,6 +5719,7 @@ export function sameParkedProtectedTaskHumanContinuation(
     && leftTask.contentNamespaceId === rightTask.contentNamespaceId
     && leftTask.contentRevision === rightTask.contentRevision
     && leftTask.cryptoObjectId === rightTask.cryptoObjectId
+    && JSON.stringify(leftTask.definitionHistoricalRepair ?? null) === JSON.stringify(rightTask.definitionHistoricalRepair ?? null)
     && leftTask.cryptoAccessRevision === rightTask.cryptoAccessRevision
     && sameBytes(
       leftTask.cryptoRequiredNamespaceFingerprint,
@@ -5180,6 +5731,7 @@ export function sameParkedProtectedTaskHumanContinuation(
     && leftRun.graphThreadId === rightRun.graphThreadId
     && leftRun.status === rightRun.status
     && leftRun.startedAt.getTime() === rightRun.startedAt.getTime()
+    && sameProtectedTaskCheckpointAadBinding(leftJob.checkpointAadBinding, rightJob.checkpointAadBinding)
     && leftJob.id === rightJob.id
     && leftJob.generation === rightJob.generation
     && leftJob.parkedAt.getTime() === rightJob.parkedAt.getTime()
@@ -5270,6 +5822,7 @@ export function copyParkedProtectedTaskAdditionalAuthority(
           executionSegment: priorJob.reference.executionSegment,
           interrupts: priorJob.interrupts.map(interrupt => ({ ...interrupt })),
           parkedAt: priorJob.parkedAt.toISOString(),
+          ...parkAadFields(priorJob),
         },
         pristine: true,
       },
@@ -5292,10 +5845,69 @@ export function copyParkedProtectedTaskAdditionalAuthority(
   }
 }
 
+function checkpointDescriptorTuple(value: ParkedProtectedTaskCheckpointContinuation): readonly unknown[] {
+  const t = value.occurrence.task;
+  const r = value.occurrence.run;
+  const p = value.priorJob;
+  const j = p.reference;
+  return [t.id, t.ownerId, t.requestorId, t.agentId, t.callingRoomId, t.scheduleKind,
+    t.status, t.contentRepresentation, t.contentNamespaceId, t.contentRevision,
+    t.cryptoObjectId, t.cryptoAccessRevision, encodeRoutingDigest(t.cryptoRequiredNamespaceFingerprint),
+    t.definitionHistoricalRepair ?? null,
+    r.id, r.taskId, r.jobId, r.graphThreadId, r.status, r.startedAt.toISOString(),
+    p.id, p.generation, p.parkedAt.toISOString(), p.interrupts, p.checkpointAadBinding,
+    j.kind, j.taskId, j.taskRunId, j.inputObjectId, j.resultObjectId,
+    j.authorizationRequestId, j.policyRevision, j.executionSegment,
+    j.resumeAcceptanceId, j.resumeContinuationFingerprint,
+    checkpointContinuationFingerprint(value.proof, value.stableRoutingDigest),
+    value.continuationFingerprint, value.authorizationRequestId, value.nextExecutionSegment];
+}
+
+export function sameParkedProtectedTaskCheckpointContinuation(
+  left: ParkedProtectedTaskCheckpointContinuation,
+  right: ParkedProtectedTaskCheckpointContinuation,
+): boolean {
+  try { return JSON.stringify(checkpointDescriptorTuple(left)) === JSON.stringify(checkpointDescriptorTuple(right)); }
+  catch { return false; }
+}
+
+export function copyParkedProtectedTaskCheckpointContinuation(
+  expected: ParkedProtectedTaskCheckpointContinuation,
+): ParkedProtectedTaskCheckpointContinuation {
+  const t = expected.occurrence.task;
+  const r = expected.occurrence.run;
+  const p = expected.priorJob;
+  const copy = parseParkedProtectedTaskCheckpointContinuation({
+    task: { ...t, cryptoMappingState: "verified", contentPristine: true },
+    run: { ...r, pristine: true },
+    job: { id: p.id, ownerId: t.requestorId, requestorId: t.requestorId,
+      laneKey: `task:${t.id}`, type: "foreground", status: "completed",
+      startedAt: r.startedAt, completedAt: p.parkedAt, reference: p.reference,
+      pristine: true, parkReceipt: {
+        version: 1, taskId: t.id, taskRunId: r.id, jobId: p.id,
+        graphThreadId: r.graphThreadId, generation: p.generation,
+        executionSegment: p.reference.executionSegment, interrupts: p.interrupts,
+        ...parkAadFields(p),
+        parkedAt: p.parkedAt.toISOString(), stableRoutingDigest: encodeRoutingDigest(expected.stableRoutingDigest),
+      } },
+    proof: expected.proof,
+  });
+  if (copy === null || !sameParkedProtectedTaskCheckpointContinuation(expected, copy)) {
+    throw new TypeError("Parked Task checkpoint descriptor is invalid");
+  }
+  return copy;
+}
+
 export function copyParkedProtectedTaskHumanContinuation(
   expected: ParkedProtectedTaskHumanContinuation,
 ): ParkedProtectedTaskHumanContinuation {
   try {
+    if (expected.priorJob.checkpointAadBinding !== undefined && (
+      parseProtectedTaskCheckpointAadBinding(expected.priorJob.checkpointAadBinding) === null
+      || expected.priorJob.checkpointAadBinding.namespaceId !== expected.occurrence.task.contentNamespaceId
+      || expected.priorJob.checkpointAadBinding.policyRevision > expected.priorJob.reference.policyRevision)) {
+      throw new TypeError("Parked Task Human descriptor is invalid");
+    }
     assertProtectedTaskHumanContinuationAcceptance(expected.acceptance);
     if (expected.acceptance.acceptanceId
       !== protectedTaskHumanContinuationAcceptanceId({
@@ -5328,6 +5940,7 @@ export function copyParkedProtectedTaskHumanContinuation(
       }),
       priorJob: Object.freeze({
         ...expected.priorJob,
+        ...parkAadFields(expected.priorJob),
         parkedAt: new Date(expected.priorJob.parkedAt.getTime()),
         interrupts: copyProtectedTaskInterrupts(expected.priorJob.interrupts),
         reference: Object.freeze({ ...expected.priorJob.reference }),
@@ -5364,6 +5977,7 @@ export function copyParkedProtectedTaskHumanContinuation(
 
 /** Shared content-free projections for discovery and locked revalidation. */
 export const parkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
+  pauseRequestId: tasks.pauseRequestId,
   id: tasks.id,
   ownerId: tasks.ownerId,
   requestorId: tasks.requestorId,
@@ -5375,6 +5989,7 @@ export const parkedTaskAdditionalAuthorityTaskProjection = Object.freeze({
   contentNamespaceId: tasks.contentNamespaceId,
   contentRevision: tasks.contentRevision,
   cryptoObjectId: tasks.cryptoObjectId,
+  definitionHistoricalRepair: protectedTaskDefinitionHistoricalRepairProjection,
   cryptoAccessRevision: tasks.cryptoAccessRevision,
   cryptoRequiredNamespaceFingerprint:
     tasks.cryptoRequiredNamespaceFingerprint,
@@ -5565,7 +6180,7 @@ async function readParkedProtectedTaskAdditionalAuthorityCandidate(
   taskRunId: string,
 ): Promise<Readonly<{
   row: Readonly<{
-    task: ParkedProtectedTaskAdditionalAuthorityTaskRow;
+    task: ParkedProtectedTaskAdditionalAuthorityTaskRow & Readonly<{ pauseRequestId?: string | null }>;
     run: ParkedProtectedTaskAdditionalAuthorityRunRow;
     job: ParkedProtectedTaskAdditionalAuthorityJobRow;
   }>;
@@ -5602,6 +6217,47 @@ async function readParkedProtectedTaskAdditionalAuthorityCandidate(
     executionSegment: row.job.reference["executionSegment"] as number,
   });
   return proof === null ? null : Object.freeze({ row, proof });
+}
+
+export async function discoverParkedProtectedTaskCheckpointContinuation(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string }>,
+): Promise<ParkedProtectedTaskCheckpointContinuation | null> {
+  const candidate = await readParkedProtectedTaskAdditionalAuthorityCandidate(db, input.taskRunId);
+  return candidate === null ? null : parseParkedProtectedTaskCheckpointContinuation({ ...candidate.row, proof: candidate.proof });
+}
+
+export async function readParkedProtectedTaskCheckpointContinuation(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ taskRunId: string; authorizationRequestId: string }>,
+): Promise<ParkedProtectedTaskCheckpointContinuation | null> {
+  const current = await discoverParkedProtectedTaskCheckpointContinuation(db, input);
+  return current?.authorizationRequestId === input.authorizationRequestId ? current : null;
+}
+
+export async function lockParkedProtectedTaskCheckpointContinuation(
+  transaction: Pick<DirectDatabase, "select">,
+  supplied: ParkedProtectedTaskCheckpointContinuation,
+): Promise<Readonly<{ current: ParkedProtectedTaskCheckpointContinuation;
+  task: LockedParkedProtectedTaskAdditionalAuthorityTaskRow }> | null> {
+  const expected = copyParkedProtectedTaskCheckpointContinuation(supplied);
+  const [task] = await transaction.select(lockedParkedTaskAdditionalAuthorityTaskProjection)
+    .from(tasks).where(eq(tasks.id, expected.occurrence.task.id)).limit(1).for("update");
+  if (!task || task.pauseRequestId !== null) return null;
+  const [run] = await transaction.select(parkedTaskAdditionalAuthorityRunProjection)
+    .from(taskRuns).where(and(eq(taskRuns.id, expected.occurrence.run.id), eq(taskRuns.taskId, task.id)))
+    .limit(1).for("update");
+  if (!run || run.jobId !== expected.priorJob.id) return null;
+  const [job] = await transaction.select(parkedTaskAdditionalAuthorityJobProjection)
+    .from(jobs).where(eq(jobs.id, expected.priorJob.id)).limit(1).for("update");
+  if (!job) return null;
+  const proof = await readProtectedTaskExecutionContinuationProof(transaction, {
+    taskId: task.id, taskRunId: run.id, jobId: job.id,
+    executionSegment: expected.priorJob.reference.executionSegment,
+  });
+  const current = parseParkedProtectedTaskCheckpointContinuation({ task, run, job, proof });
+  return current !== null && sameParkedProtectedTaskCheckpointContinuation(expected, current)
+    ? Object.freeze({ current, task }) : null;
 }
 
 /**
@@ -5822,6 +6478,7 @@ function parseProtectedTaskPendingAttentionRow(
   }
   const park: ProtectedTaskRunParkReceipt = Object.freeze({
     version: 1,
+    ...parkAadFields(rawPark, task.contentNamespaceId, reference.policyRevision),
     taskId: task.id,
     taskRunId: run.id,
     jobId: job.id,
@@ -5898,6 +6555,7 @@ function parseProtectedTaskPendingAttentionRow(
         contentNamespaceId: task.contentNamespaceId,
         contentRevision: task.contentRevision,
         cryptoObjectId: task.cryptoObjectId,
+        ...copyDefinitionHistoricalMetadata(task),
         cryptoAccessRevision: task.cryptoAccessRevision,
         cryptoRequiredNamespaceFingerprint:
           task.cryptoRequiredNamespaceFingerprint.slice(),
@@ -5914,6 +6572,7 @@ function parseProtectedTaskPendingAttentionRow(
       }),
     }),
     priorJob: Object.freeze({
+      ...parkAadFields(park),
       id: job.id,
       generation: park.generation,
       parkedAt: new Date(parkedAt.getTime()),
@@ -6266,7 +6925,7 @@ function parkedProtectedTaskAwaitReplyInput(
     ? new Date(parkedAtText)
     : new Date(Number.NaN);
   if (
-    Object.keys(rawReceipt).sort().join(",")
+    parkKeys(rawReceipt)
       !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version"
     || rawReceipt["version"] !== 1
     || !Number.isSafeInteger(rawReceipt["generation"])
@@ -6299,6 +6958,7 @@ function parkedProtectedTaskAwaitReplyInput(
   const reference = job.input as ProtectedTaskDurableJobReference;
   const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
     version: 1,
+    ...parkAadFields(rawReceipt, task.contentNamespaceId, reference.policyRevision),
     taskId: task.id,
     taskRunId: run.id,
     jobId: job.id,
@@ -6345,6 +7005,7 @@ function parkedProtectedTaskAwaitReplyInput(
     graphThreadId: run.graphThreadId,
     priorJobId: job.id,
     generation: receipt.generation,
+    ...parkAadFields(receipt),
     executionSegment: receipt.executionSegment,
     interrupts,
     parkedAt,
@@ -6385,7 +7046,7 @@ function parkedProtectedTaskHumanAcceptanceCoordinates(
   const stableRoutingDigest = decodeRoutingDigest(
     rawReceipt["stableRoutingDigest"],
   );
-  if (Object.keys(rawReceipt).sort().join(",")
+  if (parkKeys(rawReceipt)
       !== "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version"
     || rawReceipt["version"] !== 1
     || !Number.isSafeInteger(rawReceipt["generation"])
@@ -6416,6 +7077,7 @@ function parkedProtectedTaskHumanAcceptanceCoordinates(
   const reference = job.input as ProtectedTaskDurableJobReference;
   const receipt: ProtectedTaskRunParkReceipt = Object.freeze({
     version: 1,
+    ...parkAadFields(rawReceipt, task.contentNamespaceId, reference.policyRevision),
     taskId: task.id,
     taskRunId: run.id,
     jobId: job.id,
@@ -6468,6 +7130,7 @@ function parkedProtectedTaskHumanAcceptanceCoordinates(
       graphThreadId: run.graphThreadId,
       priorJobId: job.id,
       generation: receipt.generation,
+      ...parkAadFields(receipt),
       executionSegment: receipt.executionSegment,
       interrupts: copyProtectedTaskInterrupts(interrupts),
       parkedAt: new Date(parkedAt.getTime()),
@@ -6736,6 +7399,7 @@ export async function acceptProtectedTaskHumanContinuation(
   }
   const receipt = humanContinuationAcceptanceReceipt(input);
   const park = parkReceipt({
+    ...parkAadFields(input),
     taskId: input.taskId,
     taskRunId: input.taskRunId,
     graphThreadId: input.graphThreadId,
@@ -7047,6 +7711,7 @@ async function advanceParkedProtectedTaskSegment(
   }>,
 ): Promise<StartParkedProtectedTaskHumanRunSegmentResult> {
   const { task, run, priorJob, nextJob } = rows;
+  if (task.pauseRequestId != null) return { status: "rejected", reason: "stale" };
   const nextJobIsPristineQueued = nextJob.status === "queued"
     && nextJob.startedAt === null;
   const nextJobIsLiveRunning = nextJob.status === "running"
@@ -7165,7 +7830,8 @@ export async function startParkedProtectedTaskHumanRunSegment(
     || nextReference.taskRunId !== priorReference.taskRunId
     || nextReference.inputObjectId !== priorReference.inputObjectId
     || nextReference.resultObjectId !== priorReference.resultObjectId
-    || nextReference.policyRevision !== priorReference.policyRevision
+    || !Number.isSafeInteger(nextReference.policyRevision)
+    || nextReference.policyRevision < priorReference.policyRevision
     || !Number.isSafeInteger(nextReference.executionSegment)
     || nextReference.executionSegment !== priorReference.executionSegment + 1
     || !nextReference.authorizationRequestId
@@ -7176,6 +7842,7 @@ export async function startParkedProtectedTaskHumanRunSegment(
     throw new TypeError("Protected Task parked segment binding is malformed");
   }
   const receipt = parkReceipt({
+    ...parkAadFields(input),
     taskId: input.taskId,
     taskRunId: input.taskRunId,
     graphThreadId: input.graphThreadId,
@@ -7200,11 +7867,20 @@ export async function startParkedProtectedTaskHumanRunSegment(
   const prepared = prepareParkedProtectedTaskHumanStart(input);
 
   return db.transaction(async (tx) => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server")).limit(1).for("share");
+    if (!policy || policy.revision !== nextReference.policyRevision
+      || !protectedTaskDefinitionSupportsPolicy(input.contentRepresentation, policy.mode)) {
+      return { status: "rejected", reason: "stale" } as const;
+    }
     const rows = await lockParkedProtectedTaskSegmentRows(tx, input);
     if (rows === null) {
       return { status: "rejected", reason: "not_found" } as const;
     }
     const { task, run, priorJob, nextJob } = rows;
+    if (!await parkedOutputBindingAllowsPolicy(tx, run.id, priorReference, nextReference.policyRevision)) {
+      return { status: "rejected", reason: "conflict" } as const;
+    }
 
     const priorMetadata = isRecord(priorJob.metadata) ? priorJob.metadata : {};
     const nextMetadata = isRecord(nextJob.metadata) ? nextJob.metadata : {};
@@ -7417,6 +8093,13 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
     prepared.cryptoRequiredNamespaceFingerprint;
 
   return db.transaction(async (tx) => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server")).limit(1).for("share");
+    if (!policy || policy.revision !== nextReference.policyRevision
+      || nextReference.policyRevision < priorReference.policyRevision
+      || !protectedTaskDefinitionSupportsPolicy(contentRepresentation, policy.mode)) {
+      return { status: "rejected", reason: "stale" } as const;
+    }
     const rows = await lockParkedProtectedTaskSegmentRows(tx, {
       taskId,
       taskRunId,
@@ -7427,6 +8110,9 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
       return { status: "rejected", reason: "not_found" } as const;
     }
     const { task, run, priorJob, nextJob } = rows;
+    if (!await parkedOutputBindingAllowsPolicy(tx, run.id, priorReference, nextReference.policyRevision)) {
+      return { status: "rejected", reason: "conflict" } as const;
+    }
 
     const proof = await readProtectedTaskExecutionContinuationProof(tx, {
       taskId: taskId,
@@ -7515,8 +8201,136 @@ export async function startParkedProtectedTaskRunAdditionalAuthoritySegment(
   });
 }
 
+async function parkedOutputBindingAllowsPolicy(
+  tx: Pick<DirectDatabase, "select">,
+  taskRunId: string,
+  prior: ProtectedTaskDurableJobReference,
+  currentPolicyRevision: number,
+): Promise<boolean> {
+  const [binding] = await tx.select().from(protectedTaskRunOutputBindings)
+    .where(eq(protectedTaskRunOutputBindings.taskRunId, taskRunId)).limit(1).for("share");
+  return binding !== undefined && binding.bindingId === `task-run-output:${taskRunId}`
+    && binding.resultRevision === 1 && binding.resultObjectId === prior.resultObjectId
+    && binding.resultOperationId === `task-run-result:${taskRunId}`
+    && currentPolicyRevision >= binding.acceptedPolicyRevision
+    && binding.resultTerminalAt === null && binding.resultAttachedAt === null
+    && binding.messageId === null && binding.messagePublishedAt === null
+    && binding.wakeJobId === null && binding.wakeScheduledAt === null && binding.completedAt === null;
+}
+
+/** Start only from an immutable safe checkpoint under fresh current policy. */
+export async function startParkedProtectedTaskCheckpointSegment(
+  db: DirectDatabase,
+  supplied: StartParkedProtectedTaskCheckpointSegmentInput,
+): Promise<StartParkedProtectedTaskCheckpointSegmentResult> {
+  const input = structuredClone(supplied);
+  const prior = input.priorJobReference;
+  const next = input.jobReference;
+  const checkpoint = input.checkpointManifest;
+  if (!Array.isArray(input.interrupts) || input.interrupts.length !== 0
+    || input.priorJobId === input.jobId || !CANONICAL_UUID.test(input.jobId)
+    || !(input.stableRoutingDigest instanceof Uint8Array) || input.stableRoutingDigest.length !== 32
+    || !(input.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || input.cryptoRequiredNamespaceFingerprint.length !== 32
+    || !canonicalContinuationFingerprint(input.continuationFingerprint)
+    || prior.kind !== "protected_task_run_v1" || next.kind !== "protected_task_run_v1"
+    || !exactProtectedTaskJobReference(prior, prior)
+    || !exactProtectedTaskJobReference(next, next)
+    || prior.taskId !== input.taskId || prior.taskRunId !== input.taskRunId
+    || prior.inputObjectId !== input.cryptoObjectId
+    || prior.executionSegment >= Number.MAX_SAFE_INTEGER
+    || next.taskId !== prior.taskId || next.taskRunId !== prior.taskRunId
+    || next.inputObjectId !== prior.inputObjectId || next.resultObjectId !== prior.resultObjectId
+    || next.executionSegment !== prior.executionSegment + 1
+    || !Number.isSafeInteger(next.policyRevision) || next.policyRevision < prior.policyRevision
+    || next.resumeContinuationFingerprint !== input.continuationFingerprint
+    || next.authorizationRequestId !== `task-checkpoint-continuation:${input.taskRunId}:${next.executionSegment}:${input.continuationFingerprint}`
+    || checkpoint.contract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(checkpoint.expectedCheckpointCount) || checkpoint.expectedCheckpointCount < 1
+    || !Number.isSafeInteger(checkpoint.expectedBlobCount) || checkpoint.expectedBlobCount < 0
+    || !Number.isSafeInteger(checkpoint.expectedPendingWriteCount) || checkpoint.expectedPendingWriteCount < 0
+    || ![checkpoint.checkpointOrderedDigest, checkpoint.blobOrderedDigest,
+      checkpoint.pendingWriteOrderedDigest].every(bytes => bytes instanceof Uint8Array && bytes.length === 32)) {
+    throw new TypeError("Protected Task checkpoint segment binding is malformed");
+  }
+  const receipt = prepareProtectedTaskParkReceipt({ ...input, jobId: input.priorJobId,
+    executionSegment: prior.executionSegment, jobReference: prior }, input.stableRoutingDigest, true);
+  return db.transaction(async tx => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server")).limit(1).for("share");
+    if (!policy || policy.revision !== next.policyRevision
+      || !protectedTaskDefinitionSupportsPolicy(input.contentRepresentation, policy.mode)) {
+      return { status: "rejected", reason: "stale" };
+    }
+    const rows = await lockParkedProtectedTaskSegmentRows(tx, input);
+    if (rows === null) return { status: "rejected", reason: "not_found" };
+    const { task, run, priorJob, nextJob } = rows;
+    if (task.pauseRequestId != null) return { status: "rejected", reason: "stale" };
+    const proof = await readProtectedTaskExecutionContinuationProof(tx, {
+      taskId: task.id, taskRunId: run.id, jobId: priorJob.id, executionSegment: prior.executionSegment,
+    });
+    const metadata = isRecord(priorJob.metadata) ? priorJob.metadata : {};
+    // Normalize only for parsing retained prior proof on an exact started replay;
+    // the actual lifecycle remains separately checked by the shared CAS below.
+    const current = parseParkedProtectedTaskCheckpointContinuation({
+      task: { ...task, status: task.scheduleKind === "cron" ? "pending" : "awaiting",
+        contentPristine: task.lastError === null && (task.contentRepresentation !== "protected"
+          || task.prompt === "" && task.expectedOutput === null) },
+      run: { ...run, status: "awaiting", jobId: priorJob.id, pristine: pristineProtectedTaskRun(run) },
+      job: { ...priorJob, reference: priorJob.input,
+        parkReceipt: metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY],
+        pristine: priorJob.result === null && priorJob.message === null
+          && metadata[PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY] === undefined },
+      proof,
+    });
+    if (!current || current.continuationFingerprint !== input.continuationFingerprint
+      || current.authorizationRequestId !== next.authorizationRequestId
+      || !exactParkReceipt(metadata[PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY], receipt)
+      || !exactProtectedTaskJobReference(priorJob.input, prior)
+      || run.graphThreadId !== input.graphThreadId
+      || task.contentRepresentation !== input.contentRepresentation
+      || task.contentNamespaceId !== input.contentNamespaceId
+      || task.contentRevision !== input.contentRevision || task.cryptoObjectId !== input.cryptoObjectId
+      || task.cryptoAccessRevision !== input.cryptoAccessRevision
+      || !sameBytes(task.cryptoRequiredNamespaceFingerprint, input.cryptoRequiredNamespaceFingerprint)) {
+      return { status: "rejected", reason: "conflict" };
+    }
+    if (!await parkedOutputBindingAllowsPolicy(tx, run.id, prior, next.policyRevision)) {
+      return { status: "rejected", reason: "conflict" };
+    }
+    const nextMetadata = isRecord(nextJob.metadata) ? nextJob.metadata : {};
+    if (nextJob.ownerId !== task.requestorId || nextJob.requestorId !== task.requestorId
+      || nextJob.laneKey !== `task:${task.id}` || nextJob.type !== "foreground"
+      || nextJob.result !== null || nextJob.message !== null || nextJob.completedAt !== null
+      || Object.keys(nextMetadata).length !== 0 || !exactProtectedTaskJobReference(nextJob.input, next)) {
+      return { status: "rejected", reason: "stale" };
+    }
+    const segment = current.proof.segment;
+    const fresh = run.status === "awaiting" && run.jobId === priorJob.id;
+    if (fresh) {
+      const transcript = await readProtectedTaskTranscriptManifestInTx(tx, {
+        taskId: task.id, taskRunId: run.id, graphThreadId: run.graphThreadId,
+      });
+      if (!exactAdditionalAuthorityTranscriptManifest(segment, transcript)
+        || segment.checkpointContract !== checkpoint.contract
+        || segment.expectedCheckpointCount !== checkpoint.expectedCheckpointCount
+        || !sameBytes(segment.checkpointDigest, checkpoint.checkpointOrderedDigest)
+        || segment.expectedCheckpointBlobCount !== checkpoint.expectedBlobCount
+        || !sameBytes(segment.checkpointBlobDigest, checkpoint.blobOrderedDigest)
+        || segment.expectedPendingWriteCount !== checkpoint.expectedPendingWriteCount
+        || !sameBytes(segment.pendingWriteDigest, checkpoint.pendingWriteOrderedDigest)) {
+        return { status: "rejected", reason: "conflict" };
+      }
+    }
+    return advanceParkedProtectedTaskSegment(tx, rows, {
+      graphThreadId: input.graphThreadId, freshAuthorized: true, replayAuthorized: true,
+    });
+  });
+}
+
 const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
-const TASK_DEFINITION_OBJECT_ID = /^task-definition:v1:[0-9a-f]{64}$/u;
+// Lexical correlation only; current publication/execution validates the exact mapped definition ledger.
+const TASK_DEFINITION_OBJECT_ID = /^(?:task-definition|task-historical):v1:[0-9a-f]{64}$/u;
 const TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1 = 1024 * 1024;
 
 export type ProtectedTaskRunTerminalOutcome = "completed" | "errored";
@@ -7736,7 +8550,8 @@ function exactTaskDefinition(
   revision: TaskDefinitionCryptoRevision | undefined,
   representation: "protected" | "dual",
 ): boolean {
-  return task.contentRepresentation === representation
+  return protectedTaskDefinitionSupportsPolicy(task.contentRepresentation,
+      representation === "protected" ? "encrypted_only" : "shadow_encryption")
     && task.contentNamespaceId !== null
     && task.contentRevision > 0
     && task.cryptoObjectId !== null
@@ -7745,7 +8560,7 @@ function exactTaskDefinition(
     && task.cryptoRequiredNamespaceFingerprint.length === 32
     && task.cryptoMappingState === "verified"
     && task.lastError === null
-    && (representation !== "protected" || (
+    && (task.contentRepresentation !== "protected" || (
       task.prompt === "" && task.expectedOutput === null
     ))
     && revision !== undefined
@@ -7753,9 +8568,10 @@ function exactTaskDefinition(
     && revision.contentNamespaceId === task.contentNamespaceId
     && revision.contentRevision === task.contentRevision
     && revision.cryptoObjectId === task.cryptoObjectId
-    && revision.representation === representation
+    && revision.representation === task.contentRepresentation
     && revision.payloadVersion === 1
-    && revision.cryptoAccessRevision === task.cryptoAccessRevision
+    // Definition ledger retains genesis; only the authenticated mapped Task head advances.
+    && revision.cryptoAccessRevision === 0
     && sameBytes(
       revision.requiredNamespaceFingerprint,
       task.cryptoRequiredNamespaceFingerprint,
@@ -7911,7 +8727,7 @@ function exactTerminalOutputBinding(
     && binding.bindingId === `task-run-output:${input.taskRunId}`
     && binding.resultOperationId === input.operationId
     && binding.resultObjectId === input.resultObjectId
-    && binding.acceptedPolicyRevision === policyRevision;
+    && binding.acceptedPolicyRevision <= policyRevision;
 }
 
 type TaskRunTerminalPlan = Readonly<{
@@ -8247,7 +9063,7 @@ export async function lockExactProtectedTaskRunResultPublicationInTx(
     && binding.bindingId === `task-run-output:${run.id}`
     && binding.resultOperationId === revision.operationId
     && binding.resultObjectId === reference.resultObjectId
-    && binding.acceptedPolicyRevision === reference.policyRevision
+    && binding.acceptedPolicyRevision <= reference.policyRevision
     && finiteDate(acceptedAt)
     && finiteDate(terminalAt)
     && terminalAt.getTime() === runCompletedAt.getTime()
@@ -8269,7 +9085,8 @@ export async function lockExactProtectedTaskRunResultPublicationInTx(
     && definition.contentNamespaceId === revision.contentNamespaceId
     && definition.contentRevision > 0
     && definition.cryptoObjectId === reference.inputObjectId
-    && definition.representation === representation
+    && protectedTaskDefinitionSupportsPolicy(definition.representation,
+      representation === "protected" ? "encrypted_only" : "shadow_encryption")
     && definition.payloadVersion === 1
     && definition.cryptoAccessRevision === 0
     && definition.requiredNamespaceFingerprint instanceof Uint8Array
@@ -8425,7 +9242,7 @@ export async function settlePublishedProtectedTaskRunAuthorization(
           protectedTaskRunOutputBindings.resultObjectId,
           proof.reference.resultObjectId,
         ),
-        eq(
+        lte(
           protectedTaskRunOutputBindings.acceptedPolicyRevision,
           proof.reference.policyRevision,
         ),
@@ -8556,7 +9373,8 @@ async function terminalizeTaskRunResult(
       return terminalRejected("authority_changed");
     }
     const taskStatus = input.scheduleKind === "cron" ? "pending" : input.outcome;
-    const taskIsExactTerminal = task.status === taskStatus;
+    const taskIsExactTerminal = task.status === taskStatus
+      || task.pauseRequestId != null && ["running", "awaiting", "paused", "pending"].includes(task.status);
     const runIsExactTerminal = run.status === input.outcome;
     const existingReceipt = isRecord(job!.metadata)
       ? job!.metadata[PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY]
@@ -8617,14 +9435,14 @@ async function terminalizeTaskRunResult(
     )).returning();
     if (!updatedRun) throw new Error("Protected Task terminal CAS lost its TaskRun");
 
-    if (input.scheduleKind !== "cron") {
+    if (input.scheduleKind !== "cron" && task.pauseRequestId == null) {
       const [updatedTask] = await tx.update(tasks).set({
         status: input.outcome,
         updatedAt: new Date(input.completedAt.getTime()),
       }).where(and(
         eq(tasks.id, task.id),
         eq(tasks.status, "running"),
-        eq(tasks.contentRepresentation, input.resultRepresentation),
+        eq(tasks.contentRepresentation, task.contentRepresentation),
         isNull(tasks.lastError),
       )).returning();
       if (!updatedTask) throw new Error("Protected Task terminal CAS lost its Task");
@@ -8882,6 +9700,8 @@ export async function getCallerFundedRunningTaskRunRestartBoundary(
     .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
     .where(and(
       eq(tasks.fundingMode, "caller"),
+      eq(tasks.contentRepresentation, "ordinary"),
+      eq(taskRuns.resultRepresentation, "ordinary"),
       inArray(tasks.status, ["pending", "running"]),
       eq(taskRuns.status, "running"),
     ))
@@ -8915,6 +9735,8 @@ export async function listCallerFundedRunningTaskRunsForRestart(
     .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
     .where(and(
       eq(tasks.fundingMode, "caller"),
+      eq(tasks.contentRepresentation, "ordinary"),
+      eq(taskRuns.resultRepresentation, "ordinary"),
       inArray(tasks.status, ["pending", "running"]),
       eq(taskRuns.status, "running"),
       or(
@@ -9064,6 +9886,7 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
     if (
       !task
       || task.fundingMode !== "caller"
+      || task.contentRepresentation !== "ordinary"
       || (task.status !== "pending" && task.status !== "running")
     ) return { task, run: undefined, transitioned: false };
 
@@ -9074,7 +9897,8 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
       ))
       .limit(1)
       .for("update");
-    if (!run || run.id !== input.taskRunId || run.status !== "running") {
+    if (!run || run.id !== input.taskRunId || run.status !== "running"
+      || run.resultRepresentation !== "ordinary") {
       return { task, run, transitioned: false };
     }
     let fundingBinding: TaskFundingBinding | null = null;
@@ -9115,6 +9939,7 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
       eq(taskRuns.id, input.taskRunId),
       eq(taskRuns.taskId, input.taskId),
       eq(taskRuns.status, "running"),
+      eq(taskRuns.resultRepresentation, "ordinary"),
     )).returning();
     const interruptedFundingPredicate = fundingBinding?.kind === "personal"
       ? and(
@@ -9180,6 +10005,7 @@ export async function reconcileCallerFundedTaskRunAfterRestart(
     }).where(and(
       eq(tasks.id, input.taskId),
       eq(tasks.fundingMode, "caller"),
+      eq(tasks.contentRepresentation, "ordinary"),
       inArray(tasks.status, ["pending", "running"]),
     )).returning();
     if (!updatedRun || !updatedTask) {

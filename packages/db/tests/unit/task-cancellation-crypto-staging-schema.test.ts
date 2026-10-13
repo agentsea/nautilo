@@ -104,10 +104,10 @@ describe("Task cancellation crypto staging receipt schema", () => {
     expect(LATTICE_STORAGE_ADAPTER_TABLE_NAMES).not.toContain(
       "task_cancellation_crypto_staging_receipts",
     );
-    expect(LATTICE_STORAGE_TABLE_NAMES.at(-1)).toBe(
+    expect(LATTICE_STORAGE_TABLE_NAMES).toContain(
       "task_cancellation_crypto_staging_receipts",
     );
-    expect(getTableName(LATTICE_STORAGE_TABLES.at(-1)!)).toBe(
+    expect(LATTICE_STORAGE_TABLES.map(getTableName)).toContain(
       "task_cancellation_crypto_staging_receipts",
     );
   });

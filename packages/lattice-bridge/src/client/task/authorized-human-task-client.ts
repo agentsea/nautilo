@@ -2,6 +2,7 @@ import type {
   DualTaskPreparedCreateRequestV1,
   DualTaskPreparedUpdateRequestV1,
   NautiloApiClient,
+  ProtectedTaskDefinitionReadReadyEnvelopeV1,
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedUpdateRequestV1,
 } from "@nautilo/api-client/browser";
@@ -16,10 +17,15 @@ import type {
   TaskOperationalUpdateV1,
 } from "@nautilo/types";
 import {
+  deriveTaskHistoricalContentCryptoObjectIdV1,
+} from "../../task/task-historical-content-identity.ts";
+import {
   decodeTaskPayloadV1,
   encodeTaskPayloadV1,
   type TaskPayloadV1,
 } from "../../task/task-payload-v1.ts";
+import { parseTaskHistoricalRepairProvenanceV1 } from
+  "../../task/task-historical-repair-provenance.ts";
 import {
   ClassifiedDataOperationError,
   type EncryptionDataOperationOwner,
@@ -72,6 +78,7 @@ export type TaskDefinitionReadEnvelopeV1 = Readonly<{
   accessManifestBytes: Uint8Array;
   accessManifestProofBytes: readonly Uint8Array[];
   namespaceEnvelopeBytes: Uint8Array;
+  historicalRepair?: ProtectedTaskDefinitionReadReadyEnvelopeV1["historicalRepair"];
   /** Device port authenticates the exact signer chain and current authority. */
   signerEvidence: readonly unknown[];
 }>;
@@ -121,6 +128,7 @@ export interface HumanTaskDeviceContentPortV1 {
   openExact(input: Readonly<{
     reference: ProtectedTaskContentDtoV1;
     envelope: TaskDefinitionReadEnvelopeV1;
+    expectedAgentId?: string;
   }>): Promise<Uint8Array>;
 }
 
@@ -245,13 +253,54 @@ function checkedRead(
   reference: ProtectedTaskContentDtoV1,
   envelope: TaskDefinitionReadEnvelopeV1,
 ): void {
+  let historicalRepair = envelope.historicalRepair;
+  if (historicalRepair !== undefined) {
+    try {
+      const parsed = parseTaskHistoricalRepairProvenanceV1(historicalRepair);
+      if (parsed.version !== 2) throw new TypeError("unsupported version");
+      historicalRepair = parsed;
+    } catch (cause) {
+      throw new ClassifiedDataOperationError(
+        "integrity", "Protected Task historical read metadata is invalid",
+        { cause },
+      );
+    }
+  }
+  const historicalSourceDigest = historicalRepair === undefined
+    || !/^[0-9a-f]{64}$/u.test(historicalRepair.sourceDigest)
+    ? null
+    : Uint8Array.from(historicalRepair.sourceDigest.match(/../gu)!,
+        byte => Number.parseInt(byte, 16));
+  const historicalObjectId = historicalSourceDigest === null
+    ? null : deriveTaskHistoricalContentCryptoObjectIdV1({
+        coordinate: {
+          kind: "definition",
+          taskId,
+          contentRevision: envelope.contentRevision,
+        },
+        namespaceId: envelope.namespaceId,
+        sourceDigest: historicalSourceDigest,
+      });
   if (
     envelope.readVersion !== 1
     || envelope.taskId !== taskId
     || envelope.objectId !== reference.objectId
     || envelope.contentRevision !== reference.contentRevision
     || envelope.cryptoAccessRevision !== reference.cryptoAccessRevision
+    || envelope.accessManifestProofBytes.length !== reference.cryptoAccessRevision
     || !envelope.namespaceId
+    || historicalRepair !== undefined
+      && (historicalSourceDigest === null
+        || envelope.contentRevision !== 1
+        || historicalObjectId !== envelope.objectId
+        || envelope.signerEvidence.length === 0
+        || envelope.signerEvidence.some(entry =>
+          (entry as { kind?: unknown }).kind !== "human_device")
+        || !envelope.signerEvidence.some(entry =>
+          (entry as { kind?: unknown; committerDeviceId?: unknown }).kind
+              === "human_device"
+            && (entry as { committerDeviceId?: unknown }).committerDeviceId
+              === historicalRepair.publisherDeviceId))
   ) throw integrity("Protected Task read was substituted");
 }
 
@@ -364,7 +413,13 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
           const envelope = await input.plans.readExact({ taskId, reference: task.content });
           try {
             checkedRead(taskId, task.content, envelope);
-            const bytes = await input.content.openExact({ reference: task.content, envelope });
+            const bytes = await input.content.openExact({
+              reference: task.content,
+              envelope,
+              ...(task.agentId === null || task.agentId === undefined
+                ? {}
+                : { expectedAgentId: task.agentId }),
+            });
             try {
               return decodeTaskPayloadV1(bytes);
             } finally {

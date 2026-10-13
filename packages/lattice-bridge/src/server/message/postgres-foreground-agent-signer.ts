@@ -49,6 +49,8 @@ export type ResolveForegroundAgentAcceptedExecutionEvidence = (
 export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(input: Readonly<{
   product: ConversationProductPostgresHandle;
   crypto: LatticeCrypto;
+  /** A selected malformed receipt must not fall back to another signer family. */
+  rejectInvalidSelectedEvidence?: boolean;
 }>): ResolveForegroundAgentAcceptedExecutionEvidence {
   assertVerifiedConversationProductPostgresHandle(input.product);
   const authenticate = (
@@ -209,8 +211,13 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
       )).orderBy(desc(executions.sequence)).limit(1));
     // Select one deterministic accepted record; this does not claim to audit
     // all historical duplicates. Never skip a selected inconsistent record.
-    if (shared.length !== 0) return shared.length === 1
-      ? authenticate(shared[0]!, principal, true) : null;
+    if (shared.length !== 0) {
+      const evidence = shared.length === 1 ? authenticate(shared[0]!, principal, true) : null;
+      if (evidence === null && input.rejectInvalidSelectedEvidence === true) {
+        throw new TypeError("Selected foreground Agent execution evidence is invalid");
+      }
+      return evidence;
+    }
     const single = await executeTypedConversationProductQuery(input.product,
       conversationProductTypedDb.select({
         operationId: turns.operationId,
@@ -233,8 +240,11 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
         isNotNull(turns.grantDigest),
         isNotNull(turns.humanRequestDigest),
       )).orderBy(desc(signers.createdAt), desc(signers.operationId)).limit(1));
-    return single.length === 1
-      ? authenticate(single[0]!, principal, false) : null;
+    const evidence = single.length === 1 ? authenticate(single[0]!, principal, false) : null;
+    if (single.length !== 0 && evidence === null && input.rejectInvalidSelectedEvidence === true) {
+      throw new TypeError("Selected foreground Agent execution evidence is invalid");
+    }
+    return evidence;
   };
 }
 
@@ -249,6 +259,33 @@ export function createPostgresForegroundAgentSignerResolver(input: Readonly<{
     if (evidence === null) return null;
     try {
       return evidence.signerPublicKey.slice();
+    } finally {
+      evidence.signerPublicKey.fill(0);
+      evidence.planBytes.fill(0);
+      evidence.planDigest.fill(0);
+    }
+  };
+}
+
+/** Adapt retained accepted execution evidence without lending any signing key custody. */
+export function foregroundAgentAcceptedExecutionSigner(input: Readonly<{
+  crypto: LatticeCrypto;
+  resolveEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
+}>): ResolveLiveShadowAgentObjectSigner {
+  return async principal => {
+    const evidence = await input.resolveEvidence?.(principal) ?? null;
+    if (evidence === null) return null;
+    try {
+      const plan = decodeLiveShadowMessagePlanV4(evidence.planBytes);
+      if (!equal(input.crypto.hash(evidence.planBytes), evidence.planDigest)
+        || plan.recipientAgentId !== principal.agentId
+        || plan.agentRuntimeGeneration !== principal.runtimeGeneration
+        || plan.agentSignerKeyId !== principal.signerKeyId
+        || !equal(plan.agentSignerPublicKey, evidence.signerPublicKey)
+        || agentRuntimeObjectSignerKeyIdV1(input.crypto, evidence.signerPublicKey) !== principal.signerKeyId) {
+        throw new TypeError("Foreground Agent execution signer evidence was substituted");
+      }
+      return Uint8Array.from(evidence.signerPublicKey);
     } finally {
       evidence.signerPublicKey.fill(0);
       evidence.planBytes.fill(0);

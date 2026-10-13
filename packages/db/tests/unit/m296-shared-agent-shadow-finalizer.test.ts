@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  finalizeM296SharedAgentShadowEncryptionMigration,
+  finalizeSharedAgentShadowEncryptionMigration,
   M296_SHARED_AGENT_SHADOW_AUTHORITY_MARKER,
 } from "../../scripts/finalize-m296-shared-agent-shadow-encryption.ts";
 
@@ -17,19 +17,33 @@ ALTER TABLE "session_message_crypto_revisions"
 
 describe("M296 Shared-Agent Shadow migration finalizer", () => {
   test("leaves unrelated migrations untouched", () => {
-    expect(finalizeM296SharedAgentShadowEncryptionMigration("SELECT 1;"))
+    expect(finalizeSharedAgentShadowEncryptionMigration("SELECT 1;"))
       .toBe("SELECT 1;");
   });
 
+  test("extends the current identity guard for a genuine Task wake parent once", () => {
+    const generated = 'ALTER TABLE "session_message_crypto_revisions" ADD COLUMN "task_wake_operation_id" text;';
+    const once = finalizeSharedAgentShadowEncryptionMigration(generated);
+    expect(finalizeSharedAgentShadowEncryptionMigration(once)).toBe(once);
+    expect(once).toContain("NEW.task_wake_operation_id");
+    expect(once).toContain("OLD.task_wake_operation_id");
+    expect(once).toContain("NEW.shared_agent_shadow_execution_id");
+    expect(once).toContain("NEW.human_peer_shadow_operation_id");
+    expect(once).toContain("OLD.disposition IN ('superseded', 'hard_delete')");
+    expect(once).toContain("OLD.shadow_durable_event_digest IS NOT NULL");
+    expect(once).not.toContain("CREATE TRIGGER");
+    expect(once).not.toContain("GRANT ALL");
+  });
+
   test("rejects a partial table family", () => {
-    expect(() => finalizeM296SharedAgentShadowEncryptionMigration(
+    expect(() => finalizeSharedAgentShadowEncryptionMigration(
       'CREATE TABLE "conversation_shared_agent_shadow_operations" ();',
     )).toThrow("generation is incomplete");
   });
 
   test("adds exact product-only authority and monotonic triggers once", () => {
-    const once = finalizeM296SharedAgentShadowEncryptionMigration(COMPLETE);
-    const twice = finalizeM296SharedAgentShadowEncryptionMigration(once);
+    const once = finalizeSharedAgentShadowEncryptionMigration(COMPLETE);
+    const twice = finalizeSharedAgentShadowEncryptionMigration(once);
     expect(twice).toBe(once);
     expect(once.match(new RegExp(M296_SHARED_AGENT_SHADOW_AUTHORITY_MARKER, "g")))
       .toHaveLength(1);

@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
-import { createProtectedTaskNodeSettlementScope } from
+import {
+  createProtectedTaskCheckpointPauseController,
+  createProtectedTaskNodeSettlementScope,
+  isProtectedTaskCheckpointPauseInterruption,
+} from
   "../../src/graph/protected-task-node-settlement-scope";
 
 describe("protected Task graph node settlement scope", () => {
@@ -72,5 +76,140 @@ describe("protected Task graph node settlement scope", () => {
     expect(await invocation).toBe("finished");
     await closing;
     expect(closed).toBe(true);
+  });
+
+  test("rejects a pause before the node body starts", async () => {
+    const pause = createProtectedTaskCheckpointPauseController();
+    const scope = createProtectedTaskNodeSettlementScope(undefined, pause);
+    let bodyCalls = 0;
+
+    expect(pause.request("manual_pause")).toBe(true);
+    const failure = await scope.run("agent", () => {
+      bodyCalls += 1;
+      return "not reached";
+    }).catch((error: unknown) => error);
+
+    expect(bodyCalls).toBe(0);
+    expect(isProtectedTaskCheckpointPauseInterruption(failure)).toBe(true);
+    expect(isProtectedTaskCheckpointPauseInterruption(Object.assign(
+      new Error("Protected Task checkpoint pause requested"),
+      { reason: "manual_pause" },
+    ))).toBe(false);
+    if (isProtectedTaskCheckpointPauseInterruption(failure)) {
+      expect(failure.reason).toBe("manual_pause");
+      Object.defineProperty(failure, "pregelTaskId", {
+        value: "node-task-1",
+      });
+      expect(Reflect.get(failure, "pregelTaskId")).toBe("node-task-1");
+      expect(isProtectedTaskCheckpointPauseInterruption(failure)).toBe(true);
+      expect(Reflect.set(failure, "reason", "grant_refresh")).toBe(false);
+      expect(failure.reason).toBe("manual_pause");
+    }
+    await scope.closeAndWait();
+  });
+
+  test("drains an admitted body while refusing the next body on pause", async () => {
+    const pause = createProtectedTaskCheckpointPauseController();
+    const scope = createProtectedTaskNodeSettlementScope(undefined, pause);
+    const release = Promise.withResolvers<string>();
+    let nextBodyCalls = 0;
+
+    const admitted = scope.run("tools", () => release.promise);
+    expect(pause.request("time_limit")).toBe(true);
+    const nextFailure = await scope.run("agent", () => {
+      nextBodyCalls += 1;
+      return "not reached";
+    }).catch((error: unknown) => error);
+    expect(nextBodyCalls).toBe(0);
+    expect(isProtectedTaskCheckpointPauseInterruption(nextFailure)).toBe(true);
+
+    const draining = scope.closeAndWait();
+    let drained = false;
+    void draining.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    release.resolve("settled");
+    expect(await admitted).toBe("settled");
+    await draining;
+    expect(drained).toBe(true);
+  });
+
+  test("drains independently settling parallel admitted bodies", async () => {
+    const pause = createProtectedTaskCheckpointPauseController();
+    const scope = createProtectedTaskNodeSettlementScope(undefined, pause);
+    const first = Promise.withResolvers<void>();
+    const second = Promise.withResolvers<void>();
+    const firstRun = scope.run("agent", () => first.promise);
+    const secondRun = scope.run("tools", () => second.promise);
+
+    pause.request("grant_refresh");
+    const draining = scope.closeAndWait();
+    let drained = false;
+    void draining.then(() => {
+      drained = true;
+    });
+
+    first.resolve();
+    await firstRun;
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    second.resolve();
+    await secondRun;
+    await draining;
+    expect(drained).toBe(true);
+  });
+
+  test("authorization abort wins over an already requested pause", async () => {
+    const authorization = new AbortController();
+    const pause = createProtectedTaskCheckpointPauseController();
+    const scope = createProtectedTaskNodeSettlementScope(
+      authorization.signal,
+      pause,
+    );
+    const abortReason = new Error("authorization revoked");
+    let bodyCalls = 0;
+
+    pause.request("manual_pause");
+    authorization.abort(abortReason);
+    const failure = await scope.run("agent", () => {
+      bodyCalls += 1;
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBe(abortReason);
+    expect(isProtectedTaskCheckpointPauseInterruption(failure)).toBe(false);
+    expect(bodyCalls).toBe(0);
+    await scope.closeAndWait();
+  });
+
+  test("retains the immutable first pause request", () => {
+    const pause = createProtectedTaskCheckpointPauseController();
+
+    expect(pause.currentRequestedReason()).toBeNull();
+    expect(pause.request("grant_refresh")).toBe(true);
+    expect(pause.currentRequestedReason()).toBe("grant_refresh");
+    expect(pause.request("manual_pause")).toBe(false);
+    expect(pause.request("grant_refresh")).toBe(false);
+    expect(pause.currentRequestedReason()).toBe("grant_refresh");
+    expect(() => pause.request("other" as never)).toThrow(TypeError);
+    expect(pause.currentRequestedReason()).toBe("grant_refresh");
+  });
+
+  test("preserves the no-pause admission path", async () => {
+    const pause = createProtectedTaskCheckpointPauseController();
+    const scope = createProtectedTaskNodeSettlementScope(undefined, pause);
+    let bodyCalls = 0;
+
+    const result = await scope.run("agent", () => {
+      bodyCalls += 1;
+      return "completed";
+    });
+    expect(result).toBe("completed");
+    expect(bodyCalls).toBe(1);
+    expect(pause.currentRequestedReason()).toBeNull();
+    await scope.closeAndWait();
   });
 });

@@ -55,6 +55,14 @@ export type TaskMemoryEnvelopeResolverInput = Readonly<{
   sessionRoomId: string;
   /** Fresh target users, including any peer added while resolving the Room. */
   targetUserIds: readonly string[];
+  /**
+   * Protected predispatch only: canonical source coordinates proved by its
+   * current product owner. Ordinary dispatch never supplies this field.
+   */
+  protectedScopeOrigin?: Readonly<{
+    roomId: string;
+    namespaceId: string;
+  }>;
 }>;
 
 export type TaskMemoryEnvelopeResolutionDependencies = Readonly<{
@@ -144,7 +152,14 @@ export async function resolveTaskMemoryEnvelope(
       }
       provenance = "scope_created_from_plaintext_prompt";
     }
-    const canInheritOrigin = baseEnvelope.memoryMode === "namespace"
+    const protectedOrigin = input.protectedScopeOrigin;
+    const protectedLegacyNamespaceIsExact = protectedOrigin !== undefined
+      && isNamespaceMemoryEnvelope(baseEnvelope)
+      && baseEnvelope.roomId === protectedOrigin.roomId
+      && baseEnvelope.writableNamespaces.length === 1
+      && baseEnvelope.writableNamespaces[0] === protectedOrigin.namespaceId;
+    const canInheritOrigin = (baseEnvelope.memoryMode === "namespace"
+        || protectedLegacyNamespaceIsExact)
       && baseEnvelope.writableNamespaces.length === 1
       && (baseEnvelope.writableNamespaces[0]?.trim().length ?? 0) > 0;
     const envelope = canInheritOrigin

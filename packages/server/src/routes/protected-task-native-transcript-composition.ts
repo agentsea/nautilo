@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import { ensureSession } from "@nautilo/agent";
 import { eq, rooms, sessions } from "@nautilo/db";
 import {
@@ -137,6 +138,10 @@ function productAuthority(
   const occurrence = input.occurrence;
   const reference = input.current.reference;
   const signal = input.current.signal;
+  if (!protectedTaskDefinitionSupportsPolicy(occurrence.task.contentRepresentation, input.policy.mode)
+    || input.policy.revision !== input.current.evidence.policyRevision) {
+    throw new TypeError("Protected Task transcript policy changed");
+  }
   return Object.freeze({
     taskId: occurrence.task.id,
     taskRunId: occurrence.run.id,
@@ -167,7 +172,8 @@ function productAuthority(
         }
       : {}),
     policyRevision: input.current.evidence.policyRevision,
-    representation: occurrence.task.contentRepresentation,
+    definitionRepresentation: occurrence.task.contentRepresentation,
+    representation: input.policy.mode === "shadow_encryption" ? "dual" : "protected",
     authorizationExpiresAt: input.current.evidence.expiresAt,
     signal,
   });

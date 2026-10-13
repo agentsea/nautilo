@@ -50,6 +50,7 @@ import {
   createForegroundHumanTaskRunResultReader,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
+  createForegroundTaskContentBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
   createForegroundSharedAgentLiveShadowMessageReceiver,
   createForegroundSharedAgentOutputLiveShadowReceiver,
@@ -57,6 +58,7 @@ import {
   type ForegroundLiveShadowMessageClientInput,
   type ForegroundBackgroundAuthorizationClientInput,
   type ForegroundMessageBackfillClientInput,
+  type ForegroundTaskContentBackfillClientInput,
   type ForegroundHumanMemoryClientInput,
   type ForegroundHumanTaskClientInput,
   type ForegroundHumanTaskRunResultReaderInput,
@@ -986,6 +988,12 @@ export function createBrowserBackgroundAuthorizationClientV2(
 export type BrowserMessageBackfillClientInput =
   ForegroundMessageBackfillClientInput;
 
+export type BrowserTaskContentBackfillClientInput = ForegroundTaskContentBackfillClientInput;
+
+export function createBrowserTaskContentBackfillClient(input: BrowserTaskContentBackfillClientInput) {
+  return createForegroundTaskContentBackfillClient(browserForegroundShadowPlatform, input);
+}
+
 /** Browser adapter for the shared, policy-free Message backfill client. */
 export function createBrowserMessageBackfillClient(
   input: BrowserMessageBackfillClientInput,
@@ -1295,3 +1303,5 @@ export type {
   ClientProfileVaultAvailability,
   PublicClientProfile,
 } from "../../client-vault/types.ts";
+export * from "../task/device-task-content-backfill-client.ts";
+export * from "../task/task-content-backfill-worker.ts";

@@ -23,6 +23,16 @@ import {
 const TASK_ID = "91000000-0000-4000-8000-000000000001";
 const NAMESPACE_ID = "91000000-0000-4000-8000-000000000002";
 const TASK_RUN_ID = "91000000-0000-4000-8000-000000000003";
+const historicalRepair = Object.freeze({
+  version: 2 as const,
+  claimId: "91000000-0000-4000-8000-000000000004",
+  publisherDeviceId: "historical-device.1",
+  signedRequestDigest: "11".repeat(32),
+  sourceDigest: "22".repeat(32),
+  sourcePayloadHash: "33".repeat(32),
+  sourceRevision: 0 as const,
+  genesisManifestHash: "44".repeat(32),
+});
 
 function createRequest(): ProtectedTaskPreparedCreateRequestV1 {
   return {
@@ -147,6 +157,48 @@ describe("protected Task prepared publication schema", () => {
       }],
     };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(ready)).toEqual(ready);
+    const foreground = {
+      ...ready,
+      signerEvidence: [{
+        kind: "foreground_agent_accepted_execution" as const,
+        planBytesBase64url: "cGxhbg",
+        planDigestBase64url: "A".repeat(43),
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(foreground))
+      .toEqual(foreground);
+    const historical = {
+      ...ready,
+      accessManifestProofBytesBase64url: [] as [],
+      historicalRepair,
+      signerEvidence: [{
+        kind: "human_device" as const,
+        subjectHumanId: TASK_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 3,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(historical))
+      .toEqual(historical);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      signerEvidence: ready.signerEvidence,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      signerEvidence: foreground.signerEvidence,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      historicalRepair: { ...historicalRepair, sourceRevision: 1 },
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      readVersion: 1, status: "waiting", taskId: TASK_ID,
+      taskRunId: TASK_RUN_ID, objectId: historical.objectId,
+      resultRevision: 1, cryptoAccessRevision: 0,
+      reason: "result_not_mapped", historicalRepair,
+    })).toThrow();
     const cancelled = { ...ready, resultRevision: 2 as const };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(cancelled))
       .toEqual(cancelled);
@@ -434,7 +486,7 @@ describe("Task content v1 response schemas", () => {
     })).toThrow();
   });
 
-  test("keeps protected lists and definition reads ciphertext-only and genesis-only", () => {
+  test("keeps protected lists and definition access histories ciphertext-only", () => {
     expect(protectedTaskContentListV1Schema.parse([protectedSummary])).toHaveLength(1);
     expect(() => protectedTaskContentListV1Schema.parse([{
       ...protectedSummary,
@@ -454,12 +506,46 @@ describe("Task content v1 response schemas", () => {
       accessManifestBytesBase64url: "bWFuaWZlc3Q",
       accessManifestProofBytesBase64url: [],
       namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
-      signerEvidence: [],
+      signerEvidence: [{
+        kind: "human_device",
+        subjectHumanId: TASK_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 3,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
     } as const;
     expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(ready).status).toBe("ready");
+    const historical = {
+      ...ready,
+      accessManifestProofBytesBase64url: [] as [],
+      historicalRepair,
+      signerEvidence: [{
+        kind: "human_device" as const,
+        subjectHumanId: TASK_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 3,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
+    };
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(historical))
+      .toEqual(historical);
     expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
-      ...ready, cryptoAccessRevision: 1,
+      ...historical,
+      historicalRepair: { ...historicalRepair, genesisManifestHash: "g".repeat(64) },
     })).toThrow();
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      cryptoAccessRevision: 1,
+      accessManifestProofBytesBase64url: ["YQ"],
+    }).cryptoAccessRevision).toBe(1);
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      cryptoAccessRevision: 257,
+      accessManifestProofBytesBase64url: Array.from(
+        { length: 257 },
+        () => "YQ",
+      ),
+    }).cryptoAccessRevision).toBe(257);
     expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
       ...ready, accessManifestProofBytesBase64url: ["YQ"],
     })).toThrow();

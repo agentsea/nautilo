@@ -397,6 +397,8 @@ export {
 export {
   assertAuthenticTaskRuntimeCancellationResultEvidenceV1
     as assertAuthenticTaskRuntimeCancellationResultEvidence,
+  assertAuthenticTaskRuntimeTerminalMessageEvidenceV1
+    as assertAuthenticTaskRuntimeTerminalMessageEvidence,
   TaskRuntimeRecipientRegistryV1 as TaskRuntimeRecipientRegistry,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
@@ -410,6 +412,10 @@ export type {
   TaskRuntimeRecipientDeadlineSchedulerV1 as TaskRuntimeRecipientDeadlineScheduler,
   TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
 } from "./background/task-runtime-recipient-registry-v1.ts";
+export type {
+  TaskRuntimeTerminalMessageEvidenceV1 as TaskRuntimeTerminalMessageEvidence,
+  TaskRuntimeTerminalMessageProofV1 as TaskRuntimeTerminalMessageProof,
+} from "./background/task-runtime-terminal-message-evidence-v1.ts";
 export type {
   TaskRuntimeExecutionDomainAuthorityV1 as TaskRuntimeExecutionDomainAuthority,
   TaskRuntimeExecutionEvidenceV1 as TaskRuntimeExecutionEvidence,
@@ -982,6 +988,8 @@ export {
 export {
   prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1
     as prepareDeviceWrappedAgentObjectAccessManifestGenesisSet,
+  assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1
+    as assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet,
 } from "./object/device-wrapped-agent-access-manifest-set-v1.ts";
 export {
   assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1
@@ -1636,3 +1644,31 @@ export type {
   HumanTaskPublicationRequestV1 as HumanTaskPublicationRequest,
   PrepareHumanTaskPublicationRequestInputV1 as PrepareHumanTaskPublicationRequestInput,
 } from "./task/publication-request-v1.ts";
+
+export {
+  prepareHumanExistingTaskRepresentationPublicationRequestV1,
+  verifyHumanExistingTaskRepresentationPublicationRequestV1,
+  verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1,
+} from "./task/existing-representation-publication-request-v1.ts";
+export type {
+  HumanExistingTaskRepresentationPublicationRequestV1,
+  PrepareHumanExistingTaskRepresentationPublicationRequestInputV1,
+} from "./task/existing-representation-publication-request-v1.ts";
+
+export {
+  assertAuthenticTaskRuntimeRunResultReadEvidenceV1 as assertAuthenticTaskRuntimeRunResultReadEvidence,
+} from "./background/task-runtime-run-result-read-evidence-v1.ts";
+export type {
+  TaskRuntimeRunResultReadEvidenceV1 as TaskRuntimeRunResultReadEvidence,
+  TaskRuntimeRunResultReadProofV1 as TaskRuntimeRunResultReadProof,
+  TaskRuntimeRunResultReadInvocationV1 as TaskRuntimeRunResultReadInvocation,
+} from "./background/task-runtime-run-result-read-evidence-v1.ts";
+export type {
+  TaskRuntimeRunResultReadPartitionsV1 as TaskRuntimeRunResultReadPartitions,
+} from "./background/task-runtime-recipient-registry-v1.ts";
+export {
+  assertAuthenticTaskRuntimeWakeForegroundEvidenceV1 as assertAuthenticTaskRuntimeWakeForegroundEvidence,
+} from "./background/task-runtime-wake-foreground-evidence-v1.ts";
+export type {
+  TaskRuntimeWakeForegroundEvidenceV1 as TaskRuntimeWakeForegroundEvidence,
+} from "./background/task-runtime-wake-foreground-evidence-v1.ts";

@@ -234,6 +234,7 @@ function input(): ProtectedTaskNativeMessageAuthorityInput {
       executionSegment: 1,
       policyRevision: 9,
       representation: "protected",
+      definitionRepresentation: "protected",
       authorizationExpiresAt: expiresAt,
       signal: abort.signal,
     }),
@@ -431,7 +432,8 @@ function productRows(
 function runner(rows: unknown[]): ConversationProductCanonicalTransactionRunner {
   const transaction: ConversationProductCanonicalTransactionRunner["transaction"] =
     async (use) => {
-      const remaining = [...rows];
+      // Publication checks fence policy before locking the aggregate.
+      const remaining = [rows[5], ...rows.slice(0, 5), ...rows.slice(6)];
       const tx = {
         select() {
           const row = remaining.shift();
@@ -507,6 +509,7 @@ describe("protected Task native Message current authority", () => {
       productAuthority: {
         ...current.productAuthority,
         representation: "dual" as const,
+        definitionRepresentation: "dual" as const,
       },
     };
     const rows = productRows();

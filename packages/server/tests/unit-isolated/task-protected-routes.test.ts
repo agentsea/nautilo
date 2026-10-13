@@ -78,11 +78,13 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
       return {
         readVersion: 1, status: "ready", taskId: input.taskId, objectId: input.objectId,
         contentRevision: input.contentRevision,
-        cryptoAccessRevision: 0,
+        cryptoAccessRevision: input.cryptoAccessRevision,
         namespaceId: NAMESPACE,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
-        accessManifestProofBytesBase64url: [],
+        accessManifestProofBytesBase64url: Array.from(
+          { length: input.cryptoAccessRevision }, () => "YQ",
+        ),
         namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
         signerEvidence: [{ kind: "human_device", subjectHumanId: HUMAN,
           committerDeviceId: "device:one", hostAuthorizationRevision: 1,
@@ -281,22 +283,18 @@ describe("protected Task routes", () => {
     expect(response.body).not.toContain("must-not-serialize");
   });
 
-  test("returns typed unavailable without consulting the genesis reader", async () => {
+  test("forwards a dynamic access head to the protected reader", async () => {
     const state = fixture();
     const result = await state.client.getProtectedTaskDefinitionEnvelopeV1(TASK, {
       ...summary.content,
       cryptoAccessRevision: 1,
     });
-    expect(result).toEqual({
-      readVersion: 1,
-      status: "unavailable",
-      taskId: TASK,
-      objectId: OBJECT,
-      contentRevision: 1,
-      cryptoAccessRevision: 1,
-      reason: "unsupported_crypto_access_revision",
+    expect(result).toMatchObject({
+      status: "ready", taskId: TASK, objectId: OBJECT,
+      contentRevision: 1, cryptoAccessRevision: 1,
+      accessManifestProofBytesBase64url: ["YQ"],
     });
-    expect(state.calls).toHaveLength(0);
+    expect(state.calls).toHaveLength(1);
   });
 
   test("returns waiting and unavailable TaskRun result states without plaintext", async () => {

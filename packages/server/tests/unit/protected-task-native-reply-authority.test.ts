@@ -190,6 +190,7 @@ function input(assertCurrentTaskAuthority = async () => {}):
 ProtectedTaskNativeReplyAuthorityInput {
   return {
     occurrence: occurrence(),
+    policy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 9 },
     evidence: evidence(),
     acceptedBy: { userId: ids.owner, humanActorId: ids.human },
     message: {
@@ -316,4 +317,16 @@ describe("protected Task native Human reply authority", () => {
     })).toBeNull();
     expect(seenParameters.some(values => values.includes(ids.human))).toBeTrue();
   });
+});
+
+
+test("Full reply authority reads a retained dual definition with the exact current policy", async () => {
+  const base = input();
+  const current = { ...base, occurrence: { ...base.occurrence,
+    task: { ...base.occurrence.task, contentRepresentation: "dual" as const } } };
+  const deps = { assertEvidence: () => {}, readProductProjection: async () => projection(),
+    readCryptoAccessRevision: async () => 7 };
+  expect(await createProtectedTaskNativeReplyAuthorityResolver(current, deps).readCurrent()).not.toBeNull();
+  expect(() => createProtectedTaskNativeReplyAuthorityResolver({ ...current,
+    policy: { ...current.policy, revision: 10 } }, deps)).toThrow("policy is unavailable");
 });

@@ -1,3 +1,5 @@
+import { encryptionTransitionPolicy } from "../../src/schema/encryption-transition";
+import { protectedTaskRunOutputBindings } from "../../src/schema/protected-task-run-output-bindings";
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 
@@ -338,6 +340,8 @@ type FixtureOptions = Readonly<{
   transcriptRows?: readonly Record<string, unknown>[];
   message?: ReturnType<typeof currentMessage> | undefined;
   humanEnabled?: boolean;
+  policy?: { mode: string; revision: number };
+  binding?: Record<string, unknown>;
   loseRunUpdate?: boolean;
   loseTaskUpdate?: boolean;
 }>;
@@ -366,6 +370,13 @@ function harness(options: FixtureOptions = {}) {
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
   const rows = (table: unknown, locked: boolean): unknown[] => {
+    if (table === encryptionTransitionPolicy) return [options.policy ?? { mode: "encrypted_only", revision: 9 }];
+    if (table === protectedTaskRunOutputBindings) return [options.binding ?? {
+      bindingId: `task-run-output:${ids.run}`, resultRevision: 1,
+      resultObjectId, resultOperationId: `task-run-result:${ids.run}`, acceptedPolicyRevision: 9,
+      resultTerminalAt: null, resultAttachedAt: null, messageId: null, messagePublishedAt: null,
+      wakeJobId: null, wakeScheduledAt: null, completedAt: null,
+    }];
     if (table === tasks) return taskRow ? [taskRow] : [];
     if (table === taskRuns) return runRow ? [runRow] : [];
     if (table === jobs) {
@@ -461,6 +472,24 @@ async function expectRejected(
 }
 
 describe("protected TaskRun parked-segment start CAS", () => {
+  test("re-admits a dual Human park under fresh Full policy without changing retained provenance", async () => {
+    const reference = nextReference({ policyRevision: 10 });
+    const fixture = harness({ task: task({ contentRepresentation: "dual", prompt: "retained sibling" }),
+      nextJob: nextJob({ input: reference }), policy: { mode: "encrypted_only", revision: 10 } });
+    expect(await startParkedProtectedTaskHumanRunSegment(fixture.db,
+      input({ contentRepresentation: "dual", jobReference: reference }))).toEqual({ status: "started" });
+    expect(fixture.locks[0]).toEqual({ table: encryptionTransitionPolicy, kind: "share" });
+    expect(fixture.writes.every(write => !("prompt" in write.patch) && !("contentRepresentation" in write.patch))).toBe(true);
+    for (const policy of [{ mode: "plaintext_only", revision: 10 },
+      { mode: "shadow_encryption", revision: 10 }, { mode: "encrypted_only", revision: 11 }]) {
+      const denied = harness({ nextJob: nextJob({ input: reference }), policy });
+      expect(await startParkedProtectedTaskHumanRunSegment(denied.db, input({ jobReference: reference })))
+        .toEqual({ status: "rejected", reason: "stale" });
+      expect(denied.writes).toEqual([]);
+      expect(denied.locks).toEqual([{ table: encryptionTransitionPolicy, kind: "share" }]);
+    }
+  });
+
   test("locks the aggregate in order, consumes acceptance, and swaps the Job", async () => {
     const fixture = harness();
 
@@ -468,10 +497,12 @@ describe("protected TaskRun parked-segment start CAS", () => {
       status: "started",
     });
     expect(fixture.locks).toEqual([
+      { table: encryptionTransitionPolicy, kind: "share" },
       { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" },
       { table: jobs, kind: "update" },
       { table: jobs, kind: "update" },
+      { table: protectedTaskRunOutputBindings, kind: "share" },
       { table: actors, kind: "share" },
       { table: sessionMessages, kind: "share" },
     ]);

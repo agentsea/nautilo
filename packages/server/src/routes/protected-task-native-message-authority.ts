@@ -424,7 +424,7 @@ function exactFixedProjection(
       value === occurrence.task.cryptoRequiredNamespaceFingerprint[index]
     )
     && productAuthority.inputObjectId === occurrence.task.cryptoObjectId
-    && productAuthority.representation
+    && productAuthority.definitionRepresentation
       === occurrence.task.contentRepresentation
     && productAuthority.authorizationRequestId === evidence.requestId
     && productAuthority.resultObjectId === evidence.result.objectId

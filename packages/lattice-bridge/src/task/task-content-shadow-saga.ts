@@ -1,12 +1,15 @@
 import { assertProtectedTaskOperationalMetadataProjectionV1 } from "@nautilo/types";
+import { preparedTaskHistoricalRepairProvenanceV1 } from
+  "./task-historical-repair-provenance.ts";
 
 import {
   TaskCancellationPublicationPolicyUnavailableError,
+  TaskHistoricalRepairPublicationUnavailableError,
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   TASK_CONTENT_RECONCILE_MAX_BATCH,
   assertTaskContentCoordinateV1,
   assertTaskContentRevisionLifecycleV1,
-  deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
   fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
@@ -55,7 +58,8 @@ function sameJson(left: unknown, right: unknown): boolean {
 
 function cancellationPolicyWait(cause: unknown, coordinate: TaskContentCoordinateV1,
   operationId: string): boolean {
-  return cause instanceof TaskCancellationPublicationPolicyUnavailableError
+  return cause instanceof TaskHistoricalRepairPublicationUnavailableError
+    || cause instanceof TaskCancellationPublicationPolicyUnavailableError
     && coordinate.kind === "run_result" && coordinate.contentRevision === 2
     && operationId === `task-run-cancelled-result:${coordinate.taskRunId}`;
 }
@@ -135,6 +139,7 @@ function authorityMatches(state: TaskContentRevisionStateV1): boolean {
 
 function cryptoReference(
   state: TaskContentRevisionStateV1,
+  historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1,
 ): TaskContentCryptoRevisionReferenceV1 {
   const coordinate = Object.freeze({ ...state.lifecycle.coordinate });
   const cancellationResult = coordinate.kind === "run_result"
@@ -146,9 +151,18 @@ function cryptoReference(
     objectId: state.lifecycle.cryptoObjectId,
     objectType: state.lifecycle.objectType,
     expectedAccessRevision: state.product?.cryptoAccessRevision ?? 0,
+    ...(historicalStagedPrepared === undefined || state.lifecycle.disposition === "mapped"
+      ? {} : { historicalStagedPrepared }),
     expectedAuthorityFingerprint: state.lifecycle.authorityFingerprint.slice(),
     expectedAuthorityIdentityFingerprint:
       fingerprintTaskContentAuthorityIdentityV1(state.authority),
+    ...(state.lifecycle.historicalRepair == null ? {} : { historicalRepair: {
+      provenance: state.lifecycle.historicalRepair, namespaceId: state.lifecycle.namespaceId,
+    } }),
+    ...(state.lifecycle.historicalRepair?.version === 2 ? {
+      expectedGenesisManifestHash: Uint8Array.from(state.lifecycle.historicalRepair.genesisManifestHash.match(/../gu)!,
+        byte => Number.parseInt(byte, 16)),
+    } : {}),
     ...(cancellationResult
       ? { expectedGenesisManifestHash: state.lifecycle.requestDigest.slice() }
       : {}),
@@ -165,7 +179,7 @@ function verifiedMatches(
       state.lifecycle.coordinate,
     )
       && verified.objectId
-        === deriveTaskContentCryptoObjectIdV1(state.lifecycle.coordinate)
+        === taskContentRevisionObjectIdV1(state.lifecycle)
       && verified.objectId === state.lifecycle.cryptoObjectId
       && verified.objectType
         === taskContentObjectTypeV1(state.lifecycle.coordinate)
@@ -222,10 +236,11 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   async function verifyComplete(
     state: TaskContentRevisionStateV1,
     leaseToken: string | null,
+    historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1,
   ): Promise<VerifiedTaskContentCryptoRevisionV1> {
     let verified: VerifiedTaskContentCryptoRevisionV1 | null;
     try {
-      verified = await input.crypto.verify(cryptoReference(state));
+      verified = await input.crypto.verify(cryptoReference(state, historicalStagedPrepared));
     } catch (cause) {
       if (cancellationPolicyWait(cause, state.lifecycle.coordinate, state.lifecycle.operationId)) throw cause;
       throw new Error("Task content crypto verification is unavailable", {
@@ -245,6 +260,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   async function publishVerified(
     state: TaskContentRevisionStateV1,
     leaseToken: string | null,
+    historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1,
   ): Promise<TaskContentCompletionResult> {
     const lifecycle = state.lifecycle;
     const marked = await input.product.markCryptoComplete({
@@ -273,6 +289,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       cryptoObjectId: lifecycle.cryptoObjectId,
       expectedAuthorityFingerprint: lifecycle.authorityFingerprint,
       expectedRepresentation: lifecycle.representation,
+      ...(historicalStagedPrepared === undefined ? {} : { historicalStagedPrepared }),
       leaseToken,
     });
     if (mapped === "lease_lost") {
@@ -397,7 +414,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
           request.coordinate,
         )
         || state.lifecycle.cryptoObjectId
-          !== deriveTaskContentCryptoObjectIdV1(request.coordinate)
+          !== taskContentRevisionObjectIdV1(state.lifecycle)
         || state.lifecycle.requesterHumanId
           !== request.requesterHumanId
         || state.lifecycle.namespaceId !== request.namespaceId
@@ -419,9 +436,12 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
     async reserveRevision(
       request: Parameters<TaskContentRepository["reserveRevision"]>[0],
     ) {
+      const historicalRepair = request.historicalRepair === true
+        ? preparedTaskHistoricalRepairProvenanceV1(request.prepared) : null;
       if (
         request.prepared.objectId
-          !== deriveTaskContentCryptoObjectIdV1(request.prepared.coordinate)
+          !== taskContentRevisionObjectIdV1({ coordinate: request.prepared.coordinate,
+            namespaceId: request.prepared.namespaceId, historicalRepair })
         || request.prepared.objectType
           !== taskContentObjectTypeV1(request.prepared.coordinate)
         || request.prepared.namespaceId !== request.authority.namespaceId
@@ -441,6 +461,14 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       if (!(request.requestDigest instanceof Uint8Array)
         || request.requestDigest.length !== 32) {
         throw new TypeError("Task content request digest must contain 32 bytes");
+      }
+      if (request.historicalRepair !== undefined) {
+        const provenance = preparedTaskHistoricalRepairProvenanceV1(request.prepared);
+        if (request.historicalRepair !== true || request.representation !== "dual"
+          || provenance.signedRequestDigest !== Array.from(request.requestDigest,
+            byte => byte.toString(16).padStart(2, "0")).join("")) {
+          throw new TypeError("Historical Task repair reservation disagrees");
+        }
       }
       if (request.prepared.coordinate.kind === "definition") {
         assertProtectedTaskOperationalMetadataProjectionV1(
@@ -464,6 +492,8 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         objectType: request.prepared.objectType,
         payloadVersion: request.prepared.payloadVersion,
         operationalMetadata: request.operationalMetadata,
+        ...(request.historicalRepair === true
+          ? { historicalPrepared: request.prepared } : {}),
       });
       if (!("state" in reserved)) {
         return reserved;
@@ -520,10 +550,12 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         });
       }
       assertPrepared(state, request.prepared);
+      const historicalStagedPrepared = state.lifecycle.historicalRepair?.version === 2
+        ? request.prepared : undefined;
 
       if (state.lifecycle.disposition === "mapped") {
         assertMappedState(state);
-        await verifyComplete(state, null);
+        await verifyComplete(state, null, historicalStagedPrepared);
         return Object.freeze({
           status: "replayed" as const,
           coordinate: state.lifecycle.coordinate,
@@ -533,7 +565,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       const existingOrphan = orphanReason(state.lifecycle);
       if (existingOrphan !== null) {
         if (state.lifecycle.completion === "complete") {
-          await verifyComplete(state, null);
+          await verifyComplete(state, null, historicalStagedPrepared);
         }
         return Object.freeze({
           status: "orphaned" as const,
@@ -547,8 +579,8 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       }
 
       await input.crypto.complete(request.prepared);
-      await verifyComplete(state, null);
-      return publishVerified(state, null);
+      await verifyComplete(state, null, historicalStagedPrepared);
+      return publishVerified(state, null, historicalStagedPrepared);
     },
 
     async reconcilePending(

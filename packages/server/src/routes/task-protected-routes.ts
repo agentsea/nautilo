@@ -121,17 +121,6 @@ export function protectedTaskRoutes(app: FastifyInstance, input: Readonly<{
     ) return invalid(reply);
     const authorized = await resolve(request);
     if (authorized === null) return reply.code(403).send({ error: "Forbidden" });
-    if (cryptoAccessRevision !== 0) {
-      return reply.send(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
-        readVersion: 1,
-        status: "unavailable",
-        taskId: request.params.taskId,
-        objectId,
-        contentRevision,
-        cryptoAccessRevision,
-        reason: "unsupported_crypto_access_revision",
-      }));
-    }
     const attempted = await protectedOperation(reply, () => authorized.ports.readDefinition({
       authority: authorized.authority,
       taskId: request.params.taskId,

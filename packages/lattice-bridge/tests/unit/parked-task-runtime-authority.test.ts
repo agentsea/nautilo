@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import {
   canonicalProtectedTaskSemanticAuthorityRequirements,
   parseParkedProtectedTaskAdditionalAuthority,
+  parseParkedProtectedTaskCheckpointContinuation,
   protectedTaskSemanticAuthorityRequirementsDigest,
   type ParkedProtectedTaskAdditionalAuthority,
   type ParkedProtectedTaskAdditionalAuthorityJobRow,
@@ -454,4 +455,58 @@ describe("parked Task Runtime authority", () => {
     expect(await escaped?.catch((error: unknown) => error))
       .toBeInstanceOf(TypeError);
   });
+});
+
+function checkpointRows() {
+  const value = rows();
+  return { ...value,
+    task: { ...value.task, pauseRequestId: null },
+    job: { ...value.job, parkReceipt: {
+      ...(value.job.parkReceipt as Record<string, unknown>), interrupts: [],
+      stableRoutingDigest: Buffer.from(digest(9)).toString("base64url"),
+    } },
+    proof: { segment: value.proof.segment, continuation: {
+      ...value.proof.continuation, kind: "checkpoint_safe_v1" as const,
+      reason: "grant_refresh" as const, effectDisposition: "none_v1" as const,
+      interruptId: null, operationId: null, requestDigest: null,
+      requiredAuthorityDigest: null, stableRoutingDigest: null,
+      semanticAuthorityRequirements: null,
+    } },
+  };
+}
+
+test("checkpoint authority uses its own immutable receipt and holds the canonical lock order", async () => {
+  const value = checkpointRows();
+  const expected = parseParkedProtectedTaskCheckpointContinuation(value);
+  expect(expected).not.toBeNull();
+  if (!expected) throw new Error("invalid checkpoint fixture");
+  const copy = copyParkedTaskRuntimeAuthority(expected);
+  expected.stableRoutingDigest.fill(0);
+  expect(copy.stableRoutingDigest).toEqual(digest(9));
+  const events: string[] = [];
+  expect(await lockCurrentParkedTaskAuthority({
+    transaction: transactionRows(value, events) as never, expected: copy,
+  })).toEqual(copy);
+  expect(events).toEqual(["task", "run", "job", "proof-run", "proof-segment", "proof-continuation"]);
+  expect(() => copyParkedTaskRuntimeAuthority({ ...copy,
+    proof: { ...copy.proof, continuation: { ...copy.proof.continuation, effectDisposition: "not_started_v1" } },
+  })).toThrow("descriptor is invalid");
+});
+
+test("checkpoint authority rejects a new pause, changed Job, receipt, or routing after discovery", async () => {
+  const expected = parseParkedProtectedTaskCheckpointContinuation(checkpointRows());
+  if (!expected) throw new Error("invalid checkpoint fixture");
+  const original = checkpointRows();
+  for (const value of [
+    { ...original, task: { ...original.task, pauseRequestId: TASK } },
+    { ...original, run: { ...original.run, jobId: TASK } },
+    { ...original, proof: { ...original.proof, segment: { ...original.proof.segment, checkpointDigest: digest(10) } } },
+    { ...original, job: { ...original.job, parkReceipt: { ...original.job.parkReceipt,
+      stableRoutingDigest: Buffer.from(digest(10)).toString("base64url"),
+    } } },
+  ]) {
+    expect(await lockCurrentParkedTaskAuthority({
+      transaction: transactionRows(value, []) as never, expected,
+    })).toBeNull();
+  }
 });

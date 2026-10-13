@@ -8,11 +8,10 @@ import { sha256 } from "@noble/hashes/sha2.js";
 
 import {
   PREPARED_MUTATION_JOURNAL_LIMITS,
+  type PreparedMutationJournalCustodyAvailability,
   type PreparedMutationJournalIndex,
   type PreparedMutationJournalVaultPort,
 } from "../client/memory/prepared-mutation-journal.ts";
-import type { PreparedMutationJournalCustodyAvailability } from
-  "../client/memory/file-prepared-mutation-journal-vault.ts";
 
 export type AdditionalDeviceTransitionCampaignIndex = Extract<
   PreparedMutationJournalIndex,

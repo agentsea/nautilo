@@ -1,3 +1,5 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
+import type { ProtectedTaskRuntimeMemoryPolicy } from "./protected-task-runtime-grant-plan";
 import {
   actors,
   and,
@@ -43,6 +45,7 @@ function cryptoStorageInteger(value: unknown): number {
 }
 
 export type ProtectedTaskNativeReplyAuthorityInput = Readonly<{
+  policy: ProtectedTaskRuntimeMemoryPolicy;
   occurrence: ProtectedTaskRunningOccurrence;
   evidence: TaskRuntimeExecutionEvidence;
   acceptedBy: AcceptedBy;
@@ -366,12 +369,9 @@ export function createProtectedTaskNativeReplyAuthorityResolver(
       "Protected Task Human reply decrypt authority is unavailable",
     );
   }
-  const mode = input.occurrence.task.contentRepresentation === "dual"
-    ? "shadow_encryption" as const
-    : input.occurrence.task.contentRepresentation === "protected"
-      ? "encrypted_only" as const
-      : null;
-  if (mode === null) {
+  const mode = input.policy.mode;
+  if (!protectedTaskDefinitionSupportsPolicy(input.occurrence.task.contentRepresentation, mode)
+    || input.policy.revision !== input.evidence.policyRevision) {
     throw new TypeError("Protected Task Human reply policy is unavailable");
   }
 

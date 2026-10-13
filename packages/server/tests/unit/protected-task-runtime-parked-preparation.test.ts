@@ -101,6 +101,7 @@ function fixture() {
   const events: string[] = [];
   let captured: Parameters<NonNullable<Overrides["prepare"]>>[0] | undefined;
   const overrides: Overrides = {
+    readAccessLineage: async () => null,
     db: {} as NonNullable<Overrides["db"]>, now: () => NOW,
     discover: async () => expected, readOutput: async () => output,
     readPolicy: async () => ({ mode: "shadow_encryption", shadowBehavior: "strict", revision: 7 }),

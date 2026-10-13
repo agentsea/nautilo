@@ -22,11 +22,13 @@ import type {
   ParkedProtectedTaskHumanContinuation,
   ProtectedTaskDurableJobReference,
   StartParkedProtectedTaskHumanRunSegmentInput,
+  StartParkedProtectedTaskCheckpointSegmentInput,
   StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "../../src/queries/tasks";
 import {
   parseParkedProtectedTaskAdditionalAuthority,
   parseParkedProtectedTaskHumanContinuation,
+  parseParkedProtectedTaskCheckpointContinuation,
   protectedTaskHumanContinuationAcceptanceId,
 } from
   "../../src/queries/tasks";
@@ -1057,7 +1059,7 @@ function claimJobRow(
 
 function claimHarness(
   initialJobs: ReturnType<typeof claimJobRow>[],
-  options: Readonly<{ human?: boolean; actorEnabled?: boolean }> = {},
+  options: Readonly<{ human?: boolean; actorEnabled?: boolean; checkpoint?: ReturnType<typeof checkpointFixture> }> = {},
 ) {
   let currentJobs = initialJobs.map(row => ({ ...row }));
   const locks: string[] = [];
@@ -1066,6 +1068,7 @@ function claimHarness(
     transaction: async <T>(operation: (value: unknown) => Promise<T>) => {
       const rows = (table: unknown, projection: Record<string, unknown>) => {
         if (table === tasks) return [taskRow({
+          pauseRequestId: null,
           preset: "task",
           targetUserIds: [],
           useScope: false,
@@ -1077,14 +1080,14 @@ function claimHarness(
         if (table === taskRuns) return [runRow()];
         if (table === jobs) {
           return Object.hasOwn(projection, "parkReceipt")
-            ? [options.human ? humanPriorJobRow() : priorJobRow()]
+            ? [options.checkpoint?.priorJob ?? (options.human ? humanPriorJobRow() : priorJobRow())]
             : currentJobs;
         }
         if (table === protectedTaskExecutionSegmentReceipts) {
           return [segmentReceipt()];
         }
         if (table === protectedTaskContinuationReceipts) {
-          return options.human ? [] : [continuationReceipt()];
+          return options.human ? [] : [options.checkpoint?.continuation ?? continuationReceipt()];
         }
         if (table === actors) {
           return [{
@@ -1252,4 +1255,88 @@ describe("parked protected Task claimed-before-Job recovery", () => {
     )).toEqual({ status: "cancelled" });
     expect(fixture.writes).toEqual([[ids.nextJob]]);
   });
+});
+
+function checkpointFixture() {
+  const park = humanParkReceipt({ interrupts: [] });
+  const priorJob = priorJobRow(1, { parkReceipt: park });
+  const continuation = continuationReceipt(1, {
+    kind: "checkpoint_safe_v1", reason: "grant_refresh", effectDisposition: "none_v1",
+    interruptId: null, operationId: null, requestDigest: null, requiredAuthorityDigest: null,
+    stableRoutingDigest: null, semanticAuthorityRequirements: null,
+  });
+  const expected = parseParkedProtectedTaskCheckpointContinuation({
+    task: taskRow() as never, run: runRow() as never, job: priorJob as never,
+    proof: { segment: segmentReceipt() as never, continuation: continuation as never },
+  });
+  if (!expected) throw new Error("invalid checkpoint fixture");
+  const { acceptance: _acceptance, ...base } = humanInput();
+  const start: StartParkedProtectedTaskCheckpointSegmentInput = {
+    ...base, interrupts: [], continuationFingerprint: expected.continuationFingerprint,
+    jobReference: { ...priorReference(), policyRevision: 10, executionSegment: 2,
+      authorizationRequestId: expected.authorizationRequestId,
+      resumeContinuationFingerprint: expected.continuationFingerprint,
+    },
+  };
+  return { expected, start, priorJob, continuation,
+    nextJob: nextJobRow(1, { reference: start.jobReference }) };
+}
+
+describe("checkpoint-safe preexecution recovery", () => {
+  test.each([false, true])("cancels and restores only an unstarted checkpoint continuation (linked=%s)", async linked => {
+    const value = checkpointFixture();
+    const fixture = harness({ priorJob: value.priorJob, nextJob: value.nextJob,
+      continuationReceipt: value.continuation,
+      task: taskRow({ status: linked ? "running" : "awaiting", pauseRequestId: ids.owner }),
+      run: runRow({ status: linked ? "running" : "awaiting", jobId: linked ? ids.nextJob : ids.priorJob }),
+    });
+    let defers = 0;
+    expect(await recoverUnstartedParkedProtectedTaskRun(fixture.db, value.start, recoveredAt, async () => {
+      expect(fixture.writes[0]?.patch["status"]).toBe("cancelled"); defers++; return true;
+    })).toEqual({ status: "recovered" });
+    expect(defers).toBe(1);
+    expect(fixture.writes.some(write => "pauseRequestId" in write.patch)).toBe(false);
+    expect(await recoverUnstartedParkedProtectedTaskRun(fixture.db, value.start, recoveredAt, async () => true))
+      .toEqual({ status: "exact_replay" });
+  });
+
+  test("restart discovery reconstructs the genuine checkpoint and rejects substituted physical proof", () => {
+    const value = checkpointFixture();
+    const row = { ...discoveryRow(), priorJob: value.priorJob, nextJob: value.nextJob,
+      continuation: value.continuation as never };
+    expect(projectParkedProtectedTaskRecoveryCandidate(row)).toEqual({ lifecycle: "parked", input: value.start });
+    expect(projectParkedProtectedTaskRecoveryCandidate({ ...row,
+      segment: segmentReceipt(1, { checkpointDigest: digest(17) }) as never,
+    })).toBeNull();
+  });
+
+  test.each(["running", "routing", "receipt", "policy", "completed"]) ("never defers a checkpoint with %s drift", async changed => {
+    const value = checkpointFixture();
+    const fixture = harness({
+      priorJob: changed === "routing" ? priorJobRow(1, { parkReceipt: humanParkReceipt({ interrupts: [],
+        stableRoutingDigest: Buffer.from(digest(19)).toString("base64url") }) }) : value.priorJob,
+      nextJob: changed === "running" ? nextJobRow(1, { reference: value.start.jobReference, status: "running", startedAt: recoveredAt }) : value.nextJob,
+      continuationReceipt: changed === "receipt" ? null : value.continuation,
+      run: changed === "completed" ? runRow({ status: "completed" }) : runRow(),
+    });
+    let defers = 0;
+    const operation = () => recoverUnstartedParkedProtectedTaskRun(fixture.db,
+      changed === "policy" ? { ...value.start, jobReference: { ...value.start.jobReference, policyRevision: 8 } } : value.start,
+      recoveredAt, async () => { defers++; return true; });
+    if (changed === "policy") expect(operation()).rejects.toThrow("binding is malformed");
+    else expect(await operation()).toEqual({ status: "stale" });
+    expect(defers).toBe(0); expect(fixture.writes).toEqual([]);
+  });
+});
+
+test.each([false, true])("checkpoint claim recovery fences the queued Job before deferring (persisted=%s)", async persisted => {
+  const checkpoint = checkpointFixture();
+  const fixture = claimHarness(persisted ? [claimJobRow(ids.nextJob, { reference: checkpoint.start.jobReference })] : [], { checkpoint });
+  let deferred = 0;
+  expect(await recoverUnstartedParkedProtectedTaskClaim(fixture.db,
+    { expected: checkpoint.expected, jobReference: checkpoint.start.jobReference }, recoveredAt, async () => {
+      if (persisted) expect(fixture.writes).toEqual([[ids.nextJob]]);
+      deferred++; return true;
+    })).toEqual({ status: "recovered" });
+  expect(deferred).toBe(1);
 });

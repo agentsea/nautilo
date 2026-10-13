@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import type {
@@ -8,6 +9,7 @@ import type {
 import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
   claimTaskRuntimeBackgroundAuthorizationRequest,
@@ -19,6 +21,7 @@ import {
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
+  type TaskRuntimeRecipientRequestPlan,
 } from "@nautilo/runtime";
 import type { ProtectedTaskCancellationAuthorityPort } from
   "./protected-task-cancellation-authority";
@@ -37,14 +40,6 @@ type Repository = Pick<
   BackgroundAuthorizationTaskRuntimeReplacementRepository,
   "get" | "compareAndSwap"
 >;
-
-export type ProtectedTaskCancellationClaimInput = Readonly<{
-  plan: ProtectedTaskCancellationPlan;
-  record: BackgroundAuthorizationTaskRuntimeRecordV3;
-  /** Caller-owned connection. It remains usable after authority callbacks release their locks. */
-  restricted: PostgresJsBridgeConnection;
-  signal: AbortSignal;
-}>;
 
 export type ProtectedTaskCancellationClaimDependencies = Readonly<{
   authority: ProtectedTaskCancellationAuthorityPort;
@@ -68,6 +63,16 @@ function cancellationRecord(
     && record.purpose === "task.cancel_result";
 }
 
+function publicationRecord(record: BackgroundAuthorizationRecord | null,
+  workKind: PublicationWorkKind,
+): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return record !== null && record.snapshot.formatVersion === 3
+    && record.snapshot.credentialSubject.kind === "runtime"
+    && record.snapshot.credentialSubject.runtimeKind === "task"
+    && record.snapshot.credentialSubject.runtimeVersion === 1
+    && record.workKind === workKind && record.purpose === workKind;
+}
+
 function exactPlan(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
   plan: ProtectedTaskCancellationPlan,
@@ -89,12 +94,13 @@ function exactRunningRecord(
   expected: BackgroundAuthorizationTaskRuntimeRecordV3,
   claimId: string,
   now: number,
+  workKind: PublicationWorkKind = "task.cancel_result",
 ): current is BackgroundAuthorizationTaskRuntimeRecordV3 {
   return Number.isSafeInteger(now)
     && expected.snapshot.claimExpiresAt !== null
     && now >= expected.snapshot.updatedAt
     && now < expected.snapshot.claimExpiresAt
-    && cancellationRecord(current)
+    && publicationRecord(current, workKind)
     && current.snapshot.state === "running"
     && current.snapshot.claimId === claimId
     && current.snapshot.claimExpiresAt === expected.snapshot.claimExpiresAt
@@ -111,16 +117,128 @@ function exactRunningRecord(
 export function createProtectedTaskCancellationClaim(
   dependencies: ProtectedTaskCancellationClaimDependencies,
 ) {
+  return createProtectedTaskPublicationClaim<ProtectedTaskCancellationPlan>({
+    workKind: "task.cancel_result", recipients: dependencies.recipients,
+    repository: dependencies.repository, matchesPlan: exactPlan,
+    coordinates: plan => ({ workId: plan.intent.taskRunId,
+      requesterUserId: plan.intent.requesterUserId }),
+    withAccepted: ({ plan, ...operation }) => dependencies.authority.withAccepted({
+      ...operation, intent: plan.intent }),
+    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+    ...(dependencies.claimId === undefined ? {} : { claimId: dependencies.claimId }),
+    openGrant: async ({ plan, request, record, claimId, claimExpiresAt, authority, signal, assertCurrentClaim }) => {
+      const namespace = record.authoritySet.namespaceRequirements[0]!;
+      const material = record.acceptedMaterial!;
+      const proof: TaskRuntimeCancellationResultProof = Object.freeze({
+        taskId: plan.intent.taskId, taskRunId: plan.intent.taskRunId,
+        contentRevision: 2, objectId: plan.intent.resultObjectId,
+        signerAgentId: plan.intent.agentId,
+        namespace: Object.freeze({ namespaceId: namespace.namespaceId, domainId: namespace.domainId,
+          operations: Object.freeze(["encrypt"] as const),
+          expectedAccessRevision: namespace.expectedAccessRevision,
+          expectedPolicyRevision: namespace.expectedPolicyRevision }),
+      });
+      const opened = await dependencies.recipients.withOpenedCancellationResultGrant({
+        requestId: request.requestId, workId: request.workId,
+        recipientGeneration: record.snapshot.recipientGeneration,
+        recipientKeyId: request.recipientKeyId, claimId, claimExpiresAt,
+        authorizationBytes: material.responseBytes, current: authority.foreground,
+        currentNamespaceRequirements: authority.namespaceRequirements,
+        result: proof, signal,
+        operation: async (domains, activeSignal, evidence) => {
+          await assertCurrentClaim();
+          await dependencies.publish({ plan, record, domains, evidence,
+            signal: activeSignal, assertCurrentClaim });
+        },
+      });
+      return opened.status === "opened";
+    },
+  });
+}
+
+type PublicationWorkKind = "task.cancel_result" | "task.deliver_message"
+  | "task.deliver_result" | "task.delivery_wake";
+type PublicationPlan = TaskRuntimeRecipientRequestPlan & Readonly<{ sourceRoomId: string }>;
+export type TaskPublicationClaimInput<Plan extends PublicationPlan> = Readonly<{
+  plan: Plan;
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  restricted: PostgresJsBridgeConnection;
+  signal: AbortSignal;
+}>;
+type AcceptedOperation = Parameters<ProtectedTaskCancellationAuthorityPort["withAccepted"]>[0];
+export type TaskPublicationClaimDependencies<Plan extends PublicationPlan> = Readonly<{
+  workKind: PublicationWorkKind;
+  recipients: Pick<TaskRuntimeRecipientRegistry, "delete">;
+  repository(restricted: PostgresJsBridgeConnection): Promise<Repository>;
+  coordinates(plan: Plan): Readonly<{ workId: string; requesterUserId: string }>;
+  matchesPlan(record: BackgroundAuthorizationTaskRuntimeRecordV3, plan: Plan): boolean;
+  withAccepted(input: Omit<AcceptedOperation, "intent" | "use"> & Readonly<{
+    plan: Plan;
+    use(...args: Parameters<AcceptedOperation["use"]>): Promise<boolean | null>;
+  }>): Promise<boolean | null>;
+  openGrant(input: Readonly<{
+    plan: Plan;
+    request: TaskRuntimeBackgroundAuthorizationRequestV1;
+    record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    claimId: string;
+    claimExpiresAt: number;
+    authority: ReturnType<typeof copyProtectedTaskRuntimeAuthority>;
+    signal: AbortSignal;
+    assertCurrentClaim(): Promise<void>;
+  }>): Promise<boolean | Readonly<{ status: "parked"; record: BackgroundAuthorizationTaskRuntimeRecordV3 }>>;
+  now?: () => number;
+  claimId?: () => string;
+}>;
+
+function publicationAuthorityShape(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  workKind: PublicationWorkKind,
+): boolean {
+  const namespaces = record.authoritySet.namespaceRequirements;
+  const domains = record.authoritySet.domainRequirements;
+  if (workKind === "task.cancel_result" || workKind === "task.deliver_message") {
+    const namespace = namespaces[0];
+    const domain = domains[0];
+    return namespaces.length === 1 && domains.length === 1
+      && namespace?.ordinal === 0 && domain?.ordinal === 0
+      && namespace.domainId === domain.domainId
+      && namespace.operations.length === 1 && namespace.operations[0] === "encrypt";
+  }
+  if (workKind !== "task.deliver_result" && workKind !== "task.delivery_wake") return false;
+  const primary = namespaces.find(n => n.namespaceId === record.snapshot.namespaceId);
+  const foreground = namespaces.filter(n => n.operations.includes("encrypt"));
+  return primary !== undefined && primary.operations.includes("decrypt")
+    && primary.domainId === record.domainId
+    && foreground.length > 0
+    && (workKind !== "task.deliver_result" || foreground.length === 1)
+    && (workKind !== "task.delivery_wake" || foreground.some(n => n.operations.includes("decrypt"))
+      && foreground.filter(n => n.operations.length === 1 && n.operations[0] === "encrypt").length <= 1)
+    && namespaces.every(n => n.expectedPolicyRevision === record.expectedPolicyRevision
+      && (n.namespaceId === primary.namespaceId
+        ? n.operations.length === 1 && n.operations[0] === "decrypt"
+          || n.operations.length === 2 && n.operations[0] === "decrypt" && n.operations[1] === "encrypt"
+        : workKind === "task.deliver_result"
+          ? n.operations.length === 1 && n.operations[0] === "encrypt"
+          : n.operations.length === 1 && n.operations[0] === "encrypt"
+            || n.operations.length === 2 && n.operations[0] === "decrypt" && n.operations[1] === "encrypt"));
+}
+
+/** Shared one-use publication lifecycle; each closed owner supplies its proof and grant opener. */
+export function createProtectedTaskPublicationClaim<Plan extends PublicationPlan>(
+  dependencies: TaskPublicationClaimDependencies<Plan>,
+) {
+  const cancellationRecord = (record: BackgroundAuthorizationRecord | null): record is BackgroundAuthorizationTaskRuntimeRecordV3 => publicationRecord(record, dependencies.workKind);
   const now = dependencies.now ?? Date.now;
   const createClaimId = dependencies.claimId ?? randomUUID;
 
   return async (
-    input: ProtectedTaskCancellationClaimInput,
+    input: TaskPublicationClaimInput<Plan>,
   ): Promise<BackgroundAuthorizationTaskRuntimeRecordV3 | null> => {
+    const coordinates = dependencies.coordinates(input.plan);
     const selected = parseBackgroundAuthorizationRecord(input.record);
     if (!cancellationRecord(selected)
       || selected.snapshot.state !== "grant_ready"
-      || !exactPlan(selected, input.plan)
+      || !dependencies.matchesPlan(selected, input.plan)
       || selected.descriptorBytes === null) return null;
     const accepted = acceptedTaskRuntimeRecord(selected);
     if (accepted === null) return null;
@@ -143,16 +261,11 @@ export function createProtectedTaskCancellationClaim(
     try {
       if (recipient === null || material === null || namespace === undefined
         || domain === undefined
-        || selected.authoritySet.namespaceRequirements.length !== 1
-        || selected.authoritySet.domainRequirements.length !== 1
-        || namespace.ordinal !== 0 || domain.ordinal !== 0
-        || namespace.domainId !== domain.domainId
-        || namespace.operations.length !== 1
-        || namespace.operations[0] !== "encrypt"
+        || !publicationAuthorityShape(selected, dependencies.workKind)
         || request.requestId !== selected.snapshot.requestId
-        || request.workId !== input.plan.intent.taskRunId
-        || request.workKind !== "task.cancel_result"
-        || request.workPurpose !== "task.cancel_result"
+        || request.workId !== coordinates.workId
+        || request.workKind !== dependencies.workKind
+        || request.workPurpose !== dependencies.workKind
         || request.sourceRoomId !== input.plan.sourceRoomId
         || request.recipientGeneration !== selected.snapshot.recipientGeneration
         || request.recipientKeyId !== recipient.recipientKeyId
@@ -162,7 +275,7 @@ export function createProtectedTaskCancellationClaim(
         || accepted.recipientKeyId !== request.recipientKeyId) return null;
       input.signal.throwIfAborted();
       const subject = Object.freeze({
-        userId: input.plan.intent.requesterUserId,
+        userId: coordinates.requesterUserId,
         humanActorId: accepted.issuingHumanId,
         deviceId: accepted.issuingDeviceId,
       });
@@ -177,10 +290,11 @@ export function createProtectedTaskCancellationClaim(
             expected,
             claimId,
             now(),
+            dependencies.workKind,
           )) throw new Error("Cancellation result claim is no longer current");
       };
-      const held = await dependencies.authority.withAccepted({
-        intent: input.plan.intent,
+      const held = await dependencies.withAccepted({
+        plan: input.plan,
         subject,
         accepted,
         restricted: input.restricted,
@@ -263,6 +377,7 @@ export function createProtectedTaskCancellationClaim(
           runningRecord,
           claimId,
           now(),
+          dependencies.workKind,
         )) throw new Error("Cancellation result claim is no longer current");
       };
       await assertCurrentClaim();
@@ -270,46 +385,28 @@ export function createProtectedTaskCancellationClaim(
       if (claimExpiresAt === null) {
         throw new Error("Cancellation result claim expiry is unavailable");
       }
-      const proof: TaskRuntimeCancellationResultProof = Object.freeze({
-        taskId: input.plan.intent.taskId,
-        taskRunId: input.plan.intent.taskRunId,
-        contentRevision: 2,
-        objectId: input.plan.intent.resultObjectId,
-        signerAgentId: input.plan.intent.agentId,
-        namespace: Object.freeze({
-          namespaceId: namespace.namespaceId,
-          domainId: namespace.domainId,
-          operations: Object.freeze(["encrypt"] as const),
-          expectedAccessRevision: namespace.expectedAccessRevision,
-          expectedPolicyRevision: namespace.expectedPolicyRevision,
-        }),
-      });
-      const opened = await dependencies.recipients.withOpenedCancellationResultGrant({
-        requestId: request.requestId,
-        workId: request.workId,
-        recipientGeneration: runningRecord.snapshot.recipientGeneration,
-        recipientKeyId: request.recipientKeyId,
-        claimId,
-        claimExpiresAt,
-        authorizationBytes: material.responseBytes,
-        current: publicAuthority.foreground,
-        currentNamespaceRequirements: publicAuthority.namespaceRequirements,
-        result: proof,
-        signal: input.signal,
-        operation: async (domains, signal, evidence) => {
-          await assertCurrentClaim();
-          await dependencies.publish({
-            plan: input.plan,
-            record: runningRecord,
-            domains,
-            evidence,
-            signal,
-            assertCurrentClaim,
-          });
-        },
-      });
-      if (opened.status !== "opened") {
-        throw new Error("Cancellation result authorization could not be opened");
+      const opened = await dependencies.openGrant({ plan: input.plan, request, record: runningRecord,
+        claimId, claimExpiresAt, authority: publicAuthority, signal: input.signal,
+        assertCurrentClaim });
+      if (opened === false) throw new Error("Task publication authorization could not be opened");
+      if (opened !== true) {
+        const parked = opened.record;
+        const stored = await rootRepository.get(runningRecord.snapshot.requestId);
+        if (dependencies.workKind !== "task.delivery_wake" || opened.status !== "parked"
+          || !cancellationRecord(stored) || !sameBackgroundAuthorizationRecord(stored, parked)
+          || parked.workKind !== "task.delivery_wake" || parked.purpose !== "task.delivery_wake"
+          || parked.snapshot.requestId !== runningRecord.snapshot.requestId
+          || parked.snapshot.workId !== runningRecord.snapshot.workId
+          || parked.snapshot.namespaceId !== runningRecord.snapshot.namespaceId
+          || !isDeepStrictEqual(parked.snapshot.credentialSubject, runningRecord.snapshot.credentialSubject)
+          || parked.idempotencyKey !== runningRecord.idempotencyKey
+          || parked.expectedPolicyRevision < runningRecord.expectedPolicyRevision
+          || parked.snapshot.requestRevision <= runningRecord.snapshot.requestRevision
+          || parked.snapshot.recipientGeneration <= runningRecord.snapshot.recipientGeneration
+          || parked.snapshot.state !== "awaiting_recipient" || parked.finishedAt !== null
+          || parked.acceptedMaterial !== null || parked.snapshot.claimId !== null
+          || parked.snapshot.recipient !== null) throw new Error("Task wake park transition is not current");
+        return parked;
       }
       await assertCurrentClaim();
       const completedAt = now();

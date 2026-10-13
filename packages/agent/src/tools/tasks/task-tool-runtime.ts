@@ -273,6 +273,16 @@ export interface TaskToolRuntime {
     input: TaskToolCreateInput,
   ): Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
   /**
+   * Server-owned protected publication for the same native Task intent.
+   * The server supplies the trusted foreground authority and device custody;
+   * this seam carries no authority material and remains optional until that
+   * production path is composed.
+  */
+  createProtectedTask?(
+    this: void,
+    input: TaskToolCreateInput,
+  ): Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
+  /**
    * Server-owned harness admission. Optional during bootstrap/test
    * wiring so legacy Native task callers retain their established seam.
    */

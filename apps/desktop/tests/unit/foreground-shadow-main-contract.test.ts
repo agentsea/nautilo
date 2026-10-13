@@ -132,3 +132,16 @@ describe("foreground Shadow main-process contract", () => {
     expect(cancel).toContain("bound.controller.cancelMessageBackfill()");
   });
 });
+
+
+test("Task repair IPC is sender-bound and cancellation never creates profile custody", () => {
+  const service = handler("foregroundShadow:taskContentBackfill:service", "foregroundShadow:taskContentBackfill:cancel");
+  expect(service).toContain("foregroundShadowControllerForSender(e)");
+  expect(service).toContain("controller.serviceTaskContentBackfill()");
+  const cancel = handler("foregroundShadow:taskContentBackfill:cancel", "foregroundShadow:history:reconcile");
+  expect(cancel).toContain("resolveSessionFromSender(e)");
+  expect(cancel).toContain("bound.sender !== e.sender");
+  expect(cancel).toContain("bound.serverScope !== session.scope");
+  expect(cancel).toContain("bound.controller.cancelTaskContentBackfill()");
+  expect(cancel).not.toContain("foregroundShadowControllerForSender");
+});

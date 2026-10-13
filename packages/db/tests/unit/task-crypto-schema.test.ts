@@ -41,6 +41,21 @@ describe("protected Task persistence schema", () => {
       .toContain("task_runs_current_crypto_result_revision_fk");
   });
 
+  test("historical repair provenance is closed, dual-only and rejects SQL unknown JSON fields", () => {
+    for (const table of [taskDefinitionCryptoRevisions, taskRunResultCryptoRevisions]) {
+      expect(getTableColumns(table).historicalRepair.notNull).toBe(false);
+      const shape = getTableConfig(table).checks.find((item) => item.name.endsWith("_historical_repair"));
+      expect(shape).toBeDefined();
+      const statement = dialect.sqlToQuery(shape!.value).sql;
+      expect(statement).toContain("is true");
+      expect(statement).toContain("= 'dual'");
+      expect(statement).toContain("sourceRevision");
+      for (const field of ["claimId", "publisherDeviceId", "signedRequestDigest", "sourceDigest", "sourcePayloadHash"]) {
+        expect(statement).toContain(`->'${field}') = 'string'`);
+      }
+    }
+  });
+
   test("uses exactly two content-free receipt and revision ledgers", () => {
     for (const table of [
       taskDefinitionCryptoRevisions,

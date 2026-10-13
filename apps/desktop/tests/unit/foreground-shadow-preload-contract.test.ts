@@ -34,6 +34,9 @@ describe("M300 foreground Shadow preload contract", () => {
       "foregroundShadow:backgroundAuthorization:service",
       "foregroundShadow:messageBackfill:service",
       "foregroundShadow:messageBackfill:cancel",
+      "foregroundShadow:taskContentBackfill:progress",
+      "foregroundShadow:taskContentBackfill:service",
+      "foregroundShadow:taskContentBackfill:cancel",
       "foregroundShadow:protectedRoomAccess",
       "foregroundShadow:history:reconcile",
     ]) expect(surface).toContain(`"${channel}"`);
@@ -48,6 +51,7 @@ describe("M300 foreground Shadow preload contract", () => {
     expect(surface).not.toContain("claimId");
     expect(surface).not.toContain("payloadBytes");
     expect(surface).toContain("MessageBackfillBatchResult");
+    expect(surface).toContain("TaskContentBackfillBatchResult");
     expect(surface).toContain("ProtectedRoomAccessStateV2");
   });
 

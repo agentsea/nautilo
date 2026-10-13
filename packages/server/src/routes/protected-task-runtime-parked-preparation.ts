@@ -1,9 +1,11 @@
+import { createProtectedTaskRuntimeAccessLineageReader } from "./protected-task-runtime-access-lineage";
 import {
   actors, and, asc, createPostgresJsBridgeConnection,
   eq,
   getEncryptionTransitionPolicy, getProtectedTaskRunOutputBinding,
   getSharedDirectCryptoDb, inArray, isNull, roomMembers, rooms,
   sameParkedProtectedTaskAdditionalAuthority, sameParkedProtectedTaskHumanContinuation,
+  sameParkedProtectedTaskCheckpointContinuation,
   type DirectDatabase,
 } from "@nautilo/db";
 import { LatticeCrypto, type TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
@@ -62,8 +64,11 @@ function createReadinessWake(db: DirectDatabase): Dependencies["wake"] {
     if (current === null || ("acceptance" in expected
       ? !("acceptance" in current)
         || !sameParkedProtectedTaskHumanContinuation(current, expected)
-      : "acceptance" in current
-        || !sameParkedProtectedTaskAdditionalAuthority(current, expected))) return;
+      : "stableRoutingDigest" in expected
+        ? "acceptance" in current || !("stableRoutingDigest" in current)
+          || !sameParkedProtectedTaskCheckpointContinuation(current, expected)
+        : "acceptance" in current || "stableRoutingDigest" in current
+          || !sameParkedProtectedTaskAdditionalAuthority(current, expected))) return;
     const participants = await db.select({
       roomId: rooms.id, namespaceId: rooms.namespaceId, userId: actors.ownerId,
     }).from(rooms).innerJoin(roomMembers, eq(roomMembers.roomId, rooms.id))
@@ -111,7 +116,9 @@ export function createProtectedTaskRuntimeParkedPreparation(
     rotate: overrides.rotate ?? rotateExpiredTaskRuntimeRecipient,
     wake: overrides.wake ?? createReadinessWake(db), now: overrides.now ?? Date.now,
   };
-  const resolvePlan = createParkedTaskRuntimeAuthorizationPlanResolver(dependencies);
+  const resolvePlan = createParkedTaskRuntimeAuthorizationPlanResolver({ ...dependencies,
+    readAccessLineage: overrides.readAccessLineage ?? createProtectedTaskRuntimeAccessLineageReader(dependencies),
+  });
   return async observed => {
     if (observed.run.jobId === null) return { status: "inactive" };
     const resolved = await resolvePlan({ taskRunId: observed.run.id, occurrence: observed });

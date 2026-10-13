@@ -5,6 +5,7 @@ import {
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
   type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
 } from "@nautilo/db";
 import {
   sameTaskRuntimeAuthorityPlan,
@@ -22,7 +23,8 @@ import {
 } from "./protected-task-runtime-parked-plan";
 
 type ParkedStartInput = StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
-  | StartParkedProtectedTaskHumanRunSegmentInput;
+  | StartParkedProtectedTaskHumanRunSegmentInput
+  | StartParkedProtectedTaskCheckpointSegmentInput;
 
 /** The DB owner invokes grant deferral only after durable non-execution proof. */
 export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{

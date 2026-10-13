@@ -405,6 +405,10 @@ export const DATA_TABLES = [
   // block. Blob rows precede revision rows for the exact retained-blob FK.
   "public.crypto_objects",
   "public.task_cancellation_crypto_staging_receipts",
+  "public.task_terminal_message_crypto_staging_receipts",
+  // Immutable publication receipts survive restore with their ciphertext parents.
+  "public.task_historical_content_crypto_staging_receipts",
+  "public.foreground_memory_crypto_publication_receipts",
   "public.artifacts",
   // M322 — immutable exact-operation receipts must survive restore so a retry
   // cannot regrant access. COPY inserts unchanged receipts after all four FK
@@ -448,6 +452,10 @@ export const DATA_TABLES = [
   "public.task_run_message_associations",
   "public.protected_task_execution_segment_receipts",
   "public.protected_task_continuation_receipts",
+  "public.protected_task_wake_continuation_receipts",
+  // Keep device-driven repair cursors and sparse source dispositions intact.
+  "public.task_content_backfill_scans",
+  "public.task_content_backfill_failures",
   // Pending/recoverable Plan input references the Task, run, Job,
   // Room, and Codex binding, so every parent must be restored first.
   "public.codex_user_input_requests",

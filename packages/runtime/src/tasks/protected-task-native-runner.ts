@@ -63,6 +63,11 @@ export type ProtectedTaskNativeExecution = Readonly<{
     ownerId: string;
   }>;
   modelFallbackMode?: RunScopeSubagentOpts["modelFallbackMode"];
+  /** Process-local caller-funding custody; never serialized or checkpointed. */
+  foregroundChatFundingSession?:
+    RunScopeSubagentOpts["foregroundChatFundingSession"];
+  /** Grant-bound delegated local execution authority; process-local and nonserializable. */
+  delegatedLocalExecutionPort?: RunScopeSubagentOpts["delegatedLocalExecutionPort"];
 }>;
 
 export type RunProtectedTaskNativeSegmentInput = Readonly<{
@@ -75,6 +80,9 @@ export type RunProtectedTaskNativeSegmentInput = Readonly<{
   transcriptPort: ProtectedTaskTranscriptPort;
   /** Process-local Memory authority opened by this protected Task grant. */
   memoryHandoff: ProtectedTaskMemoryHandoff;
+  /** Cooperative stop at the next durable protected graph checkpoint. */
+  protectedTaskCheckpointPauseController?:
+    RunScopeSubagentOpts["protectedTaskCheckpointPauseController"];
   /** One-shot input opened by ProtectedTaskExecutionCandidate.run. */
   transientInput: Record<string, unknown>;
   execution: ProtectedTaskNativeExecution;
@@ -95,6 +103,9 @@ export type ProtectedTaskNativeSegmentResult =
       interruptCoordinates: readonly ProtectedTaskNativeInterruptCoordinate[];
       additionalAuthority: ProtectedTaskNativeAdditionalAuthorityContinuation;
     }>
+  | Extract<RunScopeSubagentResult, Readonly<{
+      status: "checkpoint_paused";
+    }>>
   | Readonly<{ status: "aborted" }>;
 
 export type ProtectedTaskNativeInterruptCoordinate = Readonly<{
@@ -369,6 +380,15 @@ function runnerOptions(
     ...(execution.modelFallbackMode === undefined
       ? {}
       : { modelFallbackMode: execution.modelFallbackMode }),
+    ...(execution.foregroundChatFundingSession === undefined
+      ? {}
+      : {
+          foregroundChatFundingSession:
+            execution.foregroundChatFundingSession,
+        }),
+    ...(execution.delegatedLocalExecutionPort === undefined
+      ? {}
+      : { delegatedLocalExecutionPort: execution.delegatedLocalExecutionPort }),
     taskRun: true,
     trustedExecutionEntrypoint: "background.task",
     currentTaskId: input.taskId,
@@ -378,6 +398,12 @@ function runnerOptions(
     taskRunCheckpointSaver: input.checkpointSaver,
     protectedTaskTranscriptPort: input.transcriptPort,
     protectedTaskMemoryHandoff: input.memoryHandoff,
+    ...(input.protectedTaskCheckpointPauseController === undefined
+      ? {}
+      : {
+          protectedTaskCheckpointPauseController:
+            input.protectedTaskCheckpointPauseController,
+        }),
     signal: input.signal,
   };
 }
@@ -408,6 +434,13 @@ export async function runProtectedTaskNativeSegment(
   if (input.signal.aborted) return Object.freeze({ status: "aborted" });
   if (result.threadId !== input.graphThreadId) {
     return createProtectedTaskFailurePayload();
+  }
+  if (result.status === "checkpoint_paused") {
+    return Object.freeze({
+      status: "checkpoint_paused" as const,
+      threadId: result.threadId,
+      reason: result.reason,
+    });
   }
   if (result.status === "interrupted") {
     const interruption = exactInterruptCoordinates(

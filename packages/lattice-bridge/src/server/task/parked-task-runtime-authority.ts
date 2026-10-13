@@ -1,13 +1,16 @@
 import {
   copyParkedProtectedTaskAdditionalAuthority,
   copyParkedProtectedTaskHumanContinuation,
+  copyParkedProtectedTaskCheckpointContinuation,
   eq,
   lockParkedProtectedTaskAdditionalAuthority,
   lockParkedProtectedTaskHumanContinuation,
+  lockParkedProtectedTaskCheckpointContinuation,
   rooms,
   type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ParkedProtectedTaskAdditionalAuthority,
   type ParkedProtectedTaskHumanContinuation,
+  type ParkedProtectedTaskCheckpointContinuation,
   type PostgresJsBridgeConnection,
   type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
@@ -26,7 +29,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 export type ParkedTaskRuntimeContinuation =
   | ParkedProtectedTaskAdditionalAuthority
-  | ParkedProtectedTaskHumanContinuation;
+  | ParkedProtectedTaskHumanContinuation
+  | ParkedProtectedTaskCheckpointContinuation;
 
 export type ParkedTaskRuntimeCurrentRoutingFacts = Readonly<{
   taskId: string;
@@ -408,6 +412,9 @@ export function copyParkedTaskRuntimeAuthority(
   expected: ParkedProtectedTaskHumanContinuation,
 ): ParkedProtectedTaskHumanContinuation;
 export function copyParkedTaskRuntimeAuthority(
+  expected: ParkedProtectedTaskCheckpointContinuation,
+): ParkedProtectedTaskCheckpointContinuation;
+export function copyParkedTaskRuntimeAuthority(
   expected: ParkedTaskRuntimeContinuation,
 ): ParkedTaskRuntimeContinuation;
 export function copyParkedTaskRuntimeAuthority(
@@ -416,7 +423,9 @@ export function copyParkedTaskRuntimeAuthority(
   try {
     return "acceptance" in expected
       ? copyParkedProtectedTaskHumanContinuation(expected)
-      : copyParkedProtectedTaskAdditionalAuthority(expected);
+      : "stableRoutingDigest" in expected
+        ? copyParkedProtectedTaskCheckpointContinuation(expected)
+        : copyParkedProtectedTaskAdditionalAuthority(expected);
   } catch (error) {
     throw new TypeError(
       "Parked Task Runtime authority descriptor is invalid",
@@ -442,7 +451,9 @@ export async function lockCurrentParkedTaskAuthorityWithRouting(
 }> | null> {
   const locked = "acceptance" in input.expected
     ? await lockParkedProtectedTaskHumanContinuation(input.transaction, input.expected)
-    : await lockParkedProtectedTaskAdditionalAuthority(input.transaction, input.expected);
+    : "stableRoutingDigest" in input.expected
+      ? await lockParkedProtectedTaskCheckpointContinuation(input.transaction, input.expected)
+      : await lockParkedProtectedTaskAdditionalAuthority(input.transaction, input.expected);
   return locked === null
     ? null
     : Object.freeze({

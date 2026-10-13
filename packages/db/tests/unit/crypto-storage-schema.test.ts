@@ -35,6 +35,9 @@ const EXPECTED_TABLE_NAMES = [
   "background_crypto_authorization_namespace_requirements",
   "processor_crypto_signer_authorizations",
   "task_cancellation_crypto_staging_receipts",
+  "task_terminal_message_crypto_staging_receipts",
+  "task_historical_content_crypto_staging_receipts",
+  "foreground_memory_crypto_publication_receipts",
 ] as const;
 
 const migration = readFileSync(
@@ -182,6 +185,7 @@ describe("Wave 6 crypto storage schema", () => {
       objectAccessEnvelope: 1_048_576,
       agentRuntimeDomainEnvelope: 1_048_576,
       agentRuntimeSignerPublication: 1_024,
+      historicalTaskPublicationRequest: 1_048_576,
       signingPublicKey: 32,
       wrappedDekMinimum: 40,
       wrappedDekMaximum: 4_096,

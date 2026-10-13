@@ -56,7 +56,7 @@ function exactCandidate(
  * the legacy private Room first, then the oldest stable private candidate.
  */
 export function createProtectedTaskRequesterPrivateRoomResolver(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "select">,
 ): ProtectedTaskRequesterPrivateRoomResolver {
   return async (userId, agentId, expectedNamespaceId) => {
     const humans = await db.select({ id: actors.id }).from(actors).where(and(

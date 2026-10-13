@@ -89,6 +89,7 @@ function segment(
   } as unknown as Segment["current"];
   return Object.freeze({
     occurrence,
+    policy: { mode: "shadow_encryption", shadowBehavior: "strict", revision: 4 },
     record: Object.freeze({}),
     request: Object.freeze({}),
     current,
@@ -113,11 +114,12 @@ function product(runner: ConversationProductCanonicalTransactionRunner) {
 }
 
 describe("protected Task native transcript composition", () => {
-  test("binds a content-free Agent Session to the execution Room Namespace", async () => {
+  test.each(["shadow_encryption", "encrypted_only"] as const)("binds retained dual input to current %s transcript output", async mode => {
     const runner = Object.freeze({ role: "nautilo" }) as unknown as
       ConversationProductCanonicalTransactionRunner;
     const signal = new AbortController().signal;
-    const current = segment(runner, signal);
+    const current = { ...segment(runner, signal),
+      policy: { mode, shadowBehavior: "strict" as const, revision: 4 } };
     const sourceBytes = [
       new Uint8Array([1, 2]),
       new Uint8Array([3, 4]),
@@ -195,6 +197,8 @@ describe("protected Task native transcript composition", () => {
 
     const publish = await create(current);
     expect(validatedAuthority).toMatchObject({
+      definitionRepresentation: "dual",
+      representation: mode === "encrypted_only" ? "protected" : "dual",
       sessionId: ids.session,
       sessionOwnerId: ids.owner,
       roomId: ids.room,

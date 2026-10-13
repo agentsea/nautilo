@@ -658,6 +658,7 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/runtime/src/tasks/create-task.ts",
     "packages/runtime/src/tasks/resume-task-approval.ts",
     "packages/runtime/src/tasks/task-run-executor.ts",
+    "packages/server/src/routes/protected-task-native-execution-context.ts",
   ]);
 });
 
@@ -760,7 +761,9 @@ const EXECUTION_PRIMITIVE_INVENTORY: ReadonlyArray<{
   },
   {
     primitive: "runtimeCreateTask",
-    pattern: /\bruntimeCreateTask\s*\(/g,
+    // Generic result typing does not change the execution primitive. Keep the
+    // call inventoried when a caller supplies a concrete protected plan type.
+    pattern: /\bruntimeCreateTask(?:\s*<[^()]+>)?\s*\(/g,
     callsites: [
       {
         file: "packages/server/src/app.ts",

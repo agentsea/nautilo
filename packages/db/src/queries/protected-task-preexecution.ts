@@ -46,6 +46,7 @@ import {
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
   type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
   type StartProtectedTaskRunInput,
 } from "./tasks";
 
@@ -74,6 +75,13 @@ export type ProtectedTaskPreexecutionRecoveryCandidate =
       cursor: ProtectedTaskPreexecutionRecoveryCursor;
     }>
   | Readonly<{
+      route: "parked_checkpoint";
+      input: StartParkedProtectedTaskCheckpointSegmentInput;
+      jobStatus: "queued" | "cancelled";
+      lifecycle: "linked" | "parked";
+      cursor: ProtectedTaskPreexecutionRecoveryCursor;
+    }>
+  | Readonly<{
       route: "parked_human";
       input: StartParkedProtectedTaskHumanRunSegmentInput;
       jobStatus: "queued" | "cancelled";
@@ -89,6 +97,8 @@ export type ProtectedTaskPreexecutionRecoveryPage = Readonly<{
 
 const taskProjection = Object.freeze({
   id: tasks.id,
+  ownerId: tasks.ownerId,
+  agentId: tasks.agentId,
   requestorId: tasks.requestorId,
   callingRoomId: tasks.callingRoomId,
   resultDelivery: tasks.resultDelivery,
@@ -117,6 +127,7 @@ const runProjection = Object.freeze({
   jobId: taskRuns.jobId,
   graphThreadId: taskRuns.graphThreadId,
   status: taskRuns.status,
+  startedAt: taskRuns.startedAt,
   modelId: taskRuns.modelId,
   fundingPristine: and(
     isNull(taskRuns.fundingBinding),
@@ -592,6 +603,13 @@ export async function listUnstartedProtectedTaskRunRecoveryCandidates(
       if (parked !== null) {
         if ("acceptance" in parked.input) candidates.push({
           route: "parked_human",
+          input: parked.input,
+          jobStatus: row.job.status,
+          lifecycle: parked.lifecycle,
+          cursor,
+        });
+        else if ("continuationFingerprint" in parked.input) candidates.push({
+          route: "parked_checkpoint",
           input: parked.input,
           jobStatus: row.job.status,
           lifecycle: parked.lifecycle,

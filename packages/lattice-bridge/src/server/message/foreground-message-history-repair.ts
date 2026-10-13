@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import type { CryptoPostgresHandle } from "../storage/postgres-lattice-storage.ts";
 import { createDormantConversationShadowRepository } from "../../message/conversation-shadow-saga.ts";
 
 import {
@@ -199,6 +200,8 @@ export function createForegroundExistingMessageWriteAuthorization(input: Readonl
 export function createForegroundMessageHistoryRepairer(input: Readonly<{
   crypto: LatticeCrypto;
   storage: LatticeStorage;
+  /** Retained common-v5 Agent Message chains, including Human access updates. */
+  commonManifestHandle?: CryptoPostgresHandle;
   entities: ForegroundMessageEntityCryptoInvocation;
   product: ConversationProductStorePort
     & ConversationExistingRepresentationProductStorePort
@@ -258,6 +261,8 @@ export function createForegroundMessageHistoryRepairer(input: Readonly<{
       crypto: input.crypto,
       storage: input.storage,
       objectId: cryptoObjectId,
+      ...(input.commonManifestHandle === undefined || source.sessionAgentId === null
+        ? {} : { commonManifest: { handle: input.commonManifestHandle, expectedAgentId: source.sessionAgentId } }),
       resolveHistoricalSigner: input.resolveHistoricalHumanSigner,
       resolveHistoricalAgentSignerAuthority:
         input.resolveHistoricalAgentSignerAuthority,
@@ -282,9 +287,15 @@ export function createForegroundMessageHistoryRepairer(input: Readonly<{
           reason: "message_crypto_coordinates_mismatch",
         });
       }
-      const manifest = decodeObjectAccessManifestV2OrV3(
-        stored.objectAccessManifestBytes,
-      );
+      const publisher = stored.authenticatedPublisher ?? (() => {
+        const manifest = decodeObjectAccessManifestV2OrV3(stored.objectAccessManifestBytes);
+        return manifest.formatVersion === 2
+          ? Object.freeze({ kind: "human_device" as const, id: manifest.committerDeviceId })
+          : Object.freeze({ kind: "foreground_runtime" as const, id: manifest.signer.signerKeyId });
+      })();
+      if (stored.authenticatedPublisher !== undefined && source.authorRole !== "assistant" && source.authorRole !== "tool") {
+        return Object.freeze({ status: "failed" as const, reason: "message_author_role_mismatch" });
+      }
       payload = decodeEncryptedPayloadV2(stored.payloadBytes);
       envelope = decodeNamespaceObjectEnvelopeV2(
         stored.namespaceEnvelopeBytes,
@@ -388,15 +399,7 @@ export function createForegroundMessageHistoryRepairer(input: Readonly<{
           }),
           namespaceAccessRevision: opened.value.namespaceAccessRevision,
           namespaceKeyGeneration: opened.value.namespaceKeyGeneration,
-          publisher: manifest.formatVersion === 2
-            ? Object.freeze({
-              kind: "human_device" as const,
-              id: manifest.committerDeviceId,
-            })
-            : Object.freeze({
-              kind: "foreground_runtime" as const,
-              id: manifest.signer.signerKeyId,
-            }),
+          publisher,
           attestationDigest: input.crypto.hash(
             stored.objectAccessManifestBytes,
           ),

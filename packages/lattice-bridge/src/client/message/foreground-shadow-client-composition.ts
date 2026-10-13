@@ -97,6 +97,10 @@ import {
   type EncryptionDataOperationOwner,
 } from "../../transition/encryption-data-operation-owner.ts";
 import { createDeviceMessageBackfillClient, type DeviceMessageBackfillApiPort } from "./device-message-backfill-client.ts";
+import {
+  createDeviceTaskContentBackfillClient,
+  type DeviceTaskContentBackfillApiPort,
+} from "../task/device-task-content-backfill-client.ts";
 import { createHumanMemoryProcessorTransport } from "../memory/human-memory-processor-transport.ts";
 import {
   createVaultAuthorizedHumanMemoryDeviceContentPort,
@@ -111,7 +115,7 @@ import {
 import type { ResolveTrustedObjectAccessEvidenceIssuerV4 } from
   "../../client-vault/ingest-object-access-signer-evidence-v4.ts";
 import type { PreparedMutationJournalCustodyAvailability } from
-  "../memory/file-prepared-mutation-journal-vault.ts";
+  "../memory/prepared-mutation-journal.ts";
 import {
   createHumanDeviceMembershipClient,
   type HumanDeviceMembershipApiPort,
@@ -1063,6 +1067,9 @@ export function createForegroundHumanTaskClient(
           namespaceEnvelopeBytes: decodeCanonicalBase64url(
             envelope.namespaceEnvelopeBytesBase64url,
           ),
+          ...(envelope.historicalRepair === undefined ? {} : {
+            historicalRepair: envelope.historicalRepair,
+          }),
           signerEvidence: envelope.signerEvidence,
         });
       },
@@ -1567,6 +1574,48 @@ export function createForegroundMessageBackfillClient(
   return createDeviceMessageBackfillClient({owner: input.dataOperationOwner, api: input.api,
     namespaceAuthority: clients.namespaceAuthority, vault, coordinates: clientIdentity.coordinates, crypto,
     historyReader: createForegroundRoomHistoryShadowMessageReader(platform, input), now, createId});
+}
+
+export type ForegroundTaskContentBackfillClientInput =
+  ForegroundHumanTaskClientInput & Readonly<{
+    api: NautiloApiClient & DeviceTaskContentBackfillApiPort;
+    onProtectedRoomAccessState?: (state: ProtectedRoomAccessStateV2) => void;
+  }>;
+
+/** Shared Browser/Electron Task repair client using the platform's existing custody. */
+export function createForegroundTaskContentBackfillClient(
+  platform: ForegroundShadowClientPlatform,
+  input: ForegroundTaskContentBackfillClientInput,
+) {
+  const crypto = input.crypto ?? new LatticeCrypto();
+  const clientIdentity = identity(platform, crypto, input);
+  const vault = platform.createProfileVault();
+  const now = input.now ?? Date.now;
+  const createId = input.createIdempotencyKey ?? (() => platform.createId());
+  const clients = authorityClients(platform, {
+    api: input.api,
+    crypto,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    now,
+    createId,
+    ...(input.onProtectedRoomAccessState === undefined ? {} : {
+      onProtectedRoomAccessState: input.onProtectedRoomAccessState,
+    }),
+  });
+  if (clients.namespaceAuthority === undefined) {
+    throw new TypeError("Task repair namespace authority is unavailable");
+  }
+  return createDeviceTaskContentBackfillClient({
+    owner: input.dataOperationOwner,
+    api: input.api,
+    namespaceAuthority: clients.namespaceAuthority,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    crypto,
+    resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
+    now,
+  });
 }
 
 function bytesFromBase64url(value: string): Uint8Array {

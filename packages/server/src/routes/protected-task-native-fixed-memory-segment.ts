@@ -1,12 +1,16 @@
+import { parseProtectedTaskCheckpointAadBinding } from "@nautilo/db";
 import {
   createProtectedTaskAdditionalAuthorityResumeMapV1,
+  createProtectedTaskCheckpointPauseController,
   type RunScopeSubagentOpts,
   type ProtectedTaskHumanResumeBindingV1,
 } from "@nautilo/agent";
-import type {
-  PostgresJsBridgeConnection,
-  SealAndParkProtectedTaskHumanRunInput,
-  SealAndParkProtectedTaskRunInput,
+import {
+  protectedTaskDefinitionSupportsPolicy,
+  type PostgresJsBridgeConnection,
+  type SealAndParkProtectedTaskHumanRunInput,
+  type SealAndParkProtectedTaskRunInput,
+  type SealAndParkProtectedTaskCheckpointRunInput,
 } from "@nautilo/db";
 import {
   ClassifiedDataOperationError,
@@ -20,6 +24,7 @@ import {
 } from "@nautilo/lattice-bridge";
 import {
   PostgresLatticeStorage,
+  createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
   verifyCryptoPostgresHandle,
   withNativeProtectedTaskDefinitionV1,
   withNativeTaskHumanReplyV1,
@@ -41,6 +46,7 @@ import {
 import {
   createProtectedTaskFailurePayload,
   createProtectedTaskTranscriptPort,
+  ProtectedTaskExecutionDidNotBeginError,
   runProtectedTaskNativeSegment,
   withNativeProtectedTaskCheckpointManifest,
   assertProtectedTaskJobReferenceV1,
@@ -78,6 +84,7 @@ import {
 } from "./protected-task-result-signer-history";
 
 import { createProtectedTaskNativeReplyAuthorityResolver, createProtectedTaskHistoricalHumanReplySignerResolver } from "./protected-task-native-reply-authority";
+import { scheduleProtectedTaskCheckpointRefresh } from "./protected-task-checkpoint-refresh";
 
 type PrepareExecution =
   ProtectedTaskRuntimeGrantPlanBuilderDependencies["prepareExecution"];
@@ -115,11 +122,22 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
   embedding: ProtectedAgentMemoryEmbeddingPort;
   createDedicatedPool: DedicatedPoolFactory;
   parkSegment(input: SealAndParkProtectedTaskRunInput
-    | SealAndParkProtectedTaskHumanRunInput): Promise<boolean>;
+    | SealAndParkProtectedTaskHumanRunInput
+    | SealAndParkProtectedTaskCheckpointRunInput): Promise<boolean>;
+  /**
+   * Fresh local-relay availability check at the last pre-effect boundary.
+   * A false result is deferred by the existing unstarted-segment recovery.
+   */
+  localExecutionReadyBeforeStart?(input: Readonly<{
+    occurrence: ProtectedTaskRunningOccurrence;
+    signal: AbortSignal;
+  }>): Promise<boolean>;
   resolveExecutionContext(input: Readonly<{
     occurrence: ProtectedTaskRunningOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
     protectedMetadata: TaskPayloadV1["protectedMetadata"];
+    signal: AbortSignal;
+    assertCurrentTaskAuthority(): Promise<void>;
   }>): FixedExecutionContext | Promise<FixedExecutionContext>;
   /**
    * Construct one segment-local publisher while its Runtime signer and Domain
@@ -131,6 +149,7 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     request: TaskRuntimeBackgroundAuthorizationRequestV1;
     current: ProtectedTaskMemoryAuthorityInput;
+    policy: ProtectedTaskRuntimeMemoryPolicy;
     humanTurnId: string;
     assertCurrentTaskAuthority(): Promise<void>;
     /** Borrowed only while the current Runtime signer owner remains open. */
@@ -376,13 +395,20 @@ function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
       && policy.shadowBehavior !== "strict")
     || policy.revision !== reference.policyRevision
     || !executablePolicyMode(policy.mode)
-    || (policy.mode === "shadow_encryption"
-      ? occurrence.task.contentRepresentation !== "dual"
-      : policy.mode !== "encrypted_only"
-        || occurrence.task.contentRepresentation !== "protected")
+    || !protectedTaskDefinitionSupportsPolicy(
+      occurrence.task.contentRepresentation,
+      policy.mode,
+    )
     || reference.taskId !== occurrence.task.id
     || reference.taskRunId !== occurrence.run.id
     || reference.inputObjectId !== occurrence.task.cryptoObjectId
+    || reference.executionSegment > 1 && input.checkpointAadBinding === undefined
+    || input.checkpointAadBinding !== undefined && (
+      parseProtectedTaskCheckpointAadBinding(input.checkpointAadBinding) === null
+      || input.checkpointAadBinding.namespaceId !== occurrence.task.contentNamespaceId
+      || input.checkpointAadBinding.policyRevision > policy.revision
+      || reference.executionSegment === 1)
+    || input.checkpointResume !== undefined && input.checkpointResume !== true
     || (reference.executionSegment === 1
       ? reference.authorizationRequestId
           !== `task-run-authorization:${occurrence.run.id}`
@@ -390,15 +416,19 @@ function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
         || "resumeAcceptanceId" in reference
         || additionalAuthorityResume !== undefined
         || humanResume !== undefined
+        || input.checkpointResume !== undefined
       : "resumeAcceptanceId" in reference
         ? "resumeContinuationFingerprint" in reference
           || additionalAuthorityResume !== undefined
           || humanResume === undefined
+          || input.checkpointResume !== undefined
         : !("resumeContinuationFingerprint" in reference)
           || humanResume !== undefined
-          || additionalAuthorityResume === undefined
-          || additionalAuthorityResume.authorizationRequestId
-            !== reference.authorizationRequestId)
+          || (input.checkpointResume === true
+            ? additionalAuthorityResume !== undefined
+              || reference.authorizationRequestId !== `task-checkpoint-continuation:${occurrence.run.id}:${reference.executionSegment}:${reference.resumeContinuationFingerprint}`
+            : additionalAuthorityResume === undefined
+              || additionalAuthorityResume.authorizationRequestId !== reference.authorizationRequestId))
     || !(input.stableRoutingDigest instanceof Uint8Array)
     || input.stableRoutingDigest.length !== 32) {
     throw new TypeError("Protected Task fixed Memory preparation is not exact");
@@ -740,6 +770,18 @@ export function createProtectedTaskNativeFixedMemorySegment(
     const policy = Object.freeze({ ...preparation.policy });
     const reference = Object.freeze({ ...preparation.reference });
     const stableRoutingDigest = preparation.stableRoutingDigest.slice();
+    const checkpointAadBinding = preparation.checkpointAadBinding === undefined
+      ? undefined : Object.freeze({ ...preparation.checkpointAadBinding });
+    const checkpointPauseController = createProtectedTaskCheckpointPauseController();
+    let checkpointPauseRequestId: string | null = null;
+    const requestCheckpointPause: NonNullable<TaskRuntimeGrantClaimPlan["requestCheckpointPause"]> = (reason, requestId) => {
+      if (reason !== "grant_refresh" && (typeof requestId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(requestId))
+        || reason === "grant_refresh" && requestId !== undefined) return false;
+      if (!checkpointPauseController.request(reason)) return false;
+      checkpointPauseRequestId = requestId ?? null;
+      return true;
+    };
     const humanResume = preparation.humanResume === undefined
       ? undefined : frozenClone(preparation.humanResume);
     const additionalAuthorityResume = preparation.additionalAuthorityResume
@@ -778,7 +820,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
     };
 
     const openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"] =
-      grant => {
+      async grant => {
         if (grant.occurrence.run.status !== "running"
           || typeof grant.occurrence.run.jobId !== "string"
           || grant.occurrence.run.jobId.length === 0
@@ -795,6 +837,14 @@ export function createProtectedTaskNativeFixedMemorySegment(
           evidence: grant.evidence,
           signal: grant.signal,
         });
+        if (input.localExecutionReadyBeforeStart !== undefined
+          && !await input.localExecutionReadyBeforeStart({
+            occurrence: runningOccurrence,
+            signal: grant.signal,
+          })) {
+          throw new ProtectedTaskExecutionDidNotBeginError();
+        }
+        grant.signal.throwIfAborted();
         const subject = subjectFromRecord(runningOccurrence, grant.record);
         const authority = memoryAuthority({
           occurrence: runningOccurrence,
@@ -838,6 +888,10 @@ export function createProtectedTaskNativeFixedMemorySegment(
           if (request === null) {
             throw new TypeError("Protected Task fixed Memory request is unavailable");
           }
+          const closeRefresh = scheduleProtectedTaskCheckpointRefresh({
+            expiresAt: grant.evidence.expiresAt, signal,
+            requestPause: () => requestCheckpointPause("grant_refresh"),
+          }, { now, schedule: (callback, delayMs) => setTimeout(callback, delayMs), cancel: clearTimeout });
           try {
             exactRequest({ occurrence: runningOccurrence, reference,
               evidence: grant.evidence, request });
@@ -890,6 +944,12 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 domains: grant.domains,
                 signal,
                 loadCurrentOccurrence: () => loadDefinition(current),
+                resolveForegroundAgentAcceptedExecutionEvidence: principal =>
+                  createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
+                    product: input.product.handle,
+                    crypto: input.crypto,
+                    rejectInvalidSelectedEvidence: true,
+                  })(principal),
                 execute: async payload => {
                   assertNativeProtectedMetadata(payload.protectedMetadata);
                   const context = exactExecutionContext(
@@ -897,6 +957,8 @@ export function createProtectedTaskNativeFixedMemorySegment(
                       occurrence: runningOccurrence,
                       predispatch,
                       protectedMetadata: payload.protectedMetadata,
+                      signal,
+                      assertCurrentTaskAuthority,
                     }),
                   );
                   const humanTurnId = runningOccurrence.run.id;
@@ -911,6 +973,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                         record: grant.record,
                         request,
                         current,
+                        policy,
                         humanTurnId,
                         assertCurrentTaskAuthority,
                         domains: grant.domains,
@@ -974,6 +1037,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               expectedPolicyRevision: policy.revision,
                               graphThreadId: runningOccurrence.run.graphThreadId,
                             },
+                            ...(checkpointAadBinding === undefined ? {} : { checkpointAadBinding }),
                             domains: grant.domains,
                             signal,
                             now,
@@ -1029,8 +1093,11 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                 }),
                               };
                               const runSegment = (binding?: ProtectedTaskHumanResumeBindingV1) =>
-                                dependencies.runSegment({ ...segment, execution: {
+                                dependencies.runSegment({ ...segment,
+                                  protectedTaskCheckpointPauseController: checkpointPauseController,
+                                  execution: {
                                   ...segment.execution,
+                                  ...(preparation.checkpointResume === true ? { continueFromCheckpoint: true } : {}),
                                   ...(binding === undefined ? {} : { protectedTaskHumanResume: binding }),
                                 } });
                               const segmentOutcome = await Promise.resolve()
@@ -1043,6 +1110,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                     ); },
                                     protected: async () => {
                                       const resolver = dependencies.createReplyAuthority({
+                                        policy,
                                         occurrence: runningOccurrence, evidence: grant.evidence,
                                         acceptedBy: humanResume.acceptedBy, message: humanResume.message,
                                         runner: input.product.canonicalRunner, restricted: input.restricted,
@@ -1116,6 +1184,29 @@ export function createProtectedTaskNativeFixedMemorySegment(
             }
             const terminalPayload = outcome.value.value;
             if ("status" in terminalPayload) {
+              if (terminalPayload.status === "checkpoint_paused") {
+                signal.throwIfAborted();
+                if (terminalPayload.threadId !== runningOccurrence.run.graphThreadId
+                  || terminalPayload.reason !== checkpointPauseController.currentRequestedReason()) {
+                  throw new TypeError("Protected Task checkpoint pause is not exact");
+                }
+                await publication.park(parkedAt => input.parkSegment(Object.freeze({
+                  park: Object.freeze({
+                    taskId: runningOccurrence.task.id, taskRunId: runningOccurrence.run.id,
+                    graphThreadId: runningOccurrence.run.graphThreadId, jobId,
+                    generation: grant.record.snapshot.recipientGeneration,
+                    executionSegment: reference.executionSegment,
+                    interrupts: Object.freeze([] as const), parkedAt: new Date(parkedAt), jobReference: reference,
+                    checkpointAadBinding: outcome.value.checkpointAadBinding,
+                  }),
+                  segment: Object.freeze({ route: "native_langgraph_v1" as const, checkpoint: outcome.value.manifest }),
+                  continuation: Object.freeze({ kind: "checkpoint_safe_v1" as const,
+                    reason: terminalPayload.reason, effectDisposition: "none_v1" as const }),
+                  pauseRequestId: checkpointPauseRequestId,
+                  stableRoutingDigest: Uint8Array.from(stableRoutingDigest),
+                })));
+                return;
+              }
               if (terminalPayload.status === "aborted") {
                 signal.throwIfAborted();
               }
@@ -1147,6 +1238,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                       interrupts: terminalPayload.interruptCoordinates,
                       parkedAt: new Date(parkedAt),
                       jobReference: reference,
+                      checkpointAadBinding: outcome.value.checkpointAadBinding,
                     }),
                     segment: Object.freeze({
                       route: "native_langgraph_v1" as const,
@@ -1169,6 +1261,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
             signal.throwIfAborted();
             await publication.publish(terminalPayload);
           } finally {
+            closeRefresh();
             dependencies.destroyRequest(request);
           }
         };
@@ -1176,6 +1269,6 @@ export function createProtectedTaskNativeFixedMemorySegment(
         return Promise.resolve(Object.freeze({ [TRANSIENT_SEGMENT]: token }));
       };
 
-    return Promise.resolve(Object.freeze({ executor, openTransientInput }));
+    return Promise.resolve(Object.freeze({ executor, openTransientInput, requestCheckpointPause }));
   };
 }

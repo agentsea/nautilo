@@ -1454,7 +1454,6 @@ export function createNautiloToolInvocationSession(
     } } : taskCreationReturnBase;
   const taskCreationLiveMiniAppContext = taskCreationLiveMiniAppContextForState(state);
   const taskCreationBackgroundTaskProvenance = taskCreationBackgroundTaskProvenanceForState(state);
-  const taskCreationInvocationProvenance = taskCreationInvocationProvenanceForState(state);
   const deepResearchReturnContext = deepResearchReturnContextForState(state);
 
   async function runApprovedToolCall(
@@ -2021,7 +2020,7 @@ export function createNautiloToolInvocationSession(
           // are on the call chain that produces the final `file` result.
           const isFileTool = tc.name === "file";
           const invoke = () => runWithTaskCreationInvocationProvenance(
-            taskCreationInvocationProvenance,
+            taskCreationInvocationProvenanceForState(state, tc.id),
             () => runWithTaskCreationContexts(
               taskCreationReturnContext,
               taskCreationLiveMiniAppContext,

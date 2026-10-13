@@ -9,22 +9,33 @@ import {
   cryptoDeviceId,
   cryptoDomainId,
   decryptObjectThroughNamespace,
+  deriveAgentRuntimeObjectSignerPublic,
   domainEpoch,
+  encryptObjectPayload,
   humanId,
   namespaceBindingHash,
+  namespaceGeneration,
   namespaceId,
+  objectId,
   openNamespaceKeyring,
   prepareAgentRuntimeInitialization,
+  prepareHumanObjectAccessManifestGenesisSet,
   sealNamespaceKeyring,
   verifyNamespaceBindingProof,
   withTaskRuntimeCheckpointNamespace,
+  wrapObjectDekForNamespace,
   type Rng,
   type TrustedMinimumObjectAccessHead,
+  unixTimestamp,
 } from "@nautilo/lattice-crypto";
 import {
   decodeEncryptedPayloadV2,
+  decodeLiveShadowMessagePlanV4,
   decodeNamespaceObjectEnvelopeV2,
   encodeAgentRuntimeSignerPublicationV1,
+  encodeEncryptedPayloadV2,
+  encodeLiveShadowMessagePlanV4,
+  encodeNamespaceObjectEnvelopeV2,
 } from "@nautilo/lattice-crypto/wire";
 import type {
   NautiloApiClient,
@@ -75,9 +86,13 @@ import {
 } from "../../src/task/task-content-prepared-revision.ts";
 import {
   deriveTaskContentCryptoObjectIdV1,
+  TASK_RUN_RESULT_OBJECT_TYPE_V1,
 } from "../../src/task/task-content-repository.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
+  "../../src/task/task-historical-content-identity.ts";
 import {
   decodeTaskRunResultPayloadV1,
+  encodeTaskRunResultPayloadV1,
 } from "../../src/task/task-payload-v1.ts";
 import {
   createTaskRuntimeCheckpointCellCrypto,
@@ -443,6 +458,98 @@ describe("Task Runtime result preparation", () => {
       accepted.devices.forEach(device => device.signingPublicKey.fill(0));
     }
     const profileBytes = encodeClientDeviceProfileV4(retained);
+    const historicalSourceDigest = bytes(0x74);
+    const historicalObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+      coordinate: scenario.coordinate,
+      namespaceId: NAMESPACE_ID,
+      sourceDigest: historicalSourceDigest,
+    });
+    const historicalPlaintext = encodeTaskRunResultPayloadV1({
+      formatVersion: 1,
+      resultText: "Historical Task result",
+      lastError: null,
+    });
+    const historicalEncrypted = encryptObjectPayload(scenario.crypto, {
+      objectId: objectId(historicalObjectId),
+      objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1,
+      keyClass: "ai",
+      createdAt: unixTimestamp(NOW),
+    }, historicalPlaintext);
+    historicalPlaintext.fill(0);
+    const historicalPayloadBytes = encodeEncryptedPayloadV2(
+      historicalEncrypted.payload,
+    );
+    const currentGeneration = keyring.generations.find(entry =>
+      entry.generation === keyring.currentGeneration);
+    if (currentGeneration === undefined) throw new Error("current key missing");
+    const historicalEnvelopeBytes = encodeNamespaceObjectEnvelopeV2(
+      wrapObjectDekForNamespace(
+        scenario.crypto,
+        currentGeneration.key,
+        {
+          objectId: objectId(historicalObjectId),
+          namespaceId: namespaceId(NAMESPACE_ID),
+          keyClass: "ai",
+          keyGeneration: namespaceGeneration(currentGeneration.generation),
+          bindingRevisionAtWrap: accessRevision(ACCESS_REVISION),
+        },
+        historicalEncrypted.dek,
+      ),
+    );
+    historicalEncrypted.dek.fill(0);
+    const historicalAccess = prepareHumanObjectAccessManifestGenesisSet(
+      scenario.crypto,
+      {
+        objectId: historicalObjectId,
+        payloadHash: scenario.crypto.hash(historicalPayloadBytes),
+        envelopeBytes: [historicalEnvelopeBytes],
+        sourceAuthorized: true,
+        targetAuthorized: true,
+        subjectHumanId: REQUESTER_ID,
+        committerDeviceId: "task-result-manager",
+        hostAuthorizationRevision: 2,
+        committerSigningPublicKey: scenario.manager.publicKey,
+        committerSigningPrivateKey: scenario.manager.privateKey,
+      },
+    );
+    const historicalRepair = Object.freeze({
+      version: 2 as const,
+      claimId: "70000000-0000-4000-8000-000000000001",
+      publisherDeviceId: "task-result-manager",
+      signedRequestDigest: "11".repeat(32),
+      sourceDigest: Buffer.from(historicalSourceDigest).toString("hex"),
+      sourcePayloadHash: "22".repeat(32),
+      sourceRevision: 0 as const,
+      genesisManifestHash: Buffer.from(
+        scenario.crypto.hash(historicalAccess.manifestBytes),
+      ).toString("hex"),
+    });
+    const historicalResultEnvelope = Object.freeze({
+      readVersion: 1 as const,
+      status: "ready" as const,
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      objectId: historicalObjectId,
+      resultRevision: 1 as const,
+      cryptoAccessRevision: 0 as const,
+      namespaceId: NAMESPACE_ID,
+      encryptedPayloadBytesBase64url:
+        Buffer.from(historicalPayloadBytes).toString("base64url"),
+      accessManifestBytesBase64url:
+        Buffer.from(historicalAccess.manifestBytes).toString("base64url"),
+      accessManifestProofBytesBase64url: [] as [],
+      namespaceEnvelopeBytesBase64url:
+        Buffer.from(historicalEnvelopeBytes).toString("base64url"),
+      historicalRepair,
+      signerEvidence: [Object.freeze({
+        kind: "human_device" as const,
+        subjectHumanId: REQUESTER_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 2,
+        signingPublicKeyBase64url:
+          Buffer.from(scenario.manager.publicKey).toString("base64url"),
+      })],
+    });
     if (retained !== v4) destroyOpenedClientDeviceProfileV4(retained);
     destroyOpenedClientDeviceProfileV4(v4);
     destroyOpenedClientDeviceProfileV3(v3);
@@ -489,7 +596,66 @@ describe("Task Runtime result preparation", () => {
         ).toString("base64url"),
       }],
     };
-    let response: ProtectedTaskRunResultReadEnvelopeV1 = resultEnvelope;
+    const resultSigner = deriveAgentRuntimeObjectSignerPublic(
+      scenario.crypto,
+      scenario.initialized.runtime,
+    );
+    const foregroundPlanBytes = encodeLiveShadowMessagePlanV4({
+      formatVersion: 4,
+      purpose: "message.live_shadow_plan",
+      operationId: "task-result-accepted-execution",
+      policyRevision: POLICY_REVISION,
+      sessionId: TASK_ID,
+      roomId: RUN_ID,
+      humanMessageId: 1,
+      revision: 0,
+      createdAt: unixTimestamp(NOW),
+      subjectHumanId: humanId(REQUESTER_ID),
+      committerDeviceId: cryptoDeviceId(deviceId),
+      committerDeviceSigningKeyGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(2),
+      recipientAgentId: agentId(AGENT_ID),
+      agentAuthorizationRevision: authorizationRevision(4),
+      agentRuntimeGeneration: scenario.initialized.runtime.generation,
+      agentSignerKeyId: resultSigner.principal.signerKeyId,
+      agentSignerPublicKey: Uint8Array.from(resultSigner.publicKey),
+      namespaceId: namespaceId(NAMESPACE_ID),
+      namespaceAccessRevision: accessRevision(ACCESS_REVISION),
+      namespaceKeyGeneration: namespaceGeneration(0),
+      namespaceHeadDigest: new Uint8Array(32).fill(0x71),
+      namespacePublicationDigest: new Uint8Array(32).fill(0x72),
+      namespacePublicationSetDigest: new Uint8Array(32).fill(0x73),
+      namespaceAudienceFingerprint: new Uint8Array(32).fill(0x74),
+      grantDomainId: DOMAIN_ID,
+      grantDomainParticipantDigest: new Uint8Array(32).fill(0x75),
+      grantDomainKeyGeneration: 1,
+      grantDomainHeadDigest: new Uint8Array(32).fill(0x76),
+      grantDomainPublicationDigest: new Uint8Array(32).fill(0x77),
+      grantDomainAuthorizationRevision: authorizationRevision(2),
+      namespaceBundleGrantDomainAuthorizationRevision: authorizationRevision(2),
+      namespaceBundleRevision: 1,
+      namespaceBundleDigest: new Uint8Array(32).fill(0x78),
+      authorization: {
+        disposition: "authorization_reusable",
+        sessionReference: "task-result-accepted-session",
+        authorizationDigest: new Uint8Array(32).fill(0x79),
+      },
+      attemptCoordinate: "task-result-accepted-attempt",
+      issuedAt: unixTimestamp(NOW),
+      deadlineAt: unixTimestamp(NOW + 30_000),
+    });
+    const foregroundEvidence = {
+      kind: "foreground_agent_accepted_execution" as const,
+      planBytesBase64url: Buffer.from(foregroundPlanBytes).toString("base64url"),
+      planDigestBase64url: Buffer.from(
+        scenario.crypto.hash(foregroundPlanBytes),
+      ).toString("base64url"),
+    };
+    const foregroundResultEnvelope = {
+      ...resultEnvelope,
+      signerEvidence: [foregroundEvidence],
+    };
+    let response: ProtectedTaskRunResultReadEnvelopeV1 = foregroundResultEnvelope;
     const api = {
       getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
     } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">;
@@ -536,6 +702,77 @@ describe("Task Runtime result preparation", () => {
         lastError: null,
       },
     });
+    const decodedForegroundPlan = decodeLiveShadowMessagePlanV4(
+      foregroundPlanBytes,
+    );
+    const wrongGenerationBytes = encodeLiveShadowMessagePlanV4({
+      ...decodedForegroundPlan,
+      agentRuntimeGeneration:
+        decodedForegroundPlan.agentRuntimeGeneration + 1,
+    });
+    const wrongDigest = scenario.crypto.hash(foregroundPlanBytes);
+    wrongDigest[0] = wrongDigest[0]! ^ 1;
+    for (const signerEvidence of [
+      [{
+        ...foregroundEvidence,
+        planDigestBase64url: Buffer.from(wrongDigest).toString("base64url"),
+      }],
+      [{
+        ...foregroundEvidence,
+        planBytesBase64url: Buffer.from(wrongGenerationBytes).toString("base64url"),
+        planDigestBase64url: Buffer.from(
+          scenario.crypto.hash(wrongGenerationBytes),
+        ).toString("base64url"),
+      }],
+      [foregroundEvidence, foregroundEvidence],
+    ]) {
+      response = { ...foregroundResultEnvelope, signerEvidence };
+      await reader.read(request).then(
+        () => { throw new Error("substituted foreground result proof was accepted"); },
+        error => expect(error).toBeInstanceOf(ClassifiedDataOperationError),
+      );
+    }
+    wrongDigest.fill(0);
+    wrongGenerationBytes.fill(0);
+    decodedForegroundPlan.agentSignerPublicKey.fill(0);
+    decodedForegroundPlan.namespaceHeadDigest.fill(0);
+    decodedForegroundPlan.namespacePublicationDigest.fill(0);
+    decodedForegroundPlan.namespacePublicationSetDigest.fill(0);
+    decodedForegroundPlan.namespaceAudienceFingerprint.fill(0);
+    decodedForegroundPlan.grantDomainParticipantDigest.fill(0);
+    decodedForegroundPlan.grantDomainHeadDigest.fill(0);
+    decodedForegroundPlan.grantDomainPublicationDigest.fill(0);
+    decodedForegroundPlan.namespaceBundleDigest.fill(0);
+    if (decodedForegroundPlan.authorization.disposition
+      === "authorization_reusable") {
+      decodedForegroundPlan.authorization.authorizationDigest.fill(0);
+    }
+    response = resultEnvelope;
+    expect(await reader.read(request)).toMatchObject({
+      status: "ready",
+      payload: { resultText: "Protected Task result" },
+    });
+    response = historicalResultEnvelope;
+    expect(await reader.read(request)).toEqual({
+      status: "ready",
+      payload: {
+        formatVersion: 1,
+        resultText: "Historical Task result",
+        lastError: null,
+      },
+    });
+    response = {
+      ...historicalResultEnvelope,
+      historicalRepair: {
+        ...historicalRepair,
+        genesisManifestHash: "ff".repeat(32),
+      },
+    };
+    await reader.read(request).then(
+      () => { throw new Error("wrong historical genesis was accepted"); },
+      error => expect(error).toBeInstanceOf(ClassifiedDataOperationError),
+    );
+    response = resultEnvelope;
     response = {
       ...resultEnvelope,
       namespaceId: "40000000-0000-4000-8000-000000000099",

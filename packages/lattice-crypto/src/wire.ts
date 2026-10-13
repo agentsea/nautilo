@@ -1278,3 +1278,10 @@ export {
 } from "./task/publication-request-v1.ts";
 
 export type { HumanTaskPublicationRequestUnsignedV1 } from "./task/publication-request-v1.ts";
+export {
+  HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_DOMAIN_V1,
+  HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_MAX_TTL_MS_V1,
+  decodeHumanExistingTaskRepresentationPublicationRequestV1,
+  encodeHumanExistingTaskRepresentationPublicationRequestV1,
+  humanExistingTaskRepresentationPublicationRequestSigningBytesV1,
+} from "./task/existing-representation-publication-request-v1.ts";

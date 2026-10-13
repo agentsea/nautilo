@@ -3,6 +3,10 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
+  parseDomainForegroundAuthorizationV2,
+  parseDomainForegroundAuthorizationPlanV2,
+  destroyDomainForegroundAuthorizationV2,
+  destroyDomainForegroundAuthorizationPlanV2,
   withOpenedDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
   type DomainForegroundSecretEntryV2,
@@ -20,6 +24,50 @@ import {
   type TaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionNamespaceAuthorityV1,
 } from "./task-runtime-execution-evidence-v1.ts";
+import {
+  withTaskRuntimeTerminalMessageEvidenceV1,
+  type TaskRuntimeTerminalMessageEvidenceV1,
+  type TaskRuntimeTerminalMessageProofV1,
+} from "./task-runtime-terminal-message-evidence-v1.ts";
+export {
+  assertAuthenticTaskRuntimeTerminalMessageEvidenceV1,
+} from "./task-runtime-terminal-message-evidence-v1.ts";
+export type {
+  TaskRuntimeTerminalMessageEvidenceV1,
+  TaskRuntimeTerminalMessageProofV1,
+} from "./task-runtime-terminal-message-evidence-v1.ts";
+
+import {
+  withTaskRuntimeRunResultReadEvidenceV1,
+  snapshotTaskRuntimeRunResultReadEvidenceV1,
+  type TaskRuntimeRunResultReadEvidenceV1,
+  type TaskRuntimeRunResultReadInvocationV1,
+  type TaskRuntimeRunResultReadProofV1,
+} from "./task-runtime-run-result-read-evidence-v1.ts";
+
+import {
+  withTaskRuntimeWakeForegroundEvidenceV1,
+  type TaskRuntimeWakeForegroundEvidenceV1,
+  type TaskRuntimeWakeMutationDestinationV1,
+} from "./task-runtime-wake-foreground-evidence-v1.ts";
+
+export type TaskRuntimeRunResultReadPartitionsV1 = Readonly<{
+  resultDomains: readonly [DomainForegroundSecretEntryV2];
+  foregroundDomains: readonly DomainForegroundSecretEntryV2[];
+  additionalMutationDomains?: readonly DomainForegroundSecretEntryV2[];
+  foregroundNamespaceRequirements: readonly TaskRuntimeExecutionNamespaceAuthorityV1[];
+}>;
+
+function signedAuthorizationDeadline(bytes: Uint8Array): number | null {
+  const authorization = parseDomainForegroundAuthorizationV2(bytes);
+  if (authorization === null) return null;
+  try {
+    const plan = parseDomainForegroundAuthorizationPlanV2(authorization.planBytes);
+    if (plan === null) return null;
+    try { return plan.deadlineAt; }
+    finally { destroyDomainForegroundAuthorizationPlanV2(plan); }
+  } finally { destroyDomainForegroundAuthorizationV2(authorization); }
+}
 
 declare const taskRuntimeCancellationResultEvidenceBrand: unique symbol;
 
@@ -166,6 +214,32 @@ function resultAuthorityIsCurrent(input: Readonly<{
     && currentNamespace.expectedPolicyRevision
       === resultNamespace.expectedPolicyRevision
     && matchingDomains.length === 1;
+}
+
+function terminalMessageAuthorityIsCurrent(input: Readonly<{
+  readonly workId: string;
+  readonly message: TaskRuntimeTerminalMessageProofV1;
+  readonly namespaces: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+  readonly current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+}>): boolean {
+  const namespace = input.namespaces[0];
+  const domain = input.current.domains[0];
+  return input.message.taskRunId === input.workId
+    && input.message.roomId === input.current.roomId
+    && input.message.publicationPolicyRevision === input.current.policyRevision
+    && input.message.acceptedPolicyRevision <= input.current.policyRevision
+    && input.namespaces.length === 1
+    && namespace !== undefined
+    && namespace.ordinal === 0
+    && namespace.namespaceId === input.message.namespaceId
+    && namespace.domainId === input.message.domainId
+    && namespace.operations.length === 1
+    && namespace.operations[0] === "encrypt"
+    && namespace.expectedPolicyRevision === input.current.policyRevision
+    && input.current.domains.length === 1
+    && domain !== undefined
+    && domain.domainId === input.message.domainId
+    && domain.sourceNamespaceId === input.message.namespaceId;
 }
 
 function cloneCancellationEvidence(
@@ -426,13 +500,13 @@ function copyPublicCurrentAuthority(
   return Object.freeze({
     ...value,
     committerDeviceSigningPublicKey:
-      value.committerDeviceSigningPublicKey.slice(),
+      Uint8Array.from(value.committerDeviceSigningPublicKey),
     domains: Object.freeze(value.domains.map((domain) => Object.freeze({
       ...domain,
-      participantDigest: domain.participantDigest.slice(),
-      headDigest: domain.headDigest.slice(),
+      participantDigest: Uint8Array.from(domain.participantDigest),
+      headDigest: Uint8Array.from(domain.headDigest),
       activeNamespaceBindingSetDigest:
-        domain.activeNamespaceBindingSetDigest.slice(),
+        Uint8Array.from(domain.activeNamespaceBindingSetDigest),
     }))),
   });
 }
@@ -764,6 +838,278 @@ export class TaskRuntimeRecipientRegistryV1 {
     }
   }
 
+  /**
+   * Opens one accepted encrypt-only terminal Message grant. The callback-only
+   * evidence is deliberately disjoint from running execution and cancellation
+   * result evidence, and is invalidated before this method returns.
+   */
+  async withOpenedTerminalMessageGrant<Value>(input: Readonly<{
+    requestId: string;
+    workId: string;
+    recipientGeneration: number;
+    recipientKeyId: string;
+    claimId: string;
+    claimExpiresAt: number;
+    authorizationBytes: Uint8Array;
+    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    currentNamespaceRequirements:
+      readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+    message: TaskRuntimeTerminalMessageProofV1;
+    signal?: AbortSignal;
+    operation(
+      domains: readonly DomainForegroundSecretEntryV2[],
+      signal: AbortSignal,
+      evidence: TaskRuntimeTerminalMessageEvidenceV1,
+    ): Value | PromiseLike<Value>;
+  }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
+    const authorizationBytes = input.authorizationBytes.slice();
+    const current = copyPublicCurrentAuthority(input.current);
+    const currentNamespaceRequirements = Object.freeze(
+      input.currentNamespaceRequirements.map(requirement => Object.freeze({
+        ...requirement,
+        operations: Object.freeze([...requirement.operations]),
+      })),
+    );
+    const message = Object.freeze({
+      ...input.message,
+      payloadDigest: input.message.payloadDigest.slice(),
+    });
+    try {
+      return await this.#withOpenedAuthorization({
+        ...input,
+        authorizationBytes,
+        current,
+        expectedOperations: ["encrypt"],
+        authorityIsCurrent: () => terminalMessageAuthorityIsCurrent({
+          workId: input.workId,
+          message,
+          namespaces: currentNamespaceRequirements,
+          current,
+        }),
+        operation: async (domains, signal, entry, deadline) => {
+          const domainRequirement = current.domains[0];
+          const namespaceRequirement = currentNamespaceRequirements[0];
+          if (domainRequirement === undefined || namespaceRequirement === undefined) {
+            throw new TypeError("Task Runtime terminal Message authority is incomplete");
+          }
+          const authorizationDigest = this.crypto.hash(authorizationBytes);
+          try {
+            return await withTaskRuntimeTerminalMessageEvidenceV1({
+              evidence: {
+                purpose: "task.runtime.terminal_message",
+                workKind: "task.deliver_message",
+                requestId: input.requestId,
+                workId: input.workId,
+                claimId: input.claimId,
+                claimExpiresAt: input.claimExpiresAt,
+                recipientExpiresAt: entry.attempt.expiresAt,
+                expiresAt: deadline,
+                recipientGeneration: input.recipientGeneration,
+                recipientKeyId: input.recipientKeyId,
+                authorizationDigest,
+                policyRevision: current.policyRevision,
+                episodeId: current.sessionId,
+                sourceRoomId: current.roomId,
+                hostAuthorizationRevision: current.hostAuthorizationRevision,
+                recipientAuthorizationRevision:
+                  current.recipientAuthorizationRevision,
+                operations: ["encrypt"],
+                message,
+                domainRequirements: [domainRequirement],
+                namespaceRequirements: [{
+                  ...namespaceRequirement,
+                  ordinal: 0,
+                  operations: ["encrypt"],
+                }],
+              },
+              signal,
+              now: this.#now,
+              execute: evidence => input.operation(domains, signal, evidence),
+            });
+          } finally {
+            authorizationDigest.fill(0);
+          }
+        },
+      });
+    } finally {
+      authorizationBytes.fill(0);
+      message.payloadDigest.fill(0);
+    }
+  }
+
+  /** Source result custody is separate from independently admitted foreground facts. */
+  async withOpenedRunResultReadGrant<Value>(input: Readonly<{
+    requestId: string;
+    workId: string;
+    workKind: "task.deliver_result" | "task.delivery_wake";
+    recipientGeneration: number;
+    recipientKeyId: string;
+    claimId: string;
+    claimExpiresAt: number;
+    authorizationBytes: Uint8Array;
+    current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+    requesterHumanId: string;
+    result: TaskRuntimeRunResultReadProofV1;
+    invocation: TaskRuntimeRunResultReadInvocationV1;
+    currentNamespaceRequirements: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+    currentForegroundNamespaceRequirements: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
+    currentAdditionalMutationDestination?: TaskRuntimeWakeMutationDestinationV1;
+    signal?: AbortSignal;
+    operation(
+      partitions: TaskRuntimeRunResultReadPartitionsV1,
+      signal: AbortSignal,
+      evidence: TaskRuntimeRunResultReadEvidenceV1,
+      wakeEvidence?: TaskRuntimeWakeForegroundEvidenceV1 | null,
+    ): Value | PromiseLike<Value>;
+  }>): Promise<TaskRuntimeRecipientOpenResultV1<Value>> {
+    const authorizationBytes = Uint8Array.from(input.authorizationBytes);
+    const authorizationExpiresAt = signedAuthorizationDeadline(authorizationBytes);
+    if (authorizationExpiresAt === null) {
+      authorizationBytes.fill(0);
+      return unavailable("invalid");
+    }
+    const current = copyPublicCurrentAuthority(input.current);
+    const combined = Object.freeze(input.currentNamespaceRequirements.map(n =>
+      Object.freeze({ ...n, operations: Object.freeze([...n.operations]) })));
+    const foreground = Object.freeze(input.currentForegroundNamespaceRequirements.map(n =>
+      Object.freeze({ ...n, operations: Object.freeze([...n.operations]) })));
+    const suppliedMutation = input.currentAdditionalMutationDestination;
+    const mutation = suppliedMutation === undefined ? undefined : Object.freeze({
+      roomId: suppliedMutation.roomId, semanticDigest: suppliedMutation.semanticDigest,
+      namespace: Object.freeze({ ...suppliedMutation.namespace,
+        operations: Object.freeze([...suppliedMutation.namespace.operations]) }),
+    });
+    const resultDomain = current.domains.find(d => d.domainId === input.result.namespace.domainId);
+    if (resultDomain === undefined) {
+      authorizationBytes.fill(0);
+      return unavailable("authority_stale");
+    }
+    const messageWriteNamespace = input.workKind === "task.deliver_result"
+      && input.result.contentRevision === 1 ? foreground[0] : undefined;
+    const messageWriteDomains = messageWriteNamespace === undefined ? []
+      : current.domains.filter(d => d.domainId === messageWriteNamespace.domainId);
+    const messageWriteDomain = messageWriteDomains[0];
+    // Snapshot before the first await; even internal callers cannot change the
+    // selected object, purpose, destination or public Domain facts during open.
+    const evidence = snapshotTaskRuntimeRunResultReadEvidenceV1({
+      purpose: "task.runtime.run_result_read", workKind: input.workKind,
+      requestId: input.requestId, workId: input.workId, claimId: input.claimId,
+      claimExpiresAt: input.claimExpiresAt, recipientExpiresAt: input.claimExpiresAt,
+      expiresAt: Math.min(input.claimExpiresAt, authorizationExpiresAt), authorizationExpiresAt, recipientGeneration: input.recipientGeneration,
+      recipientKeyId: input.recipientKeyId, authorizationDigest: this.crypto.hash(authorizationBytes),
+      requesterHumanId: input.requesterHumanId, policyRevision: current.policyRevision,
+      episodeId: current.sessionId, sourceRoomId: current.roomId,
+      hostAuthorizationRevision: current.hostAuthorizationRevision,
+      recipientAuthorizationRevision: current.recipientAuthorizationRevision,
+      operations: ["decrypt"], result: input.result, invocation: input.invocation, resultDomain,
+      messageWrite: messageWriteNamespace === undefined || messageWriteDomain === undefined
+        || input.invocation.kind !== "raw" ? null : {
+          taskId: input.result.taskId,
+          taskRunId: input.result.taskRunId,
+          bindingId: input.invocation.bindingId,
+          messageOperationId: input.invocation.operationId,
+          roomId: input.invocation.roomId,
+          sessionId: input.invocation.sessionId,
+          signerAgentId: input.result.signerAgentId,
+          namespace: {
+            namespaceId: messageWriteNamespace.namespaceId,
+            domainId: messageWriteNamespace.domainId,
+            operations: ["encrypt"],
+            expectedAccessRevision: messageWriteNamespace.expectedAccessRevision,
+            expectedPolicyRevision: messageWriteNamespace.expectedPolicyRevision,
+          },
+          domain: messageWriteDomain,
+        },
+    });
+    const foregroundDomains = new Set(foreground.map(n => n.domainId));
+    const expectedForegroundOperations = input.workKind === "task.deliver_result"
+      ? ["encrypt"] : ["decrypt", "encrypt"];
+    const sourceNamespace = evidence.result.namespace;
+    const expectedNamespaceIds = new Set([sourceNamespace.namespaceId, ...foreground.map(n => n.namespaceId),
+      ...(mutation === undefined ? [] : [mutation.namespace.namespaceId])]);
+    const combinedMatches = (): boolean => combined.length === expectedNamespaceIds.size
+      && new Set(combined.map(n => n.namespaceId)).size === combined.length
+      && combined.every(n => {
+        const roles = [
+          ...(n.namespaceId === sourceNamespace.namespaceId ? [sourceNamespace] : []),
+          ...foreground.filter(f => f.namespaceId === n.namespaceId),
+          ...(mutation?.namespace.namespaceId === n.namespaceId ? [mutation.namespace] : []),
+        ];
+        const operations = ["decrypt", "encrypt"].filter(op => roles.some(role =>
+          (role.operations as readonly string[]).includes(op)));
+        return roles.length > 0 && roles.every(role => role.domainId === n.domainId
+          && role.expectedAccessRevision === n.expectedAccessRevision
+          && role.expectedPolicyRevision === n.expectedPolicyRevision)
+          && operations.length === n.operations.length
+          && operations.every((op, i) => op === n.operations[i]);
+      });
+    const authorityIsCurrent = (): boolean => current.subjectHumanId === evidence.requesterHumanId
+      && current.recipientKind === "runtime"
+      && current.recipientPrincipalId === "nautilo_task_runtime"
+      && combinedMatches()
+      && (mutation === undefined || input.workKind === "task.delivery_wake"
+        && /^[0-9a-f]{64}$/u.test(mutation.semanticDigest)
+        && mutation.roomId.length > 0
+        && mutation.namespace.namespaceId !== sourceNamespace.namespaceId
+        && !foreground.some(n => n.namespaceId === mutation.namespace.namespaceId)
+        && mutation.namespace.operations.length === 1 && mutation.namespace.operations[0] === "encrypt"
+        && mutation.namespace.expectedPolicyRevision === current.policyRevision
+        && Number.isSafeInteger(mutation.namespace.ordinal) && mutation.namespace.ordinal >= 0
+        && Number.isSafeInteger(mutation.namespace.expectedAccessRevision) && mutation.namespace.expectedAccessRevision >= 0
+        && current.domains.some(d => d.domainId === mutation.namespace.domainId))
+      && foreground.length > 0
+      && (input.workKind !== "task.deliver_result" || foreground.length === 1)
+      && (input.workKind !== "task.deliver_result" || input.result.contentRevision !== 1
+        || messageWriteDomains.length === 1)
+      && new Set(foreground.map(n => n.namespaceId)).size === foreground.length
+      && foreground.every(n => Number.isSafeInteger(n.ordinal) && n.ordinal >= 0
+        && Number.isSafeInteger(n.expectedAccessRevision) && n.expectedAccessRevision >= 0
+        && n.expectedPolicyRevision === current.policyRevision
+        && (n.namespaceId !== evidence.result.namespace.namespaceId
+          || (n.domainId === evidence.result.namespace.domainId
+            && n.expectedAccessRevision === evidence.result.namespace.expectedAccessRevision))
+        && n.operations.length === expectedForegroundOperations.length
+        && n.operations.every((op, i) => op === expectedForegroundOperations[i])
+        && current.domains.some(d => d.domainId === n.domainId))
+      && current.domains.every(d => d.domainId === evidence.resultDomain.domainId
+        || foregroundDomains.has(d.domainId) || mutation?.namespace.domainId === d.domainId);
+    try {
+      return await this.#withOpenedAuthorization({
+        ...input, authorizationBytes, current, authorizationExpiresAt,
+        expectedOperations: ["decrypt", "encrypt"], authorityIsCurrent,
+        operation: async (domains, signal, entry, deadline) => {
+          const source = domains.find(d => d.domainId === evidence.resultDomain.domainId);
+          if (source === undefined) throw new TypeError("Task result read Domain is missing");
+          return withTaskRuntimeRunResultReadEvidenceV1({
+            evidence: { ...evidence, recipientExpiresAt: entry.attempt.expiresAt, expiresAt: deadline },
+            signal, now: this.#now,
+            execute: proof => {
+              const partitions = Object.freeze({
+                resultDomains: Object.freeze([source] as const),
+                foregroundDomains: Object.freeze(domains.filter(d => foregroundDomains.has(d.domainId))),
+                foregroundNamespaceRequirements: foreground,
+                ...(mutation === undefined ? {} : { additionalMutationDomains: Object.freeze(
+                  domains.filter(d => d.domainId === mutation.namespace.domainId)) }),
+              });
+              if (proof.workKind !== "task.delivery_wake") return input.operation(partitions, signal, proof, null);
+              return withTaskRuntimeWakeForegroundEvidenceV1({
+                readEvidence: proof,
+                committerDeviceId: current.committerDeviceId,
+                committerDeviceSigningGeneration: current.committerDeviceSigningGeneration,
+                committerDeviceSigningPublicKeyHash: this.crypto.hash(current.committerDeviceSigningPublicKey),
+                namespaceRequirements: foreground,
+                domainRequirements: current.domains.filter(d => foregroundDomains.has(d.domainId)
+                  || mutation?.namespace.domainId === d.domainId),
+                ...(mutation === undefined ? {} : { additionalMutationDestination: mutation }),
+                execute: wake => input.operation(partitions, signal, proof, wake),
+              });
+            },
+          });
+        },
+      });
+    } finally { authorizationBytes.fill(0); }
+  }
+
   async #withOpenedAuthorization<Value>(input: Readonly<{
     requestId: string;
     workId: string;
@@ -774,6 +1120,7 @@ export class TaskRuntimeRecipientRegistryV1 {
     authorizationBytes: Uint8Array;
     current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
     signal?: AbortSignal;
+    authorizationExpiresAt?: number;
     expectedOperations: readonly ["encrypt"] | readonly ["decrypt", "encrypt"];
     authorityIsCurrent(): boolean;
     operation(
@@ -806,7 +1153,8 @@ export class TaskRuntimeRecipientRegistryV1 {
     }
     if (!input.authorityIsCurrent()) return unavailable("authority_stale");
     const now = this.#now();
-    const deadline = Math.min(entry.attempt.expiresAt, input.claimExpiresAt);
+    const deadline = Math.min(entry.attempt.expiresAt, input.claimExpiresAt,
+      input.authorizationExpiresAt ?? Number.POSITIVE_INFINITY);
     if (deadline <= now) {
       this.#remove(key, entry, true);
       return unavailable("recipient_expired");

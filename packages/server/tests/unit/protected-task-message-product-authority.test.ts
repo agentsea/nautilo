@@ -50,6 +50,7 @@ function authority(
     executionSegment: 1,
     policyRevision: 9,
     representation: "protected",
+    definitionRepresentation: "protected",
     authorizationExpiresAt: 2000,
     signal: new AbortController().signal,
     ...overrides,
@@ -82,7 +83,7 @@ function rows(expected: ProtectedTaskMessageProductAuthority) {
   return [
     { id: ids.task, ownerId: ids.owner, requestorId: ids.owner,
       agentId: ids.agent, targetRoomId: ids.room,
-      contentRepresentation: expected.representation,
+      contentRepresentation: expected.definitionRepresentation,
       contentNamespaceId: expected.contentNamespaceId,
       contentRevision: expected.contentRevision,
       cryptoRequiredNamespaceFingerprint: expected.requiredNamespaceFingerprint,
@@ -104,7 +105,8 @@ function rows(expected: ProtectedTaskMessageProductAuthority) {
 }
 
 function transaction(data: unknown[]): CanonicalTranscriptTx {
-  const remaining = [...data];
+  // Fixture rows describe the aggregate; the policy fence is queried first.
+  const remaining = [data[5], ...data.slice(0, 5), ...data.slice(6)];
   return {
     select() {
       const value = remaining.shift();
@@ -296,7 +298,7 @@ describe("protected Task Message product guard", () => {
   });
 
   test("accepts a Shadow lifecycle with the canonical null policy revision", async () => {
-    const expected = authority({ representation: "dual" });
+    const expected = authority({ representation: "dual", definitionRepresentation: "dual" });
     const coordinates = {
       action: "markCryptoComplete" as const,
       sessionId: ids.session,
@@ -322,4 +324,17 @@ describe("protected Task Message product guard", () => {
       coordinates,
     ))).toContain("authority changed");
   });
+});
+
+
+test("current Full writes retain exact dual source identity", async () => {
+  const expected = authority({ definitionRepresentation: "dual" });
+  const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
+  await guard.assertPublicationAllowed(transaction(rows(expected)), append);
+  const substitutedSource: unknown[] = rows(expected);
+  substitutedSource[0] = { ...rows(expected)[0]!, contentRepresentation: "protected" };
+  await Promise.resolve(expect(guard.assertPublicationAllowed(transaction(substitutedSource), append)).rejects.toThrow());
+  await Promise.resolve(expect(guard.assertPublicationAllowed(transaction(rows(expected)), {
+    ...append, publicationPolicy: { expectedRevision: 9, representation: "ordinary_and_protected" },
+  })).rejects.toThrow());
 });

@@ -22,6 +22,10 @@ import {
 } from "../../graph/execution-policy";
 import {
   createProtectedTaskNodeSettlementScope,
+  isProtectedTaskCheckpointPauseInterruption,
+  type ProtectedTaskCheckpointPauseController,
+  type ProtectedTaskCheckpointPauseInterruption,
+  type ProtectedTaskCheckpointPauseReason,
 } from "../../graph/protected-task-node-settlement-scope";
 import {
   createProtectedTaskMemoryGraphDeps,
@@ -819,6 +823,9 @@ export type RunScopeSubagentOpts = {
    * Task/TaskRun grant before supplying it here.
    */
   taskRunCheckpointSaver?: EncryptedCheckpointSaver;
+  /** Cooperative protected-only stop at the next persisted node boundary. */
+  protectedTaskCheckpointPauseController?:
+    ProtectedTaskCheckpointPauseController;
   /**
    * Protected Message publication for an exact TaskRun transcript. Required
    * with `taskRunCheckpointSaver`; ordinary transcript rows and Room events
@@ -956,6 +963,11 @@ export type RunScopeSubagentResult =
       interrupt: Record<string, unknown>;
       /** Content-free durable resume coordinates; protected Task runs only. */
       interruptCoordinates?: readonly ProtectedTaskInterruptCoordinate[];
+    }
+  | {
+      status: "checkpoint_paused";
+      threadId: string;
+      reason: ProtectedTaskCheckpointPauseReason;
     };
 
 /** Missing or mismatched task provenance remains null rather than becoming main. */
@@ -1044,6 +1056,14 @@ async function runScopeSubagentUntilPauseInternal(
       "Protected transcript publication requires Task-run checkpoint authority",
     );
   }
+  if (
+    opts.protectedTaskCheckpointPauseController !== undefined
+    && opts.taskRunCheckpointSaver === undefined
+  ) {
+    throw new TypeError(
+      "Checkpoint pause requires protected Task checkpoint authority",
+    );
+  }
   if (opts.taskRun && opts.invocationCheckpointSaver !== undefined) {
     throw new TypeError(
       "Background task subagent cannot inherit foreground checkpoint authority",
@@ -1083,8 +1103,14 @@ async function runScopeSubagentUntilPauseInternal(
     ? createResearchNoteDraft(opts.signal) : undefined;
   const nodeSettlement = opts.taskRunCheckpointSaver === undefined
     ? undefined
-    : createProtectedTaskNodeSettlementScope(opts.signal);
+    : createProtectedTaskNodeSettlementScope(
+        opts.signal,
+        opts.protectedTaskCheckpointPauseController,
+      );
 
+  let checkpointPause:
+    | ProtectedTaskCheckpointPauseInterruption
+    | undefined;
   try {
     const protectedTaskMemoryGraphDeps = createProtectedTaskMemoryGraphDeps({
       taskId: opts.currentTaskId ?? "",
@@ -1422,22 +1448,34 @@ async function runScopeSubagentUntilPauseInternal(
     progressTap?.flush();
     log(`[scope-subagent] stream complete thread=${subThreadId} ${metrics.formatLogToken()}`);
   } catch (err) {
-    // surface the typed internal graph-budget outcome distinctly
-    // in telemetry . The user-safe sentence is produced by
-    // `toFriendlyError` at the runtime job-loop catch site when the
-    // subagent error propagates up to a foreground / fork job.
-    const budgetOutcome = toGraphBudgetOutcome(err, executionPolicy.recursionLimit);
-    if (budgetOutcome) {
-      log(
-        `[scope-subagent] graph budget exceeded thread=${subThreadId} ` +
-          `outcome=${budgetOutcome.kind} recursionLimit=${budgetOutcome.recursionLimit} ${metrics.formatLogToken()}`,
-      );
+    if (
+      isProtectedTaskCheckpointPauseInterruption(err)
+      && opts.protectedTaskCheckpointPauseController !== undefined
+      && opts.protectedTaskCheckpointPauseController.currentRequestedReason()
+        === err.reason
+    ) {
+      checkpointPause = err;
     } else {
-      log(
-        `[scope-subagent] stream error: ${scopeSubagentStreamErrorDetail(err, opts.protectedTaskTranscriptPort !== undefined)} thread=${subThreadId} ${metrics.formatLogToken()}`,
+      // surface the typed internal graph-budget outcome distinctly
+      // in telemetry . The user-safe sentence is produced by
+      // `toFriendlyError` at the runtime job-loop catch site when the
+      // subagent error propagates up to a foreground / fork job.
+      const budgetOutcome = toGraphBudgetOutcome(
+        err,
+        executionPolicy.recursionLimit,
       );
+      if (budgetOutcome) {
+        log(
+          `[scope-subagent] graph budget exceeded thread=${subThreadId} ` +
+            `outcome=${budgetOutcome.kind} recursionLimit=${budgetOutcome.recursionLimit} ${metrics.formatLogToken()}`,
+        );
+      } else {
+        log(
+          `[scope-subagent] stream error: ${scopeSubagentStreamErrorDetail(err, opts.protectedTaskTranscriptPort !== undefined)} thread=${subThreadId} ${metrics.formatLogToken()}`,
+        );
+      }
+      throw err;
     }
-    throw err;
   } finally {
     progressTap?.dispose();
     if (nodeSettlement === undefined) researchNoteDraft?.dispose();
@@ -1463,6 +1501,8 @@ async function runScopeSubagentUntilPauseInternal(
     | {
         values?: { messages?: BaseMessage[] };
         tasks?: Array<Record<string, unknown>>;
+        next?: readonly string[];
+        config?: { configurable?: Record<string, unknown> };
       }
     | undefined;
 
@@ -1480,6 +1520,35 @@ async function runScopeSubagentUntilPauseInternal(
       };
     }
     return { status: "interrupted", threadId: subThreadId, interrupt };
+  }
+
+  if (checkpointPause !== undefined) {
+    if (opts.signal?.aborted === true) {
+      if (opts.signal.reason instanceof Error) throw opts.signal.reason;
+      throw new Error("Protected Task authorization was revoked", {
+        cause: opts.signal.reason,
+      });
+    }
+    const checkpointId = postState?.config?.configurable?.["checkpoint_id"];
+    if (
+      opts.protectedTaskCheckpointPauseController
+        ?.currentRequestedReason() !== checkpointPause.reason
+      || typeof checkpointId !== "string"
+      || checkpointId.length === 0
+      || !Array.isArray(postState?.next)
+      || postState.next.length === 0
+      || !postState.next.every(node =>
+        typeof node === "string" && node.length > 0)
+    ) {
+      throw new Error(
+        "Protected Task checkpoint pause has no resumable checkpoint",
+      );
+    }
+    return {
+      status: "checkpoint_paused",
+      threadId: subThreadId,
+      reason: checkpointPause.reason,
+    };
   }
 
   const messages = postState?.values?.messages ?? [];

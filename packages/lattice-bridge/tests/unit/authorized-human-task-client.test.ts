@@ -17,6 +17,8 @@ import {
   type TaskDefinitionReadEnvelopeV1,
 } from "../../src/client/task/authorized-human-task-client.ts";
 import { encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
+  "../../src/task/task-historical-content-identity.ts";
 import {
   bindEncryptionDataOperationOwner,
   ClassifiedDataOperationError,
@@ -24,6 +26,7 @@ import {
 
 const taskId = "11111111-1111-4111-8111-111111111111";
 const objectId = "task-object";
+const agentId = "22222222-2222-4222-8222-222222222222";
 
 function owner(
   mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" = "encrypted_only",
@@ -46,6 +49,7 @@ function owner(
 
 const summary = {
   id: taskId,
+  agentId,
   content: {
     dtoVersion: 1,
     status: "protected",
@@ -65,7 +69,7 @@ function readEnvelope(): TaskDefinitionReadEnvelopeV1 {
     namespaceId: "namespace",
     encryptedPayloadBytes: new Uint8Array([1, 2]),
     accessManifestBytes: new Uint8Array([3]),
-    accessManifestProofBytes: [new Uint8Array([4])],
+    accessManifestProofBytes: [],
     namespaceEnvelopeBytes: new Uint8Array([5]),
     signerEvidence: [],
   };
@@ -186,8 +190,9 @@ describe("authorized Human Task client boundary", () => {
         },
       },
       content: {
-        async openExact() {
+        async openExact(input) {
           calls.push("device-open");
+          expect(input.expectedAgentId).toBe(agentId);
           return openedBytes;
         },
       },
@@ -206,8 +211,76 @@ describe("authorized Human Task client boundary", () => {
     expect(openedBytes.every((value) => value === 0)).toBe(true);
     expect(envelope.encryptedPayloadBytes.every((value) => value === 0)).toBe(true);
     expect(envelope.accessManifestBytes.every((value) => value === 0)).toBe(true);
-    expect(envelope.accessManifestProofBytes[0]!.every((value) => value === 0)).toBe(true);
+    expect(envelope.accessManifestProofBytes).toHaveLength(0);
     expect(envelope.namespaceEnvelopeBytes.every((value) => value === 0)).toBe(true);
+  });
+
+  test("historical definition binds the source-derived object before device open", async () => {
+    const namespaceId = "22222222-2222-4222-8222-222222222222";
+    const sourceDigest = new Uint8Array(32).fill(0x31);
+    const historicalObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+      coordinate: { kind: "definition", taskId, contentRevision: 1 },
+      namespaceId,
+      sourceDigest,
+    });
+    const historicalRepair = {
+      version: 2 as const,
+      claimId: "33333333-3333-4333-8333-333333333333",
+      publisherDeviceId: "historical-device.1",
+      signedRequestDigest: "11".repeat(32),
+      sourceDigest: Buffer.from(sourceDigest).toString("hex"),
+      sourcePayloadHash: "22".repeat(32),
+      sourceRevision: 0 as const,
+      genesisManifestHash: "33".repeat(32),
+    };
+    const historicalSummary = {
+      ...summary,
+      content: { ...summary.content, objectId: historicalObjectId },
+    } as TaskContentSummaryV1;
+    let opens = 0;
+    const makeEnvelope = (): TaskDefinitionReadEnvelopeV1 => ({
+      ...readEnvelope(),
+      objectId: historicalObjectId,
+      namespaceId,
+      historicalRepair,
+      signerEvidence: [{
+        kind: "human_device",
+        subjectHumanId: "human",
+        committerDeviceId: historicalRepair.publisherDeviceId,
+      }],
+    });
+    const opened = encodeTaskPayloadV1({
+      formatVersion: 1, prompt: "historical", expectedOutput: null,
+      protectedMetadata: {},
+    });
+    expect(await client({
+      plans: { readExact: () => Promise.resolve(makeEnvelope()) },
+      content: { openExact: () => {
+        opens += 1;
+        return Promise.resolve(opened);
+      } },
+    }).open(historicalSummary)).toMatchObject({
+      content: { status: "protected", payload: { prompt: "historical" } },
+    });
+    expect(opens).toBe(1);
+
+    for (const patch of [
+      { historicalRepair: { ...historicalRepair, sourceDigest: "44".repeat(32) } },
+      { signerEvidence: [] },
+    ]) {
+      const attempted = client({
+        plans: { readExact: () => Promise.resolve({ ...makeEnvelope(), ...patch }) },
+        content: { openExact: () => {
+          opens += 1;
+          throw new Error("substitution reached device");
+        } },
+      });
+      await attempted.open(historicalSummary).then(
+        () => { throw new Error("historical definition substitution was accepted"); },
+        error => expect(error).toBeInstanceOf(ClassifiedDataOperationError),
+      );
+    }
+    expect(opens).toBe(1);
   });
 
   test("substituted read coordinates stop before device open and wipe the response", async () => {

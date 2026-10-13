@@ -65,11 +65,13 @@ export {
 export {
   installTaskFundingPort,
   uninstallTaskFundingPort,
-  assertTaskFundingAdmission,
+  assertTaskFundingAdmission, openTaskFundingSession,
   TaskFundingError,
   taskFundingFailureCode,
   type TaskFundingPort,
   type TaskFundingAdmission,
+  type TaskFundingRunSource,
+  type TaskFundingTaskSource,
 } from "./task-funding-port";
 export {
   installDurableToolResultLifecycleObserver,
@@ -146,8 +148,10 @@ export {
   createLiveShadowDataOperationPolicyBinding,
   getCurrentLiveShadowTurnContext,
   runWithLiveShadowTurnSession,
+  runWithTaskWakeLiveShadowTurnSession,
   type LiveShadowTurnContext,
 } from "./conversation/live-shadow-turn-context";
+export type { ProtectedTaskWakeForegroundSource } from "./tasks/protected-task-wake-foreground-context";
 export {
   requiresEncryptedForegroundCheckpoint,
   readProtectedPendingInterruptEvents,
@@ -184,6 +188,8 @@ export {
 export {
   jobManager,
   JobManager,
+  type ProtectedTaskCheckpointPauseRequest,
+  type ProtectedTaskCheckpointPauseResult,
   getCurrentAcceptedWorkAuthority,
   getCurrentAcceptedInvocationAuthority,
   runWithAcceptedInvocationAuthority,
@@ -372,12 +378,24 @@ export {
   type ProtectedTaskOccurrenceJobManager,
   type ParkedProtectedTaskOccurrenceCoordinatorDeps,
 } from "./tasks/protected-task-occurrence-coordinator";
-export type {
-  ProtectedTaskExecutionCandidate,
-  ProtectedTaskExecutionSettlement,
-  ProtectedTaskExecutionStartResult,
-  ProtectedTaskJobSchedulingFacts,
+export {
+  ProtectedTaskExecutionDidNotBeginError,
+  type ProtectedTaskExecutionCandidate,
+  type ProtectedTaskCheckpointPauseReason,
+  type ProtectedTaskExecutionSettlement,
+  type ProtectedTaskExecutionStartResult,
+  type ProtectedTaskJobSchedulingFacts,
 } from "./tasks/protected-task-execution-candidate";
+export type {
+  ProtectedTaskWakeExecutionCandidate,
+  ProtectedTaskWakeSettlementResult,
+  ProtectedTaskWakeExecutionCustody,
+  ProtectedTaskWakeParkRequest,
+  ProtectedTaskWakeCheckpointBinding,
+  ProtectedTaskWakeParkResult,
+  AdoptProtectedTaskWakeJobInput,
+  AdoptProtectedTaskWakeJobResult,
+} from "./tasks/protected-task-wake-execution-candidate";
 export {
   createProtectedTaskFailurePayload,
   runProtectedTaskNativeSegment,
@@ -431,7 +449,7 @@ export {
   type HumanRoomMember,
 } from "./tasks/resolve-target-room";
 export { resolveTaskMemoryEnvelope } from "./tasks/resolve-task-memory-envelope";
-export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps } from "./tasks/create-task";
+export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps, type TaskCreationResult, type ProtectedTaskCreateCandidate } from "./tasks/create-task";
 export {
   TaskCreationUnavailableError,
   assertTaskCreationProvenance,

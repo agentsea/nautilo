@@ -355,6 +355,8 @@ export interface ConversationRevisionLifecycle
   readonly sharedAgentShadowOperationId: string | null;
   /** Exact M296 selected Agent-execution parent. */
   readonly sharedAgentShadowExecutionId: string | null;
+  /** Exact protected Task output wake; never a fabricated Human turn. */
+  readonly taskWakeOperationId: string | null;
   readonly shadowTranscriptOrdinal: number | null;
   readonly shadowReservedCreatedAt: Date | null;
   readonly shadowStreamId: string | null;
@@ -528,7 +530,14 @@ export type ConversationProductAppendResult =
   }
   | { readonly status: "conflict" };
 
+declare const taskWakePublicationAuthorityBrand: unique symbol;
+/** Callback-live authority issued only by the held wake publication owner. */
+export type TaskWakeLiveShadowPublicationAuthority = Readonly<{
+  readonly [taskWakePublicationAuthorityBrand]: true;
+}>;
+
 export interface ConversationLiveShadowAgentReservationInput {
+  readonly taskWakeAuthority?: TaskWakeLiveShadowPublicationAuthority;
   readonly sessionId: string;
   readonly operationId: string;
   readonly transcriptOrdinal: number;
@@ -551,6 +560,7 @@ export type ConversationLiveShadowAgentReservationResult =
 
 export interface ConversationLiveShadowAgentPublishInput
   extends ConversationAppendInput {
+  readonly taskWakeAuthority?: TaskWakeLiveShadowPublicationAuthority;
   readonly operationId: string;
   readonly transcriptOrdinal: number;
   readonly reservedMessageId: number;
@@ -560,6 +570,7 @@ export interface ConversationLiveShadowAgentPublishInput
 }
 
 export interface ConversationLiveShadowAgentEvidenceInput {
+  readonly taskWakeAuthority?: TaskWakeLiveShadowPublicationAuthority;
   readonly sessionId: string;
   readonly operationId: string;
   readonly messageId: number;

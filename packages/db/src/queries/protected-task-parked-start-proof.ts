@@ -1,3 +1,4 @@
+import { parseProtectedTaskCheckpointAadBinding, sameProtectedTaskCheckpointAadBinding, type ProtectedTaskCheckpointAadBinding } from "./protected-task-checkpoint-aad-binding";
 import {
   canonicalProtectedTaskSemanticAuthorityRequirements,
   protectedTaskAdditionalAuthorityContinuationFingerprint,
@@ -12,6 +13,7 @@ import type {
   ProtectedTaskDurableJobReference,
   ProtectedTaskRunInterruptCoordinate,
   StartParkedProtectedTaskHumanRunSegmentInput,
+  StartParkedProtectedTaskCheckpointSegmentInput,
   StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "./tasks";
 
@@ -19,6 +21,7 @@ const OPAQUE_COORDINATE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const CONTINUATION_FINGERPRINT = /^[A-Za-z0-9_-]{43}$/u;
 
 export type ProtectedTaskRunParkReceiptV1 = Readonly<{
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   version: 1;
   taskId: string;
   taskRunId: string;
@@ -85,6 +88,71 @@ export type PreparedParkedProtectedTaskHumanStart = Readonly<{
   acceptance: StartParkedProtectedTaskHumanRunSegmentInput["acceptance"];
   receipt: ProtectedTaskRunParkReceiptV1;
 }>;
+
+export type PreparedParkedProtectedTaskCheckpointStart = Readonly<
+  Omit<PreparedParkedProtectedTaskHumanStart, "acceptance"> & {
+    continuationFingerprint: string;
+  }
+>;
+
+/** Structural snapshot only; recovery additionally re-derives the immutable receipt proof. */
+export function prepareParkedProtectedTaskCheckpointStart(
+  supplied: StartParkedProtectedTaskCheckpointSegmentInput,
+): PreparedParkedProtectedTaskCheckpointStart {
+  const input = structuredClone(supplied);
+  const prior = input.priorJobReference;
+  const next = input.jobReference;
+  const checkpoint = input.checkpointManifest;
+  if (!input.taskId || !input.taskRunId || !input.graphThreadId
+    || !input.priorJobId || !input.jobId || input.priorJobId === input.jobId
+    || !Number.isSafeInteger(input.generation) || input.generation < 0
+    || !(input.parkedAt instanceof Date) || !Number.isFinite(input.parkedAt.getTime())
+    || !Array.isArray(input.interrupts) || input.interrupts.length !== 0
+    || (input.contentRepresentation !== "protected" && input.contentRepresentation !== "dual")
+    || !input.contentNamespaceId || !input.cryptoObjectId
+    || !Number.isSafeInteger(input.contentRevision) || input.contentRevision < 1
+    || !Number.isSafeInteger(input.cryptoAccessRevision) || input.cryptoAccessRevision < 0
+    || ![input.stableRoutingDigest, input.cryptoRequiredNamespaceFingerprint,
+      checkpoint.checkpointOrderedDigest, checkpoint.blobOrderedDigest,
+      checkpoint.pendingWriteOrderedDigest].every(bytes => bytes instanceof Uint8Array && bytes.length === 32)
+    || !CONTINUATION_FINGERPRINT.test(input.continuationFingerprint)
+    || !exactParkedProtectedTaskJobReference(prior, prior)
+    || !exactParkedProtectedTaskJobReference(next, next)
+    || prior.taskId !== input.taskId || prior.taskRunId !== input.taskRunId
+    || prior.inputObjectId !== input.cryptoObjectId
+    || prior.resultObjectId !== protectedTaskRunResultObjectId(input.taskId, input.taskRunId)
+    || !Number.isSafeInteger(prior.policyRevision) || prior.policyRevision < 1
+    || !Number.isSafeInteger(prior.executionSegment) || prior.executionSegment < 1
+    || prior.executionSegment >= Number.MAX_SAFE_INTEGER
+    || next.taskId !== prior.taskId || next.taskRunId !== prior.taskRunId
+    || next.inputObjectId !== prior.inputObjectId || next.resultObjectId !== prior.resultObjectId
+    || next.executionSegment !== prior.executionSegment + 1
+    || !Number.isSafeInteger(next.policyRevision) || next.policyRevision < prior.policyRevision
+    || next.resumeContinuationFingerprint !== input.continuationFingerprint
+    || next.authorizationRequestId !== `task-checkpoint-continuation:${input.taskRunId}:${next.executionSegment}:${input.continuationFingerprint}`
+    || checkpoint.contract !== "encrypted_langgraph_v1"
+    || !Number.isSafeInteger(checkpoint.expectedCheckpointCount) || checkpoint.expectedCheckpointCount < 1
+    || !Number.isSafeInteger(checkpoint.expectedBlobCount) || checkpoint.expectedBlobCount < 0
+    || !Number.isSafeInteger(checkpoint.expectedPendingWriteCount) || checkpoint.expectedPendingWriteCount < 0) {
+    throw new TypeError("Protected Task checkpoint recovery binding is malformed");
+  }
+  return Object.freeze({
+    taskId: input.taskId, taskRunId: input.taskRunId, graphThreadId: input.graphThreadId,
+    priorJobId: input.priorJobId, jobId: input.jobId, generation: input.generation,
+    parkedAt: input.parkedAt, contentRepresentation: input.contentRepresentation,
+    contentNamespaceId: input.contentNamespaceId, contentRevision: input.contentRevision,
+    cryptoObjectId: input.cryptoObjectId, cryptoAccessRevision: input.cryptoAccessRevision,
+    cryptoRequiredNamespaceFingerprint: input.cryptoRequiredNamespaceFingerprint,
+    priorJobReference: prior, jobReference: next, checkpointManifest: checkpoint,
+    stableRoutingDigest: input.stableRoutingDigest, continuationFingerprint: input.continuationFingerprint,
+    receipt: Object.freeze({
+    version: 1, ...checkpointAadFields(input), taskId: input.taskId, taskRunId: input.taskRunId,
+    jobId: input.priorJobId, graphThreadId: input.graphThreadId,
+    generation: input.generation, executionSegment: prior.executionSegment,
+    interrupts: Object.freeze([]), parkedAt: input.parkedAt.toISOString(),
+    stableRoutingDigest: Buffer.from(input.stableRoutingDigest).toString("base64url"),
+  }) });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -240,7 +308,8 @@ export function prepareParkedProtectedTaskHumanStart(
     || nextReference.taskRunId !== priorReference.taskRunId
     || nextReference.inputObjectId !== priorReference.inputObjectId
     || nextReference.resultObjectId !== priorReference.resultObjectId
-    || nextReference.policyRevision !== priorReference.policyRevision
+    || !Number.isSafeInteger(nextReference.policyRevision)
+    || nextReference.policyRevision < priorReference.policyRevision
     || nextReference.executionSegment !== priorReference.executionSegment + 1
     || nextReference.authorizationRequestId
       === priorReference.authorizationRequestId
@@ -278,6 +347,7 @@ export function prepareParkedProtectedTaskHumanStart(
     acceptance: input.acceptance,
     receipt: Object.freeze({
       version: 1 as const,
+    ...checkpointAadFields(input),
       taskId: input.taskId,
       taskRunId: input.taskRunId,
       jobId: input.priorJobId,
@@ -292,6 +362,14 @@ export function prepareParkedProtectedTaskHumanStart(
   });
 }
 
+function checkpointAadFields(input: Readonly<{ checkpointAadBinding?: ProtectedTaskCheckpointAadBinding; contentNamespaceId: string; priorJobReference: ProtectedTaskDurableJobReference }>): Readonly<{ checkpointAadBinding?: ProtectedTaskCheckpointAadBinding }> {
+  if (input.checkpointAadBinding === undefined) return {};
+  const binding = parseProtectedTaskCheckpointAadBinding(input.checkpointAadBinding);
+  if (binding === null || binding.namespaceId !== input.contentNamespaceId
+    || binding.policyRevision > input.priorJobReference.policyRevision) throw new TypeError("Protected Task checkpoint binding is malformed");
+  return { checkpointAadBinding: binding };
+}
+
 function exactParkReceipt(
   value: unknown,
   expected: ProtectedTaskRunParkReceiptV1,
@@ -300,7 +378,11 @@ function exactParkReceipt(
   const expectedKeys = expected.stableRoutingDigest === undefined
     ? "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,taskId,taskRunId,version"
     : "executionSegment,generation,graphThreadId,interrupts,jobId,parkedAt,stableRoutingDigest,taskId,taskRunId,version";
-  return Object.keys(value).sort().join(",") === expectedKeys
+  return Object.keys(value).filter(key => key !== "checkpointAadBinding"
+      || parseProtectedTaskCheckpointAadBinding(value[key]) === null).sort().join(",") === expectedKeys
+    && sameProtectedTaskCheckpointAadBinding(
+      value["checkpointAadBinding"] === undefined ? undefined : parseProtectedTaskCheckpointAadBinding(value["checkpointAadBinding"]) ?? undefined,
+      expected.checkpointAadBinding)
     && value["version"] === expected.version
     && value["taskId"] === expected.taskId
     && value["taskRunId"] === expected.taskRunId
@@ -450,6 +532,7 @@ export function prepareParkedProtectedTaskAdditionalAuthorityStart(
   const parkedAt = new Date(input.parkedAt.getTime());
   const receipt = Object.freeze({
     version: 1 as const,
+    ...checkpointAadFields(input),
     taskId: input.taskId,
     taskRunId: input.taskRunId,
     jobId: input.priorJobId,
@@ -535,7 +618,7 @@ export function exactParkedProtectedTaskAdditionalAuthorityProof(
     && exactParkReceipt(parkReceipt, input.receipt);
 }
 
-function exactParkedProtectedTaskPhysicalSegment(
+export function exactParkedProtectedTaskPhysicalSegment(
   segment: ProtectedTaskExecutionContinuationProof["segment"],
   input: Readonly<{
     taskRunId: string;

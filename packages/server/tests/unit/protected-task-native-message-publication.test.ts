@@ -56,6 +56,7 @@ function input(
     executionSegment: 1,
     policyRevision: 4,
     representation,
+    definitionRepresentation: representation,
     authorizationExpiresAt: NOW + 60_000,
     signal,
   });

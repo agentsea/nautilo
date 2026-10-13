@@ -29,7 +29,24 @@ import {
  * computed here; everything else is a `tasks` insert field. */
 export type TaskCreateInput = Omit<NewTask, "nextFireAt" | "status" | "localExecutionDelegation">;
 
-export interface CreateTaskDeps {
+export type TaskCreationResult = Readonly<{
+  publicationDisposition?: "created" | "replayed";
+  taskId: string;
+  status: Task["status"];
+  nextFireAt: Date | undefined;
+}>;
+
+/** Fully shaped definition handed to the protected repository. Runtime has
+ * already bound the trusted funding and local-execution sources at this point. */
+export type ProtectedTaskCreateCandidate = TaskCreateInput & Readonly<{
+  id: string;
+  nextFireAt: Date;
+  status: "pending";
+  fundingMode: "caller" | "legacy_server";
+  localExecutionDelegation: LocalExecutionDelegation | null;
+}>;
+
+export interface CreateTaskDeps<Prepared = unknown> {
   db: DirectDatabase;
   /** The live observer to wake for now-tasks. */
   observer: { kick(): void };
@@ -38,12 +55,22 @@ export interface CreateTaskDeps {
   /** Server-authored origin, carried outside caller-controlled Task fields. */
   provenance: TaskCreationProvenance;
   /** Lattice-selected admission. Plain uses the inert ordinary port. */
-  admission: TaskCreationAdmissionPort<unknown>;
+  admission: TaskCreationAdmissionPort<Prepared>;
   /** Fresh exact-target RBAC check before a durable Task is created. */
   assertInvocation?: (input: AgentInvocationAdmissionInput) => Promise<void>;
   assertServerFunding?: typeof assertCanUseServerProviderCredentials;
   /** Trusted source port, never a field supplied by a Task tool or HTTP body. */
   captureLocalExecution?: (task: TaskCreateInput & { id: string }) => Promise<LocalExecutionDelegation | null>;
+  /** Trusted protected repository. The prepared plan and fully shaped Task
+   * candidate are never accepted from a Task tool or public request body. */
+  publishProtected?: (input: Readonly<{
+    prepared: Prepared;
+    candidate: ProtectedTaskCreateCandidate;
+  }>) => Promise<TaskCreationResult>;
+  /** Protected foreground retries bind the Task and schedule to the original
+   * checkpointed tool effect. Plain creation never invokes this port. */
+  resolveProtectedIdentity?: (input: Readonly<{ prepared: Prepared; candidate: TaskCreateInput }>) =>
+    Readonly<{ taskId: string; scheduleReference: Date }>;
 }
 
 /**
@@ -75,10 +102,10 @@ export function computeNextFireAt(
  * `tasks` row through the data-access layer, and kicks the observer for
  * now-tasks so dispatch is near-instant.
  */
-export async function createTask(
-  deps: CreateTaskDeps,
+export async function createTask<Prepared = unknown>(
+  deps: CreateTaskDeps<Prepared>,
   input: TaskCreateInput,
-): Promise<{ taskId: string; status: Task["status"]; nextFireAt: Date | undefined }> {
+): Promise<TaskCreationResult> {
   if (Object.prototype.hasOwnProperty.call(input, "localExecutionDelegation")) {
     throw new TypeError("Task local execution authority must come from its trusted source");
   }
@@ -128,13 +155,27 @@ export async function createTask(
   if (admission.kind === "unavailable") {
     throw new TaskCreationUnavailableError(admission.reason);
   }
-  if (admission.kind === "protected") {
+  if (admission.kind === "protected" && !deps.publishProtected) {
     throw new TaskCreationUnavailableError("task_shape_unsupported");
   }
 
   // Capture only after canonical invocation/content admission; the Desktop
   // grant is scoped to this exact identity even if the subsequent insert fails.
-  const candidate = { ...admission.candidate, id: admission.candidate.id ?? randomUUID() };
+  const protectedIdentity = admission.kind === "protected" ? admission.canonicalTaskIdentity : undefined;
+  if (protectedIdentity !== undefined && (protectedIdentity.ownerId !== input.requestorId
+    || protectedIdentity.requestorId !== input.requestorId || protectedIdentity.agentId !== input.agentId)) {
+    throw new TypeError("Protected Task admission changed its canonical requester or Agent");
+  }
+  const admittedCandidate = admission.kind === "ordinary" ? admission.candidate
+    : protectedIdentity === undefined ? input : { ...input, ...protectedIdentity };
+  const protectedSource = admission.kind === "protected"
+    ? deps.resolveProtectedIdentity?.({ prepared: admission.prepared, candidate: admittedCandidate }) : undefined;
+  if (protectedSource !== undefined && (!protectedSource.taskId
+    || !Number.isFinite(protectedSource.scheduleReference.getTime())
+    || admittedCandidate.id !== undefined && admittedCandidate.id !== protectedSource.taskId)) {
+    throw new TypeError("Protected Task source identity changed");
+  }
+  const candidate = { ...admittedCandidate, id: protectedSource?.taskId ?? admittedCandidate.id ?? randomUUID() };
   const captured = await deps.captureLocalExecution?.(candidate) ?? null;
   const localExecutionDelegation = captured === null ? null : parseLocalExecutionDelegation(captured);
   if (captured !== null && (localExecutionDelegation === null
@@ -147,13 +188,30 @@ export async function createTask(
   if (localExecutionDelegation && candidate.parentTaskId) {
     await assertCapturedParentLineage(deps.db, candidate, localExecutionDelegation);
   }
-  const row = await dbCreateTask(deps.db, {
+  const durableCandidate: ProtectedTaskCreateCandidate = {
     ...candidate,
     localExecutionDelegation,
     // Only the trusted funding port may author this definition discriminator.
     fundingMode: callerFunded ? "caller" : "legacy_server",
-    nextFireAt,
+    nextFireAt: protectedSource === undefined ? nextFireAt : computeNextFireAt(scheduleKind,
+      input.runAt, input.cron, input.timezone ?? "UTC", protectedSource.scheduleReference),
     status: "pending",
+  };
+  if (admission.kind === "protected") {
+    const published = await deps.publishProtected!({
+      prepared: admission.prepared,
+      candidate: durableCandidate,
+    });
+    if (published.taskId !== candidate.id) {
+      throw new TypeError("Protected Task publication returned a different Task identity");
+    }
+    if (scheduleKind === "now") {
+      deps.observer.kick();
+    }
+    return published;
+  }
+  const row = await dbCreateTask(deps.db, {
+    ...durableCandidate,
   });
 
   if (scheduleKind === "now") {

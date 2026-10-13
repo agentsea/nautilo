@@ -466,6 +466,17 @@ const taskAccessSignerEvidenceV1Schema = z.union([
   }).strict(),
 ]);
 
+const historicalTaskContentRepairV2Schema = z.object({
+  version: z.literal(2),
+  claimId: canonicalLowerUuid,
+  publisherDeviceId: portableId,
+  signedRequestDigest: z.string().length(64).regex(/^[0-9a-f]+$/u),
+  sourceDigest: z.string().length(64).regex(/^[0-9a-f]+$/u),
+  sourcePayloadHash: z.string().length(64).regex(/^[0-9a-f]+$/u),
+  sourceRevision: z.literal(0),
+  genesisManifestHash: z.string().length(64).regex(/^[0-9a-f]+$/u),
+}).strict();
+
 /**
  * Exact protected definition bytes. Signer evidence is verification material,
  * not a trust assertion: clients must authenticate it against their trusted
@@ -482,12 +493,12 @@ const protectedTaskDefinitionReadReferenceV1Fields = {
 const protectedTaskDefinitionReadReadyEnvelopeV1Schema = z.object({
   ...protectedTaskDefinitionReadReferenceV1Fields,
   status: z.literal("ready"),
-  cryptoAccessRevision: z.literal(0),
   namespaceId: canonicalLowerUuid,
   encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
-  accessManifestProofBytesBase64url: z.tuple([]),
+  accessManifestProofBytesBase64url: z.array(accessManifestBase64url),
   namespaceEnvelopeBytesBase64url: namespaceEnvelopeBase64url,
+  historicalRepair: historicalTaskContentRepairV2Schema.optional(),
   signerEvidence: z.array(taskAccessSignerEvidenceV1Schema).superRefine((entries, context) => {
     const keys = entries.map((entry) => entry.kind === "human_device"
       ? `${entry.kind}:${entry.subjectHumanId}:${entry.committerDeviceId}:${entry.hostAuthorizationRevision}`
@@ -516,7 +527,30 @@ const protectedTaskDefinitionReadReadyEnvelopeV1Schema = z.object({
       });
     }
   }),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if (value.accessManifestProofBytesBase64url.length
+    !== value.cryptoAccessRevision) context.addIssue({
+      code: "custom",
+      message: "Task definition access proof must cover every prior revision",
+      path: ["accessManifestProofBytesBase64url"],
+    });
+  const agentEvidence = value.signerEvidence.filter(entry =>
+    entry.kind === "agent_runtime_publication"
+    || entry.kind === "foreground_agent_accepted_execution");
+  const onlyTaskSigners = value.signerEvidence.every(entry =>
+    entry.kind === "human_device"
+    || entry.kind === "agent_runtime_publication"
+    || entry.kind === "foreground_agent_accepted_execution");
+  if (!onlyTaskSigners || value.signerEvidence.length === 0
+    || agentEvidence.length > 1
+    || value.historicalRepair !== undefined && agentEvidence.length !== 0) {
+    context.addIssue({
+      code: "custom",
+      message: "Task definition signer evidence does not match a Human or Agent genesis chain",
+      path: ["signerEvidence"],
+    });
+  }
+});
 
 const protectedTaskDefinitionReadUnavailableEnvelopeV1Schema = z.object({
   ...protectedTaskDefinitionReadReferenceV1Fields,
@@ -544,24 +578,38 @@ const protectedTaskRunResultReadReferenceV1Fields = {
 const protectedTaskRunResultReadReadyEnvelopeV1Schema = z.object({
   ...protectedTaskRunResultReadReferenceV1Fields,
   status: z.literal("ready"),
-  cryptoAccessRevision: z.literal(0),
   namespaceId: canonicalLowerUuid,
   encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
-  accessManifestProofBytesBase64url: z.tuple([]),
+  accessManifestProofBytesBase64url: z.array(accessManifestBase64url),
   namespaceEnvelopeBytesBase64url: namespaceEnvelopeBase64url,
-  signerEvidence: z.array(taskAccessSignerEvidenceV1Schema).superRefine((entries, context) => {
-    if (
-      entries.length !== 1
-      || entries[0]?.kind !== "agent_runtime_publication"
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "Task result requires one Agent Runtime signer publication",
-      });
-    }
-  }),
-}).strict();
+  historicalRepair: historicalTaskContentRepairV2Schema.optional(),
+  signerEvidence: z.array(taskAccessSignerEvidenceV1Schema),
+}).strict().superRefine((value, context) => {
+  if (value.accessManifestProofBytesBase64url.length
+    !== value.cryptoAccessRevision) context.addIssue({
+      code: "custom",
+      message: "Task result access proof must cover every prior revision",
+      path: ["accessManifestProofBytesBase64url"],
+    });
+  const agentEvidence = value.signerEvidence.filter(entry =>
+    entry.kind === "agent_runtime_publication"
+    || entry.kind === "foreground_agent_accepted_execution");
+  const onlyTaskSigners = value.signerEvidence.every(entry =>
+    entry.kind === "human_device"
+    || entry.kind === "agent_runtime_publication"
+    || entry.kind === "foreground_agent_accepted_execution");
+  const valid = onlyTaskSigners && (value.historicalRepair === undefined
+    ? agentEvidence.length === 1
+    : agentEvidence.length === 0 && value.signerEvidence.length > 0);
+  if (!valid) context.addIssue({
+    code: "custom",
+    message: value.historicalRepair === undefined
+      ? "Task result requires one authenticated Agent Runtime signer proof"
+      : "Historical Task result requires one Human device signer",
+    path: ["signerEvidence"],
+  });
+});
 
 const protectedTaskRunResultReadWaitingEnvelopeV1Schema = z.object({
   ...protectedTaskRunResultReadReferenceV1Fields,

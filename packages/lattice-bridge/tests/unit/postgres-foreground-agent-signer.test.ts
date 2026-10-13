@@ -1,3 +1,5 @@
+import { rejects } from "node:assert/strict";
+import { foregroundAgentAcceptedExecutionSigner } from "../../src/server/message/postgres-foreground-agent-signer.ts";
 import { describe, expect, test } from "bun:test";
 import {
   LatticeCrypto, createAgentObjectAccessManifest, encryptObjectPayload, wrapObjectDekForNamespace, objectId,
@@ -393,4 +395,38 @@ describe("retained foreground Agent signer", () => {
       ...input.row, plan_bytes: bytes, plan_digest: input.crypto.hash(bytes),
     }]])).key).toBeNull();
   });
+});
+
+
+test("strict retained signer lookup rejects a selected invalid record without another-family fallback", async () => {
+  const f = fixture();
+  for (const shared of [true, false]) {
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      ...(shared ? [] : [[]]),
+      [{ ...f.row, plan_digest: hash(0) }],
+    ]);
+    const product = await verifyConversationProductPostgresHandle(connection);
+    const resolve = createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({ product, crypto: f.crypto,
+      rejectInvalidSelectedEvidence: true });
+    await rejects(Promise.resolve(resolve(f.signer.principal)), /Selected foreground Agent execution evidence is invalid/);
+    expect(connection.batches).toHaveLength(0);
+  }
+});
+
+test("Task signer adapter authenticates the entire retained plan and wipes evidence on every outcome", async () => {
+  const f = fixture();
+  for (const mode of ["valid", "digest", "principal", "key"] as const) {
+    const evidence = { signerPublicKey: f.signer.publicKey.slice(), planBytes: f.planBytes.slice(),
+      planDigest: mode === "digest" ? hash(0) : f.planDigest.slice() };
+    if (mode === "key") evidence.signerPublicKey[0]! ^= 1;
+    const resolve = foregroundAgentAcceptedExecutionSigner({ crypto: f.crypto, resolveEvidence: async () => evidence });
+    const promise = Promise.resolve(resolve(mode === "principal"
+      ? { ...f.signer.principal, agentId: "another-agent" } : f.signer.principal));
+    if (mode === "valid") expect(await promise).toEqual(f.signer.publicKey);
+    else await rejects(promise, /signer evidence was substituted/);
+    expect(evidence.signerPublicKey.every(value => value === 0)).toBe(true);
+    expect(evidence.planBytes.every(value => value === 0)).toBe(true);
+    expect(evidence.planDigest.every(value => value === 0)).toBe(true);
+  }
 });

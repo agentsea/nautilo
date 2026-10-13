@@ -7,9 +7,12 @@ import {
   exactParkedProtectedTaskHumanProof,
   prepareParkedProtectedTaskAdditionalAuthorityStart,
   prepareParkedProtectedTaskHumanStart,
+  prepareParkedProtectedTaskCheckpointStart,
 } from "./protected-task-parked-start-proof";
 import {
   type ProtectedTaskDurableJobReference,
+  parseParkedProtectedTaskCheckpointContinuation,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
   exactProtectedTaskHumanContinuationAcceptanceReceipt,
   type ProtectedTaskHumanContinuationAcceptance,
   type StartParkedProtectedTaskHumanRunSegmentInput,
@@ -18,6 +21,9 @@ import {
 
 type CandidateTask = Readonly<{
   id: string;
+  ownerId: string;
+  agentId: string;
+  callingRoomId: string | null;
   requestorId: string;
   scheduleKind: string;
   status: string;
@@ -36,6 +42,7 @@ type CandidateRun = Readonly<{
   taskId: string;
   jobId: string | null;
   graphThreadId: string;
+  startedAt: Date;
   status: string;
   modelId: string | null;
   fundingPristine: boolean;
@@ -71,7 +78,8 @@ export type ParkedProtectedTaskRecoveryCandidateRow = Readonly<{
 
 export type ProjectedParkedProtectedTaskRecoveryCandidate = Readonly<{
   input: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
-    | StartParkedProtectedTaskHumanRunSegmentInput;
+    | StartParkedProtectedTaskHumanRunSegmentInput
+    | StartParkedProtectedTaskCheckpointSegmentInput;
   lifecycle: "linked" | "parked";
 }>;
 
@@ -145,6 +153,45 @@ export function projectParkedProtectedTaskRecoveryCandidate(
     || segment.checkpointBlobDigest === null
     || segment.pendingWriteDigest === null
   ) return null;
+
+  if (continuation?.kind === "checkpoint_safe_v1") {
+    if (task.scheduleKind !== "now" && task.scheduleKind !== "one_shot" && task.scheduleKind !== "cron") return null;
+    const current = parseParkedProtectedTaskCheckpointContinuation({
+      task: { ...task, scheduleKind: task.scheduleKind, contentRepresentation: task.contentRepresentation,
+        cryptoMappingState: task.cryptoMappingState,
+        status: task.scheduleKind === "cron" ? "pending" : "awaiting" },
+      run: { ...run, status: "awaiting", jobId: priorJob.id },
+      job: priorJob, proof: { segment, continuation },
+    });
+    if (current === null || nextReference.authorizationRequestId !== current.authorizationRequestId
+      || nextReference.resumeContinuationFingerprint !== current.continuationFingerprint) return null;
+    const raw: StartParkedProtectedTaskCheckpointSegmentInput = {
+      taskId: task.id, taskRunId: run.id, graphThreadId: run.graphThreadId,
+      priorJobId: priorJob.id, jobId: nextJob.id,
+      generation: current.priorJob.generation, interrupts: [], parkedAt,
+      stableRoutingDigest: current.stableRoutingDigest,
+      continuationFingerprint: current.continuationFingerprint,
+      contentRepresentation: task.contentRepresentation, contentNamespaceId: task.contentNamespaceId,
+      contentRevision: task.contentRevision, cryptoObjectId: task.cryptoObjectId,
+      cryptoAccessRevision: task.cryptoAccessRevision,
+      cryptoRequiredNamespaceFingerprint: Uint8Array.from(task.cryptoRequiredNamespaceFingerprint),
+      priorJobReference: current.priorJob.reference, jobReference: Object.freeze({ ...nextReference }),
+      checkpointManifest: {
+        contract: "encrypted_langgraph_v1", expectedCheckpointCount: segment.expectedCheckpointCount,
+        checkpointOrderedDigest: Uint8Array.from(segment.checkpointDigest),
+        expectedBlobCount: segment.expectedCheckpointBlobCount,
+        blobOrderedDigest: Uint8Array.from(segment.checkpointBlobDigest),
+        expectedPendingWriteCount: segment.expectedPendingWriteCount,
+        pendingWriteOrderedDigest: Uint8Array.from(segment.pendingWriteDigest),
+      },
+    };
+    try {
+      prepareParkedProtectedTaskCheckpointStart(raw);
+      return Object.freeze({ lifecycle: linked ? "linked" : "parked", input: Object.freeze(raw) });
+    } catch {
+      return null;
+    }
+  }
 
   const human = typeof nextReference.resumeAcceptanceId === "string"
     && nextReference.resumeContinuationFingerprint === undefined;

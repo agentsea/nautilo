@@ -287,7 +287,14 @@ export async function dispatchTaskCommand(
           return "Cannot create task: 'prompt' is required for command 'create'.";
         }
         const rt = getTaskToolRuntime();
-        if (rt.canUseLegacyTaskContent && !await rt.canUseLegacyTaskContent()) {
+        const canUseLegacyTaskContent = rt.canUseLegacyTaskContent
+          ? await rt.canUseLegacyTaskContent()
+          : true;
+        const protectedTaskCreator = rt.createProtectedTask;
+        if (
+          !canUseLegacyTaskContent
+          && (args.harness !== undefined || !protectedTaskCreator)
+        ) {
           return "Cannot create task: protected Task creation is not yet available from this Agent tool.";
         }
         if (
@@ -520,7 +527,15 @@ export async function dispatchTaskCommand(
           });
         }
 
-        const { taskId, status } = await rt.createTask(input);
+        const created = canUseLegacyTaskContent
+          ? await rt.createTask(input)
+          : protectedTaskCreator
+            ? await protectedTaskCreator(input)
+            : null;
+        if (!created) {
+          return "Cannot create task: protected Task creation is not yet available from this Agent tool.";
+        }
+        const { taskId, status } = created;
         return JSON.stringify({
           taskId,
           status,

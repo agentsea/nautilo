@@ -30,6 +30,10 @@ import {
   reviewedPaidServiceFundingDtoReplacements,
   SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS,
 } from "./reviewed-paid-service-funding-dto";
+import {
+  REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
+  SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
+} from "./reviewed-task-protection-dto";
 import { REVIEWED_LANDING_DTO_DECLARATIONS, SUPERSEDED_LANDING_DTO_LOCATORS } from "./reviewed-main-2026-09-05-landing-dto";
 import { REVIEWED_D487_DTO_DECLARATIONS } from "./reviewed-d487-dto";
 import {
@@ -6201,9 +6205,13 @@ const PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS: readonly DtoDeclaration[] =
 export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
   ...PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS.has(entry.locator)
+    && !SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(entry.locator)
   ),
   ...reviewedPaidServiceFundingDtoReplacements(
     PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS,
+  ).filter((entry) =>
+    !SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(entry.locator)
   ),
   ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
+  ...REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
 ];

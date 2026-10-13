@@ -1,3 +1,4 @@
+import type { TaskRuntimeMappedHeadReplacementInput } from "./task-runtime-mapped-head-replan";
 import {
   assertVerifiedCryptoPostgresHandle,
   cryptoTypedDb,
@@ -42,8 +43,18 @@ import {
   assertBackgroundAuthorizationCasSuccessor,
   buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
+  buildUnclaimedTaskMappedHeadAuthorityReplacement,
   buildUnclaimedTaskCancellationAuthorityReplacement,
+  buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+  buildUnclaimedTaskOutputReadAuthorityReplacement,
+  buildParkedTaskWakeAuthorityReplacement,
+  rotateExpiredParkedTaskWakeRecipient,
+  type BackgroundAuthorizationTaskOutputReadReplacementRepository,
+  type BackgroundAuthorizationTaskWakeParkRepository,
+  type BackgroundAuthorizationTaskWakeParkResult,
+  type BackgroundAuthorizationTaskWakeRecipientRenewalResult,
   type BackgroundAuthorizationTaskCancellationReplacementRepository,
+  type BackgroundAuthorizationTaskTerminalMessageReplacementRepository,
   assertUnstartedProcessorSupersession,
   isExactProcessorSupersessionCancellation,
   sameProcessorSupersessionPlan,
@@ -591,7 +602,10 @@ export class PostgresBackgroundAuthorizationRepository
     BackgroundAuthorizationTaskRuntimeDeferralRepository,
     BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
     BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository,
-    BackgroundAuthorizationTaskCancellationReplacementRepository {
+    BackgroundAuthorizationTaskCancellationReplacementRepository,
+    BackgroundAuthorizationTaskTerminalMessageReplacementRepository,
+    BackgroundAuthorizationTaskOutputReadReplacementRepository,
+    BackgroundAuthorizationTaskWakeParkRepository {
   constructor(private readonly handle: CryptoPostgresHandle) {
     assertVerifiedCryptoPostgresHandle(handle);
   }
@@ -838,6 +852,10 @@ export class PostgresBackgroundAuthorizationRepository
     return rows[0] === undefined ? null : this.#recordFromRow(rows[0] as Row);
   }
 
+  replaceUnclaimedTaskMappedHeadAuthority(input: TaskRuntimeMappedHeadReplacementInput): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, checked => buildUnclaimedTaskMappedHeadAuthorityReplacement({ ...input, ...checked }));
+  }
+
   replaceUnclaimedTaskRuntimeAuthority(input: Readonly<{
     expected: BackgroundAuthorizationTaskRuntimeRecordV3;
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -852,6 +870,236 @@ export class PostgresBackgroundAuthorizationRepository
     now: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
     return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskCancellationAuthorityReplacement);
+  }
+
+  replaceUnclaimedTaskTerminalMessageAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(
+      input,
+      buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+    );
+  }
+
+  replaceUnclaimedTaskOutputReadAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskOutputReadAuthorityReplacement);
+  }
+
+  parkTaskWakeForAdditionalAuthority(
+    input: Parameters<BackgroundAuthorizationTaskWakeParkRepository[
+      "parkTaskWakeForAdditionalAuthority"
+    ]>[0],
+  ): Promise<BackgroundAuthorizationTaskWakeParkResult> {
+    const expected = parseBackgroundAuthorizationRecord(input.expected) as
+      BackgroundAuthorizationTaskRuntimeRecordV3;
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskWakeParkResult
+    >(this.handle, async handle => {
+      await input.proof.assertCurrent();
+      const next = buildParkedTaskWakeAuthorityReplacement(input);
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null : await repository.#recordFromRow(row);
+      if (current !== null && sameBackgroundAuthorizationRecord(current, next)) {
+        await input.proof.assertCurrent();
+        return {
+          status: "exact_replay",
+          record: current as BackgroundAuthorizationTaskRuntimeRecordV3,
+        };
+      }
+      if (rows.length !== 1 || row === undefined || current === null
+        || !sameBackgroundAuthorizationRecord(current, expected)
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null) {
+        return { status: "stale", current };
+      }
+      const values = requestValues(next);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          workIdentityHash: values.workIdentityHash,
+          idempotencyKey: values.idempotencyKey,
+          domainId: values.domainId,
+          expectedDomainEpoch: values.expectedDomainEpoch,
+          expectedNamespaceAccessRevision:
+            values.expectedNamespaceAccessRevision,
+          expectedPolicyRevision: values.expectedPolicyRevision,
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          retryCount: values.retryCount,
+          lastRetryReason: values.lastRetryReason,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, expected.snapshot.requestId),
+          eq(table.requestRevision, expected.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return {
+          status: "stale",
+          current: await repository.get(expected.snapshot.requestId),
+        };
+      }
+      await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.delete(backgroundCryptoAuthorizationNamespaceRequirements)
+          .where(eq(
+            backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+            expected.snapshot.requestId,
+          )),
+      );
+      await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.delete(backgroundCryptoAuthorizationDomainRequirements)
+          .where(eq(
+            backgroundCryptoAuthorizationDomainRequirements.requestId,
+            expected.snapshot.requestId,
+          )),
+      );
+      await repository.#insertAuthoritySet(next);
+      await input.proof.assertCurrent();
+      return {
+        status: "parked",
+        record: await repository.#recordFromRow(updated[0] as Row) as
+          BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
+  }
+
+  renewParkedTaskWakeRecipient(
+    input: Parameters<BackgroundAuthorizationTaskWakeParkRepository[
+      "renewParkedTaskWakeRecipient"
+    ]>[0],
+  ): Promise<BackgroundAuthorizationTaskWakeRecipientRenewalResult> {
+    const expected = parseBackgroundAuthorizationRecord(input.expected) as
+      BackgroundAuthorizationTaskRuntimeRecordV3;
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskWakeRecipientRenewalResult
+    >(this.handle, async handle => {
+      await input.proof.assertCurrent();
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null : await repository.#recordFromRow(row);
+      if (rows.length !== 1 || row === undefined || current === null
+        || !sameBackgroundAuthorizationRecord(current, expected)
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null) {
+        return { status: "stale", current };
+      }
+      const renewal = rotateExpiredParkedTaskWakeRecipient(input);
+      if (renewal.status !== "rotated") {
+        await input.proof.assertCurrent();
+        return renewal;
+      }
+      const values = requestValues(renewal.record);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          workIdentityHash: values.workIdentityHash,
+          domainId: values.domainId,
+          expectedDomainEpoch: values.expectedDomainEpoch,
+          expectedNamespaceAccessRevision: values.expectedNamespaceAccessRevision,
+          expectedPolicyRevision: values.expectedPolicyRevision,
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          retryCount: values.retryCount,
+          lastRetryReason: values.lastRetryReason,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, expected.snapshot.requestId),
+          eq(table.requestRevision, expected.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return {
+          status: "stale",
+          current: await repository.get(expected.snapshot.requestId),
+        };
+      }
+      if (JSON.stringify(expected.authoritySet) !== JSON.stringify(renewal.record.authoritySet)) {
+        await executeTypedCryptoQuery(handle, cryptoTypedDb.delete(backgroundCryptoAuthorizationNamespaceRequirements)
+          .where(eq(backgroundCryptoAuthorizationNamespaceRequirements.requestId, expected.snapshot.requestId)));
+        await executeTypedCryptoQuery(handle, cryptoTypedDb.delete(backgroundCryptoAuthorizationDomainRequirements)
+          .where(eq(backgroundCryptoAuthorizationDomainRequirements.requestId, expected.snapshot.requestId)));
+        await repository.#insertAuthoritySet(renewal.record);
+      }
+      await input.proof.assertCurrent();
+      return {
+        ...renewal,
+        record: await repository.#recordFromRow(updated[0] as Row) as
+          BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
   }
 
   #replaceUnclaimedAuthority(
@@ -896,6 +1144,7 @@ export class PostgresBackgroundAuthorizationRepository
         handle,
         cryptoTypedDb.update(table).set({
           workIdentityHash: values.workIdentityHash,
+          idempotencyKey: values.idempotencyKey,
           domainId: values.domainId,
           expectedDomainEpoch: values.expectedDomainEpoch,
           expectedNamespaceAccessRevision:

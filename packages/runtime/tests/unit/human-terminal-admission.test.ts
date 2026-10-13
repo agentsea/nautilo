@@ -85,13 +85,14 @@ test("foreground adapter uses persisted conversation and current Room/Agent admi
   f.setRoom("foreign"); await denied(f.port().withAdmission(async () => { throw new Error("must not dispatch"); }));
   expect(foregroundHumanTerminalAdmissionPort({ ...f.state, verifiedOrdinaryOrigin: null }, new AbortController().signal, f.owners)).toBeUndefined();
 });
-test("production protected adapter rejects absent, expired, foreign and changed policy owners", async () => {
-  for (const variant of ["absent", "expired", "foreign", "behavior", "valid"]) {
+test("production protected adapter rejects absent, wake, expired, foreign and changed policy owners", async () => {
+  for (const variant of ["absent", "wake", "expired", "foreign", "behavior", "valid"]) {
     const f = foregroundFixture(); const crypto = protectedContext(); let effects = 0;
     if (variant === "expired") crypto.session.authorizationDeadlineAt = 0;
     if (variant === "foreign") crypto.capability.scope.recipientAgentId = "foreign";
     if (variant === "behavior") crypto.enforcementPolicy = { ...crypto.enforcementPolicy, shadowBehavior: "different" };
-    f.protected(variant === "absent" ? undefined : crypto);
+    f.protected(variant === "absent" ? undefined
+      : variant === "wake" ? { ...crypto, capability: null } : crypto);
     const work = f.port().withAdmission(async () => { effects++; return "protected-output"; });
     if (variant === "valid") expect(await work).toBe("protected-output"); else await denied(work);
     expect(effects).toBe(variant === "valid" ? 1 : 0);

@@ -36,6 +36,20 @@ describe("Task cancellation crypto staging migration finalizer", () => {
     );
   });
 
+  test("keeps fresh Memory publication receipts immutable and crypto-only", () => {
+    const table = "foreground_memory_crypto_publication_receipts";
+    const generated = `CREATE TABLE "${table}" ("operation_id" text PRIMARY KEY);`;
+    const finalized = finalizeTaskCancellationStagingMigration(generated);
+    expect(finalizeTaskCancellationStagingMigration(finalized)).toBe(finalized);
+    expect(finalized).toContain(`ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY`);
+    expect(finalized).toContain(`GRANT SELECT, INSERT ON TABLE "${table}" TO "nautilo_crypto"`);
+    expect(finalized).not.toMatch(/GRANT (?:UPDATE|DELETE|ALL)/);
+    expect(finalized).toContain(`BEFORE UPDATE ON "${table}"`);
+    expect(finalized).toContain("IF NEW IS DISTINCT FROM OLD THEN");
+    expect(finalized).toContain("USING ERRCODE = '23514'");
+    expect(finalized.match(/CREATE FUNCTION/g)).toHaveLength(1);
+  });
+
   test("is the final generate-only migration step", () => {
     expect(packageJson.scripts["db:generate"]?.split(" && ").at(-1)).toBe(
       "bun scripts/finalize-task-cancellation-staging.ts",

@@ -18,6 +18,7 @@ import type {
   ProtectedTaskOccurrence,
   TaskRuntimeRecipientRequestPlan,
 } from "@nautilo/runtime";
+import type { ProtectedTaskOutputReadIntent } from "./protected-task-output-read-product";
 import type { ProtectedTaskCancellationOutputIntent } from "@nautilo/db";
 
 const UUID =
@@ -95,7 +96,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
     ...input,
     workId: input.occurrence.run.id,
     requesterUserId: input.occurrence.task.requestorId,
-    cancellation: false,
+    publication: "execution",
   });
 }
 
@@ -121,23 +122,94 @@ export function createProtectedTaskCancellationRecipientRequestPlan(
     ...input,
     workId: intent.taskRunId,
     requesterUserId: intent.requesterUserId,
-    cancellation: true,
+    publication: "cancellation",
   });
+}
+
+/** One terminal Message gets a fresh, write-only destination grant. */
+export function createProtectedTaskTerminalMessageRecipientRequestPlan(
+  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+    taskRunId: string;
+    requesterUserId: string;
+    destinationNamespaceId: string;
+  }>,
+): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
+  const { initialRecord, authority } = input;
+  const namespace = authority.namespaces[0];
+  if (initialRecord.workKind !== "task.deliver_message"
+    || initialRecord.purpose !== "task.deliver_message"
+    || initialRecord.snapshot.namespaceId !== input.destinationNamespaceId
+    || authority.namespaces.length !== 1 || authority.domains.length !== 1
+    || namespace?.namespaceId !== input.destinationNamespaceId
+    || namespace.domainId !== authority.domains[0]?.domainId
+    || namespace.operations.length !== 1 || namespace.operations[0] !== "encrypt") {
+    throw new TypeError("Protected Task terminal Message recipient authority is not exact");
+  }
+  return createRecipientRequestPlan({ ...input, workId: input.taskRunId,
+    publication: "terminal_message" });
+}
+
+/** Fresh result reads name the actual delivery Session, never the old Task execution episode. */
+export function createProtectedTaskOutputReadRecipientRequestPlan(
+  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+    intent: ProtectedTaskOutputReadIntent;
+    foregroundNamespaceIds: readonly string[];
+    additionalMutationDestination?: Readonly<{ roomId: string; namespaceId: string; semanticDigest: string }>;
+  }>,
+): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
+  const { intent, initialRecord, authority, foregroundNamespaceIds } = input;
+  const wake = intent.invocation.kind === "wake";
+  const workKind = wake ? "task.delivery_wake" : "task.deliver_result";
+  const workId = intent.invocation.kind === "wake" ? intent.invocation.jobId : intent.result.taskRunId;
+  const requestId = wake ? `task-wake-authorization:${workId}`
+    : `task-run-delivery-result-authorization:${workId}`;
+  const extra = input.additionalMutationDestination;
+  const ids = [...new Set([intent.contentNamespaceId, ...foregroundNamespaceIds,
+    ...(extra === undefined ? [] : [extra.namespaceId])])].sort();
+  if (extra !== undefined && (!wake || !UUID.test(extra.roomId) || !UUID.test(extra.namespaceId)
+      || !/^[0-9a-f]{64}$/u.test(extra.semanticDigest) || extra.namespaceId === intent.contentNamespaceId
+      || foregroundNamespaceIds.includes(extra.namespaceId))
+    || initialRecord.workKind !== workKind || initialRecord.purpose !== workKind
+    || initialRecord.snapshot.requestId !== requestId || initialRecord.snapshot.workId !== workId
+    || initialRecord.snapshot.namespaceId !== intent.contentNamespaceId
+    || intent.expectedPolicyRevision !== authority.policyRevision
+    || input.sourceRoomId !== intent.invocation.roomId
+    || foregroundNamespaceIds.length < 1
+    || foregroundNamespaceIds.some((id, index) => !UUID.test(id)
+      || index > 0 && foregroundNamespaceIds[index - 1]! >= id)
+    || !wake && foregroundNamespaceIds.length !== 1
+    || authority.namespaces.length !== ids.length
+    || authority.namespaces.some((n, index) => {
+      const foreground = foregroundNamespaceIds.includes(n.namespaceId);
+      const expectedOperations = [
+        ...(n.namespaceId === intent.contentNamespaceId || wake && foreground ? ["decrypt"] : []),
+        ...(foreground || extra?.namespaceId === n.namespaceId ? ["encrypt"] : []),
+      ];
+      return n.ordinal !== index || n.namespaceId !== ids[index]
+        || n.expectedPolicyRevision !== authority.policyRevision
+        || n.operations.join(",") !== expectedOperations.join(",");
+    })) throw new TypeError("Protected Task result-read recipient authority is not exact");
+  return createRecipientRequestPlan({ ...input, workId,
+    requesterUserId: intent.requesterUserId, publication: "result_read",
+    episodeId: intent.invocation.sessionId });
 }
 
 function createRecipientRequestPlan(
   input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
     workId: string;
     requesterUserId: string;
-    cancellation: boolean;
+    publication: "execution" | "cancellation" | "terminal_message" | "result_read";
+    episodeId?: string;
   }>,
 ): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
   const { initialRecord, workId, requesterUserId } = input;
   const crypto = input.crypto;
   const requestId = initialRecord.snapshot.requestId;
   const workKind = initialRecord.workKind;
-  const cancellation = input.cancellation;
-  const recipientPrefix = cancellation ? "task-cancellation-runtime" : "task-runtime";
+  const writeOnly = input.publication === "cancellation" || input.publication === "terminal_message";
+  const recipientPrefix = input.publication === "cancellation" ? "task-cancellation-runtime"
+    : input.publication === "terminal_message" ? "task-delivery-runtime"
+    : input.publication === "result_read" ? "task-output-read-runtime" : "task-runtime";
   const sourceRoomId = input.sourceRoomId;
   const policyRevision = input.authority.policyRevision;
   const createdAt = input.createdAt;
@@ -150,7 +222,9 @@ function createRecipientRequestPlan(
     Object.freeze({ ...value })));
 
   if (workKind !== "task.execute" && workKind !== "task.approval_resume"
-    && workKind !== "task.await_reply_resume" && workKind !== "task.cancel_result") {
+    && workKind !== "task.await_reply_resume" && workKind !== "task.cancel_result"
+    && workKind !== "task.deliver_message" && workKind !== "task.deliver_result"
+    && workKind !== "task.delivery_wake") {
     workIdentityHash.fill(0);
     throw new TypeError("Protected Task recipient work kind is invalid");
   }
@@ -160,9 +234,12 @@ function createRecipientRequestPlan(
     || !Number.isSafeInteger(createdAt) || createdAt < 0
     || !Number.isSafeInteger(recipientTtlMs) || recipientTtlMs < 1
     || recipientTtlMs > DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2
-    || (cancellation ? workKind !== "task.cancel_result"
+    || (input.publication === "cancellation" ? workKind !== "task.cancel_result"
+      : input.publication === "terminal_message" ? workKind !== "task.deliver_message"
+      : input.publication === "result_read" ? workKind !== "task.deliver_result" && workKind !== "task.delivery_wake"
       : workKind !== "task.execute" && workKind !== "task.approval_resume"
         && workKind !== "task.await_reply_resume")
+    || input.publication === "result_read" && !UUID.test(input.episodeId ?? "")
     || initialRecord.purpose !== workKind
     || initialRecord.snapshot.workId !== workId
     || initialRecord.expectedPolicyRevision !== policyRevision
@@ -237,7 +314,7 @@ function createRecipientRequestPlan(
       const grant = createDomainForegroundAuthorizationPlan(crypto, {
         authorizationId: requestId,
         policyRevision,
-        sessionId: `task-run:${workId}`,
+        sessionId: input.publication === "result_read" ? input.episodeId! : `task-run:${workId}`,
         roomId: current.sourceRoomId,
         subjectHumanId: humanId(binding.humanActorId),
         committerDeviceId: cryptoDeviceId(binding.deviceId),
@@ -249,7 +326,7 @@ function createRecipientRequestPlan(
         recipientAuthorizationRevision: authorizationRevision(0),
         recipientRuntimeGeneration: attempt.recipientGeneration,
         recipientKeyId: attempt.recipientKeyId,
-        operations: cancellation ? ["encrypt"] : ["decrypt", "encrypt"],
+        operations: writeOnly ? ["encrypt"] : ["decrypt", "encrypt"],
         issuedAt,
         deadlineAt: attempt.expiresAt,
         maximumSecretBytes: DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,

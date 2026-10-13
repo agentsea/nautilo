@@ -1,3 +1,4 @@
+import type { ProtectedTaskCheckpointAadBinding } from "@nautilo/db";
 import {
   createEncryptedCheckpointSaver,
   readEncryptedCheckpointPhysicalManifest,
@@ -120,6 +121,7 @@ export async function withNativeProtectedTaskCheckpointSaver<Value>(
 export type NativeProtectedTaskCheckpointManifestResult<Value> = Readonly<{
   value: Value;
   manifest: EncryptedCheckpointPhysicalManifest;
+  checkpointAadBinding: ProtectedTaskCheckpointAadBinding;
 }>;
 
 /**
@@ -143,8 +145,10 @@ export async function withNativeProtectedTaskCheckpointManifest<Value>(
   const signal = input.signal;
   const pool = freshOwnedPool(createDedicatedPool);
   let saver: EncryptedCheckpointSaver;
+  let checkpointAadBinding: ProtectedTaskCheckpointAadBinding;
   try {
     const cell = createNativeTaskRuntimeCheckpointCellCrypto(input);
+    checkpointAadBinding = cell.checkpointAadBinding;
     saver = createEncryptedCheckpointSaver({
       dedicatedPool: pool,
       crypto: cell.crypto,
@@ -186,7 +190,7 @@ export async function withNativeProtectedTaskCheckpointManifest<Value>(
     signal.throwIfAborted();
     outcome = {
       status: "fulfilled",
-      value: Object.freeze({ value, manifest }),
+      value: Object.freeze({ value, manifest, checkpointAadBinding }),
     };
   } catch (error) {
     outcome = { status: "rejected", error };

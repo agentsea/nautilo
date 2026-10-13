@@ -124,6 +124,10 @@ type ForegroundShadowHistoryReconcileInput = Readonly<{
     "result"
   >;
 }>;
+type TaskContentBackfillBatchResult = Readonly<{
+  state: "more" | "waiting" | "caught_up";
+  resumeAt: number | null;
+}>;
 type MessageBackfillBatchResult = Readonly<{
   state: "more" | "waiting" | "caught_up";
   resumeAt: number | null;
@@ -2120,6 +2124,15 @@ const foregroundShadowAPI = {
     ipcRenderer.invoke(
       "foregroundShadow:messageBackfill:cancel",
     ) as Promise<void>,
+  getTaskContentBackfillProgress: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:progress",
+  ) as ReturnType<NautiloApiClient["getTaskContentBackfillProgress"]>,
+  serviceTaskContentBackfill: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:service",
+  ) as Promise<TaskContentBackfillBatchResult>,
+  cancelTaskContentBackfill: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:cancel",
+  ) as Promise<void>,
   onProtectedRoomAccessState: (
     listener: (state: ProtectedRoomAccessStateV2) => void,
   ) => {

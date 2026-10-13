@@ -3,6 +3,9 @@ import {
   agentRuntimeSignerPublicationMatchesRuntime,
   assertAuthenticTaskRuntimeCancellationResultEvidence,
   assertAuthenticTaskRuntimeExecutionEvidence,
+  assertAuthenticTaskRuntimeRunResultReadEvidence,
+  assertAuthenticTaskRuntimeTerminalMessageEvidence,
+  assertAuthenticTaskRuntimeWakeForegroundEvidence,
   authorizationRevision,
   cryptoDomainId,
   domainEpoch,
@@ -15,6 +18,9 @@ import {
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type TaskRuntimeCancellationResultEvidence,
   type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeRunResultReadEvidence,
+  type TaskRuntimeTerminalMessageEvidence,
+  type TaskRuntimeWakeForegroundEvidence,
 } from "@nautilo/lattice-crypto";
 import type {
   HistoricalAgentRuntimeCommitterResolverV1,
@@ -132,8 +138,93 @@ function cancellationResultAuthorityMatches(
     && sameBytes(domain.headDigest, domainRequirement.headDigest);
 }
 
+function terminalMessageAuthorityMatches(
+  evidence: TaskRuntimeTerminalMessageEvidence,
+  domain: DomainForegroundSecretEntry,
+): boolean {
+  const message = evidence.message;
+  const namespaceRequirement = evidence.namespaceRequirements[0];
+  const domainRequirement = evidence.domainRequirements[0];
+  return evidence.purpose === "task.runtime.terminal_message"
+    && evidence.workKind === "task.deliver_message"
+    && evidence.operations.length === 1
+    && evidence.operations[0] === "encrypt"
+    && message.taskRunId === evidence.workId
+    && message.roomId === evidence.sourceRoomId
+    && message.publicationPolicyRevision === evidence.policyRevision
+    && message.acceptedPolicyRevision <= evidence.policyRevision
+    && evidence.namespaceRequirements.length === 1
+    && namespaceRequirement !== undefined
+    && namespaceRequirement.ordinal === 0
+    && namespaceRequirement.namespaceId === message.namespaceId
+    && namespaceRequirement.domainId === message.domainId
+    && namespaceRequirement.expectedPolicyRevision === evidence.policyRevision
+    && namespaceRequirement.operations.length === 1
+    && namespaceRequirement.operations[0] === "encrypt"
+    && evidence.domainRequirements.length === 1
+    && domainRequirement !== undefined
+    && domainRequirement.domainId === message.domainId
+    && domainRequirement.sourceNamespaceId === message.namespaceId
+    && domain.domainId === domainRequirement.domainId
+    && domain.sourceNamespaceId === domainRequirement.sourceNamespaceId
+    && domain.keyClass === "ai"
+    && domainRequirement.keyClass === "ai"
+    && domain.domainKeyGeneration === domainRequirement.domainKeyGeneration
+    && domain.authorizationRevision === domainRequirement.authorizationRevision
+    && domain.participantCount === domainRequirement.participantCount
+    && sameBytes(domain.participantDigest, domainRequirement.participantDigest)
+    && sameBytes(domain.headDigest, domainRequirement.headDigest);
+}
+
+function runResultMessageAuthorityMatches(
+  evidence: TaskRuntimeRunResultReadEvidence,
+  domain: DomainForegroundSecretEntry,
+): boolean {
+  const result = evidence.result;
+  const invocation = evidence.invocation;
+  const write = evidence.messageWrite;
+  if (evidence.purpose !== "task.runtime.run_result_read"
+    || evidence.workKind !== "task.deliver_result"
+    || result.contentRevision !== 1
+    || (result.terminalStatus !== "completed" && result.terminalStatus !== "errored")
+    || invocation.kind !== "raw"
+    || write === null) return false;
+  const namespace = write.namespace;
+  const current = write.domain;
+  return write.taskId === result.taskId
+    && write.taskRunId === result.taskRunId
+    && write.bindingId === invocation.bindingId
+    && write.messageOperationId === invocation.operationId
+    && write.roomId === invocation.roomId
+    && write.sessionId === invocation.sessionId
+    && write.signerAgentId === result.signerAgentId
+    && namespace.operations.length === 1
+    && namespace.operations[0] === "encrypt"
+    && namespace.expectedPolicyRevision === evidence.policyRevision
+    && current.domainId === namespace.domainId
+    && current.keyClass === "ai"
+    && domain.domainId === current.domainId
+    && domain.sourceNamespaceId === current.sourceNamespaceId
+    && domain.keyClass === "ai"
+    && domain.domainKeyGeneration === current.domainKeyGeneration
+    && domain.authorizationRevision === current.authorizationRevision
+    && domain.participantCount === current.participantCount
+    && sameBytes(domain.participantDigest, current.participantDigest)
+    && sameBytes(domain.headDigest, current.headDigest);
+}
+
 type ResultSignerEvidence = TaskRuntimeExecutionEvidence
-  | TaskRuntimeCancellationResultEvidence;
+  | TaskRuntimeCancellationResultEvidence
+  | TaskRuntimeTerminalMessageEvidence
+  | TaskRuntimeRunResultReadEvidence
+  | TaskRuntimeWakeForegroundEvidence;
+
+function signerAgentId(evidence: ResultSignerEvidence): string {
+  if (evidence.purpose === "task.runtime.wake_foreground") return evidence.signerAgentId;
+  return evidence.purpose === "task.runtime.terminal_message"
+    ? evidence.message.signerAgentId
+    : evidence.result.signerAgentId;
+}
 
 type ProtectedTaskResultSignerInput<Value> = Readonly<{
   crypto: LatticeCrypto;
@@ -170,7 +261,7 @@ async function withAuthenticatedProtectedTaskResultSigner<Value>(
       agentAuthorizationRevision: expectedAgentAuthorizationRevision,
       domainRoot: input.domain.domainKey,
     },
-    agentId: agentId(input.evidence.result.signerAgentId),
+    agentId: agentId(signerAgentId(input.evidence)),
     resolveHistoricalCommitter: input.resolveHistoricalRuntimeCommitter,
   });
   if (opened === null) {
@@ -301,5 +392,114 @@ export async function withProtectedTaskCancellationResultSigner<Value>(
     ...input,
     assertAuthenticEvidence: () =>
       assertAuthenticTaskRuntimeCancellationResultEvidence(input.evidence),
+  });
+}
+
+/**
+ * Lend the current HIVE Runtime signer only for the destination Domain named
+ * by authentic, callback-scoped terminal Message evidence.
+ */
+export async function withProtectedTaskTerminalMessageSigner<Value>(
+  input: Readonly<{
+    crypto: LatticeCrypto;
+    storage: Pick<
+      LatticeStorage,
+      "getAgentRuntimeAtomicState" | "getAgentRuntimeSignerPublication"
+    >;
+    evidence: TaskRuntimeTerminalMessageEvidence;
+    domain: DomainForegroundSecretEntry;
+    expectedAgentAuthorizationRevision: number;
+    resolveHistoricalRuntimeCommitter:
+      HistoricalAgentRuntimeCommitterResolverV1;
+    resolveHistoricalSignerPublicationManager:
+      ResolveHistoricalAgentRuntimeSignerPublicationManager;
+    execute(
+      authority: ProtectedTaskResultSignerAuthority,
+    ): Value | PromiseLike<Value>;
+  }>,
+): Promise<ProtectedTaskResultSignerResult<Value>> {
+  assertAuthenticTaskRuntimeTerminalMessageEvidence(input.evidence);
+  if (!terminalMessageAuthorityMatches(input.evidence, input.domain)) {
+    return Object.freeze({
+      status: "unavailable" as const,
+      reason: "authority_unavailable" as const,
+    });
+  }
+  return withAuthenticatedProtectedTaskResultSigner({
+    ...input,
+    assertAuthenticEvidence: () =>
+      assertAuthenticTaskRuntimeTerminalMessageEvidence(input.evidence),
+  });
+}
+
+/**
+ * Lend the current HIVE Runtime signer for the independently admitted raw
+ * result Message destination while its result-read proof remains live.
+ */
+export async function withProtectedTaskRunResultMessageSigner<Value>(
+  input: Readonly<{
+    crypto: LatticeCrypto;
+    storage: Pick<
+      LatticeStorage,
+      "getAgentRuntimeAtomicState" | "getAgentRuntimeSignerPublication"
+    >;
+    evidence: TaskRuntimeRunResultReadEvidence;
+    domain: DomainForegroundSecretEntry;
+    expectedAgentAuthorizationRevision: number;
+    resolveHistoricalRuntimeCommitter:
+      HistoricalAgentRuntimeCommitterResolverV1;
+    resolveHistoricalSignerPublicationManager:
+      ResolveHistoricalAgentRuntimeSignerPublicationManager;
+    execute(
+      authority: ProtectedTaskResultSignerAuthority,
+    ): Value | PromiseLike<Value>;
+  }>,
+): Promise<ProtectedTaskResultSignerResult<Value>> {
+  assertAuthenticTaskRuntimeRunResultReadEvidence(input.evidence);
+  if (!runResultMessageAuthorityMatches(input.evidence, input.domain)) {
+    return Object.freeze({
+      status: "unavailable" as const,
+      reason: "authority_unavailable" as const,
+    });
+  }
+  return withAuthenticatedProtectedTaskResultSigner({
+    ...input,
+    assertAuthenticEvidence: () =>
+      assertAuthenticTaskRuntimeRunResultReadEvidence(input.evidence),
+  });
+}
+
+/** Lend a HIVE signer through an independently admitted wake foreground Namespace. */
+export async function withProtectedTaskWakeForegroundSigner<Value>(
+  input: Omit<ProtectedTaskResultSignerInput<Value>, "evidence" | "assertAuthenticEvidence"> & Readonly<{
+    evidence: TaskRuntimeWakeForegroundEvidence;
+    namespaceId: string;
+  }>,
+): Promise<ProtectedTaskResultSignerResult<Value>> {
+  const evidence = input.evidence;
+  const assertAuthority = (): void => {
+    assertAuthenticTaskRuntimeWakeForegroundEvidence(evidence);
+    const namespace = evidence.namespaceRequirements.find(n => n.namespaceId === input.namespaceId);
+    const domain = evidence.domainRequirements.find(d => d.domainId === namespace?.domainId);
+    if (namespace === undefined || domain === undefined
+      || !namespace.operations.includes("encrypt")
+      || namespace.expectedPolicyRevision !== evidence.policyRevision
+      || input.domain.domainId !== domain.domainId
+      || input.domain.sourceNamespaceId !== domain.sourceNamespaceId
+      || input.domain.keyClass !== "ai"
+      || input.domain.domainKeyGeneration !== domain.domainKeyGeneration
+      || input.domain.authorizationRevision !== domain.authorizationRevision
+      || input.domain.participantCount !== domain.participantCount
+      || !sameBytes(input.domain.participantDigest, domain.participantDigest)
+      || !sameBytes(input.domain.headDigest, domain.headDigest)) {
+      throw new TypeError("Task wake foreground signer authority is unavailable");
+    }
+  };
+  assertAuthenticTaskRuntimeWakeForegroundEvidence(evidence);
+  try { assertAuthority(); } catch {
+    return Object.freeze({ status: "unavailable", reason: "authority_unavailable" });
+  }
+  return withAuthenticatedProtectedTaskResultSigner({
+    ...input, assertAuthenticEvidence: assertAuthority,
   });
 }

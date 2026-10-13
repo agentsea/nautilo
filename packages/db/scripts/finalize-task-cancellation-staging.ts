@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const TABLE = "task_cancellation_crypto_staging_receipts";
+const TABLES = ["task_cancellation_crypto_staging_receipts", "task_terminal_message_crypto_staging_receipts",
+  "task_historical_content_crypto_staging_receipts", "foreground_memory_crypto_publication_receipts"] as const;
 export const TASK_CANCELLATION_STAGING_AUTHORITY_MARKER =
   "-- TASK_CANCELLATION_CRYPTO_STAGING_AUTHORITY";
 
@@ -9,18 +10,40 @@ export const TASK_CANCELLATION_STAGING_AUTHORITY_MARKER =
 export function finalizeTaskCancellationStagingMigration(
   migration: string,
 ): string {
-  if (
-    !migration.includes(`CREATE TABLE "${TABLE}"`)
-    || migration.includes(TASK_CANCELLATION_STAGING_AUTHORITY_MARKER)
-  ) {
-    return migration;
-  }
-  return `${migration}${migration.endsWith("\n") ? "" : "\n"}--> statement-breakpoint
-${TASK_CANCELLATION_STAGING_AUTHORITY_MARKER}
-ALTER TABLE "${TABLE}" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
-REVOKE ALL PRIVILEGES ON TABLE "${TABLE}" FROM PUBLIC, "nautilo", "nautilo_agent", "nautilo_crypto";--> statement-breakpoint
-GRANT SELECT, INSERT ON TABLE "${TABLE}" TO "nautilo_crypto";
+  let result = migration;
+  for (const table of TABLES) {
+    const marker = table === "task_cancellation_crypto_staging_receipts"
+      ? TASK_CANCELLATION_STAGING_AUTHORITY_MARKER
+      : table === "task_terminal_message_crypto_staging_receipts"
+      ? "-- TASK_TERMINAL_MESSAGE_CRYPTO_STAGING_AUTHORITY"
+      : table === "task_historical_content_crypto_staging_receipts"
+      ? "-- TASK_HISTORICAL_CONTENT_CRYPTO_STAGING_AUTHORITY"
+      : "-- FOREGROUND_MEMORY_CRYPTO_PUBLICATION_AUTHORITY";
+    if (!result.includes(`CREATE TABLE "${table}"`) || result.includes(marker)) continue;
+    result = `${result}${result.endsWith("\n") ? "" : "\n"}--> statement-breakpoint
+${marker}
+ALTER TABLE "${table}" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+REVOKE ALL PRIVILEGES ON TABLE "${table}" FROM PUBLIC, "nautilo", "nautilo_agent", "nautilo_crypto";--> statement-breakpoint
+GRANT SELECT, INSERT ON TABLE "${table}" TO "nautilo_crypto";
 `;
+    if (table === "foreground_memory_crypto_publication_receipts") {
+      result += `--> statement-breakpoint
+CREATE FUNCTION "public"."reject_foreground_memory_publication_update"()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'Foreground Memory publication receipt is immutable' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;--> statement-breakpoint
+REVOKE ALL ON FUNCTION "public"."reject_foreground_memory_publication_update"() FROM PUBLIC, "nautilo", "nautilo_agent", "nautilo_crypto";--> statement-breakpoint
+CREATE TRIGGER "foreground_memory_publication_immutable" BEFORE UPDATE ON "${table}" FOR EACH ROW
+EXECUTE FUNCTION "public"."reject_foreground_memory_publication_update"();
+`;
+    }
+  }
+  return result;
 }
 
 function run(): void {

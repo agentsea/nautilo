@@ -1,3 +1,4 @@
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "../../src/task/task-historical-content-identity.ts";
 import { describe, expect, test } from "bun:test";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 
@@ -129,4 +130,40 @@ describe("Task content repository identity contract", () => {
       authorityFingerprint: new Uint8Array(31),
     }))).toThrow("exactly 32 bytes");
   });
+});
+
+
+test("historical source versions are distinct while native coordinates and legacy provenance remain strict", () => {
+  const base = lifecycle();
+  const sourceDigest = new Uint8Array(32).fill(4);
+  const historicalRepair = { version: 2 as const, claimId: "60000000-0000-4000-8000-000000000001",
+    publisherDeviceId: "historical-device", signedRequestDigest: "01".repeat(32), sourceDigest: "04".repeat(32),
+    sourcePayloadHash: "05".repeat(32), sourceRevision: 0 as const, genesisManifestHash: "06".repeat(32) };
+  const input = { coordinate: base.coordinate, sourceDigest, namespaceId: authority.namespaceId };
+  const objectId = deriveTaskHistoricalContentCryptoObjectIdV1(input);
+  expect(objectId).toMatch(/^task-historical:v1:[0-9a-f]{64}$/u);
+  expect(objectId).not.toBe(base.cryptoObjectId);
+  const historical = lifecycle({ historicalRepair, representation: "dual", cryptoObjectId: objectId });
+  expect(() => assertTaskContentRevisionLifecycleV1(historical)).not.toThrow();
+  const { genesisManifestHash: _hash, ...oldFields } = historicalRepair;
+  expect(() => assertTaskContentRevisionLifecycleV1(lifecycle({ representation: "dual",
+    historicalRepair: { ...oldFields, version: 1 } }))).not.toThrow();
+  for (const patch of [{ sourceDigest: new Uint8Array(32).fill(5) }, { namespaceId: TASK_B },
+    { coordinate: { ...base.coordinate, taskId: TASK_B } },
+    { coordinate: { kind: "run_result" as const, taskId: TASK_A, taskRunId: RUN_A, contentRevision: 1 } }]) {
+    expect(deriveTaskHistoricalContentCryptoObjectIdV1({ ...input, ...patch })).not.toBe(objectId);
+  }
+  for (const patch of [{ historicalRepair: null }, { cryptoObjectId: base.cryptoObjectId },
+    { representation: "protected" as const }, { namespaceId: TASK_B },
+    { historicalRepair: { ...historicalRepair, genesisManifestHash: "bad" } },
+    { historicalRepair: { ...historicalRepair, sourceDigest: "00".repeat(32) } }]) {
+    expect(() => assertTaskContentRevisionLifecycleV1({ ...historical, ...patch })).toThrow();
+  }
+  const runIdentity = { ...input, coordinate: { kind: "run_result" as const, taskId: TASK_A,
+    taskRunId: RUN_A, contentRevision: 1 } };
+  expect(deriveTaskHistoricalContentCryptoObjectIdV1(runIdentity)).not.toBe(
+    deriveTaskHistoricalContentCryptoObjectIdV1({ ...runIdentity,
+      coordinate: { ...runIdentity.coordinate, taskRunId: TASK_B } }));
+  expect(() => deriveTaskHistoricalContentCryptoObjectIdV1({ ...input, sourceDigest: new Uint8Array(31) })).toThrow();
+  expect(() => deriveTaskHistoricalContentCryptoObjectIdV1({ ...input, coordinate: { ...base.coordinate, contentRevision: 2 } })).toThrow();
 });

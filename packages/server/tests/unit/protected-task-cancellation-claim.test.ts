@@ -361,6 +361,25 @@ test("rejects a stale selected record, expired lease, and denied device before c
   expect(denied.events).toEqual(["authority:enter", "authority:deny"]);
 });
 
+test("a clock before signed issuance waits without consuming custody, then retries with the current clock", async () => {
+  let currentTime = NOW - 1;
+  const value = fixture({ clock: () => currentTime });
+  const input = { plan: value.plan, record: value.selected,
+    restricted: {} as never, signal: new AbortController().signal };
+  expect(await value.claim(input)).toBeNull();
+  expect(value.events).toEqual(["authority:enter", "authority:exit"]);
+  expect(value.state.record.snapshot.state).toBe("grant_ready");
+  expect(value.registryCalls()).toBe(0);
+  expect(value.publicationCalls()).toBe(0);
+  expect(value.deletes()).toBe(0);
+
+  currentTime = NOW + 1;
+  expect((await value.claim(input))?.snapshot.state).toBe("completed");
+  expect(value.registryCalls()).toBe(1);
+  expect(value.publicationCalls()).toBe(1);
+  expect(value.deletes()).toBe(1);
+});
+
 test("a claim race does not open or publish", async () => {
   const value = fixture({ failCasState: "claimed" });
   expect(await value.claim({ plan: value.plan, record: value.selected,
@@ -402,7 +421,7 @@ test("an unavailable opened grant leaves running state for recovery", async () =
   expect(await value.claim({ plan: value.plan, record: value.selected,
     restricted: {} as never, signal: new AbortController().signal })
     .catch((error: unknown) => error)).toMatchObject({
-    message: "Cancellation result authorization could not be opened",
+    message: "Task publication authorization could not be opened",
   });
   expect(value.state.record.snapshot.state).toBe("running");
   expect(value.publicationCalls()).toBe(0);
@@ -419,4 +438,23 @@ test("the publication fence rejects a changed claim revision or generation", asy
   expect(value.state.record.snapshot.state).toBe("running");
   expect(value.publicationCalls()).toBe(1);
   expect(value.deletes()).toBe(0);
+});
+
+
+test("fixed cancellation claims still reject a merged decrypt-and-encrypt authority", async () => {
+  const value = fixture();
+  const expanded = {
+    ...value.selected,
+    authoritySet: { ...value.selected.authoritySet,
+      namespaceRequirements: value.selected.authoritySet.namespaceRequirements.map(n => ({
+        ...n, operations: ["decrypt", "encrypt"] as const,
+      })),
+    },
+  };
+  expect(await value.claim({
+    plan: { ...value.plan, initialRecord: { ...value.plan.initialRecord, authoritySet: expanded.authoritySet } },
+    record: expanded, restricted: {} as never, signal: new AbortController().signal,
+  }).catch((error: unknown) => error)).toBeInstanceOf(TypeError);
+  expect(value.events).toEqual([]);
+  expect(value.registryCalls()).toBe(0);
 });

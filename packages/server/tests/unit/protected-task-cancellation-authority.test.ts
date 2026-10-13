@@ -95,7 +95,7 @@ function fixture(change: (stage: string, row: PostgresJsBridgeRow) => PostgresJs
       return result;
     },
     withAcceptedAuthority: async input => {
-      if (!await input.validateCurrentProduct(connection)) return null;
+      if (!await input.validateCurrentProduct(connection, {} as never)) return null;
       const result = await input.use({ plan: { roomId: ROOM } } as CurrentTaskRuntimeAuthority,
         connection, connection, {} as never);
       await input.validateBeforeCommit();

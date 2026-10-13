@@ -17,6 +17,7 @@ import {
 import {
   attachBackgroundAuthorizationRecipient, parseBackgroundAuthorizationRecord,
   sameTaskRuntimeAuthorityPlan,
+  type TaskRuntimeRecipientRequestPlan,
   type BackgroundAuthorizationRecord, type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BindTaskRuntimeRecipientResult,
@@ -38,21 +39,27 @@ export type ProtectedTaskCancellationDeviceAuthorizationInput = Readonly<{
   now?: () => number;
 }>;
 
-function cancellationRecord(record: BackgroundAuthorizationRecord): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
+type PublicationCoordinates = Readonly<{ workId: string; requesterUserId: string;
+  namespaceId: string; policyRevision: number }>;
+export type TaskPublicationDeviceAuthority<Plan> = Readonly<{
+  withDiscovery<Value>(input: Omit<Parameters<ProtectedTaskCancellationAuthorityPort["withDiscovery"]>[0], "intent" | "use"> & Readonly<{
+    plan: Plan;
+    use(...args: Parameters<Parameters<ProtectedTaskCancellationAuthorityPort["withDiscovery"]>[0]["use"]>): Value | Promise<Value>;
+  }>): Promise<Value | null>;
+  withBound<Value>(input: Omit<Parameters<ProtectedTaskCancellationAuthorityPort["withBound"]>[0], "intent" | "use"> & Readonly<{
+    plan: Plan;
+    use(...args: Parameters<Parameters<ProtectedTaskCancellationAuthorityPort["withBound"]>[0]["use"]>): Value | Promise<Value>;
+  }>): Promise<Value | null>;
+}>;
+
+function publicationRecord(record: BackgroundAuthorizationRecord,
+  workKind: "task.cancel_result" | "task.deliver_message" | "task.deliver_result" | "task.delivery_wake",
+): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
   return record.snapshot.formatVersion === 3
     && record.snapshot.credentialSubject.kind === "runtime"
     && record.snapshot.credentialSubject.runtimeKind === "task"
     && record.snapshot.credentialSubject.runtimeVersion === 1
-    && record.workKind === "task.cancel_result" && record.purpose === "task.cancel_result";
-}
-
-function exactPlan(record: BackgroundAuthorizationTaskRuntimeRecordV3, plan: ProtectedTaskCancellationPlan): boolean {
-  return cancellationRecord(record) && cancellationRecord(plan.initialRecord)
-    && record.snapshot.workId === plan.intent.taskRunId
-    && record.snapshot.namespaceId === plan.intent.contentNamespaceId
-    && record.expectedPolicyRevision === plan.intent.policyRevision
-    && record.idempotencyKey === plan.initialRecord.idempotencyKey
-    && sameTaskRuntimeAuthorityPlan(record, plan.initialRecord);
+    && record.workKind === workKind && record.purpose === workKind;
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -67,6 +74,41 @@ function digest(bytes: Uint8Array): string {
 export function createProtectedTaskCancellationDeviceAuthorization(
   input: ProtectedTaskCancellationDeviceAuthorizationInput,
 ): DeviceHooks {
+  return createProtectedTaskPublicationDeviceAuthorization({ ...input,
+    workKind: "task.cancel_result",
+    coordinates: plan => ({ workId: plan.intent.taskRunId,
+      requesterUserId: plan.intent.requesterUserId, namespaceId: plan.intent.contentNamespaceId,
+      policyRevision: plan.intent.policyRevision }),
+    authority: {
+      withDiscovery: ({ plan, ...operation }) => input.authority.withDiscovery({ ...operation, intent: plan.intent }),
+      withBound: ({ plan, ...operation }) => input.authority.withBound({ ...operation, intent: plan.intent }),
+    },
+  });
+}
+
+/** Shared device lifecycle; each publication owner retains its exact product proof. */
+export function createProtectedTaskPublicationDeviceAuthorization<Plan extends TaskRuntimeRecipientRequestPlan & Readonly<{ sourceRoomId: string }>>(
+  input: Readonly<{
+    workKind: "task.cancel_result" | "task.deliver_message" | "task.deliver_result" | "task.delivery_wake";
+    recipients: TaskRuntimeRecipientRegistry;
+    authority: TaskPublicationDeviceAuthority<Plan>;
+    coordinates(plan: Plan): PublicationCoordinates;
+    resolvePlan(record: BackgroundAuthorizationTaskRuntimeRecordV3): Promise<Plan | null>;
+    repository: ProtectedTaskCancellationDeviceAuthorizationInput["repository"];
+    now?: () => number;
+  }>,
+): DeviceHooks {
+  const workKind = input.workKind;
+  const cancellationRecord = (record: BackgroundAuthorizationRecord): record is BackgroundAuthorizationTaskRuntimeRecordV3 => publicationRecord(record, workKind);
+  const exactPlan = (record: BackgroundAuthorizationTaskRuntimeRecordV3, plan: Plan): boolean => {
+    const coordinates = input.coordinates(plan);
+    return cancellationRecord(record) && cancellationRecord(plan.initialRecord)
+      && record.snapshot.workId === coordinates.workId
+      && record.snapshot.namespaceId === coordinates.namespaceId
+      && record.expectedPolicyRevision === coordinates.policyRevision
+      && record.idempotencyKey === plan.initialRecord.idempotencyKey
+      && sameTaskRuntimeAuthorityPlan(record, plan.initialRecord);
+  };
   const recipients = input.recipients;
   const authority = input.authority;
   const resolvePlan = input.resolvePlan;
@@ -102,11 +144,11 @@ export function createProtectedTaskCancellationDeviceAuthorization(
           || !matchesStenographerRequestAdmission(admission, operation.device, now())) return null;
         const plan = await resolvePlan(selected);
         if (plan === null || !exactPlan(selected, plan)
-          || subject.userId !== plan.intent.requesterUserId) return null;
+          || subject.userId !== input.coordinates(plan).requesterUserId) return null;
         let currentDevice: CurrentDeviceAdmissionAuthority | null = null;
         let used = false;
         const bound = await authority.withDiscovery({
-          intent: plan.intent, subject, restricted: operation.restricted,
+          plan, subject, restricted: operation.restricted,
           validateBeforeCommit: () => {
             if (attached === null) return;
             if (currentDevice === null || !isTaskRecipientActive(attached.record)
@@ -135,8 +177,8 @@ export function createProtectedTaskCancellationDeviceAuthorization(
             const request = plan.buildRequest({ record: loaded, attempt: attempt.attempt, binding: subject, authority: current });
             const grant = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
             try {
-              if (grant === null || request.workKind !== "task.cancel_result" || request.workPurpose !== "task.cancel_result"
-                || request.requestId !== loaded.snapshot.requestId || request.workId !== plan.intent.taskRunId
+              if (grant === null || request.workKind !== workKind || request.workPurpose !== workKind
+                || request.requestId !== loaded.snapshot.requestId || request.workId !== input.coordinates(plan).workId
                 || request.sourceRoomId !== plan.sourceRoomId || current.sourceRoomId !== plan.sourceRoomId
                 || request.recipientGeneration !== loaded.snapshot.recipientGeneration
                 || request.recipientKeyId !== attempt.attempt.recipientKeyId
@@ -204,19 +246,19 @@ export function createProtectedTaskCancellationDeviceAuthorization(
           || !["awaiting_device", "grant_ready"].includes(selected.snapshot.state)
           || selected.descriptorBytes === null || digest(selected.descriptorBytes) !== selected.snapshot.descriptorDigest) return null;
         const plan = await resolvePlan(selected);
-        if (plan === null || !exactPlan(selected, plan) || subject.userId !== plan.intent.requesterUserId) return null;
+        if (plan === null || !exactPlan(selected, plan) || subject.userId !== input.coordinates(plan).requesterUserId) return null;
         const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(selected.descriptorBytes);
         if (request === null) return null;
         try {
           const recipient = selected.snapshot.recipient;
           if (recipient === null || request.requestId !== selected.snapshot.requestId
-            || request.workId !== plan.intent.taskRunId || request.workKind !== "task.cancel_result"
-            || request.workPurpose !== "task.cancel_result" || request.sourceRoomId !== plan.sourceRoomId
+            || request.workId !== input.coordinates(plan).workId || request.workKind !== workKind
+            || request.workPurpose !== workKind || request.sourceRoomId !== plan.sourceRoomId
             || request.recipientGeneration !== selected.snapshot.recipientGeneration
             || request.recipientKeyId !== recipient.recipientKeyId || request.deadlineAt !== recipient.expiresAt
             || Buffer.from(request.recipientPublicKey).toString("base64url") !== recipient.recipientPublicKey) return null;
           let used = false;
-          return await authority.withBound({ intent: plan.intent, subject, admission, request,
+          return await authority.withBound({ plan, subject, admission, request,
             namespaceRequirements: selected.authoritySet.namespaceRequirements,
             domainRequirements: selected.authoritySet.domainRequirements, restricted: operation.restricted,
             use: async (current, _product, scoped) => {

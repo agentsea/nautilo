@@ -1,0 +1,190 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  classifyTaskHistoricalContentSourceV1,
+  type TaskHistoricalDefinitionSourceV1,
+  type TaskHistoricalRunResultSourceV1,
+} from "../../src/task/task-historical-content-source.ts";
+
+const ids = {
+  human: "10000000-0000-4000-8000-000000000001",
+  task: "20000000-0000-4000-8000-000000000002",
+  run: "30000000-0000-4000-8000-000000000003",
+};
+const createdAt = new Date("2026-10-10T08:00:00.000Z");
+const updatedAt = new Date("2026-10-10T09:00:00.000Z");
+const startedAt = new Date("2026-10-10T10:00:00.000Z");
+const completedAt = new Date("2026-10-10T11:00:00.000Z");
+
+function operationalFields() {
+  return {
+    scheduleKind: "one_shot" as const,
+    runAt: "2026-10-10T10:00:00.000Z",
+    timezone: "UTC",
+    targetChat: "orphan" as const,
+    resultDelivery: "raw" as const,
+    useScope: false,
+    parentTaskId: null,
+  };
+}
+
+function definition(
+  overrides: Partial<TaskHistoricalDefinitionSourceV1> = {},
+): TaskHistoricalDefinitionSourceV1 {
+  return {
+    kind: "definition",
+    taskId: ids.task,
+    requesterHumanId: ids.human,
+    sourceRevision: 0,
+    taskCreatedAt: createdAt,
+    taskUpdatedAt: updatedAt,
+    taskStatus: "pending",
+    activeRun: false,
+    parentTaskId: null,
+    taskLastError: null,
+    prompt: "Summarize the release evidence.",
+    expectedOutput: "A short report",
+    metadata: {},
+    operationalFields: operationalFields(),
+    ...overrides,
+  };
+}
+
+function result(
+  overrides: Partial<TaskHistoricalRunResultSourceV1> = {},
+): TaskHistoricalRunResultSourceV1 {
+  return {
+    kind: "run_result",
+    taskId: ids.task,
+    taskRunId: ids.run,
+    requesterHumanId: ids.human,
+    sourceRevision: 0,
+    taskCreatedAt: createdAt,
+    taskUpdatedAt: updatedAt,
+    taskStatus: "completed",
+    runStartedAt: startedAt,
+    runCompletedAt: completedAt,
+    runStatus: "completed",
+    resultText: "Release evidence is ready.",
+    lastError: null,
+    metadata: {},
+    operationalFields: operationalFields(),
+    ...overrides,
+  };
+}
+
+function supported(input: TaskHistoricalDefinitionSourceV1 | TaskHistoricalRunResultSourceV1) {
+  const classified = classifyTaskHistoricalContentSourceV1(input);
+  expect(classified.status).toBe("supported");
+  if (classified.status !== "supported") throw new Error("Expected supported source");
+  return classified;
+}
+
+describe("historical Task content source", () => {
+  test("returns canonical definition payload and binds every source lifecycle fact", () => {
+    const base = supported(definition());
+    expect(base.kind).toBe("definition");
+    if (base.kind !== "definition") throw new Error("Expected definition");
+    expect(base.payload).toEqual({
+      formatVersion: 1,
+      prompt: "Summarize the release evidence.",
+      expectedOutput: "A short report",
+      protectedMetadata: {},
+    });
+    expect(base.sourcePayloadHash).toHaveLength(32);
+    expect(base.operationalFieldsDigest).toHaveLength(32);
+    expect(base.sourceDigest).toHaveLength(32);
+
+    const promptEdit = supported(definition({ prompt: "Summarize different evidence." }));
+    const statusEdit = supported(definition({ taskStatus: "paused" }));
+    const timeEdit = supported(definition({
+      taskUpdatedAt: new Date(updatedAt.getTime() + 1),
+    }));
+    expect(promptEdit.sourcePayloadHash).not.toEqual(base.sourcePayloadHash);
+    expect(promptEdit.sourceDigest).not.toEqual(base.sourceDigest);
+    expect(statusEdit.sourcePayloadHash).toEqual(base.sourcePayloadHash);
+    expect(statusEdit.sourceDigest).not.toEqual(base.sourceDigest);
+    expect(timeEdit.sourcePayloadHash).toEqual(base.sourcePayloadHash);
+    expect(timeEdit.sourceDigest).not.toEqual(base.sourceDigest);
+  });
+
+  test("accounts for active, nested, errored, malformed, and unencodable definitions", () => {
+    for (const source of [
+      definition({ taskStatus: "running" }),
+      definition({ taskStatus: "awaiting" }),
+      definition({ taskStatus: "pending", activeRun: true }),
+      definition({ taskStatus: "paused", activeRun: true }),
+    ]) expect(classifyTaskHistoricalContentSourceV1(source)).toEqual({
+      status: "waiting_parent", reason: "active_definition",
+    });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      parentTaskId: "40000000-0000-4000-8000-000000000004",
+    }))).toEqual({ status: "unsupported", reason: "nested_task" });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      taskLastError: "provider unavailable",
+    }))).toEqual({ status: "unsupported", reason: "task_last_error" });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      taskUpdatedAt: new Date("invalid"),
+    }))).toEqual({ status: "unsupported", reason: "invalid_source" });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      metadata: { futureField: true },
+    }))).toEqual({ status: "unsupported", reason: "metadata" });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      metadata: { target: "x".repeat(2_000_000), mode: "update", publish: "branch" },
+    }))).toEqual({ status: "unsupported", reason: "payload" });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      operationalFields: { ...operationalFields(), unknown: true },
+    } as unknown as Partial<TaskHistoricalDefinitionSourceV1>))).toEqual({
+      status: "unsupported", reason: "operational_fields",
+    });
+  });
+
+  test("supports terminal completed, errored, and cancelled run results without truncation", () => {
+    for (const runStatus of ["completed", "errored", "cancelled"] as const) {
+      const classified = supported(result({ runStatus }));
+      expect(classified.kind).toBe("run_result");
+      if (classified.kind !== "run_result") throw new Error("Expected run result");
+      expect(classified.payload).toEqual({
+        formatVersion: 1,
+        resultText: "Release evidence is ready.",
+        lastError: null,
+      });
+    }
+    expect(classifyTaskHistoricalContentSourceV1(result({
+      runCompletedAt: new Date(startedAt.getTime() - 1),
+    }))).toEqual({ status: "unsupported", reason: "invalid_source" });
+  });
+
+  test("distinguishes absent result content from exact empty-string content", () => {
+    expect(classifyTaskHistoricalContentSourceV1(result({
+      resultText: null, lastError: null,
+    }))).toEqual({ status: "no_content" });
+    const empty = supported(result({ resultText: "", lastError: null }));
+    expect(empty.kind).toBe("run_result");
+    if (empty.kind !== "run_result") throw new Error("Expected run result");
+    expect(empty.payload.resultText).toBe("");
+  });
+
+  test("canonical metadata commitment is independent of input key order", () => {
+    const first = supported(definition({
+      metadata: {
+        target: "/work/repository",
+        mode: "update",
+        publish: "branch",
+        instructions: "Preserve existing behavior.",
+      },
+    }));
+    const reordered = supported(definition({
+      metadata: {
+        instructions: "Preserve existing behavior.",
+        publish: "branch",
+        mode: "update",
+        target: "/work/repository",
+      },
+    }));
+    expect(reordered.operationalMetadata).toEqual(first.operationalMetadata);
+    expect(reordered.payload).toEqual(first.payload);
+    expect(reordered.sourcePayloadHash).toEqual(first.sourcePayloadHash);
+    expect(reordered.sourceDigest).toEqual(first.sourceDigest);
+  });
+});

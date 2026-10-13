@@ -251,8 +251,8 @@ test("mixed Task discovery advances only through the earliest source and never s
   signing.privateKey.fill(0);
 });
 
-test.each(["task.dispatch", "task.cancel_result"] as const)("accepts exact signed %s response and wakes awaiting work", async workKind => {
-  const operations = workKind === "task.cancel_result"
+test.each(["task.dispatch", "task.cancel_result", "task.deliver_message"] as const)("accepts exact signed %s response and wakes awaiting work", async workKind => {
+  const operations = ["task.cancel_result", "task.deliver_message"].includes(workKind)
     ? ["encrypt"] as const : ["decrypt", "encrypt"] as const;
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();

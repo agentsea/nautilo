@@ -356,6 +356,33 @@ import {
   type MessageBackfillSourceResponse,
 } from "./schemas/message-backfill";
 import {
+  taskContentBackfillAckRequestSchema,
+  taskContentBackfillAckResponseSchema,
+  taskContentBackfillClaimIdRequestSchema,
+  taskContentBackfillClaimRequestSchema,
+  taskContentBackfillClaimResponseSchema,
+  taskContentBackfillDiscoverResponseSchema,
+  taskContentBackfillProgressResponseSchema,
+  taskContentBackfillPublishRequestSchema,
+  taskContentBackfillPublishResponseSchema,
+  taskContentBackfillRecoverResponseSchema,
+  taskContentBackfillReleaseRequestSchema,
+  taskContentBackfillReleaseResponseSchema,
+  taskContentBackfillSourceResponseSchema,
+  type TaskContentBackfillAckRequest,
+  type TaskContentBackfillAckResponse,
+  type TaskContentBackfillClaimRequest,
+  type TaskContentBackfillClaimResponse,
+  type TaskContentBackfillDiscoverResponse,
+  type TaskContentBackfillProgressResponse,
+  type TaskContentBackfillPublishRequest,
+  type TaskContentBackfillPublishResponse,
+  type TaskContentBackfillRecoverResponse,
+  type TaskContentBackfillReleaseRequest,
+  type TaskContentBackfillReleaseResponse,
+  type TaskContentBackfillSourceResponse,
+} from "./schemas/task-content-backfill";
+import {
   backgroundAuthorizationListRequestSchema,
   backgroundAuthorizationListResponseSchema,
   backgroundAuthorizationRespondRequestSchema,
@@ -10643,6 +10670,122 @@ export class NautiloApiClient {
       auth: "session-fresh",
       schema: messageBackfillProgressSchema,
       defaultErrorPrefix: "GET /api/message-backfill/progress",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async discoverTaskContentBackfill(
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillDiscoverResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/discover",
+      auth: "session-fresh",
+      body: {},
+      schema: taskContentBackfillDiscoverResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/discover",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async claimTaskContentBackfill(
+    input: TaskContentBackfillClaimRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillClaimResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/claim",
+      auth: "session-fresh",
+      body: taskContentBackfillClaimRequestSchema.parse(input),
+      schema: taskContentBackfillClaimResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/claim",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async readTaskContentBackfillSource(
+    input: Readonly<{ claimId: string }>,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillSourceResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/source",
+      auth: "session-fresh",
+      body: taskContentBackfillClaimIdRequestSchema.parse(input),
+      schema: taskContentBackfillSourceResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/source",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async publishTaskContentBackfill(
+    input: TaskContentBackfillPublishRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillPublishResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/publish",
+      auth: "session-fresh",
+      body: taskContentBackfillPublishRequestSchema.parse(input),
+      schema: taskContentBackfillPublishResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/publish",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async recoverTaskContentBackfill(
+    input: Readonly<{ claimId: string }>,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillRecoverResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/recover",
+      auth: "session-fresh",
+      body: taskContentBackfillClaimIdRequestSchema.parse(input),
+      schema: taskContentBackfillRecoverResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/recover",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async getTaskContentBackfillProgress(
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillProgressResponse> {
+    return this.request({
+      path: "/api/tasks/content/backfill/progress",
+      auth: "session-fresh",
+      schema: taskContentBackfillProgressResponseSchema,
+      defaultErrorPrefix: "GET /api/tasks/content/backfill/progress",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async releaseTaskContentBackfill(
+    input: TaskContentBackfillReleaseRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillReleaseResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/release",
+      auth: "session-fresh",
+      body: taskContentBackfillReleaseRequestSchema.parse(input),
+      schema: taskContentBackfillReleaseResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/release",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async acknowledgeTaskContentBackfill(
+    input: TaskContentBackfillAckRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillAckResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/ack",
+      auth: "session-fresh",
+      body: taskContentBackfillAckRequestSchema.parse(input),
+      schema: taskContentBackfillAckResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/ack",
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }

@@ -39,6 +39,7 @@ beforeEach(() => {
     requestorId: ownerId, timeLimitSeconds: null, cryptoRequiredNamespaceFingerprint: null,
     catchup: "skip", targetChatHandle: null, targetUserIds: [], awaitResponse: false,
     fundingMode: "legacy_server", lastFiredAt: null, fireLockId: null, fireLockedAt: null,
+    pauseRequestId: null, pauseRequestedAt: null, pauseReason: null,
     localExecutionDelegation: null, cancelledAt: null };
   run = { id: runId, status: "completed", modelId: null, startedAt: new Date(0), completedAt: new Date(1),
     graphThreadId: "thread", resultRepresentation: "ordinary", resultText: "private result", lastError: "private run error",

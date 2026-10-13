@@ -1,3 +1,5 @@
+import { QueryBuilder } from "drizzle-orm/pg-core";
+import { tasks } from "../../src/schema/tasks";
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
@@ -7,6 +9,7 @@ import {
   type ProtectedTaskExecutionContinuationProof,
 } from "../../src/queries/protected-task-execution-receipts";
 import {
+  protectedTaskDefinitionHistoricalRepairProjection,
   discoverParkedProtectedTaskAdditionalAuthority,
   parseParkedProtectedTaskAdditionalAuthority,
   readParkedProtectedTaskAdditionalAuthority,
@@ -368,4 +371,32 @@ describe("parked protected Task additional-authority discovery", () => {
       { taskRunId: ids.run },
     )).toMatchObject({ authorizationRequestId });
   });
+});
+
+
+test("parked discovery retains immutable historical provenance and compares it during reread", () => {
+  const metadata = { version: 2, claimId: ids.run, publisherDeviceId: "device",
+    signedRequestDigest: "a".repeat(64), sourceDigest: "b".repeat(64), sourcePayloadHash: "c".repeat(64),
+    sourceRevision: 0, genesisManifestHash: "d".repeat(64) };
+  const historical = parse({ task: task({ definitionHistoricalRepair: metadata }) });
+  expect(historical?.occurrence.task.definitionHistoricalRepair).toEqual(metadata);
+  metadata.genesisManifestHash = "e".repeat(64);
+  expect(historical?.occurrence.task.definitionHistoricalRepair?.["genesisManifestHash"]).toBe("d".repeat(64));
+  const changed = parse({ task: task({ definitionHistoricalRepair: metadata }) });
+  expect(historical).not.toBeNull(); expect(changed).not.toBeNull();
+  expect(sameParkedProtectedTaskAdditionalAuthority(historical!, changed!)).toBe(false);
+  expect(Object.hasOwn(parse()!.occurrence.task, "definitionHistoricalRepair")).toBe(false);
+});
+
+
+test("historical discovery uses the immutable genesis ledger after the mapped Task head advances", () => {
+  const query = new QueryBuilder().select({ provenance: protectedTaskDefinitionHistoricalRepairProjection })
+    .from(tasks).toSQL();
+  expect(query.sql).toContain('"task_definition_crypto_revisions"."crypto_access_revision" =');
+  expect(query.sql).not.toContain('"task_definition_crypto_revisions"."crypto_access_revision" = "tasks"."crypto_access_revision"');
+  expect(query.params).toContain(0);
+  expect(query.params).toContain("complete"); expect(query.params).toContain("mapped");
+  for (const field of ["content_revision", "content_namespace_id", "crypto_object_id", "representation", "required_namespace_fingerprint"]) {
+    expect(query.sql).toContain(`"task_definition_crypto_revisions"."${field}" = "tasks".`);
+  }
 });

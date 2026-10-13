@@ -11,6 +11,9 @@ import { readProtectedTaskExecutionContinuationProof } from
 import {
   exactParkedProtectedTaskAdditionalAuthorityProof,
   exactParkedProtectedTaskHumanProof,
+  exactParkedProtectedTaskPhysicalSegment,
+  prepareParkedProtectedTaskCheckpointStart,
+  type PreparedParkedProtectedTaskCheckpointStart,
   exactParkedProtectedTaskJobReference,
   prepareParkedProtectedTaskAdditionalAuthorityStart,
   prepareParkedProtectedTaskHumanStart,
@@ -20,6 +23,11 @@ import {
 import {
   copyParkedProtectedTaskAdditionalAuthority,
   copyParkedProtectedTaskHumanContinuation,
+  copyParkedProtectedTaskCheckpointContinuation,
+  lockParkedProtectedTaskCheckpointContinuation,
+  parseParkedProtectedTaskCheckpointContinuation,
+  type ParkedProtectedTaskCheckpointContinuation,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
   exactProtectedTaskHumanContinuationAcceptanceReceipt,
   lockParkedProtectedTaskAdditionalAuthority,
   lockParkedProtectedTaskHumanContinuation,
@@ -42,12 +50,17 @@ type RecoveryTransaction = Pick<DirectDatabase, "select" | "update">;
 export type RecoverUnstartedParkedProtectedTaskClaimInput = Readonly<{
   expected:
     | ParkedProtectedTaskAdditionalAuthority
-    | ParkedProtectedTaskHumanContinuation;
+    | ParkedProtectedTaskHumanContinuation
+    | ParkedProtectedTaskCheckpointContinuation;
   jobReference: ProtectedTaskDurableJobReference;
 }>;
 
 const taskProjection = Object.freeze({
   id: tasks.id,
+  ownerId: tasks.ownerId,
+  agentId: tasks.agentId,
+  callingRoomId: tasks.callingRoomId,
+  pauseRequestId: tasks.pauseRequestId,
   requestorId: tasks.requestorId,
   scheduleKind: tasks.scheduleKind,
   status: tasks.status,
@@ -74,6 +87,7 @@ const runProjection = Object.freeze({
   jobId: taskRuns.jobId,
   graphThreadId: taskRuns.graphThreadId,
   status: taskRuns.status,
+  startedAt: taskRuns.startedAt,
   pristine: and(
     isNull(taskRuns.resultText),
     isNull(taskRuns.completedAt),
@@ -142,7 +156,8 @@ type ParkedClaimJob = Readonly<{
 
 function exactParkedClaimReference(
   expected: ParkedProtectedTaskAdditionalAuthority
-    | ParkedProtectedTaskHumanContinuation,
+    | ParkedProtectedTaskHumanContinuation
+    | ParkedProtectedTaskCheckpointContinuation,
   reference: ProtectedTaskDurableJobReference,
 ): boolean {
   const prior = expected.priorJob.reference;
@@ -154,6 +169,8 @@ function exactParkedClaimReference(
     && reference.authorizationRequestId === expected.authorizationRequestId
     && Number.isSafeInteger(reference.policyRevision)
     && reference.policyRevision >= 1
+    && (!("stableRoutingDigest" in expected) || "acceptance" in expected
+      || reference.policyRevision >= prior.policyRevision)
     && reference.executionSegment === expected.nextExecutionSegment
     && ("continuationFingerprint" in expected
       ? reference.resumeAcceptanceId === undefined
@@ -165,7 +182,8 @@ function exactParkedClaimReference(
 
 function exactParkedClaimJob(
   expected: ParkedProtectedTaskAdditionalAuthority
-    | ParkedProtectedTaskHumanContinuation,
+    | ParkedProtectedTaskHumanContinuation
+    | ParkedProtectedTaskCheckpointContinuation,
   reference: ProtectedTaskDurableJobReference,
   job: ParkedClaimJob,
 ): "queued" | "cancelled" | null {
@@ -188,15 +206,18 @@ function exactParkedClaimJob(
 async function lockParkedClaimJobs(
   tx: RecoveryTransaction,
   expected: ParkedProtectedTaskAdditionalAuthority
-    | ParkedProtectedTaskHumanContinuation,
+    | ParkedProtectedTaskHumanContinuation
+    | ParkedProtectedTaskCheckpointContinuation,
   reference: ProtectedTaskDurableJobReference,
 ): Promise<Readonly<{
   jobs: readonly ParkedClaimJob[];
   queuedIds: readonly string[];
 }> | null> {
-  const locked = "continuationFingerprint" in expected
-    ? await lockParkedProtectedTaskAdditionalAuthority(tx, expected)
-    : await lockParkedProtectedTaskHumanContinuation(tx, expected);
+  const locked = "acceptance" in expected
+    ? await lockParkedProtectedTaskHumanContinuation(tx, expected)
+    : "stableRoutingDigest" in expected
+      ? await lockParkedProtectedTaskCheckpointContinuation(tx, expected)
+      : await lockParkedProtectedTaskAdditionalAuthority(tx, expected);
   if (locked === null) return null;
   const rows = await (
     tx.select(nextJobProjection).from(jobs)
@@ -225,7 +246,8 @@ type LockedRecovery = Readonly<{
 
 type PreparedParkedProtectedTaskRecovery =
   | PreparedParkedProtectedTaskAdditionalAuthorityStart
-  | PreparedParkedProtectedTaskHumanStart;
+  | PreparedParkedProtectedTaskHumanStart
+  | PreparedParkedProtectedTaskCheckpointStart;
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -290,7 +312,7 @@ async function lockExactRecovery(
   const nextJob = await selectNextJob(tx, input);
   if (!nextJob) return null;
 
-  const proof = "continuation" in input
+  const proof = !("acceptance" in input)
     ? await readProtectedTaskExecutionContinuationProof(tx, {
         taskId: input.taskId,
         taskRunId: input.taskRunId,
@@ -308,7 +330,25 @@ async function lockExactRecovery(
         ),
       )).limit(2)
     : [];
-  const exactProof = "continuation" in input
+  // Only normalize lifecycle for proving the retained checkpoint; the actual
+  // parked/linked states and unstarted next Job are independently fenced below.
+  const checkpoint = "continuationFingerprint" in input
+    ? parseParkedProtectedTaskCheckpointContinuation({
+        task: { ...task, pauseRequestId: null,
+          status: task.scheduleKind === "cron" ? "pending" : "awaiting" },
+        run: { ...run, status: "awaiting", jobId: priorJob.id },
+        job: priorJob, proof,
+      })
+    : null;
+  const exactProof = "continuationFingerprint" in input
+    ? checkpoint !== null
+      && checkpoint.continuationFingerprint === input.continuationFingerprint
+      && checkpoint.authorizationRequestId === input.jobReference.authorizationRequestId
+      && checkpoint.priorJob.generation === input.generation
+      && checkpoint.priorJob.parkedAt.getTime() === input.parkedAt.getTime()
+      && sameBytes(checkpoint.stableRoutingDigest, input.stableRoutingDigest)
+      && exactParkedProtectedTaskPhysicalSegment(checkpoint.proof.segment, input, true)
+    : "continuation" in input
     ? exactParkedProtectedTaskAdditionalAuthorityProof(
         proof,
         priorJob.parkReceipt,
@@ -413,13 +453,16 @@ async function lockExactRecovery(
 export async function recoverUnstartedParkedProtectedTaskRun(
   db: DirectDatabase,
   startInput: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
-    | StartParkedProtectedTaskHumanRunSegmentInput,
+    | StartParkedProtectedTaskHumanRunSegmentInput
+    | StartParkedProtectedTaskCheckpointSegmentInput,
   recoveredAt: Date,
   deferAuthorization: () => Promise<boolean>,
 ): Promise<ParkedProtectedTaskPreexecutionRecoveryResult> {
-  const input = "continuation" in startInput
-    ? prepareParkedProtectedTaskAdditionalAuthorityStart(startInput)
-    : prepareParkedProtectedTaskHumanStart(startInput);
+  const input = "continuationFingerprint" in startInput
+    ? prepareParkedProtectedTaskCheckpointStart(startInput)
+    : "continuation" in startInput
+      ? prepareParkedProtectedTaskAdditionalAuthorityStart(startInput)
+      : prepareParkedProtectedTaskHumanStart(startInput);
   if (!(recoveredAt instanceof Date)
     || !Number.isFinite(recoveredAt.getTime())
     || recoveredAt.getTime() < input.parkedAt.getTime()) {
@@ -546,9 +589,11 @@ export async function recoverUnstartedParkedProtectedTaskClaim(
   recoveredAt: Date,
   deferAuthorization: () => Promise<boolean>,
 ): Promise<ParkedProtectedTaskPreexecutionRecoveryResult> {
-  const expected = "continuationFingerprint" in supplied.expected
-    ? copyParkedProtectedTaskAdditionalAuthority(supplied.expected)
-    : copyParkedProtectedTaskHumanContinuation(supplied.expected);
+  const expected = "acceptance" in supplied.expected
+    ? copyParkedProtectedTaskHumanContinuation(supplied.expected)
+    : "stableRoutingDigest" in supplied.expected
+      ? copyParkedProtectedTaskCheckpointContinuation(supplied.expected)
+      : copyParkedProtectedTaskAdditionalAuthority(supplied.expected);
   const reference = Object.freeze({ ...supplied.jobReference });
   if (!exactParkedClaimReference(expected, reference)
     || !(recoveredAt instanceof Date)

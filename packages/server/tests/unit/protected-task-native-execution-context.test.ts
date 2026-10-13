@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { NautiloProfile } from "@nautilo/agent";
+import type { ForegroundChatFundingSession, NautiloProfile } from "@nautilo/agent";
 import type { DirectDatabase, Task, TaskRun } from "@nautilo/db";
 import type {
   ProtectedTaskPredispatchPlan,
   ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
+import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 
 import { createProductionProtectedTaskNativeExecutionContext } from
   "../../src/routes/protected-task-native-execution-context";
@@ -62,6 +63,9 @@ function task(overrides: Partial<Task> = {}): Task {
     lastFiredAt: null,
     fireLockId: null,
     fireLockedAt: null,
+    pauseRequestId: null,
+    pauseRequestedAt: null,
+    pauseReason: null,
     lastError: null,
     localExecutionDelegation: null,
     metadata: {},
@@ -202,6 +206,7 @@ function harness(
   const currentTask = task(taskOverrides);
   let currentRun = run(executionOverrides.run);
   let attachCalls = 0;
+  let fundingBindCalls = 0;
   const job = {
     id: ids.job,
     ownerId: ids.owner,
@@ -220,7 +225,11 @@ function harness(
     db: {} as DirectDatabase,
     resolveToolWhitelist: () => undefined,
     readTask: async () => currentTask,
-    readRun: async () => currentRun,
+    readRun: async () => ({
+      ...currentRun,
+      resultTextIsNull: currentRun.resultText === null,
+      lastErrorIsNull: currentRun.lastError === null,
+    }),
     readJob: async () => job,
     getProfileByAgentId: async () => profile(),
     assertCanUseServerProviderCredentials: async () => {},
@@ -237,12 +246,25 @@ function harness(
       currentRun = run({ modelId: input.modelId });
       return { status: "attached" as const };
     },
+    bindProtectedTaskRunFunding: async (
+      _db: DirectDatabase,
+      input: { modelId: string; fundingBinding: TaskRun["fundingBinding"] },
+    ) => {
+      fundingBindCalls += 1;
+      currentRun = run({
+        modelId: input.modelId,
+        fundingBinding: input.fundingBinding,
+      });
+      return { status: "attached" as const };
+    },
     resolveTaskReturnBinding: () => ({ status: "not_captured" as const }),
     resolveRelayCapabilities: () => undefined,
+    resolveLocalExecutionPort: async () => undefined,
   };
   return {
     dependencies,
     get attachCalls() { return attachCalls; },
+    get fundingBindCalls() { return fundingBindCalls; },
     setJobStatus(status: string) {
       (job as { status: string }).status = status;
     },
@@ -253,9 +275,27 @@ const input = {
   occurrence: occurrence(),
   predispatch: predispatch(),
   protectedMetadata: {},
+  signal: new AbortController().signal,
+  assertCurrentTaskAuthority: async () => {},
 };
 
 describe("protected Task native execution context", () => {
+  test("retains the exact grant-bound delegated local execution port", async () => {
+    const state = harness();
+    const port = Object.freeze({ taskId: ids.task, taskRunId: ids.run,
+      signal: new AbortController().signal,
+      withAdmission: async <T>(_operation: "read", work: (value: never) => Promise<T>) => work({} as never) });
+    const context = await createProductionProtectedTaskNativeExecutionContext({
+      ...state.dependencies,
+      resolveLocalExecutionPort: async supplied => {
+        expect(supplied.occurrence).toBe(input.occurrence);
+        expect(supplied.assertCurrentTaskAuthority).toBe(input.assertCurrentTaskAuthority);
+        return port;
+      },
+      resolveTaskModel: ({ baseModelId }) => ({ modelId: baseModelId, reasons: [] }),
+    })(input);
+    expect(context.delegatedLocalExecutionPort).toBe(port);
+  });
   test("binds the selected profile model and ordinary depth policy", async () => {
     const state = harness();
     const context = await createProductionProtectedTaskNativeExecutionContext({
@@ -388,21 +428,126 @@ describe("protected Task native execution context", () => {
     expect(state.attachCalls).toBe(0);
   });
 
-  test("rejects caller funding without falling back to server credentials", async () => {
+  test("binds caller funding and carries credential custody under current protected authority", async () => {
     const state = harness({ fundingMode: "caller" });
     let serverFundingCalls = 0;
+    let currentAuthorityChecks = 0;
+    let fundingRuns = 0;
+    const admittedSources: unknown[] = [];
+    const openedSources: unknown[] = [];
+    const binding = {
+      kind: "personal" as const,
+      providerRoute: "anthropic",
+      credentialId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      credentialRevision: 2,
+    };
+    const session: ForegroundChatFundingSession = {
+      kind: "personal",
+      recheckAttempt: async () => {},
+      runAttempt: async (_modelId, callback) => {
+        fundingRuns += 1;
+        return callback({
+          usageFunding: {
+            kind: "personal",
+            humanUserId: ids.owner,
+            payerHumanId: ids.owner,
+            providerRoute: "anthropic",
+            credentialId: binding.credentialId,
+            credentialRevision: binding.credentialRevision,
+          },
+          personalCredential: { apiKey: "request-local-secret" },
+        });
+      },
+    };
     const load = createProductionProtectedTaskNativeExecutionContext({
       ...state.dependencies,
       assertCanUseServerProviderCredentials: async () => {
         serverFundingCalls += 1;
       },
+      assertTaskFundingAdmission: async (taskSource, runSource) => {
+        admittedSources.push({ taskSource, runSource });
+        return { modelId: "anthropic:claude-sonnet", binding };
+      },
+      openTaskFundingSession: async request => {
+        openedSources.push(request);
+        return session;
+      },
+      getCurrentAcceptedInvocationAuthority: () =>
+        createAcceptedInvocationAuthority(ids.owner, { originTaskId: ids.task }),
+      withProtectedTaskFundingAuthority: async (assertCurrent, work) => {
+        await assertCurrent();
+        const result = await work();
+        await assertCurrent();
+        return result;
+      },
     });
 
-    await Promise.resolve(expect(load(input)).rejects.toThrow(
-      "Caller-funded protected Task execution is unsupported",
-    ));
+    const context = await load({
+      ...input,
+      assertCurrentTaskAuthority: async () => {
+        currentAuthorityChecks += 1;
+      },
+    });
+    const fundingSession = context.foregroundChatFundingSession;
+    if (fundingSession === undefined) {
+      throw new Error("caller funding session was not retained");
+    }
+    const observed = await fundingSession.runAttempt(
+      "anthropic:claude-sonnet",
+      async attempt => attempt.personalCredential?.apiKey,
+    );
+
+    expect(observed).toBe("request-local-secret");
+    expect(fundingRuns).toBe(1);
+    expect(currentAuthorityChecks).toBeGreaterThanOrEqual(8);
     expect(serverFundingCalls).toBe(0);
     expect(state.attachCalls).toBe(0);
+    expect(state.fundingBindCalls).toBe(1);
+    expect(admittedSources).toHaveLength(1);
+    const admittedSource = admittedSources[0] as {
+      taskSource: Record<string, unknown>;
+      runSource: unknown;
+    };
+    expect(admittedSource.taskSource["metadata"]).toEqual({});
+    expect(admittedSource.runSource).toBeUndefined();
+    expect(openedSources).toHaveLength(1);
+    for (const source of [
+      admittedSource.taskSource,
+      (openedSources[0] as { task: Record<string, unknown> }).task,
+    ]) {
+      expect(Object.hasOwn(source, "prompt")).toBe(false);
+      expect(Object.hasOwn(source, "expectedOutput")).toBe(false);
+      expect(Object.hasOwn(source, "lastError")).toBe(false);
+    }
+    const openedRun = (openedSources[0] as {
+      run: Record<string, unknown>;
+    }).run;
+    expect(Object.hasOwn(openedRun, "resultText")).toBe(false);
+    expect(Object.hasOwn(openedRun, "lastError")).toBe(false);
+    expect(JSON.stringify(context)).not.toContain("request-local-secret");
+  });
+
+  test("rejects a mismatched caller authority before funding admission or binding", async () => {
+    const state = harness({ fundingMode: "caller" });
+    let admissionCalls = 0;
+    const load = createProductionProtectedTaskNativeExecutionContext({
+      ...state.dependencies,
+      getCurrentAcceptedInvocationAuthority: () =>
+        createAcceptedInvocationAuthority(ids.owner, {
+          originTaskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        }),
+      assertTaskFundingAdmission: async () => {
+        admissionCalls += 1;
+        throw new Error("must not admit mismatched authority");
+      },
+    });
+
+    await Promise.resolve(expect(load({
+      ...input,
+      assertCurrentTaskAuthority: async () => {},
+    })).rejects.toThrow("caller funding authority changed"));
+    expect(admissionCalls).toBe(0);
+    expect(state.fundingBindCalls).toBe(0);
   });
   test("rejects changed tool policy while model resolution is in flight", async () => {
     const f = harness();

@@ -1,3 +1,4 @@
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "../../src/task/task-historical-content-identity.ts";
 import { describe, expect, test } from "bun:test";
 import {
   PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1,
@@ -953,4 +954,22 @@ describe("dormant Task content shadow repository", () => {
       limit: 1,
     })).rejects.toThrow("too many candidates");
   });
+});
+
+test("historical recovery carries its closed source identity and exact signed genesis to crypto verification", async () => {
+  const h = harness();
+  const historicalRepair = { version: 2 as const, claimId: "70000000-0000-4000-8000-000000000001",
+    publisherDeviceId: "historical-device", signedRequestDigest: "0a".repeat(32), sourceDigest: "04".repeat(32),
+    sourcePayloadHash: "05".repeat(32), sourceRevision: 0 as const, genesisManifestHash: "06".repeat(32) };
+  const cryptoObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({ coordinate,
+    namespaceId: authority.namespaceId, sourceDigest: new Uint8Array(32).fill(4) });
+  h.product.state = Object.freeze({ product: null, authority, lifecycle: lifecycle({
+    historicalRepair, representation: "dual", requestDigest: new Uint8Array(32).fill(10), cryptoObjectId,
+  }) });
+  h.crypto.stored = { ...prepared(), objectId: cryptoObjectId };
+  expect(await h.repository.reconcileCoordinate({ coordinate,
+    operationId: h.product.state.lifecycle.operationId, leaseToken: LEASE })).toBe("mapped");
+  expect(h.crypto.lastReference?.historicalRepair).toEqual({ provenance: historicalRepair,
+    namespaceId: authority.namespaceId });
+  expect(h.crypto.lastReference?.expectedGenesisManifestHash).toEqual(new Uint8Array(32).fill(6));
 });

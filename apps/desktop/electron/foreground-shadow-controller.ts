@@ -16,6 +16,7 @@ import {
   createElectronHumanTaskClient,
   createElectronHumanTaskRunResultReader,
   createElectronMessageBackfillClient,
+  createElectronTaskContentBackfillClient,
   createElectronRoomHistoryShadowMessageReader,
   createElectronSharedAgentLiveShadowMessageReceiver,
   createElectronSharedAgentOutputLiveShadowReceiver,
@@ -28,6 +29,7 @@ import {
   type ElectronHumanTaskClientInput,
   type ElectronHumanTaskRunResultReaderInput,
   type ElectronMessageBackfillClientInput,
+  type ElectronTaskContentBackfillClientInput,
   type ElectronRoomHistoryShadowAcknowledgementInput,
   type ElectronRoomHistoryShadowMessageReaderInput,
   type ElectronSafeStoragePort,
@@ -69,6 +71,7 @@ type HumanTaskRunTranscriptReader = ReturnType<
 type MessageBackfillClient = ReturnType<
   typeof createElectronMessageBackfillClient
 >;
+type TaskContentBackfillClient = ReturnType<typeof createElectronTaskContentBackfillClient>;
 type BackgroundAuthorizationClient = ReturnType<
   typeof createElectronBackgroundAuthorizationClientV2
 >;
@@ -130,6 +133,7 @@ export type ElectronForegroundShadowApi =
   & ElectronSharedAgentOutputLiveShadowReceiverInput["api"]
   & ElectronRoomHistoryShadowMessageReaderInput["api"]
   & ElectronMessageBackfillClientInput["api"]
+  & ElectronTaskContentBackfillClientInput["api"]
   & ElectronHumanMemoryClientInput["api"]
   & ElectronBackgroundAuthorizationClientInput["api"]
   & Pick<NautiloApiClient, "setToken" | "readProtectedTaskRunTranscriptV1">
@@ -168,6 +172,7 @@ export interface ElectronForegroundShadowControllerFactories {
   createMessageBackfill(
     input: ElectronMessageBackfillClientInput,
   ): MessageBackfillClient;
+  createTaskContentBackfill(input: ElectronTaskContentBackfillClientInput): TaskContentBackfillClient;
   createBackgroundAuthorization(
     input: ElectronBackgroundAuthorizationClientInput,
   ): BackgroundAuthorizationClient;
@@ -189,6 +194,7 @@ const productionFactories: ElectronForegroundShadowControllerFactories =
     createHumanTask: createElectronHumanTaskClient,
     createHumanTaskRunResult: createElectronHumanTaskRunResultReader,
     createMessageBackfill: createElectronMessageBackfillClient,
+    createTaskContentBackfill: createElectronTaskContentBackfillClient,
     createBackgroundAuthorization:
       createElectronBackgroundAuthorizationClientV2,
   });
@@ -253,6 +259,10 @@ export class ElectronForegroundShadowController {
   readonly #humanTaskRunResult: HumanTaskRunResultReader;
   readonly #humanTaskRunTranscript: HumanTaskRunTranscriptReader;
   readonly #messageBackfill: MessageBackfillClient;
+  readonly #taskContentBackfill: TaskContentBackfillClient;
+  #taskContentBackfillAbort: AbortController | undefined;
+  #taskContentBackfillResumeAfterAbort: AbortController | undefined;
+  #taskContentBackfillRequest: Promise<Awaited<ReturnType<TaskContentBackfillClient["runBatch"]>>> | undefined;
   readonly #backgroundAuthorization: BackgroundAuthorizationClient;
   readonly #backgroundAuthorizationSweeps:
     CoalescedBackgroundAuthorizationSweepV2;
@@ -375,6 +385,10 @@ export class ElectronForegroundShadowController {
     this.#messageBackfill = factories.createMessageBackfill({
       ...clientInput,
       dataOperationOwner,
+    });
+    this.#taskContentBackfill = factories.createTaskContentBackfill({
+      ...clientInput, dataOperationOwner,
+      resolveDeviceAdmissionStatus: () => api.deviceAdmission.status(),
     });
     this.#backgroundAuthorization = factories.createBackgroundAuthorization(
       clientInput,
@@ -529,7 +543,7 @@ export class ElectronForegroundShadowController {
     this.#messageBackfillAbort = abort;
     const request = this.#runMemory(
       () => this.#messageBackfill.runBatch({ signal: abort.signal }),
-      {signal: abort.signal, preemptMessageBackfill: false},
+      {signal: abort.signal, preemptMessageBackfill: false, preemptTaskContentBackfill: false},
     ).catch((error: unknown) => {
       if (abort.signal.aborted) {
         return this.#messageBackfillResumeAfterAbort === abort
@@ -550,6 +564,55 @@ export class ElectronForegroundShadowController {
     });
     this.#messageBackfillRequest = request;
     return request;
+  }
+
+  getTaskContentBackfillProgress(): ReturnType<NautiloApiClient["getTaskContentBackfillProgress"]> {
+    return this.#runMemory(() => this.#activeMemoryPolicy?.mode === "shadow_encryption"
+      ? this.#api.getTaskContentBackfillProgress()
+      : Promise.resolve({ status: "inactive" as const }),
+    { preemptMessageBackfill: false, preemptTaskContentBackfill: false });
+  }
+
+  serviceTaskContentBackfill(): Promise<Awaited<ReturnType<TaskContentBackfillClient["runBatch"]>>> {
+    if (this.#taskContentBackfillRequest !== undefined) return this.#taskContentBackfillRequest;
+    const abort = new AbortController();
+    this.#taskContentBackfillAbort = abort;
+    const request = this.#runMemory(async () => {
+      // The progress endpoint contains no source content and activates only Shadow repair.
+      if (this.#activeMemoryPolicy?.mode !== "shadow_encryption") {
+        return { state: "waiting" as const, resumeAt: null };
+      }
+      const progress = await this.#api.getTaskContentBackfillProgress({ signal: abort.signal });
+      abort.signal.throwIfAborted();
+      if (progress.status !== "ready") return { state: "waiting" as const, resumeAt: null };
+      if (this.#disposed || !await this.#isBindingCurrent()) {
+        throw new ElectronForegroundShadowControllerUnavailableError();
+      }
+      if (this.#isAccountCurrent !== undefined) await this.#assertAccountCurrent();
+      abort.signal.throwIfAborted();
+      return this.#taskContentBackfill.runBatch({ signal: abort.signal });
+    }, { signal: abort.signal, preemptMessageBackfill: false, preemptTaskContentBackfill: false })
+      .catch((error: unknown) => {
+        if (abort.signal.aborted) return this.#taskContentBackfillResumeAfterAbort === abort
+          ? { state: "more" as const, resumeAt: Date.now() }
+          : { state: "waiting" as const, resumeAt: null };
+        throw error;
+      }).finally(() => {
+        if (this.#taskContentBackfillAbort === abort) this.#taskContentBackfillAbort = undefined;
+        if (this.#taskContentBackfillResumeAfterAbort === abort) this.#taskContentBackfillResumeAfterAbort = undefined;
+        if (this.#taskContentBackfillRequest === request) this.#taskContentBackfillRequest = undefined;
+      });
+    this.#taskContentBackfillRequest = request;
+    return request;
+  }
+
+  cancelTaskContentBackfill(): void { this.#taskContentBackfillAbort?.abort(); }
+
+  #preemptTaskContentBackfill(): void {
+    const abort = this.#taskContentBackfillAbort;
+    if (abort === undefined) return;
+    this.#taskContentBackfillResumeAfterAbort = abort;
+    abort.abort();
   }
 
   cancelMessageBackfill(): void {
@@ -710,6 +773,7 @@ export class ElectronForegroundShadowController {
     if (this.#disposePromise !== undefined) return this.#disposePromise;
     this.#disposed = true;
     this.cancelMessageBackfill();
+    this.cancelTaskContentBackfill();
     this.#backgroundAuthorizationAbort.abort();
     const dispose = Promise.all([
       this.#tail,
@@ -750,11 +814,13 @@ export class ElectronForegroundShadowController {
     options: Readonly<{
       signal?: AbortSignal;
       preemptMessageBackfill?: boolean;
+      preemptTaskContentBackfill?: boolean;
     }> = {},
   ): Promise<Result> {
     if (options.preemptMessageBackfill !== false) {
       this.#preemptMessageBackfill();
     }
+    if (options.preemptTaskContentBackfill !== false) this.#preemptTaskContentBackfill();
     if (this.#disposed) {
       return Promise.reject(
         new ElectronForegroundShadowControllerUnavailableError(),
@@ -811,6 +877,7 @@ export class ElectronForegroundShadowController {
     options: Readonly<{
       signal?: AbortSignal;
       preemptMessageBackfill?: boolean;
+      preemptTaskContentBackfill?: boolean;
       revalidateAccountAfterOperation?: boolean;
     }> = {},
   ): Promise<Result> {

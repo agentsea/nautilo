@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "../utils/encryption-transition-queries";
 import {
   and,
   asc,
@@ -165,6 +166,10 @@ export async function acceptProtectedTaskRunOutputBinding(
 ): Promise<AcceptProtectedTaskRunOutputBindingResult> {
   assertAcceptanceInput(input);
   return db.transaction(async (tx) => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server"))
+      .limit(1).for("share");
+
     const [task] = await tx.select().from(tasks).where(eq(tasks.id, input.taskId))
       .limit(1).for("update");
     if (!task) return rejected("not_found");
@@ -173,15 +178,10 @@ export async function acceptProtectedTaskRunOutputBinding(
       eq(taskRuns.taskId, input.taskId),
     )).limit(1).for("update");
     if (!run) return rejected("not_found");
-    const [policy] = await tx.select().from(encryptionTransitionPolicy)
-      .where(eq(encryptionTransitionPolicy.id, "server"))
-      .limit(1).for("share");
     if (
       !policy
       || policy.revision !== input.requiredPolicyRevision
-      || policy.mode !== (task.contentRepresentation === "dual"
-        ? "shadow_encryption"
-        : "encrypted_only")
+      || !protectedTaskDefinitionSupportsPolicy(task.contentRepresentation, policy.mode)
     ) return rejected("authority_changed");
 
     const deliveryMode = task.callingRoomId === null
@@ -323,7 +323,9 @@ function exactTerminalResult(
       : run.resultText === PROTECTED_TASK_CANCELLED_RESULT);
   return (task.contentRepresentation === "protected"
       || task.contentRepresentation === "dual")
-    && run.resultRepresentation === task.contentRepresentation
+    && (run.resultRepresentation === "dual" || run.resultRepresentation === "protected")
+    && protectedTaskDefinitionSupportsPolicy(task.contentRepresentation,
+      run.resultRepresentation === "protected" ? "encrypted_only" : "shadow_encryption")
     && exactDestination
     && run.completedAt !== null
     && run.resultCryptoMappingState === "verified"
@@ -380,7 +382,7 @@ export async function recordProtectedTaskRunResultAttached(
 }
 
 export async function recordProtectedTaskRunMessagePublished(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "transaction">,
   input: Readonly<{ taskId: string; taskRunId: string; messageId: number }>,
 ): Promise<RecordProtectedTaskRunOutputReceiptResult> {
   if (
@@ -430,6 +432,8 @@ export async function recordProtectedTaskRunMessagePublished(
         eq(sessionMessageCryptoRevisions.messageId, message.id),
         eq(sessionMessageCryptoRevisions.editRevision, message.editRevision),
       )).limit(1).for("share");
+    // Task/Run locks retain this append-only receipt; unique publication keys
+    // serialize insertion without requiring UPDATE privileges on receipts.
     const [association] = await tx.select().from(taskRunMessageAssociations)
       .where(and(
         eq(taskRunMessageAssociations.taskRunId, input.taskRunId),
@@ -444,18 +448,15 @@ export async function recordProtectedTaskRunMessagePublished(
           taskRunMessageAssociations.publicationKey,
           binding.messageOperationId,
         ),
-      )).limit(1).for("share");
+      )).limit(1);
     // This immutable receipt is inserted inside the canonical Message
     // transaction only after its producer proves that the Session belongs to
     // the destination Room owner. Re-reading mutable Room ownership here
     // would invert canonical publication locks and reject valid old Messages
     // after a later Room ownership transfer.
-    const expectedMode = task.contentRepresentation === "dual"
-      ? "shadow_encryption"
-      : "full_encryption";
-    const expectedPolicyRevision = expectedMode === "full_encryption"
-      ? binding.acceptedPolicyRevision
-      : null;
+    const expectedMode = revision?.representationMode;
+    // Retained result bytes may be dual while a later current-policy writer
+    // publishes a protected-only Message. Its immutable lifecycle is the write proof.
     if (
       !session
       || !association
@@ -473,8 +474,17 @@ export async function recordProtectedTaskRunMessagePublished(
       || revision.roomId !== binding.destinationRoomId
       || revision.namespaceIdAtAllocation !== binding.destinationNamespaceId
       || revision.appendIdempotencyKey !== binding.messageOperationId
-      || revision.representationMode !== expectedMode
-      || revision.publicationPolicyRevision !== expectedPolicyRevision
+      || expectedMode !== "shadow_encryption" && expectedMode !== "full_encryption"
+      || !protectedTaskDefinitionSupportsPolicy(run.resultRepresentation,
+        expectedMode === "full_encryption" ? "encrypted_only" : "shadow_encryption")
+      // The result's accepted revision remains immutable provenance. A fresh
+      // destination grant can publish later under the same compatible mode;
+      // the canonical raw-delivery association proves that publication.
+      || (expectedMode === "full_encryption"
+        ? !Number.isSafeInteger(revision.publicationPolicyRevision)
+          || revision.publicationPolicyRevision === null
+          || revision.publicationPolicyRevision < binding.acceptedPolicyRevision
+        : revision.publicationPolicyRevision !== null)
       || revision.payloadVersion !== 2
       || revision.keyClass !== "ai"
       || revision.authorRole !== "assistant"

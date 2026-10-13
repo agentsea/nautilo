@@ -1,5 +1,7 @@
 import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { createProtectedTaskPendingAttention } from "./protected-task-pending-attention";
+import { createProtectedTaskForegroundCreationOwner } from "./protected-task-foreground-creation-owner";
+import { withProtectedTaskForegroundCreationContext } from "./protected-task-foreground-creation-context";
 import {
   and,
   conversationSharedAgentShadowExecutions,
@@ -90,6 +92,7 @@ import {
   persistDeviceWrappedAgentObject,
   readVerifiedDeviceWrappedAgentObject,
   createPostgresForegroundAgentSignerResolver,
+  createPostgresForegroundMemoryPublication,
   LiveShadowRecipientRegistry,
   PostgresConversationProductStore,
   PostgresHumanMessageEditPlanner,
@@ -581,6 +584,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     messageId: number;
   }>) => Promise<void>;
 }>): ProductionLiveShadowMessageComposition {
+  const taskContentOwner = input.taskContentOwner;
   const wakeForegroundMemoryEffectRecovery =
     input.wakeForegroundMemoryEffectRecovery;
   const loadRuntimePolicy = input.loadRuntimePolicy
@@ -3863,6 +3867,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                           const historyRepairer =
                             createForegroundMessageHistoryRepairer({
                               crypto,
+                              commonManifestHandle: cryptoHandle,
                               cryptoCompletion: completion,
                               storage,
                               entities,
@@ -4323,6 +4328,16 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                 envelope, policy,
                                 wakeEffectRecovery:
                                   wakeForegroundMemoryEffectRecovery,
+                                publication: createPostgresForegroundMemoryPublication({
+                                  handle: cryptoHandle,
+                                  crypto,
+                                  resolveCurrentAuthorization:
+                                    authority!.resolveCurrentForegroundEntityObjectWrite,
+                                  resolveHistoricalAgentSignerAuthority:
+                                    signerHistory.resolveAgentRuntimeSignerManager,
+                                  resolveLiveShadowAgentSigner:
+                                    resolveForegroundSigner,
+                                }),
                                 domain: {
                                   subjectUserId: authority!.causalHumanUserId,
                                   agentId: foregroundPlan.recipientAgentId,
@@ -4390,11 +4405,48 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                           const settled = Promise.withResolvers<void>();
                           activeAgentWork.settlement = settled.promise;
                           try {
-                            const value = await input.work(
+                            const work = () => input.work(
                                 session,
                                 openedHumanContent,
                                 entities.signal,
                               );
+                            const createProtected = async () => {
+                              const creation = createProtectedTaskForegroundCreationOwner({
+                                owner: taskContentOwner!(), crypto, entities, restricted: restrictedConnection,
+                                serverScope: serverId, representation: policy.mode === "encrypted_only" ? "protected" : "dual",
+                                subject: { userId: authority!.causalHumanUserId, humanId: foregroundPlan.subjectHumanId,
+                                  agentId: foregroundPlan.recipientAgentId, roomId: foregroundPlan.roomId,
+                                  policyRevision: foregroundPlan.policyRevision, namespaceIds: description.namespaceIds },
+                                publication: { operationId: foregroundPlan.operationId,
+                                  policyRevision: foregroundPlan.policyRevision, grantId: description.authorizationId,
+                                  grantDigest: description.authorizationDigest, recipientKeyId: description.recipientKeyId,
+                                  agentAuthorizationRevision: foregroundPlan.agentAuthorizationRevision,
+                                  signerKeyId: foregroundPlan.agentSignerKeyId, signerPublicKey: foregroundPlan.agentSignerPublicKey,
+                                  runtime: agentRuntime },
+                                assertCurrentForeground: async () => {
+                                  entities.signal.throwIfAborted();
+                                  if (!await authority!.verifyCurrentPlan()) throw new Error("Foreground Task creation authority changed");
+                                  entities.signal.throwIfAborted();
+                                },
+                                createCurrentAuthority: async product => createPostgresDomainKeyV2LiveShadowCurrentAuthority({
+                                  product, restricted: restrictedConnection, crypto, serverId, plan: foregroundPlan,
+                                  representationMode: policy.mode === "encrypted_only" ? "full_encryption" : "shadow_encryption",
+                                  source: retained.source,
+                                  resolveReadableNamespaces: async coordinates => {
+                                    const readable = [...new Set(await resolveReadableNamespaces(coordinates))].sort();
+                                    const admitted = [...description.namespaceIds].sort();
+                                    if (readable.length !== admitted.length || readable.some((id, index) => id !== admitted[index])) {
+                                      throw new Error("Foreground Task creation namespace authority changed");
+                                    }
+                                    return readable;
+                                  },
+                                }),
+                              });
+                              try { return await withProtectedTaskForegroundCreationContext(creation.context, work); }
+                              finally { creation.dispose(); }
+                            };
+                            const value = taskContentOwner === undefined ? await work()
+                              : await taskContentOwner().runMutation({ ordinary: work, dual: createProtected, protected: createProtected });
                             return Object.freeze({
                               value,
                             });

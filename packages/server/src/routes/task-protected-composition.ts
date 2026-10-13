@@ -16,15 +16,20 @@ import {
 } from "@nautilo/agent";
 import {
   and,
+  asc,
   createPostgresJsBridgeConnection,
   encryptionTransitionPolicy,
   eq,
+  gte,
   getLatestRunModelByTask,
   getOwnerAgentDisplayNamesByAgentId,
   getTaskById,
   getTaskByIdWithMutationVersion,
   humanCryptoDevices,
   inArray,
+  lte,
+  objectCryptoAccessManifests,
+  taskDefinitionCryptoRevisions,
   taskRuns,
   taskRunResultCryptoRevisions,
   tasks,
@@ -37,12 +42,16 @@ import {
 import {
   ClassifiedDataOperationError,
   deriveTaskContentCryptoObjectIdV1,
+  parseTaskHistoricalRepairProvenanceV1,
+  taskContentRevisionObjectIdV1,
   type EncryptionDataOperationOwner,
+  type TaskHistoricalRepairProvenanceV1,
   type TaskContentAuthorityV1,
   type TaskContentPayloadV1,
 } from "@nautilo/lattice-bridge";
 import {
   createPostgresTaskContentRepositoryV1,
+  createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
   destroyVerifiedStoredObjectAccessManifestChainV5,
   PostgresDomainKeyAuthorityRepository,
   PostgresHumanDeviceSignerHistory,
@@ -52,13 +61,18 @@ import {
   executeTypedCryptoQuery,
   verifyCryptoPostgresHandle,
   verifyStoredObjectAccessManifestChainV5,
+  refreshHumanMappedTaskContentAccessHead,
   withCurrentHumanDeviceSigningAuthority,
+  type ResolveForegroundAgentAcceptedExecutionEvidence,
 } from "@nautilo/lattice-bridge/server";
 import {
   LatticeCrypto,
   type HumanTaskPublicationRequest,
 } from "@nautilo/lattice-crypto";
-import { decodeHumanTaskPublicationRequestV1 } from "@nautilo/lattice-crypto/wire";
+import {
+  decodeHumanTaskPublicationRequestV1,
+  decodeObjectAccessManifestV5,
+} from "@nautilo/lattice-crypto/wire";
 import {
   computeNextFireAt,
   createHumanApiTaskCreationProvenance,
@@ -80,6 +94,7 @@ import {
 } from "@nautilo/trust";
 
 import { createHumanProductTransactionContext } from "./human-message-product-store";
+import type { CurrentDeviceAdmission } from "../auth/device-admission-gate";
 import { importProtectedTaskPublicationV1 } from "./task-protected-publication";
 import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
 import {
@@ -95,6 +110,7 @@ export type ProtectedTaskRouteAuthority = Readonly<{
   agentId: string;
   deviceId: string;
   deviceGeneration: number;
+  admission?: CurrentDeviceAdmission;
 }>;
 
 export interface ProtectedTaskRoutePorts {
@@ -107,7 +123,7 @@ export interface ProtectedTaskRoutePorts {
     taskId: string;
     objectId: string;
     contentRevision: number;
-    cryptoAccessRevision: 0;
+    cryptoAccessRevision: number;
   }>): Promise<ProtectedTaskDefinitionReadReadyEnvelopeV1>;
   readRunResult(input: Readonly<{
     authority: ProtectedTaskRouteAuthority;
@@ -238,6 +254,237 @@ type TaskDefinitionPayload = Extract<
   TaskContentPayloadV1,
   { coordinate: { kind: "definition" } }
 >["payload"];
+
+function historicalRepairV2(
+  value: unknown,
+): Extract<TaskHistoricalRepairProvenanceV1, { version: 2 }> | null {
+  if (value === null || value === undefined) return null;
+  const parsed = parseTaskHistoricalRepairProvenanceV1(value);
+  if (parsed.version !== 2) {
+    throw new TypeError("Historical Task read provenance is unsupported");
+  }
+  return parsed;
+}
+
+function hex(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("hex");
+}
+
+type ForegroundAgentSignerPrincipal = Parameters<
+  ResolveForegroundAgentAcceptedExecutionEvidence
+>[0];
+
+type RetainedForegroundAgentExecution = Readonly<{
+  principal: ForegroundAgentSignerPrincipal;
+  planBytes: Uint8Array;
+  planDigest: Uint8Array;
+}>;
+
+function sameForegroundAgentSigner(
+  left: ForegroundAgentSignerPrincipal,
+  right: ForegroundAgentSignerPrincipal,
+): boolean {
+  return left.agentId === right.agentId
+    && left.runtimeGeneration === right.runtimeGeneration
+    && left.signerKeyId === right.signerKeyId;
+}
+
+/**
+ * Lend a retained foreground signer to the manifest verifier while retaining
+ * only the portable accepted-plan proof that the Human client can authenticate.
+ */
+export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
+  resolveEvidence: ResolveForegroundAgentAcceptedExecutionEvidence;
+}>) {
+  let retained: RetainedForegroundAgentExecution | null = null;
+  return Object.freeze({
+    resolveSigner: async (
+      principal: ForegroundAgentSignerPrincipal,
+    ): Promise<Uint8Array | null> => {
+      const evidence = await input.resolveEvidence(principal);
+      if (evidence === null) return null;
+      try {
+        const next = Object.freeze({
+          principal: Object.freeze({ ...principal }),
+          planBytes: Uint8Array.from(evidence.planBytes),
+          planDigest: Uint8Array.from(evidence.planDigest),
+        });
+        if (retained !== null && (
+          !sameForegroundAgentSigner(retained.principal, next.principal)
+          || !sameBytes(retained.planBytes, next.planBytes)
+          || !sameBytes(retained.planDigest, next.planDigest)
+        )) {
+          next.planBytes.fill(0);
+          next.planDigest.fill(0);
+          throw new TypeError("Foreground Task signer evidence was substituted");
+        }
+        if (retained === null) retained = next;
+        return Uint8Array.from(evidence.signerPublicKey);
+      } finally {
+        evidence.signerPublicKey.fill(0);
+        evidence.planBytes.fill(0);
+        evidence.planDigest.fill(0);
+      }
+    },
+    evidenceFor: (
+      principal: ForegroundAgentSignerPrincipal,
+      expectedAgentId: string,
+    ) => retained !== null
+      && principal.agentId === expectedAgentId
+      && sameForegroundAgentSigner(retained.principal, principal)
+      ? Object.freeze({
+          kind: "foreground_agent_accepted_execution" as const,
+          planBytesBase64url: Buffer.from(retained.planBytes).toString("base64url"),
+          planDigestBase64url: Buffer.from(retained.planDigest).toString("base64url"),
+        })
+      : null,
+    destroy: () => {
+      retained?.planBytes.fill(0);
+      retained?.planDigest.fill(0);
+      retained = null;
+    },
+  });
+}
+
+type HumanSignerContext = Readonly<{
+  subjectHumanId: string;
+  committerDeviceId: string;
+  hostAuthorizationRevision: number;
+}>;
+
+function humanSignerCoordinate(input: HumanSignerContext): string {
+  return `${input.subjectHumanId}\0${input.committerDeviceId}\0${input.hostAuthorizationRevision}`;
+}
+
+function exactDatabaseCounter(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === "bigint") {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  }
+  if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/u.test(value)) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function createProtectedTaskHumanSignerTransport(
+  resolveHistoricalHumanDeviceSigningPublicKey: (
+    context: HumanSignerContext,
+  ) => Promise<Uint8Array | null>,
+) {
+  const retained = new Map<string, Readonly<{
+    context: HumanSignerContext;
+    key: Uint8Array;
+  }>>();
+  return Object.freeze({
+    resolve: async (context: HumanSignerContext): Promise<Uint8Array | null> => {
+      const resolved = await resolveHistoricalHumanDeviceSigningPublicKey(
+        context,
+      );
+      if (resolved === null) return null;
+      const coordinate = humanSignerCoordinate(context);
+      const key = Uint8Array.from(resolved);
+      const existing = retained.get(coordinate);
+      if (existing !== undefined && !sameBytes(existing.key, key)) {
+        key.fill(0);
+        resolved.fill(0);
+        throw new TypeError("Foreground Task Human signer evidence collided");
+      }
+      if (existing === undefined) {
+        retained.set(coordinate, Object.freeze({
+          context: Object.freeze({ ...context }),
+          key,
+        }));
+      } else {
+        key.fill(0);
+      }
+      return resolved;
+    },
+    evidence: () => Object.freeze([...retained.values()].map(entry =>
+      Object.freeze({
+        kind: "human_device" as const,
+        subjectHumanId: entry.context.subjectHumanId,
+        committerDeviceId: entry.context.committerDeviceId,
+        hostAuthorizationRevision: entry.context.hostAuthorizationRevision,
+        signingPublicKeyBase64url: Buffer.from(entry.key).toString("base64url"),
+      }))),
+    destroy: () => {
+      retained.forEach(entry => entry.key.fill(0));
+      retained.clear();
+    },
+  });
+}
+
+function wipeDecodedAccessManifest(
+  manifest: ReturnType<typeof decodeObjectAccessManifestV5>,
+): void {
+  manifest.payloadHash.fill(0);
+  manifest.previousManifestHash?.fill(0);
+  manifest.envelopeHashes.forEach(value => value.fill(0));
+  manifest.signerAuthorizationHash?.fill(0);
+  manifest.signature.fill(0);
+}
+
+function validateProtectedTaskReadManifestSigners(input: Readonly<{
+  crypto: LatticeCrypto;
+  chain: readonly Uint8Array[];
+  expectedAgentId: string;
+  requesterHumanId: string;
+  historicalRepair: Extract<TaskHistoricalRepairProvenanceV1, { version: 2 }> | null;
+  allowHumanGenesis: boolean;
+}>): "agent_runtime" | "human_device" {
+  if (input.chain.length === 0) {
+    throw new TypeError("Protected Task access chain is empty");
+  }
+  let genesisKind: "agent_runtime" | "human_device" | null = null;
+  for (let index = 0; index < input.chain.length; index += 1) {
+    const manifest = decodeObjectAccessManifestV5(input.chain[index]!);
+    try {
+      if (index === 0) {
+        if (manifest.accessRevision !== 0
+          || manifest.previousManifestHash !== null) {
+          throw new TypeError("Protected Task access genesis is invalid");
+        }
+        if (manifest.signer.kind === "agent_runtime"
+          && input.historicalRepair === null
+          && manifest.signer.agentId === input.expectedAgentId) {
+          genesisKind = "agent_runtime";
+        } else if (manifest.signer.kind === "human_device"
+          && (input.allowHumanGenesis || input.historicalRepair !== null)
+          && manifest.signer.subjectHumanId === input.requesterHumanId) {
+          genesisKind = "human_device";
+        } else {
+          throw new TypeError("Protected Task access genesis signer is invalid");
+        }
+        if (input.historicalRepair !== null) {
+          const digest = input.crypto.hash(input.chain[0]!);
+          try {
+            if (manifest.signer.kind !== "human_device"
+              || manifest.signer.committerDeviceId
+                !== input.historicalRepair.publisherDeviceId
+              || hex(digest) !== input.historicalRepair.genesisManifestHash) {
+              throw new TypeError(
+                "Protected Task historical access genesis is invalid",
+              );
+            }
+          } finally {
+            digest.fill(0);
+          }
+        }
+      } else if (manifest.signer.kind !== "human_device"
+        || manifest.signer.subjectHumanId !== input.requesterHumanId) {
+        throw new TypeError("Protected Task access rewrap signer is invalid");
+      }
+    } finally {
+      wipeDecodedAccessManifest(manifest);
+    }
+  }
+  return genesisKind!;
+}
 
 type ProductionDependencies = Readonly<{
   db: DirectDatabase;
@@ -538,6 +785,72 @@ export function createProductionProtectedTaskComposition(
   const resolveRequesterPrivateRoom = dependencies.resolveRequesterPrivateRoom
     ?? createProtectedTaskRequesterPrivateRoomResolver(dependencies.db);
 
+  const foregroundSignerTransport = async (userId: string) => {
+    const product = await createHumanProductTransactionContext(
+      userId,
+      dependencies.db,
+    );
+    return createProtectedTaskForegroundSignerTransport({
+      resolveEvidence:
+        createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
+          product: product.handle,
+          crypto: dependencies.crypto,
+          rejectInvalidSelectedEvidence: true,
+        }),
+    });
+  };
+
+  const readAccessManifestChain = async (
+    objectId: string,
+    headAccessRevision: number,
+  ): Promise<readonly Uint8Array[]> => {
+    if (!Number.isSafeInteger(headAccessRevision)
+      || headAccessRevision < 0) {
+      throw new ProtectedTaskRouteError(
+        409,
+        "unsupported_crypto_access_revision",
+        "Protected Task access history exceeds the supported read profile",
+      );
+    }
+    const chain: Uint8Array[] = [];
+    let cursor = 0;
+    try {
+      while (cursor <= headAccessRevision) {
+        const rows = await executeTypedCryptoQuery(
+          await cryptoHandle(),
+          cryptoTypedDb.select({
+            access_revision: objectCryptoAccessManifests.accessRevision,
+            manifest_bytes: objectCryptoAccessManifests.manifestBytes,
+          }).from(objectCryptoAccessManifests).where(and(
+            eq(objectCryptoAccessManifests.objectId, objectId),
+            gte(objectCryptoAccessManifests.accessRevision, cursor),
+            lte(objectCryptoAccessManifests.accessRevision, headAccessRevision),
+          )).orderBy(asc(objectCryptoAccessManifests.accessRevision)).limit(64),
+        );
+        try {
+          if (rows.length === 0 || rows.some((row, index) =>
+            exactDatabaseCounter(row.access_revision) !== cursor + index)) {
+            throw new ProtectedTaskRouteError(
+              409,
+              "task_content_integrity_failure",
+              "Protected Task access history is incomplete",
+            );
+          }
+          rows.forEach(row => chain.push(Uint8Array.from(row.manifest_bytes)));
+          const lastRevision = cursor + rows.length - 1;
+          if (lastRevision === headAccessRevision) break;
+          cursor = lastRevision + 1;
+        } finally {
+          rows.forEach(row => row.manifest_bytes.fill(0));
+        }
+      }
+      return Object.freeze(chain);
+    } catch (error) {
+      chain.forEach(bytes => bytes.fill(0));
+      throw error;
+    }
+  };
+
   const readPolicyRevision = async (): Promise<number> => {
     const rows = await dependencies.db.select({
       revision: encryptionTransitionPolicy.revision,
@@ -554,6 +867,72 @@ export function createProductionProtectedTaskComposition(
       );
     }
     return policy.revision;
+  };
+
+  const resolveHistoricalHumanDeviceSigningPublicKey = async (
+    context: HumanSignerContext,
+  ): Promise<Uint8Array | null> => {
+    const rows = await executeTypedCryptoQuery(
+      await cryptoHandle(),
+      cryptoTypedDb.select({
+        human_id: humanCryptoDevices.humanId,
+        signing_public_key: humanCryptoDevices.signingPublicKey,
+        revision: humanCryptoDevices.revision,
+      }).from(humanCryptoDevices).where(and(
+        eq(humanCryptoDevices.deviceId, context.committerDeviceId),
+        eq(humanCryptoDevices.humanId, context.subjectHumanId),
+        inArray(humanCryptoDevices.state, ["active", "revoked"]),
+      )).limit(2),
+    );
+    const row = rows[0];
+    return rows.length === 1 && row !== undefined
+        && row.revision >= context.hostAuthorizationRevision
+        && row.signing_public_key instanceof Uint8Array
+      ? Uint8Array.from(row.signing_public_key) : null;
+  };
+
+  const refreshMappedReadAccess = async (
+    authority: ProtectedTaskRouteAuthority,
+    coordinate: Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["coordinate"],
+    expectedNamespaceId: string,
+  ): Promise<"applied" | "duplicate" | "unavailable"> => {
+    if (authority.admission === undefined) return "unavailable";
+    const privateRoom = await resolveRequesterPrivateRoom(
+      authority.userId,
+      authority.agentId,
+      expectedNamespaceId,
+    );
+    if (privateRoom === null || privateRoom.namespaceId !== expectedNamespaceId) {
+      return "unavailable";
+    }
+    const product = await createHumanProductTransactionContext(
+      authority.userId,
+      dependencies.db,
+    );
+    const headDigest = Uint8Array.from(authority.admission.headDigest);
+    try {
+      return await refreshHumanMappedTaskContentAccessHead({
+        runner: product.canonicalRunner,
+        restricted: dependencies.restricted,
+        crypto: dependencies.crypto,
+        serverScope: dependencies.serverScope,
+        coordinate,
+        sourceRoomId: privateRoom.roomId,
+        expectedPolicyRevision: await readPolicyRevision(),
+        subject: {
+          userId: authority.userId,
+          humanActorId: authority.subjectHumanId,
+          admission: {
+            status: "admitted",
+            ...authority.admission,
+            headDigest,
+          },
+        },
+        now,
+      });
+    } finally {
+      headDigest.fill(0);
+    }
   };
 
   const currentPrivateAuthority = async (
@@ -942,7 +1321,7 @@ export function createProductionProtectedTaskComposition(
       listProtectedTaskContentV1(input.authority.userId, input.query),
 
     async readDefinition(input) {
-      const task = await getTaskById(dependencies.db, input.taskId);
+      let task = await getTaskById(dependencies.db, input.taskId);
       if (task === undefined) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
@@ -952,6 +1331,20 @@ export function createProductionProtectedTaskComposition(
       );
       if (taskAuthority === null) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
+      }
+      if (task.contentNamespaceId !== null) {
+        const refreshedAccess = await refreshMappedReadAccess(input.authority, {
+          kind: "definition",
+          taskId: input.taskId,
+          contentRevision: input.contentRevision,
+        }, task.contentNamespaceId);
+        const refreshed = refreshedAccess === "unavailable" ? task
+          : await getTaskById(dependencies.db, input.taskId);
+        if (refreshed === undefined
+          || resolveOwnedProtectedTaskAuthority(input.authority, refreshed) === null) {
+          throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
+        }
+        task = refreshed;
       }
       if ((task.contentRepresentation !== "protected"
         && task.contentRepresentation !== "dual")
@@ -964,6 +1357,67 @@ export function createProductionProtectedTaskComposition(
           409,
           "task_content_changed",
           "Task content reference changed",
+        );
+      }
+      const ledgerRows = await dependencies.db.select({
+        taskId: taskDefinitionCryptoRevisions.taskId,
+        contentNamespaceId: taskDefinitionCryptoRevisions.contentNamespaceId,
+        contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+        requesterHumanId: taskDefinitionCryptoRevisions.requesterHumanId,
+        cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+        representation: taskDefinitionCryptoRevisions.representation,
+        cryptoAccessRevision: taskDefinitionCryptoRevisions.cryptoAccessRevision,
+        completion: taskDefinitionCryptoRevisions.completion,
+        disposition: taskDefinitionCryptoRevisions.disposition,
+        historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+      }).from(taskDefinitionCryptoRevisions).where(and(
+        eq(taskDefinitionCryptoRevisions.taskId, input.taskId),
+        eq(taskDefinitionCryptoRevisions.contentRevision, input.contentRevision),
+      )).limit(2);
+      const ledger = ledgerRows[0];
+      let historicalRepair: Extract<
+        TaskHistoricalRepairProvenanceV1,
+        { version: 2 }
+      > | null;
+      try {
+        historicalRepair = historicalRepairV2(ledger?.historicalRepair);
+      } catch {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_content_integrity_failure",
+          "Task historical content provenance is invalid",
+        );
+      }
+      const expectedObjectId = taskContentRevisionObjectIdV1({
+        coordinate: {
+          kind: "definition",
+          taskId: input.taskId,
+          contentRevision: input.contentRevision,
+        },
+        namespaceId: task.contentNamespaceId,
+        historicalRepair,
+      });
+      if (ledgerRows.length !== 1 || ledger === undefined
+        || ledger.taskId !== input.taskId
+        || ledger.contentNamespaceId !== task.contentNamespaceId
+        || ledger.contentRevision !== input.contentRevision
+        || ledger.requesterHumanId !== input.authority.subjectHumanId
+        || ledger.cryptoObjectId !== input.objectId
+        || ledger.cryptoObjectId !== expectedObjectId
+        || ledger.representation !== task.contentRepresentation
+        // The allocation ledger pins the signed genesis. Human metadata
+        // rewraps advance the Task/access head while this immutable coordinate
+        // remains revision zero; the complete chain below proves that head.
+        || ledger.cryptoAccessRevision !== 0
+        || ledger.completion !== "complete"
+        || ledger.disposition !== "mapped"
+        || historicalRepair !== null && (
+          ledger.representation !== "dual" || input.contentRevision !== 1
+        )) {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_content_integrity_failure",
+          "Task content mapping is invalid",
         );
       }
       const current = await currentPrivateAuthority(
@@ -985,7 +1439,7 @@ export function createProductionProtectedTaskComposition(
         storage.getObjectAccessState(input.objectId),
       ]);
       if (object === null || access === null
-        || access.head.accessRevision !== 0
+        || access.head.accessRevision !== input.cryptoAccessRevision
         || access.namespaceEnvelopes.length !== 1
         || access.namespaceEnvelopes[0]?.namespaceId
           !== task.contentNamespaceId) {
@@ -999,60 +1453,149 @@ export function createProductionProtectedTaskComposition(
         handle: verifiedCryptoHandle,
         crypto: dependencies.crypto,
       });
-      const payloadHash = dependencies.crypto.hash(object.payloadBytes);
-      let verified;
+      const foreground = historicalRepair === null
+        ? await foregroundSignerTransport(input.authority.userId)
+        : null;
+      const humanSigners = createProtectedTaskHumanSignerTransport(
+        resolveHistoricalHumanDeviceSigningPublicKey,
+      );
+      let chain: readonly Uint8Array[];
       try {
-        verified = await verifyStoredObjectAccessManifestChainV5({
-          executor: verifiedCryptoHandle,
-          crypto: dependencies.crypto,
-          objectId: input.objectId,
-          headAccessRevision: 0,
-          expectedPayloadHash: payloadHash,
-          expectedHeadManifestHash: access.head.manifestHash,
-          resolveHistoricalAgentManagerAuthority:
-            history.resolveAgentRuntimeSignerManager,
+        chain = await readAccessManifestChain(
+          input.objectId,
+          input.cryptoAccessRevision,
+        );
+      } catch (error) {
+        foreground?.destroy();
+        humanSigners.destroy();
+        object.payloadBytes.fill(0);
+        access.head.manifestBytes.fill(0);
+        access.head.manifestHash.fill(0);
+        access.namespaceEnvelopes.forEach(entry => {
+          entry.envelopeBytes.fill(0);
+          entry.envelopeHash.fill(0);
         });
-      } finally {
-        payloadHash.fill(0);
+        throw error;
       }
+      const payloadHash = dependencies.crypto.hash(object.payloadBytes);
+      let verified: Awaited<ReturnType<
+        typeof verifyStoredObjectAccessManifestChainV5
+      >> | undefined;
       try {
-        if (verified.headManifest.signer.kind !== "human_device"
-          || verified.genesisHumanId !== input.authority.subjectHumanId) {
+        try {
+          verified = await verifyStoredObjectAccessManifestChainV5({
+            executor: verifiedCryptoHandle,
+            crypto: dependencies.crypto,
+            objectId: input.objectId,
+            headAccessRevision: input.cryptoAccessRevision,
+            expectedPayloadHash: payloadHash,
+            expectedHeadManifestHash: access.head.manifestHash,
+            resolveHistoricalAgentManagerAuthority:
+              history.resolveAgentRuntimeSignerManager,
+            resolveLiveShadowAgentSigner: foreground?.resolveSigner,
+            resolveHistoricalHumanDeviceSigningPublicKey:
+              humanSigners.resolve,
+          });
+        } finally {
+          payloadHash.fill(0);
+        }
+        const genesis = decodeObjectAccessManifestV5(chain[0]!);
+        let genesisKind: "agent_runtime" | "human_device";
+        let foregroundEvidence: ReturnType<
+          NonNullable<typeof foreground>["evidenceFor"]
+        > = null;
+        try {
+          genesisKind = validateProtectedTaskReadManifestSigners({
+            crypto: dependencies.crypto,
+            chain,
+            expectedAgentId: task.agentId,
+            requesterHumanId: input.authority.subjectHumanId,
+            historicalRepair,
+            allowHumanGenesis: true,
+          });
+          foregroundEvidence = genesis.signer.kind === "agent_runtime"
+            ? foreground?.evidenceFor(genesis.signer, task.agentId) ?? null
+            : null;
+        } finally {
+          wipeDecodedAccessManifest(genesis);
+        }
+        const publicationEvidence = verified.signerEvidence.length === 1
+          && verified.signerEvidence[0]?.kind === "agent_runtime_publication"
+          ? verified.signerEvidence[0]
+          : null;
+        const humanGenesis = genesisKind === "human_device"
+          && verified.genesisHumanId === input.authority.subjectHumanId;
+        const agentGenesis = genesisKind === "agent_runtime"
+          && historicalRepair === null
+          && verified.genesisHumanId === null
+          && (foregroundEvidence !== null
+            ? verified.signerEvidence.length === 0
+            : publicationEvidence !== null);
+        if (!humanGenesis && !agentGenesis) {
           throw new ProtectedTaskRouteError(
             409,
             "task_content_integrity_failure",
             "Task signer is invalid",
           );
         }
-        const signer = verified.headManifest.signer;
+        const agentEvidence = agentGenesis
+          ? foregroundEvidence !== null ? [foregroundEvidence] : [Object.freeze({
+              kind: "agent_runtime_publication" as const,
+              evidenceBytesBase64url: Buffer.from(
+                publicationEvidence!.evidenceBytes,
+              ).toString("base64url"),
+            })]
+          : [];
+        const signerEvidence = [
+          ...agentEvidence,
+          ...humanSigners.evidence(),
+        ];
+        const stableAccess = await storage.getObjectAccessState(input.objectId);
+        if (stableAccess === null
+          || stableAccess.head.accessRevision !== input.cryptoAccessRevision
+          || !sameBytes(stableAccess.head.manifestHash, access.head.manifestHash)) {
+          stableAccess?.head.manifestBytes.fill(0);
+          stableAccess?.head.manifestHash.fill(0);
+          stableAccess?.namespaceEnvelopes.forEach(entry => {
+            entry.envelopeBytes.fill(0);
+            entry.envelopeHash.fill(0);
+          });
+          throw new ProtectedTaskRouteError(
+            409,
+            "task_content_changed",
+            "Task access changed while it was being read",
+          );
+        }
+        stableAccess.head.manifestBytes.fill(0);
+        stableAccess.head.manifestHash.fill(0);
+        stableAccess.namespaceEnvelopes.forEach(entry => {
+          entry.envelopeBytes.fill(0);
+          entry.envelopeHash.fill(0);
+        });
         return Object.freeze({
           readVersion: 1 as const,
           status: "ready" as const,
           taskId: input.taskId,
           objectId: input.objectId,
           contentRevision: input.contentRevision,
-          cryptoAccessRevision: 0 as const,
+          cryptoAccessRevision: input.cryptoAccessRevision,
           namespaceId: task.contentNamespaceId,
           encryptedPayloadBytesBase64url:
             Buffer.from(object.payloadBytes).toString("base64url"),
           accessManifestBytesBase64url:
             Buffer.from(access.head.manifestBytes).toString("base64url"),
-          accessManifestProofBytesBase64url: [] as [],
+          accessManifestProofBytesBase64url: chain.slice(0, -1).map(value =>
+            Buffer.from(value).toString("base64url")),
           namespaceEnvelopeBytesBase64url: Buffer.from(
             access.namespaceEnvelopes[0].envelopeBytes,
           ).toString("base64url"),
-          signerEvidence: [Object.freeze({
-            kind: "human_device" as const,
-            subjectHumanId: signer.subjectHumanId,
-            committerDeviceId: signer.committerDeviceId,
-            hostAuthorizationRevision:
-              verified.headManifest.hostAuthorizationRevision,
-            signingPublicKeyBase64url: Buffer.from(
-              verified.headSignerPublicKey,
-            ).toString("base64url"),
-          })],
+          ...(historicalRepair === null ? {} : { historicalRepair }),
+          signerEvidence,
         });
       } finally {
+        foreground?.destroy();
+        humanSigners.destroy();
+        chain.forEach(value => value.fill(0));
         object.payloadBytes.fill(0);
         access.head.manifestBytes.fill(0);
         access.head.manifestHash.fill(0);
@@ -1060,12 +1603,14 @@ export function createProductionProtectedTaskComposition(
           envelope.envelopeBytes.fill(0);
           envelope.envelopeHash.fill(0);
         }
-        destroyVerifiedStoredObjectAccessManifestChainV5(verified);
+        if (verified !== undefined) {
+          destroyVerifiedStoredObjectAccessManifestChainV5(verified);
+        }
       }
     },
 
     async readRunResult(input) {
-      const taskRows = await dependencies.db.select({
+      let taskRows = await dependencies.db.select({
         ownerId: tasks.ownerId,
         requestorId: tasks.requestorId,
         agentId: tasks.agentId,
@@ -1073,7 +1618,7 @@ export function createProductionProtectedTaskComposition(
         contentNamespaceId: tasks.contentNamespaceId,
         cryptoMappingState: tasks.cryptoMappingState,
       }).from(tasks).where(eq(tasks.id, input.taskId)).limit(2);
-      const task = taskRows[0];
+      let task = taskRows[0];
       if (taskRows.length !== 1 || task === undefined
         || task.ownerId !== input.authority.userId
         || task.requestorId !== input.authority.userId) {
@@ -1086,7 +1631,7 @@ export function createProductionProtectedTaskComposition(
       if (taskAuthority === null) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
-      const runRows = await dependencies.db.select({
+      let runRows = await dependencies.db.select({
         taskId: taskRuns.taskId,
         status: taskRuns.status,
         resultRepresentation: taskRuns.resultRepresentation,
@@ -1099,9 +1644,49 @@ export function createProductionProtectedTaskComposition(
         eq(taskRuns.id, input.taskRunId),
         eq(taskRuns.taskId, input.taskId),
       )).limit(2);
-      const run = runRows[0];
+      let run = runRows[0];
       if (runRows.length !== 1 || run === undefined) {
         throw new ProtectedTaskRouteError(404, "task_run_not_found", "Task run not found");
+      }
+      if (task.contentNamespaceId !== null) {
+        const refreshedAccess = await refreshMappedReadAccess(input.authority, {
+          kind: "run_result",
+          taskId: input.taskId,
+          taskRunId: input.taskRunId,
+          contentRevision: run.resultRevision === 1 || run.resultRevision === 2
+            ? run.resultRevision
+            : run.status === "cancelled" ? 2 : 1,
+        }, task.contentNamespaceId);
+        if (refreshedAccess !== "unavailable") {
+        taskRows = await dependencies.db.select({
+          ownerId: tasks.ownerId,
+          requestorId: tasks.requestorId,
+          agentId: tasks.agentId,
+          contentRepresentation: tasks.contentRepresentation,
+          contentNamespaceId: tasks.contentNamespaceId,
+          cryptoMappingState: tasks.cryptoMappingState,
+        }).from(tasks).where(eq(tasks.id, input.taskId)).limit(2);
+        runRows = await dependencies.db.select({
+          taskId: taskRuns.taskId,
+          status: taskRuns.status,
+          resultRepresentation: taskRuns.resultRepresentation,
+          resultContentNamespaceId: taskRuns.resultContentNamespaceId,
+          resultRevision: taskRuns.resultRevision,
+          resultCryptoObjectId: taskRuns.resultCryptoObjectId,
+          resultCryptoAccessRevision: taskRuns.resultCryptoAccessRevision,
+          resultCryptoMappingState: taskRuns.resultCryptoMappingState,
+        }).from(taskRuns).where(and(
+          eq(taskRuns.id, input.taskRunId),
+          eq(taskRuns.taskId, input.taskId),
+        )).limit(2);
+        task = taskRows[0];
+        run = runRows[0];
+        if (taskRows.length !== 1 || task === undefined
+          || runRows.length !== 1 || run === undefined
+          || resolveOwnedProtectedTaskAuthority(input.authority, task) === null) {
+          throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
+        }
+        }
       }
       const terminalResultRevision = run.status === "cancelled"
         ? 2 as const
@@ -1109,7 +1694,14 @@ export function createProductionProtectedTaskComposition(
         ? 1 as const
         : null;
       const resultRevision = terminalResultRevision ?? 1;
-      const reference = Object.freeze({
+      let reference: Readonly<{
+        readVersion: 1;
+        taskId: string;
+        taskRunId: string;
+        objectId: string;
+        resultRevision: 1 | 2;
+        cryptoAccessRevision: number;
+      }> = Object.freeze({
         readVersion: 1 as const,
         taskId: input.taskId,
         taskRunId: input.taskRunId,
@@ -1120,7 +1712,7 @@ export function createProductionProtectedTaskComposition(
           contentRevision: resultRevision,
         }),
         resultRevision,
-        cryptoAccessRevision: 0 as const,
+        cryptoAccessRevision: 0,
       });
       const unavailable = (
         reason: Extract<
@@ -1152,13 +1744,43 @@ export function createProductionProtectedTaskComposition(
         completion: taskRunResultCryptoRevisions.completion,
         disposition: taskRunResultCryptoRevisions.disposition,
         failureCode: taskRunResultCryptoRevisions.failureCode,
+        historicalRepair: taskRunResultCryptoRevisions.historicalRepair,
       }).from(taskRunResultCryptoRevisions).where(and(
         eq(taskRunResultCryptoRevisions.taskId, input.taskId),
         eq(taskRunResultCryptoRevisions.taskRunId, input.taskRunId),
-        eq(taskRunResultCryptoRevisions.resultRevision, resultRevision),
-      )).limit(2);
-      const ledger = ledgerRows[0];
-      if (ledgerRows.length > 1) return unavailable("integrity_failure");
+      )).limit(3);
+      const selectedLedgers = ledgerRows.filter(candidate =>
+        run.status === "cancelled"
+          ? candidate.resultRevision === 2
+            || candidate.resultRevision === 1
+              && candidate.historicalRepair !== null
+          : candidate.resultRevision === resultRevision);
+      const ledger = run.status === "cancelled"
+        ? selectedLedgers.find(candidate => candidate.resultRevision === 2)
+          ?? selectedLedgers[0]
+        : selectedLedgers[0];
+      if (selectedLedgers.length > 1 && ledger?.resultRevision !== 2) {
+        return unavailable("integrity_failure");
+      }
+      let historicalRepair: Extract<
+        TaskHistoricalRepairProvenanceV1,
+        { version: 2 }
+      > | null;
+      try {
+        historicalRepair = historicalRepairV2(ledger?.historicalRepair);
+      } catch {
+        return unavailable("integrity_failure");
+      }
+      if (historicalRepair !== null) {
+        if (ledger === undefined || ledger.resultRevision !== 1) {
+          return unavailable("integrity_failure");
+        }
+        reference = Object.freeze({
+          ...reference,
+          objectId: ledger.cryptoObjectId,
+          resultRevision: 1 as const,
+        });
+      }
       const exactLedger = ledger !== undefined
         && ledger.taskId === input.taskId
         && ledger.taskRunId === input.taskRunId
@@ -1168,7 +1790,23 @@ export function createProductionProtectedTaskComposition(
         && ledger.cryptoObjectId === reference.objectId
         && (ledger.representation === "protected"
           || ledger.representation === "dual")
-        && ledger.cryptoAccessRevision === 0;
+        // Result allocation likewise remains the immutable genesis coordinate
+        // after a Human metadata rewrap advances the mapped Run head.
+        && ledger.cryptoAccessRevision === 0
+        && (historicalRepair === null || (
+          task.contentRepresentation === "dual"
+          && ledger.representation === "dual"
+          && ledger.cryptoObjectId === taskContentRevisionObjectIdV1({
+            coordinate: {
+              kind: "run_result",
+              taskId: input.taskId,
+              taskRunId: input.taskRunId,
+              contentRevision: 1,
+            },
+            namespaceId: ledger.contentNamespaceId,
+            historicalRepair,
+          })
+        ));
       if (
         run.resultRepresentation === "ordinary"
         && run.resultRevision === 0
@@ -1182,7 +1820,12 @@ export function createProductionProtectedTaskComposition(
             || run.status === "cancelled"
             ? unavailable("result_not_protected")
             : Object.freeze({
-                ...reference,
+                readVersion: 1 as const,
+                taskId: reference.taskId,
+                taskRunId: reference.taskRunId,
+                objectId: reference.objectId,
+                resultRevision: reference.resultRevision,
+                cryptoAccessRevision: 0 as const,
                 status: "waiting" as const,
                 reason: "result_not_mapped" as const,
               });
@@ -1192,7 +1835,12 @@ export function createProductionProtectedTaskComposition(
           && (ledger.completion === "pending"
             || ledger.completion === "complete")) {
           return Object.freeze({
-            ...reference,
+            readVersion: 1 as const,
+            taskId: reference.taskId,
+            taskRunId: reference.taskRunId,
+            objectId: reference.objectId,
+            resultRevision: reference.resultRevision,
+            cryptoAccessRevision: 0 as const,
             status: "waiting" as const,
             reason: "result_not_mapped" as const,
           });
@@ -1200,14 +1848,10 @@ export function createProductionProtectedTaskComposition(
         return unavailable(ledger.failureCode === "authority_stale"
           ? "authority_changed" : "integrity_failure");
       }
-      if (run.resultCryptoAccessRevision !== 0) {
-        return Object.freeze({
-          ...reference,
-          cryptoAccessRevision: run.resultCryptoAccessRevision,
-          status: "unavailable" as const,
-          reason: "unsupported_crypto_access_revision" as const,
-        });
-      }
+      reference = Object.freeze({
+        ...reference,
+        cryptoAccessRevision: run.resultCryptoAccessRevision,
+      });
       if (
         terminalResultRevision === null
         || (run.resultRepresentation !== "protected"
@@ -1253,7 +1897,7 @@ export function createProductionProtectedTaskComposition(
         throw error;
       }
       if (object === null || access === null
-        || access.head.accessRevision !== 0
+        || access.head.accessRevision !== run.resultCryptoAccessRevision
         || access.namespaceEnvelopes.length !== 1
         || access.namespaceEnvelopes[0]?.namespaceId
           !== run.resultContentNamespaceId) {
@@ -1270,6 +1914,34 @@ export function createProductionProtectedTaskComposition(
         handle: verifiedCryptoHandle,
         crypto: dependencies.crypto,
       });
+      const foreground = historicalRepair === null
+        ? await foregroundSignerTransport(input.authority.userId)
+        : null;
+      const humanSigners = createProtectedTaskHumanSignerTransport(
+        resolveHistoricalHumanDeviceSigningPublicKey,
+      );
+      let chain: readonly Uint8Array[];
+      try {
+        chain = await readAccessManifestChain(
+          reference.objectId,
+          run.resultCryptoAccessRevision,
+        );
+      } catch (error) {
+        foreground?.destroy();
+        humanSigners.destroy();
+        object.payloadBytes.fill(0);
+        access.head.manifestBytes.fill(0);
+        access.head.manifestHash.fill(0);
+        access.namespaceEnvelopes.forEach(entry => {
+          entry.envelopeBytes.fill(0);
+          entry.envelopeHash.fill(0);
+        });
+        if (error instanceof ProtectedTaskRouteError) {
+          return unavailable(error.code === "unsupported_crypto_access_revision"
+            ? "unsupported_crypto_access_revision" : "integrity_failure");
+        }
+        throw error;
+      }
       const payloadHash = dependencies.crypto.hash(object.payloadBytes);
       let verified;
       try {
@@ -1278,11 +1950,14 @@ export function createProductionProtectedTaskComposition(
             executor: verifiedCryptoHandle,
             crypto: dependencies.crypto,
             objectId: reference.objectId,
-            headAccessRevision: 0,
+            headAccessRevision: run.resultCryptoAccessRevision,
             expectedPayloadHash: payloadHash,
             expectedHeadManifestHash: access.head.manifestHash,
             resolveHistoricalAgentManagerAuthority:
               history.resolveAgentRuntimeSignerManager,
+            resolveLiveShadowAgentSigner: foreground?.resolveSigner,
+            resolveHistoricalHumanDeviceSigningPublicKey:
+              humanSigners.resolve,
           });
         } catch (error) {
           if (error instanceof ClassifiedDataOperationError
@@ -1291,13 +1966,71 @@ export function createProductionProtectedTaskComposition(
           }
           throw error;
         }
-        if (
-          verified.headManifest.signer.kind !== "agent_runtime"
-          || verified.headManifest.signer.agentId !== task.agentId
-          || verified.genesisHumanId !== null
-          || verified.signerEvidence.length !== 1
-          || verified.signerEvidence[0]?.kind !== "agent_runtime_publication"
-        ) return unavailable("integrity_failure");
+        const genesis = decodeObjectAccessManifestV5(chain[0]!);
+        let genesisKind: "agent_runtime" | "human_device";
+        let foregroundEvidence: ReturnType<
+          NonNullable<typeof foreground>["evidenceFor"]
+        > = null;
+        try {
+          genesisKind = validateProtectedTaskReadManifestSigners({
+            crypto: dependencies.crypto,
+            chain,
+            expectedAgentId: task.agentId,
+            requesterHumanId: input.authority.subjectHumanId,
+            historicalRepair,
+            allowHumanGenesis: false,
+          });
+          foregroundEvidence = genesis.signer.kind === "agent_runtime"
+            ? foreground?.evidenceFor(genesis.signer, task.agentId) ?? null
+            : null;
+        } finally {
+          wipeDecodedAccessManifest(genesis);
+        }
+        const historicalSigner = historicalRepair !== null
+          && genesisKind === "human_device"
+          && verified.genesisHumanId === input.authority.subjectHumanId;
+        const publicationEvidence = verified.signerEvidence.length === 1
+          && verified.signerEvidence[0]?.kind === "agent_runtime_publication"
+          ? verified.signerEvidence[0]
+          : null;
+        const nativeSigner = historicalRepair === null
+          && genesisKind === "agent_runtime"
+          && verified.genesisHumanId === null
+          && (foregroundEvidence !== null
+            ? verified.signerEvidence.length === 0
+            : publicationEvidence !== null);
+        if (!historicalSigner && !nativeSigner) {
+          return unavailable("integrity_failure");
+        }
+        const agentEvidence = nativeSigner
+          ? foregroundEvidence !== null ? [foregroundEvidence] : [Object.freeze({
+              kind: "agent_runtime_publication" as const,
+              evidenceBytesBase64url: Buffer.from(
+                publicationEvidence!.evidenceBytes,
+              ).toString("base64url"),
+            })] : [];
+        const signerEvidence = [
+          ...agentEvidence,
+          ...humanSigners.evidence(),
+        ];
+        const stableAccess = await storage.getObjectAccessState(reference.objectId);
+        if (stableAccess === null
+          || stableAccess.head.accessRevision !== run.resultCryptoAccessRevision
+          || !sameBytes(stableAccess.head.manifestHash, access.head.manifestHash)) {
+          stableAccess?.head.manifestBytes.fill(0);
+          stableAccess?.head.manifestHash.fill(0);
+          stableAccess?.namespaceEnvelopes.forEach(entry => {
+            entry.envelopeBytes.fill(0);
+            entry.envelopeHash.fill(0);
+          });
+          return unavailable("authority_changed");
+        }
+        stableAccess.head.manifestBytes.fill(0);
+        stableAccess.head.manifestHash.fill(0);
+        stableAccess.namespaceEnvelopes.forEach(entry => {
+          entry.envelopeBytes.fill(0);
+          entry.envelopeHash.fill(0);
+        });
         return Object.freeze({
           ...reference,
           status: "ready" as const,
@@ -1306,18 +2039,18 @@ export function createProductionProtectedTaskComposition(
             Buffer.from(object.payloadBytes).toString("base64url"),
           accessManifestBytesBase64url:
             Buffer.from(access.head.manifestBytes).toString("base64url"),
-          accessManifestProofBytesBase64url: [] as [],
+          accessManifestProofBytesBase64url: chain.slice(0, -1).map(value =>
+            Buffer.from(value).toString("base64url")),
           namespaceEnvelopeBytesBase64url: Buffer.from(
             access.namespaceEnvelopes[0].envelopeBytes,
           ).toString("base64url"),
-          signerEvidence: [Object.freeze({
-            kind: "agent_runtime_publication" as const,
-            evidenceBytesBase64url: Buffer.from(
-              verified.signerEvidence[0].evidenceBytes,
-            ).toString("base64url"),
-          })],
+          ...(historicalRepair === null ? {} : { historicalRepair }),
+          signerEvidence,
         }) satisfies ProtectedTaskRunResultReadReadyEnvelopeV1;
       } finally {
+        foreground?.destroy();
+        humanSigners.destroy();
+        chain.forEach(value => value.fill(0));
         payloadHash.fill(0);
         object.payloadBytes.fill(0);
         access.head.manifestBytes.fill(0);

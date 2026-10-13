@@ -9,6 +9,8 @@ import {
   taskRuns,
   tasks,
   lockParkedProtectedTaskHumanContinuation,
+  lockParkedProtectedTaskCheckpointContinuation,
+  sameParkedProtectedTaskCheckpointContinuation,
   sameParkedProtectedTaskHumanContinuation,
   type DirectDatabase,
 } from "@nautilo/db";
@@ -36,6 +38,7 @@ export type ProtectedTaskParkedAuthorizationSettlementStatus =
 type Dependencies = Readonly<{
   discover: typeof discoverParkedProtectedTaskContinuation;
   lockHuman: typeof lockParkedProtectedTaskHumanContinuation;
+  lockCheckpoint: typeof lockParkedProtectedTaskCheckpointContinuation;
   read: typeof readParkedProtectedTaskAdditionalAuthority;
 }>;
 
@@ -109,6 +112,7 @@ export function createProtectedTaskParkedAuthorizationSettlement(input: Readonly
   const dependencies: Dependencies = {
     discover: discoverParkedProtectedTaskContinuation,
     lockHuman: lockParkedProtectedTaskHumanContinuation,
+    lockCheckpoint: lockParkedProtectedTaskCheckpointContinuation,
     read: readParkedProtectedTaskAdditionalAuthority,
     ...overrides,
   };
@@ -133,6 +137,12 @@ export function createProtectedTaskParkedAuthorizationSettlement(input: Readonly
         const held = await dependencies.lockHuman(tx, expected);
         if (held === null
           || !sameParkedProtectedTaskHumanContinuation(held.current, expected)) {
+          return "inactive" as const;
+        }
+      } else if ("stableRoutingDigest" in expected) {
+        const held = await dependencies.lockCheckpoint(tx, expected);
+        if (held === null
+          || !sameParkedProtectedTaskCheckpointContinuation(held.current, expected)) {
           return "inactive" as const;
         }
       } else {

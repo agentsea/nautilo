@@ -1,11 +1,16 @@
+import { resolveProtectedTaskCheckpointAadBinding } from "./protected-task-checkpoint-aad-binding";
+import { createProtectedTaskRuntimeAccessLineageReader } from "./protected-task-runtime-access-lineage";
 import {
   getEncryptionTransitionPolicy,
   getProtectedTaskRunOutputBinding,
+  startParkedProtectedTaskCheckpointSegment,
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
   startParkedProtectedTaskHumanRunSegment,
   type DirectDatabase,
+  type ParkedProtectedTaskCheckpointContinuation,
   type PostgresJsBridgeConnection,
   type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
   type ParkedProtectedTaskHumanContinuation,
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
@@ -37,14 +42,22 @@ import { createProtectedTaskRuntimeParkedClaimAuthority } from "./protected-task
 import type { ProtectedTaskRuntimeGrantPlanBuilderDependencies, ProtectedTaskHumanResumePreparation } from "./protected-task-runtime-grant-plan";
 
 type StartInput = StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+  | StartParkedProtectedTaskCheckpointSegmentInput
   | StartParkedProtectedTaskHumanRunSegmentInput;
 type Dependencies = Readonly<{
   resolvePlan: ReturnType<typeof createParkedTaskRuntimeAuthorizationPlanResolver>;
   authority: ReturnType<typeof createProtectedTaskRuntimeParkedClaimAuthority>;
   readManifest: typeof readProtectedTaskCheckpointPhysicalManifest;
   start: typeof startParkedProtectedTaskRunAdditionalAuthoritySegment;
+  startCheckpoint: typeof startParkedProtectedTaskCheckpointSegment;
   startHuman: typeof startParkedProtectedTaskHumanRunSegment;
 }>;
+
+function isCheckpointContinuation(
+  expected: ParkedProtectedTaskContinuation,
+): expected is ParkedProtectedTaskCheckpointContinuation {
+  return !("acceptance" in expected) && "stableRoutingDigest" in expected;
+}
 
 function startInput(
   resolved: ParkedTaskRuntimeAuthorizationPlan,
@@ -53,6 +66,7 @@ function startInput(
 ): StartInput {
   const { occurrence, priorJob } = resolved.expected;
   const common = {
+    ...(priorJob.checkpointAadBinding === undefined ? {} : { checkpointAadBinding: priorJob.checkpointAadBinding }),
     taskId: occurrence.task.id, taskRunId: occurrence.run.id,
     graphThreadId: occurrence.run.graphThreadId,
     priorJobId: priorJob.id, jobId: value.jobId,
@@ -71,6 +85,12 @@ function startInput(
   if ("acceptance" in resolved.expected) return {
     ...common, acceptance: resolved.expected.acceptance,
     stableRoutingDigest: resolved.expected.stableRoutingDigest.slice(),
+  };
+  if (isCheckpointContinuation(resolved.expected)) return {
+    ...common,
+    interrupts: [] as const,
+    stableRoutingDigest: resolved.expected.stableRoutingDigest.slice(),
+    continuationFingerprint: resolved.expected.continuationFingerprint,
   };
   const { proof } = resolved.expected;
   return { ...common, continuation: {
@@ -127,6 +147,7 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
 }>, overrides: Partial<Dependencies> = {}) {
   const resolvePlan = overrides.resolvePlan ?? createParkedTaskRuntimeAuthorizationPlanResolver({
     db: input.db, discover: discoverParkedProtectedTaskContinuation,
+    readAccessLineage: createProtectedTaskRuntimeAccessLineageReader({ db: input.db, crypto: input.crypto, restricted: () => input.restricted }),
     readPolicy: getEncryptionTransitionPolicy, readOutput: getProtectedTaskRunOutputBinding,
     resolveMemory: createProtectedTaskRuntimeParkedMemoryPlanResolver({
       db: input.db, resolver: input.resolver,
@@ -137,6 +158,8 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
   });
   const readManifest = overrides.readManifest ?? readProtectedTaskCheckpointPhysicalManifest;
   const start = overrides.start ?? startParkedProtectedTaskRunAdditionalAuthoritySegment;
+  const startCheckpoint = overrides.startCheckpoint
+    ?? startParkedProtectedTaskCheckpointSegment;
   const startHuman = overrides.startHuman ?? startParkedProtectedTaskHumanRunSegment;
   const plan = async (observed: ProtectedTaskOccurrence): Promise<ParkedTaskRuntimeGrantClaimPlan | null> => {
     const occurrence = structuredClone(observed);
@@ -179,7 +202,10 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
         agentId: occurrence.task.agentId, roomId: memory.routing.targetRoomId,
         callingRoomId: occurrence.task.callingRoomId, graphThreadId: occurrence.run.graphThreadId,
       });
+      const checkpointAadBinding = await resolveProtectedTaskCheckpointAadBinding(expected, input.repository);
+      if (checkpointAadBinding === null) return null;
       const execution = await input.prepareExecution({
+        checkpointAadBinding,
         occurrence, reference, policy: { ...policy, mode: policy.mode },
         predispatch: { occurrence, scheduling,
           target: { roomId: memory.routing.targetRoomId, targetUserIds: memory.routing.targetUserIds },
@@ -187,6 +213,9 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
         ...("acceptance" in expected ? {
           stableRoutingDigest: expected.stableRoutingDigest.slice(),
           humanResume: humanResumePreparation(expected),
+        } : isCheckpointContinuation(expected) ? {
+          stableRoutingDigest: expected.stableRoutingDigest.slice(),
+          checkpointResume: true as const,
         } : {
           stableRoutingDigest: expected.proof.continuation.stableRoutingDigest.slice(),
           additionalAuthorityResume: {
@@ -202,6 +231,22 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
           scopeMemory: memory.scopeMemory, scopeWorkIdentity: canonical.scopeWorkIdentity,
         }),
       });
+      const executionKeys = execution !== null && typeof execution === "object"
+        ? Object.keys(execution).sort().join(",")
+        : "";
+      if ((executionKeys !== "executor,openTransientInput"
+          && executionKeys !== "executor,modelAttribution,openTransientInput"
+          && executionKeys !== "executor,openTransientInput,requestCheckpointPause"
+          && executionKeys
+            !== "executor,modelAttribution,openTransientInput,requestCheckpointPause")
+        || typeof execution.executor !== "function"
+        || typeof execution.openTransientInput !== "function"
+        || (Object.hasOwn(execution, "requestCheckpointPause")
+          && typeof execution.requestCheckpointPause !== "function")
+        || (execution.modelAttribution !== undefined
+          && execution.modelAttribution !== "external")) {
+        throw new TypeError("Parked Task execution preparation is invalid");
+      }
       const priorManifest: StartInput["checkpointManifest"] = {
         contract: "encrypted_langgraph_v1",
         expectedCheckpointCount: segment.expectedCheckpointCount,
@@ -213,7 +258,14 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
       };
       return {
         stableIdentity: canonical.stableIdentity, initialRecord: canonical.initialRecord,
-        reference, scheduling, ...execution,
+        reference, scheduling, executor: execution.executor,
+        openTransientInput: execution.openTransientInput,
+        ...(execution.requestCheckpointPause === undefined ? {} : {
+          requestCheckpointPause: execution.requestCheckpointPause,
+        }),
+        ...(execution.modelAttribution === undefined ? {} : {
+          modelAttribution: execution.modelAttribution,
+        }),
         ...(memory.scopeMemory === undefined ? {} : { scopeMemory: memory.scopeMemory }),
         publishResult: input.publishResult,
         persistJob: async value => {
@@ -268,7 +320,9 @@ export function createProtectedTaskRuntimeParkedContinuation(input: Readonly<{
           // Both the held product/crypto owner and fresh physical pool are closed.
           const result = "acceptance" in startValue
             ? await startHuman(input.db, startValue)
-            : await start(input.db, startValue);
+            : "continuationFingerprint" in startValue
+              ? await startCheckpoint(input.db, startValue)
+              : await start(input.db, startValue);
           return { status: result.status === "rejected" ? "stale" : "started" };
         },
         deferBeforeExecution: value => input.recoverUnstarted(

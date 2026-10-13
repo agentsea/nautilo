@@ -121,7 +121,8 @@ export function assertTaskCreationProvenance(
 
 export type TaskCreationAdmissionResult<Prepared = never> =
   | Readonly<{ kind: "ordinary"; candidate: TaskCreateInput }>
-  | Readonly<{ kind: "protected"; prepared: Prepared }>
+  | Readonly<{ kind: "protected"; prepared: Prepared;
+      canonicalTaskIdentity?: Readonly<{ ownerId: string; requestorId: string; agentId: string }> }>
   | Readonly<{
       kind: "unavailable";
       reason:
@@ -316,9 +317,15 @@ export function createProtectedTaskCreationAdmissionV1(
       }
       const requesterPrivateNamespace =
         await ports.resolveRequesterPrivateNamespace(resolutionInput);
+      if (requesterPrivateNamespace.status === "unavailable") {
+        return Object.freeze({
+          kind: "unavailable" as const,
+          reason: "content_namespace_unavailable" as const,
+        });
+      }
       const authority = resolveTaskContentAuthorityV1({
         resolverVersion: TASK_CONTENT_AUTHORITY_RESOLVER_VERSION_V1,
-        requesterHumanId: candidate.requestorId,
+        requesterHumanId: requesterPrivateNamespace.subjectHumanId,
         requesterPrivateNamespace,
         shape: shape.shape,
       });
@@ -345,6 +352,7 @@ export function createProtectedTaskCreationAdmissionV1(
       }
       return Object.freeze({
         kind: "protected" as const,
+        canonicalTaskIdentity,
         prepared: Object.freeze({
           canonicalTaskIdentity,
           authority: authority.authority,

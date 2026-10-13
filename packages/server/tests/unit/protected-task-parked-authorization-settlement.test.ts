@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 
 import {
   jobs,
+  parseParkedProtectedTaskCheckpointContinuation,
+  protectedTaskRunResultObjectId,
   taskRuns,
   tasks,
   type DirectDatabase,
@@ -567,4 +569,65 @@ test.each([false, true])("settles accepted Human continuations only after exact 
   expect(calls).toEqual(stale ? ["locked-human-acceptance"]
     : ["locked-human-acceptance", "grant-read", "grant-complete", "release"]);
   expect((await repository.get(REQUEST))?.snapshot.state).toBe(stale ? "running" : "completed");
+});
+
+function checkpointCandidate() {
+  const prior = candidate();
+  const reference = { ...prior.priorJob.reference, resultObjectId: protectedTaskRunResultObjectId(TASK, RUN) };
+  const park = { version: 1, taskId: TASK, taskRunId: RUN, jobId: JOB,
+    graphThreadId: prior.occurrence.run.graphThreadId, generation: 0, executionSegment: 1,
+    interrupts: [], parkedAt: new Date(PARKED_AT).toISOString(),
+    stableRoutingDigest: Buffer.alloc(32, 8).toString("base64url"),
+  };
+  const parsed = parseParkedProtectedTaskCheckpointContinuation({
+    task: { ...prior.occurrence.task, cryptoMappingState: "verified", contentPristine: true, pauseRequestId: null },
+    run: { ...prior.occurrence.run, pristine: true },
+    job: { id: JOB, ownerId: USER, requestorId: USER, laneKey: `task:${TASK}`,
+      type: "foreground", status: "completed", reference, parkReceipt: park,
+      startedAt: new Date(START), completedAt: new Date(PARKED_AT), pristine: true },
+    proof: { segment: { ...prior.proof.segment, sealedAt: new Date(PARKED_AT) },
+      continuation: { ...prior.proof.continuation, kind: "checkpoint_safe_v1",
+        reason: "grant_refresh", effectDisposition: "none_v1", interruptId: null,
+        operationId: null, requestDigest: null, requiredAuthorityDigest: null,
+        stableRoutingDigest: null, semanticAuthorityRequirements: null, sealedAt: new Date(PARKED_AT) } },
+  });
+  if (!parsed) throw new Error("invalid checkpoint fixture");
+  return parsed;
+}
+
+test("checkpoint prior grant settles from its genuine closed proof and releases only after commit", async () => {
+  const expected = checkpointCandidate();
+  const database = fakeDatabase();
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(runningRecord());
+  let releases = 0;
+  const owner = createProtectedTaskParkedAuthorizationSettlement({ db: database.db, repository,
+    recipients: { delete: () => { expect(database.events.at(-1)).toBe("transaction-commit"); releases++; return true; } },
+  }, { discover: async () => expected,
+    lockCheckpoint: async () => ({ current: expected, task: {} as never }),
+    lockHuman: async () => { throw new Error("checkpoint is not Human"); },
+    read: async () => { throw new Error("checkpoint is not additional authority"); },
+  });
+  database.failAfterOperation();
+  let rejected = false;
+  try { await owner.settle(expected.occurrence); } catch { rejected = true; }
+  expect(rejected).toBe(true);
+  expect(releases).toBe(0);
+  expect((await repository.get(REQUEST))?.snapshot.state).toBe("completed");
+  expect(await owner.settle(expected.occurrence)).toBe("settled");
+  expect(releases).toBe(1);
+});
+
+test("checkpoint settlement rejects changed physical proof before touching the prior grant", async () => {
+  const expected = checkpointCandidate();
+  let reads = 0;
+  const owner = createProtectedTaskParkedAuthorizationSettlement({ db: fakeDatabase().db,
+    repository: { get: async () => { reads++; return runningRecord(); }, compareAndSwap: async () => { throw new Error("unexpected CAS"); } },
+    recipients: { delete: () => { throw new Error("unexpected custody release"); } },
+  }, { discover: async () => expected,
+    lockCheckpoint: async () => ({ current: { ...expected,
+      proof: { ...expected.proof, segment: { ...expected.proof.segment, checkpointDigest: new Uint8Array(32) } } }, task: {} as never }),
+  });
+  expect(await owner.settle(expected.occurrence)).toBe("inactive");
+  expect(reads).toBe(0);
 });

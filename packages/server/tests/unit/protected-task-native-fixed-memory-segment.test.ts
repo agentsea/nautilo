@@ -20,7 +20,10 @@ import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
-import { createProtectedTaskTranscriptPort } from "@nautilo/runtime";
+import {
+  createProtectedTaskTranscriptPort,
+  ProtectedTaskExecutionDidNotBeginError,
+} from "@nautilo/runtime";
 import type {
   ConversationProductCanonicalTransactionRunner,
   ConversationProductPostgresHandle,
@@ -66,7 +69,7 @@ const REQUEST = `task-run-authorization:${RUN}`;
 
 const bytes = (fill: number): Uint8Array => new Uint8Array(32).fill(fill);
 
-async function fixture(mode: "namespace" | "scope" = "namespace") {
+async function fixture(mode: "namespace" | "scope" = "namespace", requestId = REQUEST) {
   const crypto = new LatticeCrypto();
   const recipient = await crypto.generateEncryptionKeyPair();
   const domainRequirement = {
@@ -90,7 +93,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     expectedPolicyRevision: 17,
   };
   const authorization = createDomainForegroundAuthorizationPlan(crypto, {
-    authorizationId: REQUEST,
+    authorizationId: requestId,
     policyRevision: 17,
     sessionId: `task-run:${RUN}`,
     roomId: ROOM,
@@ -110,7 +113,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     domains: [domainRequirement],
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
-    requestId: REQUEST,
+    requestId: requestId,
     workId: RUN,
     workKind: "task.execute",
     workPurpose: "task.execute",
@@ -124,7 +127,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     deadlineAt: NOW + 60_000,
   });
   const evidenceInput: TaskRuntimeExecutionEvidenceInputV1 = {
-    requestId: REQUEST,
+    requestId: requestId,
     workId: RUN,
     claimId: "fixed-memory-claim",
     claimExpiresAt: NOW + 60_000,
@@ -232,7 +235,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     taskRunId: RUN,
     inputObjectId: INPUT_OBJECT,
     resultObjectId: RESULT_OBJECT,
-    authorizationRequestId: REQUEST,
+    authorizationRequestId: requestId,
     policyRevision: 17,
     executionSegment: 1,
   });
@@ -244,7 +247,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
         runtimeKind: "task",
         runtimeVersion: 1,
       },
-      requestId: REQUEST,
+      requestId: requestId,
       workId: RUN,
       state: "claimed",
       descriptorDigest: "11".repeat(32),
@@ -281,7 +284,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace") {
     },
     acceptedMaterial: {
       responseBytes: bytes(6),
-      credentialId: REQUEST,
+      credentialId: requestId,
       issuingDeviceAuthorizationRevision: authorizationRevision(9),
       issuerSigningPublicKeyHash: bytes(7),
       authorizationExpiresAt: NOW + 60_000,
@@ -526,6 +529,7 @@ function overrides(
       try {
         return {
           value: await input.execute(Object.freeze({})),
+          checkpointAadBinding: { version: 1 as const, namespaceId: NAMESPACE, domainId: DOMAIN, namespaceAccessRevision: 4, policyRevision: 17 },
           manifest: Object.freeze({
             contract: "encrypted_langgraph_v1" as const,
             expectedCheckpointCount: 1,
@@ -695,6 +699,60 @@ async function withScenario<Value>(
 }
 
 describe("protected Task native fixed Memory segment", () => {
+  test("defers an offline local target before opening protected content or execution", async () => {
+    const value = await fixture();
+    const calls: string[] = [];
+    let ready = false;
+    let readinessChecks = 0;
+    const input = {
+      ...compositionInput(value.crypto, runner()),
+      localExecutionReadyBeforeStart: async (current: Readonly<{
+        occurrence: ProtectedTaskRunningOccurrence;
+        signal: AbortSignal;
+      }>) => {
+        readinessChecks += 1;
+        expect(current.occurrence).toBe(value.runningOccurrence);
+        current.signal.throwIfAborted();
+        return ready;
+      },
+    };
+    const prepare = createProtectedTaskNativeFixedMemorySegment(
+      input,
+      overrides(calls),
+    );
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const prepared = await prepare({
+          occurrence: value.occurrence,
+          predispatch: value.predispatch,
+          policy: value.policy,
+          reference: value.reference,
+          stableRoutingDigest: value.stableRoutingDigest,
+        });
+        const grant = {
+          occurrence: value.runningOccurrence,
+          reference: value.reference,
+          record: value.record,
+          domains: value.domains,
+          evidence,
+          signal: new AbortController().signal,
+        };
+        await Promise.resolve(expect(prepared.openTransientInput(grant)).rejects.toBeInstanceOf(
+          ProtectedTaskExecutionDidNotBeginError,
+        ));
+        expect(calls).toEqual([]);
+        ready = true;
+        const transient = await prepared.openTransientInput(grant);
+        expect(transient).toBeDefined();
+      },
+    });
+    expect(readinessChecks).toBe(2);
+    expect(calls).toEqual([]);
+  });
+
   test.each([{ writableNamespaces: [NAMESPACE] }, { writableNamespaces: [OTHER_NAMESPACE, NAMESPACE] }])("keeps the primary writable Namespace in multi-Namespace Memory authority: %j", async ({ writableNamespaces }) => {
     const value = await fixture();
     const calls: string[] = [];
@@ -1196,6 +1254,53 @@ describe("protected Task native fixed Memory segment", () => {
     });
   });
 
+  test.each(["manual_pause", "time_limit", "grant_refresh"] as const)(
+    "seals a requested %s checkpoint only after every plaintext owner closes", async reason => {
+      const value = await fixture();
+      const calls: string[] = [];
+      const published: unknown[] = [];
+      const parked: unknown[] = [];
+      const pauseRequestId = "d0000000-0000-4000-8000-00000000000d";
+      const prepare = createProtectedTaskNativeFixedMemorySegment({
+        ...compositionInput(value.crypto, runner()),
+        parkSegment: async input => { parked.push(input); return true; },
+      }, { ...overrides(calls), runSegment: async segment => {
+        expect(segment.protectedTaskCheckpointPauseController?.currentRequestedReason()).toBe(reason);
+        return { status: "checkpoint_paused", threadId: segment.graphThreadId, reason };
+      } });
+      await withTaskRuntimeExecutionEvidenceV1({ evidence: value.evidenceInput,
+        signal: new AbortController().signal, now: () => NOW,
+        execute: async evidence => {
+          const prepared = await prepare({ occurrence: value.occurrence,
+            predispatch: value.predispatch, policy: value.policy, reference: value.reference,
+            stableRoutingDigest: value.stableRoutingDigest });
+          expect(prepared.requestCheckpointPause?.(reason,
+            reason === "grant_refresh" ? undefined : pauseRequestId)).toBe(true);
+          expect(prepared.requestCheckpointPause?.(reason,
+            reason === "grant_refresh" ? undefined : pauseRequestId)).toBe(false);
+          const transient = await prepared.openTransientInput({ occurrence: value.runningOccurrence,
+            reference: value.reference, record: value.record, domains: value.domains, evidence,
+            signal: new AbortController().signal });
+          await consume(prepared.executor(executorInput(value.occurrence, transient, published, calls),
+            JOB, `task:${TASK}`, new AbortController().signal));
+        },
+      });
+      expect(published).toEqual([]);
+      expect(parked).toHaveLength(1);
+      expect(parked[0]).toMatchObject({
+        park: { taskId: TASK, taskRunId: RUN, jobId: JOB, interrupts: [] },
+        continuation: { kind: "checkpoint_safe_v1", reason, effectDisposition: "none_v1" },
+        pauseRequestId: reason === "grant_refresh" ? null : pauseRequestId,
+        stableRoutingDigest: value.stableRoutingDigest,
+      });
+      for (const close of ["transcript-quiesce", "checkpoint-close", "repository-close", "signer-close", "definition-close"]) {
+        expect(calls.indexOf(close)).toBeGreaterThanOrEqual(0);
+        expect(calls.indexOf(close)).toBeLessThan(calls.indexOf("result-park"));
+      }
+      expect(calls).not.toContain("result-publish");
+    },
+  );
+
   test.each(["interrupt", "prove_it", "identity", "await_reply"] as const)(
     "parks Human %s only after checkpoint and plaintext owners close", async outcome => {
       await withScenario("namespace", outcome, async scenario => {
@@ -1274,6 +1379,7 @@ describe("protected Task native fixed Memory segment", () => {
           policy: value.policy,
           reference,
           stableRoutingDigest: value.stableRoutingDigest,
+          checkpointAadBinding: { version: 1, namespaceId: NAMESPACE, domainId: DOMAIN, namespaceAccessRevision: 4, policyRevision: 17 },
           additionalAuthorityResume,
         });
         const transient = await prepared.openTransientInput({
@@ -1330,6 +1436,57 @@ describe("protected Task native fixed Memory segment", () => {
     });
     expect((parked[0] as { continuation: { stableRoutingDigest: Uint8Array } })
       .continuation.stableRoutingDigest).toEqual(value.stableRoutingDigest);
+  });
+
+  test("resumes a safe checkpoint without fabricating a Human or additional-authority reply", async () => {
+    const calls: string[] = [];
+    const published: unknown[] = [];
+    const fingerprint = "A".repeat(43);
+    const value = await fixture("namespace", `task-checkpoint-continuation:${RUN}:2:${fingerprint}`);
+    const reference: TaskRuntimeGrantClaimPlan["reference"] = Object.freeze({
+      ...value.reference,
+      executionSegment: 2,
+      resumeContinuationFingerprint: fingerprint,
+      authorizationRequestId: `task-checkpoint-continuation:${RUN}:2:${fingerprint}`,
+    });
+    const baseOverrides = overrides(calls, "complete")!;
+    const baseRunSegment = baseOverrides.runSegment!;
+    let executions = 0;
+    const prepare = createProtectedTaskNativeFixedMemorySegment(
+      compositionInput(value.crypto, runner()), {
+        ...baseOverrides,
+        runSegment: async segment => {
+          executions += 1;
+          expect(segment.execution.continueFromCheckpoint).toBe(true);
+          expect(segment.execution.resume).toBeUndefined();
+          return baseRunSegment(segment);
+        },
+      },
+    );
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const prepared = await prepare({
+          occurrence: value.occurrence, predispatch: value.predispatch,
+          policy: value.policy, reference,
+          stableRoutingDigest: value.stableRoutingDigest, checkpointResume: true,
+          checkpointAadBinding: { version: 1, namespaceId: NAMESPACE, domainId: DOMAIN, namespaceAccessRevision: 4, policyRevision: 17 },
+        });
+        const transient = await prepared.openTransientInput({
+          occurrence: value.runningOccurrence, reference, record: value.record,
+          domains: value.domains, evidence, signal: new AbortController().signal,
+        });
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, published, calls),
+          JOB, `task:${TASK}`, new AbortController().signal,
+        ));
+      },
+    });
+    expect(executions).toBe(1);
+    expect(published).toHaveLength(1);
+    expect(calls.indexOf("definition-close")).toBeLessThan(calls.indexOf("result-publish"));
   });
 
   test("does not publish a terminal result after Job cancellation during owner close", async () => {
@@ -1494,6 +1651,53 @@ describe("protected Task native fixed Memory segment", () => {
     })).toThrow("preparation is not exact");
   });
 
+  test("keeps an immutable dual definition eligible under current Full policy", async () => {
+    const value = await fixture();
+    const task = Object.freeze({
+      ...value.occurrence.task,
+      contentRepresentation: "dual" as const,
+    });
+    const occurrence = Object.freeze({ ...value.occurrence, task });
+    const predispatch = Object.freeze({
+      ...value.predispatch,
+      occurrence: Object.freeze({
+        ...value.predispatch.occurrence,
+        task,
+      }),
+    });
+    const prepare = createProtectedTaskNativeFixedMemorySegment(
+      compositionInput(value.crypto, runner()),
+      overrides([]),
+    );
+    const prepared = await prepare({
+      occurrence,
+      predispatch,
+      policy: value.policy,
+      reference: value.reference,
+      stableRoutingDigest: value.stableRoutingDigest,
+    });
+    expect(prepared.openTransientInput).toBeFunction();
+  });
+
+  test("does not run a protected-only definition under Shadow policy", async () => {
+    const value = await fixture();
+    const prepare = createProtectedTaskNativeFixedMemorySegment(
+      compositionInput(value.crypto, runner()),
+      overrides([]),
+    );
+    expect(() => prepare({
+      occurrence: value.occurrence,
+      predispatch: value.predispatch,
+      policy: {
+        mode: "shadow_encryption",
+        shadowBehavior: "strict",
+        revision: 17,
+      },
+      reference: value.reference,
+      stableRoutingDigest: value.stableRoutingDigest,
+    })).toThrow("preparation is not exact");
+  });
+
   test("requires a typed resume matching its exact continuation reference", async () => {
     const value = await fixture();
     const prepare = createProtectedTaskNativeFixedMemorySegment(
@@ -1652,7 +1856,8 @@ test.each([false, true])("opens an accepted reply only inside fresh grant custod
   });
   const prepared = await prepare({ occurrence: value.occurrence,
     predispatch: value.predispatch, policy: value.policy, reference,
-    stableRoutingDigest: value.stableRoutingDigest, humanResume });
+    stableRoutingDigest: value.stableRoutingDigest, humanResume,
+    checkpointAadBinding: { version: 1, namespaceId: NAMESPACE, domainId: DOMAIN, namespaceAccessRevision: 4, policyRevision: 17 } });
   expect(replyHeld).toBe(false);
   await withTaskRuntimeExecutionEvidenceV1({ evidence: value.evidenceInput,
     signal: new AbortController().signal, now: () => NOW,

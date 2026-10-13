@@ -10,14 +10,19 @@ import type {
 import {
   bindEncryptionDataOperationOwner,
   deriveTaskContentCryptoObjectIdV1,
+  deriveTaskHistoricalContentCryptoObjectIdV1,
 } from "@nautilo/lattice-bridge";
 import {
+  agentId,
+  agentRuntimeGeneration,
+  deriveAgentRuntimeObjectSignerPublic,
   LatticeCrypto,
   type HumanTaskPublicationRequest,
 } from "@nautilo/lattice-crypto";
 
 import {
   ProtectedTaskRouteError,
+  createProtectedTaskForegroundSignerTransport,
   createProductionProtectedTaskComposition,
   withCurrentProtectedTaskPublicationDeviceAuthority,
 } from
@@ -125,6 +130,58 @@ PostgresJsBridgeConnection {
 }
 
 describe("production protected Task composition", () => {
+  test("retains only the exact accepted foreground execution proof for the Task Agent", async () => {
+    const crypto = new LatticeCrypto();
+    const runtime = {
+      agentId: agentId(ROUTE_AUTHORITY.agentId),
+      keyClass: "runtime" as const,
+      generation: agentRuntimeGeneration(4),
+      key: new Uint8Array(32).fill(0x31),
+    };
+    const signer = deriveAgentRuntimeObjectSignerPublic(crypto, runtime);
+    const planBytes = Buffer.from([1, 2, 3, 4]);
+    const planDigest = Buffer.from(new Uint8Array(32).fill(0x42));
+    const signerPublicKey = Buffer.from(signer.publicKey);
+    const transport = createProtectedTaskForegroundSignerTransport({
+      resolveEvidence: async principal => {
+        expect(principal).toEqual(signer.principal);
+        return {
+          signerPublicKey,
+          planBytes,
+          planDigest,
+        };
+      },
+    });
+
+    expect(await transport.resolveSigner(signer.principal)).toEqual(
+      signer.publicKey,
+    );
+    expect(signerPublicKey.every(byte => byte === 0)).toBe(true);
+    expect(planBytes.every(byte => byte === 0)).toBe(true);
+    expect(planDigest.every(byte => byte === 0)).toBe(true);
+    expect(transport.evidenceFor(
+      signer.principal,
+      ROUTE_AUTHORITY.agentId,
+    )).toEqual({
+      kind: "foreground_agent_accepted_execution",
+      planBytesBase64url: Buffer.from([1, 2, 3, 4]).toString("base64url"),
+      planDigestBase64url: Buffer.from(
+        new Uint8Array(32).fill(0x42),
+      ).toString("base64url"),
+    });
+    expect(transport.evidenceFor(
+      signer.principal,
+      "10000000-0000-4000-8000-000000000099",
+    )).toBeNull();
+
+    transport.destroy();
+    expect(transport.evidenceFor(
+      signer.principal,
+      ROUTE_AUTHORITY.agentId,
+    )).toBeNull();
+    runtime.key.fill(0);
+  });
+
   test("does not verify or query the crypto database during construction", async () => {
     const cryptoActivity = { queries: 0 };
     const composition = createProductionProtectedTaskComposition({
@@ -437,6 +494,68 @@ describe("production protected Task composition", () => {
     expect(selections.flat()).not.toContain("resultText");
     expect(selections.flat()).not.toContain("lastError");
     expect(cryptoActivity.queries).toBe(0);
+  });
+
+  test("selects a source-versioned revision-1 cancelled result reservation", async () => {
+    const taskId = "10000000-0000-4000-8000-000000000004";
+    const taskRunId = "10000000-0000-4000-8000-000000000006";
+    const namespaceId = "10000000-0000-4000-8000-000000000005";
+    const sourceDigest = new Uint8Array(32).fill(0x41);
+    const objectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+      coordinate: {
+        kind: "run_result", taskId, taskRunId, contentRevision: 1,
+      },
+      namespaceId,
+      sourceDigest,
+    });
+    const historicalRepair = {
+      version: 2 as const,
+      claimId: "10000000-0000-4000-8000-000000000007",
+      publisherDeviceId: "historical-device.1",
+      signedRequestDigest: "11".repeat(32),
+      sourceDigest: Buffer.from(sourceDigest).toString("hex"),
+      sourcePayloadHash: "22".repeat(32),
+      sourceRevision: 0 as const,
+      genesisManifestHash: "33".repeat(32),
+    };
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([
+        [{ ownerId: ROUTE_AUTHORITY.userId,
+          requestorId: ROUTE_AUTHORITY.userId,
+          agentId: ROUTE_AUTHORITY.agentId,
+          contentRepresentation: "dual", contentNamespaceId: namespaceId,
+          cryptoMappingState: "verified" }],
+        [{ taskId, status: "cancelled", resultRepresentation: "ordinary",
+          resultContentNamespaceId: null, resultRevision: 0,
+          resultCryptoObjectId: null, resultCryptoAccessRevision: 0,
+          resultCryptoMappingState: "unmapped" }],
+        [{ taskId, taskRunId,
+          requesterHumanId: ROUTE_AUTHORITY.subjectHumanId,
+          contentNamespaceId: namespaceId, anchorNamespaceId: namespaceId,
+          resultRevision: 1, cryptoObjectId: objectId,
+          representation: "dual", cryptoAccessRevision: 0,
+          completion: "complete", disposition: "active", failureCode: null,
+          historicalRepair }],
+      ], []),
+      restricted: observedRestrictedConnection({ queries: 0 }),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: { resolve: () => Promise.resolve({
+          policy: { mode: "shadow_encryption", shadowBehavior: "strict" },
+          revalidationToken: 1,
+        }), revalidate: () => Promise.resolve() },
+      }),
+      observer: { kick() {} },
+    });
+
+    expect(await composition.ports.readRunResult({
+      authority: ROUTE_AUTHORITY, taskId, taskRunId,
+    })).toEqual({
+      readVersion: 1, status: "waiting", taskId, taskRunId, objectId,
+      resultRevision: 1, cryptoAccessRevision: 0,
+      reason: "result_not_mapped",
+    });
   });
 
   test("rejects mapped result revisions that disagree with terminal status", async () => {

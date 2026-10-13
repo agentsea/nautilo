@@ -134,7 +134,7 @@ function fixture() {
     requestDigest: new Uint8Array(32).fill(8), authorityFingerprint: fingerprint,
     requesterHumanId: HUMAN, anchorNamespaceId: NAMESPACE,
     cryptoObjectId: intent.resultObjectId, representation: "protected", payloadVersion: 1,
-    cryptoAccessRevision: 0, requiredNamespaceFingerprint: new Uint8Array(32).fill(5),
+    historicalRepair: null, cryptoAccessRevision: 0, requiredNamespaceFingerprint: new Uint8Array(32).fill(5),
     completion: "pending", disposition: "active", attemptCount: 0,
     nextAttemptAt: new Date(START), leaseToken: null, leaseExpiresAt: null,
     failureCode: null, cryptoCompletedAt: null, createdAt: new Date(START), updatedAt: new Date(START),

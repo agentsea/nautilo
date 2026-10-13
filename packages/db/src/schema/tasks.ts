@@ -71,6 +71,9 @@ export const tasks = pgTable(
     lastFiredAt: timestamp("last_fired_at", { withTimezone: true }),
     fireLockId: uuid("fire_lock_id"),
     fireLockedAt: timestamp("fire_locked_at", { withTimezone: true }),
+    pauseRequestId: uuid("pause_request_id"),
+    pauseRequestedAt: timestamp("pause_requested_at", { withTimezone: true }),
+    pauseReason: text("pause_reason", { enum: ["manual_pause", "time_limit"] }),
     lastError: text("last_error"),
     // Server-authored reference; never accepted from Task input or protected payload metadata.
     localExecutionDelegation: jsonb("local_execution_delegation").$type<LocalExecutionDelegation | null>(),
@@ -113,6 +116,13 @@ export const tasks = pgTable(
     }).onDelete("restrict"),
     check("tasks_content_revision_nonnegative", sql`${t.contentRevision} >= 0`),
     check("tasks_crypto_access_revision_nonnegative", sql`${t.cryptoAccessRevision} >= 0`),
+    check("tasks_protected_pause_intent_coherent", sql`(
+      ${t.pauseRequestId} is null and ${t.pauseRequestedAt} is null and ${t.pauseReason} is null
+    ) or (
+      ${t.contentRepresentation} in ('dual', 'protected')
+      and ${t.pauseRequestId} is not null and ${t.pauseRequestedAt} is not null
+      and ${t.pauseReason} in ('manual_pause', 'time_limit')
+    )`),
     check("tasks_protected_requester_owns_content", sql`${t.contentRepresentation} = 'ordinary' or ${t.ownerId} = ${t.requestorId}`),
     check("tasks_crypto_mapping_coherent", sql`(
       ${t.contentRepresentation} = 'ordinary'

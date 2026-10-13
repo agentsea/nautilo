@@ -425,3 +425,24 @@ test("does not attach a substituted result publication receipt", async () => {
   ));
   expect(attached).toBe(false);
 });
+
+
+test("historical definition correlation remains exact throughout native result publication", async () => {
+  const state = fixture();
+  const inputObjectId = `task-historical:v1:${"c".repeat(64)}`;
+  const publish = createProtectedTaskNativeResultPublication({ ...state.input,
+    reference: { ...reference, inputObjectId } }, state.overrides);
+  const original = publication();
+  const current = { ...original, occurrence: { ...original.occurrence,
+    task: { ...original.occurrence.task, cryptoObjectId: inputObjectId } } };
+  await publish(current);
+  expect(state.published()).toMatchObject({ reference: { ...reference, inputObjectId } });
+  const denied = fixture();
+  const mismatched = createProtectedTaskNativeResultPublication({ ...denied.input,
+    reference: { ...reference, inputObjectId } }, denied.overrides);
+  await Promise.resolve(expect(mismatched(original)).rejects.toThrow("publication coordinates disagree"));
+  expect(denied.calls).toEqual([]);
+  expect(() => createProtectedTaskNativeResultPublication({ ...denied.input,
+    reference: { ...reference, inputObjectId: "task-historical:v1:invalid" } },
+  denied.overrides)).toThrow("Protected Task result reference is invalid");
+});

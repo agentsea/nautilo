@@ -58,7 +58,18 @@ export {
   BackgroundAuthorizationRepositoryConflictError,
   InMemoryBackgroundAuthorizationRepository,
   buildUnclaimedTaskCancellationAuthorityReplacement,
+  buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+  buildUnclaimedTaskOutputReadAuthorityReplacement,
+  buildUnclaimedTaskMappedHeadAuthorityReplacement,
+  buildParkedTaskWakeAuthorityReplacement,
+  rotateExpiredParkedTaskWakeRecipient,
+  type BackgroundAuthorizationTaskMappedHeadReplacementRepository,
+  type BackgroundAuthorizationTaskOutputReadReplacementRepository,
   type BackgroundAuthorizationTaskCancellationReplacementRepository,
+  type BackgroundAuthorizationTaskTerminalMessageReplacementRepository,
+  type BackgroundAuthorizationTaskWakeParkRepository,
+  type BackgroundAuthorizationTaskWakeParkResult,
+  type BackgroundAuthorizationTaskWakeRecipientRenewalResult,
   parseBackgroundAuthorizationRecord,
   isTaskRuntimeStableIdempotencyKey,
   isTaskExecutionWorkKind,
@@ -100,6 +111,8 @@ export {
   type ProcessorSignerAuthorizationEvidenceV1,
   type ProcessorSignerAuthorizationEvidenceV2,
 } from "./repository";
+
+export { type TaskRuntimeMappedHeadReplacementInput } from "./task-runtime-mapped-head-replan";
 
 export {
   PostgresBackgroundAuthorizationRepository,

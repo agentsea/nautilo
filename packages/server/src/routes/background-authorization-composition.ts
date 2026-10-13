@@ -367,8 +367,8 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
                 throw new BackgroundAuthorizationDeviceServiceError("malformed");
               }
               const verified = verifyDomainForegroundAuthorizationV2(crypto, {
-                ...(request.workKind === "task.cancel_result"
-                  && request.workPurpose === "task.cancel_result"
+                ...(["task.cancel_result", "task.deliver_message"].includes(request.workKind)
+                  && request.workPurpose === request.workKind
                   ? { expectedOperations: ["encrypt"] as const } : {}),
                 authorizationBytes: responseBytes,
                 now: now(),

@@ -1,7 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { FastifyReply } from "fastify";
 import type { Task, TaskRun } from "@nautilo/db";
-import { TaskFundingError } from "@nautilo/runtime";
+import {
+  TaskFundingError,
+  type TaskFundingRunSource,
+  type TaskFundingTaskSource,
+} from "@nautilo/runtime";
 import {
   callerTargetChatChangeConflictsWithResume,
   requireTaskFundingForMutation,
@@ -60,7 +64,10 @@ describe("Task route funding admission", () => {
     const priorRun = { id: "run-1" } as TaskRun;
     const allowed = await requireTaskFundingForMutation({
       task: task(), priorRun, origin: "task_update", reply: replyFixture().reply,
-      assertAdmission: mock(async (candidate: Task, prior?: TaskRun) => {
+      assertAdmission: mock(async (
+        candidate: TaskFundingTaskSource,
+        prior?: TaskFundingRunSource,
+      ) => {
         expect(candidate.requestorId).toBe("human-1");
         expect(prior).toBe(priorRun);
         return {

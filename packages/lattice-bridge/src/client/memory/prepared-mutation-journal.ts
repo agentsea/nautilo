@@ -132,6 +132,13 @@ export type PreparedMutationJournalState =
   | "corrupt"
   | "missing_authority";
 
+export type PreparedMutationJournalCustodyAvailability =
+  | Readonly<{ status: "available" | "locked" }>
+  | Readonly<{
+      status: "unsupported" | "corrupt" | "storage_lost";
+      reasonCode: string;
+    }>;
+
 interface PreparedMutationJournalIndexBase {
   readonly formatVersion: 1;
   readonly operationId: string;

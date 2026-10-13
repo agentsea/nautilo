@@ -122,6 +122,45 @@ describe("native protected Task execution composition", () => {
     expect(f.publications).toEqual([]);
   });
 
+  test("rechecks the exact local target at the pre-effect boundary and permits a later reconnect", async () => {
+    const f = setup();
+    const checks: unknown[] = [];
+    let available = false;
+    const execution = createProductionProtectedTaskNativeExecution(f.input, {
+      ...f.overrides,
+      localReadiness: async request => {
+        checks.push(request);
+        return available ? { status: "ready" } : { status: "waiting" };
+      },
+    });
+    await execution.prepareExecution(preparation("requester-a", "agent-a"));
+    const recheck = f.segments[0]!.localExecutionReadyBeforeStart;
+    if (recheck === undefined) throw new Error("local readiness was not wired");
+    const occurrence = { task: { id: "task-a" }, run: { id: "run-a" } } as never;
+    const signal = new AbortController().signal;
+    expect(await recheck({ occurrence, signal })).toBe(false);
+    available = true;
+    expect(await recheck({ occurrence, signal })).toBe(true);
+    expect(checks).toEqual([{ db: f.input.db, occurrence, signal }, {
+      db: f.input.db, occurrence, signal,
+    }]);
+  });
+
+  test("does not classify a local source denial as an offline wait", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, {
+      ...f.overrides,
+      localReadiness: async () => { throw new Error("local_source_revoked"); },
+    });
+    await execution.prepareExecution(preparation("requester-a", "agent-a"));
+    const recheck = f.segments[0]!.localExecutionReadyBeforeStart;
+    if (recheck === undefined) throw new Error("local readiness was not wired");
+    await Promise.resolve(expect(recheck({ occurrence: {} as never,
+      signal: new AbortController().signal })).rejects.toThrow(
+      "local_source_revoked",
+    ));
+  });
+
   test("adapts the fixed segment park callback to one atomic database seal", async () => {
     const f = setup();
     const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);

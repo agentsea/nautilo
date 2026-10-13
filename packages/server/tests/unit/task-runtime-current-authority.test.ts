@@ -241,7 +241,7 @@ describe("current protected Task Runtime authority adapter", () => {
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         const product = {} as never;
-        if (!await input.validateCurrentProduct(product)) return null;
+        if (!await input.validateCurrentProduct(product, {} as never)) return null;
         return input.use(f.authority, product, {} as never);
       }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
@@ -300,7 +300,7 @@ describe("current protected Task Runtime authority adapter", () => {
         insideAuthority = true;
         try {
           const product = {} as never;
-          if (!await input.validateCurrentProduct(product)) return null;
+          if (!await input.validateCurrentProduct(product, {} as never)) return null;
           events.push("namespace");
           const value = await input.use(f.authority, product, restricted, {} as never);
           await input.validateBeforeCommit();
@@ -430,7 +430,7 @@ describe("current protected Task Runtime authority adapter", () => {
         insideAuthority = true;
         try {
           const product = {} as never;
-          if (!await input.validateCurrentProduct(product)) return null;
+          if (!await input.validateCurrentProduct(product, {} as never)) return null;
           order.push("namespace");
           return await input.use(f.authority, product, {} as never);
         } finally {insideAuthority = false;}
@@ -480,7 +480,7 @@ describe("current protected Task Runtime authority adapter", () => {
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         const product = {} as never;
-        if (!await input.validateCurrentProduct(product)) return null;
+        if (!await input.validateCurrentProduct(product, {} as never)) return null;
         return input.use(f.authority, product, {} as never);
       }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
@@ -516,7 +516,7 @@ describe("current protected Task Runtime authority adapter", () => {
         withAcceptedAuthority: (async (input: Parameters<
           typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
           const product = {} as never;
-          if (!await input.validateCurrentProduct(product)) return null;
+          if (!await input.validateCurrentProduct(product, {} as never)) return null;
           return input.use(f.authority, product, {} as never);
         }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
       });

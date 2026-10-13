@@ -25,7 +25,7 @@ import {
   decodeNamespaceObjectEnvelopeV2,
   parseHumanMessageEditCryptoObjectIdV1,
 } from "@nautilo/lattice-crypto/wire";
-import { deriveMessageCryptoObjectIdV2 } from "../../message/conversation-repository.ts";
+import { deriveMessageCryptoObjectIdV2, deriveLiveShadowMessageCryptoObjectIdV1 } from "../../message/conversation-repository.ts";
 import type { ExistingMessageRepairEvidence, ExistingMessageRetainedGeneration } from
   "../../message/existing-message-repair-evidence.ts";
 import type { ResolveLiveShadowAgentObjectSigner } from "../storage/postgres-object-access-manifest-v5.ts";
@@ -308,6 +308,8 @@ export interface PostgresRoomHistoryShadowProjectionOptions {
   readonly resolveHumanEditedRepresentationAuthority?:
     ResolveRoomHistoryHumanEditedRepresentationAuthority;
   readonly resolveForegroundAgentSigner?: ResolveLiveShadowAgentObjectSigner;
+  /** Historical Runtime signer publication, independent of Human/shared ingress. */
+  readonly resolveTaskWakeAgentSigner?: ResolveLiveShadowAgentObjectSigner;
   readonly resolveExistingRetainedGeneration?: (input: Readonly<{
     namespaceId: string; keyClass: "ai" | "human"; generation: number; accessRevision: number;
   }>) => Promise<ExistingMessageRetainedGeneration | null>;
@@ -586,6 +588,7 @@ function selectRoomRows(
       human_peer_shadow_operation_id: sql`${sessionMessageCryptoRevisions.humanPeerShadowOperationId}`.as("human_peer_shadow_operation_id"),
       shared_agent_shadow_operation_id: sql`${sessionMessageCryptoRevisions.sharedAgentShadowOperationId}`.as("shared_agent_shadow_operation_id"),
       shared_agent_shadow_execution_id: sql`${sessionMessageCryptoRevisions.sharedAgentShadowExecutionId}`.as("shared_agent_shadow_execution_id"),
+      task_wake_operation_id: sessionMessageCryptoRevisions.taskWakeOperationId,
       shadow_transcript_ordinal: sql`${sessionMessageCryptoRevisions.shadowTranscriptOrdinal}::int`.as("shadow_transcript_ordinal"),
       payload_version: sql`${sessionMessageCryptoRevisions.payloadVersion}::int`.as("payload_version"),
       key_class: sql`${sessionMessageCryptoRevisions.keyClass}`.as("key_class"),
@@ -688,7 +691,8 @@ async function selectCompleteShadowOperations(
   const operation = sql<string>`COALESCE(
     ${sessionMessageCryptoRevisions.shadowOperationId},
     ${sessionMessageCryptoRevisions.sharedAgentShadowOperationId},
-    ${sessionMessageCryptoRevisions.sharedAgentShadowExecutionId})`;
+    ${sessionMessageCryptoRevisions.sharedAgentShadowExecutionId},
+    ${sessionMessageCryptoRevisions.taskWakeOperationId})`;
   return product.transaction(async (transaction) => {
     const rows: ConversationProductDatabaseRow[] = [];
     let cursor: Readonly<{
@@ -1067,12 +1071,13 @@ async function resolveSharedResumeToolResultCallId(
   }
 }
 
-function operationFamily(row: ConversationProductDatabaseRow): "legacy" | "human_peer" | "shared_human" | "shared_execution" | null {
+function operationFamily(row: ConversationProductDatabaseRow): "legacy" | "human_peer" | "shared_human" | "shared_execution" | "task_wake" | null {
   const families = [
     ["legacy", row["shadow_operation_id"]],
     ["human_peer", row["human_peer_shadow_operation_id"]],
     ["shared_human", row["shared_agent_shadow_operation_id"]],
     ["shared_execution", row["shared_agent_shadow_execution_id"]],
+    ["task_wake", row["task_wake_operation_id"]],
   ] as const;
   const present = families.filter(([, value]) => value != null);
   return present.length === 1 && typeof present[0]![1] === "string"
@@ -1091,6 +1096,8 @@ function isEligible(row: ConversationProductDatabaseRow): boolean {
   if (family === "human_peer") return row["key_class"] === "human" && role === "user";
   if (row["key_class"] !== "ai") return false;
   if (family === "shared_human") return role === "user";
+  if (family === "task_wake") return (role === "assistant" || role === "tool")
+    && row["edit_revision"] === 0 && Number(row["shadow_transcript_ordinal"]) >= 2;
   if (family === "shared_execution") return role === "assistant" || role === "tool";
   return family === "legacy" && (role === "user" || role === "assistant" || role === "tool");
 }
@@ -1112,7 +1119,7 @@ function isHumanEditedRepresentation(row: ConversationProductDatabaseRow): boole
 function isExistingRepresentation(row: ConversationProductDatabaseRow): boolean {
   return row["object_id_scheme"] === "message_v2" && row["repair_identity_digest"] != null
     && ["shadow_operation_id", "human_peer_shadow_operation_id",
-      "shared_agent_shadow_operation_id", "shared_agent_shadow_execution_id"]
+      "shared_agent_shadow_operation_id", "shared_agent_shadow_execution_id", "task_wake_operation_id"]
       .every((field) => row[field] == null);
 }
 
@@ -1225,7 +1232,70 @@ async function projectExistingRepresentation(
 function operationIdFor(row: ConversationProductDatabaseRow): string {
   return text("Room history Shadow operation ID",
     row["shadow_operation_id"] ?? row["human_peer_shadow_operation_id"]
-      ?? row["shared_agent_shadow_operation_id"] ?? row["shared_agent_shadow_execution_id"]);
+      ?? row["shared_agent_shadow_operation_id"] ?? row["shared_agent_shadow_execution_id"] ?? row["task_wake_operation_id"]);
+}
+
+/** Wake messages retain Room-owned signed provenance even after the origin Task is deleted. */
+async function withWakeProvenance(
+  options: PostgresRoomHistoryShadowProjectionOptions,
+  row: ConversationProductDatabaseRow,
+  coordinate: RoomHistorySelectedCoordinate,
+  roomId: string,
+  namespaceId: string,
+): Promise<ConversationProductDatabaseRow> {
+  const operationId = text("Task wake history operation", row["task_wake_operation_id"]);
+  if (!/^task-run-delivery-wake:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId)
+    || (coordinate.role !== "assistant" && coordinate.role !== "tool") || coordinate.editRevision !== 0
+    || row["completion"] !== "complete" || row["disposition"] !== "mapped"
+    || !["server_verified", "server_authenticated"].includes(String(row["parity_status"]))) {
+    throw new TypeError("Task wake history identity is invalid");
+  }
+  const ordinal = counter("Task wake history ordinal", row["shadow_transcript_ordinal"], 2);
+  const expectedId = deriveLiveShadowMessageCryptoObjectIdV1({ operationId, sessionId: coordinate.sessionId,
+    messageId: coordinate.messageId, revision: 0, transcriptOrdinal: ordinal, authorRole: coordinate.role });
+  if (row["crypto_object_id"] !== expectedId || row["lifecycle_object_id"] !== expectedId) {
+    throw new TypeError("Task wake history object is substituted");
+  }
+  const dto = await projectConversationProtectedMessageDtoV2(row,
+    { sessionId: coordinate.sessionId, roomId, namespaceId }, options.crypto);
+  if (dto.protectedPayload.status !== "encrypted" || dto.protectedPayload.keyClass !== "ai") {
+    throw new TypeError("Task wake history ciphertext is unavailable");
+  }
+  const manifestBytes = Buffer.from(dto.protectedPayload.accessManifestBytesBase64url, "base64url");
+  const envelopeBytes = Buffer.from(dto.protectedPayload.namespaceEnvelopeBytesBase64url, "base64url");
+  const manifest = decodeObjectAccessManifestV2OrV3(manifestBytes);
+  const envelope = decodeNamespaceObjectEnvelopeV2(envelopeBytes);
+  try {
+    if (manifest.formatVersion !== 3 || manifest.objectId !== expectedId
+      || manifest.signer.agentId !== row["author_agent_id"]
+      || envelope.context.objectId !== expectedId || envelope.context.namespaceId !== namespaceId
+      || envelope.context.keyClass !== "ai") {
+      throw new TypeError("Task wake history signer or Namespace is unavailable");
+    }
+    const publicKey = await options.resolveTaskWakeAgentSigner?.(manifest.signer);
+    if (publicKey == null || publicKey.length !== 32) throw new TypeError("Task wake history signer unavailable");
+    publicKey.fill(0);
+    const retained = await options.resolveExistingRetainedGeneration?.({ namespaceId, keyClass: "ai",
+      generation: envelope.context.keyGeneration, accessRevision: envelope.context.bindingRevisionAtWrap });
+    if (retained === undefined || retained === null || retained.namespaceGeneration !== envelope.context.keyGeneration
+      || retained.accessRevision !== envelope.context.bindingRevisionAtWrap) {
+      throw new TypeError("Task wake history retained Namespace is unavailable");
+    }
+    const decodeDigest = (value: string) => {
+      digest("Task wake retained Namespace digest", value);
+      return Uint8Array.from(Buffer.from(value, "base64url"));
+    };
+    return { ...row, turn_room_id: roomId, turn_namespace_id: namespaceId,
+      namespace_generation: retained.namespaceGeneration, turn_namespace_access_revision: retained.accessRevision,
+      namespace_head_digest: decodeDigest(retained.headDigestBase64url),
+      namespace_publication_digest: decodeDigest(retained.publicationDigestBase64url),
+      namespace_publication_set_digest: decodeDigest(retained.publicationSetDigestBase64url),
+      namespace_audience_fingerprint: decodeDigest(retained.audienceFingerprintBase64url),
+      agent_signer_key_id: manifest.signer.signerKeyId,
+    };
+  } finally {
+    manifestBytes.fill(0); envelopeBytes.fill(0); envelope.wrappedDek.fill(0);
+  }
 }
 
 /** Bind shared provenance before exposing ciphertext or signer authority. */
@@ -1786,8 +1856,10 @@ export function createPostgresRoomHistoryShadowProjection(
     try {
       for (let index = 0; index < eligible.length; index += 1) {
         const entry = eligible[index]!;
-        eligible[index] = isHumanEditedRepresentation(entry.row)
-          ? entry : { ...entry, row: withSharedProvenance(entry.row) };
+        eligible[index] = operationFamily(entry.row) === "task_wake"
+          ? { ...entry, row: await withWakeProvenance(options, entry.row, entry.coordinate, input.roomId, namespaceId) }
+          : isHumanEditedRepresentation(entry.row)
+            ? entry : { ...entry, row: withSharedProvenance(entry.row) };
       }
     } catch {
       return { status: "unavailable", reason: "projection_corrupt",
@@ -1903,7 +1975,7 @@ export function createPostgresRoomHistoryShadowProjection(
         // createLiveShadowAgentTurnSession always starts output reservations
         // at 2, including multi-input shared executions. Their Human inputs
         // retain separate operation IDs/input ordinals and are not output rows.
-        const firstTranscriptOrdinal = operationFamily(row) === "shared_execution" ? 2 : 1;
+        const firstTranscriptOrdinal = ["shared_execution", "task_wake"].includes(operationFamily(row) ?? "") ? 2 : 1;
         if (needsOrdinary && keyClass === "ai" && (
           transcript === undefined
           || transcript.length < 1

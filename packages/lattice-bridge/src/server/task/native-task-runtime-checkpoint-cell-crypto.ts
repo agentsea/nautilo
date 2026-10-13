@@ -5,6 +5,8 @@ import {
   humanCryptoDevices,
   namespaceDomainKeyBindings,
   namespaceDomainKeyHeads,
+  parseProtectedTaskCheckpointAadBinding,
+  type ProtectedTaskCheckpointAadBinding,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
@@ -44,6 +46,8 @@ export type NativeTaskRuntimeCheckpointCellCryptoInput = Readonly<{
   serverScope: string;
   evidence: TaskRuntimeExecutionEvidence;
   identity: TaskRuntimeCheckpointCellIdentity;
+  /** Only the exact canonical sealed park supplies retained ciphertext metadata. */
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   domains: readonly DomainForegroundSecretEntry[];
   signal: AbortSignal;
   now(): number;
@@ -152,6 +156,10 @@ function runtimeCheckpointDomain(
   return domain;
 }
 
+export type NativeTaskRuntimeCheckpointCellCrypto = TaskRuntimeCheckpointCellCrypto & Readonly<{
+  checkpointAadBinding: ProtectedTaskCheckpointAadBinding;
+}>;
+
 type NativeCheckpointCustody = Omit<NativeTaskRuntimeCheckpointCellCryptoInput, "evidence"> & Readonly<{
   readOnly: boolean;
   expiresAt: number;
@@ -162,7 +170,7 @@ type NativeCheckpointCustody = Omit<NativeTaskRuntimeCheckpointCellCryptoInput, 
 /** Runtime custody admits both checkpoint writes and reads. */
 export function createNativeTaskRuntimeCheckpointCellCrypto(
   supplied: NativeTaskRuntimeCheckpointCellCryptoInput,
-): TaskRuntimeCheckpointCellCrypto {
+): NativeTaskRuntimeCheckpointCellCrypto {
   const input = { ...supplied, identity: Object.freeze({ ...supplied.identity }),
     domains: Object.freeze([...supplied.domains]) };
   return createNativeTaskCheckpointCells({
@@ -183,7 +191,7 @@ export type HumanTaskCheckpointReadInput = Omit<
  */
 export function createHumanTaskCheckpointCellReader(
   supplied: HumanTaskCheckpointReadInput,
-): TaskRuntimeCheckpointCellCrypto {
+): NativeTaskRuntimeCheckpointCellCrypto {
   const input = { ...supplied, identity: Object.freeze({ ...supplied.identity }),
     domains: Object.freeze([...supplied.domains]) };
   if (!Number.isSafeInteger(input.deadlineAt)) {
@@ -214,19 +222,28 @@ export function createHumanTaskCheckpointCellReader(
       return cell.crypto.executeAuthorizedOperation(operation);
     },
   };
-  return Object.freeze({ scope: cell.scope, crypto: Object.freeze(readCrypto) });
+  return Object.freeze({ scope: cell.scope, crypto: Object.freeze(readCrypto), checkpointAadBinding: cell.checkpointAadBinding });
 }
 
 /** Native retained generation keys never leave an operation callback. */
 function createNativeTaskCheckpointCells(
   input: NativeCheckpointCustody,
-): TaskRuntimeCheckpointCellCrypto {
+): NativeTaskRuntimeCheckpointCellCrypto {
   const identity = Object.freeze({ ...input.identity });
   if (
     identity.graphThreadId.length === 0 ||
     !(input.signal instanceof AbortSignal)
   ) {
     throw new TypeError("Native Task checkpoint graph identity is invalid");
+  }
+  const checkpointAadBinding = parseProtectedTaskCheckpointAadBinding(input.checkpointAadBinding ?? {
+    version: 1, namespaceId: identity.namespaceId, domainId: identity.domainId,
+    namespaceAccessRevision: identity.expectedAccessRevision, policyRevision: identity.expectedPolicyRevision,
+  });
+  if (checkpointAadBinding === null || checkpointAadBinding.namespaceId !== identity.namespaceId
+    || checkpointAadBinding.namespaceAccessRevision > identity.expectedAccessRevision
+    || checkpointAadBinding.policyRevision > identity.expectedPolicyRevision) {
+    throw new TypeError("Native Task checkpoint ciphertext binding is invalid");
   }
   const authorizationSession = Object.freeze({});
   const scope = Object.freeze({
@@ -538,7 +555,9 @@ function createNativeTaskCheckpointCells(
       authority,
       domainId: identity.domainId,
       entrypointId: "task.execute",
+      aadBinding: checkpointAadBinding,
     }),
     scope,
+    checkpointAadBinding,
   });
 }

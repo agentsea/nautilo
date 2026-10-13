@@ -132,6 +132,11 @@ import {
   createDesktopMessageBackfillSchedulerClient,
   type PrioritizedHistoryRefreshResult,
 } from "./message-backfill-scheduler";
+import {
+  createDesktopTaskContentBackfillSchedulerClient,
+  createWorkbenchTaskContentBackfillScheduler,
+  type WorkbenchTaskContentBackfillReadinessPort,
+} from "./task-content-backfill-scheduler";
 import { restoreRoomReadOutcome } from "./room-read-outcome";
 import { createVisibilityGate, shouldHandleVisibility } from "./ws-visibility-gate";
 import { observeWorkbenchHumanActivity } from "./human-activity";
@@ -195,6 +200,7 @@ import {
   deriveBrowserCryptoDeviceId,
   createBrowserRoomHistoryShadowMessageReader,
   createBrowserMessageBackfillClient,
+  createBrowserTaskContentBackfillClient,
   type ProtectedRoomAccessStateV2,
 } from
   "@nautilo/lattice-bridge/client/browser";
@@ -2189,6 +2195,9 @@ export function NautiloRuntimeProvider({
     };
   }, [liveShadowMessageReceiver]);
   const messageBackfillSchedulerRef = useRef<ReturnType<typeof createWorkbenchMessageBackfillScheduler> | null>(null);
+  const taskContentBackfillSchedulerRef = useRef<ReturnType<
+    typeof createWorkbenchTaskContentBackfillScheduler
+  > | null>(null);
   const recipientSyncSchedulerRef = useRef<ReturnType<
     typeof createDomainKeyRecipientSyncScheduler
   > | null>(null);
@@ -2219,6 +2228,71 @@ export function NautiloRuntimeProvider({
       dataOperationOwner: createWorkbenchDataOperationOwner(), onProtectedRoomAccessState: observeProtectedRoomAccess});
   }, [auth.viewer.isVerified, auth.viewer.sessionUserId, auth.viewer.sessionActorId,
     desktopForegroundShadow, desktopForegroundShadowDeviceId, observeProtectedRoomAccess]);
+  const taskContentBackfill = useMemo(() => {
+    if (shadowPolicyMode !== "shadow_encryption"
+      || !auth.viewer.isVerified
+      || auth.viewer.sessionUserId === null
+      || auth.viewer.sessionActorId === null) return undefined;
+    if (isDesktop) {
+      if (desktopForegroundShadow === undefined
+        || desktopForegroundShadowDeviceId === null
+        || desktopForegroundShadow.getTaskContentBackfillProgress === undefined
+        || desktopForegroundShadow.serviceTaskContentBackfill === undefined
+        || desktopForegroundShadow.cancelTaskContentBackfill === undefined) return undefined;
+      const readiness: WorkbenchTaskContentBackfillReadinessPort = {
+        async readTaskProtectionActive({ signal }) {
+          if (signal.aborted) return false;
+          const progress = await runWithCryptoAdmission(
+            () => desktopForegroundShadow.getTaskContentBackfillProgress!(),
+          );
+          return !signal.aborted && progress.status === "ready";
+        },
+      };
+      return Object.freeze({
+        client: createDesktopTaskContentBackfillSchedulerClient({
+          service: () => runWithCryptoAdmission(
+            () => desktopForegroundShadow.serviceTaskContentBackfill!(),
+          ),
+          cancel: () => desktopForegroundShadow.cancelTaskContentBackfill!(),
+        }),
+        readiness,
+      });
+    }
+    if (typeof window === "undefined") return undefined;
+    const installationId = readOrCreateBrowserCryptoInstallationId({
+      serverScope: window.location.origin,
+      userId: auth.viewer.sessionUserId,
+      humanActorId: auth.viewer.sessionActorId,
+    });
+    if (installationId === null) return undefined;
+    return Object.freeze({
+      client: createBrowserTaskContentBackfillClient({
+        api: apiClient,
+        serverScope: window.location.origin,
+        userId: auth.viewer.sessionUserId,
+        humanActorId: auth.viewer.sessionActorId,
+        installationId,
+        dataOperationOwner: createWorkbenchDataOperationOwner(),
+        resolveDeviceAdmissionStatus: () => apiClient.deviceAdmission.status(),
+        onProtectedRoomAccessState: observeProtectedRoomAccess,
+      }),
+      readiness: {
+        async readTaskProtectionActive({ signal }) {
+          if (signal.aborted) return false;
+          const progress = await apiClient.getTaskContentBackfillProgress({ signal });
+          return !signal.aborted && progress.status === "ready";
+        },
+      } satisfies WorkbenchTaskContentBackfillReadinessPort,
+    });
+  }, [
+    auth.viewer.isVerified,
+    auth.viewer.sessionActorId,
+    auth.viewer.sessionUserId,
+    desktopForegroundShadow,
+    desktopForegroundShadowDeviceId,
+    observeProtectedRoomAccess,
+    shadowPolicyMode,
+  ]);
   const localExecutionHistoryScopeRef = useRef(0);
   const roomHistoryShadowReadAdapter = useMemo<
     RoomHistoryShadowReadAdapter | undefined
@@ -6747,6 +6821,49 @@ export function NautiloRuntimeProvider({
     if (admissionReady && wsState === "open") scheduler?.notify();
   }, [messageBackfillClient, admissionReady, admissionResumeGeneration,
     shadowPolicyMode, wsState, isRunning]);
+  useEffect(() => {
+    if (taskContentBackfill === undefined) return;
+    const scheduler = createWorkbenchTaskContentBackfillScheduler({
+      client: taskContentBackfill.client,
+      readiness: taskContentBackfill.readiness,
+      visibility: document,
+      clock: {
+        now: Date.now,
+        schedule(callback, delayMs) {
+          const timer = setTimeout(callback, delayMs);
+          return () => clearTimeout(timer);
+        },
+      },
+      errorResumeAt: () => Date.now() + 30_000,
+    });
+    taskContentBackfillSchedulerRef.current = scheduler;
+    const hint = () => scheduler.notify();
+    window.addEventListener("nautilo:admission-resumed", hint);
+    window.addEventListener("nautilo:room-members-changed", hint);
+    window.addEventListener("online", hint);
+    return () => {
+      if (taskContentBackfillSchedulerRef.current === scheduler) {
+        taskContentBackfillSchedulerRef.current = null;
+      }
+      window.removeEventListener("nautilo:admission-resumed", hint);
+      window.removeEventListener("nautilo:room-members-changed", hint);
+      window.removeEventListener("online", hint);
+      scheduler.dispose();
+    };
+  }, [taskContentBackfill]);
+  useEffect(() => {
+    const scheduler = taskContentBackfillSchedulerRef.current;
+    scheduler?.setForegroundBusy(isRunning);
+    scheduler?.setReady(admissionReady && wsState === "open");
+    if (admissionReady && wsState === "open") scheduler?.notify();
+  }, [
+    taskContentBackfill,
+    admissionReady,
+    admissionResumeGeneration,
+    shadowPolicyMode,
+    wsState,
+    isRunning,
+  ]);
 
   // reconcile-on-reconnect.
   //

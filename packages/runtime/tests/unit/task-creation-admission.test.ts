@@ -22,6 +22,7 @@ const TASK = "44444444-4444-4444-8444-444444444444";
 const RUN = "55555555-5555-4555-8555-555555555555";
 const FOREIGN_OWNER = "66666666-6666-4666-8666-666666666666";
 const OTHER_HUMAN = "77777777-7777-4777-8777-777777777777";
+const REQUESTER_USER = "88888888-8888-4888-8888-888888888888";
 const DB = {} as DirectDatabase;
 
 function candidate(overrides: Partial<TaskCreateInput> = {}): TaskCreateInput {
@@ -126,6 +127,7 @@ describe("Task creation admission", () => {
 
     expect(result).toEqual({
       kind: "protected",
+      canonicalTaskIdentity: { ownerId: HUMAN, requestorId: HUMAN, agentId: AGENT },
       prepared: {
         canonicalTaskIdentity: {
           ownerId: HUMAN,
@@ -169,6 +171,31 @@ describe("Task creation admission", () => {
     expect(dependencies.lastInput()).not.toHaveProperty("prompt");
     expect(dependencies.lastInput()).not.toHaveProperty("expectedOutput");
     expect(dependencies.lastInput()).not.toHaveProperty("metadata");
+  });
+
+  test("binds content authority to the resolved Human actor while retaining the requester User identity", async () => {
+    const dependencies = ports();
+    const original = candidate({ ownerId: REQUESTER_USER, requestorId: REQUESTER_USER });
+    const provenance = createHumanApiTaskCreationProvenance({ ownerId: REQUESTER_USER });
+    const result = await createProtectedTaskCreationAdmissionV1(dependencies).admit({
+      db: DB,
+      candidate: original,
+      provenance,
+      invocationAuthority: createAcceptedInvocationAuthority(REQUESTER_USER),
+    });
+
+    expect(result.kind).toBe("protected");
+    if (result.kind !== "protected") throw new Error("canonical identity fixture rejected");
+    expect(result.prepared.canonicalTaskIdentity).toEqual({
+      ownerId: REQUESTER_USER,
+      requestorId: REQUESTER_USER,
+      agentId: AGENT,
+    });
+    expect(result.prepared.authority.requesterHumanId).toBe(HUMAN);
+    expect(dependencies.lastInput()).toMatchObject({
+      ownerId: REQUESTER_USER,
+      requestorId: REQUESTER_USER,
+    });
   });
 
   test.each(["foreground.main", "foreground.fork"] as const)(

@@ -19,7 +19,7 @@ import {
   prepareHumanObjectAccessManifestGenesisSet,
   prepareHumanTaskPublicationRequest,
   unixTimestamp,
-  verifyCommonObjectAccessManifest,
+  verifyCommonObjectAccessManifestChain,
   wrapObjectDekForNamespace,
   type TrustedMinimumObjectAccessHead,
 } from "@nautilo/lattice-crypto";
@@ -37,6 +37,11 @@ import {
   destroyOpenedClientDeviceProfileV4,
   withClientObjectAccessSignerResolversV4,
 } from "../../client-vault/profile-v4.ts";
+import {
+  ingestObjectAccessSignerEvidenceV4,
+  type ObjectAccessSignerEvidenceTransportV1,
+  type ResolveTrustedObjectAccessEvidenceIssuerV4,
+} from "../../client-vault/ingest-object-access-signer-evidence-v4.ts";
 import type {
   ClientProfileCoordinates,
   ClientProfileVault,
@@ -47,7 +52,11 @@ import {
   deriveTaskContentCryptoObjectIdV1,
   TASK_DEFINITION_OBJECT_TYPE_V1,
 } from "../../task/task-content-repository.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
+  "../../task/task-historical-content-identity.ts";
 import { encodeTaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { parseTaskHistoricalRepairProvenanceV1 } from
+  "../../task/task-historical-repair-provenance.ts";
 import {
   fingerprintTaskDualPublicationFieldsV1,
   fingerprintTaskOperationalFieldsV1,
@@ -59,17 +68,20 @@ import {
 import type {
   HumanTaskDeviceContentPortV1,
 } from "./authorized-human-task-client.ts";
+import {
+  exactForegroundAgentSignerKeysV1,
+  foregroundAgentSignerPrincipalKeyV1,
+} from "../foreground-agent-accepted-execution.ts";
+import {
+  destroyPreparedTaskAccessManifestChain,
+  assertTaskAccessRewrapSigners,
+  exactTaskHumanSignerKeys,
+  prepareTaskAccessManifestChain,
+  taskHumanSignerCoordinate,
+} from "./task-access-manifest-read.ts";
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/u;
 const SIGNED_REQUEST_TTL_MS = 30_000;
-
-type HumanSignerEvidence = Readonly<{
-  kind: "human_device";
-  subjectHumanId: string;
-  committerDeviceId: string;
-  hostAuthorizationRevision: number;
-  signingPublicKeyBase64url: string;
-}>;
 
 export interface VaultHumanTaskDeviceContentInputV1 {
   readonly crypto: LatticeCrypto;
@@ -78,6 +90,8 @@ export interface VaultHumanTaskDeviceContentInputV1 {
   readonly subjectHumanId: string;
   readonly now: () => number;
   readonly resolveDeviceAdmissionStatus: () => Promise<DeviceAdmissionStatus>;
+  readonly resolveTrustedIssuingDevicePublicKey?:
+    ResolveTrustedObjectAccessEvidenceIssuerV4;
   readonly accessAnchors: Readonly<{
     load(objectId: string): Promise<TrustedMinimumObjectAccessHead | null>;
     advance(input: Readonly<{
@@ -113,37 +127,6 @@ function fromBase64url(label: string, value: string): Uint8Array {
     throw new TypeError(`${label} is not canonical base64url`);
   }
   return bytes;
-}
-
-function exactHumanSignerEvidenceKey(
-  envelope: Parameters<HumanTaskDeviceContentPortV1["openExact"]>[0]["envelope"],
-  signer: Readonly<{ subjectHumanId: string; committerDeviceId: string }>,
-  hostAuthorizationRevision: number,
-): Uint8Array | undefined {
-  const evidence = envelope.signerEvidence.filter(
-    (entry): entry is HumanSignerEvidence =>
-      typeof entry === "object"
-      && entry !== null
-      && !Array.isArray(entry)
-      && (entry as Partial<HumanSignerEvidence>).kind === "human_device",
-  );
-  if (envelope.signerEvidence.length !== 1 || evidence.length !== 1) {
-    return undefined;
-  }
-  const entry = evidence[0]!;
-  if (
-    entry.subjectHumanId !== signer.subjectHumanId
-    || entry.committerDeviceId !== signer.committerDeviceId
-    || entry.hostAuthorizationRevision !== hostAuthorizationRevision
-    || typeof entry.signingPublicKeyBase64url !== "string"
-  ) return undefined;
-  const key = fromBase64url(
-    "Protected Task Human signer key",
-    entry.signingPublicKeyBase64url,
-  );
-  if (key.length === 32) return key;
-  key.fill(0);
-  return undefined;
 }
 
 async function withProfile<Value>(
@@ -391,22 +374,88 @@ export function createVaultHumanTaskDeviceContentPortV1(
     ) => prepare("update", input, "dual") as Promise<DualTaskPreparedUpdateRequestV1>,
     openExact: async (input: Parameters<HumanTaskDeviceContentPortV1["openExact"]>[0]) => {
       const envelope = input.envelope;
-      if (
-        input.reference.cryptoAccessRevision !== 0
-        || envelope.accessManifestProofBytes.length !== 0
-      ) throw new ClassifiedDataOperationError(
-        "unsupported",
-        "Protected Task access-history reads are unavailable",
+      let historicalRepair = envelope.historicalRepair;
+      if (historicalRepair !== undefined) {
+        try {
+          const parsed = parseTaskHistoricalRepairProvenanceV1(historicalRepair);
+          if (parsed.version !== 2) throw new TypeError("unsupported version");
+          historicalRepair = parsed;
+          const historicalSourceDigest = Uint8Array.from(
+            parsed.sourceDigest.match(/../gu)!,
+            byte => Number.parseInt(byte, 16),
+          );
+          try {
+            if (deriveTaskHistoricalContentCryptoObjectIdV1({
+              coordinate: {
+                kind: "definition",
+                taskId: envelope.taskId,
+                contentRevision: envelope.contentRevision,
+              },
+              namespaceId: envelope.namespaceId,
+              sourceDigest: historicalSourceDigest,
+            }) !== input.reference.objectId) {
+              throw new TypeError("historical object substitution");
+            }
+          } finally {
+            historicalSourceDigest.fill(0);
+          }
+        } catch (cause) {
+          throw new ClassifiedDataOperationError(
+            "integrity", "Protected Task historical definition metadata is invalid",
+            { cause },
+          );
+        }
+      }
+      if (envelope.accessManifestProofBytes.length
+        !== input.reference.cryptoAccessRevision) {
+        throw new ClassifiedDataOperationError(
+          "integrity", "Protected Task access history is incomplete",
+        );
+      }
+      let foregroundKeys: Map<string, Uint8Array> | undefined;
+      const publications = envelope.signerEvidence.filter(
+        (entry): entry is ObjectAccessSignerEvidenceTransportV1 =>
+          typeof entry === "object" && entry !== null && !Array.isArray(entry)
+          && (entry as { kind?: unknown }).kind === "agent_runtime_publication",
       );
-      const retainedAnchor = await dependencies.accessAnchors.load(
+      if (publications.length > 0) {
+        try {
+          await ingestObjectAccessSignerEvidenceV4({
+            crypto: dependencies.crypto,
+            vault: dependencies.vault,
+            coordinates: dependencies.coordinates,
+            evidence: publications,
+            ...(dependencies.resolveTrustedIssuingDevicePublicKey === undefined
+              ? {}
+              : { resolveTrustedIssuingDevicePublicKey:
+                  dependencies.resolveTrustedIssuingDevicePublicKey }),
+            createStageId: () => `task-definition-signer:${input.reference.objectId}:${input.reference.cryptoAccessRevision}`,
+          });
+        } catch (cause) {
+          throw new ClassifiedDataOperationError(
+            "key_waiting",
+            "Protected Task Agent signer authority is unavailable",
+            { cause },
+          );
+        }
+      }
+      let retainedAnchor: TrustedMinimumObjectAccessHead | null;
+      let result: Readonly<{
+        plaintext: Uint8Array;
+        nextAnchor: TrustedMinimumObjectAccessHead;
+      }>;
+      try {
+      retainedAnchor = await dependencies.accessAnchors.load(
         input.reference.objectId,
       );
-      const result = await withProfile(dependencies, async (profileV4) => {
+      result = await withProfile(dependencies, async (profileV4) => {
       let canonicalPayload: Uint8Array | undefined;
       let canonicalManifest: Uint8Array | undefined;
       let canonicalEnvelope: Uint8Array | undefined;
-      let signerKey: Uint8Array | undefined;
-      let evidenceKey: Uint8Array | undefined;
+      let payloadHash: Uint8Array | undefined;
+      let envelopeHash: Uint8Array | undefined;
+      let humanKeys: Map<string, Uint8Array> | undefined;
+      let prepared: ReturnType<typeof prepareTaskAccessManifestChain> | undefined;
       let plaintext: Uint8Array | undefined;
       try {
         const payload = decodeEncryptedPayloadV2(envelope.encryptedPayloadBytes);
@@ -417,6 +466,8 @@ export function createVaultHumanTaskDeviceContentPortV1(
         canonicalPayload = encodeEncryptedPayloadV2(payload);
         canonicalManifest = encodeObjectAccessManifestV5(manifest);
         canonicalEnvelope = encodeNamespaceObjectEnvelopeV2(namespaceEnvelope);
+        payloadHash = dependencies.crypto.hash(envelope.encryptedPayloadBytes);
+        envelopeHash = dependencies.crypto.hash(envelope.namespaceEnvelopeBytes);
         if (
           !equalBytes(canonicalPayload, envelope.encryptedPayloadBytes)
           || !equalBytes(canonicalManifest, envelope.accessManifestBytes)
@@ -426,94 +477,120 @@ export function createVaultHumanTaskDeviceContentPortV1(
           || payload.context.keyClass !== "ai"
           || manifest.objectId !== input.reference.objectId
           || manifest.accessRevision !== input.reference.cryptoAccessRevision
-          || !equalBytes(manifest.payloadHash, dependencies.crypto.hash(
-            envelope.encryptedPayloadBytes,
-          ))
+          || !equalBytes(manifest.payloadHash, payloadHash)
           || namespaceEnvelope.context.objectId !== input.reference.objectId
           || namespaceEnvelope.context.namespaceId !== envelope.namespaceId
           || namespaceEnvelope.context.keyClass !== "ai"
           || manifest.envelopeHashes.length !== 1
-          || !equalBytes(manifest.envelopeHashes[0]!, dependencies.crypto.hash(
-            envelope.namespaceEnvelopeBytes,
-          ))
+          || !equalBytes(manifest.envelopeHashes[0]!, envelopeHash)
         ) throw new ClassifiedDataOperationError(
           "integrity",
           "Protected Task ciphertext coordinates are invalid",
         );
-        const signer = manifest.signer;
-        if (signer.kind !== "human_device") throw new ClassifiedDataOperationError(
-          "integrity",
-          "Protected Task definition signer is invalid",
-        );
         const own = profileV4.baseProfile.baseProfile;
-        // Exact reads currently accept only the locally authenticated device.
-        // Server-returned public keys are not a trust root. Cross-device reads
-        // remain closed until signer evidence is ingested into the V4 profile's
-        // authenticated device-history anchors.
-        signerKey = signer.subjectHumanId === dependencies.subjectHumanId
-          && signer.committerDeviceId === own.deviceId
-          && manifest.hostAuthorizationRevision <= own.trustedHostAuthorizationRevision
-          ? own.signingPublicKey.slice()
-          : undefined;
-        if (
-          signerKey === undefined
-          && signer.subjectHumanId === dependencies.subjectHumanId
-          && manifest.hostAuthorizationRevision <= own.trustedHostAuthorizationRevision
-        ) {
-          signerKey = withClientObjectAccessSignerResolversV4({
-            crypto: dependencies.crypto,
-            profile: profileV4,
-            operation: (resolvers) =>
-              resolvers.resolveHistoricalHumanDeviceSigningPublicKey({
-                humanId: signer.subjectHumanId,
-                deviceId: signer.committerDeviceId,
-              })?.slice(),
-          });
-        }
-        if (signerKey === undefined) throw new ClassifiedDataOperationError(
-          "key_waiting",
-          "Protected Task signer evidence is unavailable",
-        );
-        evidenceKey = exactHumanSignerEvidenceKey(
-          envelope,
-          signer,
-          manifest.hostAuthorizationRevision,
-        );
-        if (evidenceKey === undefined || !equalBytes(evidenceKey, signerKey)) {
-          throw new ClassifiedDataOperationError(
-            "integrity",
-            "Protected Task signer evidence disagrees with trusted device history",
-          );
-        }
-        verifyCommonObjectAccessManifest(dependencies.crypto, {
-          manifestBytes: envelope.accessManifestBytes,
-          resolveHistoricalHumanDeviceSigningPublicKey: () => signerKey!,
-          resolveAgentRuntimeSignerPublicKey: () => null,
-          resolveProcessorSignerAuthorizationBytes: () => null,
-          resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+        prepared = prepareTaskAccessManifestChain({
+          crypto: dependencies.crypto,
+          objectId: input.reference.objectId,
+          payloadHash,
+          headManifestBytes: envelope.accessManifestBytes,
+          proofManifestBytes: envelope.accessManifestProofBytes,
+          retained: retainedAnchor,
         });
-        const nextAnchor: TrustedMinimumObjectAccessHead = Object.freeze({
-          objectId: objectId(manifest.objectId),
-          payloadHash: manifest.payloadHash.slice(),
-          accessRevision: accessRevision(0),
-          manifestHash: dependencies.crypto.hash(envelope.accessManifestBytes),
-        });
-        if (
-          retainedAnchor !== null
-          && (
-            retainedAnchor.objectId !== nextAnchor.objectId
-            || retainedAnchor.accessRevision !== 0
-            || !equalBytes(retainedAnchor.payloadHash, nextAnchor.payloadHash)
-            || !equalBytes(retainedAnchor.manifestHash, nextAnchor.manifestHash)
-          )
-        ) {
-          nextAnchor.payloadHash.fill(0);
-          nextAnchor.manifestHash.fill(0);
-          throw new ClassifiedDataOperationError(
-            "integrity",
-            "Protected Task definition rolled back behind its trusted anchor",
-          );
+        const genesis = decodeObjectAccessManifestV5(prepared.genesisManifestBytes);
+        try {
+          if (historicalRepair !== undefined) {
+            const actual = dependencies.crypto.hash(prepared.genesisManifestBytes);
+            const expected = Uint8Array.from(
+              historicalRepair.genesisManifestHash.match(/../gu)!,
+              byte => Number.parseInt(byte, 16),
+            );
+            try {
+              if (genesis.signer.kind !== "human_device"
+                || genesis.signer.subjectHumanId !== dependencies.subjectHumanId
+                || genesis.signer.committerDeviceId
+                  !== historicalRepair.publisherDeviceId
+                || !equalBytes(actual, expected)) {
+                throw new TypeError("Task definition historical genesis was substituted");
+              }
+            } finally {
+              actual.fill(0);
+              expected.fill(0);
+            }
+          } else if (genesis.signer.kind === "agent_runtime") {
+            if (input.expectedAgentId === undefined
+              || genesis.signer.agentId !== input.expectedAgentId) {
+              throw new TypeError("Task definition Agent genesis was substituted");
+            }
+          } else if (genesis.signer.kind !== "human_device"
+            || genesis.signer.subjectHumanId !== dependencies.subjectHumanId) {
+            throw new TypeError("Task definition Human genesis was substituted");
+          }
+        } finally {
+          genesis.payloadHash.fill(0);
+          genesis.previousManifestHash?.fill(0);
+          genesis.envelopeHashes.forEach(hash => hash.fill(0));
+          genesis.signerAuthorizationHash?.fill(0);
+          genesis.signature.fill(0);
         }
+        assertTaskAccessRewrapSigners(
+          prepared.fullChain,
+          dependencies.subjectHumanId,
+        );
+        foregroundKeys = exactForegroundAgentSignerKeysV1({
+          crypto: dependencies.crypto,
+          evidence: envelope.signerEvidence,
+          manifestBytes: prepared.fullChain,
+          ...(input.expectedAgentId === undefined
+            ? {} : { expectedAgentId: input.expectedAgentId }),
+        });
+        humanKeys = exactTaskHumanSignerKeys({
+          evidence: envelope.signerEvidence,
+          chain: prepared.fullChain,
+          expectedHumanId: dependencies.subjectHumanId,
+        });
+        withClientObjectAccessSignerResolversV4({
+          crypto: dependencies.crypto,
+          profile: profileV4,
+          operation: resolvers => verifyCommonObjectAccessManifestChain(
+            dependencies.crypto,
+            {
+              manifestBytes: envelope.accessManifestBytes,
+              proof: prepared!.proof,
+              trustedMinimumHead: prepared!.trustedMinimumHead,
+              resolveHistoricalHumanDeviceSigningPublicKey: context => {
+                const evidenceKey = humanKeys!.get(taskHumanSignerCoordinate({
+                  subjectHumanId: context.subjectHumanId,
+                  committerDeviceId: context.committerDeviceId,
+                  hostAuthorizationRevision: context.hostAuthorizationRevision,
+                }));
+                if (evidenceKey === undefined) return null;
+                const trusted = context.committerDeviceId === own.deviceId
+                  && context.subjectHumanId === dependencies.subjectHumanId
+                  && context.hostAuthorizationRevision
+                    <= own.trustedHostAuthorizationRevision
+                  ? own.signingPublicKey
+                  : resolvers.resolveHistoricalHumanDeviceSigningPublicKey({
+                      humanId: context.subjectHumanId,
+                      deviceId: context.committerDeviceId,
+                    });
+                if (trusted === null || trusted === undefined) {
+                  throw new ClassifiedDataOperationError(
+                    "key_waiting", "Protected Task signer history is unavailable",
+                  );
+                }
+                if (!equalBytes(trusted, evidenceKey)) {
+                  throw new TypeError("Protected Task Human signer evidence is untrusted");
+                }
+                return evidenceKey;
+              },
+              resolveAgentRuntimeSignerPublicKey: principal =>
+                foregroundKeys!.get(foregroundAgentSignerPrincipalKeyV1(principal))
+                ?? resolvers.resolveAgentRuntimeSignerPublicKey(principal),
+              resolveProcessorSignerAuthorizationBytes: () => null,
+              resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+            },
+          ),
+        });
         plaintext = await withClientNamespaceKeyring({
           profile: own,
           namespaceId: envelope.namespaceId,
@@ -537,7 +614,11 @@ export function createVaultHumanTaskDeviceContentPortV1(
           "key_waiting",
           "Protected Task Namespace key is unavailable",
         );
-        return Object.freeze({ plaintext, nextAnchor });
+        return Object.freeze({ plaintext, nextAnchor: Object.freeze({
+          ...prepared.nextAnchor,
+          payloadHash: Uint8Array.from(prepared.nextAnchor.payloadHash),
+          manifestHash: Uint8Array.from(prepared.nextAnchor.manifestHash),
+        }) });
       } catch (error) {
         plaintext?.fill(0);
         if (error instanceof ClassifiedDataOperationError) throw error;
@@ -550,10 +631,17 @@ export function createVaultHumanTaskDeviceContentPortV1(
         canonicalPayload?.fill(0);
         canonicalManifest?.fill(0);
         canonicalEnvelope?.fill(0);
-        signerKey?.fill(0);
-        evidenceKey?.fill(0);
+        payloadHash?.fill(0);
+        envelopeHash?.fill(0);
+        humanKeys?.forEach(key => key.fill(0));
+        if (prepared !== undefined) {
+          destroyPreparedTaskAccessManifestChain(prepared, retainedAnchor);
+        }
       }
       });
+      } finally {
+        foregroundKeys?.forEach(key => key.fill(0));
+      }
       let advanced: boolean;
       try {
         advanced = await dependencies.accessAnchors.advance({

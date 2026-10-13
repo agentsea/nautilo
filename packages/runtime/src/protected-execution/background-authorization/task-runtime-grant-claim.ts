@@ -1,3 +1,4 @@
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import { ProtectedTaskExecutionDidNotBeginError } from "../../tasks/protected-task-execution-candidate";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -27,6 +28,7 @@ import type {
 } from "@nautilo/db";
 import {
   deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
 } from "@nautilo/lattice-bridge";
 import type {
   CurrentTaskRuntimeAuthority,
@@ -38,6 +40,7 @@ import {
 
 import type { JobExecutor } from "../../job";
 import type {
+  ProtectedTaskCheckpointPauseReason,
   ProtectedTaskExecutionCandidate,
   ProtectedTaskExecutionStartResult,
   ProtectedTaskJobSchedulingFacts,
@@ -222,6 +225,10 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   executor: JobExecutor;
   scopeMemory?: TaskScopeMemoryBinding;
   modelAttribution?: "external";
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   startProtectedTaskRun(
     input: StartProtectedTaskRunInput,
   ): Promise<StartProtectedTaskRunResult>;
@@ -258,6 +265,10 @@ export type ParkedTaskRuntimeGrantClaimPlan = Readonly<{
   executor: JobExecutor;
   scopeMemory?: TaskScopeMemoryBinding;
   modelAttribution?: "external";
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   persistJob(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     claimed: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -562,11 +573,10 @@ function exactOccurrenceRecord(
       requirement.namespaceId === occurrence.task.contentNamespaceId,
   );
   const content = contentRequirements[0];
-  return occurrence.task.cryptoAccessRevision === 0
-    && occurrence.task.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
-      kind: "definition",
-      taskId: occurrence.task.id,
-      contentRevision: occurrence.task.contentRevision,
+  return Number.isSafeInteger(occurrence.task.cryptoAccessRevision) && occurrence.task.cryptoAccessRevision >= 0
+    && occurrence.task.cryptoObjectId === taskContentRevisionObjectIdV1({
+      coordinate: { kind: "definition", taskId: occurrence.task.id, contentRevision: occurrence.task.contentRevision },
+      namespaceId: occurrence.task.contentNamespaceId, historicalRepair: occurrence.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair),
     })
     && record.snapshot.workId === occurrence.run.id
     && record.snapshot.namespaceId === occurrence.task.contentNamespaceId
@@ -1157,6 +1167,9 @@ function copyOccurrence(
   return Object.freeze({
     task: Object.freeze({
       ...occurrence.task,
+      ...(occurrence.task.definitionHistoricalRepair == null ? {} : {
+        definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair),
+      }),
       cryptoRequiredNamespaceFingerprint:
         occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
     }),
@@ -1644,6 +1657,10 @@ type TaskRuntimeExecutionCandidateInput = Readonly<{
   now: () => number;
   claimId: string;
   result: TaskRuntimeResultBinding;
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   persistJob?(payload: PersistJobPayload): Promise<string>;
   recoverBeforeExecution?(): Promise<boolean>;
   start(jobId: string): Promise<ProtectedTaskExecutionStartResult>;
@@ -1664,6 +1681,54 @@ function executionTimestamp(
     throw new TypeError(message);
   }
   return timestamp;
+}
+
+async function failExpiredUnsettledTaskRuntimeExecution(input: Readonly<{
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  repository: Pick<
+    BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap"
+  >;
+  now: () => number;
+}>): Promise<void> {
+  const claimExpiresAt = input.record.snapshot.claimExpiresAt;
+  const failedAt = input.now();
+  if (input.record.snapshot.state !== "running"
+    || claimExpiresAt === null
+    || !Number.isSafeInteger(failedAt)
+    || failedAt < claimExpiresAt) return;
+  const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...input.record,
+    snapshot: failBackgroundAuthorizationRequest(
+      input.record.snapshot,
+      "provider_outcome_unknown",
+      failedAt,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    finishedAt: failedAt,
+  };
+  try {
+    const failed = await input.repository.compareAndSwap({
+      expectedRequestRevision: input.record.snapshot.requestRevision,
+      next,
+    });
+    if (failed.status === "updated"
+      && !sameBackgroundAuthorizationRecord(failed.record, next)) {
+      throw new TypeError(
+        "Task Runtime expired execution failure was substituted",
+      );
+    }
+  } catch (error) {
+    const current = await input.repository.get(
+      input.record.snapshot.requestId,
+    );
+    if (current !== null && sameBackgroundAuthorizationRecord(current, next)) {
+      return;
+    }
+    // A concurrent terminal/park settlement owns its exact successor. It must
+    // never be replaced by the deadline cleanup after its product commit.
+    if (current !== null && current.snapshot.state !== "running") return;
+    throw error;
+  }
 }
 
 function createTaskRuntimeExecutionCandidate(
@@ -1728,8 +1793,23 @@ function createTaskRuntimeExecutionCandidate(
           return persistenceRecovery;
         },
       };
+  const requestCheckpointPause = input.requestCheckpointPause;
+  const checkpointPause = requestCheckpointPause === undefined
+    ? {}
+    : {
+        requestCheckpointPause(
+          reason: ProtectedTaskCheckpointPauseReason,
+          pauseRequestId?: string,
+        ): boolean {
+          if (released || (state !== "started" && state !== "running")) {
+            return false;
+          }
+          return requestCheckpointPause(reason, pauseRequestId);
+        },
+      };
   return Object.freeze({
     ...persisted,
+    ...checkpointPause,
     async start(jobId: string): Promise<StartProtectedTaskRunResult> {
       const expectedState = input.persistJob === undefined ? "ready" : "persisted";
       if (state !== expectedState) {
@@ -2011,6 +2091,17 @@ function createTaskRuntimeExecutionCandidate(
                   return result;
                 } catch (error) {
                   await Promise.allSettled(pendingSettlements);
+                  // Once work has begun, an elapsed grant cannot remain a
+                  // durable `running` claim that a restart might mistake for
+                  // live authority. A started settlement is left to its
+                  // product/recovery owner because its commit may be durable.
+                  if (settlementCalls === 0) {
+                    await failExpiredUnsettledTaskRuntimeExecution({
+                      record: storedRunning,
+                      repository: input.repository,
+                      now: input.now,
+                    });
+                  }
                   throw error;
                 } finally {
                   settlementOpen = false;
@@ -2369,6 +2460,9 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
                 return plan.deferBeforeExecution!(exact);
               },
             }),
+        ...(plan.requestCheckpointPause === undefined
+          ? {}
+          : { requestCheckpointPause: plan.requestCheckpointPause }),
         openTransientInput: plan.openTransientInput,
         publishResult: plan.publishResult,
       });
@@ -2558,6 +2652,9 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
                 return plan.deferBeforeExecution!(exact);
               },
             }),
+        ...(plan.requestCheckpointPause === undefined
+          ? {}
+          : { requestCheckpointPause: plan.requestCheckpointPause }),
         openTransientInput: plan.openTransientInput,
         publishResult: plan.publishResult,
       });

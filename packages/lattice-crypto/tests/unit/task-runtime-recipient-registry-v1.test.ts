@@ -1,3 +1,11 @@
+import {
+  assertAuthenticTaskRuntimeWakeForegroundEvidenceV1,
+  type TaskRuntimeWakeForegroundEvidenceV1,
+} from "../../src/background/task-runtime-wake-foreground-evidence-v1.ts";
+import {
+  assertAuthenticTaskRuntimeRunResultReadEvidenceV1,
+  type TaskRuntimeRunResultReadEvidenceV1,
+} from "../../src/background/task-runtime-run-result-read-evidence-v1.ts";
 import { describe, expect, spyOn, test } from "bun:test";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -14,8 +22,10 @@ import {
 } from "../../src/format/domain-foreground-authorization-v2.ts";
 import {
   assertAuthenticTaskRuntimeCancellationResultEvidenceV1,
+  assertAuthenticTaskRuntimeTerminalMessageEvidenceV1,
   TaskRuntimeRecipientRegistryV1,
   type TaskRuntimeCancellationResultEvidenceV1,
+  type TaskRuntimeTerminalMessageEvidenceV1,
 } from
   "../../src/background/task-runtime-recipient-registry-v1.ts";
 import type { TaskRuntimeRecipientDeadlineSchedulerV1 } from
@@ -39,6 +49,9 @@ const NOW = 1_800_400_000_000;
 const REQUEST = "task-runtime-request";
 const WORK = "10000000-0000-4000-8000-000000000001";
 const KEY = "task-runtime-key";
+const ROOM = "70000000-0000-4000-8000-000000000001";
+const SESSION = "80000000-0000-4000-8000-000000000001";
+const TERMINAL_REQUEST = `task-run-delivery-message-authorization:${WORK}`;
 const RESULT = Object.freeze({
   taskId: "10000000-0000-4000-8000-000000000002",
   taskRunId: WORK,
@@ -78,6 +91,28 @@ const CANCELLATION_NAMESPACES = Object.freeze([Object.freeze({
   ...CURRENT_NAMESPACES[0]!,
   operations: Object.freeze(["encrypt"] as const),
 })]);
+const terminalObjectDigest = sha256(new TextEncoder().encode(
+  `nautilo/conversation-message-crypto-object/v2\n${SESSION.length}\n${SESSION}\n1\n0`,
+));
+const TERMINAL_MESSAGE = Object.freeze({
+  taskId: RESULT.taskId,
+  taskRunId: WORK,
+  bindingId: `task-run-output:${WORK}`,
+  messageOperationId: `task-run-delivery-message:${WORK}`,
+  sessionId: SESSION,
+  messageId: 1,
+  revision: 0,
+  objectId: `message:v2:${bytesToHex(terminalObjectDigest)}`,
+  roomId: ROOM,
+  namespaceId: RESULT.namespace.namespaceId,
+  domainId: RESULT.namespace.domainId,
+  mode: "encrypted_only" as const,
+  acceptedPolicyRevision: 6,
+  publicationPolicyRevision: 7,
+  signerAgentId: RESULT.signerAgentId,
+  payloadDigest: new Uint8Array(32).fill(0x55),
+});
+terminalObjectDigest.fill(0);
 
 const resultAuthority = () => ({
   result: RESULT,
@@ -91,6 +126,8 @@ function bytes(fill: number): Uint8Array {
 async function fixture(
   scheduler?: TaskRuntimeRecipientDeadlineSchedulerV1,
   cancellation = false,
+  requestId = REQUEST,
+  options: { workId?: string; separateForeground?: boolean; authorizationExpiresAt?: number } = {},
 ) {
   let now = NOW;
   const crypto = new LatticeCrypto(seededRng(401_001), { now: () => now });
@@ -110,8 +147,8 @@ async function fixture(
       return pair;
     });
   const attempt = await registry.createAttempt({
-    requestId: REQUEST,
-    workId: WORK,
+    requestId,
+    workId: options.workId ?? WORK,
     recipientGeneration: 0,
     recipientKeyId: KEY,
     expiresAt: NOW + 60_000,
@@ -139,10 +176,10 @@ async function fixture(
     activeNamespaceBindingCount: 1,
   });
   const plan = createDomainForegroundAuthorizationPlanV2(crypto, {
-    authorizationId: REQUEST,
+    authorizationId: requestId,
     policyRevision: 7,
     sessionId: "task-runtime-episode",
-    roomId: "task-runtime-room",
+    roomId: ROOM,
     subjectHumanId: humanId("task-runtime-human"),
     committerDeviceId: cryptoDeviceId("task-runtime-device"),
     committerDeviceSigningGeneration: 2,
@@ -156,14 +193,14 @@ async function fixture(
       ? ["encrypt"]
       : ["decrypt", "encrypt"],
     issuedAt: NOW,
-    deadlineAt: NOW + 60_000,
+    deadlineAt: options.authorizationExpiresAt ?? NOW + 60_000,
     maximumSecretBytes: 4_096,
-    domains: [domain],
+    domains: [domain, ...(options.separateForeground ? [{ ...domain,
+      domainId: "foreground-domain", sourceNamespaceId: "foreground-namespace" }] : [])].sort((a, b) => a.domainId.localeCompare(b.domainId)),
   });
-  const secrets: readonly DomainForegroundSecretEntryV2[] = [{
-    ...domain,
-    domainKey: bytes(9),
-  }];
+  const secrets: readonly DomainForegroundSecretEntryV2[] = plan.domains.map(entry => ({
+    ...entry, domainKey: bytes(9),
+  }));
   const authorization = await mintDomainForegroundAuthorizationV2(crypto, {
     plan,
     domains: secrets,
@@ -200,11 +237,118 @@ async function fixture(
     generatedRecipientPublicKey: generatedRecipientPair.publicKey,
     authorizationBytes,
     current,
+    requestId,
     setNow: (value: number) => { now = value; },
   };
 }
 
 describe("Task Runtime recipient registry", () => {
+  test("opens one exact encrypt-only terminal Message grant with callback-scoped evidence", async () => {
+    const value = await fixture(undefined, true, TERMINAL_REQUEST);
+    let retained: TaskRuntimeTerminalMessageEvidenceV1 | null = null;
+    let openedDomainKey: Uint8Array | null = null;
+    const opened = await value.registry.withOpenedTerminalMessageGrant({
+      requestId: TERMINAL_REQUEST,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "task-runtime-terminal-message-claim",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: value.authorizationBytes,
+      current: value.current,
+      currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+      message: TERMINAL_MESSAGE,
+      operation: (domains, _signal, evidence) => {
+        expect(() => assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(
+          evidence,
+        )).not.toThrow();
+        expect(evidence).toMatchObject({
+          purpose: "task.runtime.terminal_message",
+          workKind: "task.deliver_message",
+          requestId: TERMINAL_REQUEST,
+          workId: WORK,
+          operations: ["encrypt"],
+          message: TERMINAL_MESSAGE,
+          namespaceRequirements: CANCELLATION_NAMESPACES,
+        });
+        expect(evidence.domainRequirements).toHaveLength(1);
+        openedDomainKey = domains[0]!.domainKey;
+        retained = evidence;
+        return "terminal-message";
+      },
+    });
+    expect(opened).toEqual({ status: "opened", value: "terminal-message" });
+    expect(value.registry.size).toBe(0);
+    expect(value.generatedRecipientPrivateKey.every(byte => byte === 0))
+      .toBe(true);
+    expect(openedDomainKey).not.toBeNull();
+    expect(openedDomainKey!.every(byte => byte === 0)).toBe(true);
+    if (retained === null) throw new Error("terminal Message evidence was absent");
+    expect(() => assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(retained!))
+      .toThrow("not active");
+  });
+
+  test("rejects terminal Message substitutions and permanently invalidates tampered evidence", async () => {
+    const substitutions = [
+      { ...TERMINAL_MESSAGE, roomId: "70000000-0000-4000-8000-000000000002" },
+      { ...TERMINAL_MESSAGE, messageOperationId: `other:${WORK}` },
+      { ...TERMINAL_MESSAGE, publicationPolicyRevision: 8 },
+      { ...TERMINAL_MESSAGE, objectId: `message:v2:${"b".repeat(64)}` },
+    ] as const;
+    for (const message of substitutions) {
+      const value = await fixture(undefined, true, TERMINAL_REQUEST);
+      let invoked = false;
+      let result: unknown;
+      try {
+        result = await value.registry.withOpenedTerminalMessageGrant({
+          requestId: TERMINAL_REQUEST,
+          workId: WORK,
+          recipientGeneration: 0,
+          recipientKeyId: KEY,
+          claimId: "task-runtime-terminal-message-claim",
+          claimExpiresAt: NOW + 30_000,
+          authorizationBytes: value.authorizationBytes,
+          current: value.current,
+          currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+          message,
+          operation: () => { invoked = true; },
+        });
+      } catch (error: unknown) {
+        result = error;
+      }
+      expect(invoked).toBe(false);
+      expect(result instanceof Error || typeof result === "object"
+        && result !== null && "status" in result
+        && result.status === "unavailable").toBe(true);
+      value.registry.close();
+    }
+
+    const value = await fixture(undefined, true, TERMINAL_REQUEST);
+    const opened = await value.registry.withOpenedTerminalMessageGrant({
+      requestId: TERMINAL_REQUEST,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "task-runtime-terminal-message-claim",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: value.authorizationBytes,
+      current: value.current,
+      currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+      message: TERMINAL_MESSAGE,
+      operation: (_domains, _signal, evidence) => {
+        const original = evidence.message.payloadDigest[0]!;
+        evidence.message.payloadDigest[0] = original ^ 1;
+        expect(() => assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(evidence))
+          .toThrow("not active");
+        evidence.message.payloadDigest[0] = original;
+        expect(() => assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(evidence))
+          .toThrow("not active");
+        return "tampered";
+      },
+    });
+    expect(opened).toEqual({ status: "opened", value: "tampered" });
+  });
+
   test("opens one exact encrypt-only cancellation result grant with scoped evidence", async () => {
     const value = await fixture(undefined, true);
     let retained: TaskRuntimeCancellationResultEvidenceV1 | null = null;
@@ -448,7 +592,7 @@ describe("Task Runtime recipient registry", () => {
           recipientKeyId: KEY,
           policyRevision: 7,
           episodeId: "task-runtime-episode",
-          sourceRoomId: "task-runtime-room",
+          sourceRoomId: ROOM,
           hostAuthorizationRevision: 6,
           recipientAuthorizationRevision: 0,
           operations: ["decrypt", "encrypt"],
@@ -1247,3 +1391,371 @@ describe("Task Runtime recipient registry", () => {
     expect(swept.registry.size).toBe(0);
   });
 });
+
+const READ_RESULT = { ...RESULT,
+  objectId: `task-run-result:v1:${bytesToHex(sha256(new TextEncoder().encode(
+    `nautilo/task-run-result-crypto-object/v1\n${RESULT.taskId}\n${WORK}\n1`,
+  )))}`,
+  terminalStatus: "completed" as const, cryptoAccessRevision: 0 as const,
+  genesisManifestHash: bytes(71),
+  namespace: { ...RESULT.namespace, operations: ["decrypt"] as const },
+};
+const WAKE_JOB = "474b01a6-658f-5664-889e-79aedbf85413";
+
+async function readFixture(wake = false, separateForeground = true, authorizationExpiresAt = NOW + 60_000) {
+  const requestId = wake ? `task-wake-authorization:${WAKE_JOB}`
+    : `task-run-delivery-result-authorization:${WORK}`;
+  const value = await fixture(undefined, false, requestId, {
+    workId: wake ? WAKE_JOB : WORK, separateForeground, authorizationExpiresAt,
+  });
+  const common = { bindingId: `task-run-output:${WORK}`, roomId: ROOM,
+    sessionId: value.current.sessionId };
+  const invocation = wake ? { ...common, kind: "wake" as const, jobId: WAKE_JOB,
+    operationId: `task-run-delivery-wake:${WORK}`, reference: {
+      kind: "protected_task_delivery_v1" as const, taskId: RESULT.taskId,
+      taskRunId: WORK, bindingId: common.bindingId, resultObjectId: READ_RESULT.objectId,
+      wakeOperationId: `task-run-delivery-wake:${WORK}`,
+    } } : { ...common, kind: "raw" as const, operationId: `task-run-delivery-message:${WORK}` };
+  const input = { requestId, workId: wake ? WAKE_JOB : WORK,
+    workKind: wake ? "task.delivery_wake" as const : "task.deliver_result" as const,
+    recipientGeneration: 0, recipientKeyId: KEY, claimId: "result-read-claim",
+    claimExpiresAt: NOW + 30_000, authorizationBytes: value.authorizationBytes,
+    current: value.current, requesterHumanId: value.current.subjectHumanId,
+    result: READ_RESULT, invocation,
+    currentNamespaceRequirements: separateForeground ? [
+      { ordinal: 0, ...READ_RESULT.namespace },
+      { ordinal: 1, namespaceId: "foreground-namespace", domainId: "foreground-domain",
+        expectedAccessRevision: 4, expectedPolicyRevision: 7,
+        operations: wake ? ["decrypt", "encrypt"] as const : ["encrypt"] as const },
+    ] : [{ ordinal: 0, ...READ_RESULT.namespace, operations: ["decrypt", "encrypt"] as const }],
+    currentForegroundNamespaceRequirements: [{ ordinal: 0,
+      namespaceId: separateForeground ? "foreground-namespace" : RESULT.namespace.namespaceId,
+      domainId: separateForeground ? "foreground-domain" : RESULT.namespace.domainId,
+      expectedAccessRevision: 4, expectedPolicyRevision: 7,
+      operations: wake ? ["decrypt", "encrypt"] as const : ["encrypt"] as const,
+    }],
+  };
+  return { ...value, input };
+}
+
+describe("closed Task result read grants", () => {
+  test.each([false, true])("authenticates fresh raw/wake custody and keeps private result out of foreground (%s)", async wake => {
+    const value = await readFixture(wake);
+    let retained: TaskRuntimeRunResultReadEvidenceV1 | undefined;
+    let sourceKey: Uint8Array | undefined;
+    const opened = await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+      operation: (partitions, _signal, evidence) => {
+        const expectedWriteDomain = value.current.domains.find(
+          domain => domain.domainId === "foreground-domain",
+        );
+        if (!wake && expectedWriteDomain === undefined) {
+          throw new Error("foreground Domain fixture missing");
+        }
+        assertAuthenticTaskRuntimeRunResultReadEvidenceV1(evidence);
+        expect(evidence.operations).toEqual(["decrypt"]);
+        expect(evidence.result).toEqual(READ_RESULT);
+        expect(evidence.workId).toBe(wake ? WAKE_JOB : WORK);
+        expect(evidence.messageWrite).toEqual(wake ? null : {
+          taskId: READ_RESULT.taskId,
+          taskRunId: READ_RESULT.taskRunId,
+          bindingId: `task-run-output:${WORK}`,
+          messageOperationId: `task-run-delivery-message:${WORK}`,
+          roomId: ROOM,
+          sessionId: value.current.sessionId,
+          signerAgentId: READ_RESULT.signerAgentId,
+          namespace: {
+            namespaceId: value.input.currentForegroundNamespaceRequirements[0]!.namespaceId,
+            domainId: value.input.currentForegroundNamespaceRequirements[0]!.domainId,
+            operations: ["encrypt"],
+            expectedAccessRevision: value.input.currentForegroundNamespaceRequirements[0]!.expectedAccessRevision,
+            expectedPolicyRevision: value.input.currentForegroundNamespaceRequirements[0]!.expectedPolicyRevision,
+          },
+          domain: expectedWriteDomain!,
+        });
+        expect(partitions.resultDomains.map(d => d.domainId)).toEqual([RESULT.namespace.domainId]);
+        expect(partitions.foregroundDomains.map(d => d.domainId)).toEqual(["foreground-domain"]);
+        expect(partitions.foregroundNamespaceRequirements.map(n => n.namespaceId)).toEqual(["foreground-namespace"]);
+        expect(() => assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence as unknown as TaskRuntimeExecutionEvidenceV1)).toThrow();
+        expect(() => assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(evidence as unknown as TaskRuntimeTerminalMessageEvidenceV1)).toThrow();
+        retained = evidence; sourceKey = partitions.resultDomains[0].domainKey;
+        return "result";
+      } });
+    expect(opened).toEqual({ status: "opened", value: "result" });
+    expect(value.registry.size).toBe(0);
+    expect(value.generatedRecipientPrivateKey.every(b => b === 0)).toBe(true);
+    expect(sourceKey!.every(b => b === 0)).toBe(true);
+    expect(() => assertAuthenticTaskRuntimeRunResultReadEvidenceV1(retained!)).toThrow();
+  });
+
+  test.each([false, true])("allows independently canonical identical Namespace without duplicating source requirement (%s)", async wake => {
+    const value = await readFixture(wake, false);
+    expect(await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+      operation: (partitions, _signal, evidence) => {
+        expect(partitions.resultDomains[0]).toBe(partitions.foregroundDomains[0]!);
+        expect(evidence.result.namespace.operations).toEqual(["decrypt"]);
+        expect(evidence.messageWrite?.namespace.namespaceId)
+          .toBe(wake ? undefined : READ_RESULT.namespace.namespaceId);
+        expect(evidence.messageWrite?.domain.sourceNamespaceId)
+          .toBe(wake ? undefined : READ_RESULT.namespace.namespaceId);
+        return true;
+      } })).toEqual({ status: "opened", value: true });
+  });
+
+  test("does not mint Message write authority for cancellation revision or wake delivery", async () => {
+    const wake = await readFixture(true);
+    expect(await wake.registry.withOpenedRunResultReadGrant({ ...wake.input,
+      operation: (_partitions, _signal, evidence) => evidence.messageWrite,
+    })).toEqual({ status: "opened", value: null });
+
+    const raw = await readFixture();
+    const cancelledResult = { ...READ_RESULT, terminalStatus: "cancelled" as const,
+      contentRevision: 2 as const, objectId: CANCEL_RESULT.objectId };
+    expect(await raw.registry.withOpenedRunResultReadGrant({ ...raw.input,
+      result: cancelledResult,
+      currentNamespaceRequirements: [{ ordinal: 0, ...cancelledResult.namespace },
+        raw.input.currentNamespaceRequirements[1]!],
+      operation: (_partitions, _signal, evidence) => evidence.messageWrite,
+    })).toEqual({ status: "opened", value: null });
+  });
+
+  test("rejects wrong purpose, work, result, invocation, requester and foreground authority before callback", async () => {
+    const changes = [
+      { workKind: "task.deliver_message" }, { workId: WAKE_JOB },
+      { result: { ...READ_RESULT, contentRevision: 2 } },
+      { result: { ...READ_RESULT, objectId: CANCEL_RESULT.objectId } },
+      { requesterHumanId: "another-human" },
+      { invocation: { kind: "raw", bindingId: `task-run-output:${WORK}`, operationId: `task-run-delivery-message:${WORK}`, roomId: "another-room", sessionId: "task-runtime-episode" } },
+      { currentForegroundNamespaceRequirements: [] },
+      { currentNamespaceRequirements: [] },
+      { currentNamespaceRequirements: CURRENT_NAMESPACES },
+      { requestId: `task-wake-authorization:${WAKE_JOB}` },
+      { currentForegroundNamespaceRequirements: [{ ...CURRENT_NAMESPACES[0], expectedAccessRevision: 5, operations: ["encrypt"] }] },
+    ];
+    for (const change of changes) {
+      const value = await readFixture();
+      let called = false;
+      const outcome = await value.registry.withOpenedRunResultReadGrant({ ...value.input, ...change,
+        operation: () => { called = true; },
+      } as Parameters<typeof value.registry.withOpenedRunResultReadGrant>[0]).catch(() => null);
+      expect(called).toBe(false);
+      expect(outcome?.status).not.toBe("opened");
+      value.registry.close();
+    }
+  });
+
+  test("rejects expired/disabled grant and invalidates modified or expired evidence within callback", async () => {
+    for (const mode of ["disabled", "expired", "tamper", "callback-expiry"] as const) {
+      const value = await readFixture();
+      if (mode === "expired") value.setNow(NOW + 60_000);
+      let called = false;
+      const result = await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+        current: mode === "disabled" ? { ...value.current, committerDeviceActive: false } : value.current,
+        operation: (_partitions, _signal, evidence) => {
+          called = true;
+          if (mode === "tamper") evidence.result.genesisManifestHash[0] = evidence.result.genesisManifestHash[0]! ^ 1;
+          if (mode === "callback-expiry") value.setNow(NOW + 31_000);
+          expect(() => assertAuthenticTaskRuntimeRunResultReadEvidenceV1(evidence)).toThrow();
+        } }).catch(() => null);
+      expect(called).toBe(mode === "tamper" || mode === "callback-expiry");
+      expect(result?.status).not.toBe("opened");
+      expect(value.generatedRecipientPrivateKey.every(b => b === 0)).toBe(true);
+      value.registry.close();
+    }
+  });
+});
+
+test("result read expires at the signed grant deadline even when claim and recipient remain live", async () => {
+  const value = await readFixture(false, true, NOW + 10_000);
+  const failure = await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    operation: (_partitions, signal, evidence) => {
+      expect(evidence.claimExpiresAt).toBe(NOW + 30_000);
+      expect(evidence.recipientExpiresAt).toBe(NOW + 60_000);
+      expect(evidence.authorizationExpiresAt).toBe(NOW + 10_000);
+      expect(evidence.expiresAt).toBe(NOW + 10_000);
+      expect(signal.aborted).toBe(false);
+      value.setNow(NOW + 10_000);
+      expect(() => assertAuthenticTaskRuntimeRunResultReadEvidenceV1(evidence)).toThrow();
+    },
+  }).then(() => null, (error: unknown) => error);
+  expect(failure).toBeInstanceOf(TypeError);
+  expect(value.generatedRecipientPrivateKey.every(b => b === 0)).toBe(true);
+});
+
+test("shared Domain does not insert source Namespace into independently admitted foreground", async () => {
+  const value = await readFixture(false, false);
+  const target = { ...value.input.currentForegroundNamespaceRequirements[0]!, namespaceId: "other-foreground-namespace" };
+  expect(await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    currentForegroundNamespaceRequirements: [target],
+    currentNamespaceRequirements: [{ ordinal: 0, ...READ_RESULT.namespace }, { ...target, ordinal: 1 }],
+    operation: (partitions, _signal, evidence) => {
+      expect(partitions.foregroundNamespaceRequirements.map(n => n.namespaceId)).toEqual([target.namespaceId]);
+      expect(partitions.resultDomains[0]).toBe(partitions.foregroundDomains[0]!);
+      expect(evidence.result.namespace.namespaceId).toBe(RESULT.namespace.namespaceId);
+      return true;
+    },
+  })).toEqual({ status: "opened", value: true });
+});
+
+test("wake read rejects transplanted or extended durable Job reference before opening", async () => {
+  for (const change of [{ taskRunId: RESULT.taskId }, { resultObjectId: CANCEL_RESULT.objectId },
+    { wakeOperationId: "other" }, { extra: "not-opaque" }]) {
+    const value = await readFixture(true);
+    if (value.input.invocation.kind !== "wake") throw new Error("wake fixture missing");
+    let called = false;
+    const failure = await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+      invocation: { ...value.input.invocation, reference: { ...value.input.invocation.reference, ...change } },
+      operation: () => { called = true; },
+    }).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(TypeError);
+    expect(called).toBe(false);
+    value.registry.close();
+  }
+});
+
+
+test.each([false, true])("registry mints foreground evidence only for a verified signed wake (%s)", async wake => {
+  const value = await readFixture(wake);
+  let retained: TaskRuntimeWakeForegroundEvidenceV1 | null = null;
+  let secret: Uint8Array | undefined;
+  expect(await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    operation: (partitions, _signal, read, foreground) => {
+      expect(read.operations).toEqual(["decrypt"]);
+      expect(foreground === null).toBe(!wake);
+      if (foreground) {
+        retained = foreground;
+        assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(foreground);
+        expect(foreground.workKind).toBe("task.delivery_wake");
+        expect(foreground.namespaceRequirements).toEqual(partitions.foregroundNamespaceRequirements);
+        expect(foreground.domainRequirements.map(domain => domain.domainId)).toEqual(["foreground-domain"]);
+        expect(foreground.committerDeviceId).toBe(value.current.committerDeviceId);
+        expect(foreground.committerDeviceSigningPublicKeyHash).toEqual(value.crypto.hash(value.current.committerDeviceSigningPublicKey));
+        expect(() => assertAuthenticTaskRuntimeExecutionEvidenceV1(foreground as never)).toThrow();
+        expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(read as never)).toThrow();
+      }
+      secret = partitions.foregroundDomains[0]!.domainKey;
+      return true;
+    },
+  })).toEqual({ status: "opened", value: true });
+  expect(secret!.every(byte => byte === 0)).toBe(true);
+  expect(value.generatedRecipientPrivateKey.every(byte => byte === 0)).toBe(true);
+  if (retained) expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(retained!)).toThrow();
+});
+
+test("wake foreground evidence preserves independently admitted same-Namespace roles", async () => {
+  const value = await readFixture(true, false);
+  expect(await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    operation: (partitions, _signal, read, wake) => {
+      if (!wake) throw new Error("missing wake proof");
+      assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(wake);
+      expect(read.result.namespace.operations).toEqual(["decrypt"]);
+      expect(wake.namespaceRequirements[0]!.operations).toEqual(["decrypt", "encrypt"]);
+      expect(wake.domainRequirements).toHaveLength(1);
+      expect(partitions.resultDomains[0]).toBe(partitions.foregroundDomains[0]!);
+      return true;
+    },
+  })).toEqual({ status: "opened", value: true });
+});
+
+test.each(["disabled Device", "Device key", "Domain", "expired", "signature"])(
+  "wake proof is never minted after %s denial", async changed => {
+    const value = await readFixture(true);
+    const current = { ...value.current };
+    const authorizationBytes = Uint8Array.from(value.authorizationBytes);
+    if (changed === "disabled Device") current.committerDeviceActive = false;
+    if (changed === "Device key") current.committerDeviceSigningPublicKey = new Uint8Array(65);
+    if (changed === "Domain") current.domains = current.domains.map(domain => ({ ...domain, authorizationRevision: 999 as never }));
+    if (changed === "expired") value.setNow(NOW + 30_000);
+    if (changed === "signature") authorizationBytes[authorizationBytes.length - 1]! ^= 1;
+    let calls = 0;
+    const result = await value.registry.withOpenedRunResultReadGrant({ ...value.input, current, authorizationBytes,
+      operation: () => { calls++; },
+    }).catch(() => null);
+    expect(result?.status).not.toBe("opened"); expect(calls).toBe(0);
+  });
+
+test("wake foreground admits distinct Namespaces sharing one Domain without importing the private role", async () => {
+  const value = await readFixture(true, false);
+  const foreground = { ...value.input.currentForegroundNamespaceRequirements[0]!, namespaceId: "other-foreground", ordinal: 1 };
+  expect(await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    currentNamespaceRequirements: [{ ordinal: 0, ...READ_RESULT.namespace }, foreground],
+    currentForegroundNamespaceRequirements: [foreground],
+    operation: (partitions, _signal, read, wake) => {
+      if (!wake) throw new Error("missing wake proof");
+      assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(wake);
+      expect(wake.namespaceRequirements.map(n => n.namespaceId)).toEqual(["other-foreground"]);
+      expect(wake.domainRequirements).toHaveLength(1);
+      expect(read.result.namespace.namespaceId).toBe(READ_RESULT.namespace.namespaceId);
+      expect(partitions.foregroundDomains[0]).toBe(partitions.resultDomains[0]);
+      return true;
+    },
+  })).toEqual({ status: "opened", value: true });
+});
+
+test.each(["throw", "expiry", "delete"])("wake foreground revokes and wipes Domain custody on %s", async reason => {
+  const value = await readFixture(true);
+  let retained: TaskRuntimeWakeForegroundEvidenceV1 | undefined;
+  let key: Uint8Array | undefined;
+  const result = await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    operation: (partitions, _signal, _read, wake) => {
+      if (!wake) throw new Error("missing wake proof");
+      retained = wake; key = partitions.foregroundDomains[0]!.domainKey;
+      if (reason === "throw") throw new Error("callback failed");
+      if (reason === "expiry") value.setNow(NOW + 30_000);
+      if (reason === "delete") value.registry.delete(value.input.requestId, 0);
+      expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(wake)).toThrow();
+    },
+  }).catch(() => null);
+  expect(result?.status).not.toBe("opened");
+  expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(retained!)).toThrow();
+  expect(key!.every(byte => byte === 0)).toBe(true);
+  expect(value.generatedRecipientPrivateKey.every(byte => byte === 0)).toBe(true);
+  expect(value.registry.size).toBe(0);
+});
+
+
+test("signed wake lends a separate encrypt-only destination sharing a Domain without adding source reads", async () => {
+  const value = await readFixture(true, false);
+  const foreground = { ...value.input.currentForegroundNamespaceRequirements[0]!, namespaceId: "ordinary-foreground", ordinal: 1 };
+  const mutation = { roomId: "projection-room", semanticDigest: "a".repeat(64),
+    namespace: { ...foreground, namespaceId: "projection-destination", ordinal: 2, operations: ["encrypt"] as const } };
+  let retained: TaskRuntimeWakeForegroundEvidenceV1 | undefined;
+  let secret: Uint8Array | undefined;
+  expect(await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+    currentNamespaceRequirements: [{ ordinal: 0, ...READ_RESULT.namespace }, foreground, mutation.namespace],
+    currentForegroundNamespaceRequirements: [foreground], currentAdditionalMutationDestination: mutation,
+    operation: (partitions, _signal, read, wake) => {
+      if (!wake) throw new Error("wake evidence missing");
+      retained = wake;
+      assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(wake);
+      expect(read.operations).toEqual(["decrypt"]);
+      expect(wake.namespaceRequirements.map(n => n.namespaceId)).toEqual(["ordinary-foreground"]);
+      expect(wake.additionalMutationDestination).toEqual(mutation);
+      expect(wake.additionalMutationDestination?.namespace.operations).toEqual(["encrypt"]);
+      expect(partitions.additionalMutationDomains).toHaveLength(1);
+      expect(partitions.additionalMutationDomains![0]).toBe(partitions.foregroundDomains[0]);
+      secret = partitions.additionalMutationDomains![0]!.domainKey;
+      return true;
+    },
+  })).toEqual({ status: "opened", value: true });
+  expect(secret!.every(b => b === 0)).toBe(true);
+  expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(retained!)).toThrow();
+});
+
+test.each(["decrypt", "ordinary alias", "private alias", "unsigned Domain", "semantic digest", "raw"])(
+  "additional wake mutation refuses %s before custody", async changed => {
+    const value = await readFixture(changed !== "raw", false);
+    const foreground = { ...value.input.currentForegroundNamespaceRequirements[0]!, namespaceId: "ordinary", ordinal: 1 };
+    const mutation = { roomId: "projection-room", semanticDigest: changed === "semantic digest" ? "invalid" : "a".repeat(64),
+      namespace: { ...foreground, ordinal: 2,
+        namespaceId: changed === "ordinary alias" ? foreground.namespaceId : changed === "private alias" ? READ_RESULT.namespace.namespaceId : "target",
+        domainId: changed === "unsigned Domain" ? "not-signed" : foreground.domainId,
+        operations: changed === "decrypt" ? ["decrypt", "encrypt"] as const : ["encrypt"] as const } };
+    let calls = 0;
+    const outcome = await value.registry.withOpenedRunResultReadGrant({ ...value.input,
+      currentNamespaceRequirements: [{ ordinal: 0, ...READ_RESULT.namespace }, foreground, mutation.namespace],
+      currentForegroundNamespaceRequirements: [foreground], currentAdditionalMutationDestination: mutation,
+      operation: () => { calls++; },
+    }).catch(() => null);
+    expect(outcome?.status).not.toBe("opened"); expect(calls).toBe(0);
+  },
+);

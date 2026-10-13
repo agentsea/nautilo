@@ -51,6 +51,11 @@ export {
 
 // Graph
 export {
+  createProtectedTaskCheckpointPauseController,
+  type ProtectedTaskCheckpointPauseController,
+  type ProtectedTaskCheckpointPauseReason,
+} from "./graph/protected-task-node-settlement-scope";
+export {
   createNautiloGraph,
   type NautiloGraphDeps,
 } from "./agent/graph";
@@ -122,6 +127,8 @@ export {
 export {
   interruptValueToServerEvent,
   collectPendingInterruptEvents,
+  protectedTaskInterruptCoordinates,
+  type ProtectedTaskAdditionalAuthorityInterruptCoordinate,
 } from "./graph/interrupt-mapping";
 export {
   PROTECTED_TASK_ADDITIONAL_AUTHORITY_GRANTED_V1,
@@ -1139,6 +1146,7 @@ export {
   encodeMemoryListCursor,
   decodeMemoryListCursor,
   lockAtomicProjectionDestinationAuthority,
+  fingerprintProjectionAudience,
   setMemoryAuditSink,
   assertNamespaceWriteAccess,
   attachMemoryToNamespace,

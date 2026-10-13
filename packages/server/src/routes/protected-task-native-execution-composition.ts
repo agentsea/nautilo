@@ -7,6 +7,7 @@ import { MEMORY_EMBEDDING_DIMENSIONS } from "@nautilo/lattice-bridge";
 import {
   sealAndParkProtectedTaskRun,
   sealAndParkProtectedTaskHumanRun,
+  sealAndParkProtectedTaskCheckpointRun,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
@@ -23,6 +24,7 @@ import {
   type ProtectedTaskNativeFixedMemorySegmentInput,
 } from "./protected-task-native-fixed-memory-segment";
 import { createProductionProtectedTaskNativeExecutionContext } from "./protected-task-native-execution-context";
+import { inspectProtectedTaskLocalExecutionReadiness } from "./protected-task-local-execution";
 import { createProtectedTaskNativeResultPublication } from "./protected-task-native-result-publication";
 import { createProtectedTaskNativeTranscriptPublisher } from "./protected-task-native-transcript-composition";
 import type { ProtectedTaskRuntimeGrantPlanBuilderDependencies } from "./protected-task-runtime-grant-plan";
@@ -36,6 +38,8 @@ type Dependencies = Readonly<{
   result: typeof createProtectedTaskNativeResultPublication;
   sealAndPark: typeof sealAndParkProtectedTaskRun;
   sealAndParkHuman: typeof sealAndParkProtectedTaskHumanRun;
+  sealAndParkCheckpoint: typeof sealAndParkProtectedTaskCheckpointRun;
+  localReadiness: typeof inspectProtectedTaskLocalExecutionReadiness;
 }>;
 
 export type ProductionProtectedTaskNativeExecutionInput = Readonly<{
@@ -68,6 +72,8 @@ export function createProductionProtectedTaskNativeExecution(
     result: createProtectedTaskNativeResultPublication,
     sealAndPark: sealAndParkProtectedTaskRun,
     sealAndParkHuman: sealAndParkProtectedTaskHumanRun,
+    sealAndParkCheckpoint: sealAndParkProtectedTaskCheckpointRun,
+    localReadiness: inspectProtectedTaskLocalExecutionReadiness,
     ...overrides,
   };
   const resolveExecutionContext = dependencies.executionContext({ db: input.db });
@@ -109,10 +115,20 @@ export function createProductionProtectedTaskNativeExecution(
         embedding,
         createDedicatedPool,
         parkSegment: async park => {
-          const result = "continuation" in park
-            ? await dependencies.sealAndPark(input.db, park)
+          const result = "pauseRequestId" in park
+            ? await dependencies.sealAndParkCheckpoint(input.db, park)
+            : "continuation" in park
+              ? await dependencies.sealAndPark(input.db, park)
             : await dependencies.sealAndParkHuman(input.db, park);
           return result.status === "parked" || result.status === "exact_replay";
+        },
+        localExecutionReadyBeforeStart: async ({ occurrence, signal }) => {
+          const readiness = await dependencies.localReadiness({
+            db: input.db,
+            occurrence,
+            signal,
+          });
+          return readiness.status !== "waiting";
         },
         resolveExecutionContext,
         createTranscriptPublisher: dependencies.transcriptPublisher({ product }),

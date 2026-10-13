@@ -76,6 +76,7 @@
     "@nautilo/event-feed": "workspace:*"
   },
   "devDependencies": {
+    "@langchain/langgraph": "1.2.9",
     "@nautilo/lattice-bridge": "workspace:*",
     "@nautilo/realtime-client": "workspace:*",
     "@nautilo/office-docs": "workspace:*",
@@ -83,6 +84,7 @@
     "@types/ws": "8.18.1",
     "dotenv": "16.6.1",
     "jose": "6.2.3",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "postgres": "3.4.7"
   }
 }

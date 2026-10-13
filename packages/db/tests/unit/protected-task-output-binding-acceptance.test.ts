@@ -332,3 +332,20 @@ describe("protected TaskRun output binding acceptance", () => {
     })).toEqual({ status: "rejected", reason: "stale" });
   });
 });
+
+
+test("accepts retained dual definition under the current Full fence without changing it", async () => {
+  const source = task({ contentRepresentation: "dual", prompt: "retained prompt" });
+  const f = harness({ task: source });
+  expect((await acceptProtectedTaskRunOutputBinding(f.db, {
+    taskId: ids.task, taskRunId: ids.run, requiredPolicyRevision: 9,
+    acceptedAt, destination: null,
+  })).status).toBe("accepted");
+  expect(f.locks.slice(0, 3)).toEqual([
+    { table: encryptionTransitionPolicy, kind: "share" },
+    { table: tasks, kind: "update" },
+    { table: taskRuns, kind: "update" },
+  ]);
+  expect(source.contentRepresentation).toBe("dual");
+  expect(source.prompt).toBe("retained prompt");
+});

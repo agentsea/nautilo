@@ -346,6 +346,7 @@ async function fixture() {
   });
   const restricted = { query: async () => [] } as never;
   const overrides: Overrides = {
+    mappedHeadReplan: async () => "unchanged",
     db: {} as DirectDatabase,
     crypto,
     serverScope: "https://server.test",

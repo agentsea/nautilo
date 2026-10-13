@@ -14,6 +14,11 @@ describe("foreground Memory native entry resolution", () => {
           toolPolicy: {} } as never,
         policy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 1 },
         wakeEffectRecovery() {},
+        publication: {
+          forReservation() {
+            throw new Error("Unexpected publication reservation");
+          },
+        },
         domain: { subjectUserId: "user", agentId: "agent" } as never,
       });
     } catch (error) {

@@ -1,12 +1,14 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createCapabilityFundingSession, prepareCapabilityFundingSession } from "./capability-funding";
 import {
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
-import { and, eq, isNull, rooms, namespaces, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
+import { and, eq, isNull, rooms, namespaces, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, getUserCapabilities } from "@nautilo/trust";
-import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission } from "@nautilo/runtime";
+import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission,
+  type TaskFundingRunSource, type TaskFundingTaskSource } from "@nautilo/runtime";
 import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
 import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
@@ -15,6 +17,99 @@ import { getServerDirectDb } from "./server-direct-db";
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
 type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
+type ProtectedTaskFundingAuthority = () => Promise<void>;
+const SCOPE_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+const protectedTaskFundingAuthority =
+  new AsyncLocalStorage<ProtectedTaskFundingAuthority>();
+
+export type ProtectedTaskWakeFundingTaskSource = TaskFundingTaskSource;
+
+export type ProtectedTaskWakeFundingRunSource = TaskFundingRunSource;
+
+type FundingTaskSource = Candidate | TaskFundingTaskSource;
+type FundingRunSource = TaskRun | TaskFundingRunSource;
+
+const protectedTaskProjection = {
+  id: tasks.id,
+  ownerId: tasks.ownerId,
+  requestorId: tasks.requestorId,
+  agentId: tasks.agentId,
+  preset: tasks.preset,
+  callingRoomId: tasks.callingRoomId,
+  targetChat: tasks.targetChat,
+  targetChatHandle: tasks.targetChatHandle,
+  targetRoomId: tasks.targetRoomId,
+  targetUserIds: tasks.targetUserIds,
+  useScope: tasks.useScope,
+  scopeId: tasks.scopeId,
+  toolsMode: tasks.toolsMode,
+  toolsWhitelist: tasks.toolsWhitelist,
+  awaitResponse: tasks.awaitResponse,
+  selectionProfile: tasks.selectionProfile,
+  selectionSpec: tasks.selectionSpec,
+  requestedModelId: tasks.requestedModelId,
+  parentTaskId: tasks.parentTaskId,
+  depth: tasks.depth,
+  fundingMode: tasks.fundingMode,
+  metadata: tasks.metadata,
+  contentRepresentation: tasks.contentRepresentation,
+  contentNamespaceId: tasks.contentNamespaceId,
+  contentRevision: tasks.contentRevision,
+  cryptoObjectId: tasks.cryptoObjectId,
+  cryptoAccessRevision: tasks.cryptoAccessRevision,
+  cryptoRequiredNamespaceFingerprint: tasks.cryptoRequiredNamespaceFingerprint,
+  cryptoMappingState: tasks.cryptoMappingState,
+} as const;
+
+const protectedRunProjection = {
+  id: taskRuns.id,
+  taskId: taskRuns.taskId,
+  jobId: taskRuns.jobId,
+  graphThreadId: taskRuns.graphThreadId,
+  status: taskRuns.status,
+  modelId: taskRuns.modelId,
+  fundingBinding: taskRuns.fundingBinding,
+  fundingPredecessorRunId: taskRuns.fundingPredecessorRunId,
+} as const;
+
+async function readProtectedFundingTask(
+  taskId: string,
+): Promise<ProtectedTaskWakeFundingTaskSource | undefined> {
+  const [task] = await getServerDirectDb().select(protectedTaskProjection)
+    .from(tasks).where(eq(tasks.id, taskId)).limit(1);
+  return task;
+}
+
+async function readProtectedFundingRun(
+  taskId: string,
+  taskRunId: string,
+): Promise<ProtectedTaskWakeFundingRunSource | undefined> {
+  const [run] = await getServerDirectDb().select(protectedRunProjection)
+    .from(taskRuns).where(and(eq(taskRuns.id, taskRunId),
+      eq(taskRuns.taskId, taskId))).limit(1);
+  return run;
+}
+
+/**
+ * Borrow the live protected-definition authority for caller funding setup.
+ * The callback is captured only by the request-local funding session and is
+ * rechecked around every provider attempt; it is never serialized.
+ */
+export async function withProtectedTaskFundingAuthority<T>(
+  assertCurrent: ProtectedTaskFundingAuthority,
+  work: () => Promise<T>,
+): Promise<T> {
+  if (typeof assertCurrent !== "function" || typeof work !== "function") {
+    throw new TypeError("Protected Task funding authority is invalid");
+  }
+  await assertCurrent();
+  return protectedTaskFundingAuthority.run(assertCurrent, async () => {
+    const result = await work();
+    await assertCurrent();
+    return result;
+  });
+}
 
 export function shouldPrepareNativeTaskCallerFunding(
   metadata: Candidate["metadata"],
@@ -39,7 +134,7 @@ function hasAdmittedDeepResearchFunding(metadata: Candidate["metadata"]): boolea
   }
 }
 
-function supportedShape(task: Candidate): boolean {
+function supportedShape(task: FundingTaskSource): boolean {
   return task.ownerId === task.requestorId && !task.parentTaskId && (task.depth ?? 0) === 0
     && (task.contentRepresentation ?? "ordinary") === "ordinary"
     && ["none", "auto", "whitelist"].includes(task.toolsMode ?? "auto")
@@ -51,11 +146,80 @@ function supportedShape(task: Candidate): boolean {
     && !task.awaitResponse && Object.keys(task.metadata ?? {}).every((key) => key === "preparation" || key === "deepResearch");
 }
 
-async function assertOwnShape(task: Candidate): Promise<void> {
-  if (!supportedShape(task) || !task.callingRoomId
+function protectedRuntimeShape(task: FundingTaskSource): boolean {
+  return task.ownerId === task.requestorId
+    && !task.parentTaskId
+    && (task.depth ?? 0) === 0
+    && (task.contentRepresentation === "dual"
+      || task.contentRepresentation === "protected")
+    && task.contentNamespaceId !== null
+    && task.contentNamespaceId !== undefined
+    && Number.isSafeInteger(task.contentRevision)
+    && (task.contentRevision ?? 0) > 0
+    && typeof task.cryptoObjectId === "string"
+    && task.cryptoObjectId.length > 0
+    && Number.isSafeInteger(task.cryptoAccessRevision)
+    && (task.cryptoAccessRevision ?? -1) >= 0
+    && task.cryptoRequiredNamespaceFingerprint instanceof Uint8Array
+    && task.cryptoRequiredNamespaceFingerprint.length === 32
+    && task.cryptoMappingState === "verified"
+    && ["none", "auto", "whitelist"].includes(task.toolsMode ?? "auto")
+    && (task.toolsWhitelist ?? []).every(isSupportedPersonalTool)
+    && (task.useScope === true
+      ? typeof task.scopeId === "string" && SCOPE_UUID.test(task.scopeId)
+      : task.useScope === false && task.scopeId == null)
+    && !task.targetChatHandle
+    && (task.preset === "task"
+      || task.preset === "in_background"
+      || task.preset === "schedule")
+    && (task.targetChat === "orphan"
+      || task.targetChat === "last_in_namespace")
+    && (task.targetUserIds ?? []).every(id => id === task.requestorId)
+    && !task.awaitResponse
+    && Object.keys(task.metadata ?? {}).every(
+      key => key === "preparation" || key === "deepResearch",
+    );
+}
+
+function sameProtectedRuntimeCoordinates(
+  current: FundingTaskSource,
+  accepted: FundingTaskSource,
+): boolean {
+  if (!protectedRuntimeShape(accepted)) return true;
+  const currentFingerprint = current.cryptoRequiredNamespaceFingerprint;
+  const acceptedFingerprint = accepted.cryptoRequiredNamespaceFingerprint;
+  return protectedRuntimeShape(current)
+    && current.contentRepresentation === accepted.contentRepresentation
+    && current.contentNamespaceId === accepted.contentNamespaceId
+    && current.contentRevision === accepted.contentRevision
+    && current.cryptoObjectId === accepted.cryptoObjectId
+    && current.cryptoAccessRevision === accepted.cryptoAccessRevision
+    && current.cryptoMappingState === accepted.cryptoMappingState
+    && current.useScope === accepted.useScope
+    && current.scopeId === accepted.scopeId
+    && currentFingerprint instanceof Uint8Array
+    && acceptedFingerprint instanceof Uint8Array
+    && currentFingerprint.length === acceptedFingerprint.length
+    && currentFingerprint.every(
+      (value, index) => value === acceptedFingerprint[index],
+    );
+}
+
+async function assertOwnShape(
+  task: FundingTaskSource,
+  retainedProtectedAuthority?: ProtectedTaskFundingAuthority,
+): Promise<ProtectedTaskFundingAuthority | undefined> {
+  const isProtected = protectedRuntimeShape(task);
+  const authority = isProtected
+    ? retainedProtectedAuthority ?? protectedTaskFundingAuthority.getStore()
+    : undefined;
+  if ((!supportedShape(task) && !isProtected)
+    || isProtected && authority === undefined
+    || !task.callingRoomId
     || !await isOwnPrivateGenieRoom(task.requestorId, task.callingRoomId, task.agentId)) {
     throw new TaskFundingError("unsupported_workload");
   }
+  await authority?.();
   if (task.targetChat === "last_in_namespace" && task.targetRoomId
     && task.targetRoomId !== task.callingRoomId) {
     throw new TaskFundingError("unsupported_workload");
@@ -90,6 +254,7 @@ async function assertOwnShape(task: Candidate): Promise<void> {
   }
   await assertCanInvokeAgent({ humanUserId: task.requestorId, origin: "task_dispatch",
     agentId: task.agentId, roomId: task.callingRoomId });
+  return authority;
 }
 
 function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
@@ -99,7 +264,9 @@ function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
     : { kind: "server", providerRoute: decision.providerRoute };
 }
 
-function restoreDecision(task: Task, run: TaskRun): ModelFundingDecision {
+function restoreDecision(task: Pick<FundingTaskSource, "id" | "requestorId">,
+  run: Pick<FundingRunSource, "taskId" | "modelId" | "fundingBinding">,
+): ModelFundingDecision {
   if (run.taskId !== task.id || !run.modelId) throw new TaskFundingError("funding_source_changed");
   let binding: TaskFundingBinding;
   try { binding = parseTaskFundingBinding(run.fundingBinding); }
@@ -111,9 +278,11 @@ function restoreDecision(task: Task, run: TaskRun): ModelFundingDecision {
     : { ...base, ...binding };
 }
 
-type TaskSelection = Pick<Candidate,
+type TaskSelection = Readonly<Omit<Pick<Candidate,
   "agentId" | "requestorId" | "requestedModelId" | "selectionProfile" |
-  "selectionSpec" | "toolsMode" | "toolsWhitelist">;
+  "selectionSpec" | "toolsMode" | "toolsWhitelist">, "toolsWhitelist">> & Readonly<{
+    toolsWhitelist?: readonly string[] | undefined;
+  }>;
 
 /** Match the shared Task-selection definition of whether this run needs tools. */
 export function nativeTaskSelectionPurpose(
@@ -153,12 +322,14 @@ export function validateNativeTaskExactModelSelection(
     profile: task.selectionProfile,
     spec: task.selectionSpec,
     toolsMode: task.toolsMode,
-    toolsWhitelist: task.toolsWhitelist,
+    toolsWhitelist: task.toolsWhitelist === undefined
+      ? undefined
+      : [...task.toolsWhitelist],
     env,
   });
 }
 
-async function selectTaskModel(task: TaskSelection, priorRun?: TaskRun): Promise<string> {
+async function selectTaskModel(task: TaskSelection, priorRun?: TaskFundingRunSource): Promise<string> {
   if (priorRun) {
     if (!priorRun.modelId || (task.requestedModelId && task.requestedModelId !== priorRun.modelId)) {
       throw new TaskFundingError("funding_source_changed");
@@ -224,11 +395,13 @@ export async function isPersonalOnlyNativeTaskSelection(
   return (await personalOnlyTaskModelIds(input.requestorId, [modelId])).length === 1;
 }
 
-async function admit(task: Task, priorRun?: TaskRun): Promise<TaskFundingAdmission> {
-  await assertOwnShape(task);
+async function admit(task: TaskFundingTaskSource,
+  priorRun?: TaskFundingRunSource): Promise<TaskFundingAdmission> {
+  const authority = await assertOwnShape(task);
   const modelId = await selectTaskModel(task, priorRun);
   const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId,
     workload: "native_text_task", ...(priorRun ? { priorDecision: restoreDecision(task, priorRun) } : {}) });
+  await authority?.();
   return { modelId, binding: bindingFor(decision) };
 }
 
@@ -237,30 +410,51 @@ function sameBinding(left: unknown, right: unknown): boolean {
   catch { throw new TaskFundingError("funding_source_changed"); }
 }
 
-async function openSession(task: Task, run: TaskRun, modelId: string, wake: boolean): Promise<ForegroundChatFundingSession> {
-  await assertOwnShape(task);
-  const admitted = restoreDecision(task, run);
+async function openSession(task: FundingTaskSource, run: FundingRunSource,
+  modelId: string, wake: boolean, retainedDecision?: ModelFundingDecision,
+): Promise<ForegroundChatFundingSession> {
+  const authority = await assertOwnShape(task);
+  const protectedSource = protectedRuntimeShape(task);
+  if (typeof task.id !== "string" || typeof task.requestorId !== "string"
+    || typeof run.id !== "string") throw new TaskFundingError("funding_source_changed");
+  const taskId = task.id;
+  const taskRunId = run.id;
+  const freshCancelledWake = retainedDecision !== undefined;
+  const admitted = retainedDecision ?? restoreDecision(task, run);
   const resolveCandidateUnchecked = async (candidateModelId: string, transport?: "direct" | "surplus") => {
+    await authority?.();
     // Every retry/fallback rechecks exact Room authority and the original revision.
     const db = getServerDirectDb();
-    const [currentTask, currentRun] = await Promise.all([
-      getTaskById(db, task.id), getTaskRunForTask(db, task.id, run.id),
-    ]);
+    const [currentTask, currentRun] = protectedSource
+      ? await Promise.all([
+          readProtectedFundingTask(taskId),
+          readProtectedFundingRun(taskId, taskRunId),
+        ])
+      : await Promise.all([
+          getTaskById(db, taskId), getTaskRunForTask(db, taskId, taskRunId),
+        ]);
     if (!currentTask || !currentRun || currentTask.fundingMode !== "caller"
       || currentTask.ownerId !== task.ownerId || currentTask.requestorId !== task.requestorId
       || currentTask.agentId !== task.agentId || currentTask.callingRoomId !== task.callingRoomId
       || currentTask.requestedModelId !== task.requestedModelId
       || currentTask.toolsMode !== task.toolsMode
       || JSON.stringify(currentTask.toolsWhitelist) !== JSON.stringify(task.toolsWhitelist)
-      || currentRun.modelId !== run.modelId || currentRun.graphThreadId !== run.graphThreadId
+      || !sameProtectedRuntimeCoordinates(currentTask, task)
+      || currentRun.modelId !== run.modelId || currentRun.jobId !== run.jobId
+      || currentRun.graphThreadId !== run.graphThreadId
       || currentRun.fundingPredecessorRunId !== run.fundingPredecessorRunId
-      || !sameBinding(currentRun.fundingBinding, run.fundingBinding)
+      || (freshCancelledWake
+        ? currentRun.fundingBinding !== null || run.fundingBinding !== null
+        : !sameBinding(currentRun.fundingBinding, run.fundingBinding))
       || (!wake && currentRun.status !== "running")
       || (wake && !["completed", "errored", "cancelled"].includes(currentRun.status))) {
       throw new TaskFundingError("funding_source_changed");
     }
-    if (currentRun.fundingPredecessorRunId) {
-      const predecessor = await getTaskRunForTask(db, task.id, currentRun.fundingPredecessorRunId);
+    const predecessorRunId = currentRun.fundingPredecessorRunId;
+    if (predecessorRunId) {
+      const predecessor = protectedSource
+        ? await readProtectedFundingRun(taskId, predecessorRunId)
+        : await getTaskRunForTask(db, taskId, predecessorRunId);
       if (!predecessor || predecessor.id === currentRun.id
         || predecessor.status !== "paused" || predecessor.modelId !== currentRun.modelId
         || predecessor.graphThreadId !== currentRun.graphThreadId
@@ -268,20 +462,22 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
         throw new TaskFundingError("funding_source_changed");
       }
     }
-    await assertOwnShape(currentTask);
+    await assertOwnShape(currentTask, authority);
     assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
     if (!wake && task.requestedModelId && task.requestedModelId !== candidateModelId) {
       throw new TaskFundingError("funding_source_changed");
     }
-    return resolveModelFunding({ humanUserId: task.requestorId, modelId: candidateModelId,
+    const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId: candidateModelId,
       workload: "native_text_task", priorDecision: admitted, ...(transport ? { transport } : {}) });
+    await authority?.();
+    return decision;
   };
   const resolveCandidate = async (candidateModelId: string, transport?: "direct" | "surplus") => {
     try { return await fundingBoundary(() => resolveCandidateUnchecked(candidateModelId, transport)); }
     catch (error) {
       if (wake && run.status === "completed" && error instanceof TaskFundingError) {
-        await recordTaskWakeFundingFailure(getServerDirectDb(), { taskId: task.id,
-          taskRunId: run.id, requestorId: task.requestorId, reason: error.code });
+        await recordTaskWakeFundingFailure(getServerDirectDb(), { taskId,
+          taskRunId, requestorId: task.requestorId, reason: error.code });
       }
       throw error;
     }
@@ -309,19 +505,84 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
         const decision = await resolveCandidate(candidate, transport);
         lastAttempt = decision;
         const usageFunding = usageFundingFor(decision);
-        if (decision.kind === "server") return await runAttempt({ usageFunding });
-        return await withAdmittedPersonalProviderKey(decision,
-          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+        await authority?.();
+        try {
+          if (decision.kind === "server") return await runAttempt({ usageFunding });
+          return await withAdmittedPersonalProviderKey(decision,
+            (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+        } finally {
+          await authority?.();
+        }
       } catch (error) {
         const reason = taskFundingFailureCode(error);
         if (wake && run.status === "completed" && reason) {
-          await recordTaskWakeFundingFailure(getServerDirectDb(), { taskId: task.id,
-            taskRunId: run.id, requestorId: task.requestorId, reason });
+          await recordTaskWakeFundingFailure(getServerDirectDb(), { taskId,
+            taskRunId, requestorId: task.requestorId, reason });
         }
         throw error;
       }
     },
   };
+}
+
+/**
+ * Open caller funding for one already-terminal protected Task Run without
+ * materializing the Task prompt, expected output, or Run result columns.
+ */
+export async function openProtectedTaskWakeFundingSession(input: Readonly<{
+  taskSource: ProtectedTaskWakeFundingTaskSource;
+  runSource: ProtectedTaskWakeFundingRunSource;
+  modelId: string | null;
+  assertCurrent: ProtectedTaskFundingAuthority;
+}>): Promise<ForegroundChatFundingSession | null> {
+  const task: ProtectedTaskWakeFundingTaskSource = Object.freeze({
+    ...input.taskSource,
+    targetUserIds: Object.freeze([...input.taskSource.targetUserIds]),
+    toolsWhitelist: Object.freeze([...input.taskSource.toolsWhitelist]),
+    metadata: structuredClone(input.taskSource.metadata),
+    cryptoRequiredNamespaceFingerprint:
+      input.taskSource.cryptoRequiredNamespaceFingerprint === null
+        ? null
+        : Uint8Array.from(input.taskSource.cryptoRequiredNamespaceFingerprint),
+  });
+  const run: ProtectedTaskWakeFundingRunSource = Object.freeze({
+    ...input.runSource,
+    fundingBinding: structuredClone(input.runSource.fundingBinding),
+  });
+  if (task.fundingMode === "legacy_server") return null;
+  const freshCancelledWake = run.status === "cancelled"
+    && run.jobId === null && run.modelId === null && run.fundingBinding === null
+    && run.fundingPredecessorRunId === null;
+  if (task.fundingMode !== "caller" || !protectedRuntimeShape(task)
+    || run.taskId !== task.id
+    || !["completed", "errored", "cancelled"].includes(run.status)
+    || (freshCancelledWake ? input.modelId !== null : run.modelId === null
+      || run.modelId !== input.modelId)) {
+    throw new TaskFundingError("funding_source_changed");
+  }
+  return withProtectedTaskFundingAuthority(input.assertCurrent, async () => {
+    if (!freshCancelledWake) {
+      return fundingBoundary(() => openSession(task, run, input.modelId!, true));
+    }
+    return fundingBoundary(async () => {
+      await assertOwnShape(task);
+      const modelId = await selectTaskModel(task);
+      await input.assertCurrent();
+      const retainedDecision = await resolveModelFunding({
+        humanUserId: task.requestorId,
+        modelId,
+        workload: "native_text_task",
+      });
+      await input.assertCurrent();
+      return openSession(
+        task,
+        run,
+        modelId,
+        true,
+        retainedDecision,
+      );
+    });
+  });
 }
 
 async function fundingBoundary<T>(work: () => Promise<T>): Promise<T> {

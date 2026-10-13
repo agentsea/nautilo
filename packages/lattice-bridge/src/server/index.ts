@@ -134,6 +134,7 @@ export {
   createPostgresLatticeStorage,
   cryptoTypedDb,
   executeTypedCryptoQuery,
+  readCryptoStorageInteger,
   assertVerifiedCryptoPostgresHandle,
   verifyCryptoPostgresHandle,
   withVerifiedCryptoPostgresTransaction,
@@ -168,6 +169,7 @@ export type {
 } from "./message/postgres-conversation-product-store.ts";
 export {
   createLiveShadowAgentTurnSession,
+  createTaskWakeForegroundAgentTurnSession,
 } from "./message/live-shadow-agent-session.ts";
 export {
   createPostgresForegroundJournalSelectionPort,
@@ -227,16 +229,30 @@ export type {
   LiveShadowAgentStreamFrameResult,
   LiveShadowAgentStreamReservation,
   LiveShadowAgentTurnSession,
+  TaskWakeForegroundAgentTurnSessionInput,
+  TaskWakeForegroundTranscriptPorts,
+  TaskWakeForegroundTranscriptAuthority,
+  LiveShadowAgentPublicationCoordinates,
 } from "./message/live-shadow-agent-session.ts";
 export {
   PostgresMemoryProductStore,
 } from "./memory/postgres-memory-product-store.ts";
 export * from "./task/postgres-task-content-product-store.ts";
+export {
+  withPostgresTaskWakeLiveShadowAuthority,
+  type PostgresTaskWakeLiveShadowAuthorityInput,
+  type TaskWakeLiveShadowRuntimeSigner,
+  type TaskWakeLiveShadowCurrentWriter,
+} from "./message/postgres-task-wake-live-shadow-authority.ts";
 export * from "./task/postgres-task-content-crypto-completion.ts";
+export * from "./task/postgres-task-historical-content-staging.ts";
 export * from "./task/task-content-repository-composition.ts";
 export {
   PostgresAgentMemoryProductPort,
+  type VerifiedForegroundMemoryPublicationReservation,
 } from "./memory/postgres-agent-memory-product-port.ts";
+export { createPostgresForegroundMemoryPublication } from
+  "./memory/postgres-foreground-memory-publication.ts";
 export type {
   AgentMemoryBeforeLocks,
   AgentMemoryPublicationBoundary,
@@ -999,17 +1015,21 @@ export {PostgresProtectedReflectionMessageMetadata, type ProtectedReflectionMess
 export {
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
+  inspectTaskDeliveryNamespaceAuthority,
   withInitialTaskRuntimeRecipientAuthority,
   withParkedTaskRuntimeNamespaceAuthority,
   withParkedTaskRuntimeRecipientAuthority,
   withTaskContentNamespaceAuthority,
   withTaskContentRecipientAuthority,
+  withTaskDeliveryNamespaceAuthority,
+  withTaskDeliveryRecipientAuthority,
   type InitialTaskRuntimeRecipientAuthority,
   type InitialTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeNamespaceFact,
   type ParkedTaskRuntimeCurrentRoutingFacts,
   type ParkedTaskRuntimeExpectedNamespaceParticipants,
   type TaskContentNamespaceAuthorityInput,
+  type TaskDeliveryNamespaceAuthorityInput,
 } from "./task/initial-task-runtime-namespace-authority.ts";
 
 export {
@@ -1022,9 +1042,39 @@ export {
   prepareNativeTaskRuntimeCancelledRunResult,
   type PrepareNativeTaskRuntimeCancelledRunResultInput,
   withNativeTaskNamespaceSource,
+  withNativeTaskTerminalMessageNamespaceSource,
+  withNativeTaskRunResultMessageNamespaceSource,
+  type NativeTaskTerminalMessageNamespaceSourceInput,
+  type NativeTaskRunResultMessageNamespaceSourceInput,
   type NativeTaskNamespaceSourceInput,
   type PrepareNativeTaskRuntimeRunResultInput,
 } from "./task/native-task-run-result-preparation.ts";
+export {
+  prepareNativeTaskDefinitionCryptoRevision,
+  type PrepareNativeTaskDefinitionCryptoRevisionInput,
+} from "./task/native-task-definition-preparation.ts";
+
+export {
+  prepareNativeTaskTerminalMessage,
+  readPreparedNativeTaskTerminalMessage,
+  type NativeTaskTerminalMessageAuthority,
+  type NativeTaskTerminalMessageSnapshot,
+  type PrepareNativeTaskTerminalMessageInput,
+  type PreparedNativeTaskTerminalMessage,
+} from "./task/native-task-terminal-message-preparation.ts";
+
+export {
+  assertVerifiedStagedTaskTerminalMessagePublication,
+  hasTaskTerminalMessageCryptoPublication,
+  inspectStagedTaskTerminalMessagePublication,
+  readStagedTaskTerminalMessagePublicationPolicy,
+  stageNativeTaskTerminalMessagePublication,
+  type InspectStagedTaskTerminalMessagePublicationInput,
+  type NativeTaskTerminalMessageCurrentAuthority,
+  type NativeTaskTerminalMessageIntent,
+  type StageNativeTaskTerminalMessagePublicationInput,
+  type VerifiedStagedTaskTerminalMessagePublication,
+} from "./task/postgres-task-terminal-message-staging.ts";
 
 export {
   stageNativeTaskCancellationPublication,
@@ -1086,6 +1136,8 @@ export {
 
 export {
   withNativeTaskMemoryEntityCrypto,
+  withNativeTaskWakeForegroundEntityCrypto,
+  type NativeTaskWakeForegroundEntityCryptoInput,
   type NativeTaskMemoryEntityCryptoInput,
 } from "./task/native-task-memory-entity-crypto.ts";
 
@@ -1102,3 +1154,73 @@ export {
   type TaskNamespaceMemoryRepairSource,
   type TaskScopeMemoryRepairSource,
 } from "./memory/postgres-foreground-memory-repair.ts";
+
+export {
+  withUnstagedTaskTerminalMessagePublication,
+  assertUnstagedTaskTerminalMessageAuthority,
+  type UnstagedTaskTerminalMessageAuthority,
+} from "./task/unstaged-task-terminal-message-authority.ts";
+
+export {
+  withNativeProtectedTaskRunResultV1,
+  withNativeProtectedTaskRunResultMessageSourceV1,
+  assertAuthenticNativeProtectedTaskRunResultMessageSourceV1,
+  type NativeProtectedTaskRunResultMessageSourceV1,
+  type NativeProtectedTaskRunResultMessageSourceResultV1,
+  type NativeProtectedTaskRunResultOccurrenceV1,
+} from "./task/native-protected-task-run-result-opener.ts";
+
+export {
+  prepareNativeTaskRunResultMessage,
+  readPreparedNativeTaskRunResultMessage,
+  type NativeTaskRunResultMessageAllocation,
+  type NativeTaskRunResultMessageAuthority,
+  type NativeTaskRunResultMessageSnapshot,
+  type PrepareNativeTaskRunResultMessageInput,
+  type PreparedNativeTaskRunResultMessage,
+} from "./task/native-task-run-result-message-preparation.ts";
+export {
+  stageNativeTaskRunResultMessagePublication,
+  inspectStagedTaskRunResultMessagePublication,
+  readStagedTaskRunResultMessageIntent,
+  assertVerifiedStagedTaskRunResultMessagePublication,
+  hasTaskRunResultMessageCryptoPublication,
+  type NativeTaskRunResultMessageIntent,
+  type NativeTaskRunResultMessageCurrentAuthority,
+  type VerifiedStagedTaskRunResultMessagePublication,
+  type InspectStagedTaskRunResultMessagePublicationInput,
+  type StageNativeTaskRunResultMessagePublicationInput,
+} from "./task/postgres-task-run-result-message-staging.ts";
+
+export {
+  inspectTaskOutputNamespaceAuthority,
+  withTaskOutputNamespaceAuthority,
+  withTaskOutputRecipientAuthority,
+  withTaskOutputProductAuthority,
+  type TaskOutputNamespaceAuthorityInput,
+  type TaskOutputNamespaceAuthority,
+  type TaskOutputRecipientAuthority,
+  type TaskOutputProductAuthority,
+} from "./task/initial-task-runtime-namespace-authority.ts";
+export {
+  withCurrentTaskOutputRuntimeAuthority,
+  withCurrentAcceptedTaskOutputRuntimeClaimAuthority,
+} from "./task/current-task-runtime-authority.ts";
+export {
+  withVerifiedForegroundTaskDefinitionPublication,
+  publishVerifiedForegroundTaskDefinition,
+  type VerifiedForegroundTaskDefinitionPublication,
+  type InspectForegroundTaskDefinitionInput,
+  inspectMappedTaskDefinitionAccessLineage,
+  readVerifiedTaskDefinitionAccessLineage,
+  isVerifiedMappedTaskContentMetadataProof,
+  readVerifiedForegroundTaskDefinitionAccessRevision,
+  type VerifiedTaskDefinitionAccessLineage,
+} from "./task/postgres-foreground-task-definition-inspector.ts";
+
+export { refreshHumanMappedTaskContentAccessHead } from "./task/postgres-foreground-task-definition-inspector.ts";
+export { type HumanTaskMappedContentAuthorityInput } from "./task/postgres-human-task-mapped-content-authority.ts";
+
+export { readTaskContentCryptoObjectPage, readTaskContentCryptoStagingPage,
+  type TaskContentCryptoInventoryRow, type TaskContentCryptoStagingKind,
+} from "./task/postgres-task-content-publication-inventory.ts";

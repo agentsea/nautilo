@@ -1,3 +1,4 @@
+import type { ProtectedTaskRuntimeMappedHeadReplan } from "./protected-task-runtime-mapped-head-replan";
 import type { TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -52,6 +53,7 @@ export type ProtectedTaskRuntimeInitialDeviceAuthorizationInput = Readonly<{
   }>): Promise<ProtectedTaskOccurrence | null>;
   /** Canonical native authority owner, supporting awaiting and bound phases. */
   withRecipientAuthority: ProtectedTaskRuntimeRecipientAuthorityPort;
+  mappedHeadReplan?: ProtectedTaskRuntimeMappedHeadReplan;
   now?: () => number;
 }>;
 
@@ -130,14 +132,32 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
       : null;
   };
 
+  const replanMappedHead = async (operation: Parameters<DeviceHooks["bindTaskRecipient"]>[0]
+    | Parameters<DeviceHooks["withTaskAuthority"]>[0]): Promise<boolean> => {
+    if (input.mappedHeadReplan === undefined || !["awaiting_recipient", "awaiting_device"].includes(operation.record.snapshot.state)) return true;
+    const coordinates = { taskRunId: operation.record.snapshot.workId, authorizationRequestId: operation.record.snapshot.requestId };
+    const occurrence = await input.resolveOccurrence(coordinates);
+    if (occurrence === null || occurrence.run.jobId !== null) return false;
+    return await input.mappedHeadReplan({ occurrence, record: operation.record, admission: operation.admission,
+      restricted: operation.restricted, resolvePlan: async () => {
+        const current = await input.resolveOccurrence(coordinates);
+        if (current === null || current.run.jobId !== null) return null;
+        const plan = await input.plan(current);
+        return { occurrence: current, initialRecord: plan.initialRecord, stableIdentity: plan.stableIdentity };
+      } }) === "unchanged";
+  };
+
   return Object.freeze({
     isTaskRecipientActive,
     bindTaskRecipient: async operation => {
+      operation = { ...operation, subject: structuredClone(operation.subject), admission: structuredClone(operation.admission),
+        record: structuredClone(operation.record), device: structuredClone(operation.device) };
       if (!matchesStenographerRequestAdmission(
         operation.admission,
         operation.device,
         now(),
       )) return null;
+      if (!await replanMappedHead(operation)) return null;
       const resolved = await resolveInitial(operation.record);
       if (resolved === null
         || operation.record.snapshot.state !== "awaiting_recipient") return null;
@@ -153,6 +173,9 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
       });
     },
     withTaskAuthority: async operation => {
+      operation = { ...operation, subject: structuredClone(operation.subject), admission: structuredClone(operation.admission),
+        record: structuredClone(operation.record) };
+      if (!await replanMappedHead(operation)) return null;
       const resolved = await resolveInitial(operation.record);
       if (resolved === null
         || !isTaskRecipientActive(operation.record)

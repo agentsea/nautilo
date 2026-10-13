@@ -2395,6 +2395,76 @@
       "when": 1791792954434,
       "tag": "0341_fearless_stingray",
       "breakpoints": true
+    },
+    {
+      "idx": 342,
+      "version": "7",
+      "when": 1791806580008,
+      "tag": "0342_exotic_starjammers",
+      "breakpoints": true
+    },
+    {
+      "idx": 343,
+      "version": "7",
+      "when": 1791808103739,
+      "tag": "0343_famous_slayback",
+      "breakpoints": true
+    },
+    {
+      "idx": 344,
+      "version": "7",
+      "when": 1791811007281,
+      "tag": "0344_thin_nico_minoru",
+      "breakpoints": true
+    },
+    {
+      "idx": 345,
+      "version": "7",
+      "when": 1791815186603,
+      "tag": "0345_illegal_ken_ellis",
+      "breakpoints": true
+    },
+    {
+      "idx": 346,
+      "version": "7",
+      "when": 1791815689709,
+      "tag": "0346_hard_franklin_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 347,
+      "version": "7",
+      "when": 1791818670030,
+      "tag": "0347_tranquil_justin_hammer",
+      "breakpoints": true
+    },
+    {
+      "idx": 348,
+      "version": "7",
+      "when": 1791820248390,
+      "tag": "0348_unknown_mattie_franklin",
+      "breakpoints": true
+    },
+    {
+      "idx": 349,
+      "version": "7",
+      "when": 1791821219446,
+      "tag": "0349_lame_la_nuit",
+      "breakpoints": true
+    },
+    {
+      "idx": 350,
+      "version": "7",
+      "when": 1791839251547,
+      "tag": "0350_abandoned_thundra",
+      "breakpoints": true
+    },
+    {
+      "idx": 351,
+      "version": "7",
+      "when": 1791843553431,
+      "tag": "0351_strange_red_shift",
+      "breakpoints": true
     }
   ]
 }

@@ -2,10 +2,10 @@
 
 import {
   decodePreparedMutationJournalIndex,
+  type PreparedMutationJournalCustodyAvailability,
   type PreparedMutationJournalIndex,
   type PreparedMutationJournalVaultPort,
 } from "./prepared-mutation-journal.ts";
-import type { PreparedMutationJournalCustodyAvailability } from "./file-prepared-mutation-journal-vault.ts";
 import { PREPARED_MUTATION_JOURNAL_LIMITS } from "./prepared-mutation-journal-limits.ts";
 
 // V1 accepted records produced before the journal became a shared durability

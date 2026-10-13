@@ -57,6 +57,8 @@ const DOMAIN = "10000000-0000-4000-8000-000000000006";
 const AGENT = "10000000-0000-4000-8000-000000000007";
 const OTHER_HUMAN = "10000000-0000-4000-8000-000000000008";
 const SCOPE = "10000000-0000-4000-8000-000000000009";
+const CHILD_ROOM = "10000000-0000-4000-8000-00000000000a";
+const OTHER_NAMESPACE = "10000000-0000-4000-8000-00000000000b";
 const TASK = "20000000-0000-4000-8000-000000000008";
 const RUN = "20000000-0000-4000-8000-000000000009";
 const JOB = "20000000-0000-4000-8000-00000000000a";
@@ -251,7 +253,11 @@ function hex(value: Uint8Array): string {
     .join("");
 }
 
-async function fixture(continuation = false, cancellation = false) {
+async function fixture(
+  continuation = false,
+  cancellation = false,
+  delivery = false,
+) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -275,7 +281,7 @@ async function fixture(continuation = false, cancellation = false) {
     authorizationId: "task-request",
     policyRevision: 7,
     sessionId: "task-episode",
-    roomId: ROOM,
+    roomId: delivery ? CHILD_ROOM : ROOM,
     subjectHumanId: humanId(HUMAN),
     committerDeviceId: cryptoDeviceId(DEVICE),
     committerDeviceSigningGeneration: 2,
@@ -285,7 +291,8 @@ async function fixture(continuation = false, cancellation = false) {
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: 1,
     recipientKeyId: "task-recipient",
-    operations: cancellation ? ["encrypt"] : ["decrypt", "encrypt"],
+    operations: cancellation || delivery
+      ? ["encrypt"] : ["decrypt", "encrypt"],
     issuedAt: NOW,
     deadlineAt: NOW + 60_000,
     maximumSecretBytes: 4_096,
@@ -294,8 +301,12 @@ async function fixture(continuation = false, cancellation = false) {
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId,
     workId: continuation ? RUN : "task-run",
-    workKind: cancellation ? "task.cancel_result" : continuation ? "task.execute" : "task.dispatch",
-    workPurpose: cancellation ? "task.cancel_result" : continuation ? "task.execute" : "task.dispatch",
+    workKind: delivery ? "task.deliver_message"
+      : cancellation ? "task.cancel_result"
+      : continuation ? "task.execute" : "task.dispatch",
+    workPurpose: delivery ? "task.deliver_message"
+      : cancellation ? "task.cancel_result"
+      : continuation ? "task.execute" : "task.dispatch",
     recipientGeneration: plan.recipientRuntimeGeneration,
     episodeId: plan.sessionId,
     sourceRoomId: plan.roomId,
@@ -322,7 +333,8 @@ async function fixture(continuation = false, cancellation = false) {
     ordinal: 0,
     namespaceId: NAMESPACE,
     domainId: DOMAIN,
-    operations: cancellation ? ["encrypt"] : ["decrypt", "encrypt"],
+    operations: cancellation || delivery
+      ? ["encrypt"] : ["decrypt", "encrypt"],
     expectedAccessRevision: 9,
     expectedPolicyRevision: plan.policyRevision,
   }];
@@ -399,6 +411,19 @@ function productAuthority(
     wideBringBack?: boolean;
     participantHumanIds?: readonly string[];
     insertedJobs?: Record<string, unknown>[];
+    deliveryDestination?: Readonly<{
+      roomId?: string;
+      namespaceId?: string;
+      parentRoomId?: string | null;
+      rootRoomIds?: readonly string[];
+      memberRows?: readonly Readonly<{
+        actor_id: string;
+        kind: "user" | "agent";
+      }>[];
+      humanActorIds?: readonly string[];
+      effectiveHumanActorIds?: readonly string[];
+      destinationAccessAllowed?: boolean;
+    }>;
   }> = {},
 ) {
   const member = { actor_id: HUMAN, kind: "user" };
@@ -496,15 +521,54 @@ function productAuthority(
       expect(selected).toBe(true);
       events.push("product");
       let rows: readonly PostgresJsBridgeRow[];
-      if (statement.includes("m291_namespace_key_readable_set_target_candidates")) {
+      const destination = routing.deliveryDestination;
+      if (destination && statement.startsWith(
+        'select "id", "namespace_id", "parent_room_id" from "rooms"',
+      )) {
+        rows = [{
+          id: destination.roomId ?? CHILD_ROOM,
+          namespace_id: destination.namespaceId ?? NAMESPACE,
+          parent_room_id: destination.parentRoomId === undefined
+            ? ROOM : destination.parentRoomId,
+        }];
+      } else if (destination && statement.startsWith(
+        'select "id" from "rooms"',
+      )
+        && statement.includes('"rooms"."namespace_id"')
+        && statement.includes('"rooms"."parent_room_id" is null')
+        && !statement.includes("_namespace_key_readable_set")) {
+        rows = (destination.rootRoomIds ?? [ROOM]).map(id => ({ id }));
+      } else if (statement.includes("_namespace_key_readable_set_target_candidates")) {
         rows = [{ room_id: ROOM, namespace_id: NAMESPACE }];
       } else if (statement.includes(
         'order by "rooms"."parent_room_id" nulls first',
       )) {
-        rows = [{ room_id: ROOM }];
-      } else if (statement.includes("m291_namespace_key_readable_set_source_members")) {
+        rows = destination
+          ? [{ room_id: ROOM }, {
+              room_id: destination.roomId ?? CHILD_ROOM,
+            }]
+          : [{ room_id: ROOM }];
+      } else if (destination
+        && statement.includes("destination_access_allowed")) {
+        const childHumans = destination.memberRows?.filter(row =>
+          row.kind === "user"
+        ).map(row => row.actor_id) ?? [HUMAN];
+        rows = [{
+          id: destination.roomId ?? CHILD_ROOM,
+          namespace_id: destination.namespaceId ?? NAMESPACE,
+          parent_room_id: destination.parentRoomId === undefined
+            ? ROOM : destination.parentRoomId,
+          kind: "subthread",
+          archived_at: null,
+          human_actor_ids: destination.humanActorIds ?? childHumans,
+          effective_human_actor_ids:
+            destination.effectiveHumanActorIds ?? childHumans,
+          destination_access_allowed:
+            destination.destinationAccessAllowed ?? true,
+        }];
+      } else if (statement.includes("_namespace_key_readable_set_source_members")) {
         rows = [member, agentMember];
-      } else if (statement.includes("m291_namespace_key_readable_set_source")) {
+      } else if (statement.includes("_namespace_key_readable_set_source")) {
         rows = [{
           source_room_id: ROOM,
           kind: "open",
@@ -513,16 +577,20 @@ function productAuthority(
           human_actor_ids: [HUMAN],
           effective_human_actor_ids: [HUMAN],
         }];
-      } else if (statement.includes("m291_namespace_key_readable_set_actor")) {
+      } else if (statement.includes("_namespace_key_readable_set_actor")) {
         rows = [{ subject_user_id: USER }];
-      } else if (statement.includes("m291_namespace_key_readable_set_targets")) {
+      } else if (statement.includes("_namespace_key_readable_set_targets")) {
         rows = [target];
       } else if (statement.includes(
-        "m291_namespace_key_readable_set_target_members",
+        "_namespace_key_readable_set_target_members",
       )) {
         rows = [
           { ...member, room_id: ROOM },
           { ...agentMember, room_id: ROOM },
+          ...(destination?.memberRows ?? [member, agentMember]).map(row => ({
+            ...row,
+            room_id: destination?.roomId ?? CHILD_ROOM,
+          })),
         ];
       } else if (statement.startsWith(
         'select "rooms"."namespace_id" from "rooms" inner join "rooms" "namespace_source_room"',
@@ -677,6 +745,167 @@ describe("current Task Runtime authority", () => {
     })).toBe(false);
   });
 
+  test("binds and reopens delivery authority through the signed child Room roster", async () => {
+    const value = await fixture(false, false, true);
+    for (const phase of ["bound", "accepted"] as const) {
+      const events: string[] = [];
+      let used = false;
+      const common = {
+        ...productAuthority(value, events, undefined, {
+          deliveryDestination: {
+            memberRows: [
+              { actor_id: HUMAN, kind: "user" as const },
+              { actor_id: AGENT, kind: "agent" as const },
+            ],
+          },
+        }),
+        restricted: restrictedAuthority(value, { events }),
+        crypto: value.crypto,
+        serverScope: "https://nautilo.example",
+        subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+        now: () => NOW + 1,
+        use: async (authority: CurrentTaskRuntimeAuthority) => {
+          used = true;
+          expect(authority.plan.operations).toEqual(["encrypt"]);
+          expect(authority.namespaceRequirements[0]?.operations)
+            .toEqual(["encrypt"]);
+          return phase;
+        },
+      };
+      const result = phase === "bound"
+        ? await withCurrentTaskRuntimeAuthority({
+            ...common,
+            admission: value.admission,
+            request: value.request,
+            namespaceRequirements: value.namespaceRequirements,
+            domainRequirements: value.domainRequirements,
+          } as unknown as Parameters<typeof withCurrentTaskRuntimeAuthority>[0])
+        : await withCurrentAcceptedTaskRuntimeAuthority({
+            ...common,
+            accepted: value.accepted,
+            validateCurrentProduct: async () => true,
+          } as unknown as Parameters<
+            typeof withCurrentAcceptedTaskRuntimeAuthority
+          >[0]);
+      expect(result, phase).toBe(phase);
+      expect(used, phase).toBe(true);
+      expect(events).toContain("role");
+    }
+  });
+
+  test("denies delivery when the actual child roster or Namespace ancestry is stale", async () => {
+    const scenarios = [{
+      name: "empty child roster",
+      destination: {
+        memberRows: [],
+        humanActorIds: [],
+        effectiveHumanActorIds: [],
+      },
+    }, {
+      name: "revoked child roster",
+      destination: {
+        memberRows: [
+          { actor_id: HUMAN, kind: "user" as const },
+          { actor_id: AGENT, kind: "agent" as const },
+        ],
+        humanActorIds: [HUMAN],
+        effectiveHumanActorIds: [],
+      },
+    }, {
+      name: "wrong Namespace",
+      destination: { namespaceId: OTHER_NAMESPACE },
+    }, {
+      name: "wrong parent",
+      destination: { parentRoomId: OTHER_HUMAN },
+    }] as const;
+    for (const scenario of scenarios) {
+      const value = await fixture(false, false, true);
+      for (const phase of ["bound", "accepted"] as const) {
+        const events: string[] = [];
+        let used = false;
+        const common = {
+          ...productAuthority(value, events, undefined, {
+            deliveryDestination: scenario.destination,
+          }),
+          restricted: restrictedAuthority(value, { events }),
+          crypto: value.crypto,
+          serverScope: "https://nautilo.example",
+          subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+          now: () => NOW + 1,
+          use: async () => {
+            used = true;
+            return "unsafe";
+          },
+        };
+        const result = phase === "bound"
+          ? await withCurrentTaskRuntimeAuthority({
+              ...common,
+              admission: value.admission,
+              request: value.request,
+              namespaceRequirements: value.namespaceRequirements,
+              domainRequirements: value.domainRequirements,
+            } as unknown as Parameters<
+              typeof withCurrentTaskRuntimeAuthority
+            >[0])
+          : await withCurrentAcceptedTaskRuntimeAuthority({
+              ...common,
+              accepted: value.accepted,
+              validateCurrentProduct: async () => true,
+            } as unknown as Parameters<
+              typeof withCurrentAcceptedTaskRuntimeAuthority
+            >[0]);
+        expect(result, `${scenario.name}/${phase}`).toBeNull();
+        expect(used, `${scenario.name}/${phase}`).toBe(false);
+        expect(events, `${scenario.name}/${phase}`).not.toContain("role");
+      }
+    }
+  });
+
+  test("never accepts decrypt authority for delivery work", async () => {
+    const value = await fixture(false, false, true);
+    const withDecrypt = value.namespaceRequirements.map(requirement => ({
+      ...requirement,
+      operations: ["decrypt", "encrypt"] as const,
+    }));
+    for (const phase of ["bound", "accepted"] as const) {
+      const events: string[] = [];
+      let used = false;
+      const common = {
+        ...productAuthority(value, events, undefined, {
+          deliveryDestination: {},
+        }),
+        restricted: restrictedAuthority(value, { events }),
+        crypto: value.crypto,
+        serverScope: "https://nautilo.example",
+        subject: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
+        now: () => NOW + 1,
+        use: async () => {
+          used = true;
+          return "unsafe";
+        },
+      };
+      const result = phase === "bound"
+        ? await withCurrentTaskRuntimeAuthority({
+            ...common,
+            admission: value.admission,
+            request: value.request,
+            namespaceRequirements: withDecrypt,
+            domainRequirements: value.domainRequirements,
+          } as unknown as Parameters<typeof withCurrentTaskRuntimeAuthority>[0])
+        : await withCurrentAcceptedTaskRuntimeAuthority({
+            ...common,
+            accepted: { ...value.accepted,
+              namespaceRequirements: withDecrypt },
+            validateCurrentProduct: async () => true,
+          } as unknown as Parameters<
+            typeof withCurrentAcceptedTaskRuntimeAuthority
+          >[0]);
+      expect(result, phase).toBeNull();
+      expect(used, phase).toBe(false);
+      expect(events, phase).not.toContain("role");
+    }
+  });
+
   test("matches only the exact live device, policy and Domain authority", async () => {
     const value = await fixture();
     const input = {
@@ -784,15 +1013,15 @@ describe("current Task Runtime authority", () => {
         expect(selected).toBe(true);
         events.push("product");
         let rows: readonly PostgresJsBridgeRow[];
-        if (statement.includes("m291_namespace_key_readable_set_target_candidates")) {
+        if (statement.includes("_namespace_key_readable_set_target_candidates")) {
           rows = [{ room_id: ROOM, namespace_id: NAMESPACE }];
         } else if (statement.includes(
           'order by "rooms"."parent_room_id" nulls first',
         )) {
           rows = [{ room_id: ROOM }];
-        } else if (statement.includes("m291_namespace_key_readable_set_source_members")) {
+        } else if (statement.includes("_namespace_key_readable_set_source_members")) {
           rows = [member, agentMember];
-        } else if (statement.includes("m291_namespace_key_readable_set_source")) {
+        } else if (statement.includes("_namespace_key_readable_set_source")) {
           rows = [{
             source_room_id: ROOM,
             kind: "open",
@@ -801,11 +1030,11 @@ describe("current Task Runtime authority", () => {
             human_actor_ids: [HUMAN],
             effective_human_actor_ids: [HUMAN],
           }];
-        } else if (statement.includes("m291_namespace_key_readable_set_actor")) {
+        } else if (statement.includes("_namespace_key_readable_set_actor")) {
           rows = [{ subject_user_id: USER }];
-        } else if (statement.includes("m291_namespace_key_readable_set_targets")) {
+        } else if (statement.includes("_namespace_key_readable_set_targets")) {
           rows = [target];
-        } else if (statement.includes("m291_namespace_key_readable_set_target_members")) {
+        } else if (statement.includes("_namespace_key_readable_set_target_members")) {
           rows = [
             { ...member, room_id: ROOM },
             { ...agentMember, room_id: ROOM },

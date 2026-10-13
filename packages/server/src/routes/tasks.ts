@@ -51,6 +51,7 @@ import {
   eq,
   inArray,
   getTaskById,
+  getTaskLifecycleState,
   getTaskByIdWithMutationVersion,
   getTaskRuns,
   getLatestResumableTaskRun,
@@ -554,7 +555,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         .send({ error: "no_agent_in_context", message: "No agent in context." });
     }
 
-    return runOrdinaryTaskMutation(deps.contentOwner, reply, async () => {
+    return await runOrdinaryTaskMutation(deps.contentOwner, reply, async () => {
 
     const body = request.body ?? ({} as TaskCreatePayload);
     if (!body.prompt) {
@@ -1061,7 +1062,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         return reply.status(401).send({ error: "Authentication required" });
       }
 
-      return runOrdinaryTaskMutation(deps.contentOwner, reply, async () => {
+      return await runOrdinaryTaskMutation(deps.contentOwner, reply, async () => {
 
       const body = request.body ?? ({} as TaskUpdatePayload);
       const reject = rejectNotYetWiredTaskParams(
@@ -1260,7 +1261,16 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     if (!ownerId) {
       return reply.status(401).send({ error: "Authentication required" });
     }
-    const task = await getTaskById(getServerDirectDb(), request.params.id);
+    const readState = async (ordinaryContentAllowed: boolean) => ({
+      task: await getTaskLifecycleState(getServerDirectDb(), request.params.id),
+      ordinaryContentAllowed,
+    });
+    const selected = await deps.contentOwner.selectReadMetadata({
+      ordinary: () => readState(true),
+      fallback: () => readState(true),
+      protected: () => readState(false),
+    });
+    const { task } = selected;
     if (!task || task.ownerId !== ownerId) {
       return reply.status(404).send({ error: "Task not found" });
     }
@@ -1278,10 +1288,17 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     ) {
       return;
     }
-    if (requiresInvocation) {
+    if (requiresInvocation && task.contentRepresentation === "ordinary") {
+      if (!selected.ordinaryContentAllowed) {
+        return reply.status(409).send({ error: "task_content_unavailable" });
+      }
+      const fundingTask = await getTaskById(getServerDirectDb(), task.id, { ordinaryOnly: true });
+      if (!fundingTask || fundingTask.ownerId !== ownerId) {
+        return reply.status(409).send({ error: "Task changed before resume. Reload and try again." });
+      }
       const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
       if (!await requireTaskFundingForMutation({
-        task,
+        task: fundingTask,
         ...(priorRun ? { priorRun } : {}),
         origin: "task_unpause",
         reply,

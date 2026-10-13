@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { rejects } from "node:assert/strict";
 import { TASK_LOCAL_EXECUTION_RECREATE_TEXT } from "@nautilo/db";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 
@@ -14,6 +15,7 @@ import {
 } from "../../src/server/message/postgres-conversation-product-store.ts";
 import {
   TASK_CONTENT_PAYLOAD_VERSION_V1,
+  TaskHistoricalRepairPublicationUnavailableError,
   deriveTaskContentCryptoObjectIdV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
@@ -21,6 +23,8 @@ import {
   type TaskContentCoordinateV1,
 } from "../../src/task/task-content-repository.ts";
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
+  "../../src/task/task-historical-content-identity.ts";
 
 const TASK_ID = "10000000-0000-4000-8000-000000000001";
 const RUN_ID = "10000000-0000-4000-8000-000000000002";
@@ -55,6 +59,7 @@ type Step = Readonly<{
 class ScriptedConnection implements ConversationProductPostgresConnection {
   readonly steps: Step[];
   readonly isolations: string[] = [];
+  readonly statements: string[] = [];
   transactionDepth = 0;
   productUpdateLocks = 0;
 
@@ -69,6 +74,7 @@ class ScriptedConnection implements ConversationProductPostgresConnection {
     if (statement.includes("SELECT current_user::text")) {
       return [{ current_user: "nautilo", session_user: "nautilo" }] as unknown as readonly Row[];
     }
+    this.statements.push(statement);
     const step = this.steps.shift();
     if (step === undefined) throw new Error(`Unexpected query: ${statement}`);
     if (statement.includes("for update")
@@ -202,11 +208,90 @@ const protectedPublicationPolicy: Step = {
   },
 };
 
+// Keep the expected definition protocol explicit while sharing the unchanged
+// lifecycle and product fixtures with reservation/mapping regression cases.
+function definitionReservationSteps(steps: readonly Step[]): Step[] {
+  const product = steps.find(step => step.contains === 'from "tasks"');
+  return [protectedPublicationPolicy, { contains: 'from "tasks"', rows: product?.rows ?? [] }, ...steps];
+}
+
+function definitionMappingSteps(steps: readonly Step[]): Step[] {
+  const lockedIndex = steps.findIndex(step => step.contains === "for update");
+  if (lockedIndex < 0) throw new Error("Definition mapping fixture needs its locked lifecycle");
+  const locked = steps[lockedIndex]!;
+  const prior = steps.slice(0, lockedIndex);
+  const policy = steps.find(step => step.contains === 'from "encryption_transition_policy"') ?? protectedPublicationPolicy;
+  const product = steps.find(step => step.contains === 'from "tasks"');
+  return [
+    ...prior.filter(step => step.contains !== 'from "encryption_transition_policy"' && step.contains !== 'from "tasks"'),
+    { contains: 'from "task_definition_crypto_revisions"', rows: locked.rows },
+    policy, { contains: 'from "tasks"', rows: product?.rows ?? [] },
+    ...steps.slice(lockedIndex),
+  ];
+}
+
 describe("PostgresTaskContentProductStore", () => {
+  test("definition reservation locks policy then Task before either ledger", async () => {
+    const coordinate = definition();
+    const row = lifecycleRow(coordinate, { kind: "definition" });
+    const { store, connection } = await setup([
+      protectedPublicationPolicy,
+      { contains: 'from "tasks"', rows: [], inspect(_parameters, statement) { expect(statement).toContain("for update"); } },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
+      { contains: 'from "tasks"', rows: [] },
+    ]);
+    expect((await store.reserveRevision(reservation(coordinate))).status).toBe("replayed");
+    expect(connection.statements.slice(0, 3).map(statement => statement.match(/from "([^"]+)"/)?.[1]))
+      .toEqual(["encryption_transition_policy", "tasks", "task_definition_crypto_revisions"]);
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("definition mapping resolves authority without locks then rejects changed immutable ledger", async () => {
+    const coordinate = definition();
+    const complete = lifecycleRow(coordinate, { completion: "complete", crypto_completed_at: NOW });
+    const connection = new ScriptedConnection([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [complete], inspect(_parameters, statement) { expect(statement).not.toContain("for update"); } },
+      protectedPublicationPolicy,
+      { contains: 'from "tasks"', rows: [], inspect(_parameters, statement) { expect(statement).toContain("for update"); } },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [{ ...complete, request_digest: new Uint8Array(32).fill(99) }] },
+    ]);
+    let resolutions = 0;
+    const store = new PostgresTaskContentProductStore(await verifyConversationProductPostgresHandle(connection), () => {
+      expect(connection.transactionDepth).toBe(0);
+      expect(connection.productUpdateLocks).toBe(0);
+      resolutions += 1;
+      return authority;
+    });
+    expect(await store.compareAndSwapCryptoMapping({ coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "protected", leaseToken: null })).toBe("stale");
+    expect(resolutions).toBe(1);
+    expect(connection.statements.slice(1).map(statement => statement.match(/from "([^"]+)"/)?.[1]))
+      .toEqual(["encryption_transition_policy", "tasks", "task_definition_crypto_revisions"]);
+    expect(connection.steps).toHaveLength(0);
+    expect(connection.statements.some(statement => statement.startsWith("update "))).toBe(false);
+  });
+
+  test.each([
+    { mode: "encrypted_only", revision: 2 },
+    { mode: "shadow_encryption", revision: 1 },
+    { mode: "plaintext_only", revision: 1 },
+  ])("definition reservation rejects changed policy before product or ledger locks %p", async policy => {
+    const { store, connection } = await setup([
+      { ...protectedPublicationPolicy, rows: [policy] },
+    ]);
+    expect(await store.reserveRevision(reservation(definition()))).toEqual({ status: "stale" });
+    expect(connection.productUpdateLocks).toBe(0);
+    expect(connection.steps).toHaveLength(0);
+    expect(connection.statements).toHaveLength(1);
+  });
+
   test("reserves definition creation before the product row exists", async () => {
     const coordinate = definition();
     const row = lifecycleRow(coordinate);
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionReservationSteps([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
@@ -222,7 +307,7 @@ describe("PostgresTaskContentProductStore", () => {
         },
       },
       { contains: 'from "tasks"', rows: [] },
-    ]);
+    ]));
     const reserved = await store.reserveRevision(reservation(coordinate));
     expect(reserved.status).toBe("reserved");
     if (reserved.status === "reserved") {
@@ -242,14 +327,14 @@ describe("PostgresTaskContentProductStore", () => {
     const row = lifecycleRow(coordinate, {
       next_attempt_at: nextAttemptAt,
     });
-    const { store } = await setup([
+    const { store } = await setup(definitionReservationSteps([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [] },
       { contains: 'insert into "task_definition_crypto_revisions"', rows: [row] },
       { contains: 'from "tasks"', rows: [] },
-    ]);
+    ]));
     const reserved = await store.reserveRevision(reservation(coordinate));
     expect(reserved.status).toBe("reserved");
     if (reserved.status !== "reserved") return;
@@ -271,7 +356,7 @@ describe("PostgresTaskContentProductStore", () => {
     "rejects malformed storage timestamp %p",
     async (stored) => {
       const coordinate = definition();
-      const { store } = await setup([
+      const { store } = await setup(definitionReservationSteps([
         ...emptyOperations,
         { contains: 'from "task_definition_crypto_revisions"', rows: [] },
         requesterOwner,
@@ -280,7 +365,7 @@ describe("PostgresTaskContentProductStore", () => {
           contains: 'insert into "task_definition_crypto_revisions"',
           rows: [lifecycleRow(coordinate, { next_attempt_at: stored })],
         },
-      ]);
+      ]));
       const error = await store.reserveRevision(reservation(coordinate))
         .then(() => null, (reason: unknown) => reason);
       expect(error).toBeInstanceOf(TypeError);
@@ -292,7 +377,7 @@ describe("PostgresTaskContentProductStore", () => {
   test("enforces exact update predecessor and TaskRun parent binding", async () => {
     const update = definition(2);
     const updateRow = lifecycleRow(update);
-    const updateSetup = await setup([
+    const updateSetup = await setup(definitionReservationSteps([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
@@ -312,7 +397,7 @@ describe("PostgresTaskContentProductStore", () => {
         crypto_access_revision: 0,
         crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
       }] },
-    ]);
+    ]));
     expect((await updateSetup.store.reserveRevision(reservation(update))).status).toBe("reserved");
 
     const run = result();
@@ -342,7 +427,7 @@ describe("PostgresTaskContentProductStore", () => {
 
   test("refuses a definition update while an occurrence owns the fire lock", async () => {
     const coordinate = definition(2);
-    const { store } = await setup([
+    const { store } = await setup(definitionReservationSteps([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
@@ -354,29 +439,29 @@ describe("PostgresTaskContentProductStore", () => {
         crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
         crypto_mapping_state: "verified",
       }] },
-    ]);
+    ]));
     expect((await store.reserveRevision(reservation(coordinate))).status).toBe("stale");
   });
 
   test("accepts only exact operation replay and rejects stale authority", async () => {
     const coordinate = definition();
     const row = lifecycleRow(coordinate, { kind: "definition" });
-    const replaySetup = await setup([
+    const replaySetup = await setup(definitionReservationSteps([
       { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
       { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
       { contains: 'from "tasks"', rows: [] },
-    ]);
+    ]));
     expect((await replaySetup.store.reserveRevision(reservation(coordinate))).status).toBe("replayed");
 
-    const collisionSetup = await setup([
+    const collisionSetup = await setup(definitionReservationSteps([
       { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
       { contains: 'from "task_run_result_crypto_revisions"', rows: [] },
-    ]);
+    ]));
     const collision = { ...reservation(coordinate), requestDigest: new Uint8Array(32).fill(8) };
     expect((await collisionSetup.store.reserveRevision(collision)).status).toBe("conflict");
 
     const stale = { ...authority, expectedPolicyRevision: 2 } satisfies TaskContentAuthorityV1;
-    const staleSetup = await setup(emptyOperations, stale);
+    const staleSetup = await setup([protectedPublicationPolicy], stale);
     expect((await staleSetup.store.reserveRevision(reservation(coordinate))).status).toBe("stale");
     expect(staleSetup.connection.isolations).toEqual(["serializable"]);
   });
@@ -437,8 +522,8 @@ describe("PostgresTaskContentProductStore", () => {
     const { store, connection } = await setup([
       { contains: 'for update', rows: [pending] },
       { contains: 'update "task_definition_crypto_revisions"', rows: [complete] },
-      {
-        contains: 'from "task_definition_crypto_revisions"',
+      ...definitionMappingSteps([{
+        contains: 'for update',
         rows: [complete],
         inspect(_parameters, statement) {
           expect(statement).toContain("for update");
@@ -476,6 +561,7 @@ describe("PostgresTaskContentProductStore", () => {
         },
       },
       { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
+      ]),
     ]);
     expect(await store.markCryptoComplete({
       coordinate, cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate), leaseToken: null,
@@ -490,7 +576,7 @@ describe("PostgresTaskContentProductStore", () => {
 
   test("rejects initial protected reservation by the old owner when the requester differs", async () => {
     const coordinate = definition();
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionReservationSteps([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
@@ -506,7 +592,7 @@ describe("PostgresTaskContentProductStore", () => {
         crypto_required_namespace_fingerprint: null,
         crypto_mapping_state: "unmapped",
       }] },
-    ]);
+    ]));
 
     expect(await store.reserveRevision(reservation(coordinate))).toEqual({ status: "stale" });
     expect(connection.steps).toHaveLength(0);
@@ -514,7 +600,7 @@ describe("PostgresTaskContentProductStore", () => {
 
   test("rejects an inconsistent protected owner on later revision reservation", async () => {
     const coordinate = definition(2);
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionReservationSteps([
       ...emptyOperations,
       { contains: 'from "task_definition_crypto_revisions"', rows: [] },
       requesterOwner,
@@ -530,7 +616,7 @@ describe("PostgresTaskContentProductStore", () => {
         crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
         crypto_mapping_state: "verified",
       }] },
-    ]);
+    ]));
 
     expect(await store.reserveRevision(reservation(coordinate))).toEqual({ status: "stale" });
     expect(connection.steps).toHaveLength(0);
@@ -570,7 +656,7 @@ describe("PostgresTaskContentProductStore", () => {
       });
       const captured = { projectGrantId: "synthetic-project-grant" };
       let savedConsent: typeof captured | null = captured;
-      const { store, connection } = await setup([
+      const { store, connection } = await setup(definitionMappingSteps([
         { contains: "for update", rows: [complete] },
         requesterOwner,
         { contains: 'from "tasks"', rows: [{
@@ -605,7 +691,7 @@ describe("PostgresTaskContentProductStore", () => {
           else expect(statement.split(" where ")[1]).toContain('"tasks"."owner_id" =');
         } },
         { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
-      ]);
+      ]));
       expect(await store.compareAndSwapCryptoMapping({
         coordinate, cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
         expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
@@ -620,7 +706,7 @@ describe("PostgresTaskContentProductStore", () => {
   test("replaying a mapped protected definition preserves its content-free project repair state", async () => {
     const coordinate = definition(2);
     const complete = lifecycleRow(coordinate, { completion: "complete", crypto_completed_at: NOW, lease_is_live: true });
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionMappingSteps([
       { contains: "for update", rows: [complete] }, requesterOwner,
       { contains: 'from "tasks"', rows: [{ task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID,
         task_status: "paused", content_revision: 2, content_namespace_id: NAMESPACE_ID,
@@ -630,7 +716,7 @@ describe("PostgresTaskContentProductStore", () => {
         metadata_json: '{"mode":"update","publish":"branch"}',
       }] },
       { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] },
-    ]);
+    ]));
     expect(await store.compareAndSwapCryptoMapping({ coordinate,
       cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
       expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
@@ -644,7 +730,7 @@ describe("PostgresTaskContentProductStore", () => {
     const complete = lifecycleRow(coordinate, {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionMappingSteps([
       { contains: "for update", rows: [complete] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
@@ -668,7 +754,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'update "task_definition_crypto_revisions"', rows: [{
         ...complete, disposition: "stale_mapping", failure_code: "mapping_conflict",
       }] },
-    ]);
+    ]));
 
     expect(await store.compareAndSwapCryptoMapping({
       coordinate,
@@ -689,12 +775,12 @@ describe("PostgresTaskContentProductStore", () => {
       ...authority,
       requesterHumanId: "10000000-0000-4000-8000-000000000099",
     } satisfies TaskContentAuthorityV1;
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionMappingSteps([
       { contains: 'for update', rows: [complete] },
       { contains: 'update "task_definition_crypto_revisions"', rows: [{
         ...complete, disposition: "stale_mapping", failure_code: "authority_stale",
       }] },
-    ], changed);
+    ]), changed);
     expect(await store.compareAndSwapCryptoMapping({
       coordinate, cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
       expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
@@ -794,7 +880,7 @@ describe("PostgresTaskContentProductStore", () => {
     const complete = lifecycleRow(coordinate, {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionMappingSteps([
       { contains: 'for update', rows: [complete] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
@@ -813,7 +899,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'update "task_definition_crypto_revisions"', rows: [{
         ...complete, disposition: "stale_mapping", failure_code: "mapping_conflict",
       }] },
-    ]);
+    ]));
     expect(await store.compareAndSwapCryptoMapping({
       coordinate,
       cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
@@ -829,33 +915,16 @@ describe("PostgresTaskContentProductStore", () => {
     const complete = lifecycleRow(coordinate, {
       completion: "complete", crypto_completed_at: NOW, lease_is_live: true,
     });
-    const product = {
-      task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID, content_revision: 0,
-      task_status: "paused", prompt: "", expected_output: null,
-      last_error: null, metadata_json: '{}', content_namespace_id: null,
-      content_representation: "ordinary", crypto_object_id: null,
-      crypto_access_revision: 0, crypto_required_namespace_fingerprint: null,
-      crypto_mapping_state: "unmapped",
-    };
     for (const policy of [
       { mode: "encrypted_only", revision: 2 },
       { mode: "shadow_encryption", revision: 1 },
       { mode: "plaintext_only", revision: 1 },
     ]) {
       const { store, connection } = await setup([
-        { contains: 'for update', rows: [complete] },
-        requesterOwner,
-        { contains: 'from "tasks"', rows: [product] },
-        {
-          contains: 'from "encryption_transition_policy"',
-          rows: [policy],
-          inspect(_parameters, statement) {
-            expect(statement).toContain("for share");
-          },
-        },
-        { contains: 'update "task_definition_crypto_revisions"', rows: [{
-          ...complete, disposition: "stale_mapping", failure_code: "authority_stale",
-        }] },
+        { contains: 'from "task_definition_crypto_revisions"', rows: [complete] },
+        { contains: 'from "encryption_transition_policy"', rows: [policy], inspect(_parameters, statement) {
+          expect(statement).toContain("for share");
+        } },
       ]);
       expect(await store.compareAndSwapCryptoMapping({
         coordinate,
@@ -874,7 +943,7 @@ describe("PostgresTaskContentProductStore", () => {
       representation: "dual", completion: "complete",
       crypto_completed_at: NOW, lease_is_live: true,
     });
-    const { store, connection } = await setup([
+    const { store, connection } = await setup(definitionMappingSteps([
       { contains: 'for update', rows: [complete] },
       requesterOwner,
       { contains: 'from "tasks"', rows: [{
@@ -896,7 +965,7 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'update "task_definition_crypto_revisions"', rows: [{
         ...complete, disposition: "mapped",
       }] },
-    ]);
+    ]));
     expect(await store.compareAndSwapCryptoMapping({
       coordinate,
       cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
@@ -1271,4 +1340,250 @@ describe("PostgresTaskContentProductStore", () => {
     })).toBeNull();
     expect(connection.steps).toHaveLength(0);
   });
+});
+
+
+describe("authorized historical Task mapping", () => {
+  const provenance = Object.freeze({ version: 1 as const, claimId: LEASE_ID,
+    publisherDeviceId: "historical-device", signedRequestDigest: "07".repeat(32),
+    sourceDigest: "0c".repeat(32), sourcePayloadHash: "0d".repeat(32), sourceRevision: 0 as const });
+  const policy: Step = { contains: 'from "encryption_transition_policy"',
+    rows: [{ mode: "shadow_encryption", revision: 1 }] };
+  function complete(coordinate: TaskContentCoordinateV1) {
+    return lifecycleRow(coordinate, { representation: "dual", completion: "complete",
+      crypto_completed_at: NOW, lease_is_live: true, historical_repair: provenance });
+  }
+  function ordinaryDefinition(status: string) {
+    return { task_id: TASK_ID, owner_id: OWNER_ID, requestor_id: OWNER_ID,
+      task_status: status, prompt: "historical prompt", expected_output: "expected",
+      last_error: null, metadata_json: '{}', content_revision: 0,
+      content_namespace_id: null, content_representation: "ordinary", crypto_object_id: null,
+      crypto_access_revision: 0, crypto_required_namespace_fingerprint: null, crypto_mapping_state: "unmapped" };
+  }
+  const mapping = (coordinate: TaskContentCoordinateV1) => ({ coordinate,
+    cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+    expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+    expectedRepresentation: "dual" as const, leaseToken: null });
+
+  test("generic background mapping waits without quarantining a historical source", async () => {
+    const coordinate = definition();
+    const { store, connection } = await setup([{ contains: 'from "task_definition_crypto_revisions"', rows: [complete(coordinate)] }]);
+    await rejects(() => store.compareAndSwapCryptoMapping(mapping(coordinate)),
+      TaskHistoricalRepairPublicationUnavailableError);
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test.each(["pending", "paused", "completed", "errored", "cancelled"])("historical definition preserves %s lifecycle and plaintext siblings", async status => {
+    const coordinate = definition();
+    const row = complete(coordinate);
+    const source = ordinaryDefinition(status);
+    const connection = new ScriptedConnection(definitionMappingSteps([
+      policy, { contains: 'from "tasks"', rows: [source] },
+      { contains: "for update", rows: [row] }, requesterOwner,
+      { contains: 'from "tasks"', rows: [source] }, policy,
+      { contains: 'update "tasks"', rows: [{ task_id: TASK_ID }], inspect(_parameters, statement) {
+        const assignments = statement.split(" where ")[0]!;
+        for (const column of ["status", "prompt", "expected_output", "last_error", "metadata", "next_fire_at", "cancelled_at"]) {
+          expect(assignments).not.toContain(`"${column}" =`);
+        }
+      } },
+      { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...row, disposition: "mapped" }] },
+    ]));
+    const handle = await verifyConversationProductPostgresHandle(connection);
+    let validations = 0;
+    const store = new PostgresTaskContentProductStore(handle, () => authority, undefined, undefined,
+      async (_transaction, input) => {
+        expect(input.phase).toBe("mapping");
+        expect(input.provenance).toEqual(provenance);
+        validations += 1;
+        return true;
+      });
+    expect(await store.compareAndSwapCryptoMapping(mapping(coordinate))).toBe("applied");
+    expect(validations).toBe(1);
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("changed historical source waits before any product or ledger mutation", async () => {
+    const coordinate = definition();
+    const connection = new ScriptedConnection(definitionMappingSteps([
+      policy, { contains: 'from "tasks"', rows: [ordinaryDefinition("completed")] },
+      { contains: "for update", rows: [complete(coordinate)] }, requesterOwner,
+    ]));
+    const handle = await verifyConversationProductPostgresHandle(connection);
+    const store = new PostgresTaskContentProductStore(handle, () => authority,
+      undefined, undefined, async () => false);
+    await rejects(() => store.compareAndSwapCryptoMapping(mapping(coordinate)),
+      TaskHistoricalRepairPublicationUnavailableError);
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("source-versioned history maps exact retained bytes under a compatible current policy", async () => {
+    const coordinate = definition();
+    const historical = { ...provenance, version: 2 as const,
+      genesisManifestHash: "0e".repeat(32) };
+    const cryptoObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+      coordinate, namespaceId: NAMESPACE_ID, sourceDigest: new Uint8Array(32).fill(0x0c),
+    });
+    const row = lifecycleRow(coordinate, { representation: "dual", completion: "complete",
+      crypto_completed_at: NOW, lease_is_live: true, historical_repair: historical,
+      crypto_object_id: cryptoObjectId });
+    const source = ordinaryDefinition("completed");
+    const currentPolicy: Step = { contains: 'from "encryption_transition_policy"',
+      rows: [{ mode: "shadow_encryption", revision: 2 }] };
+    const connection = new ScriptedConnection(definitionMappingSteps([
+      { contains: 'from "task_definition_crypto_revisions"', rows: [row] },
+      currentPolicy, { contains: 'from "tasks"', rows: [source] },
+      { contains: "for update", rows: [row] }, requesterOwner,
+      { contains: 'from "tasks"', rows: [source] }, currentPolicy,
+      { contains: 'update "tasks"', rows: [{ task_id: TASK_ID }] },
+      { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...row, disposition: "mapped" }] },
+    ]));
+    const store = new PostgresTaskContentProductStore(
+      await verifyConversationProductPostgresHandle(connection),
+      () => ({ ...authority, expectedPolicyRevision: 2 }), undefined, undefined,
+      async (_tx, proof) => {
+        expect(proof.provenance).toEqual(historical);
+        expect(proof.currentAuthority.expectedPolicyRevision).toBe(2);
+        return true;
+      },
+    );
+    expect(await store.compareAndSwapCryptoMapping({ ...mapping(coordinate), cryptoObjectId }))
+      .toBe("applied");
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("legacy cancelled result maps to revision one while retaining its terminal status", async () => {
+    const coordinate = result();
+    const row = complete(coordinate);
+    const connection = new ScriptedConnection([
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [row] }, policy,
+      { contains: 'from "tasks"', rows: [{ owner_id: OWNER_ID, requestor_id: OWNER_ID,
+        namespace_id: NAMESPACE_ID, task_status: "cancelled" }] },
+      { contains: 'from "task_runs"', rows: [{ task_id: TASK_ID, task_run_id: RUN_ID,
+        run_status: "cancelled", result_revision: 0, result_content_namespace_id: null,
+        result_representation: "ordinary", crypto_object_id: null, crypto_access_revision: 0,
+        crypto_required_namespace_fingerprint: null, crypto_mapping_state: "unmapped" }] },
+      { contains: 'from "task_run_result_crypto_revisions"', rows: [row] }, requesterOwner,
+      { contains: 'update "task_runs"', rows: [{ task_run_id: RUN_ID }], inspect(parameters, statement) {
+        const assignments = statement.split(" where ")[0]!;
+        expect(assignments).not.toContain('"status" =');
+        expect(assignments).not.toContain('"result_text" =');
+        expect(assignments).not.toContain('"last_error" =');
+        expect(parameters).toContain(1);
+        expect(parameters).toContain("cancelled");
+      } },
+      { contains: 'update "task_run_result_crypto_revisions"', rows: [{ ...row, disposition: "mapped" }] },
+    ]);
+    const handle = await verifyConversationProductPostgresHandle(connection);
+    const store = new PostgresTaskContentProductStore(handle, () => authority,
+      undefined, undefined, async () => true);
+    expect(await store.compareAndSwapCryptoMapping(mapping(coordinate))).toBe("applied");
+    expect(connection.steps).toHaveLength(0);
+  });
+});
+
+// Genuine inspector custody is required even when a caller knows every public coordinate.
+test("foreground restart mapping consumes only the authenticated rewrapped head and fences current mode", async () => {
+  const { fixture, authority: original } = await import("../fixtures/task-content-crypto-completion.ts");
+  const { withVerifiedForegroundTaskDefinitionPublication } = await import("../../src/server/task/postgres-foreground-task-definition-inspector.ts");
+  const f = await fixture("foreground");
+  await f.adapter.complete(f.prepared); f.rewrapHuman(3);
+  const current = { ...original, expectedAccessRevision: 3, expectedPolicyRevision: 4 };
+  const coordinate = f.prepared.coordinate;
+  const complete = lifecycleRow(coordinate, {
+    requester_human_id: current.requesterHumanId, content_namespace_id: current.namespaceId,
+    request_digest: f.connection.state.manifests.get(0)!["manifest_hash"],
+    authority_fingerprint: fingerprintTaskContentAuthorityV1(original),
+    required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(current.namespaceId),
+    completion: "complete", crypto_completed_at: NOW,
+  });
+  const product = { task_id: coordinate.taskId, owner_id: OWNER_ID, requestor_id: OWNER_ID,
+    content_revision: 0, task_status: "paused", content_namespace_id: null,
+    content_representation: "ordinary", crypto_object_id: null, crypto_access_revision: 0,
+    crypto_required_namespace_fingerprint: null, crypto_mapping_state: "unmapped" };
+  const policy: Step = { contains: 'from "encryption_transition_policy"', rows: [{ mode: "encrypted_only", revision: 4 }] };
+  const common: readonly Step[] = [{ contains: 'from "task_definition_crypto_revisions"', rows: [complete] }, policy, { contains: 'from "tasks"', rows: [product] },
+    { contains: 'from "task_definition_crypto_revisions"', rows: [complete] }];
+  await withVerifiedForegroundTaskDefinitionPublication({ handle: f.handle, crypto: f.crypto,
+    taskId: coordinate.taskId, expectedAgentId: "task-agent", currentAuthority: current,
+    payload: { formatVersion: 1, prompt: "Native definition", expectedOutput: null, protectedMetadata: {} },
+    ...f.history, assertCurrent: async () => {}, entities: {
+      signal: new AbortController().signal, useCurrentSet: async () => { throw new Error("No encryption"); },
+      use: async request => ({ status: "executed", value: await request.execute({ namespaceKey: new Uint8Array(32).fill(0x52),
+        authority: { namespaceId: current.namespaceId, domainId: current.domainId,
+          namespaceAccessRevision: 3, namespaceKeyGeneration: 5, domainKeyGeneration: 1, domainAuthorizationRevision: 2,
+          domainHeadDigest: new Uint8Array(32), namespaceHeadDigest: new Uint8Array(32),
+          namespacePublicationDigest: new Uint8Array(32), namespacePublicationSetDigest: new Uint8Array(32),
+          namespaceAudienceFingerprint: new Uint8Array(32) } }) }),
+    }, use: async proof => {
+      const mapped = await setup([...common, policy, requesterOwner,
+        { contains: 'from "tasks"', rows: [product] }, policy,
+        { contains: 'update "tasks"', rows: [{ task_id: coordinate.taskId }], inspect(parameters, statement) {
+          const match = /"crypto_access_revision" = \$(\d+)/.exec(statement);
+          expect(match).not.toBeNull(); expect(parameters[Number(match![1]) - 1]).toBe(1);
+        } }, { contains: 'update "task_definition_crypto_revisions"', rows: [{ ...complete, disposition: "mapped" }] }], current);
+      const request = { coordinate, cryptoObjectId: f.prepared.objectId,
+        expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(original), expectedRepresentation: "protected" as const,
+        leaseToken: null, foregroundDefinitionProof: proof };
+      expect(await mapped.store.compareAndSwapCryptoMapping(request)).toBe("applied");
+      expect(mapped.connection.steps).toHaveLength(0);
+      const forged = await setup(common, current);
+      await rejects(forged.store.compareAndSwapCryptoMapping({ ...request,
+        foregroundDefinitionProof: { kind: "verified_foreground_task_definition" } }), /foreign/);
+      for (const mappedMetadataProof of [proof, { kind: "verified_foreground_task_definition" as const }]) {
+        const metadata = await setup([], current);
+        await rejects(metadata.store.compareAndSwapCryptoMapping({ coordinate, cryptoObjectId: f.prepared.objectId,
+          expectedAuthorityFingerprint: request.expectedAuthorityFingerprint, expectedRepresentation: "protected",
+          leaseToken: null, mappedMetadataProof }), /authentic|foreign/);
+        expect(metadata.connection.statements).toHaveLength(0);
+      }
+      const incompatible = await setup([common[0]!, { ...policy, rows: [{ mode: "plaintext_only", revision: 4 }] }], current);
+      expect(await incompatible.store.compareAndSwapCryptoMapping(request)).toBe("wrong_authority");
+      expect(incompatible.connection.steps).toHaveLength(0);
+      for (const representation of ["protected", "dual"] as const) {
+        const mappedLifecycle = { ...complete, representation, disposition: "mapped", operational_metadata: '{}' };
+        const mappedProduct = { ...product, content_revision: 1, task_status: "completed",
+          content_namespace_id: current.namespaceId, content_representation: representation,
+          crypto_object_id: f.prepared.objectId, crypto_mapping_state: "verified",
+          crypto_required_namespace_fingerprint: fingerprintTaskContentNamespaceV1(current.namespaceId),
+          prompt: representation === "dual" ? "Native definition" : "", expected_output: null,
+          last_error: null, metadata_json: '{}' };
+        const refreshPolicy: Step = { ...policy, rows: [{ mode: representation === "dual" ? "shadow_encryption" : "encrypted_only", revision: 4 }] };
+        const refreshSteps = (row = mappedProduct): Step[] => [
+          { contains: 'from "task_definition_crypto_revisions"', rows: [mappedLifecycle] }, refreshPolicy,
+          { contains: 'from "tasks"', rows: [row] },
+          { contains: 'from "task_definition_crypto_revisions"', rows: [mappedLifecycle] }, refreshPolicy, requesterOwner,
+          { contains: 'from "tasks"', rows: [row] },
+        ];
+        const refreshRequest = { ...request, expectedRepresentation: representation };
+        const refreshed = await setup([...refreshSteps(), {
+          contains: 'update "tasks"', rows: [{ task_id: coordinate.taskId }], inspect(parameters, statement) {
+            expect(statement.split(" where ")[0]).toBe('update "tasks" set "crypto_access_revision" = $1');
+            expect(parameters[0]).toBe(1);
+            expect(statement).toContain('"tasks"."content_revision" =');
+            expect(statement).toContain('"tasks"."crypto_access_revision" =');
+          },
+        }], current);
+        expect(await refreshed.store.compareAndSwapCryptoMapping(refreshRequest)).toBe("applied");
+        expect(refreshed.connection.steps).toHaveLength(0);
+        expect(refreshed.connection.statements.findIndex(sql => sql.includes('from "encryption_transition_policy"')))
+          .toBeLessThan(refreshed.connection.statements.findIndex(sql => sql.includes('from "tasks"')));
+        const replay = await setup(refreshSteps({ ...mappedProduct, crypto_access_revision: 1 }), current);
+        expect(await replay.store.compareAndSwapCryptoMapping(refreshRequest)).toBe("duplicate");
+        expect(replay.connection.steps).toHaveLength(0);
+        for (const change of [{ crypto_object_id: 'another-object' }, { content_revision: 2 },
+          { owner_id: FOREIGN_OWNER_ID }, { content_namespace_id: NAMESPACE_ID },
+          { crypto_required_namespace_fingerprint: new Uint8Array(32) }, { crypto_access_revision: 2 }]) {
+          const refused = await setup(refreshSteps({ ...mappedProduct, ...change }), current);
+          expect(await refused.store.compareAndSwapCryptoMapping(refreshRequest)).toBe("stale");
+          expect(refused.connection.steps).toHaveLength(0);
+          expect(refused.connection.statements.some(sql => sql.startsWith('update '))).toBe(false);
+        }
+        if (representation === "dual") {
+          const changedSource = await setup(refreshSteps({ ...mappedProduct, prompt: "Changed sibling" }), current);
+          await rejects(changedSource.store.compareAndSwapCryptoMapping(refreshRequest), /ordinary definition changed/);
+          expect(changedSource.connection.steps).toHaveLength(0);
+        }
+      }
+    } });
 });

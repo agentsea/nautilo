@@ -154,7 +154,12 @@ function harness(rows: Readonly<{
         const query = {
           where: (_condition: unknown) => query,
           limit: (_limit: number) => query,
-          for: async (_kind: string) => records(table),
+          for: async (_kind: string) => {
+            if (table === taskRunMessageAssociations) throw new Error("Append-only receipt cannot be row-locked");
+            return records(table);
+          },
+          then: (resolve: (value: unknown[]) => unknown, reject?: (error: unknown) => unknown) =>
+            Promise.resolve(records(table)).then(resolve, reject),
         };
         return query;
       },
@@ -433,8 +438,18 @@ describe("protected TaskRun output receipts", () => {
         status: "recorded",
       },
       {
-        name: "Full mismatched revision",
+        name: "Full later compatible publication",
         rows: messagePublicationRows({ publicationPolicyRevision: 10 }),
+        status: "recorded",
+      },
+      {
+        name: "Full older publication revision",
+        rows: messagePublicationRows({ publicationPolicyRevision: 8 }),
+        status: "rejected",
+      },
+      {
+        name: "Full missing publication revision",
+        rows: messagePublicationRows({ publicationPolicyRevision: null }),
         status: "rejected",
       },
       {
@@ -574,4 +589,27 @@ describe("protected TaskRun output receipts", () => {
       completedAt: publishedAt,
     }]);
   });
+});
+
+
+test("a Full Message receipt preserves retained dual definition and result siblings", async () => {
+  const rows = messagePublicationRows({ publicationPolicyRevision: 10 });
+  const retained = { ...rows,
+    task: { ...rows.task, contentRepresentation: "dual" as const, prompt: "old prompt" },
+    run: { ...rows.run, resultRepresentation: "dual" as const, resultText: "old result" },
+  };
+  const f = harness(retained);
+  expect((await recordProtectedTaskRunMessagePublished(f.db, {
+    taskId: ids.task, taskRunId: ids.run, messageId: 42,
+  })).status).toBe("recorded");
+  expect(retained.run.resultText).toBe("old result");
+  expect(retained.task.prompt).toBe("old prompt");
+  const shadow = messagePublicationRows({ representation: "dual", publicationPolicyRevision: null });
+  const downgrade = harness({ ...shadow,
+    task: task(), run: run(),
+  });
+  expect((await recordProtectedTaskRunMessagePublished(downgrade.db, {
+    taskId: ids.task, taskRunId: ids.run, messageId: 42,
+  })).status).toBe("rejected");
+  expect(downgrade.writes).toEqual([]);
 });

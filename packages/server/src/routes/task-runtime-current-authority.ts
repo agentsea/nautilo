@@ -1,3 +1,4 @@
+import { validateCurrentTaskDefinitionIdentity } from "./protected-task-runtime-definition-identity";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
@@ -326,6 +327,8 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
         : Uint8Array.from(runRow.result_crypto_required_namespace_fingerprint),
     resultCryptoMappingState: runRow.result_crypto_mapping_state,
   };
+  if (input.occurrence.task.definitionHistoricalRepair != null
+    && !await validateCurrentTaskDefinitionIdentity({ product: input.product, task: input.occurrence.task })) return null;
   return Object.freeze({
     task: Object.freeze(task),
     run: Object.freeze(run),

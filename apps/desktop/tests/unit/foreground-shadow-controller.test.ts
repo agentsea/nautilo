@@ -51,6 +51,7 @@ type FactoryOverrides = Partial<{
   humanTask: Record<string, unknown>;
   humanTaskRunResult: Record<string, unknown>;
   messageBackfill: Record<string, unknown>;
+  taskContentBackfill: Record<string, unknown>;
   backgroundAuthorization: Record<string, unknown>;
   custodyDispose: () => Promise<void>;
 }>;
@@ -159,6 +160,10 @@ function factories(
       runBatch: async () => ({ state: "caught_up", resumeAt: null }),
       ...overrides.messageBackfill,
     }) as never,
+    createTaskContentBackfill: () => ({
+      runBatch: async () => ({ state: "caught_up", resumeAt: null }),
+      ...overrides.taskContentBackfill,
+    }) as never,
     createBackgroundAuthorization: () => ({
       deviceId: "device:electron:test",
       service: async () => ({
@@ -183,6 +188,7 @@ function controllerInput(input: Readonly<{
 }> = {}) {
   const api = input.api ?? ({
     setToken: () => undefined,
+    getTaskContentBackfillProgress: async () => ({ status: "ready", value: null }),
     admin: { encryptionTransition: { getPolicy: async () => ({
       policy: { mode: "shadow_encryption", shadowBehavior: "fallback",
         revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
@@ -1192,5 +1198,102 @@ describe("ElectronForegroundShadowController", () => {
     await send;
     await dispose;
     expect(destroyed).toEqual(["live", "shared-output", "custody"]);
+  });
+});
+
+describe("Desktop Task content repair custody", () => {
+  test("uses exact profile input, gates Shadow activation and coalesces cancellation", async () => {
+    const current = controllerInput();
+    const base = factories();
+    let batches = 0;
+    let signal: AbortSignal | undefined;
+    const controller = createElectronForegroundShadowController({ ...current, factories: {
+      ...base,
+      createTaskContentBackfill: input => {
+        expect(input.serverScope).toBe(current.serverScope);
+        expect(input.userId).toBe(current.userId);
+        expect(input.humanActorId).toBe(current.humanActorId);
+        expect(input.installationId).toBe(current.installationId);
+        expect(input.foregroundCustody).toBeDefined();
+        return { runBatch: async operation => {
+          batches++; signal = operation.signal;
+          return input.dataOperationOwner.runMutation({ dual: () => new Promise(resolve => {
+            operation.signal.addEventListener("abort", () => resolve({ state: "waiting", resumeAt: null }), { once: true });
+          }) });
+        } };
+      },
+    } });
+    const first = controller.serviceTaskContentBackfill();
+    expect(controller.serviceTaskContentBackfill()).toBe(first);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(batches).toBe(1);
+    controller.cancelTaskContentBackfill();
+    expect(await first).toEqual({ state: "waiting", resumeAt: null });
+    expect(signal?.aborted).toBe(true);
+    await controller.dispose();
+  });
+
+  for (const mode of ["plaintext_only", "encrypted_only"] as const) test(`${mode} touches no Task repair transport or custody`, async () => {
+    let calls = 0;
+    const original = controllerInput();
+    const api = { ...original.api,
+      getTaskContentBackfillProgress: async () => { calls++; throw new Error("must not request repair"); },
+      admin: { encryptionTransition: { getPolicy: async () => ({ policy: {
+        mode, shadowBehavior: "strict", revision: 1,
+      } }) } },
+    } as unknown as ElectronForegroundShadowApi;
+    const controller = createElectronForegroundShadowController(controllerInput({ api,
+      factories: factories({ taskContentBackfill: { runBatch: async () => { calls++; throw new Error("must not open"); } } }),
+    }));
+    expect(await controller.serviceTaskContentBackfill()).toEqual({ state: "waiting", resumeAt: null });
+    expect(calls).toBe(0);
+    await controller.dispose();
+  });
+
+  test("inactive gate and profile change during progress refuse custody", async () => {
+    let current = true;
+    let opened = 0;
+    const original = controllerInput();
+    const gate = deferred();
+    const api = { ...original.api, getTaskContentBackfillProgress: async () => {
+      await gate.promise; return { status: "ready", value: null };
+    } } as unknown as ElectronForegroundShadowApi;
+    const controller = createElectronForegroundShadowController(controllerInput({ api,
+      isBindingCurrent: () => current,
+      factories: factories({ taskContentBackfill: { runBatch: async () => { opened++; return { state: "caught_up", resumeAt: null }; } } }),
+    }));
+    const pending = controller.serviceTaskContentBackfill();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    current = false; gate.resolve();
+    expect(await rejected(pending)).toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(opened).toBe(0);
+    await controller.dispose();
+    const inactive = createElectronForegroundShadowController(controllerInput({
+      api: { ...original.api, getTaskContentBackfillProgress: async () => ({ status: "inactive" }) } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ taskContentBackfill: { runBatch: async () => { opened++; } } }),
+    }));
+    expect(await inactive.serviceTaskContentBackfill()).toEqual({ state: "waiting", resumeAt: null });
+    expect(opened).toBe(0); await inactive.dispose();
+  });
+
+  test("foreground preemption retries but profile disposal cancels before custody teardown", async () => {
+    const events: string[] = [];
+    const controller = createElectronForegroundShadowController(controllerInput({ factories: factories({
+      taskContentBackfill: { runBatch: ({ signal }: { signal: AbortSignal }) => new Promise(resolve => {
+        events.push("open"); signal.addEventListener("abort", () => {
+          events.push("abort"); resolve({ state: "waiting", resumeAt: null });
+        }, { once: true });
+      }) },
+      custodyDispose: async () => { events.push("dispose"); },
+    }) }));
+    const first = controller.serviceTaskContentBackfill();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await controller.send("room", { content: "current foreground" });
+    expect(await first).toMatchObject({ state: "more" });
+    const second = controller.serviceTaskContentBackfill();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await controller.dispose();
+    expect(await second).toEqual({ state: "waiting", resumeAt: null });
+    expect(events).toEqual(["open", "abort", "open", "abort", "dispose"]);
   });
 });

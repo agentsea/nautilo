@@ -146,6 +146,9 @@ const task = {
   cryptoMappingState: "unmapped",
   createdAt: new Date(),
   updatedAt: new Date(),
+  pauseRequestId: null,
+  pauseRequestedAt: null,
+  pauseReason: null,
   cancelledAt: null,
 } satisfies Task;
 const run = {

@@ -81,7 +81,7 @@ export function foregroundHumanTerminalAdmissionPort(state: NautiloState, signal
     },
     async validateProtected(policy) {
       const session = crypto?.session;
-      const scope = crypto?.capability.scope;
+      const scope = crypto?.capability?.scope;
       if (!crypto || !session || !scope || scope.subjectHumanId !== humanUserId
         || ("recipientKind" in scope ? scope.topLevelRoomId !== roomId : scope.roomId !== roomId || scope.recipientAgentId !== agentId)
         || session.authorizationSignal?.aborted

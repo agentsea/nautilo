@@ -263,6 +263,7 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
             identity: {
               ...base.identity,
               expectedAccessRevision: current.namespaceAccessRevision,
+              expectedPolicyRevision: evidenceInput.policyRevision,
             },
             evidence,
             ...overrides,
@@ -281,7 +282,7 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       identity: { ...base.identity, expectedAccessRevision: current.namespaceAccessRevision },
       ...overrides,
     }),
-    rotate(nextAccessRevision = 0) {
+    rotate(nextAccessRevision = 0, nextPolicyRevision = 3) {
       // Device-authority rotation advances the Namespace key without changing
       // product accessRevision (the concrete native replacement plan allows it).
       retained[1] = {
@@ -305,15 +306,17 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       };
       evidenceInput = {
         ...evidenceInput,
+        policyRevision: nextPolicyRevision,
         domainRequirements: [domainRequirement],
         namespaceRequirements: evidenceInput.namespaceRequirements.map(
-          (entry) => ({ ...entry, expectedAccessRevision: nextAccessRevision }),
+          (entry) => ({ ...entry, expectedAccessRevision: nextAccessRevision, expectedPolicyRevision: nextPolicyRevision }),
         ),
         result: {
           ...evidenceInput.result,
           namespace: {
             ...evidenceInput.result.namespace,
             expectedAccessRevision: nextAccessRevision,
+            expectedPolicyRevision: nextPolicyRevision,
           },
         },
       };
@@ -413,6 +416,27 @@ describe("native Task checkpoint cell crypto", () => {
     } finally {
       opened.fill(0);
     }
+  });
+
+  test("retained checkpoint AAD opens with fresh policy, access and key-generation authority", async () => {
+    const value = fixture();
+    const oldEvidence = value.evidenceInput;
+    const encrypted = await value.run(seal);
+    const checkpointAadBinding = { version: 1 as const, namespaceId: NAMESPACE,
+      domainId: DOMAIN, namespaceAccessRevision: 0, policyRevision: 3 };
+    value.rotate(1, 4);
+    await fails(value.run(cell => open(cell, encrypted)));
+    const opened = await value.run(cell => {
+      expect(cell.scope.expectedAccessRevision).toBe(1);
+      expect(cell.scope.expectedPolicyRevision).toBe(4);
+      return open(cell, encrypted);
+    }, { checkpointAadBinding });
+    try { expect(opened).toEqual(plaintext); } finally { opened.fill(0); }
+    const fresh = await value.run(seal, { checkpointAadBinding });
+    expect(new DataView(fresh.buffer).getBigUint64(4)).toBe(1n);
+    const freshOpened = await value.run(cell => open(cell, fresh), { checkpointAadBinding });
+    try { expect(freshOpened).toEqual(plaintext); } finally { freshOpened.fill(0); }
+    await fails(value.run(cell => open(cell, encrypted), { checkpointAadBinding }, oldEvidence));
   });
 
   test("expires during an active operation before its commit check", async () => {

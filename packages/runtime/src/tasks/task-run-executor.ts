@@ -574,6 +574,12 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       return;
     }
 
+    if (result.status === "checkpoint_paused") {
+      throw new Error(
+        "Legacy Task runner cannot accept a protected checkpoint pause",
+      );
+    }
+
     if (result.status === "interrupted") {
       const parked = await parkTaskRunInterrupt(db, { taskId, taskRunId });
       if (!parked) {

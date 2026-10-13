@@ -46,6 +46,7 @@ import {
   createForegroundHumanTaskRunResultReader,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
+  createForegroundTaskContentBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
   createForegroundSharedAgentLiveShadowMessageReceiver,
   createForegroundSharedAgentOutputLiveShadowReceiver,
@@ -58,6 +59,7 @@ import {
   type ForegroundHumanTaskRunResultReaderInput,
   type ForegroundLiveShadowMessageReceiverInput,
   type ForegroundMessageBackfillClientInput,
+  type ForegroundTaskContentBackfillClientInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
   type ForegroundRoomHistoryShadowMessageReader,
   type ForegroundRoomHistoryShadowMessageReaderInput,
@@ -504,6 +506,13 @@ export type ElectronHumanTaskRunResultReaderInput =
 
 export type ElectronMessageBackfillClientInput =
   ForegroundMessageBackfillClientInput & ElectronForegroundShadowCustodyInput;
+
+export type ElectronTaskContentBackfillClientInput =
+  ForegroundTaskContentBackfillClientInput & ElectronForegroundShadowCustodyInput;
+
+export function createElectronTaskContentBackfillClient(input: ElectronTaskContentBackfillClientInput) {
+  return createForegroundTaskContentBackfillClient(electronForegroundShadowPlatform(input), input);
+}
 
 /** Electron-main adapter using the controller's existing private custody. */
 export function createElectronMessageBackfillClient(

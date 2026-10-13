@@ -1,3 +1,6 @@
+import { foregroundAgentAcceptedExecutionSigner, type ResolveForegroundAgentAcceptedExecutionEvidence } from "../message/postgres-foreground-agent-signer.ts";
+import { readInspectedHistoricalTaskContentAccessRevision } from "./postgres-task-historical-content-staging.ts";
+import { parseTaskHistoricalRepairProvenanceV1 } from "../../task/task-historical-repair-provenance.ts";
 import {
   and,
   asc,
@@ -7,7 +10,8 @@ import {
   objectCryptoAccessManifests,
   objectCryptoNamespaceEnvelopes,
 } from "@nautilo/db";
-import type { LatticeCrypto } from "@nautilo/lattice-crypto";
+import type { LatticeCrypto, ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization } from "@nautilo/lattice-crypto";
+import { persistDeviceWrappedAgentObject } from "../object/postgres-device-wrapped-agent-object.ts";
 import {
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
@@ -15,7 +19,7 @@ import {
 
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
 import {
-  deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
   fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   TASK_CONTENT_PAYLOAD_VERSION_V1,
@@ -82,7 +86,7 @@ function rowCounter(row: DatabaseRow, field: string): number {
 function rowBytes(row: DatabaseRow, field: string): Uint8Array {
   const value = row[field];
   if (!(value instanceof Uint8Array)) throw new TypeError(`${field} must be bytea`);
-  return value.slice();
+  return Uint8Array.from(value);
 }
 
 export class TaskContentCryptoCompletionConflictError extends Error {
@@ -106,6 +110,9 @@ type Dependencies = Readonly<{
   handle: CryptoPostgresHandle;
   crypto: LatticeCrypto;
   resolveCurrentAuthority: ResolveCurrentTaskContentAuthorityV1;
+  resolveCurrentForegroundDefinitionAuthorization?:
+    ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization;
+  resolveForegroundAgentAcceptedExecutionEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
   resolveHistoricalAgentSignerAuthority:
     ResolveHistoricalAgentRuntimeSignerManagerAuthority;
   resolveHistoricalHumanDeviceSigningPublicKey:
@@ -183,10 +190,11 @@ export async function readDurableTaskContentPublication(input: Readonly<{
   executor: CryptoPostgresExecutor;
   crypto: LatticeCrypto;
   objectId: string;
+  resolveForegroundAgentAcceptedExecutionEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
   resolveHistoricalAgentSignerAuthority:
     ResolveHistoricalAgentRuntimeSignerManagerAuthority;
-  resolveHistoricalHumanDeviceSigningPublicKey:
-    ResolveHistoricalHumanDeviceSigningPublicKeyV5Async;
+  resolveHistoricalHumanDeviceSigningPublicKey?:
+    ResolveHistoricalHumanDeviceSigningPublicKeyV5Async | undefined;
 }>): Promise<DurablePublication | null> {
   const object = oneOrNull(await executeTypedCryptoQuery(
     input.executor,
@@ -280,6 +288,9 @@ export async function readDurableTaskContentPublication(input: Readonly<{
     headAccessRevision: accessRevision,
     expectedPayloadHash: payloadHash,
     expectedHeadManifestHash: manifestHash,
+    resolveLiveShadowAgentSigner: foregroundAgentAcceptedExecutionSigner({
+      crypto: input.crypto, resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+    }),
     resolveHistoricalAgentManagerAuthority:
       input.resolveHistoricalAgentSignerAuthority,
     resolveHistoricalHumanDeviceSigningPublicKey:
@@ -381,7 +392,15 @@ async function insertExact(
 }
 
 function assertReference(reference: TaskContentCryptoRevisionReferenceV1): void {
-  const expectedObjectId = deriveTaskContentCryptoObjectIdV1(reference.coordinate);
+  const expectedObjectId = taskContentRevisionObjectIdV1({ coordinate: reference.coordinate,
+    namespaceId: reference.historicalRepair?.namespaceId ?? "",
+    historicalRepair: reference.historicalRepair?.provenance ?? null });
+  const historical = reference.historicalRepair?.provenance;
+  if (historical?.version === 2 && (reference.expectedGenesisManifestHash === undefined
+    || historical.genesisManifestHash !== Array.from(reference.expectedGenesisManifestHash,
+      byte => byte.toString(16).padStart(2, "0")).join(""))) {
+    throw new TypeError("Historical Task crypto reference lacks its exact genesis manifest");
+  }
   if (
     reference.objectId !== expectedObjectId
     || reference.objectType !== taskContentObjectTypeV1(reference.coordinate)
@@ -401,22 +420,41 @@ async function verifyReference(
   input: Dependencies,
   reference: TaskContentCryptoRevisionReferenceV1,
 ): Promise<VerifiedTaskContentCryptoRevisionV1 | null> {
+  reference = Object.freeze({ ...reference, coordinate: Object.freeze({ ...reference.coordinate }),
+    expectedAuthorityFingerprint: Uint8Array.from(reference.expectedAuthorityFingerprint),
+    expectedAuthorityIdentityFingerprint: Uint8Array.from(reference.expectedAuthorityIdentityFingerprint),
+    ...(reference.expectedGenesisManifestHash === undefined ? {} : {
+      expectedGenesisManifestHash: Uint8Array.from(reference.expectedGenesisManifestHash) }),
+    ...(reference.historicalRepair === undefined ? {} : { historicalRepair: Object.freeze({
+      namespaceId: reference.historicalRepair.namespaceId,
+      provenance: parseTaskHistoricalRepairProvenanceV1(reference.historicalRepair.provenance),
+    }) }),
+  });
   assertReference(reference);
   const expectedGenesisManifestHash = reference.expectedGenesisManifestHash?.slice();
   const authority = await input.resolveCurrentAuthority(reference.coordinate);
   if (
     authority === null
+    || reference.historicalRepair !== undefined && reference.historicalRepair.namespaceId !== authority.namespaceId
     || !equalBytes(
       fingerprintTaskContentAuthorityIdentityV1(authority),
       reference.expectedAuthorityIdentityFingerprint,
     )
   ) return null;
+  const inspectedAccessRevision = reference.historicalStagedPrepared === undefined ? null
+    : reference.historicalRepair?.provenance.version !== 2
+      ? conflict("Inspected historical head requires version-two provenance")
+      : readInspectedHistoricalTaskContentAccessRevision(reference.historicalStagedPrepared, {
+        coordinate: reference.coordinate, objectId: reference.objectId,
+        currentAuthority: authority, provenance: reference.historicalRepair.provenance,
+      });
   const durable = await withVerifiedCryptoPostgresTransaction(
     input.handle,
     (executor) => readDurableTaskContentPublication({
       executor,
       crypto: input.crypto,
       objectId: reference.objectId,
+      resolveForegroundAgentAcceptedExecutionEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
       resolveHistoricalAgentSignerAuthority:
         input.resolveHistoricalAgentSignerAuthority,
       resolveHistoricalHumanDeviceSigningPublicKey:
@@ -426,7 +464,7 @@ async function verifyReference(
   if (durable === null) return null;
   const payload = decodeEncryptedPayloadV2(durable.payloadBytes);
   if (
-    durable.accessRevision !== reference.expectedAccessRevision
+    durable.accessRevision !== (inspectedAccessRevision ?? reference.expectedAccessRevision)
     || (expectedGenesisManifestHash !== undefined
       && !equalBytes(durable.genesisManifestHash, expectedGenesisManifestHash))
     || durable.namespaceId !== authority.namespaceId
@@ -459,6 +497,12 @@ export function createPostgresTaskContentCryptoCompletion(
       revision: PreparedTaskContentCryptoRevisionV1,
     ): Promise<"created" | "duplicate"> {
       const exact = exactPublication(input.crypto, revision);
+      const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(revision);
+      const foreground = "publicationFamily" in snapshot
+        && snapshot.publicationFamily === "foreground_definition" ? snapshot : null;
+      if (foreground !== null && input.resolveCurrentForegroundDefinitionAuthorization === undefined) {
+        conflict("Foreground Task definition requires current foreground authorization");
+      }
       return withVerifiedCryptoPostgresTransaction(
         input.handle,
         async (executor) => {
@@ -466,10 +510,37 @@ export function createPostgresTaskContentCryptoCompletion(
             `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`,
             [exact.objectId],
           );
+          if (foreground !== null) {
+            const current = await input.resolveCurrentAuthority(exact.coordinate);
+            if (current === null || !authorityMatches(current, exact.authority)) {
+              conflict("Foreground Task definition authority is stale");
+            }
+            const status = await persistDeviceWrappedAgentObject({
+              handle: executor, crypto: input.crypto,
+              prepared: foreground.foregroundPrepared,
+              resolveCurrentAuthorization: input.resolveCurrentForegroundDefinitionAuthorization!,
+            });
+            if (status === "stale") conflict("Foreground Task definition grant is stale");
+            const after = await input.resolveCurrentAuthority(exact.coordinate);
+            if (after === null || !authorityMatches(after, exact.authority)) {
+              conflict("Foreground Task definition authority changed during publication");
+            }
+            const published = await readDurableTaskContentPublication({
+              executor, crypto: input.crypto, objectId: exact.objectId,
+              resolveForegroundAgentAcceptedExecutionEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+              resolveHistoricalAgentSignerAuthority: input.resolveHistoricalAgentSignerAuthority,
+              resolveHistoricalHumanDeviceSigningPublicKey: input.resolveHistoricalHumanDeviceSigningPublicKey,
+            });
+            if (published === null || !exactMatchesDurable(exact, published)) {
+              conflict("Foreground Task definition publication disagrees");
+            }
+            return status;
+          }
           const durable = await readDurableTaskContentPublication({
             executor,
             crypto: input.crypto,
             objectId: exact.objectId,
+            resolveForegroundAgentAcceptedExecutionEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
             resolveHistoricalAgentSignerAuthority:
               input.resolveHistoricalAgentSignerAuthority,
             resolveHistoricalHumanDeviceSigningPublicKey:
@@ -508,6 +579,7 @@ export function createPostgresTaskContentCryptoCompletion(
             executor,
             crypto: input.crypto,
             objectId: exact.objectId,
+            resolveForegroundAgentAcceptedExecutionEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
             resolveHistoricalAgentSignerAuthority:
               input.resolveHistoricalAgentSignerAuthority,
             resolveHistoricalHumanDeviceSigningPublicKey:

@@ -43,6 +43,12 @@ mock.module("@nautilo/db", () => ({ ...database,
     ? { task, runId: run.id, graphThreadId: run.graphThreadId }
     : undefined,
   getTaskById: async () => task,
+  getTaskLifecycleState: async () => ({ id: task.id, ownerId: task.ownerId,
+    requestorId: task.requestorId, agentId: task.agentId, targetRoomId: task.targetRoomId,
+    status: task.status, contentRepresentation: task.contentRepresentation,
+    scheduleKind: task.scheduleKind, pauseRequestId: null, pauseRequestedAt: null, pauseReason: null,
+    localExecutionRecaptureRequired: false, fundingOutcomeUncertain: false,
+    latestRunPaused: run.status === "paused" }),
   transitionTaskLifecyclePaused: async () => {
     task = { ...task, status: "paused" }; run = { ...run, status: "paused" };
     return { task, run, transitioned: true, outcome: "transitioned" };

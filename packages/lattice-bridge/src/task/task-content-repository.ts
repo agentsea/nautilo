@@ -9,6 +9,10 @@ import type {
   TaskPayloadV1,
   TaskRunResultPayloadV1,
 } from "./task-payload-v1.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "./task-historical-content-identity.ts";
+import { parseTaskHistoricalRepairProvenanceV1,
+  type TaskHistoricalRepairProvenanceV1 } from
+  "./task-historical-repair-provenance.ts";
 
 export const TASK_CONTENT_OBJECT_ID_VERSION_V1 = 1 as const;
 export const TASK_CONTENT_PAYLOAD_VERSION_V1 = 1 as const;
@@ -150,6 +154,24 @@ export function deriveTaskContentCryptoObjectIdV1(
   return `${prefix}${bytesToHex(sha256(encoder.encode(`${domain}\n${identity}`)))}`;
 }
 
+/** Validate the closed persisted historical scheme without changing native object identities. */
+export function taskContentRevisionObjectIdV1(input: Readonly<{
+  coordinate: TaskContentCoordinateV1;
+  namespaceId: string;
+  historicalRepair?: TaskHistoricalRepairProvenanceV1 | null;
+}>): string {
+  const provenance = input.historicalRepair == null ? null
+    : parseTaskHistoricalRepairProvenanceV1(input.historicalRepair);
+  if (provenance !== null && input.coordinate.contentRevision !== 1) {
+    throw new TypeError("Historical Task content revision is invalid");
+  }
+  return provenance?.version === 2
+    ? deriveTaskHistoricalContentCryptoObjectIdV1({ coordinate: input.coordinate,
+        namespaceId: input.namespaceId,
+        sourceDigest: Uint8Array.from(provenance.sourceDigest.match(/../gu)!, byte => Number.parseInt(byte, 16)) })
+    : deriveTaskContentCryptoObjectIdV1(input.coordinate);
+}
+
 export function assertTaskContentAuthorityV1(
   authority: TaskContentAuthorityV1,
 ): void {
@@ -252,6 +274,7 @@ export interface TaskContentRevisionLifecycleV1 {
   readonly authorityFingerprint: Uint8Array;
   readonly requiredNamespaceFingerprint: Uint8Array;
   readonly operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
+  readonly historicalRepair?: TaskHistoricalRepairProvenanceV1 | null;
   readonly completion: "pending" | "complete";
   readonly disposition: TaskContentRevisionDisposition;
   readonly attemptCount: number;
@@ -298,6 +321,9 @@ export type TaskContentCryptoRevisionReferenceV1 = Readonly<{
   expectedAuthorityFingerprint: Uint8Array;
   expectedAuthorityIdentityFingerprint: Uint8Array;
   expectedGenesisManifestHash?: Uint8Array;
+  historicalRepair?: Readonly<{ provenance: TaskHistoricalRepairProvenanceV1; namespaceId: string }>;
+  /** An inspector-authenticated historical prepared object, never a numeric override. */
+  historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1;
 }>;
 
 export type TaskContentProductMappingCasResult =
@@ -307,6 +333,9 @@ export type TaskContentProductMappingCasResult =
   | "stale"
   | "missing"
   | "wrong_authority";
+
+/** Opaque callback-live custody; only the foreground durable inspector mints it. */
+export interface VerifiedForegroundTaskDefinitionPublication { readonly kind: "verified_foreground_task_definition" }
 
 export interface TaskContentProductStorePort {
   reserveRevision(input: Readonly<{
@@ -322,6 +351,8 @@ export interface TaskContentProductStorePort {
     objectType: TaskContentObjectTypeV1;
     payloadVersion: typeof TASK_CONTENT_PAYLOAD_VERSION_V1;
     operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
+    /** Only a source-bound authenticated revision may reserve historical content. */
+    historicalPrepared?: PreparedTaskContentCryptoRevisionV1;
   }>): Promise<
     | Readonly<{
         status: "reserved" | "replayed";
@@ -348,6 +379,10 @@ export interface TaskContentProductStorePort {
     cryptoObjectId: string;
     expectedAuthorityFingerprint: Uint8Array;
     expectedRepresentation: "protected" | "dual";
+    historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1;
+    foregroundDefinitionProof?: VerifiedForegroundTaskDefinitionPublication;
+    /** Live Human metadata inspection; existing mapped content only. */
+    mappedMetadataProof?: VerifiedForegroundTaskDefinitionPublication;
     leaseToken: string | null;
   }>): Promise<TaskContentProductMappingCasResult>;
   quarantineRevision(input: Readonly<{
@@ -411,6 +446,7 @@ export interface TaskContentRepository {
     authority: TaskContentAuthorityV1;
     prepared: PreparedTaskContentCryptoRevisionV1;
     operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
+    historicalRepair?: true;
   }>): Promise<
     | Readonly<{
         status: "reserved" | "replayed";
@@ -459,13 +495,20 @@ export function assertTaskContentRevisionLifecycleV1(
     throw new TypeError("Task content lifecycle sequence is invalid");
   }
   assertTaskContentCoordinateV1(lifecycle.coordinate);
+  if (lifecycle.historicalRepair != null) {
+    parseTaskHistoricalRepairProvenanceV1(lifecycle.historicalRepair);
+    if (lifecycle.representation !== "dual" || lifecycle.coordinate.contentRevision !== 1
+      || lifecycle.historicalRepair.signedRequestDigest !== bytesToHex(lifecycle.requestDigest)) {
+      throw new TypeError("Historical Task repair lifecycle coordinates disagree");
+    }
+  }
   assertPortableId("Task content operation ID", lifecycle.operationId);
   assertUuid("Task requester Human ID", lifecycle.requesterHumanId);
   assertUuid("Task content Namespace ID", lifecycle.namespaceId);
   assertPortableId("Task content crypto object ID", lifecycle.cryptoObjectId);
   if (
     lifecycle.cryptoObjectId
-      !== deriveTaskContentCryptoObjectIdV1(lifecycle.coordinate)
+      !== taskContentRevisionObjectIdV1(lifecycle)
     || lifecycle.objectType !== taskContentObjectTypeV1(lifecycle.coordinate)
     || lifecycle.payloadVersion !== TASK_CONTENT_PAYLOAD_VERSION_V1
   ) throw new Error("Task content lifecycle coordinates are not canonical");
@@ -539,6 +582,12 @@ export function assertTaskContentRevisionLifecycleV1(
 function sameBytesForContract(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
     && left.every((value, index) => value === right[index]);
+}
+
+/** Historical mapping waits for an authorized device to reprove its exact source. */
+export class TaskHistoricalRepairPublicationUnavailableError extends Error {
+  override readonly name = "TaskHistoricalRepairPublicationUnavailableError";
+  constructor() { super("Task historical repair source authority is temporarily unavailable"); }
 }
 
 
