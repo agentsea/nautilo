@@ -372,3 +372,34 @@ test("retained system notices drain with later Human messages only after server 
     await owner.retire(); await rm(path, { recursive: true, force: true });
   }
 });
+
+
+test("system notice handover establishes listening while unknown controls do not", async () => {
+  const path = await directory();
+  const f = fixture();
+  const states: boolean[] = [];
+  const stored: string[] = [];
+  const spool = {
+    store: (jsonl: string) => { stored.push(jsonl); return Promise.resolve({ id: String(stored.length), fingerprint: "synthetic" }); },
+    pending: () => Promise.resolve([]),
+    read: () => Promise.reject(new Error("No queue read expected")),
+    acknowledge: () => Promise.reject(new Error("No server acceptance expected")),
+  };
+  try {
+    await f.owner.confirmIdentity();
+    expect(await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool,
+      onStateChange: () => { states.push(f.owner.listening); } })).toBe(true);
+    const descriptor = parseBolterHandoverDescriptor(f.calls.find(plan => plan.args[0] === "serve")!.env["NAUTILO_BOLTER_HANDOVER"]!)!;
+    async function* packet(kind: string) { yield Buffer.from(JSON.stringify({ type: "control", kind }) + "\n"); }
+    expect(await handOverBolterBatch(descriptor, packet("unknown_control"))).toBe(true);
+    expect(f.owner.listening).toBe(false);
+    expect(states).toEqual([]);
+    expect(await handOverBolterBatch(descriptor, packet("system_message"))).toBe(true);
+    expect(f.owner.listening).toBe(true);
+    expect(states).toEqual([true]);
+    expect(stored).toHaveLength(2);
+  } finally {
+    for (const child of f.children) if (child.value.exitCode === null) child.finish();
+    await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
+});

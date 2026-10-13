@@ -175,7 +175,7 @@ export class BolterConnectionOwner {
           const receipt = await spool.store(jsonl);
           if (receiverCurrent()) {
             const decoded = decodeBolterReceiveBatch(jsonl, this.runtime.version, this.decoders);
-            if (decoded.ok && decoded.value.length > 0 && decoded.value.every(item => item.type === "message" || item.kind === "connected")) {
+            if (decoded.ok && decoded.value.length > 0 && decoded.value.every(item => item.type === "message" || item.kind === "connected" || item.kind === "system_message")) {
               const changed = !this.receiverReady;
               this.receiverReady = true;
               if (changed) this.notifyReceiver();
