@@ -281,6 +281,14 @@ test("ordinary prompt crosses the production graph and semantic Computer Use lan
   expect(evidence.firstModelToolNames).toContain("computer_observe");
   expect(roomPreferenceReads).toBe(0);
   expect(profilePreferenceReads).toBe(2);
+  const admittedAssistant = result.messages.find((message) => AIMessage.isInstance(message) && message.tool_calls?.length === 1);
+  expect(admittedAssistant).toBeInstanceOf(AIMessage);
+  const admittedCall = (admittedAssistant as InstanceType<typeof AIMessage>).tool_calls?.[0];
+  if (!admittedCall?.id) throw new Error("Expected one admitted Computer Use call");
+  expect(admittedCall.id).toMatch(/^nc_[0-9a-f]{32}_0$/);
+  expect(admittedCall.id).not.toBe(ids.call);
+  const expectedInvocationId = deriveComputerUseInvocationId(ids.context, admittedCall);
+  if (expectedInvocationId === null) throw new Error("Expected canonical Computer Use invocation identity");
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({
     toolName: "computer_observe",
@@ -294,6 +302,7 @@ test("ordinary prompt crosses the production graph and semantic Computer Use lan
       originHumanId: ids.human,
       provider: "cua",
       providerGeneration: ids.providerGeneration,
+      computerUseInvocationId: expectedInvocationId,
     },
     sandboxProfile: {
       workspace: "/fixture/workspace",
@@ -304,6 +313,7 @@ test("ordinary prompt crosses the production graph and semantic Computer Use lan
   const toolMessages = result.messages.filter((message) => ToolMessage.isInstance(message));
   expect(toolMessages).toHaveLength(1);
   expect(toolMessages.map((message) => message.name)).toEqual(["computer_observe"]);
+  expect((toolMessages[0] as InstanceType<typeof ToolMessage>).tool_call_id).toBe(admittedCall.id);
   expect(JSON.parse(toolMessages[0]!.content as string)).toMatchObject({
     ok: true,
     settlement: "completed",
@@ -311,7 +321,7 @@ test("ordinary prompt crosses the production graph and semantic Computer Use lan
   });
   const secondToolCall = modelInvocations[1]?.find((message) => ToolMessage.isInstance(message));
   expect(secondToolCall).toBeInstanceOf(ToolMessage);
-  expect((secondToolCall as InstanceType<typeof ToolMessage>).tool_call_id).toBe(ids.call);
+  expect((secondToolCall as InstanceType<typeof ToolMessage>).tool_call_id).toBe(admittedCall.id);
   expect(JSON.parse((secondToolCall as InstanceType<typeof ToolMessage>).content as string)).toMatchObject({
     ok: true,
     settlement: "completed",
@@ -319,9 +329,13 @@ test("ordinary prompt crosses the production graph and semantic Computer Use lan
   });
   const checkpoint = await graph.getState(graphConfig);
   const checkpointMessages = (checkpoint?.values["messages"] ?? []) as unknown[];
+  const checkpointAssistant = checkpointMessages.find((message) => AIMessage.isInstance(message)
+    && message.tool_calls?.some((call) => call.id === admittedCall.id));
+  expect(checkpointAssistant).toBeInstanceOf(AIMessage);
+  expect((checkpointAssistant as InstanceType<typeof AIMessage>).tool_calls?.[0]?.id).toBe(admittedCall.id);
   const checkpointTool = checkpointMessages.find((message) => ToolMessage.isInstance(message));
   expect(checkpointTool).toBeInstanceOf(ToolMessage);
-  expect((checkpointTool as InstanceType<typeof ToolMessage>).tool_call_id).toBe(ids.call);
+  expect((checkpointTool as InstanceType<typeof ToolMessage>).tool_call_id).toBe(admittedCall.id);
   expect(JSON.parse((checkpointTool as InstanceType<typeof ToolMessage>).content as string)).toMatchObject({
     ok: true,
     settlement: "completed",

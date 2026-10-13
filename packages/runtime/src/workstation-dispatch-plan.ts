@@ -43,7 +43,7 @@ export interface ProfileWorkstationDispatchPlan {
   readonly capabilityRevision: number;
   /**
    * Commit 3 — the execution class the admission reasons about
-   * (`profile_bound_sandbox` / `typed_broker` / `real_workstation`). This
+   * (`profile_bound_sandbox` / `real_workstation`). This
    * replaces the old six-value operation taxonomy; the concrete tool /
    * operation identity stays separate from this field.
    */
@@ -212,7 +212,7 @@ export function revalidatePlanAgainstRelay(
     }
   }
   if (
-    (plan.executionClass === "profile_bound_sandbox" || plan.executionClass === "typed_broker") &&
+    plan.executionClass === "profile_bound_sandbox" &&
     (
       plan.currentFolder === undefined ||
       plan.currentFolder.length === 0 ||

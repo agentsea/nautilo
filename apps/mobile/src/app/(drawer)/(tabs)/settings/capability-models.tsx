@@ -53,9 +53,9 @@ export default function CapabilityModelsScreen() {
   const goBack = () => router.canGoBack() ? router.back() : router.replace("/(drawer)/(tabs)/settings");
   return (
     <View style={styles.container}>
-      <Stack.Screen options={{ header: () => <AppBar title="Research & decision models" left={<AppBarBackButton onPress={goBack} />} /> }} />
+      <Stack.Screen options={{ header: () => <AppBar title="Capability models" left={<AppBarBackButton onPress={goBack} />} /> }} />
       <Screen edgeTop={false} contentStyle={styles.content}>
-        <Text style={styles.helper}>These account-wide choices apply to your own research and decision work. Genie and Room model settings stay separate.</Text>
+        <Text style={styles.helper}>These account-wide choices apply to your own research, decisions, generated media and speech. Genie and Room model settings stay separate.</Text>
         {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before changing capability models.</SettingsStatus> : null}
         {state.loading && !state.data ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading capability models" /> : null}
         {state.loadError ? <SettingsStatus tone="error">{personalCapabilityPreferenceErrorMessage(state.loadError)}</SettingsStatus> : null}

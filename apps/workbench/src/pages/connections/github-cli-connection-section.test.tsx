@@ -34,12 +34,13 @@ afterAll(() => {
 });
 
 describe("GitHub CLI connection", () => {
-  test("describes the protected typed account broker without promising ambient gh access", async () => {
+  test("describes ordinary authenticated commands under approved Development access", async () => {
     const view = render(<GitHubCliConnectionSection />);
     await view.findByRole("heading", { name: "GitHub account" });
-    expect(view.getByText(/Let Genie check your account/)).toBeTruthy();
-    expect(view.getByText(/Pushes, comments and new pull requests require review/)).toBeTruthy();
-    expect(view.getByText(/cannot read GitHub CLI credentials/)).toBeTruthy();
+    expect(view.getByText(/Sign in to GitHub CLI for ordinary Git and GitHub work/)).toBeTruthy();
+    expect(view.getByText(/After you approve the current Development profile/)).toBeTruthy();
+    expect(view.container.textContent).toContain("gh auth status");
+    expect(view.container.textContent).not.toContain("cannot read GitHub CLI credentials");
     expect(view.container.textContent).not.toContain("Full host");
     expect(view.container.textContent).not.toContain("normal host configuration");
   });

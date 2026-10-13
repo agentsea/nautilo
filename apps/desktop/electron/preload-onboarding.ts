@@ -40,6 +40,8 @@ const api: OnboardingAPI = {
     ipcRenderer.invoke("onboarding:get-server-url") as Promise<string>,
   complete: () => ipcRenderer.invoke("onboarding:complete") as Promise<void>,
   cancel: () => ipcRenderer.invoke("onboarding:cancel") as Promise<void>,
+  openVoiceFundingRecovery: (recovery) =>
+    ipcRenderer.invoke("onboarding:open-voice-funding-recovery", recovery) as Promise<void>,
 
   // Hydration
   loadExistingProfile: () =>

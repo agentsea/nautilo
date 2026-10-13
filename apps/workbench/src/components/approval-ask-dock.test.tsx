@@ -385,7 +385,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(detail?.textContent).toContain("842 characters, summary shown");
     expect(detail?.textContent).toContain("Duration5 seconds");
     expect(detail?.textContent).toContain("USD 1.250000");
-    expect(detail?.textContent).toContain("Approving starts paid generation");
+    expect(detail?.textContent).toContain("Exact quote");
+    expect(detail?.textContent).toContain("Approving starts a paid generation using this exact quote.");
     expect(host.querySelector('[data-verb="room"]')).toBeNull();
     expect(host.querySelector('[data-verb="always"]')).toBeNull();
     expect(host.textContent).not.toContain("provider.example");
@@ -397,6 +398,41 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(submitted).toEqual(["once"]);
     act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
+  });
+
+  test("replaces a stale exact reason with the canonical marketplace estimate", async () => {
+    askState = makeState({
+      reason: "Starting this media generation spends the exact USD amount shown below.",
+      tools: [{ name: "generate_music", args: {} }],
+      allowedVerbs: ["once", "deny"],
+      requiresExplicitReview: true,
+      mediaGeneration: {
+        version: "media-generation-approval-v1",
+        digest: "a".repeat(64),
+        quoteDigest: "b".repeat(64),
+        revision: 1,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        preview: {
+          mediaKind: "music",
+          model: "minimax-music-v26",
+          settings: { forceInstrumental: true },
+          prompt: { characterCount: 12, summary: "Ambient tune", truncated: false },
+          quote: { currency: "USD", amountMicros: 60_000, display: "USD 0.060000", kind: "estimate" },
+          spendNotice: "Approving starts a paid generation using this current estimate. The final cost can be different.",
+        },
+      },
+    });
+    const host = happyWindow.document.createElement("div");
+    happyWindow.document.body.appendChild(host);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
+    await flush();
+
+    expect(host.querySelector('[data-testid="media-generation-quote-kind"]')?.textContent).toBe("Estimated cost");
+    expect(host.querySelector('[data-testid="media-generation-quote"]')?.textContent).toBe("$0.06");
+    expect(host.textContent).toContain("The final cost can be different.");
+    expect(host.textContent).not.toContain("exact USD");
+    expect(host.textContent).not.toContain("Exact quote");
   });
 
   test("renders both exact endpoints for structured SSH copy approval", async () => {
@@ -573,28 +609,20 @@ describe("ApprovalAskDock (capability scope)", () => {
   });
 });
 
-test("missing GitHub exact review exposes only Deny, including Enter", async () => {
-  askState = makeState({ requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }], allowedVerbs: ["once", "room", "always", "deny"] });
+test("obsolete mixed broker review stays recognizable and dismissible when its event had no verbs", async () => {
+  askState = makeState({
+    requiresExplicitReview: true,
+    tools: [{ name: "local_github", args: {} }, { name: "apply_patch", args: { patch: "fixture" } }],
+    allowedVerbs: [],
+    reason: "This pending approval contains an unavailable legacy local action. Deny the whole batch to dismiss it and continue.",
+  });
   const host = happyWindow.document.createElement("div"); happyWindow.document.body.appendChild(host);
   const root = createDockRoot(host as unknown as HTMLElement); act(() => root.render(<ApprovalAskDock />)); await flush();
   expect(host.querySelector('[data-verb="once"]')).toBeNull(); expect(host.querySelector('[data-verb="always"]')).toBeNull();
   expect(host.querySelector('[data-verb="deny"]')).not.toBeNull();
+  expect(host.textContent).toContain("local_github"); expect(host.textContent).toContain("apply_patch");
+  expect(host.textContent).toContain("Deny the whole batch");
   happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" })); expect(submitted).toEqual(["deny"]);
-  act(() => root.unmount()); mountedRoots.delete(root); host.remove();
-});
-
-test("valid GitHub review exposes only Once/Deny and keyboard submits exact Once", async () => {
-  const digest = "a".repeat(64), approvalId = `github-publish:preparation:${digest}`;
-  askState = makeState({ approvalId, requiresExplicitReview: true, tools: [{ name: "local_github", args: {} }], github: {
-    version: 1, approvalId, digest, prepared: { version: 1, preparationId: "preparation", generation: "generation", toolCallId: "call", digest,
-      request: { operation: "comment_create", repository: "fixture/project", number: 12, body: "Exact complete body" },
-      account: { id: 1, login: "fixture" }, repository: { id: 2, fullName: "fixture/project", htmlUrl: "https://github.com/fixture/project" },
-      resource: { id: 3, number: 12, kind: "issue", htmlUrl: "https://github.com/fixture/project/issues/12", title: "Target", body: "Original", state: "open" } } } });
-  const host = happyWindow.document.createElement("div"); happyWindow.document.body.appendChild(host);
-  const root = createDockRoot(host as unknown as HTMLElement); act(() => root.render(<ApprovalAskDock />)); await flush();
-  expect(host.textContent).toContain("Exact complete body"); expect(host.textContent).toContain("fixture/project");
-  expect(host.querySelector('[data-verb="once"]')).not.toBeNull(); expect(host.querySelector('[data-verb="room"]')).toBeNull(); expect(host.querySelector('[data-verb="always"]')).toBeNull();
-  happyWindow.dispatchEvent(new happyWindow.KeyboardEvent("keydown", { key: "Enter" })); expect(submitted).toEqual(["once"]);
   act(() => root.unmount()); mountedRoots.delete(root); host.remove();
 });
 

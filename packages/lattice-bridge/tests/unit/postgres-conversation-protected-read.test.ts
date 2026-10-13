@@ -280,12 +280,20 @@ describe("Postgres protected conversation reads", () => {
   });
 
   test("returns exact Agent authority coordinates and enforces around/up-to windows in SQL", async () => {
-    const agent = await subject({ rows: [[productRow()]] });
+    const authorizedOperations: unknown[] = [];
+    const agent = await subject({
+      rows: [[productRow()]],
+      authorize: async (operation) => {
+        authorizedOperations.push(operation);
+        return resolver()(operation);
+      },
+    });
     const batch = await agent.port.readAgentTranscript({
       authorization,
       sessionId: SESSION_ID,
       namespaceId: NAMESPACE_ID,
       upToMessageId: 11,
+      beforeMessageId: 9,
       limit: 10,
     });
     expect(batch).toMatchObject({
@@ -300,7 +308,26 @@ describe("Postgres protected conversation reads", () => {
       SESSION_ID,
       11,
       10,
+      9,
     ]);
+    expect(agent.connection.queries.at(-1)?.statement).toContain(
+      "(sm.created_at, sm.id) <",
+    );
+    expect(agent.connection.queries.at(-1)?.statement).toContain(
+      "cursor.session_id = $1::uuid",
+    );
+    expect(agent.connection.queries.at(-1)?.statement).toContain(
+      "cursor.id = $4::int",
+    );
+    expect(authorizedOperations).toEqual([{
+      kind: "agent_transcript",
+      authorization,
+      sessionId: SESSION_ID,
+      namespaceId: NAMESPACE_ID,
+      upToMessageId: 11,
+      beforeMessageId: 9,
+      limit: 10,
+    }]);
 
     const around = await subject({ rows: [[productRow()]] });
     const records = await around.port.readAround({
@@ -316,5 +343,28 @@ describe("Postgres protected conversation reads", () => {
       3,
       2,
     ]);
+  });
+
+  test("rejects invalid Agent transcript cursors before authorization or SQL", async () => {
+    for (const beforeMessageId of [0, Number.MAX_SAFE_INTEGER + 1]) {
+      let authorizationCalls = 0;
+      const agent = await subject({
+        rows: [],
+        authorize: async (operation) => {
+          authorizationCalls += 1;
+          return resolver()(operation);
+        },
+      });
+      const failure = await agent.port.readAgentTranscript({
+        authorization,
+        sessionId: SESSION_ID,
+        namespaceId: NAMESPACE_ID,
+        beforeMessageId,
+        limit: 10,
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(RangeError);
+      expect(authorizationCalls).toBe(0);
+      expect(agent.connection.queries).toHaveLength(1);
+    }
   });
 });

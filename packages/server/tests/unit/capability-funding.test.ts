@@ -100,6 +100,21 @@ describe("capability funding projection", () => {
     expect(custodyReads).toBe(1);
   });
 
+  test("media and speech projections reject replaced custody without decrypting", async () => {
+    for (const [role, provider, modelId] of [
+      ["speech", "elevenlabs", "elevenlabs:eleven_v3"],
+      ["imageGeneration", "openai", "openai:gpt-image-2"],
+    ] as const) {
+      const row = credential(provider);
+      const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, personalProjectionDeps(row), {
+        readPreferences: async () => ({ revision: 1, overrides: { [role]: modelId } }),
+        readProjectionCustody: async () => createPersonalProviderCustody(),
+      });
+      expect(await errorCode(session.resolveModel(role))).toBe("personal_credential_unavailable");
+      expect(await errorCode(session.projectMediaFunding!(modelId, role))).toBe("personal_credential_unavailable");
+    }
+  });
+
   test("does not inspect personal custody for a server-funded projection", async () => {
     let custodyReads = 0;
     const session = createCapabilityFundingSession(

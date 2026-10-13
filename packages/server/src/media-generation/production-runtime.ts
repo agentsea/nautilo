@@ -1,12 +1,15 @@
-/** D525 production composition for paid Venice media admission. */
+/** Production composition for durable direct or marketplace media admission. */
 import {
   VENICE_API_V1_BASE,
   VeniceMediaLifecycleAdapter,
+  VeniceMediaLifecycleError,
+  SurplusMediaLifecycleAdapter,
   VeniceQuoteLifecycleError,
   classifyVeniceMediaFailure,
   createMediaGenerationServerCore,
-  resolveProviderKey,
+  resolveSurplusMediaRoute,
   sanitizeVeniceProviderCode,
+  readBoundedMediaJson,
   setMediaGenerationApprovalRuntime,
   type ExactMediaGenerationQuotePort,
   type MediaGenerationFailure,
@@ -17,6 +20,7 @@ import {
   type VeniceMediaAdmissionPort,
   type VeniceMediaFetch,
 } from "@nautilo/agent";
+import type { DurableServiceFundingBinding } from "@nautilo/types";
 import {
   actors,
   and,
@@ -40,7 +44,14 @@ import {
 } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { providerAccountFingerprint } from "../lib/provider-catalog-cache";
+import { MEDIA_PRESPEND_TIMEOUT_MS, openMediaFunding } from "../lib/media-funding";
+import { runWithDurableServiceFunding } from "../lib/service-funding";
+import {
+  beginServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+} from "../costs/provider-cost-recorder";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { getUserCapabilities } from "@nautilo/trust";
 import { resolveMediaReferenceNamespaces } from "./reference-scope";
 import {
   resolveApprovedReferenceMediaUrls,
@@ -48,9 +59,9 @@ import {
 } from "./reference-request";
 
 const MAX_POSTGRES_INTEGER = 2_147_483_647;
-const DELIVERY_HOSTS_ENV = "NAUTILO_VENICE_MEDIA_SIGNED_DELIVERY_HOSTS";
+const VENICE_DELIVERY_HOSTS_ENV = "NAUTILO_VENICE_MEDIA_SIGNED_DELIVERY_HOSTS";
+const SURPLUS_DELIVERY_HOSTS_ENV = "NAUTILO_SURPLUS_MEDIA_SIGNED_DELIVERY_HOSTS";
 const DEFAULT_QUOTE_MAX_ATTEMPTS = 3;
-const DEFAULT_QUOTE_ATTEMPT_TIMEOUT_MS = 30_000;
 const MAX_QUOTE_RETRY_DELAY_MS = 2_000;
 const RETRYABLE_QUOTE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
@@ -82,7 +93,9 @@ function coreReceipt(row: MediaGeneration): MediaGenerationCoreReceipt {
     revision: row.revision,
     approvalDigest: row.approvalDigest,
     quoteDigest: row.quoteDigest,
+    provider: row.provider,
     providerAccountFingerprint: row.providerAccountFingerprint,
+    ...(row.fundingBinding ? { fundingBinding: row.fundingBinding } : {}),
     requestPayload: row.requestPayload,
     quotedUsdMicros: row.quotedUsdMicros,
     safeFailure: row.safeFailure,
@@ -156,7 +169,11 @@ export function createMediaGenerationDbRepository(
 export async function resolveMediaGenerationWritableScope(
   db: DirectDatabase,
   actor: MediaGenerationApprovalActorContext,
+  getCapabilities: (userId: string) => Promise<readonly string[]> = getUserCapabilities,
 ): Promise<MediaGenerationScope> {
+  if (!(await getCapabilities(actor.userId)).includes("use_media_generation")) {
+    throw new Error("media generation capability is not currently granted");
+  }
   const humanActors = await db
     .select({ id: actors.id })
     .from(actors)
@@ -233,7 +250,7 @@ function quoteRequestId(response: Response): string | undefined {
 async function quoteProviderCode(response: Response): Promise<string | undefined> {
   let body: unknown;
   try {
-    body = await response.json();
+    body = await readBoundedMediaJson(response);
   } catch {
     return undefined;
   }
@@ -285,7 +302,7 @@ export function createExactVeniceMediaQuotePort(input: {
   if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > DEFAULT_QUOTE_MAX_ATTEMPTS) {
     throw new Error(`Venice media quote maxAttempts must be between 1 and ${DEFAULT_QUOTE_MAX_ATTEMPTS}`);
   }
-  const attemptTimeoutMs = input.attemptTimeoutMs ?? DEFAULT_QUOTE_ATTEMPT_TIMEOUT_MS;
+  const attemptTimeoutMs = input.attemptTimeoutMs ?? MEDIA_PRESPEND_TIMEOUT_MS;
   if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1 || attemptTimeoutMs > 60_000) {
     throw new Error("Venice media quote attemptTimeoutMs must be between 1 and 60000");
   }
@@ -360,7 +377,7 @@ export function createExactVeniceMediaQuotePort(input: {
         const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
         let body: unknown;
         try {
-          body = contentType === "application/json" ? await response.json() : undefined;
+          body = contentType === "application/json" ? await readBoundedMediaJson(response) : undefined;
           const amountUsdMicros = exactQuoteMicros(body);
           clearTimeout(timeout);
           return { amountUsdMicros };
@@ -387,57 +404,303 @@ export function createExactVeniceMediaQuotePort(input: {
   };
 }
 
-function signedDeliveryHostsFromEnvironment(): readonly string[] {
-  const configured = process.env[DELIVERY_HOSTS_ENV]?.trim();
+/** Public, nonspending snapshot of the cheapest currently healthy media offer. */
+function createSurplusMediaEstimatePort(input: {
+  readonly fetchImpl?: VeniceMediaFetch;
+  readonly attemptTimeoutMs?: number;
+} = {}) {
+  const fetchImpl = input.fetchImpl ?? globalThis.fetch;
+  const attemptTimeoutMs = input.attemptTimeoutMs ?? MEDIA_PRESPEND_TIMEOUT_MS;
+  if (!Number.isSafeInteger(attemptTimeoutMs) || attemptTimeoutMs < 1 || attemptTimeoutMs > 60_000) {
+    throw new Error("Surplus media estimate timeout must be between 1 and 60000ms");
+  }
+  return {
+    async estimate(modelId: string): Promise<number> {
+      const route = resolveSurplusMediaRoute(modelId);
+      if (!route) throw new Error("marketplace media route is not qualified");
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), attemptTimeoutMs);
+      let body: unknown;
+      try {
+        const response = await fetchImpl(`https://api.surplusintelligence.ai/api/markets/${encodeURIComponent(route)}`, {
+          method: "GET",
+          redirect: "error",
+          credentials: "omit",
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+        });
+        if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+          throw new Error("marketplace media estimate unavailable");
+        }
+        body = await readBoundedMediaJson(response);
+      } finally {
+        clearTimeout(timeout);
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body) ||
+          (body as Record<string, unknown>)["model"] !== route ||
+          !Array.isArray((body as Record<string, unknown>)["offers"])) {
+        throw new Error("marketplace media estimate is invalid");
+      }
+      const prices = ((body as Record<string, unknown>)["offers"] as unknown[]).flatMap((offer) => {
+        if (!offer || typeof offer !== "object" || Array.isArray(offer)) return [];
+        const row = offer as Record<string, unknown>;
+        const price = row["media_unit_price"];
+        return row["available"] === true && row["healthy"] === true && row["media_unit"] === "job" &&
+          Number.isSafeInteger(price) && Number(price) >= 0
+          ? [Number(price)]
+          : [];
+      });
+      if (prices.length === 0) throw new Error("marketplace media estimate has no healthy offer");
+      return Math.min(...prices);
+    },
+  };
+}
+
+function signedDeliveryHostsFromEnvironment(name: typeof VENICE_DELIVERY_HOSTS_ENV | typeof SURPLUS_DELIVERY_HOSTS_ENV): readonly string[] {
+  const configured = process.env[name]?.trim();
   if (!configured) return [];
   return [...new Set(configured.split(",").map((host) => host.trim().toLowerCase()).filter(Boolean))];
 }
 
 export interface CreateProductionMediaGenerationRuntimeOptions {
-  readonly apiKey: string;
+  /** Legacy focused-test seam. Production opens the admitted durable binding per attempt. */
+  readonly apiKey?: string;
   readonly db?: DirectDatabase;
   readonly fetchImpl?: VeniceMediaFetch;
-  readonly signedDeliveryAllowedHosts?: readonly string[];
+  readonly veniceSignedDeliveryAllowedHosts?: readonly string[];
+  readonly surplusSignedDeliveryAllowedHosts?: readonly string[];
   /** Focused test seam; production always uses the proof-bound DB functions. */
   readonly dbOperations?: MediaGenerationDbOperations;
+  readonly openFunding?: typeof openMediaFunding;
+  readonly runFunding?: typeof runWithDurableServiceFunding;
+  readonly surplusEstimateUsdMicros?: (modelId: string) => Promise<number | null>;
+  /** Focused-test seam. Production records the attempt before provider dispatch. */
+  readonly beginCostAttempt?: typeof beginServerProviderCostAttempt;
+  /** Focused-test seam. Production settles deterministic pre-admission failures. */
+  readonly settleCostAttempt?: typeof settleServerProviderCostAttempt;
+  /** Focused-test seam; production reads canonical current User capabilities. */
+  readonly getCapabilities?: (userId: string) => Promise<readonly string[]>;
 }
 
 export function createProductionMediaGenerationRuntime(
   options: CreateProductionMediaGenerationRuntimeOptions,
 ): MediaGenerationApprovalRuntime {
   const db = options.db ?? getServerDirectDb();
+  const runFunding = options.runFunding ?? runWithDurableServiceFunding;
+  const legacyKey = options.apiKey?.trim();
+  const beginCostAttempt = options.beginCostAttempt ?? (legacyKey
+    ? () => Promise.resolve()
+    : beginServerProviderCostAttempt);
+  const settleCostAttempt = options.settleCostAttempt ?? (legacyKey
+    ? () => Promise.resolve()
+    : settleServerProviderCostAttempt);
+  const withFunding = async <T>(
+    binding: DurableServiceFundingBinding,
+    intent: "spend" | "recover",
+    callback: (attempt: { apiKey: string; usageFunding: import("@nautilo/agent").UsageFundingProvenance }) => Promise<T>,
+  ): Promise<T> => {
+    if (legacyKey) {
+      if (binding.provider !== "venice" || binding.credentialFingerprint !== providerAccountFingerprint(legacyKey)) {
+        throw new Error("legacy media funding changed");
+      }
+      return callback({ apiKey: legacyKey, usageFunding: { kind: "server", humanUserId: binding.humanUserId, providerRoute: "venice" } });
+    }
+    return runFunding(binding, intent, callback);
+  };
+  const surplusEstimateByBinding = new WeakMap<DurableServiceFundingBinding, number>();
+  const estimateSurplus = async (binding: DurableServiceFundingBinding, modelId: string): Promise<number> => {
+    const amountUsdMicros = await withFunding(binding, "spend", () =>
+      options.surplusEstimateUsdMicros
+        ? options.surplusEstimateUsdMicros(modelId)
+        : createSurplusMediaEstimatePort({
+            ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+          }).estimate(modelId));
+    if (amountUsdMicros === null || !Number.isSafeInteger(amountUsdMicros) || amountUsdMicros < 0) {
+      throw new Error("marketplace media estimate unavailable");
+    }
+    return amountUsdMicros;
+  };
+  const admitFunding = async (actor: MediaGenerationApprovalActorContext, request: import("@nautilo/agent").NormalizedMediaGenerationRequest) => {
+    if (legacyKey) {
+      return {
+        humanUserId: actor.userId,
+        provider: "venice" as const,
+        binding: { kind: "server" as const, providerRoute: "venice" },
+        credentialFingerprint: providerAccountFingerprint(legacyKey),
+      };
+    }
+    const openFunding = options.openFunding ?? openMediaFunding;
+    const modelId = `venice:${request.model}`;
+    const family = request.model === "sonilo-v1-1-music" || request.model === "minimax-music-v26"
+      ? "music" as const
+      : "video" as const;
+    const directOnly = request.model === "seedance-2-5-reference-to-video-basic"
+      || resolveSurplusMediaRoute(request.model) === null;
+    const surplusRequirements = request.model === "seedance-2-5-text-to-video-basic"
+      ? {
+          durationSeconds: request.durationSeconds,
+          aspectRatio: request.aspectRatio,
+          resolution: request.resolution,
+          audio: request.audio,
+        }
+      : request.model === "minimax-h3-enhanced-text-to-video"
+        ? {
+            durationSeconds: request.durationSeconds,
+            aspectRatio: request.aspectRatio,
+            resolution: request.resolution,
+          }
+        : undefined;
+    const admitted = await openFunding(actor.userId, modelId, family, {
+      operation: "generate",
+      ...(directOnly ? { directOnly: true } : {}),
+      ...(surplusRequirements ? { surplusRequirements } : {}),
+    });
+    if (admitted.modelId !== modelId || admitted.family !== family ||
+        admitted.funding.humanUserId !== actor.userId ||
+        (directOnly && admitted.funding.provider === "surplus")) {
+      throw new Error("media funding admission changed the requested route");
+    }
+    if (admitted.funding.provider !== "surplus") return admitted.funding;
+
+    try {
+      surplusEstimateByBinding.set(
+        admitted.funding,
+        await estimateSurplus(admitted.funding, request.model),
+      );
+      return admitted.funding;
+    } catch {
+      // The market snapshot is part of fresh admission. If it has no healthy
+      // exact-model offer, retain the payer class and quote the same model
+      // directly before any approval-bound receipt is reserved.
+      const direct = await openFunding(actor.userId, modelId, family, {
+        operation: "generate",
+        prior: admitted.funding,
+        transport: "direct",
+      });
+      if (direct.modelId !== modelId || direct.family !== family || direct.funding.provider === "surplus" ||
+          direct.funding.humanUserId !== actor.userId ||
+          direct.funding.binding.kind !== admitted.funding.binding.kind) {
+        throw new Error("marketplace media fallback changed the admitted request");
+      }
+      return direct.funding;
+    }
+  };
   const directRetrievalAdmission: VeniceMediaAdmissionPort = {
     async queueVeniceMediaGeneration(proof, actor) {
-      const lifecycle = new VeniceMediaLifecycleAdapter({
-        apiKey: options.apiKey,
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-        signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? [],
-        resolveReferenceMediaUrls: async (approved) => resolveApprovedReferenceMediaUrls(
-          db, approved, undefined, await resolveMediaReferenceNamespaces(approved, actor),
-        ),
-      });
-      const accepted = await lifecycle.queueVeniceMediaGeneration(proof);
-      // The first-wave models are anonymized/direct-retrieval. A signed URL
-      // cannot be persisted by the current receipt schema, so accepting it
-      // would make restart-safe retrieval impossible. A generic throw is
-      // intentionally classified by the core as ambiguous admission.
-      if (accepted.signedDeliveryUrl !== undefined) {
-        throw new Error("unexpected Venice media delivery mode");
+      try {
+        return await withFunding(proof.fundingBinding, "spend", async ({ apiKey, usageFunding }) => {
+          const assertCurrentQueueAuthority = async () => {
+            try {
+              const current = await resolveMediaGenerationWritableScope(db, actor, options.getCapabilities);
+              if (current.ownerId !== proof.ownerId || current.roomId !== proof.roomId ||
+                  current.namespaceId !== proof.namespaceId) throw new Error("media authority changed");
+            } catch {
+              throw new VeniceMediaLifecycleError(proof.receiptId, {
+                code: "MEDIA_AUTHORITY_CHANGED", phase: "admission", retrySafe: false,
+                stateChanged: false, completionCertainty: "not_started", chargeCertainty: "not_charged",
+                recoveryActions: ["review_access"],
+                message: "Media generation authority changed before dispatch. No provider request was sent.",
+              });
+            }
+          };
+          await assertCurrentQueueAuthority();
+          await beginCostAttempt({
+            identity: `media-generation:${proof.receiptId}`,
+            usageFunding,
+            userId: proof.ownerId,
+            roomId: proof.roomId,
+            agentId: actor.agentId,
+            workload: "media_generation",
+            provider: proof.provider,
+            operation: "generate",
+          });
+          const lifecycle = proof.provider === "surplus"
+            ? new SurplusMediaLifecycleAdapter({
+                apiKey,
+                ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+                signedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ?? [],
+              })
+            : new VeniceMediaLifecycleAdapter({
+                apiKey,
+                ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+                signedDeliveryAllowedHosts: options.veniceSignedDeliveryAllowedHosts ?? [],
+                resolveReferenceMediaUrls: async (approved) => resolveApprovedReferenceMediaUrls(
+                  db, approved, undefined, await resolveMediaReferenceNamespaces(approved, actor),
+                ),
+              });
+          try {
+            // Cost persistence is asynchronous too: recheck immediately before
+            // the provider operation, after both funding and accounting opened.
+            await assertCurrentQueueAuthority();
+            const accepted = await lifecycle.queueVeniceMediaGeneration(proof);
+            if (proof.provider === "venice" && accepted.signedDeliveryUrl !== undefined) {
+              throw new VeniceMediaLifecycleError(proof.receiptId, {
+                code: "VENICE_ADMISSION_DELIVERY_UNCERTAIN",
+                phase: "admission",
+                retrySafe: false,
+                stateChanged: true,
+                completionCertainty: "unknown",
+                chargeCertainty: "unknown",
+                recoveryActions: ["contact_support"],
+                message: "Venice accepted the request with an unsupported delivery mode; Nautilo will not submit it again.",
+              });
+            }
+            return accepted;
+          } catch (error) {
+            if (error instanceof VeniceMediaLifecycleError) {
+              await settleCostAttempt({
+                identity: `media-generation:${proof.receiptId}`,
+                receiptId: proof.receiptId,
+                usageFunding,
+                userId: proof.ownerId,
+                roomId: proof.roomId,
+                agentId: actor.agentId,
+                workload: "media_generation",
+                provider: proof.provider,
+                operation: "generate",
+                evidenceState: "unknown",
+                attemptOutcome: error.failure.completionCertainty === "not_started" ? "failed" : "unknown",
+                failureCode: error.failure.code.toLowerCase(),
+              }).catch(() => {
+                // Accounting storage failure cannot change the provider outcome
+                // or make an uncertain paid dispatch safe to submit again.
+                warn("[media-generation] admission cost settlement unavailable; provider outcome preserved");
+              });
+            }
+            throw error;
+          }
+        });
+      } catch (error) {
+        if (error instanceof VeniceMediaLifecycleError) throw error;
+        throw new VeniceMediaLifecycleError(proof.receiptId, classifyVeniceMediaFailure({
+          phase: "admission", status: 401,
+        }));
       }
-      return accepted;
     },
   };
   return createMediaGenerationServerCore({
     repository: createMediaGenerationDbRepository(db, options.dbOperations ?? DEFAULT_DB_OPERATIONS),
-    quotes: createExactVeniceMediaQuotePort({
-      apiKey: options.apiKey,
-      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    }),
+    quotes: {
+      async quote(request) {
+        if (!request.fundingBinding || !request.provider) throw new Error("media quote funding is missing");
+        if (request.provider === "surplus") {
+          const amountUsdMicros = surplusEstimateByBinding.get(request.fundingBinding);
+          if (amountUsdMicros === undefined) throw new Error("marketplace media estimate was not admitted");
+          surplusEstimateByBinding.delete(request.fundingBinding);
+          return { amountUsdMicros, kind: "estimate" };
+        }
+        return withFunding(request.fundingBinding, "spend", ({ apiKey }) =>
+          createExactVeniceMediaQuotePort({
+            apiKey,
+            ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+          }).quote(request));
+      },
+    },
     venice: directRetrievalAdmission,
-    resolveScope: (actor) => resolveMediaGenerationWritableScope(db, actor),
+    resolveScope: (actor) => resolveMediaGenerationWritableScope(db, actor, options.getCapabilities),
     resolveRequest: async (scope, request, actor) => resolveMediaGenerationReferenceRequest(db, scope, request, undefined,
       request.model === "seedance-2-5-reference-to-video-basic" ? await resolveMediaReferenceNamespaces(scope, actor) : [scope.namespaceId]),
-    providerAccountFingerprint: providerAccountFingerprint(options.apiKey),
+    admitFunding,
   });
 }
 
@@ -445,8 +708,15 @@ export interface InstallProductionMediaGenerationRuntimeOptions {
   readonly resolveKey?: () => string | null;
   readonly db?: DirectDatabase;
   readonly fetchImpl?: VeniceMediaFetch;
-  readonly signedDeliveryAllowedHosts?: readonly string[];
+  readonly veniceSignedDeliveryAllowedHosts?: readonly string[];
+  readonly surplusSignedDeliveryAllowedHosts?: readonly string[];
   readonly dbOperations?: MediaGenerationDbOperations;
+  readonly openFunding?: typeof openMediaFunding;
+  readonly runFunding?: typeof runWithDurableServiceFunding;
+  readonly surplusEstimateUsdMicros?: (modelId: string) => Promise<number | null>;
+  readonly beginCostAttempt?: typeof beginServerProviderCostAttempt;
+  readonly settleCostAttempt?: typeof settleServerProviderCostAttempt;
+  readonly getCapabilities?: (userId: string) => Promise<readonly string[]>;
 }
 
 /** Reset-first installation keeps missing credentials fail-closed. */
@@ -454,14 +724,22 @@ export function installProductionMediaGenerationRuntime(
   options: InstallProductionMediaGenerationRuntimeOptions = {},
 ): boolean {
   setMediaGenerationApprovalRuntime(null);
-  const apiKey = (options.resolveKey ?? (() => resolveProviderKey("venice")))()?.trim();
-  if (!apiKey) return false;
+  const configuredKey = options.resolveKey?.()?.trim();
   setMediaGenerationApprovalRuntime(createProductionMediaGenerationRuntime({
-    apiKey,
+    ...(configuredKey ? { apiKey: configuredKey } : {}),
     ...(options.db ? { db: options.db } : {}),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
     ...(options.dbOperations ? { dbOperations: options.dbOperations } : {}),
-    signedDeliveryAllowedHosts: options.signedDeliveryAllowedHosts ?? signedDeliveryHostsFromEnvironment(),
+    ...(options.openFunding ? { openFunding: options.openFunding } : {}),
+    ...(options.runFunding ? { runFunding: options.runFunding } : {}),
+    ...(options.surplusEstimateUsdMicros ? { surplusEstimateUsdMicros: options.surplusEstimateUsdMicros } : {}),
+    ...(options.beginCostAttempt ? { beginCostAttempt: options.beginCostAttempt } : {}),
+    ...(options.settleCostAttempt ? { settleCostAttempt: options.settleCostAttempt } : {}),
+    ...(options.getCapabilities ? { getCapabilities: options.getCapabilities } : {}),
+    veniceSignedDeliveryAllowedHosts: options.veniceSignedDeliveryAllowedHosts ??
+      signedDeliveryHostsFromEnvironment(VENICE_DELIVERY_HOSTS_ENV),
+    surplusSignedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ??
+      signedDeliveryHostsFromEnvironment(SURPLUS_DELIVERY_HOSTS_ENV),
   }));
   return true;
 }

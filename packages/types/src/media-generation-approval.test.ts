@@ -63,6 +63,18 @@ describe("D525 media generation approval envelope", () => {
       ...approval,
       preview: { ...approval.preview, settings: { ...approval.preview.settings, resolution: "1080p" } },
     })).toBe(true);
+    expect(isMediaGenerationApproval({
+      ...approval,
+      preview: {
+        ...approval.preview,
+        quote: { ...approval.preview.quote, kind: "estimate" },
+        spendNotice: "Approving starts a paid generation using this current estimate. The final cost can be different.",
+      },
+    })).toBe(true);
+    expect(isMediaGenerationApproval({
+      ...approval,
+      preview: { ...approval.preview, quote: { ...approval.preview.quote, kind: "estimate" } },
+    })).toBe(false);
   });
 
   test("rejects provider URLs and unexpected settings", () => {

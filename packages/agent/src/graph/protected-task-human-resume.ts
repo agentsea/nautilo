@@ -6,6 +6,7 @@ import type { NautiloState } from "../agent/state";
 import { identityEnrollmentToolCallIds } from "./protected-memory-resume-deps";
 import {
   interruptValueToServerEvent,
+  isRetiredBrokerApprovalInterrupt,
   protectedTaskInterruptCoordinates,
 } from "./interrupt-mapping";
 
@@ -218,14 +219,24 @@ function approvalPayload(
     context.approvalLaneKey,
   );
   if (event?.type !== "approval.ask"
-    || event.approvalId !== binding.requestId
-    || !event.allowedVerbs.includes(binding.verb)) {
+    || event.approvalId !== binding.requestId) {
+    throw new TypeError(
+      "Protected Task Human approval does not match the pending request",
+    );
+  }
+  if ((isRetiredBrokerApprovalInterrupt(value)
+    || binding.requestId.startsWith("github-publish:"))
+    && binding.verb !== "deny") {
+    throw new TypeError(
+      "Protected Task Human retired broker approval is no longer available",
+    );
+  }
+  if (!event.allowedVerbs.includes(binding.verb)) {
     throw new TypeError(
       "Protected Task Human approval does not match the pending request",
     );
   }
   const specialCount = [
-    event.github,
     event.localMcpInstall,
     event.mediaGeneration,
     event.structuredSsh,
@@ -236,11 +247,6 @@ function approvalPayload(
   return Object.freeze({
     approved: binding.verb !== "deny",
     verb: binding.verb,
-    ...(event.github === undefined ? {} : {
-      githubApprovalId: event.github.approvalId,
-      githubDigest: event.github.digest,
-      githubLaneKey: context.approvalLaneKey,
-    }),
     ...(event.localMcpInstall === undefined ? {} : {
       localMcpInstallApprovalId: event.approvalId,
       localMcpInstallDigest: event.localMcpInstall.digest,

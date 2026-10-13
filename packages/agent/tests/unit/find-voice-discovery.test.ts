@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { FindVoiceToolResult } from "@nautilo/types";
 import { ELEVENLABS_CURATED_VOICE_IDS } from "@nautilo/voice";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
+import type { CapabilityFundingSession } from "../../src/runtime/capability-funding";
 import {
   createFindVoiceTool,
   localeConflictsWithLanguage,
@@ -175,6 +176,113 @@ describe("find_voice discovery", () => {
       true,
     );
     expect(result.candidates.find((c) => c.badge === "curated")?.name).toMatch(/beatriz/i);
+  });
+
+  test("uses the causal Human's admitted personal ElevenLabs account", async () => {
+    delete process.env["ELEVENLABS_API_KEY"];
+    let serviceRuns = 0;
+    globalThis.fetch = (async (_input: FetchInput, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("xi-api-key")).toBe("personal-voice-key");
+      return Response.json({ voices: [{ voice_id: "personal-voice", name: "Personal", language: "en" }], has_more: false });
+    }) as typeof fetch;
+    const capability: CapabilityFundingSession = {
+      humanUserId: "voice-human",
+      parentFundingKind: "personal",
+      resolveModel: async () => { throw new Error("unused"); },
+      openModel: async () => { throw new Error("unused"); },
+      openService: async provider => ({
+        binding: { kind: "personal", providerRoute: provider, credentialId: "credential", credentialRevision: 1 },
+        runAttempt: async callback => {
+          serviceRuns += 1;
+          return callback({
+            apiKey: "personal-voice-key",
+            usageFunding: { kind: "personal", humanUserId: "voice-human", payerHumanId: "voice-human", providerRoute: provider, credentialId: "credential", credentialRevision: 1 },
+          });
+        },
+      }),
+    };
+    const tool = createFindVoiceTool(
+      { causalHumanUserId: "voice-human" },
+      { getCapabilityFundingSession: () => capability },
+    );
+    const result = parseFindResult(await tool.invoke({ query: "Personal", limit: 10 }));
+    expect(result.elevenLabsConfigured).toBe(true);
+    expect(result.candidates.some(candidate => candidate.voiceId === "personal-voice")).toBe(true);
+    const noMatch = JSON.parse(await tool.invoke({ query: "impossible-no-match", limit: 10 })) as FindVoiceToolResult & { error?: string };
+    expect(noMatch.elevenLabsConfigured).toBe(true);
+    expect(noMatch.error).not.toContain("ELEVENLABS_API_KEY");
+    expect(serviceRuns).toBe(2);
+  });
+
+  test("does not expose provider response bodies in discovery warnings", async () => {
+    const secret = "synthetic-provider-secret-account-diagnostic";
+    globalThis.fetch = (async () => new Response(secret, { status: 401 })) as unknown as typeof fetch;
+    const tool = fundedFindVoiceTool();
+
+    const raw = await tool.invoke({ query: "", language: "es", limit: 10 });
+    const result = parseFindResult(raw);
+
+    expect(result.warnings).toEqual([
+      "Voice catalog request failed (HTTP 401); showing curated voices only.",
+    ]);
+    expect(raw).not.toContain(secret);
+    expect(result.elevenLabsConfigured).toBe(true);
+  });
+
+  test.each([undefined, "not-a-number"])(
+    "bounds streamed catalog metadata with content-length %s and cancels the provider body",
+    async (contentLength) => {
+      let cancelled = false;
+      let pulls = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new Uint8Array(600_000));
+        },
+        cancel() { cancelled = true; },
+      });
+      globalThis.fetch = (async () => new Response(stream, {
+        status: 200,
+        headers: contentLength === undefined ? {} : { "content-length": contentLength },
+      })) as unknown as typeof fetch;
+      const tool = fundedFindVoiceTool();
+
+      const raw = await tool.invoke({ query: "", language: "es", limit: 10 });
+      const result = parseFindResult(raw);
+
+      expect(pulls).toBeGreaterThanOrEqual(2);
+      expect(cancelled).toBe(true);
+      expect(result.warnings).toEqual([
+        "Voice catalog request failed; showing curated voices only.",
+      ]);
+      expect(raw).not.toContain("too_large");
+    },
+  );
+
+  test("reports a closed funding code without exposing funding diagnostics", async () => {
+    const secret = "synthetic-custody-diagnostic-secret";
+    const capability = {
+      humanUserId: "voice-human",
+      parentFundingKind: "personal" as const,
+      resolveModel: async () => { throw new Error("unused"); },
+      openModel: async () => { throw new Error("unused"); },
+      openService: async () => {
+        throw Object.assign(new Error(secret), { code: "personal_credential_unavailable" });
+      },
+    } as CapabilityFundingSession;
+    const tool = createFindVoiceTool(
+      { causalHumanUserId: "voice-human" },
+      { getCapabilityFundingSession: () => capability },
+    );
+
+    const raw = await tool.invoke({ query: "", language: "es", limit: 10 });
+    const result = parseFindResult(raw);
+
+    expect(result.warnings).toEqual([
+      "Voice funding is unavailable (personal_credential_unavailable); showing curated voices only.",
+    ]);
+    expect(raw).not.toContain(secret);
+    expect(result.elevenLabsConfigured).toBe(false);
   });
 
   test("denies remote discovery before fetch for the exact causal Human", async () => {

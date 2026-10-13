@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { primeServerModelConfigCache, type ServerModelConfigRow } from "@nautilo/db";
 import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
-import { getDefaultMediaGenerationModel, listMediaGenerationModels, withMediaGenerationDefault } from "../../src/config/media-generation-models";
+import { getDefaultMediaGenerationModel, listMediaGenerationModels, listOrderedMediaGenerationModels, withMediaGenerationDefault } from "../../src/config/media-generation-models";
 import { getDefaultImageModel } from "../../src/config/image-models";
 import { GenerateMusicSchema, GenerateVideoSchema } from "../../src/tools/media/generate-media-entry";
 import { createMediaGenerationPreparedApproval, prepareMediaGenerationApproval, resetMediaGenerationApprovalRuntimeForTests, setMediaGenerationApprovalRuntime } from "../../src/tools/media/media-generation-approval-runtime";
+import { runWithCapabilityFundingSession, type CapabilityFundingSession } from "../../src/runtime/capability-funding";
 
 const previousSkip = process.env["NAUTILO_SKIP_VENICE_REFRESH"];
 const previousVenice = process.env["VENICE_API_KEY"];
@@ -40,6 +41,19 @@ describe("server media generation defaults", () => {
     expect(getDefaultImageModel(env).provider).toBe("openai");
     delete env["OPENAI_API_KEY"];
     expect(getDefaultImageModel(env).provider).toBe("google");
+  });
+
+  test("the shared Automatic candidate order preserves the existing server default", () => {
+    const env: NodeJS.ProcessEnv = {
+      VENICE_API_KEY: "test",
+      OPENROUTER_API_KEY: "test",
+      OPENAI_API_KEY: "test",
+      GOOGLE_API_KEY: "test",
+    };
+    const ordered = listOrderedMediaGenerationModels("image", env);
+    expect(ordered.find((model) => model.enabled)?.id).toBe("venice:gpt-image-2");
+    expect(getDefaultMediaGenerationModel("image", env).id)
+      .toBe(ordered.find((model) => model.enabled)!.id);
   });
 
   test("stored override wins over env; null inherits and empty selects automatic", () => {
@@ -112,5 +126,53 @@ describe("server media generation defaults", () => {
     if (next.ok) expect(next.prepared.request.model).toBe("minimax-music-v26");
     const changed = await prepareMediaGenerationApproval({ ...input, intent: { prompt: "Changed request" } });
     expect(changed.ok).toBe(false);
+  });
+
+  test("resolves personal media preferences before preparation and preserves an explicit model", async () => {
+    const resolutions: Array<{ role: string; configured?: string | null }> = [];
+    const preparedModels: string[] = [];
+    const capability: CapabilityFundingSession = {
+      humanUserId: "user",
+      async resolveModel(role, configured) {
+        resolutions.push({ role, ...(configured === undefined ? {} : { configured }) });
+        return { modelId: configured ?? "venice:minimax-music-v26", preferenceRevision: 4 };
+      },
+      async openModel() { throw new Error("unused"); },
+      async openService() { throw new Error("unused"); },
+    };
+    setMediaGenerationApprovalRuntime({
+      async prepare(actor, preparation) {
+        preparedModels.push(preparation.request.model);
+        return { ok: true, prepared: createMediaGenerationPreparedApproval({
+          actor,
+          preparation,
+          receiptId: `mg_${String(preparedModels.length).padStart(16, "0")}`,
+          quoteUsdMicros: 100_000,
+          expiresAt: "2099-01-01T00:00:00.000Z",
+        }) };
+      },
+      async submit() { throw new Error("No paid calls in unit tests"); },
+    });
+    const base = { actor: { userId: "user", roomId: "room", agentId: "agent" },
+      toolName: "generate_music" as const, threadId: "thread", turnId: "turn", laneKey: "lane", toolCallId: "call" };
+
+    const preferred = await runWithCapabilityFundingSession(capability, () => prepareMediaGenerationApproval({
+      ...base,
+      approvalId: "preferred",
+      intent: { prompt: "Gentle piano melody" },
+    }));
+    const explicit = await runWithCapabilityFundingSession(capability, () => prepareMediaGenerationApproval({
+      ...base,
+      approvalId: "explicit",
+      intent: { model: "sonilo-v1-1-music", prompt: "Gentle piano melody", durationSeconds: 60 },
+    }));
+
+    expect(preferred.ok).toBe(true);
+    expect(explicit.ok).toBe(true);
+    expect(resolutions).toEqual([
+      { role: "musicGeneration", configured: null },
+      { role: "musicGeneration", configured: "venice:sonilo-v1-1-music" },
+    ]);
+    expect(preparedModels).toEqual(["minimax-music-v26", "sonilo-v1-1-music"]);
   });
 });

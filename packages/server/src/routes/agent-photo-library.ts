@@ -22,7 +22,6 @@ import { requirePairingPepper } from "../remote-control/pairing-secrets";
 import { AGENT_AVATAR_PRESET_IDS } from "@nautilo/types";
 import { requestIsVersioned, setMediaCacheHeaders } from "./_helpers/avatar";
 import {
-  assertCanUseServerProviderCredentials,
   findPersonalAgentsForUser,
   ServerProviderCredentialsDeniedError,
   toActionCapabilityHttpDenial,
@@ -31,10 +30,12 @@ import { eq, nautiloInstanceIdentity, type AgentPhotoSelectionOrigin, type Direc
 import {
   composeAvatarPrompt,
   generateImages,
-  getDefaultImageModel,
-  resolveProviderKey,
+  getImageModel,
+  runFundedDirectImageAttempt,
   setManageAvatarPhotoLibraryPort,
+  type CapabilityFundingSession,
 } from "@nautilo/agent";
+import { createCapabilityFundingSession } from "../lib/capability-funding";
 
 const DEFAULT_PAGE_LIMIT = 24;
 const MAX_PAGE_LIMIT = 48;
@@ -62,10 +63,10 @@ export interface AgentPhotoLibraryRouteDeps {
   readonly createService?: ReturnType<typeof createProductionAgentPhotoLibraryService>;
   readonly createCoordinator?: Pick<AgentPhotoLibraryCreateCoordinator, "produceStageAndFinalize">;
   readonly generateImages?: typeof generateImages;
-  readonly getDefaultImageModel?: typeof getDefaultImageModel;
-  readonly resolveProviderKey?: typeof resolveProviderKey;
+  readonly getImageModel?: typeof getImageModel;
   readonly composeAvatarPrompt?: typeof composeAvatarPrompt;
-  readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  readonly createCapabilityFundingSession?: (humanUserId: string) => CapabilityFundingSession;
+  readonly runFundedDirectImageAttempt?: typeof runFundedDirectImageAttempt;
 }
 
 function operationIdFrom(request: FastifyRequest): string | null {
@@ -237,11 +238,12 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
   const createCoordinator = deps.createCoordinator
     ?? new AgentPhotoLibraryCreateCoordinator(mutationService);
   const generateAvatarImages = deps.generateImages ?? generateImages;
-  const getImageModel = deps.getDefaultImageModel ?? getDefaultImageModel;
-  const providerKey = deps.resolveProviderKey ?? resolveProviderKey;
+  const resolveImageModel = deps.getImageModel ?? getImageModel;
   const avatarPrompt = deps.composeAvatarPrompt ?? composeAvatarPrompt;
-  const assertServerFunding = deps.assertCanUseServerProviderCredentials
-    ?? assertCanUseServerProviderCredentials;
+  const createFundingSession = deps.createCapabilityFundingSession
+    ?? createCapabilityFundingSession;
+  const runFundedImageAttempt = deps.runFundedDirectImageAttempt
+    ?? runFundedDirectImageAttempt;
   const readMedia = deps.readMedia ?? readStrictOwnedAvatarMedia;
   let cursorCodec: PhotoLibraryCursorCodec | null = deps.cursorCodec ?? null;
   const codec = (): PhotoLibraryCursorCodec => {
@@ -285,23 +287,45 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
     prompt: string;
     count: number;
   }) => {
-    await assertServerFunding(input.authority.ownerUserId, "agent_photo_generation");
-    const policy = getImageModel();
-    const openaiKey =
-      providerKey("openai", { ownerId: input.authority.ownerUserId }) ?? "";
-    const googleKey =
-      providerKey("google", { ownerId: input.authority.ownerUserId }) ?? "";
-    const openrouterKey =
-      providerKey("openrouter", { ownerId: input.authority.ownerUserId }) ?? "";
-    const veniceKey =
-      providerKey("venice", { ownerId: input.authority.ownerUserId }) ?? "";
-    if (!{ openai: openaiKey, google: googleKey, openrouter: openrouterKey, venice: veniceKey }[policy.provider]) {
+    const fundingSession = createFundingSession(input.authority.ownerUserId);
+    const selection = await fundingSession.resolveModel("imageGeneration");
+    const policy = resolveImageModel(selection.modelId);
+    if (!policy) {
       throw new AgentPhotoLibraryError({
         code: "invalid_photo_request",
-        message: "The configured image provider is unavailable",
+        message: "The selected image model is unavailable",
         retryable: false,
       });
     }
+    if (!fundingSession.openMedia) {
+      throw new AgentPhotoLibraryError({
+        code: "photo_library_unavailable",
+        message: "Image funding is unavailable",
+        retryable: true,
+      });
+    }
+    // Avatar publication requires exact square PNG output with an opaque
+    // background. Marketplace image adapters cannot guarantee those semantics.
+    const admitted = await fundingSession.openMedia(policy.id, "image", {
+      operation: "generate",
+      directOnly: true,
+    });
+    if (admitted.funding.provider !== policy.provider) {
+      throw new AgentPhotoLibraryError({
+        code: "invalid_photo_request",
+        message: "The selected image provider is incompatible with avatar generation",
+        retryable: false,
+      });
+    }
+    const imageArgs = {
+      model: policy.apiModel,
+      prompt: avatarPrompt(input.prompt),
+      count: input.count,
+      size: "1024x1024" as const,
+      quality: "low" as const,
+      background: "opaque" as const,
+      format: "png" as const,
+    };
     const result = await createCoordinator.produceStageAndFinalize({
       authority: input.authority,
       operationId: input.operationId,
@@ -316,19 +340,22 @@ export function agentPhotoLibraryRoutes(app: FastifyInstance, deps: AgentPhotoLi
         batchOrdinal,
       })),
       produceCandidates: async () => {
-        const generated = await generateAvatarImages(
-          {
-            model: policy.apiModel,
-            prompt: avatarPrompt(input.prompt),
-            count: input.count,
-            size: "1024x1024",
-            quality: "low",
-            background: "opaque",
-            format: "png",
-          },
-          { openaiKey, googleKey, openrouterKey, veniceKey },
-          policy.provider,
-        );
+        const generated = await admitted.runAttempt(({ apiKey, usageFunding }) =>
+          runFundedImageAttempt({
+            canonicalModelId: policy.id,
+            provider: policy.provider,
+            usageFunding,
+            args: imageArgs,
+            invoke: () => generateAvatarImages(
+              imageArgs,
+              policy.provider === "openai" ? { openaiKey: apiKey }
+                : policy.provider === "google" ? { googleKey: apiKey }
+                  : policy.provider === "openrouter" ? { openrouterKey: apiKey }
+                    : { veniceKey: apiKey },
+              policy.provider,
+              { meterUsage: false },
+            ),
+          }));
         if (
           generated.bytes.length !== input.count ||
           generated.bytes.some((bytes) => !bytes.length)

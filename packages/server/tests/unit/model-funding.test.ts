@@ -81,6 +81,29 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
 }
 
 describe("trusted model funding", () => {
+  test("generation Surplus eligibility uses the signed media spelling and explicit policy", () => {
+    const input = { env: { SURPLUS_API_KEY: "configured", VENICE_API_KEY: "direct" }, preferSurplus: true };
+    expect(resolveServerFundingRoute("venice:gpt-image-2", input)).toBe("surplus");
+    expect(resolveServerFundingRoute("venice:gpt-image-2", { ...input, preferSurplus: false })).toBe("venice");
+    expect(resolveServerFundingRoute("venice:unknown-generation-model", input)).not.toBe("surplus");
+    expect(resolveServerFundingRoute("openai:gpt-image-2", { env: { SURPLUS_API_KEY: "configured" }, preferSurplus: true })).toBeNull();
+  });
+
+  test("generation uses source priority and pins the admitted payer independently of chat", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openai`, row(ALICE, "openai"));
+    h.setServerRoute("openai");
+    const input = { humanUserId: ALICE, modelId: "openai:gpt-image-2", workload: "generation" as const };
+    const personal = await resolveModelFunding(input, h.deps);
+    expect(personal).toMatchObject({ kind: "personal", providerRoute: "openai", workload: "generation" });
+    h.setFundingPreference("server_first");
+    expect(await resolveModelFunding(input, h.deps)).toMatchObject({ kind: "server", providerRoute: "openai" });
+    expect(await resolveModelFunding({ ...input, priorDecision: personal }, h.deps)).toEqual(personal);
+    h.rows.clear();
+    expect(await code(resolveModelFunding({ ...input, priorDecision: personal }, h.deps))).toBe("personal_credential_stale");
+  });
+
   test("image assistance preserves a required payer class instead of following fresh preference", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);

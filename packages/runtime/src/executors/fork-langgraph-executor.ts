@@ -136,6 +136,17 @@ export function shouldPersistForkHumanMessage(input: {
   return !input.protectedTurn && !input.humanAlreadyPersisted;
 }
 
+/** Fork speech is admitted and attributed to the initiating Human, like main. */
+export function forkVoiceExecutionContext(
+  input: Record<string, unknown>,
+  causalHumanUserId: string | null,
+): Readonly<{ voiceEnabled: boolean; voiceSubjectId: string | null }> {
+  return {
+    voiceEnabled: input["voiceMode"] === true && Boolean(causalHumanUserId),
+    voiceSubjectId: causalHumanUserId,
+  };
+}
+
 /**
  * fork-on-busy path: checkpoint on `forkThreadId`, transcript on parent thread id.
  */
@@ -575,9 +586,10 @@ export async function* forkLanggraphExecutor(
   });
 
 
-  const clientVoiceMode = input["voiceMode"] === true;
-  const hasElevenLabsKey = !!process.env["ELEVENLABS_API_KEY"]?.trim();
-  const voiceEnabled = clientVoiceMode && hasElevenLabsKey;
+  const { voiceEnabled, voiceSubjectId } = forkVoiceExecutionContext(
+    input,
+    causalHumanUserId,
+  );
 
   const forkMessages = [...historyMessages, ...inFlightMarker, forkUser];
 
@@ -639,7 +651,6 @@ export async function* forkLanggraphExecutor(
     ...(agentId ? { authorAgentId: agentId } : {}),
     ...(turnId ? { turnId } : {}),
   });
-  const voiceSubjectId = memoryAccessEnvelope?.ownerId ?? ownerId;
   const sentenceDetectorConfig: SentenceDetectorConfig = {
     onIdleEvents: events => { if (!signal.aborted) for (const event of events) eventBus.emit(event); },
   };
@@ -764,7 +775,7 @@ export async function* forkLanggraphExecutor(
     version: "v2",
   };
 
-  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId, agentId, turnId: turnId || jobId });
+  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId ?? undefined, agentId, turnId: turnId || jobId });
 
   log(`[nautilo/executor] fork stream checkpoint=${checkpointThreadId} transcript=${transcriptThreadId}`);
 

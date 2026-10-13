@@ -1,17 +1,27 @@
 import { scanContent } from "@nautilo/security";
 import type { AttachmentTextContentBlock } from "../../content-blocks";
 import type { AttachmentClassification, AttachmentEnvelope } from "../../envelope";
-import type { TranscriptionProvider } from "../../transcription/provider";
+import {
+  TranscriptionProviderRequestError,
+  type TranscriptionProvider,
+  type TranscriptionProviderFailureCode,
+} from "../../transcription/provider";
 
 export type AudioAdapterResult =
   | { ok: true; block: AttachmentTextContentBlock; provider: string; model: string; transcriptText: string }
-  | { ok: false; reason: string; code: "invalid_classification" | "missing_bytes" | "provider_unavailable" | "provider_error" };
+  | {
+      ok: false;
+      reason: string;
+      code: "invalid_classification" | "missing_bytes" | "provider_unavailable" | "provider_error";
+      providerFailureCode?: TranscriptionProviderFailureCode;
+      providerStatus?: number | null;
+    };
 
 export async function attachmentAudioToTranscriptBlock(
   envelope: AttachmentEnvelope,
   classification: AttachmentClassification,
   provider: TranscriptionProvider | null | undefined,
-  options: { language?: string; timestamps?: boolean } = {},
+  options: { language?: string; timestamps?: boolean; signal?: AbortSignal } = {},
 ): Promise<AudioAdapterResult> {
   if (classification.decision !== "accept" || classification.kind !== "audio") {
     return {
@@ -43,12 +53,20 @@ export async function attachmentAudioToTranscriptBlock(
       mime: classification.normalizedMime,
       ...(options.language !== undefined ? { language: options.language } : {}),
       ...(options.timestamps !== undefined ? { timestamps: options.timestamps } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
   } catch (err) {
+    const providerError = err instanceof TranscriptionProviderRequestError
+      ? err
+      : new TranscriptionProviderRequestError(
+          options.signal?.aborted ? "request_cancelled" : "provider_unavailable",
+        );
     return {
       ok: false,
       code: "provider_error",
-      reason: err instanceof Error ? err.message : String(err),
+      reason: providerError.message,
+      providerFailureCode: providerError.code,
+      providerStatus: providerError.status,
     };
   }
 

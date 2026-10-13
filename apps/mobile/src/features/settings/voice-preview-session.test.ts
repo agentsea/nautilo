@@ -1,6 +1,7 @@
 /// <reference types="bun-types" />
 
 import { describe, expect, test } from "bun:test";
+import { VoiceFundingApiError } from "@nautilo/api-client/browser";
 
 import { VoicePreviewSession, type VoicePreviewPlatform } from "./voice-preview-session";
 
@@ -72,6 +73,26 @@ describe("VoicePreviewSession", () => {
     now = 30100;
     await preview.play("voice-b", async () => blob());
     expect(fake.calls).toContain("play");
+  });
+
+  test("retains a typed funding recovery without provider response text", async () => {
+    const fake = fakePlatform();
+    const recovery = {
+      errorCode: "unsupported_provider",
+      repairAction: "choose_supported_speech_model",
+      href: "/settings#capability-models",
+    } as const;
+    const preview = new VoicePreviewSession(fake.platform);
+    await preview.play("voice-a", async () => {
+      throw new VoiceFundingApiError(422, recovery);
+    });
+    expect(preview.getSnapshot()).toEqual({
+      status: "error",
+      voiceId: null,
+      error: "The selected speech model cannot use voice funding.",
+      recovery,
+      retryAt: null,
+    });
   });
 
   test("dispose stops active playback and releases all resources", async () => {

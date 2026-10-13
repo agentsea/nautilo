@@ -60,7 +60,10 @@ function persistDebugRole(msg: BaseMessage): string {
 
 export interface PersistMessagesOptions {
   /** Durable rows for an invocation-owned narrative read fence. */
-  onCommittedRows?: (rows: readonly { id: string; role: string }[]) => void;
+  onCommittedRows?: (
+    rows: readonly { id: string; role: string }[],
+    messages: readonly BaseMessage[],
+  ) => void;
   /** Same ordinary Task resume boundary for newly inserted assistant calls. */
   onToolCallsPersisted?: (message: AIMessage) => void;
   /** Internal Task resume observer, called only for this append's inserted tool rows. */
@@ -250,7 +253,29 @@ export async function persistMessages(
     // in-memory set. Rows that errored stay outside the set so the
     // next persist call in this turn gets a fresh attempt.
     const failed = new Set(result.failedIndices);
-    if (failed.size === 0) options.onCommittedRows?.(result.insertedRows);
+    if (failed.size === 0 && options.onCommittedRows) {
+      // Canonical append can deduplicate a fingerprint that this process has
+      // not seen yet, so `insertedRows` may be a strict subset of newPairs.
+      // Align receipts from the canonical row fingerprint; positional pairing
+      // would associate a later row with the wrong in-memory Human message.
+      const messagesByFingerprint = new Map<string, BaseMessage[]>();
+      for (const pair of newPairs) {
+        const matches = messagesByFingerprint.get(pair.fp) ?? [];
+        matches.push(pair.msg);
+        messagesByFingerprint.set(pair.fp, matches);
+      }
+      const committedMessages = result.insertedRows.map((row) => {
+        const matches = row.fingerprint
+          ? messagesByFingerprint.get(row.fingerprint)
+          : undefined;
+        const message = matches?.shift();
+        if (!message) {
+          throw new Error("Committed transcript receipt lacks its exact source message");
+        }
+        return message;
+      });
+      options.onCommittedRows(result.insertedRows, committedMessages);
+    }
     for (let i = 0; i < newPairs.length; i++) {
       if (!failed.has(i)) savedFingerprints.add(newPairs[i]!.fp);
     }

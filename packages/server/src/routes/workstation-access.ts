@@ -1627,7 +1627,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
     let admittedPlan: WorkstationDispatchPlan | null = null;
     if (
       live !== null &&
-      (executionClass === "profile_bound_sandbox" || executionClass === "typed_broker") &&
+      executionClass === "profile_bound_sandbox" &&
       (!request.requiredRelayId || live.relayId === request.requiredRelayId)
     ) {
       if (toolCallId.length > 0 && request.currentFolder.length > 0) {
@@ -1730,7 +1730,7 @@ export function createWorkstationApprovalOverrideResolver(deps: {
     // prove or disprove local containment. Non-run_shell tools remain `none`
     // through the pure admission contract's `run_shell_required` gate.
     // -----------------------------------------------------------------
-    const isCommandTool = toolName === "run_shell" || toolName === "exec_command" || toolName === "write_stdin" || toolName === "local_git";
+    const isCommandTool = toolName === "run_shell" || toolName === "exec_command" || toolName === "write_stdin";
     const criticalOrElevationScanHit =
       requiresNormalWorkstationCommandApproval({
         toolName,

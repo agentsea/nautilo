@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { PaidServiceProvider, TaskFundingBinding } from "@nautilo/types";
+import type { DurableServiceFundingBinding, PaidServiceProvider, TaskFundingBinding } from "@nautilo/types";
 import type { ForegroundChatFundingSession } from "./foreground-chat-funding";
 import type { UsageFundingProvenance } from "../usage/usage-context";
 
@@ -24,6 +24,16 @@ export interface AdmittedCapabilityService {
   }) => Promise<T>): Promise<T>;
 }
 
+export interface AdmittedCapabilityMedia {
+  readonly modelId: string;
+  readonly family: "image" | "video" | "music";
+  readonly funding: DurableServiceFundingBinding;
+  runAttempt<T>(callback: (attempt: {
+    readonly apiKey: string;
+    readonly usageFunding: UsageFundingProvenance;
+  }) => Promise<T>): Promise<T>;
+}
+
 /**
  * Installed only by the execution owner after binding the causal Human and
  * supported Room/Task shape. Each child operation is admitted independently;
@@ -35,8 +45,16 @@ export interface CapabilityFundingSession {
   readonly parentFundingKind?: "personal" | "server";
   /** Pre-admitted default decision model for honest synchronous tool exposure. */
   readonly decisionModelId?: string | null;
+  readonly mediaGenerationReady?: Readonly<Record<"image" | "video" | "music", boolean>>;
   resolveModel(role: PersonalCapabilityRole, configuredId?: string | null): Promise<CapabilityModelSelection>;
   openModel(modelId: string, workload: "research" | "decision", prior?: TaskFundingBinding): Promise<AdmittedCapabilityModel>;
+  projectMediaFunding?(modelId: string, role: "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech"): Promise<TaskFundingBinding>;
+  openMedia?(modelId: string, family: "image" | "video" | "music", options?: {
+    readonly operation?: "generate" | "edit";
+    readonly directOnly?: boolean;
+    readonly transport?: "direct";
+    readonly prior?: DurableServiceFundingBinding;
+  }): Promise<AdmittedCapabilityMedia>;
   openService(provider: PaidServiceProvider, prior?: TaskFundingBinding): Promise<AdmittedCapabilityService>;
 }
 

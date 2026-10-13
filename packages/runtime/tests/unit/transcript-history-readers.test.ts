@@ -48,6 +48,7 @@ function agentRow(
     agent_handle: handle,
     agent_display_name: "Nova",
     agent_actor_id: `actor-${handle}`,
+    author_agent_id: `agent-${handle}`,
     user_handle: null,
     user_name: null,
     user_actor_id: null,
@@ -143,6 +144,8 @@ describe("allRoomMessages ", () => {
     expect(hits[0]!.handle).toBe("alice");
     expect(hits[1]!.handle).toBe("nova");
     expect(hits[2]!.handle).toBe("nova");
+    expect(hits[1]!.authorAgentId).toBe("agent-nova");
+    expect(hits[2]!.authorAgentId).toBe("agent-nova");
   });
 
   test("empty room → []", async () => {
@@ -230,7 +233,7 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
     expect(queryText).toContain("browser-choice:%");
   });
 
-  test("caps refresh history and admits only this Agent output after the trigger", async () => {
+  test("caps only prior refresh history and admits the Room timeline after the trigger", async () => {
     const queries: SQL[] = [];
     await recentBoundedRoomMessages(
       {
@@ -251,15 +254,14 @@ describe("recentBoundedRoomMessages (full retained evidence)", () => {
     const text = JSON.stringify(queries[0]);
     const parameters = parameterValues(queries[0]!);
     expect(text).toContain("sm.id <=");
-    expect(text).toContain("sm.id <");
-    expect(text).toContain("sm.id >");
-    expect(text).toContain("sm.role IN ('assistant', 'tool')");
-    expect(text).toContain("s.agent_id =");
-    expect(text).toContain("nautilo_foreground_execution_id");
+    expect(text).toContain("e.message_id <");
+    expect(text).toContain("e.message_id >");
+    expect(text).not.toContain("sm.role IN ('assistant', 'tool')");
+    expect(text).not.toContain("s.agent_id =");
     expect(parameters).toContain(41);
     expect(parameters).toContain(47);
-    expect(parameters).toContain("agent-refresh");
-    expect(parameters).toContain("turn-owned");
+    expect(parameters).not.toContain("agent-refresh");
+    expect(parameters).not.toContain("turn-owned");
   });
 
   test("pages protected candidates by structural assistant boundaries and a strict tuple cursor", async () => {

@@ -2550,9 +2550,9 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
         turnModelId: "openrouter:example/model",
       }]);
       if (kind === "personal") {
-        expect(res.statusCode).toBe(422);
-        expect(JSON.parse(res.body)).toMatchObject({ code: "unsupported_workload" });
-        expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+        expect(res.statusCode).toBe(202);
+        expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
+        expect(jobInputFromLastCall(mocks)["voiceMode"]).toBe(true);
         expect(serverFundingAdmission).not.toHaveBeenCalled();
       } else {
         expect(res.statusCode).toBe(202);
@@ -2562,6 +2562,53 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     } finally {
       personalChatEnabled = false;
       personalCredentialConfigured = false;
+      preflightFundingKind = "personal";
+      await app.close();
+    }
+  });
+
+  test("personal-funded voice still rejects unsupported active mini-app context", async () => {
+    personalChatEnabled = true;
+    personalCredentialConfigured = true;
+    serverFundingAllowed = false;
+    preflightFundingKind = "personal";
+    serverFundingAdmission.mockClear();
+    const mocks = makeTestMocks();
+    mocks.getRoomDetailForMember.mockImplementation(async (roomId) => {
+      if (roomId !== R1_ID) return null;
+      const detail = r1Detail();
+      return {
+        ...detail,
+        members: detail.members.map((member) => member.kind === "agent"
+          ? { ...member, agentOwnerUserId: SENDER_USER_ID }
+          : member),
+      };
+    });
+    const app = await makeMessagingApp(
+      mocks,
+      { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
+      { actorRole: "community", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+    );
+    try {
+      const res = await app.inject({
+        method: "POST", url: `/api/rooms/${R1_ID}/messages`,
+        payload: {
+          content: "speak while this app is focused",
+          voiceMode: true,
+          activeMiniApp: { appId: "writer", updatedAt: 1 },
+        },
+      });
+      expect(res.statusCode).toBe(422);
+      expect(JSON.parse(res.body)).toMatchObject({
+        code: "unsupported_workload",
+        error: "Personal provider credentials support chat, image attachments, and voice only.",
+      });
+      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+      expect(serverFundingAdmission).not.toHaveBeenCalled();
+    } finally {
+      personalChatEnabled = false;
+      personalCredentialConfigured = false;
+      serverFundingAllowed = true;
       preflightFundingKind = "personal";
       await app.close();
     }

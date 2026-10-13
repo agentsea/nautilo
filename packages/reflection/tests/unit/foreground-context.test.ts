@@ -219,6 +219,177 @@ describe("Wave 9 foreground hybrid projection", () => {
     expect(result.body).toContain("Excerpt from one oversized narrative entry");
   });
 
+  test("keeps semantic continuity and all fitting current-turn progress before prior turns", () => {
+    const activeEntries = Array.from(
+      { length: 12 },
+      (_, index) => `ACTIVE_STEP_${index.toString().padStart(2, "0")} ${"a".repeat(28)}`,
+    );
+    const result = projection({
+      maximumCharacters: 1_800,
+      maximumHistoricalCharacters: 500,
+      journalBlock: "[Journal]\nDURABLE_DECISION",
+      journalStatements: ["DURABLE_DECISION"],
+      selection: available([]),
+      narrative: {
+        baselineBlock: [
+          "[Recent]",
+          `PRIOR_HISTORY ${"p".repeat(700)}`,
+          ...activeEntries,
+        ].join("\n"),
+        header: "[Recent]",
+        turns: [
+          {
+            completeness: "complete",
+            provenance: "prior",
+            entries: [`PRIOR_HISTORY ${"p".repeat(700)}`],
+          },
+          {
+            completeness: "partial",
+            provenance: "active_turn",
+            entries: activeEntries,
+          },
+        ],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: false,
+      },
+    });
+
+    expect(result.body!.length).toBeLessThanOrEqual(1_800);
+    for (const entry of activeEntries) expect(result.body).toContain(entry);
+    expect(result.body).toContain("DURABLE_DECISION");
+    expect(result.body).not.toContain("PRIOR_HISTORY");
+  });
+
+  test("packs semantic continuity before the newest active tail when both cannot fit", () => {
+    const result = projection({
+      maximumCharacters: 700,
+      maximumHistoricalCharacters: 350,
+      journalBlock: "[Journal]\nDURABLE_DECISION",
+      journalStatements: ["DURABLE_DECISION"],
+      selection: available(["ORGANIZED_CONTINUITY"]),
+      narrative: {
+        baselineBlock: null,
+        header: "[Recent]",
+        turns: [{
+          completeness: "partial",
+          provenance: "active_turn",
+          entries: [
+            `ACTIVE_OLDEST ${"o".repeat(500)}`,
+            `ACTIVE_NEWEST ${"n".repeat(260)}`,
+          ],
+        }],
+        minimumCompleteTurns: 0,
+        earlierEntriesOmitted: false,
+      },
+    });
+
+    expect(result.body).toContain("DURABLE_DECISION");
+    expect(result.body).toContain("ORGANIZED_CONTINUITY");
+    expect(result.body).toContain("ACTIVE_NEWEST");
+    expect(result.body).not.toContain("ACTIVE_OLDEST");
+  });
+
+  test("keeps the newest current-turn tail before pre-trigger history when the turn cannot fit", () => {
+    const result = projection({
+      maximumCharacters: 420,
+      journalBlock: null,
+      journalRollupPresent: false,
+      selection: available([]),
+      narrative: {
+        baselineBlock: null,
+        header: "[Recent]",
+        turns: [
+          {
+            completeness: "complete",
+            provenance: "prior",
+            entries: [`PRIOR_HISTORY ${"p".repeat(300)}`],
+          },
+          {
+            completeness: "partial",
+            provenance: "active_turn",
+            entries: [
+              `ACTIVE_OLD ${"o".repeat(260)}`,
+              "ACTIVE_NEWEST must survive",
+            ],
+          },
+        ],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: false,
+      },
+    });
+
+    expect(result.body).toContain("ACTIVE_NEWEST must survive");
+    expect(result.body).not.toContain("PRIOR_HISTORY");
+    expect(result.body).toContain("Completed progress in the current logical turn");
+  });
+
+  test("switches provenance labels around surrounding Room activity", () => {
+    const result = projection({
+      maximumCharacters: 1_000,
+      maximumHistoricalCharacters: 200,
+      journalBlock: null,
+      journalRollupPresent: false,
+      selection: available([]),
+      narrative: {
+        baselineBlock: null,
+        header: "[Recent]",
+        turns: [
+          {
+            completeness: "partial",
+            provenance: "active_turn",
+            entries: ["OWNED_ONE"],
+          },
+          {
+            completeness: "complete",
+            provenance: "surrounding",
+            entries: ["OTHER_HUMAN", "OTHER_EXECUTION"],
+          },
+          {
+            completeness: "partial",
+            provenance: "active_turn",
+            entries: ["OWNED_TWO"],
+          },
+        ],
+        minimumCompleteTurns: 0,
+        earlierEntriesOmitted: false,
+      },
+    });
+    const body = result.body!;
+    const activeLabel = "Completed progress in the current logical turn";
+    const surroundingLabel = "Surrounding Room activity during the current logical turn";
+
+    expect(body.match(new RegExp(activeLabel, "g"))).toHaveLength(2);
+    expect(body.match(new RegExp(surroundingLabel, "g"))).toHaveLength(1);
+    expect(body.indexOf("OWNED_ONE")).toBeLessThan(body.indexOf(surroundingLabel));
+    expect(body.indexOf("OTHER_EXECUTION")).toBeLessThan(body.lastIndexOf(activeLabel));
+    expect(body.lastIndexOf(activeLabel)).toBeLessThan(body.indexOf("OWNED_TWO"));
+  });
+
+  test("applies an explicit historical allowance when only prior history exists", () => {
+    const result = projection({
+      maximumCharacters: 1_000,
+      maximumHistoricalCharacters: 100,
+      journalBlock: null,
+      journalRollupPresent: false,
+      selection: available([]),
+      narrative: {
+        baselineBlock: `[Recent]\nPRIOR_ONLY ${"p".repeat(500)}`,
+        header: "[Recent]",
+        turns: [{
+          completeness: "complete",
+          provenance: "prior",
+          entries: [`PRIOR_ONLY ${"p".repeat(500)}`],
+        }],
+        minimumCompleteTurns: 1,
+        earlierEntriesOmitted: false,
+      },
+    });
+
+    expect(result.body?.length ?? 0).toBeLessThanOrEqual(100);
+    expect(result.body ?? "").not.toContain(`PRIOR_ONLY ${"p".repeat(500)}`);
+    expect(result.facts.totalCharacters).toBeLessThanOrEqual(100);
+  });
+
   test("admits older complete turns when the whole bounded body fits", () => {
     const result = projection({
       maximumCharacters: 1_000,

@@ -218,7 +218,7 @@ export function assertForegroundChatFundingWorkloadSupported(
 ): void {
   if (
     session?.kind === "personal"
-    && (input.voiceRequested || input.hasResources || input.protectedTurn)
+    && (input.hasResources || input.protectedTurn)
   ) throw new ForegroundChatFundingUnsupportedWorkloadError();
 }
 

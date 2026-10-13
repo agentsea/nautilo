@@ -15,7 +15,8 @@ import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { CatalogQuery, CatalogResponse, CatalogVoice } from "@nautilo/types";
-import { ApiError } from "@nautilo/api-client/browser";
+import { ApiError, VoiceFundingApiError } from "@nautilo/api-client/browser";
+import { MemoryRouter } from "react-router-dom";
 
 const sampleVoice = (
   overrides: Partial<CatalogVoice> = {},
@@ -85,14 +86,16 @@ async function renderModal(props?: {
   const onClose = props?.onClose ?? (() => {});
   await act(async () => {
     root!.render(
-      <VoiceCatalogModal
-        open
-        onClose={onClose}
-        onAssigned={onAssigned}
-        roleAtAssign={props?.roleAtAssign}
-        initialLanguage={props?.initialLanguage}
-        defaultAssignRole={props?.defaultAssignRole}
-      />,
+      <MemoryRouter>
+        <VoiceCatalogModal
+          open
+          onClose={onClose}
+          onAssigned={onAssigned}
+          roleAtAssign={props?.roleAtAssign}
+          initialLanguage={props?.initialLanguage}
+          defaultAssignRole={props?.defaultAssignRole}
+        />
+      </MemoryRouter>,
     );
   });
 }
@@ -169,6 +172,26 @@ describe("VoiceCatalogModal", () => {
     expect(document.body.textContent).toContain(
       "Configure your ElevenLabs API key in Providers",
     );
+    await cleanupModal();
+  });
+
+  test("shows a truthful typed funding failure with its settings action", async () => {
+    apiStub.listVoiceCatalog.mockImplementation(async () => {
+      throw new VoiceFundingApiError(403, {
+        errorCode: "personal_credential_stale",
+        repairAction: "replace_provider_credential",
+        href: "/settings#personal-provider-keys",
+      });
+    });
+    await renderModal();
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("The saved voice provider credential changed.");
+    });
+    const action = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "Open voice settings",
+    );
+    expect(action).not.toBeUndefined();
+    await act(async () => { fireEvent.click(action!); });
     await cleanupModal();
   });
 

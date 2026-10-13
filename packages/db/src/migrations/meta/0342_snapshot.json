@@ -1,6 +1,6 @@
 {
-  "id": "ce95df84-20e4-4e47-a0e2-29f21110cdd2",
-  "prevId": "56105ab7-b0db-463c-8c6e-bb1e515d4bf2",
+  "id": "0251be5f-067e-4010-942c-3bdf9e1c964c",
+  "prevId": "77879243-aca6-435d-879b-2f5896088017",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -14038,7 +14038,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -16514,12 +16514,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "local_execution_delegation": {
-          "name": "local_execution_delegation",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -16590,6 +16584,12 @@
         "cancelled_at": {
           "name": "cancelled_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_execution_delegation": {
+          "name": "local_execution_delegation",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
@@ -16792,13 +16792,13 @@
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
         },
-        "tasks_protected_requester_owns_content": {
-          "name": "tasks_protected_requester_owns_content",
-          "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
-        },
         "tasks_crypto_mapping_coherent": {
           "name": "tasks_crypto_mapping_coherent",
           "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
+        },
+        "tasks_protected_requester_owns_content": {
+          "name": "tasks_protected_requester_owns_content",
+          "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
         }
       },
       "isRLSEnabled": false
@@ -16836,13 +16836,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        },
-        "result_revision": {
-          "name": "result_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
         },
         "result_operation_id": {
           "name": "result_operation_id",
@@ -17035,7 +17028,7 @@
         },
         "protected_task_run_output_bindings_result_identity_shape": {
           "name": "protected_task_run_output_bindings_result_identity_shape",
-          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and (\n          (\"protected_task_run_output_bindings\".\"result_revision\" = 1\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n          or (\"protected_task_run_output_bindings\".\"result_revision\" = 2\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-cancelled-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n        )\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
+          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "protected_task_run_output_bindings_delivery_shape": {
           "name": "protected_task_run_output_bindings_delivery_shape",
@@ -29485,11 +29478,11 @@
         },
         "background_crypto_authorization_requests_work_kind": {
           "name": "background_crypto_authorization_requests_work_kind",
-          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_purpose": {
           "name": "background_crypto_authorization_requests_purpose",
-          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_work_purpose_coherent": {
           "name": "background_crypto_authorization_requests_work_purpose_coherent",
@@ -29509,7 +29502,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not in ('task.cancel_result', 'task.deliver_message')\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -37061,330 +37054,6 @@
       },
       "isRLSEnabled": true
     },
-    "public.task_cancellation_crypto_staging_receipts": {
-      "name": "task_cancellation_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recipient_generation": {
-          "name": "recipient_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorization_digest": {
-          "name": "authorization_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "stopped_intent_hash": {
-          "name": "stopped_intent_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "policy_revision": {
-          "name": "policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_cancel_staging_object_fk": {
-          "name": "task_cancel_staging_object_fk",
-          "tableFrom": "task_cancellation_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_cancel_staging_object": {
-          "name": "uq_task_cancel_staging_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_cancel_staging_crypto_sel": {
-          "name": "task_cancel_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_cancel_staging_crypto_ins": {
-          "name": "task_cancel_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_cancel_staging_request_id_portable": {
-          "name": "task_cancel_staging_request_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"request_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_generation_safe": {
-          "name": "task_cancel_staging_generation_safe",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"recipient_generation\" between 0 and 9007199254740991"
-        },
-        "task_cancel_staging_claim_id_portable": {
-          "name": "task_cancel_staging_claim_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"claim_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"claim_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_authorization_digest_size": {
-          "name": "task_cancel_staging_authorization_digest_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"authorization_digest\") = 32"
-        },
-        "task_cancel_staging_stopped_intent_hash_size": {
-          "name": "task_cancel_staging_stopped_intent_hash_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"stopped_intent_hash\") = 32"
-        },
-        "task_cancel_staging_policy_revision_positive": {
-          "name": "task_cancel_staging_policy_revision_positive",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"policy_revision\" >= 1"
-        },
-        "task_cancel_staging_authority_fingerprint_size": {
-          "name": "task_cancel_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_cancel_staging_object_id_portable": {
-          "name": "task_cancel_staging_object_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_object_shape": {
-          "name": "task_cancel_staging_object_shape",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
-        },
-        "task_cancel_staging_genesis_manifest_hash_size": {
-          "name": "task_cancel_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_terminal_message_crypto_staging_receipts": {
-      "name": "task_terminal_message_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recipient_generation": {
-          "name": "recipient_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorization_digest": {
-          "name": "authorization_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delivery_intent_hash": {
-          "name": "delivery_intent_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "accepted_policy_revision": {
-          "name": "accepted_policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "publication_policy_revision": {
-          "name": "publication_policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_terminal_message_staging_object_fk": {
-          "name": "task_terminal_message_staging_object_fk",
-          "tableFrom": "task_terminal_message_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_terminal_message_staging_object": {
-          "name": "uq_task_terminal_message_staging_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_terminal_message_staging_crypto_sel": {
-          "name": "task_terminal_message_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_terminal_message_staging_crypto_ins": {
-          "name": "task_terminal_message_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_terminal_message_staging_request_id_portable": {
-          "name": "task_terminal_message_staging_request_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"request_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_generation_safe": {
-          "name": "task_terminal_message_staging_generation_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"recipient_generation\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_claim_id_portable": {
-          "name": "task_terminal_message_staging_claim_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"claim_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"claim_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_authorization_digest_size": {
-          "name": "task_terminal_message_staging_authorization_digest_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"authorization_digest\") = 32"
-        },
-        "task_terminal_message_staging_delivery_intent_hash_size": {
-          "name": "task_terminal_message_staging_delivery_intent_hash_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"delivery_intent_hash\") = 32"
-        },
-        "task_terminal_message_staging_policy_revision_positive": {
-          "name": "task_terminal_message_staging_policy_revision_positive",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\" >= 1 and \"task_terminal_message_crypto_staging_receipts\".\"publication_policy_revision\" >= \"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\""
-        },
-        "task_terminal_message_staging_accepted_policy_safe": {
-          "name": "task_terminal_message_staging_accepted_policy_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_publication_policy_safe": {
-          "name": "task_terminal_message_staging_publication_policy_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"publication_policy_revision\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_authority_fingerprint_size": {
-          "name": "task_terminal_message_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_terminal_message_staging_object_id_portable": {
-          "name": "task_terminal_message_staging_object_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_object_shape": {
-          "name": "task_terminal_message_staging_object_shape",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\" ~ '^message:v2:[0-9a-f]{64}$'"
-        },
-        "task_terminal_message_staging_genesis_manifest_hash_size": {
-          "name": "task_terminal_message_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
     "public.domain_key_envelope_acknowledgements": {
       "name": "domain_key_envelope_acknowledgements",
       "schema": "",
@@ -42292,9 +41961,27 @@
           "primaryKey": false,
           "notNull": true
         },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "provider_queue_id": {
           "name": "provider_queue_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_requested_at": {
+          "name": "cancellation_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_provider_acknowledged_at": {
+          "name": "cancellation_provider_acknowledged_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -42339,6 +42026,12 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "actual_usd_micros": {
+          "name": "actual_usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "state": {
           "name": "state",
@@ -42672,9 +42365,9 @@
           "name": "media_generations_receipt_portable",
           "value": "octet_length(\"media_generations\".\"receipt_id\") between 1 and 128 and \"media_generations\".\"receipt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
         },
-        "media_generations_provider_fixed": {
-          "name": "media_generations_provider_fixed",
-          "value": "\"media_generations\".\"provider\" = 'venice' and octet_length(\"media_generations\".\"provider_model\") between 1 and 256 and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128"
+        "media_generations_provider_shape": {
+          "name": "media_generations_provider_shape",
+          "value": "\n      \"media_generations\".\"provider\" in ('venice', 'surplus')\n      and octet_length(\"media_generations\".\"provider_model\") between 1 and 256\n      and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128\n      and ((\"media_generations\".\"funding_binding\" is null and \"media_generations\".\"provider\" = 'venice') or coalesce((\n        jsonb_typeof(\"media_generations\".\"funding_binding\") = 'object'\n        and \"media_generations\".\"funding_binding\" ?& array['humanUserId', 'provider', 'binding', 'credentialFingerprint']\n        and \"media_generations\".\"funding_binding\" - 'humanUserId' - 'provider' - 'binding' - 'credentialFingerprint' = '{}'::jsonb\n        and (\"media_generations\".\"owner_id\" is null or \"media_generations\".\"funding_binding\"->>'humanUserId' = \"media_generations\".\"owner_id\"::text)\n        and \"media_generations\".\"funding_binding\"->>'provider' = \"media_generations\".\"provider\"\n        and \"media_generations\".\"funding_binding\"->>'credentialFingerprint' = \"media_generations\".\"provider_account_fingerprint\"\n        and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding') = 'object'\n        and \"media_generations\".\"funding_binding\"->'binding'->>'providerRoute' = \"media_generations\".\"provider\"\n        and (\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'server'\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' = '{}'::jsonb)\n          or\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'personal'\n            and (\"media_generations\".\"funding_binding\"->'binding') ?& array['credentialId', 'credentialRevision']\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' - 'credentialId' - 'credentialRevision' = '{}'::jsonb\n            and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding'->'credentialRevision') = 'number'\n            and (\"media_generations\".\"funding_binding\"->'binding'->>'credentialRevision')::numeric >= 1)\n        )\n      ), false))\n    "
         },
         "media_generations_digests": {
           "name": "media_generations_digests",
@@ -42683,6 +42376,10 @@
         "media_generations_quote_nonnegative": {
           "name": "media_generations_quote_nonnegative",
           "value": "\"media_generations\".\"quoted_usd_micros\" >= 0"
+        },
+        "media_generations_actual_cost_nonnegative": {
+          "name": "media_generations_actual_cost_nonnegative",
+          "value": "\"media_generations\".\"actual_usd_micros\" is null or \"media_generations\".\"actual_usd_micros\" >= 0"
         },
         "media_generations_revision_nonnegative": {
           "name": "media_generations_revision_nonnegative",
@@ -42695,6 +42392,10 @@
         "media_generations_admission_shape": {
           "name": "media_generations_admission_shape",
           "value": "\n      (\"media_generations\".\"admission_token\" is null) = (\"media_generations\".\"admission_started_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null) = (\"media_generations\".\"accepted_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null or \"media_generations\".\"admission_token\" is not null)\n      and (\"media_generations\".\"state\" <> 'prequeue' or (\"media_generations\".\"admission_token\" is null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" <> 'admitting' or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" not in ('queued', 'retrieving', 'saving', 'ready') or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is not null))\n      and (\"media_generations\".\"state\" <> 'unknown' or \"media_generations\".\"admission_token\" is not null)\n    "
+        },
+        "media_generations_cancellation_shape": {
+          "name": "media_generations_cancellation_shape",
+          "value": "\n      (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_requested_at\" is not null)\n      and (\"media_generations\".\"cancellation_requested_at\" is null or (\n        \"media_generations\".\"provider\" = 'surplus'\n        and \"media_generations\".\"provider_queue_id\" is not null\n        and \"media_generations\".\"accepted_at\" is not null\n      ))\n      and (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_provider_acknowledged_at\" >= \"media_generations\".\"cancellation_requested_at\")\n    "
         },
         "media_generations_safe_json": {
           "name": "media_generations_safe_json",
@@ -42898,12 +42599,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "profile_funding_binding": {
-          "name": "profile_funding_binding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_verified_at": {
           "name": "last_verified_at",
           "type": "timestamp with time zone",
@@ -42948,6 +42643,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "profile_funding_binding": {
+          "name": "profile_funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -43112,18 +42813,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "run_cost_custody": {
-          "name": "run_cost_custody",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "funding_binding": {
-          "name": "funding_binding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "receipt": {
           "name": "receipt",
           "type": "jsonb",
@@ -43143,6 +42832,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_cost_custody": {
+          "name": "run_cost_custody",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -43475,12 +43176,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "funding_binding": {
-          "name": "funding_binding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "action_operation_id": {
           "name": "action_operation_id",
           "type": "uuid",
@@ -43658,6 +43353,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -44559,568 +44260,6 @@
       "checkConstraints": {},
       "isRLSEnabled": true
     },
-    "public.conversion_operations": {
-      "name": "conversion_operations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "operation_key": {
-          "name": "operation_key",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "recovery_handle": {
-          "name": "recovery_handle",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "causal_human_user_id": {
-          "name": "causal_human_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "room_id": {
-          "name": "room_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "funding_kind": {
-          "name": "funding_kind",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_route": {
-          "name": "provider_route",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_sandbox": {
-          "name": "provider_sandbox",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_region": {
-          "name": "provider_region",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_id": {
-          "name": "credential_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_revision": {
-          "name": "credential_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_fingerprint": {
-          "name": "credential_fingerprint",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_artifact_id": {
-          "name": "source_artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_artifact_revision": {
-          "name": "source_artifact_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_sha256": {
-          "name": "source_sha256",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_authority_digest": {
-          "name": "source_authority_digest",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_artifact_id": {
-          "name": "destination_artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "destination_artifact_revision": {
-          "name": "destination_artifact_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "destination_namespace_id": {
-          "name": "destination_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_path_digest": {
-          "name": "destination_path_digest",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_authority_digest": {
-          "name": "destination_authority_digest",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "input_format": {
-          "name": "input_format",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "output_format": {
-          "name": "output_format",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "max_output_bytes": {
-          "name": "max_output_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_tag": {
-          "name": "provider_tag",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_job_id": {
-          "name": "provider_job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "submission_lease_id": {
-          "name": "submission_lease_id",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "submission_lease_expires_at": {
-          "name": "submission_lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cancellation_requested_at": {
-          "name": "cancellation_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'prepared'"
-        },
-        "provider_credits": {
-          "name": "provider_credits",
-          "type": "numeric(20, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_sha256": {
-          "name": "output_sha256",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_bytes": {
-          "name": "output_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "publication_revision_id": {
-          "name": "publication_revision_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "publication_artifact_id": {
-          "name": "publication_artifact_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_code": {
-          "name": "failure_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "submitted_at": {
-          "name": "submitted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "terminal_at": {
-          "name": "terminal_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "published_at": {
-          "name": "published_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "uq_conversion_operations_operation_key": {
-          "name": "uq_conversion_operations_operation_key",
-          "columns": [
-            {
-              "expression": "operation_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_conversion_operations_recovery_handle": {
-          "name": "uq_conversion_operations_recovery_handle",
-          "columns": [
-            {
-              "expression": "recovery_handle",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_conversion_operations_provider_tag": {
-          "name": "uq_conversion_operations_provider_tag",
-          "columns": [
-            {
-              "expression": "provider_tag",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_conversion_operations_provider_job": {
-          "name": "idx_conversion_operations_provider_job",
-          "columns": [
-            {
-              "expression": "provider_job_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_conversion_operations_recovery": {
-          "name": "idx_conversion_operations_recovery",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_conversion_operations_human": {
-          "name": "idx_conversion_operations_human",
-          "columns": [
-            {
-              "expression": "causal_human_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "conversion_operations_causal_human_user_id_users_id_fk": {
-          "name": "conversion_operations_causal_human_user_id_users_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "users",
-          "columnsFrom": [
-            "causal_human_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_room_id_rooms_id_fk": {
-          "name": "conversion_operations_room_id_rooms_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "rooms",
-          "columnsFrom": [
-            "room_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_agent_id_agents_id_fk": {
-          "name": "conversion_operations_agent_id_agents_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_task_id_tasks_id_fk": {
-          "name": "conversion_operations_task_id_tasks_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_run_id_task_runs_id_fk": {
-          "name": "conversion_operations_run_id_task_runs_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "task_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_job_id_jobs_id_fk": {
-          "name": "conversion_operations_job_id_jobs_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "jobs",
-          "columnsFrom": [
-            "job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "conversion_operations_product_all": {
-          "name": "conversion_operations_product_all",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true",
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "conversion_operations_operation_key_digest": {
-          "name": "conversion_operations_operation_key_digest",
-          "value": "\"conversion_operations\".\"operation_key\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_recovery_handle_shape": {
-          "name": "conversion_operations_recovery_handle_shape",
-          "value": "\"conversion_operations\".\"recovery_handle\" ~ '^cvr_[0-9a-f]{32}$'"
-        },
-        "conversion_operations_credential_fingerprint_digest": {
-          "name": "conversion_operations_credential_fingerprint_digest",
-          "value": "\"conversion_operations\".\"credential_fingerprint\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_source_sha_digest": {
-          "name": "conversion_operations_source_sha_digest",
-          "value": "\"conversion_operations\".\"source_sha256\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_source_authority_digest": {
-          "name": "conversion_operations_source_authority_digest",
-          "value": "\"conversion_operations\".\"source_authority_digest\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_destination_path_digest": {
-          "name": "conversion_operations_destination_path_digest",
-          "value": "\"conversion_operations\".\"destination_path_digest\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_destination_authority_digest": {
-          "name": "conversion_operations_destination_authority_digest",
-          "value": "\"conversion_operations\".\"destination_authority_digest\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_output_sha_digest": {
-          "name": "conversion_operations_output_sha_digest",
-          "value": "\"conversion_operations\".\"output_sha256\" IS NULL OR \"conversion_operations\".\"output_sha256\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_version_positive": {
-          "name": "conversion_operations_version_positive",
-          "value": "\"conversion_operations\".\"version\" > 0"
-        },
-        "conversion_operations_output_bytes_nonnegative": {
-          "name": "conversion_operations_output_bytes_nonnegative",
-          "value": "\"conversion_operations\".\"output_bytes\" IS NULL OR \"conversion_operations\".\"output_bytes\" >= 0"
-        },
-        "conversion_operations_max_output_bytes_positive": {
-          "name": "conversion_operations_max_output_bytes_positive",
-          "value": "\"conversion_operations\".\"max_output_bytes\" > 0"
-        },
-        "conversion_operations_provider_credits_nonnegative": {
-          "name": "conversion_operations_provider_credits_nonnegative",
-          "value": "\"conversion_operations\".\"provider_credits\" IS NULL OR \"conversion_operations\".\"provider_credits\" >= 0"
-        },
-        "conversion_operations_funding_binding": {
-          "name": "conversion_operations_funding_binding",
-          "value": "(\n        (\"conversion_operations\".\"funding_kind\" = 'personal' AND \"conversion_operations\".\"credential_id\" IS NOT NULL AND \"conversion_operations\".\"credential_revision\" >= 1)\n        OR (\"conversion_operations\".\"funding_kind\" = 'server' AND \"conversion_operations\".\"credential_id\" IS NULL AND \"conversion_operations\".\"credential_revision\" IS NULL)\n      )"
-        },
-        "conversion_operations_source_binding": {
-          "name": "conversion_operations_source_binding",
-          "value": "(\n        (\"conversion_operations\".\"source_kind\" = 'inline' AND \"conversion_operations\".\"source_artifact_id\" IS NULL AND \"conversion_operations\".\"source_artifact_revision\" IS NULL)\n        OR (\"conversion_operations\".\"source_kind\" = 'artifact' AND \"conversion_operations\".\"source_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"source_artifact_revision\" >= 1)\n      )"
-        },
-        "conversion_operations_provider_job_phase": {
-          "name": "conversion_operations_provider_job_phase",
-          "value": "(\n        (\"conversion_operations\".\"status\" IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NULL)\n        OR (\"conversion_operations\".\"status\" NOT IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" = 'cancelled' AND \"conversion_operations\".\"provider_job_id\" IS NULL\n          AND \"conversion_operations\".\"failure_code\" IS NOT DISTINCT FROM 'cancelled_before_provider_dispatch')\n      )"
-        },
-        "conversion_operations_submission_lease": {
-          "name": "conversion_operations_submission_lease",
-          "value": "(\n        (\"conversion_operations\".\"status\" = 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NOT NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NULL)\n      )"
-        },
-        "conversion_operations_publication_receipt": {
-          "name": "conversion_operations_publication_receipt",
-          "value": "(\n        (\"conversion_operations\".\"status\" = 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NOT NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"published_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NULL AND \"conversion_operations\".\"published_at\" IS NULL)\n      )"
-        }
-      },
-      "isRLSEnabled": true
-    },
     "public.task_run_message_associations": {
       "name": "task_run_message_associations",
       "schema": "",
@@ -45603,6 +44742,568 @@
         "protected_task_continuation_receipts_shape_coherent": {
           "name": "protected_task_continuation_receipts_shape_coherent",
           "value": "(\n        \"protected_task_continuation_receipts\".\"kind\" = 'checkpoint_safe_v1'\n        and \"protected_task_continuation_receipts\".\"reason\" in ('manual_pause', 'time_limit', 'grant_refresh')\n        and \"protected_task_continuation_receipts\".\"effect_disposition\" = 'none_v1'\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" is null\n        and \"protected_task_continuation_receipts\".\"operation_id\" is null\n        and \"protected_task_continuation_receipts\".\"request_digest\" is null\n        and \"protected_task_continuation_receipts\".\"required_authority_digest\" is null\n        and \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n        and \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n      ) or (\n        \"protected_task_continuation_receipts\".\"kind\" = 'pre_effect_interrupt_v1'\n        and \"protected_task_continuation_receipts\".\"reason\" in ('grant_refresh', 'additional_authority')\n        and \"protected_task_continuation_receipts\".\"effect_disposition\" = 'not_started_v1'\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" is not null\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_continuation_receipts\".\"operation_id\" is not null\n        and \"protected_task_continuation_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_continuation_receipts\".\"request_digest\" is not null\n        and octet_length(\"protected_task_continuation_receipts\".\"request_digest\") = 32\n        and \"protected_task_continuation_receipts\".\"required_authority_digest\" is not null\n        and octet_length(\"protected_task_continuation_receipts\".\"required_authority_digest\") = 32\n        and (\n          \"protected_task_continuation_receipts\".\"reason\" = 'grant_refresh'\n          and \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n          and \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n          or \"protected_task_continuation_receipts\".\"reason\" = 'additional_authority'\n          and (\n            \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n            or octet_length(\"protected_task_continuation_receipts\".\"stable_routing_digest\") = 32\n          )\n          and (\n            \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n            or jsonb_typeof(\"protected_task_continuation_receipts\".\"semantic_authority_requirements\") = 'array'\n          )\n        )\n      )"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.conversion_operations": {
+      "name": "conversion_operations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "operation_key": {
+          "name": "operation_key",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recovery_handle": {
+          "name": "recovery_handle",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "causal_human_user_id": {
+          "name": "causal_human_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "funding_kind": {
+          "name": "funding_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_route": {
+          "name": "provider_route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_revision": {
+          "name": "credential_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_fingerprint": {
+          "name": "credential_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_artifact_id": {
+          "name": "source_artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_artifact_revision": {
+          "name": "source_artifact_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_sha256": {
+          "name": "source_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_authority_digest": {
+          "name": "source_authority_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_artifact_id": {
+          "name": "destination_artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_artifact_revision": {
+          "name": "destination_artifact_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_namespace_id": {
+          "name": "destination_namespace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_path_digest": {
+          "name": "destination_path_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_authority_digest": {
+          "name": "destination_authority_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_format": {
+          "name": "input_format",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_format": {
+          "name": "output_format",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_tag": {
+          "name": "provider_tag",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_job_id": {
+          "name": "provider_job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'prepared'"
+        },
+        "provider_credits": {
+          "name": "provider_credits",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_sha256": {
+          "name": "output_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_bytes": {
+          "name": "output_bytes",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "publication_revision_id": {
+          "name": "publication_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "publication_artifact_id": {
+          "name": "publication_artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terminal_at": {
+          "name": "terminal_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_sandbox": {
+          "name": "provider_sandbox",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_region": {
+          "name": "provider_region",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "max_output_bytes": {
+          "name": "max_output_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "submission_lease_id": {
+          "name": "submission_lease_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "submission_lease_expires_at": {
+          "name": "submission_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_requested_at": {
+          "name": "cancellation_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "uq_conversion_operations_operation_key": {
+          "name": "uq_conversion_operations_operation_key",
+          "columns": [
+            {
+              "expression": "operation_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_conversion_operations_recovery_handle": {
+          "name": "uq_conversion_operations_recovery_handle",
+          "columns": [
+            {
+              "expression": "recovery_handle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_conversion_operations_provider_tag": {
+          "name": "uq_conversion_operations_provider_tag",
+          "columns": [
+            {
+              "expression": "provider_tag",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_conversion_operations_provider_job": {
+          "name": "idx_conversion_operations_provider_job",
+          "columns": [
+            {
+              "expression": "provider_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_conversion_operations_recovery": {
+          "name": "idx_conversion_operations_recovery",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_conversion_operations_human": {
+          "name": "idx_conversion_operations_human",
+          "columns": [
+            {
+              "expression": "causal_human_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversion_operations_causal_human_user_id_users_id_fk": {
+          "name": "conversion_operations_causal_human_user_id_users_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "causal_human_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_room_id_rooms_id_fk": {
+          "name": "conversion_operations_room_id_rooms_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_agent_id_agents_id_fk": {
+          "name": "conversion_operations_agent_id_agents_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_task_id_tasks_id_fk": {
+          "name": "conversion_operations_task_id_tasks_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_run_id_task_runs_id_fk": {
+          "name": "conversion_operations_run_id_task_runs_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "task_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_job_id_jobs_id_fk": {
+          "name": "conversion_operations_job_id_jobs_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "jobs",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "conversion_operations_product_all": {
+          "name": "conversion_operations_product_all",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo"
+          ],
+          "using": "true",
+          "withCheck": "true"
+        }
+      },
+      "checkConstraints": {
+        "conversion_operations_operation_key_digest": {
+          "name": "conversion_operations_operation_key_digest",
+          "value": "\"conversion_operations\".\"operation_key\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_recovery_handle_shape": {
+          "name": "conversion_operations_recovery_handle_shape",
+          "value": "\"conversion_operations\".\"recovery_handle\" ~ '^cvr_[0-9a-f]{32}$'"
+        },
+        "conversion_operations_credential_fingerprint_digest": {
+          "name": "conversion_operations_credential_fingerprint_digest",
+          "value": "\"conversion_operations\".\"credential_fingerprint\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_source_sha_digest": {
+          "name": "conversion_operations_source_sha_digest",
+          "value": "\"conversion_operations\".\"source_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_source_authority_digest": {
+          "name": "conversion_operations_source_authority_digest",
+          "value": "\"conversion_operations\".\"source_authority_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_destination_path_digest": {
+          "name": "conversion_operations_destination_path_digest",
+          "value": "\"conversion_operations\".\"destination_path_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_destination_authority_digest": {
+          "name": "conversion_operations_destination_authority_digest",
+          "value": "\"conversion_operations\".\"destination_authority_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_output_sha_digest": {
+          "name": "conversion_operations_output_sha_digest",
+          "value": "\"conversion_operations\".\"output_sha256\" IS NULL OR \"conversion_operations\".\"output_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_version_positive": {
+          "name": "conversion_operations_version_positive",
+          "value": "\"conversion_operations\".\"version\" > 0"
+        },
+        "conversion_operations_output_bytes_nonnegative": {
+          "name": "conversion_operations_output_bytes_nonnegative",
+          "value": "\"conversion_operations\".\"output_bytes\" IS NULL OR \"conversion_operations\".\"output_bytes\" >= 0"
+        },
+        "conversion_operations_provider_credits_nonnegative": {
+          "name": "conversion_operations_provider_credits_nonnegative",
+          "value": "\"conversion_operations\".\"provider_credits\" IS NULL OR \"conversion_operations\".\"provider_credits\" >= 0"
+        },
+        "conversion_operations_funding_binding": {
+          "name": "conversion_operations_funding_binding",
+          "value": "(\n        (\"conversion_operations\".\"funding_kind\" = 'personal' AND \"conversion_operations\".\"credential_id\" IS NOT NULL AND \"conversion_operations\".\"credential_revision\" >= 1)\n        OR (\"conversion_operations\".\"funding_kind\" = 'server' AND \"conversion_operations\".\"credential_id\" IS NULL AND \"conversion_operations\".\"credential_revision\" IS NULL)\n      )"
+        },
+        "conversion_operations_source_binding": {
+          "name": "conversion_operations_source_binding",
+          "value": "(\n        (\"conversion_operations\".\"source_kind\" = 'inline' AND \"conversion_operations\".\"source_artifact_id\" IS NULL AND \"conversion_operations\".\"source_artifact_revision\" IS NULL)\n        OR (\"conversion_operations\".\"source_kind\" = 'artifact' AND \"conversion_operations\".\"source_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"source_artifact_revision\" >= 1)\n      )"
+        },
+        "conversion_operations_provider_job_phase": {
+          "name": "conversion_operations_provider_job_phase",
+          "value": "(\n        (\"conversion_operations\".\"status\" IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NULL)\n        OR (\"conversion_operations\".\"status\" NOT IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" = 'cancelled' AND \"conversion_operations\".\"provider_job_id\" IS NULL\n          AND \"conversion_operations\".\"failure_code\" IS NOT DISTINCT FROM 'cancelled_before_provider_dispatch')\n      )"
+        },
+        "conversion_operations_publication_receipt": {
+          "name": "conversion_operations_publication_receipt",
+          "value": "(\n        (\"conversion_operations\".\"status\" = 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NOT NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"published_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NULL AND \"conversion_operations\".\"published_at\" IS NULL)\n      )"
+        },
+        "conversion_operations_max_output_bytes_positive": {
+          "name": "conversion_operations_max_output_bytes_positive",
+          "value": "\"conversion_operations\".\"max_output_bytes\" > 0"
+        },
+        "conversion_operations_submission_lease": {
+          "name": "conversion_operations_submission_lease",
+          "value": "(\n        (\"conversion_operations\".\"status\" = 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NOT NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NULL)\n      )"
         }
       },
       "isRLSEnabled": true

@@ -30,7 +30,6 @@ export const FIXED_DESKTOP_DISPATCH_ORDER = [
   "directLocalFile",
   "filesystem",
   "sandboxedLocalSearch",
-  "localGit",
 ] as const;
 
 export type FixedDesktopDispatchHandlers = {

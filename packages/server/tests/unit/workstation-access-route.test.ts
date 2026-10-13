@@ -1936,7 +1936,7 @@ describe("resolveActiveWorkstationDispatchBinding — server admission boundary"
       toolCallId: "tc-zero-grant",
       userId: OWNER_USER_ID,
       currentFolder: "/Projects/nautilo",
-      executionClass: "typed_broker",
+      executionClass: "profile_bound_sandbox",
       fingerprint: {
         userId: OWNER_USER_ID,
         desktopSessionId: "desktop-session-1",
@@ -2108,96 +2108,6 @@ describe("createWorkstationApprovalOverrideResolver — plan ADMISSION", () => {
     expect(plan.executionClass).toBe("profile_bound_sandbox");
     expect(plan.admittedAt).toBe(FIXED_TS);
   });
-
-  test("structured run_shell.git admits a typed_broker plan bound to the active session", () => {
-    activateLiveSession();
-    registerBoundRelay();
-    const resolver = createWorkstationApprovalOverrideResolver({
-      registry,
-      relayRegistry,
-      planRegistry,
-      now: clock,
-    });
-
-    const decision = resolver(
-      overrideRequest("run_shell", "tc-git", { git: { operation: "status" } }),
-    );
-
-    expect(decision).toEqual({ override: "auto", executionClass: "typed_broker" });
-    const plan = planRegistry.get("tc-git");
-    expect(plan).not.toBeNull();
-    expect(plan?.executionClass).toBe("typed_broker");
-    expect(plan?.relayId).toBe("relay-1");
-    expect(plan?.currentFolder).toBe("/tmp");
-  });
-
-  test("local_git admits its canonical typed_broker tool call against the exact live session", () => {
-    activateLiveSession();
-    registerBoundRelay();
-    const audit: WorkstationAdmissionAuditEvent[] = [];
-    const resolver = createWorkstationApprovalOverrideResolver({
-      registry,
-      relayRegistry,
-      planRegistry,
-      now: clock,
-      audit: (event) => audit.push(event),
-    });
-
-    const decision = resolver(overrideRequest("local_git", "tc-local-git", { operation: "status" }));
-
-    expect(decision).toEqual({ override: "auto", executionClass: "typed_broker" });
-    const plan = planRegistry.get("tc-local-git");
-    expect(plan).not.toBeNull();
-    expect(plan).toMatchObject({
-      toolCallId: "tc-local-git",
-      executionClass: "typed_broker",
-      relayId: "relay-1",
-      desktopSessionId: "desktop-session-1",
-      pairingGeneration: "pairing-1",
-      profileId: "profile-1",
-      profileRevision: 1,
-      currentFolder: "/tmp",
-    });
-    expect(audit).toHaveLength(1);
-    expect(audit[0]).toMatchObject({
-      toolName: "local_git",
-      toolCallId: "tc-local-git",
-      executionClass: "typed_broker",
-      outcome: "auto",
-      reason: "auto_admitted",
-    });
-  });
-
-  for (const [drift, relayOverrides] of [
-    ["profile", { profileRevision: 2 }],
-    ["pairing", { pairingGeneration: "pairing-re-paired" }],
-  ] as const) {
-    test(`local_git denies an exact plan after ${drift} binding drift`, () => {
-      activateLiveSession();
-      registerBoundRelay(relayOverrides);
-      const audit: WorkstationAdmissionAuditEvent[] = [];
-      const resolver = createWorkstationApprovalOverrideResolver({
-        registry,
-        relayRegistry,
-        planRegistry,
-        now: clock,
-        audit: (event) => audit.push(event),
-      });
-
-      const decision = resolver(overrideRequest("local_git", `tc-local-git-stale-${drift}`, { operation: "status" }));
-
-      expect(decision).toMatchObject({ override: "none", executionClass: "typed_broker", reason: "no_admitted_plan" });
-      expect(planRegistry.get(`tc-local-git-stale-${drift}`)).toBeNull();
-      expect(audit).toHaveLength(1);
-      expect(audit[0]).toMatchObject({
-        toolName: "local_git",
-        toolCallId: `tc-local-git-stale-${drift}`,
-        executionClass: "typed_broker",
-        outcome: "none",
-        reason: "no_admitted_plan",
-      });
-    });
-  }
 
   test("forward capability refresh at admission stamps the current live revision", () => {
     activateLiveSession(); // session capabilityRevision = 10
@@ -2646,10 +2556,10 @@ describe("classifyWorkstationExecutionClass", () => {
   test("maps run_shell → profile_bound_sandbox (sandboxed relay dispatch)", () => {
     expect(classifyWorkstationExecutionClass("run_shell")).toBe("profile_bound_sandbox");
   });
-  test("maps structured run_shell.git → typed_broker", () => {
+  test("does not map structured run_shell.git to a broker class", () => {
     expect(
       classifyWorkstationExecutionClass("run_shell", { git: { operation: "status" } }),
-    ).toBe("typed_broker");
+    ).toBe("profile_bound_sandbox");
   });
   test("maps explicit workstation run_shell → real_workstation", () => {
     expect(

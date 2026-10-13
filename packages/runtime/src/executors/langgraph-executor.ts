@@ -888,16 +888,10 @@ export async function* langgraphExecutor(
   // respond to it) but SKIP the transcript persist + its message.new — avoiding
   // a duplicate human row without relying on read-time fingerprint collapse.
   const humanAlreadyPersisted = input["humanAlreadyPersisted"] === true;
-  // Voice mode is a per-request client decision, not a server-wide setting.
-  // The client sends voiceMode:true in the POST body only when its local UI
-  // toggle is on. Server-side TTS additionally requires ELEVENLABS_API_KEY
-  // in the environment (loaded from ~/.nautilo/instance.env). .
+  // TTS admits the initiating Human's ElevenLabs account independently of chat.
   const clientVoiceMode = input["voiceMode"] === true;
-  const hasElevenLabsKey = !!process.env["ELEVENLABS_API_KEY"]?.trim();
-  const voiceEnabled = clientVoiceMode && hasElevenLabsKey;
-  if (voiceEnabled) log(`[nautilo/executor] Voice mode ENABLED (client requested, API key present)`);
-  else if (clientVoiceMode) log(`[nautilo/executor] Voice mode requested but ELEVENLABS_API_KEY not set`);
-  else log(`[nautilo/executor] Voice mode disabled`);
+  const voiceEnabled = clientVoiceMode && Boolean(causalHumanUserId);
+  log(`[nautilo/executor] Voice mode ${voiceEnabled ? "enabled" : "disabled"}`);
 
   const langgraphThreadId = threadId;
 
@@ -1259,7 +1253,7 @@ export async function* langgraphExecutor(
     authorAgentId: agentId,
     ...(turnId ? { turnId } : {}),
   });
-  const voiceSubjectId = memoryAccessEnvelope?.ownerId ?? ownerId;
+  const voiceSubjectId = causalHumanUserId;
   const sentenceDetectorConfig: SentenceDetectorConfig = {
     onIdleEvents: events => { if (!signal.aborted) for (const event of events) eventBus.emit(event); },
   };
@@ -1396,7 +1390,7 @@ export async function* langgraphExecutor(
     version: "v2",
   };
 
-  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId, agentId, turnId: turnId || _jobId });
+  const finishVoiceTurn = bindVoiceTurnLifecycle({ detector: sentenceDetector, signal, userId: voiceSubjectId ?? undefined, agentId, turnId: turnId || _jobId });
 
   log(`[nautilo/executor] Starting stream for thread ${langgraphThreadId}`);
 

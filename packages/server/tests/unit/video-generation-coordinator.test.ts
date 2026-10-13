@@ -46,7 +46,7 @@ describe("D378 Video generation coordinator", () => {
     expect(result).toEqual({
       ok: false,
       code: "quote_unavailable",
-      recovery: "Configure Venice for media generation, then request a fresh quote. No generation was started.",
+      recovery: "Configure media generation funding, then request a fresh price. No generation was started.",
     });
     expect(writes).toBe(0);
   });

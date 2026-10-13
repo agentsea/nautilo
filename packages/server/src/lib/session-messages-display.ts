@@ -116,7 +116,7 @@ export function enrichSessionMessagesForDisplay<M extends SessionMessageInput>(
       const candidates = typeof m.toolCallId === "string" && m.toolCallId.length > 0
         ? pending.filter((call) => call.id === m.toolCallId
           && (m.authorAgentId === undefined || call.authorAgentId === m.authorAgentId)) : [];
-      const call = new Set(candidates.map((candidate) => candidate.authorAgentId)).size === 1
+      const call = candidates.length === 1
         ? candidates[0] : undefined;
       if (call !== undefined) {
         for (let index = pending.length - 1; index >= 0; index -= 1) {

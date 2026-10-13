@@ -1,8 +1,6 @@
 import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { personalToolUnavailable } from "../runtime/personal-tool-readiness";
-import { createGitHubTool } from "./github/github";
 import { createHumanTerminalTool } from "./terminal/human-terminal";
-import { createLocalGitTool } from "./local-git/local-git";
 import { createReadShellOutputTool } from "./shell/read-shell-output";
 import { createExecCommandTool, createWriteStdinTool } from "./local-execution/local-execution";
 /**
@@ -221,7 +219,8 @@ export function registerAllTools(
   });
   const isOfficeCliAvailable = options.officeCliAvailable ?? officeCliAvailable;
   const mediaGenerationAvailable = options.mediaGenerationAvailable ?? ((kind: "video" | "music") =>
-    hasMediaGenerationApprovalRuntime() && Boolean(process.env["VENICE_API_KEY"]?.trim()) && activeCatalogHasMediaKind(kind));
+    hasMediaGenerationApprovalRuntime() && activeCatalogHasMediaKind(kind)
+      && (getCapabilityFundingSession()?.mediaGenerationReady?.[kind] ?? Boolean(process.env["VENICE_API_KEY"]?.trim())));
   // the factory itself accepts only a narrow port + trusted
   // context through the opaque catalog context. Registration deliberately
   // does not choose targets, relays, or filesystem authority.
@@ -590,10 +589,6 @@ export function registerAllTools(
       relayCapabilities: [name === "exec_command" ? "canExecuteLocal" : "canObserveLocalExecution"], resultScanPolicy: "on-suspicious" });
   }
 
-  register({ name: "local_git", factory: () => createLocalGitTool(), category: "development",
-    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
-    tags: ["git", "repository", "commit", "worktree"], requiresApproval: true, approvalLevel: "prove_it",
-    requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseLocalGit"], resultScanPolicy: "on-suspicious" });
   register({ name: "read_shell_output", factory: () => createReadShellOutputTool(), category: "development",
     executor: "relay", trustTier: "admin", impact: "read-only", exposure: "discoverable",
     tags: ["output", "logs", "search", "shell"], requiresApproval: false,
@@ -722,10 +717,6 @@ export function registerAllTools(
   // allow: impact "high" (not "destructive") + requiresApproval:false →
   // `allow` for actors holding `use_workstation`. Runtime relay availability
   // remains a separate `canUseTerminal` requirement.
-  register({ name: "local_github", factory: () => createGitHubTool(), category: "development",
-    executor: "relay", trustTier: "admin", impact: "destructive", exposure: "discoverable",
-    tags: ["github", "issues", "pull-requests"], requiresApproval: true,
-    fullEncryptionSupport: "supported", requiredCapabilities: ["use_workstation"], relayCapabilities: ["canUseGitHub"], resultScanPolicy: "on-suspicious" });
   register({ name: "human_terminal", factory: () => createHumanTerminalTool(), category: "development",
     executor: "relay", trustTier: "admin", impact: "high", exposure: "discoverable",
     tags: ["terminal", "human", "handoff", "interactive"], requiresApproval: false,
@@ -1371,7 +1362,7 @@ export function registerAllTools(
     tags: ["audio", "transcription", "stt", "voice"],
     requiresApproval: true,
     approvalLevel: "confirm",
-    requiredCapabilities: ["use_transcription", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_transcription"],
     resultScanPolicy: "on-suspicious",
   });
 
@@ -1416,7 +1407,7 @@ export function registerAllTools(
     impact: "low",
     exposure: "discoverable",
     tags: ["image", "generate", "media"],
-    requiredCapabilities: ["use_image_generation", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_image_generation"],
     resultScanPolicy: "never",
   });
 
@@ -1432,7 +1423,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "destructive",
     exposure: "discoverable",
-    requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_media_generation"],
     requiresApproval: true,
     approvalLevel: "prove_it",
     tags: [
@@ -1450,7 +1441,7 @@ export function registerAllTools(
     trustTier: "standard",
     impact: "destructive",
     exposure: "discoverable",
-    requiredCapabilities: ["use_media_generation", "use_server_provider_credentials"],
+    requiredCapabilities: ["use_media_generation"],
     requiresApproval: true,
     approvalLevel: "prove_it",
     tags: ["audio", "music", "generate", "media", "paid", "venice"],

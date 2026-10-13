@@ -1,9 +1,23 @@
 import { describe, test, expect } from "bun:test";
 import {
+  acceptsRequestedRoomIdFromBody,
   acceptsRequestedRoomIdFromUrl,
   extractChatRequestedRoomId,
   extractRequestedRoomIdFromUrl,
 } from "../../src/lib/chat-requested-room-id";
+
+describe("acceptsRequestedRoomIdFromBody", () => {
+  test("narrows media cancellation to the Room carried in its POST body", () => {
+    expect(acceptsRequestedRoomIdFromBody(
+      "POST",
+      "/api/media-generations/:receiptId/cancel",
+    )).toBe(true);
+    expect(acceptsRequestedRoomIdFromBody(
+      "GET",
+      "/api/media-generations/:receiptId/cancel",
+    )).toBe(false);
+  });
+});
 
 describe("extractChatRequestedRoomId (M065 POST /api/chat body)", () => {
   test("returns UUID when body.roomId is a valid v4 string", () => {

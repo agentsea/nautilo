@@ -427,7 +427,7 @@ describe("restoreSessionMessages — authenticated protected tool correlation", 
     });
   });
 
-  test("pairs interleaved results by authenticated id despite resumed same-id calls", () => {
+  test("keeps interleaved results visible without guessing resumed same-id args", () => {
     const parts = restoredToolParts([
       assistantToolCalls("assistant-share-1", [{ id: "share-1", name: "share_memory", args: {
         mode: "project", proposed_content: "first", target_room_name: "Team",
@@ -450,19 +450,17 @@ describe("restoreSessionMessages — authenticated protected tool correlation", 
     ]);
 
     expect(parts).toMatchObject([
-      { toolCallId: "share-1", toolName: "share_memory", args: {
-        mode: "project", proposed_content: "first", target_room_name: "Team",
-      } },
+      { toolCallId: "share-1", toolName: "share_memory", args: {}, result: "first result" },
       { toolCallId: "discover-1", toolName: "discover_tools", args: {
         query: "fresh projection preflight share memory",
       } },
-      { toolCallId: "share-2", toolName: "share_memory", args: {
-        mode: "project", proposed_content: "second", target_room_name: "Team",
-      } },
+      { toolCallId: "share-2", toolName: "share_memory", args: {}, result: "second result" },
     ]);
+    expect(parts[0]?.["args"]).toEqual({});
+    expect(parts[2]?.["args"]).toEqual({});
   });
 
-  test("completion removes every queued same-id copy before a later id reuse", () => {
+  test("ambiguous completion clears queued copies before a later unique reuse", () => {
     const parts = restoredToolParts([
       assistantToolCalls("assistant-first", [{
         id: "same-id", name: "share_memory", args: { mode: "project", proposed_content: "first" },
@@ -478,9 +476,32 @@ describe("restoreSessionMessages — authenticated protected tool correlation", 
     ]);
 
     expect(parts).toMatchObject([
-      { toolCallId: "same-id", args: { proposed_content: "first" }, result: "first result" },
+      { toolCallId: "same-id", args: {}, result: "first result" },
       { toolCallId: "same-id", args: { proposed_content: "new" }, result: "new result" },
     ]);
+    expect(parts[0]?.["args"]).toEqual({});
+    expect(parts[1]?.["args"]).toEqual({ mode: "project", proposed_content: "new" });
+  });
+
+  test("two legacy same-author calls with one id never guess which args produced the result", () => {
+    const parts = restoredToolParts([
+      assistantToolCalls("assistant-legacy-first", [{
+        id: "legacy-reused", name: "get_current_time", args: { timezone: "Europe/Athens" },
+      }]),
+      assistantToolCalls("assistant-legacy-second", [{
+        id: "legacy-reused", name: "get_current_time", args: { timezone: "America/New_York" },
+      }]),
+      toolResult("tool-legacy-result", "get_current_time", "12:00", "legacy-reused"),
+    ]);
+
+    expect(parts).toMatchObject([{
+      toolCallId: "legacy-reused",
+      toolName: "get_current_time",
+      args: {},
+      result: "12:00",
+    }]);
+    expect(JSON.stringify(parts)).not.toContain("Europe/Athens");
+    expect(JSON.stringify(parts)).not.toContain("America/New_York");
   });
 
   test("an unmatched authenticated id cannot steal a pending call", () => {
@@ -545,6 +566,61 @@ describe("ordinary screenshot history", () => {
 
 
 describe("ordinary persisted tool-call identity", () => {
+  test("rehydrates six canonical calls with their exact results and intermediate messages", () => {
+    const calls = [
+      { id: "canonical-discover-previous", name: "discover_tools", args: { query: "time tools" }, result: "catalogue" },
+      { id: "canonical-discover-current-1", name: "discover_tools", args: { query: "current time" }, result: "catalogue" },
+      { id: "canonical-discover-current-2", name: "discover_tools", args: { query: "timezone" }, result: "catalogue" },
+      { id: "canonical-activate", name: "activate_tools", args: { tools: ["get_current_time"] }, result: "activated" },
+      { id: "canonical-time-1", name: "get_current_time", args: { timezone: "Europe/Athens" }, result: "12:00" },
+      { id: "canonical-time-2", name: "get_current_time", args: { timezone: "Europe/Athens" }, result: "12:00" },
+    ] as const;
+    const intermediate = calls.slice(0, 5).map((_, index) => `Intermediate ${index + 1}`);
+    const rows: HydrationRow[] = [
+      { id: "user-previous", role: "user", content: "Earlier turn" },
+      ...calls.flatMap((call, index): HydrationRow[] => [
+        {
+          ...assistantToolCalls(`assistant-call-${index + 1}`, [{
+            id: call.id,
+            name: call.name,
+            args: call.args,
+          }]),
+          content: intermediate[index] ?? "",
+        },
+        { ...toolResult(`tool-result-${index + 1}`, call.name, call.result), toolCallId: call.id },
+        ...(index === 0
+          ? [{ id: "user-current", role: "user", content: "Current turn" } satisfies HydrationRow]
+          : []),
+      ]),
+      { id: "assistant-final", role: "assistant", content: "Final report" },
+    ];
+
+    const restored = restoreSessionMessages(rows);
+    const toolParts = restored.map(firstContentPart).filter((part): part is Record<string, unknown> =>
+      part?.["type"] === "tool-call");
+    expect(toolParts).toMatchObject(calls.map((call) => ({
+      type: "tool-call",
+      toolCallId: call.id,
+      toolName: call.name,
+      args: call.args,
+      result: call.result,
+    })));
+    expect(new Set(toolParts.map((part) => part["toolCallId"])).size).toBe(6);
+    expect(restored.flatMap((message) => {
+      const part = firstContentPart(message);
+      return part?.["type"] === "text" ? [part["text"]] : [];
+    })).toEqual([
+      "Earlier turn",
+      "Intermediate 1",
+      "Current turn",
+      "Intermediate 2",
+      "Intermediate 3",
+      "Intermediate 4",
+      "Intermediate 5",
+      "Final report",
+    ]);
+  });
+
   test("parallel same-name results preserve args when approval pauses the first call", () => {
     const parts = restoredToolParts([
       assistantToolCalls("assistant", [

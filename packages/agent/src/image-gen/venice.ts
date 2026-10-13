@@ -1,5 +1,8 @@
 import type { GenerateImagesArgs, GenerateImagesResult } from "./types";
 import { VENICE_IMAGE_GENERATION_URL } from "../providers/venice-api";
+import { readBoundedMediaJson, MAX_IMAGE_RESPONSE_JSON_BYTES, MediaResponseReadError } from "../providers/media-response";
+import { assertImageOutputBounds, decodeBoundedImageBase64 } from "./bounds";
+import { directImageAdmissionError, directImageHttpError, directImageInvalidResponse, directImageTransportError } from "./errors";
 
 function aspectRatio(size: GenerateImagesArgs["size"]): string {
   if (size === "1536x1024") return "3:2";
@@ -7,23 +10,18 @@ function aspectRatio(size: GenerateImagesArgs["size"]): string {
   return "1:1";
 }
 
-function failure(status: number): Error {
-  if (status === 401 || status === 403) {
-    return new Error("Venice rejected the image-generation credential.");
-  }
-  if (status === 402) return new Error("Venice has insufficient credits for image generation.");
-  if (status === 429) return new Error("Venice rate-limited image generation. Retry shortly.");
-  return new Error(`Venice image generation failed (HTTP ${status}).`);
-}
-
 export async function generateImagesVenice(
   args: GenerateImagesArgs,
   apiKey: string,
 ): Promise<GenerateImagesResult> {
+  if ((args.references?.length ?? 0) > 0) {
+    throw directImageAdmissionError(`Venice image model ${args.model} has no qualified reference-edit request shape.`);
+  }
+  const count = Math.min(4, Math.max(1, Math.floor(args.count)));
   const body: Record<string, unknown> = {
     model: args.model,
     prompt: args.prompt,
-    variants: Math.min(4, Math.max(1, Math.floor(args.count))),
+    variants: count,
     format: args.format,
     aspect_ratio: aspectRatio(args.size),
     resolution: "1K",
@@ -32,30 +30,45 @@ export async function generateImagesVenice(
       ? { quality: args.quality }
       : {}),
   };
-  const response = await fetch(VENICE_IMAGE_GENERATION_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text().catch(() => "");
+  let response: Response;
+  try {
+    response = await fetch(VENICE_IMAGE_GENERATION_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      redirect: "error",
+    });
+  } catch {
+    throw directImageTransportError("Venice");
+  }
   if (!response.ok) {
-    throw failure(response.status);
+    await response.body?.cancel().catch(() => undefined);
+    throw directImageHttpError("venice", response.status);
   }
   let parsed: { images?: unknown[] };
   try {
-    parsed = JSON.parse(text) as typeof parsed;
-  } catch {
-    throw new Error("Venice image generation failed: invalid JSON body");
+    parsed = await readBoundedMediaJson(response, MAX_IMAGE_RESPONSE_JSON_BYTES) as typeof parsed;
+  } catch (error) {
+    if (error instanceof MediaResponseReadError) {
+      throw directImageInvalidResponse("Venice", error.reason === "too_large" ? "oversized response" : "invalid response");
+    }
+    throw error;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw directImageInvalidResponse("Venice", "invalid response envelope");
   }
   const bytes = (parsed.images ?? []).map((image) => {
     if (typeof image !== "string" || !image) {
-      throw new Error("Venice image generation failed: missing base64 image in response");
+      throw directImageInvalidResponse("Venice", "missing base64 image in response");
     }
-    return Buffer.from(image, "base64");
+    return decodeBoundedImageBase64(image, "Venice");
   });
-  if (bytes.length === 0) throw new Error("Venice image generation failed: empty response");
+  if (bytes.length !== count) {
+    throw directImageInvalidResponse("Venice", "unexpected image count");
+  }
+  assertImageOutputBounds(bytes, "Venice");
   return { bytes, model: args.model, mime: `image/${args.format}` };
 }

@@ -1,6 +1,6 @@
 {
-  "id": "d2348ecb-ea2c-4d41-a282-bb7f5aa5d19a",
-  "prevId": "79fd432f-829e-4446-91f9-2e20a75f0a8c",
+  "id": "2fccba2d-5d7e-4797-a523-e353c1a70916",
+  "prevId": "f32d340b-cd6d-4320-96cd-d390ba5e8daa",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3370,131 +3370,6 @@
         "memory_crypto_operations_human_outcome_coherent": {
           "name": "memory_crypto_operations_human_outcome_coherent",
           "value": "\"memory_crypto_operations\".\"human_product_outcome\" is null or (\n          \"memory_crypto_operations\".\"completion\" in ('complete', 'ordinary_fallback')\n          and \"memory_crypto_operations\".\"disposition\" = 'complete'\n        )"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.foreground_memory_crypto_publication_receipts": {
-      "name": "foreground_memory_crypto_publication_receipts",
-      "schema": "",
-      "columns": {
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "memory_id": {
-          "name": "memory_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "content_revision": {
-          "name": "content_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reservation_digest": {
-          "name": "reservation_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "required_namespace_fingerprint": {
-          "name": "required_namespace_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "foreground_memory_publication_object_fk": {
-          "name": "foreground_memory_publication_object_fk",
-          "tableFrom": "foreground_memory_crypto_publication_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_foreground_memory_publication_object": {
-          "name": "uq_foreground_memory_publication_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "foreground_memory_publication_crypto_select": {
-          "name": "foreground_memory_publication_crypto_select",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "foreground_memory_publication_crypto_insert": {
-          "name": "foreground_memory_publication_crypto_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "foreground_memory_publication_operation_portable": {
-          "name": "foreground_memory_publication_operation_portable",
-          "value": "\"foreground_memory_crypto_publication_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "foreground_memory_publication_object_shape": {
-          "name": "foreground_memory_publication_object_shape",
-          "value": "\"foreground_memory_crypto_publication_receipts\".\"crypto_object_id\" ~ '^memory:v1:[0-9a-f]{64}$'"
-        },
-        "foreground_memory_publication_revision_positive": {
-          "name": "foreground_memory_publication_revision_positive",
-          "value": "\"foreground_memory_crypto_publication_receipts\".\"content_revision\" > 0"
-        },
-        "foreground_memory_publication_digest_sizes": {
-          "name": "foreground_memory_publication_digest_sizes",
-          "value": "octet_length(\"foreground_memory_crypto_publication_receipts\".\"reservation_digest\") = 32\n        and octet_length(\"foreground_memory_crypto_publication_receipts\".\"required_namespace_fingerprint\") = 32\n        and octet_length(\"foreground_memory_crypto_publication_receipts\".\"genesis_manifest_hash\") = 32"
         }
       },
       "isRLSEnabled": true
@@ -14195,7 +14070,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -17769,7 +17644,7 @@
       "checkConstraints": {
         "task_definition_crypto_revisions_historical_repair": {
           "name": "task_definition_crypto_revisions_historical_repair",
-          "value": "\"task_definition_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_definition_crypto_revisions\".\"representation\" = 'dual' and \"task_definition_crypto_revisions\".\"content_revision\" = 1\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_definition_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\n        (\"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n          and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)\n        or (\"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n          and \"task_definition_crypto_revisions\".\"historical_repair\" ? 'genesisManifestHash'\n          and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb\n          and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'genesisManifestHash') = 'string'\n          and \"task_definition_crypto_revisions\".\"historical_repair\"->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')\n      )\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
+          "value": "\"task_definition_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_definition_crypto_revisions\".\"representation\" = 'dual' and \"task_definition_crypto_revisions\".\"content_revision\" = 1\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_definition_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
         },
         "task_definition_crypto_revisions_revision_positive": {
           "name": "task_definition_crypto_revisions_revision_positive",
@@ -17793,7 +17668,7 @@
         },
         "task_definition_crypto_revisions_object_shape": {
           "name": "task_definition_crypto_revisions_object_shape",
-          "value": "((\n      (\"task_definition_crypto_revisions\".\"historical_repair\" is null or \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb)\n      and \"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'\n    ) or (\n      \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n      and \"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'\n    )) is true"
+          "value": "\"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'"
         },
         "task_definition_crypto_revisions_digest_sizes": {
           "name": "task_definition_crypto_revisions_digest_sizes",
@@ -18113,7 +17988,7 @@
       "checkConstraints": {
         "task_run_result_crypto_revisions_historical_repair": {
           "name": "task_run_result_crypto_revisions_historical_repair",
-          "value": "\"task_run_result_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_run_result_crypto_revisions\".\"representation\" = 'dual' and \"task_run_result_crypto_revisions\".\"result_revision\" = 1\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\n        (\"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n          and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)\n        or (\"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n          and \"task_run_result_crypto_revisions\".\"historical_repair\" ? 'genesisManifestHash'\n          and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb\n          and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'genesisManifestHash') = 'string'\n          and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')\n      )\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
+          "value": "\"task_run_result_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_run_result_crypto_revisions\".\"representation\" = 'dual' and \"task_run_result_crypto_revisions\".\"result_revision\" = 1\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
         },
         "task_run_result_crypto_revisions_revision_positive": {
           "name": "task_run_result_crypto_revisions_revision_positive",
@@ -18137,7 +18012,7 @@
         },
         "task_run_result_crypto_revisions_object_shape": {
           "name": "task_run_result_crypto_revisions_object_shape",
-          "value": "((\n      (\"task_run_result_crypto_revisions\".\"historical_repair\" is null or \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb)\n      and \"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'\n    ) or (\n      \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n      and \"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'\n    )) is true"
+          "value": "\"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "task_run_result_crypto_revisions_digest_sizes": {
           "name": "task_run_result_crypto_revisions_digest_sizes",
@@ -37415,131 +37290,6 @@
       },
       "isRLSEnabled": true
     },
-    "public.task_historical_content_crypto_staging_receipts": {
-      "name": "task_historical_content_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signed_publication_request_bytes": {
-          "name": "signed_publication_request_bytes",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signed_request_digest": {
-          "name": "signed_request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_historical_staging_object_fk": {
-          "name": "task_historical_staging_object_fk",
-          "tableFrom": "task_historical_content_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_historical_staging_operation": {
-          "name": "uq_task_historical_staging_operation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "operation_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_historical_staging_crypto_sel": {
-          "name": "task_historical_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_historical_staging_crypto_ins": {
-          "name": "task_historical_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_historical_staging_operation_portable": {
-          "name": "task_historical_staging_operation_portable",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"operation_id\") between 1\n      and 128\n      and \"task_historical_content_crypto_staging_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_historical_staging_object_portable": {
-          "name": "task_historical_staging_object_portable",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_historical_staging_object_shape": {
-          "name": "task_historical_staging_object_shape",
-          "value": "\"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'"
-        },
-        "task_historical_staging_signed_request_size": {
-          "name": "task_historical_staging_signed_request_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"signed_publication_request_bytes\") between 1\n      and 1048576"
-        },
-        "task_historical_staging_signed_request_digest_size": {
-          "name": "task_historical_staging_signed_request_digest_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"signed_request_digest\") = 32"
-        },
-        "task_historical_staging_authority_fingerprint_size": {
-          "name": "task_historical_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_historical_staging_genesis_manifest_hash_size": {
-          "name": "task_historical_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
     "public.task_terminal_message_crypto_staging_receipts": {
       "name": "task_terminal_message_crypto_staging_receipts",
       "schema": "",
@@ -42626,9 +42376,27 @@
           "primaryKey": false,
           "notNull": true
         },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "provider_queue_id": {
           "name": "provider_queue_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_requested_at": {
+          "name": "cancellation_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_provider_acknowledged_at": {
+          "name": "cancellation_provider_acknowledged_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -42673,6 +42441,12 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "actual_usd_micros": {
+          "name": "actual_usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "state": {
           "name": "state",
@@ -43006,9 +42780,9 @@
           "name": "media_generations_receipt_portable",
           "value": "octet_length(\"media_generations\".\"receipt_id\") between 1 and 128 and \"media_generations\".\"receipt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
         },
-        "media_generations_provider_fixed": {
-          "name": "media_generations_provider_fixed",
-          "value": "\"media_generations\".\"provider\" = 'venice' and octet_length(\"media_generations\".\"provider_model\") between 1 and 256 and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128"
+        "media_generations_provider_shape": {
+          "name": "media_generations_provider_shape",
+          "value": "\n      \"media_generations\".\"provider\" in ('venice', 'surplus')\n      and octet_length(\"media_generations\".\"provider_model\") between 1 and 256\n      and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128\n      and ((\"media_generations\".\"funding_binding\" is null and \"media_generations\".\"provider\" = 'venice') or coalesce((\n        jsonb_typeof(\"media_generations\".\"funding_binding\") = 'object'\n        and \"media_generations\".\"funding_binding\" ?& array['humanUserId', 'provider', 'binding', 'credentialFingerprint']\n        and \"media_generations\".\"funding_binding\" - 'humanUserId' - 'provider' - 'binding' - 'credentialFingerprint' = '{}'::jsonb\n        and (\"media_generations\".\"owner_id\" is null or \"media_generations\".\"funding_binding\"->>'humanUserId' = \"media_generations\".\"owner_id\"::text)\n        and \"media_generations\".\"funding_binding\"->>'provider' = \"media_generations\".\"provider\"\n        and \"media_generations\".\"funding_binding\"->>'credentialFingerprint' = \"media_generations\".\"provider_account_fingerprint\"\n        and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding') = 'object'\n        and \"media_generations\".\"funding_binding\"->'binding'->>'providerRoute' = \"media_generations\".\"provider\"\n        and (\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'server'\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' = '{}'::jsonb)\n          or\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'personal'\n            and (\"media_generations\".\"funding_binding\"->'binding') ?& array['credentialId', 'credentialRevision']\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' - 'credentialId' - 'credentialRevision' = '{}'::jsonb\n            and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding'->'credentialRevision') = 'number'\n            and (\"media_generations\".\"funding_binding\"->'binding'->>'credentialRevision')::numeric >= 1)\n        )\n      ), false))\n    "
         },
         "media_generations_digests": {
           "name": "media_generations_digests",
@@ -43017,6 +42791,10 @@
         "media_generations_quote_nonnegative": {
           "name": "media_generations_quote_nonnegative",
           "value": "\"media_generations\".\"quoted_usd_micros\" >= 0"
+        },
+        "media_generations_actual_cost_nonnegative": {
+          "name": "media_generations_actual_cost_nonnegative",
+          "value": "\"media_generations\".\"actual_usd_micros\" is null or \"media_generations\".\"actual_usd_micros\" >= 0"
         },
         "media_generations_revision_nonnegative": {
           "name": "media_generations_revision_nonnegative",
@@ -43029,6 +42807,10 @@
         "media_generations_admission_shape": {
           "name": "media_generations_admission_shape",
           "value": "\n      (\"media_generations\".\"admission_token\" is null) = (\"media_generations\".\"admission_started_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null) = (\"media_generations\".\"accepted_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null or \"media_generations\".\"admission_token\" is not null)\n      and (\"media_generations\".\"state\" <> 'prequeue' or (\"media_generations\".\"admission_token\" is null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" <> 'admitting' or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" not in ('queued', 'retrieving', 'saving', 'ready') or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is not null))\n      and (\"media_generations\".\"state\" <> 'unknown' or \"media_generations\".\"admission_token\" is not null)\n    "
+        },
+        "media_generations_cancellation_shape": {
+          "name": "media_generations_cancellation_shape",
+          "value": "\n      (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_requested_at\" is not null)\n      and (\"media_generations\".\"cancellation_requested_at\" is null or (\n        \"media_generations\".\"provider\" = 'surplus'\n        and \"media_generations\".\"provider_queue_id\" is not null\n        and \"media_generations\".\"accepted_at\" is not null\n      ))\n      and (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_provider_acknowledged_at\" >= \"media_generations\".\"cancellation_requested_at\")\n    "
         },
         "media_generations_safe_json": {
           "name": "media_generations_safe_json",
@@ -46225,344 +46007,6 @@
         "task_content_backfill_scans_lease": {
           "name": "task_content_backfill_scans_lease",
           "value": "case when \"task_content_backfill_scans\".\"lease_token\" is null\n    then \"task_content_backfill_scans\".\"lease_device_id\" is null and \"task_content_backfill_scans\".\"lease_expires_at\" is null and \"task_content_backfill_scans\".\"claim\" is null\n    else \"task_content_backfill_scans\".\"lease_device_id\" is not null and \"task_content_backfill_scans\".\"lease_expires_at\" is not null and \"task_content_backfill_scans\".\"claim\" is not null end"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.protected_task_wake_continuation_receipts": {
-      "name": "protected_task_wake_continuation_receipts",
-      "schema": "",
-      "columns": {
-        "wake_job_id": {
-          "name": "wake_job_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "segment": {
-          "name": "segment",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "binding_id": {
-          "name": "binding_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wake_operation_id": {
-          "name": "wake_operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prior_recipient_generation": {
-          "name": "prior_recipient_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wake_authorization_request_id": {
-          "name": "wake_authorization_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "additional_authorization_request_id": {
-          "name": "additional_authorization_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "interrupt_id": {
-          "name": "interrupt_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_digest": {
-          "name": "request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "required_authority_digest": {
-          "name": "required_authority_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "semantic_authority_requirements": {
-          "name": "semantic_authority_requirements",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "retained_source_namespace_ids": {
-          "name": "retained_source_namespace_ids",
-          "type": "uuid[]",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_envelope_digest": {
-          "name": "source_envelope_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "initial_policy_revision": {
-          "name": "initial_policy_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "initial_agent_authorization_revision": {
-          "name": "initial_agent_authorization_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_room_id": {
-          "name": "destination_room_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_namespace_id": {
-          "name": "destination_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_authority_digest": {
-          "name": "destination_authority_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_thread_id": {
-          "name": "checkpoint_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_contract": {
-          "name": "checkpoint_contract",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_checkpoint_count": {
-          "name": "expected_checkpoint_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_ordered_digest": {
-          "name": "checkpoint_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_blob_count": {
-          "name": "expected_blob_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "blob_ordered_digest": {
-          "name": "blob_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_pending_write_count": {
-          "name": "expected_pending_write_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pending_write_ordered_digest": {
-          "name": "pending_write_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sealed_at": {
-          "name": "sealed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "protected_task_wake_continuation_receipts_wake_job_id_jobs_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_wake_job_id_jobs_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "jobs",
-          "columnsFrom": [
-            "wake_job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_receipts_task_id_tasks_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_task_id_tasks_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_receipts_task_run_id_task_runs_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_task_run_id_task_runs_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "task_runs",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_binding_fk": {
-          "name": "protected_task_wake_continuation_binding_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "protected_task_run_output_bindings",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "task_run_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_destination_fk": {
-          "name": "protected_task_wake_continuation_destination_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "rooms",
-          "columnsFrom": [
-            "destination_room_id",
-            "destination_namespace_id"
-          ],
-          "columnsTo": [
-            "id",
-            "namespace_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "protected_task_wake_continuation_receipts_pkey": {
-          "name": "protected_task_wake_continuation_receipts_pkey",
-          "columns": [
-            "wake_job_id",
-            "segment"
-          ]
-        }
-      },
-      "uniqueConstraints": {
-        "uq_protected_task_wake_continuation_authorization_generation": {
-          "name": "uq_protected_task_wake_continuation_authorization_generation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wake_authorization_request_id",
-            "prior_recipient_generation"
-          ]
-        },
-        "uq_protected_task_wake_continuation_interrupt": {
-          "name": "uq_protected_task_wake_continuation_interrupt",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wake_job_id",
-            "interrupt_id"
-          ]
-        }
-      },
-      "policies": {
-        "protected_task_wake_continuation_receipts_product_select": {
-          "name": "protected_task_wake_continuation_receipts_product_select",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true"
-        },
-        "protected_task_wake_continuation_receipts_product_insert": {
-          "name": "protected_task_wake_continuation_receipts_product_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "protected_task_wake_continuation_receipts_segment_positive": {
-          "name": "protected_task_wake_continuation_receipts_segment_positive",
-          "value": "\"protected_task_wake_continuation_receipts\".\"segment\" between 1 and 2147483647"
-        },
-        "protected_task_wake_continuation_receipts_generation_safe": {
-          "name": "protected_task_wake_continuation_receipts_generation_safe",
-          "value": "\"protected_task_wake_continuation_receipts\".\"prior_recipient_generation\" between 0 and 2147483646\n        and \"protected_task_wake_continuation_receipts\".\"segment\" = \"protected_task_wake_continuation_receipts\".\"prior_recipient_generation\" + 1"
-        },
-        "protected_task_wake_continuation_receipts_identity_shape": {
-          "name": "protected_task_wake_continuation_receipts_identity_shape",
-          "value": "\"protected_task_wake_continuation_receipts\".\"binding_id\" = 'task-run-output:' || \"protected_task_wake_continuation_receipts\".\"task_run_id\"::text\n        and \"protected_task_wake_continuation_receipts\".\"wake_operation_id\" = 'task-run-delivery-wake:' || \"protected_task_wake_continuation_receipts\".\"task_run_id\"::text\n        and \"protected_task_wake_continuation_receipts\".\"wake_authorization_request_id\" = 'task-wake-authorization:' || \"protected_task_wake_continuation_receipts\".\"wake_job_id\"::text"
-        },
-        "protected_task_wake_continuation_receipts_interrupt_shape": {
-          "name": "protected_task_wake_continuation_receipts_interrupt_shape",
-          "value": "\"protected_task_wake_continuation_receipts\".\"additional_authorization_request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"interrupt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"checkpoint_thread_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "protected_task_wake_continuation_receipts_digest_sizes": {
-          "name": "protected_task_wake_continuation_receipts_digest_sizes",
-          "value": "octet_length(\"protected_task_wake_continuation_receipts\".\"request_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"required_authority_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"source_envelope_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"destination_authority_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"checkpoint_ordered_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"blob_ordered_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"pending_write_ordered_digest\") = 32"
-        },
-        "protected_task_wake_continuation_receipts_public_revision_positive": {
-          "name": "protected_task_wake_continuation_receipts_public_revision_positive",
-          "value": "\"protected_task_wake_continuation_receipts\".\"initial_policy_revision\" > 0\n        and \"protected_task_wake_continuation_receipts\".\"initial_agent_authorization_revision\" > 0"
-        },
-        "protected_task_wake_continuation_receipts_manifest_counts_safe": {
-          "name": "protected_task_wake_continuation_receipts_manifest_counts_safe",
-          "value": "\"protected_task_wake_continuation_receipts\".\"expected_checkpoint_count\" between 1 and 2147483647\n        and \"protected_task_wake_continuation_receipts\".\"expected_blob_count\" between 0 and 2147483647\n        and \"protected_task_wake_continuation_receipts\".\"expected_pending_write_count\" between 0 and 2147483647"
-        },
-        "protected_task_wake_continuation_receipts_authority_shape": {
-          "name": "protected_task_wake_continuation_receipts_authority_shape",
-          "value": "jsonb_typeof(\"protected_task_wake_continuation_receipts\".\"semantic_authority_requirements\") = 'array'\n        and cardinality(\"protected_task_wake_continuation_receipts\".\"retained_source_namespace_ids\") > 0\n        and array_position(\"protected_task_wake_continuation_receipts\".\"retained_source_namespace_ids\", null) is null"
         }
       },
       "isRLSEnabled": true

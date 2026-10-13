@@ -200,7 +200,7 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3_182);
+    expect(inventory.currentColumns).toHaveLength(3186);
     expect(inventory.currentConstraints).toHaveLength(890);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
@@ -403,9 +403,9 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 351,
-      tag: "0351_strange_red_shift",
-      path: "0351_strange_red_shift.sql",
+      index: 354,
+      tag: "0354_strange_red_shift",
+      path: "0354_strange_red_shift.sql",
       sha256: "950d05509ccf6affa335753842e8f2f07a47ee5c1877577fadb8df48626b3f2b",
     });
 

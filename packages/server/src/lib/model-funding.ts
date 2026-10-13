@@ -7,6 +7,7 @@ import {
   resolveProviderKey,
   resolveOpenRouterTransport,
   resolveSurplusChatServingAvailability,
+  deriveSurplusMediaModelId,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import {
@@ -31,7 +32,8 @@ export type ModelFundingWorkload =
   | "native_text_task"
   | "research"
   | "decision"
-  | "image_assistance";
+  | "image_assistance"
+  | "generation";
 
 /** Runnable personal chat adapters; storing a service key never enables its paid path. */
 export const PERSONAL_CHAT_PROVIDER_IDS = [
@@ -84,6 +86,8 @@ export interface ResolveModelFundingInput {
   readonly transport?: "direct" | "surplus";
   /** A related image call may narrow admission to the main turn's payer class. */
   readonly fundingKind?: "server" | "personal";
+  /** A media request may require a supported direct-only wire contract. */
+  readonly directOnly?: boolean;
 }
 
 export interface ModelFundingDeps {
@@ -116,6 +120,16 @@ export function resolveServerFundingRoute(
   const decision = resolveCatalogModel(modelId, { env });
   const preferSurplus = input.preferSurplus
     ?? getCachedServerModelConfigRow()?.preferSurplus === true;
+  if (decision.workload === "generation") {
+    // Generation has its own transport contract; a chat alias never admits it.
+    if (["selectable", "missing_credentials"].includes(decision.availability)
+      && preferSurplus && deriveSurplusMediaModelId(modelId)
+      && (input.surplusKeyConfigured ?? Boolean(input.env === undefined
+        ? resolveProviderKey("surplus") : env["SURPLUS_API_KEY"]?.trim()))) return "surplus";
+    if (decision.provider === "openrouter" && !env["OPENROUTER_API_KEY"]?.trim()) return null;
+    return decision.availability === "selectable" && modelHasRunnableCredentials(modelId, env)
+      ? decision.provider : null;
+  }
   if (decision.workload === "decision") {
     if (!["selectable", "missing_credentials"].includes(decision.availability)) return null;
     const surplus = resolveSurplusDecisionServingAvailability({
@@ -156,7 +170,9 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   serverRoute: (modelId, _workload, transport) => resolveServerFundingRoute(modelId, {
     ...(transport === undefined ? {} : { preferSurplus: transport === "surplus" }),
   }),
-  personalSurplusRoute: (modelId, workload) => (workload === "decision" ? resolveSurplusDecisionServingAvailability : resolveSurplusChatServingAvailability)({
+  personalSurplusRoute: (modelId, workload) => workload === "generation"
+    ? getCachedServerModelConfigRow()?.preferSurplus === true && deriveSurplusMediaModelId(modelId) !== null
+    : (workload === "decision" ? resolveSurplusDecisionServingAvailability : resolveSurplusChatServingAvailability)({
     catalogModelId: modelId,
     policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
     keyConfigured: true, fundingKind: "personal",
@@ -216,10 +232,13 @@ export async function resolveModelFunding(
 ): Promise<ModelFundingDecision> {
   if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task"
     && input.workload !== "research" && input.workload !== "decision"
-    && input.workload !== "image_assistance") {
+    && input.workload !== "image_assistance" && input.workload !== "generation") {
     throw new ModelFundingError("unsupported_workload");
   }
   if (input.workload === "image_assistance" && input.transport !== "direct") {
+    throw new ModelFundingError("unsupported_workload");
+  }
+  if (input.directOnly && input.workload !== "generation") {
     throw new ModelFundingError("unsupported_workload");
   }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
@@ -253,7 +272,7 @@ export async function resolveModelFunding(
 
   // Priority applies only to fresh admissions. An eligible server-first route
   // needs neither a personal row lookup nor access to personal key custody.
-  const serverRoute = (transport: "direct" | "surplus" | undefined = input.transport) => {
+  const serverRoute = (transport: "direct" | "surplus" | undefined = input.directOnly ? "direct" : input.transport) => {
     const route = deps.serverRoute(input.modelId, input.workload, transport);
     // Image assistance uses the reviewed direct adapters. A text marketplace
     // mapping is not proof that the same route accepts image payloads.
@@ -286,7 +305,7 @@ export async function resolveModelFunding(
 
   // Switch-off and admitted server operations never inspect personal rows.
   if (personalAllowed && provider && prior?.kind !== "server" && input.fundingKind !== "server") {
-    const surplusEligible = input.transport !== "direct"
+    const surplusEligible = !input.directOnly && input.transport !== "direct"
       && deps.personalSurplusRoute?.(input.modelId, input.workload) === true;
     const surplusCredential = surplusEligible
       ? prior?.kind === "personal" && prior.providerRoute === "surplus"
@@ -340,7 +359,7 @@ export async function resolveModelFunding(
   if (input.transport === "surplus" && pinnedServerTransport === "direct") {
     throw new ModelFundingError("funding_source_changed");
   }
-  const requestedServerTransport = input.transport ?? pinnedServerTransport;
+  const requestedServerTransport = input.transport ?? (input.directOnly ? "direct" : pinnedServerTransport);
   const route = serverRoute(requestedServerTransport);
   if (!route) throw new ModelFundingError("provider_credentials_missing");
   if (requestedServerTransport === "surplus" && route !== "surplus") {

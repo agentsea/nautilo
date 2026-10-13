@@ -30,6 +30,8 @@ test("research recovery survives an actual graph checkpoint and restart through 
   let providerCalls = 0;
   let selectedModel: string | undefined;
   let current: NautiloState | undefined;
+  const providerCheckpointCallId = "save-page-checkpoint";
+  let admittedCheckpointCallId: string | undefined;
   const prepared = spyOn(preModel, "preModelNode").mockImplementation(async (state) => {
     preparations++;
     if (preparations >= pauseAt) throw new Error("qualification-pause-after-protected-tool");
@@ -44,7 +46,7 @@ test("research recovery survives an actual graph checkpoint and restart through 
     if (!current?.researchContextRecovery) throw new Error("Expected persisted recovery before provider call");
     if (providerCalls === 2 || providerCalls === 4) {
       return { modelUsed: model, response: new AIMessage({ id: "ai:model-checkpoint", content: "Save the inspected page before requesting another.", tool_calls: [{
-        id: "save-page-checkpoint", name: "security_scan", args: { version: "security-scan-v1", operation: "record", action: "append", entry: {
+        id: providerCheckpointCallId, name: "security_scan", args: { version: "security-scan-v1", operation: "record", action: "append", entry: {
           kind: "checkpoint", summary: "Inspected the first retained authorization-source page; its source bytes and outstanding references remain preserved.",
           nextWork: "Read the exact continuation of the original source; investigate the queued delivery and revocation paths.", openRecordIds: [], evidenceRefs: [],
         } },
@@ -64,7 +66,20 @@ test("research recovery survives an actual graph checkpoint and restart through 
   const saver = new MemorySaver();
   const policy = { checkToolAccess: async () => ({ type: "allow" as const }) } as unknown as PolicyResolver;
   const makeGraph = () => createNautiloGraph(saver, policy, { liveShadowToolBoundaryForState: () => ({
-    protectAssistantToolCall: async (message) => { protectedCalls++; return message; },
+    protectAssistantToolCall: async (message) => {
+      protectedCalls++;
+      const checkpointCall = AIMessage.isInstance(message)
+        ? message.tool_calls?.find((call) => call.name === "security_scan" && call.args["operation"] === "record")
+        : undefined;
+      if (checkpointCall) {
+        if (!checkpointCall.id) throw new Error("Expected an admitted checkpoint call ID");
+        expect(checkpointCall.id).toMatch(/^nc_[0-9a-f]{32}_0$/);
+        expect(checkpointCall.id).not.toBe(providerCheckpointCallId);
+        if (admittedCheckpointCallId === undefined) admittedCheckpointCallId = checkpointCall.id;
+        else expect(checkpointCall.id).toBe(admittedCheckpointCallId);
+      }
+      return message;
+    },
     protectToolResult: async (message) => { protectedResults++; return message; },
   }) });
   const config = { configurable: { thread_id: "security-research-restart" } };
@@ -99,7 +114,8 @@ test("research recovery survives an actual graph checkpoint and restart through 
         const args = request["args"] as SecurityScanRelayRequest;
         expect(args.operation.operation).toBe("record");
         if (args.operation.operation !== "record") throw new Error("Only the fixture checkpoint can reach this Desktop backend");
-        expect(args.trustedContext).toMatchObject({ taskId: input.currentTaskId, taskRunId: input.currentTaskRunId, toolCallId: "save-page-checkpoint", modelId: input.model });
+        if (admittedCheckpointCallId === undefined) throw new Error("Expected admitted checkpoint identity before relay dispatch");
+        expect(args.trustedContext).toMatchObject({ taskId: input.currentTaskId, taskRunId: input.currentTaskRunId, toolCallId: admittedCheckpointCallId, modelId: input.model });
         checkpointWrites++;
         const author = { taskId: input.currentTaskId, taskRunId: input.currentTaskRunId, modelId: input.model };
         return { status: "ok", result: securityScanToolResultSchema.parse({ ok: true, operation: "record", result: { codeEvidence: [], record: {
@@ -113,11 +129,16 @@ test("research recovery survives an actual graph checkpoint and restart through 
     const secondPause = await restarted.invoke(null, config).catch((error: unknown) => error);
     expect(secondPause).toBeInstanceOf(Error);
     expect((secondPause as Error).message).toBe("qualification-pause-after-protected-tool");
+    if (admittedCheckpointCallId === undefined) throw new Error("Expected admitted checkpoint identity after graph execution");
     const second = (await restarted.getState(config))!.values as unknown as NautiloState;
     expect(second.messages[2]?.content).toBe(original.content);
     expect(currentResearchContextRecovery(second)).not.toBeNull();
     expect(second.messages.filter((message) => ToolMessage.isInstance(message) && message.name === "security_scan")).toHaveLength(2);
     expect(JSON.parse(second.messages.at(-1)!.content as string)).toMatchObject({ ok: true, operation: "record", result: { record: { entry: { kind: "checkpoint" } } } });
+    const persistedCheckpoint = second.messages.find((message) => AIMessage.isInstance(message) && message.id === "ai:model-checkpoint");
+    if (!persistedCheckpoint || !AIMessage.isInstance(persistedCheckpoint)) throw new Error("Expected persisted checkpoint response");
+    expect(persistedCheckpoint.tool_calls?.[0]?.id).toBe(admittedCheckpointCallId);
+    expect((second.messages.at(-1) as ToolMessage).tool_call_id).toBe(admittedCheckpointCallId);
     expect(checkpointWrites).toBe(1);
     // Disconnect the fake Desktop. Historical reads remain server-local and
     // resume exact bytes after the accepted, separately checkpointed model note.
@@ -130,6 +151,9 @@ test("research recovery survives an actual graph checkpoint and restart through 
     const third = (await afterCheckpoint.getState(config))!.values as unknown as NautiloState;
     expect(third.messages[2]?.content).toBe(original.content);
     expect(currentResearchContextRecovery(third)).not.toBeNull();
+    const restartedCheckpoint = third.messages.find((message) => AIMessage.isInstance(message) && message.id === "ai:model-checkpoint");
+    if (!restartedCheckpoint || !AIMessage.isInstance(restartedCheckpoint)) throw new Error("Expected restarted checkpoint response");
+    expect(restartedCheckpoint.tool_calls?.[0]?.id).toBe(admittedCheckpointCallId);
     const contextPages = third.messages.filter((message) => ToolMessage.isInstance(message) && message.name === "security_scan" && typeof message.content === "string" && (JSON.parse(message.content) as { operation?: string }).operation === "context");
     expect(contextPages).toHaveLength(2);
     const secondPage = JSON.parse(contextPages[1]!.content as string) as { result: { startByte: number } };

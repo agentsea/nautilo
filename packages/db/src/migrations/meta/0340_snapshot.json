@@ -1,6 +1,6 @@
 {
-  "id": "2088f4ce-31ac-494f-a489-0a6d6e3b7fcf",
-  "prevId": "0251be5f-067e-4010-942c-3bdf9e1c964c",
+  "id": "f49f83ad-01ca-449c-972f-7b435ec81b69",
+  "prevId": "4fc8179b-8a89-4c03-a167-8cc5c86b3043",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -16792,10 +16792,6 @@
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
         },
-        "tasks_protected_requester_owns_content": {
-          "name": "tasks_protected_requester_owns_content",
-          "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
-        },
         "tasks_crypto_mapping_coherent": {
           "name": "tasks_crypto_mapping_coherent",
           "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
@@ -16836,13 +16832,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        },
-        "result_revision": {
-          "name": "result_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
         },
         "result_operation_id": {
           "name": "result_operation_id",
@@ -17035,7 +17024,7 @@
         },
         "protected_task_run_output_bindings_result_identity_shape": {
           "name": "protected_task_run_output_bindings_result_identity_shape",
-          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and (\n          (\"protected_task_run_output_bindings\".\"result_revision\" = 1\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n          or (\"protected_task_run_output_bindings\".\"result_revision\" = 2\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-cancelled-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n        )\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
+          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "protected_task_run_output_bindings_delivery_shape": {
           "name": "protected_task_run_output_bindings_delivery_shape",
@@ -29485,11 +29474,11 @@
         },
         "background_crypto_authorization_requests_work_kind": {
           "name": "background_crypto_authorization_requests_work_kind",
-          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_purpose": {
           "name": "background_crypto_authorization_requests_purpose",
-          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_work_purpose_coherent": {
           "name": "background_crypto_authorization_requests_work_purpose_coherent",
@@ -29509,7 +29498,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" <> 'task.cancel_result'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume',\n        'task.cancel_result'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -41968,9 +41957,27 @@
           "primaryKey": false,
           "notNull": true
         },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "provider_queue_id": {
           "name": "provider_queue_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_requested_at": {
+          "name": "cancellation_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_provider_acknowledged_at": {
+          "name": "cancellation_provider_acknowledged_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -42015,6 +42022,12 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "actual_usd_micros": {
+          "name": "actual_usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "state": {
           "name": "state",
@@ -42348,9 +42361,9 @@
           "name": "media_generations_receipt_portable",
           "value": "octet_length(\"media_generations\".\"receipt_id\") between 1 and 128 and \"media_generations\".\"receipt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
         },
-        "media_generations_provider_fixed": {
-          "name": "media_generations_provider_fixed",
-          "value": "\"media_generations\".\"provider\" = 'venice' and octet_length(\"media_generations\".\"provider_model\") between 1 and 256 and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128"
+        "media_generations_provider_shape": {
+          "name": "media_generations_provider_shape",
+          "value": "\n      \"media_generations\".\"provider\" in ('venice', 'surplus')\n      and octet_length(\"media_generations\".\"provider_model\") between 1 and 256\n      and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128\n      and ((\"media_generations\".\"funding_binding\" is null and \"media_generations\".\"provider\" = 'venice') or coalesce((\n        jsonb_typeof(\"media_generations\".\"funding_binding\") = 'object'\n        and \"media_generations\".\"funding_binding\" ?& array['humanUserId', 'provider', 'binding', 'credentialFingerprint']\n        and \"media_generations\".\"funding_binding\" - 'humanUserId' - 'provider' - 'binding' - 'credentialFingerprint' = '{}'::jsonb\n        and (\"media_generations\".\"owner_id\" is null or \"media_generations\".\"funding_binding\"->>'humanUserId' = \"media_generations\".\"owner_id\"::text)\n        and \"media_generations\".\"funding_binding\"->>'provider' = \"media_generations\".\"provider\"\n        and \"media_generations\".\"funding_binding\"->>'credentialFingerprint' = \"media_generations\".\"provider_account_fingerprint\"\n        and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding') = 'object'\n        and \"media_generations\".\"funding_binding\"->'binding'->>'providerRoute' = \"media_generations\".\"provider\"\n        and (\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'server'\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' = '{}'::jsonb)\n          or\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'personal'\n            and (\"media_generations\".\"funding_binding\"->'binding') ?& array['credentialId', 'credentialRevision']\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' - 'credentialId' - 'credentialRevision' = '{}'::jsonb\n            and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding'->'credentialRevision') = 'number'\n            and (\"media_generations\".\"funding_binding\"->'binding'->>'credentialRevision')::numeric >= 1)\n        )\n      ), false))\n    "
         },
         "media_generations_digests": {
           "name": "media_generations_digests",
@@ -42359,6 +42372,10 @@
         "media_generations_quote_nonnegative": {
           "name": "media_generations_quote_nonnegative",
           "value": "\"media_generations\".\"quoted_usd_micros\" >= 0"
+        },
+        "media_generations_actual_cost_nonnegative": {
+          "name": "media_generations_actual_cost_nonnegative",
+          "value": "\"media_generations\".\"actual_usd_micros\" is null or \"media_generations\".\"actual_usd_micros\" >= 0"
         },
         "media_generations_revision_nonnegative": {
           "name": "media_generations_revision_nonnegative",
@@ -42371,6 +42388,10 @@
         "media_generations_admission_shape": {
           "name": "media_generations_admission_shape",
           "value": "\n      (\"media_generations\".\"admission_token\" is null) = (\"media_generations\".\"admission_started_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null) = (\"media_generations\".\"accepted_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null or \"media_generations\".\"admission_token\" is not null)\n      and (\"media_generations\".\"state\" <> 'prequeue' or (\"media_generations\".\"admission_token\" is null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" <> 'admitting' or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" not in ('queued', 'retrieving', 'saving', 'ready') or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is not null))\n      and (\"media_generations\".\"state\" <> 'unknown' or \"media_generations\".\"admission_token\" is not null)\n    "
+        },
+        "media_generations_cancellation_shape": {
+          "name": "media_generations_cancellation_shape",
+          "value": "\n      (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_requested_at\" is not null)\n      and (\"media_generations\".\"cancellation_requested_at\" is null or (\n        \"media_generations\".\"provider\" = 'surplus'\n        and \"media_generations\".\"provider_queue_id\" is not null\n        and \"media_generations\".\"accepted_at\" is not null\n      ))\n      and (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_provider_acknowledged_at\" >= \"media_generations\".\"cancellation_requested_at\")\n    "
         },
         "media_generations_safe_json": {
           "name": "media_generations_safe_json",

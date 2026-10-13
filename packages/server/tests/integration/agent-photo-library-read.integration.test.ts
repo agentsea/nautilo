@@ -106,8 +106,6 @@ function appFor(
   });
   agentPhotoLibraryRoutes(app, {
     ...(options.routeDeps ?? {}),
-    assertCanUseServerProviderCredentials:
-      options.routeDeps?.assertCanUseServerProviderCredentials ?? (async () => {}),
     db,
     now: () => new Date(nowMs),
     cursorCodec: createPhotoLibraryCursorCodec("p".repeat(32), () => new Date(nowMs)),
@@ -378,20 +376,57 @@ describe("Owned Agent-photo read routes", () => {
             };
           },
         },
-        getDefaultImageModel: () => ({
+        getImageModel: () => ({
           id: "openai:test-image",
           apiModel: "test-image",
           displayName: "Test image",
           provider: "openai",
           enabled: true,
         }),
-        resolveProviderKey: () => "test-key",
+        createCapabilityFundingSession: (humanUserId) => ({
+          humanUserId,
+          resolveModel: async () => ({
+            modelId: "openai:test-image",
+            preferenceRevision: 1,
+          }),
+          openModel: async () => { throw new Error("unexpected model funding"); },
+          openService: async () => { throw new Error("unexpected service funding"); },
+          openMedia: async (modelId, family, options) => {
+            expect({ modelId, family, options }).toEqual({
+              modelId: "openai:test-image",
+              family: "image",
+              options: { operation: "generate", directOnly: true },
+            });
+            return {
+              modelId,
+              family,
+              funding: {
+                humanUserId,
+                provider: "openai",
+                binding: { kind: "server", providerRoute: "openai" },
+                credentialFingerprint: "a".repeat(64),
+              },
+              runAttempt: (run) => run({
+                apiKey: "request-local-test-key",
+                usageFunding: {
+                  kind: "server",
+                  humanUserId,
+                  providerRoute: "openai",
+                },
+              }),
+            };
+          },
+        }),
+        runFundedDirectImageAttempt: (input) => input.invoke(),
         composeAvatarPrompt: (prompt) => `policy:${prompt}`,
-        generateImages: async (args) => ({
+        generateImages: async (args, credentials) => {
+          expect(credentials.openaiKey).toBe("request-local-test-key");
+          return {
           bytes: produced,
           model: args.model,
           mime: "image/png",
-        }),
+          };
+        },
       },
     });
     try {

@@ -8,6 +8,9 @@ import {
   ToolMessage,
 } from "@langchain/core/messages";
 import type { ProtectedMessageDtoV2 } from "@nautilo/types";
+import { normalizeModelToolCallIdentity } from "../../../agent/src/nodes/model-tool-call-identity";
+import { transcriptMetadataForMessage } from "../../../agent/src/store/session-store";
+import { serializeTranscriptToolCalls } from "../../../agent/src/store/transcript-tool-arguments";
 
 import type {
   ActiveConversationRepository,
@@ -90,6 +93,87 @@ describe("protected conversation executor IO", () => {
         toolCallId: "call-owned",
         foregroundExecutionId: "turn-owned",
       },
+    });
+  });
+
+  test("keeps repeated provider call IDs distinct in protected and ordinary transcript payloads", () => {
+    const providerCallId = "provider-reused-call";
+    const admit = (sequence: number) => normalizeModelToolCallIdentity(new AIMessage({
+      content: [
+        { type: "text", text: "Checking." },
+        {
+          type: "tool_use",
+          id: providerCallId,
+          name: "fixture_step",
+          input: { sequence },
+        },
+      ],
+      tool_calls: [{
+        id: providerCallId,
+        name: "fixture_step",
+        args: { sequence },
+      }],
+    }));
+    const first = admit(1);
+    const second = admit(2);
+    const firstId = first.tool_calls?.[0]?.id;
+    const secondId = second.tool_calls?.[0]?.id;
+    if (!firstId || !secondId) throw new Error("expected normalized tool call IDs");
+    expect(firstId).not.toBe(secondId);
+    const firstResult = new ToolMessage({
+      content: "identical result",
+      name: "fixture_step",
+      tool_call_id: firstId,
+    });
+    const secondResult = new ToolMessage({
+      content: "identical result",
+      name: "fixture_step",
+      tool_call_id: secondId,
+    });
+
+    const protectedPayloads = [
+      protectedAgentMessagePayload(first),
+      protectedAgentMessagePayload(firstResult),
+      protectedAgentMessagePayload(second),
+      protectedAgentMessagePayload(secondResult),
+    ];
+    expect(protectedPayloads).toEqual([
+      {
+        role: "assistant",
+        content: "Checking.",
+        toolCalls: [{ id: firstId, name: "fixture_step", args: { sequence: 1 } }],
+      },
+      {
+        role: "tool",
+        content: "identical result",
+        toolName: "fixture_step",
+        sensitiveMetadata: { toolCallId: firstId },
+      },
+      {
+        role: "assistant",
+        content: "Checking.",
+        toolCalls: [{ id: secondId, name: "fixture_step", args: { sequence: 2 } }],
+      },
+      {
+        role: "tool",
+        content: "identical result",
+        toolName: "fixture_step",
+        sensitiveMetadata: { toolCallId: secondId },
+      },
+    ]);
+    expect(JSON.stringify(protectedPayloads)).not.toContain(providerCallId);
+
+    expect(JSON.parse(serializeTranscriptToolCalls(first.tool_calls!))).toEqual([
+      { id: firstId, name: "fixture_step", args: { sequence: 1 } },
+    ]);
+    expect(JSON.parse(serializeTranscriptToolCalls(second.tool_calls!))).toEqual([
+      { id: secondId, name: "fixture_step", args: { sequence: 2 } },
+    ]);
+    expect(transcriptMetadataForMessage(firstResult, {})).toEqual({
+      nautilo_tool_result: { toolCallId: firstId },
+    });
+    expect(transcriptMetadataForMessage(secondResult, {})).toEqual({
+      nautilo_tool_result: { toolCallId: secondId },
     });
   });
 
@@ -220,6 +304,81 @@ describe("protected conversation executor IO", () => {
         args: { limit: 2, query: "needle" },
       }],
     });
+  });
+
+  test("accepts normalized Gemini functionCall transport only with exact canonical parity", () => {
+    const signature = "opaque-gemini-function-signature";
+    const message = normalizeModelToolCallIdentity(new AIMessage({
+      content: [{
+        type: "functionCall",
+        functionCall: {
+          id: "provider-call",
+          name: "look_up",
+          args: { query: "needle", limit: 2 },
+        },
+      }],
+      tool_calls: [{
+        id: "provider-call",
+        name: "look_up",
+        args: { query: "needle", limit: 2 },
+      }],
+      additional_kwargs: {
+        __gemini_function_call_thought_signatures__: {
+          "provider-call": signature,
+        },
+      },
+    }));
+    const canonicalId = message.tool_calls![0]!.id!;
+    expect((message.content[0] as unknown as { functionCall: { id: string } }).functionCall.id)
+      .toBe(canonicalId);
+    expect(message.additional_kwargs["__gemini_function_call_thought_signatures__"])
+      .toEqual({ [canonicalId]: signature });
+    expect(protectedAgentMessagePayload(message)).toEqual({
+      role: "assistant",
+      content: "",
+      toolCalls: [{
+        id: canonicalId,
+        name: "look_up",
+        args: { limit: 2, query: "needle" },
+      }],
+    });
+
+    for (const content of [
+      [{
+        type: "functionCall",
+        functionCall: {
+          id: canonicalId,
+          name: "look_up",
+          args: { query: "different", limit: 2 },
+        },
+      }],
+      [{
+        type: "functionCall",
+        functionCall: {
+          id: "different-call",
+          name: "look_up",
+          args: { query: "needle", limit: 2 },
+        },
+      }],
+      [{ type: "functionCall", functionCall: null }],
+      [{
+        type: "functionCall",
+        functionCall: { name: "look_up", args: { query: "needle", limit: 2 } },
+      }],
+      [{
+        type: "functionCall",
+        functionCall: { id: canonicalId, name: "look_up", args: [] },
+      }],
+    ]) {
+      expect(() => protectedAgentMessagePayload(new AIMessage({
+        content: content as never,
+        tool_calls: message.tool_calls!,
+      }))).toThrow("lacks an exact canonical tool call");
+    }
+    expect(() => protectedAgentMessagePayload(new AIMessage({
+      content: message.content,
+      tool_calls: [],
+    }))).toThrow("lacks an exact canonical tool call");
   });
 
   test("preserves OpenAI Responses output_text blocks", () => {
@@ -619,7 +778,71 @@ describe("protected conversation executor IO", () => {
     });
   });
 
-  test("rereads a fresh authorized cut and excludes later Human input", async () => {
+  test.each([false, true])("pages current progress under live protected callbacks (revoke older page=%s)", async (revoke) => {
+    let initial = true;
+    let liveCallbacks = 0;
+    let maximumLiveCallbacks = 0;
+    let consumerCalls = 0;
+    const cursors: (number | undefined)[] = [];
+    const productReadAuthorization = Object.freeze({}) as never;
+    const rows = [9, 10, 11, 12, 13, 14].map((id) => ({
+      messageId: id,
+      revision: 0,
+      createdAt: new Date(`2027-01-15T08:00:${id.toString().padStart(2, "0")}.000Z`),
+      author: { actorId: "actor-agent", handle: "agent", displayName: "Agent" },
+      payload: { role: "assistant" as const, content: `PROGRESS ${id}`, sensitiveMetadata: { foregroundExecutionId: "active" } },
+    }));
+    const repository = {
+      withAgentTranscript: async <Value>(input: Parameters<ActiveConversationRepository["withAgentTranscript"]>[0]) => {
+        expect(input.productReadAuthorization).toBe(productReadAuthorization);
+        expect(input.authorization).toBe(authorization);
+        expect(input.limit).toBe(2);
+        const first = initial;
+        initial = false;
+        if (!first) {
+          expect(input.upToMessageId).toBe(14);
+          cursors.push(input.beforeMessageId);
+          if (revoke && input.beforeMessageId === 13) return { status: "unavailable" as const, reason: "authorization_unavailable" as const };
+        }
+        const page = first ? [] : rows.filter((row) => input.beforeMessageId === undefined || row.messageId < input.beforeMessageId).slice(-2);
+        liveCallbacks += 1;
+        maximumLiveCallbacks = Math.max(maximumLiveCallbacks, liveCallbacks);
+        try {
+          return { status: "executed" as const, value: await input.execute(page) as Value };
+        } finally { liveCallbacks -= 1; }
+      },
+      appendPreparedAgent: async () => ({ status: "committed" as const, message: committedMessage }),
+    } as Pick<ActiveConversationRepository, "withAgentTranscript" | "appendPreparedAgent">;
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 2,
+      productReadAuthorization,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: { transcriptOrigin: "main", parentThreadId: null, scopeId: null, subthreadRoomId: null, notificationContext: { mentionedHumanUserIds: [], causalHumanUserId: null, causalHumanTurnId: null } },
+      repository,
+      preparer: { prepare: async (input) => ({ status: "prepared", write: prepared(input.sessionId, input.idempotencyKey) }) },
+      execute: ({ readFreshHistory }) => readFreshHistory({
+        throughMessageIdInclusive: 14, excludeMessageId: 10, maximumContextCharacters: 10_000, recentConversationLimit: 1,
+        execute: (history) => {
+          consumerCalls += 1;
+          expect(liveCallbacks).toBeGreaterThan(2);
+          return history.map((hit) => hit.messageId);
+        },
+      }),
+    });
+    expect(result).toEqual({ status: "executed", value: revoke
+      ? { status: "unavailable", reason: "authorization_unavailable" }
+      : { status: "executed", value: [9, 11, 12, 13, 14] } });
+    expect(consumerCalls).toBe(revoke ? 0 : 1);
+    expect(cursors).toEqual(revoke ? [undefined, 13] : [undefined, 13, 11]);
+    expect(maximumLiveCallbacks).toBeGreaterThanOrEqual(2);
+    expect(liveCallbacks).toBe(0);
+  });
+
+  test("rereads a fresh authorized cut with concurrent surrounding activity", async () => {
     let opens = 0;
     let lateRead:
       | Parameters<
@@ -781,6 +1004,7 @@ describe("protected conversation executor IO", () => {
           excludeMessageIds: [9, 10],
           throughMessageIdInclusive: 14,
           foregroundExecutionId: "turn-active",
+          maximumContextCharacters: 10_000,
           execute: (history) => history.map((hit) => ({
             id: hit.messageId,
             role: hit.role,
@@ -791,6 +1015,7 @@ describe("protected conversation executor IO", () => {
         const revoked = await readFreshHistory({
           excludeMessageId: 10,
           throughMessageIdInclusive: 14,
+          maximumContextCharacters: 10_000,
           execute: () => {
             revokedCallbackCalls += 1;
             return "must not run";
@@ -807,7 +1032,9 @@ describe("protected conversation executor IO", () => {
           status: "executed",
           value: [
             { id: 8, role: "user", content: "older request" },
+            { id: 11, role: "user", content: "queued request" },
             { id: 12, role: "assistant", content: "working" },
+            { id: 13, role: "assistant", content: "concurrent turn output" },
             { id: 14, role: "tool", content: "tool:lookup completed result" },
           ],
         },
@@ -822,12 +1049,93 @@ describe("protected conversation executor IO", () => {
     expect(await lateRead!({
       excludeMessageId: 10,
       throughMessageIdInclusive: 14,
+      maximumContextCharacters: 10_000,
       execute: () => "must not run",
     })).toEqual({
       status: "unavailable",
       reason: "authorization_unavailable",
     });
     expect(opens).toBe(3);
+  });
+
+  test("rejects missing or invalid refresh envelopes before reading transcript pages", async () => {
+    let freshTranscriptPageReads = 0;
+    const repository = {
+      withAgentTranscript: async <Value>(
+        input: Parameters<
+          ActiveConversationRepository["withAgentTranscript"]
+        >[0],
+      ) => {
+        if (input.upToMessageId !== undefined) freshTranscriptPageReads += 1;
+        return {
+          status: "executed" as const,
+          value: await input.execute([]) as Value,
+        };
+      },
+      appendPreparedAgent: async () => ({
+        status: "committed" as const,
+        message: committedMessage,
+      }),
+    } as Pick<
+      ActiveConversationRepository,
+      "withAgentTranscript" | "appendPreparedAgent"
+    >;
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 20,
+      productReadAuthorization: Object.freeze({}) as never,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: {
+        transcriptOrigin: "main",
+        parentThreadId: null,
+        scopeId: null,
+        subthreadRoomId: null,
+        notificationContext: {
+          mentionedHumanUserIds: [],
+          causalHumanUserId: null,
+          causalHumanTurnId: null,
+        },
+      },
+      repository,
+      preparer: {
+        prepare: async (input) => ({
+          status: "prepared",
+          write: prepared(input.sessionId, input.idempotencyKey),
+        }),
+      },
+      execute: async ({ readFreshHistory }) => {
+        const invalid = [
+          {},
+          { maximumContextCharacters: Number.NaN },
+          { maximumContextCharacters: Number.POSITIVE_INFINITY },
+          { maximumContextCharacters: -1 },
+        ];
+        const failures: unknown[] = [];
+        for (const envelope of invalid) {
+          failures.push(await readFreshHistory({
+            excludeMessageId: 10,
+            throughMessageIdInclusive: 10,
+            ...envelope,
+            execute: () => "must not run",
+          } as never).catch((error: unknown) => error));
+        }
+        return failures;
+      },
+    });
+
+    expect(result.status).toBe("executed");
+    if (result.status !== "executed") throw new Error("expected execution");
+    expect(result.value).toHaveLength(4);
+    for (const failure of result.value) {
+      expect(failure).toBeInstanceOf(RangeError);
+      expect((failure as Error).message).toBe(
+        "protected transcript refresh envelope is out of bounds",
+      );
+    }
+    expect(freshTranscriptPageReads).toBe(0);
   });
 
   test("allows a trigger-equal protected cut before output is committed", async () => {
@@ -883,6 +1191,7 @@ describe("protected conversation executor IO", () => {
       execute: ({ readFreshHistory }) => readFreshHistory({
         excludeMessageId: 10,
         throughMessageIdInclusive: 10,
+        maximumContextCharacters: 0,
         execute: (history) => history.length,
       }),
     });

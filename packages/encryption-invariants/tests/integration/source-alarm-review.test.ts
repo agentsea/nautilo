@@ -24,6 +24,10 @@ import {
   REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS,
   SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-protected-task-provider-source-alarms";
+import {
+  REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS,
+  SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-trusted-development-environment-source-alarms";
 import { REVIEWED_D581_SOURCE_ALARMS } from "../../baseline/reviewed-d581-research-continuity";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -390,6 +394,10 @@ describe("source alarm review closure", () => {
         !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator)
       )
       .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS)
       .filter((review) =>
         !SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS.has(review.locator)
       )

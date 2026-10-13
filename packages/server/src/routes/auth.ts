@@ -2,7 +2,6 @@ import type { ProtectedTaskHumanResponseInput, ProtectedTaskHumanResponseResult 
 import { readForegroundFundingForThread, runWithForegroundFundingSession } from "@nautilo/agent";
 import { openForegroundChatFundingSession } from "../lib/foreground-chat-funding";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { parseGitHubApprovalEcho } from "@nautilo/types";
 import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { fromRuntimeConfig, resolveInstance } from "@nautilo/config";
@@ -2061,7 +2060,6 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
     mediaGenerationDigest?: string;
     mediaGenerationQuoteDigest?: string;
     mediaGenerationRevision?: number;
-    githubDigest?: string;
     clientActionSessionId?: string;
     authorizationDeviceId?: string;
   } }>(
@@ -2076,7 +2074,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
       const {
         verb, threadId, laneKey, approvalId, localMcpInstallDigest,
         mediaGenerationDigest, mediaGenerationQuoteDigest, mediaGenerationRevision,
-        githubDigest, clientActionSessionId, authorizationDeviceId,
+        clientActionSessionId, authorizationDeviceId,
       } = request.body ?? {};
 
       if (!threadId || typeof threadId !== "string") {
@@ -2090,9 +2088,9 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
 
       const sessionUserId = request.sessionUserId;
 
-      const hasGitHubEcho = githubDigest !== undefined || (typeof approvalId === "string" && approvalId.startsWith("github-publish:"));
-      const githubEcho = hasGitHubEcho ? parseGitHubApprovalEcho({ approvalId, digest: githubDigest, laneKey, verb }) : undefined;
-      if (hasGitHubEcho && !githubEcho) return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
+      if (typeof approvalId === "string" && approvalId.startsWith("github-publish:") && verb !== "deny") {
+        return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
+      }
       const hasMediaEcho = mediaGenerationDigest !== undefined ||
         mediaGenerationQuoteDigest !== undefined || mediaGenerationRevision !== undefined;
       if (hasMediaEcho) {
@@ -2162,7 +2160,6 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
           });
           return;
         }
-        if (githubEcho) return reply.status(409).send({ error: "approval_stale", code: "approval_stale" });
         const auth = await authorizeTaskApprovalResume({
           taskId,
           threadId,
@@ -2490,7 +2487,6 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
                 processor.liveShadowToolBoundaryForState,
                 await resumedMemoryDeps(request, threadId, resumeRoom.roomId ?? "", agentIdForResume, effectiveLaneKey),
                 approvalId,
-                githubEcho ?? undefined,
               )
                 .then(() => jobManager.reconcileForkAndResumePendingTurns(threadId))
                 .then(() => auditApprovalReply(deps.auditEvent, auditEvent))

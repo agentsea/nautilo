@@ -305,6 +305,68 @@ describe("protected Task Human graph continuation", () => {
     expect(continuedState?.relayCapabilities?.["staleRelay"]).toBeUndefined();
   });
 
+  test("retired broker approvals reject allow but accept atomic denial", async () => {
+    for (const scenario of [
+      {
+        approvalId: "legacy-local-git-batch",
+        tools: [
+          { name: "local_git", id: "tool-git", args: { operation: "status" } },
+          { name: "apply_patch", id: "tool-patch", args: { patch: "fixture" } },
+        ],
+      },
+      {
+        approvalId: "github-publish:legacy-publication",
+        tools: [{ name: "apply_patch", id: "tool-patch", args: { patch: "fixture" } }],
+      },
+    ]) {
+      const saver = new MemorySaver();
+      const effects = { predecessors: 0 };
+      let decision: unknown;
+      const graph = makeGraph(
+        saver,
+        () => {
+          decision = interrupt({
+            type: "approval_ask",
+            approvalId: scenario.approvalId,
+            tools: scenario.tools,
+            reason: "Resume the historical local operation?",
+            reasonCode: "destructive-tool",
+            allowedVerbs: ["once", "deny"],
+          });
+          return {};
+        },
+        () => undefined,
+        effects,
+      );
+      const pending = await parked(graph);
+
+      expect(() => createProtectedTaskHumanResumeCommandV1(
+        pending.snapshot,
+        {
+          kind: "approval",
+          interruptId: pending.interruptId,
+          requestId: scenario.approvalId,
+          verb: "once",
+        },
+        context(),
+      )).toThrow("retired broker approval");
+
+      await graph.invoke(createProtectedTaskHumanResumeCommandV1(
+        pending.snapshot,
+        {
+          kind: "approval",
+          interruptId: pending.interruptId,
+          requestId: scenario.approvalId,
+          verb: "deny",
+        },
+        context(),
+      ), pending.config);
+
+      expect(decision).toEqual({ approved: false, verb: "deny" });
+      expect(effects.predecessors).toBe(1);
+    }
+  });
+
   test("wrong request, kind, sender, or widened binding fails before the resumed node", async () => {
     const saver = new MemorySaver();
     const effects = { predecessors: 0 };

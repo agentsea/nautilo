@@ -759,10 +759,11 @@ export {
   type ImageModelConfig,
   type ImageProvider,
 } from "./config/image-models";
-export { listMediaGenerationModels, getDefaultMediaGenerationModel } from "./config/media-generation-models";
+export { listMediaGenerationModels, listOrderedMediaGenerationModels, getDefaultMediaGenerationModel } from "./config/media-generation-models";
 export type { MediaGenerationFamily, MediaGenerationModel } from "./config/media-generation-models";
 export {
   generateImages,
+  runFundedDirectImageAttempt,
   generateImagesOpenAi,
   generateImagesOpenAiStream,
   generateImagesGoogle,
@@ -838,6 +839,7 @@ export {
 } from "./media-generation/errors";
 export {
   VeniceMediaLifecycleAdapter,
+  VeniceMediaLifecycleError,
   type VeniceAcceptedMediaWork,
   type VeniceMediaFetch,
 } from "./media-generation/venice-lifecycle";
@@ -1510,12 +1512,14 @@ export type {
 export { collapseWhitespaceShareApprovalSnippet } from "./post-model/share-approval-preview";
 export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-content-access";
 
-export { listSpeechModels, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
+export { listSpeechModels, getServerSpeechModel, resolveFundedSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
+
+export { deriveSurplusMediaModelId, findSurplusMediaModel, type SurplusMediaFamily, type SurplusMediaRequirements } from "./providers/surplus-media-route";
 
 export { normalizeGatewayBaseUrl } from "./providers/universal";
 
-export { getCapabilityFundingSession, runWithCapabilityFundingSession, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
+export { getCapabilityFundingSession, runWithCapabilityFundingSession, type AdmittedCapabilityMedia, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
 
 export { isSupportedPersonalTool } from "./runtime/personal-tool-readiness";
 
@@ -1534,3 +1538,9 @@ export {
 } from "./runtime/protected-task-project-file";
 
 export { installConversionRuntime, uninstallConversionRuntime, type ConversionRuntime, type CloudConversionExecutionRequest, type CloudConversionExecutionResult, type CloudConversionRecoveryRequest, type CloudConversionSourceBinding, type CloudConversionDestinationBinding } from "./tools/convert/conversion-runtime";
+
+export { SurplusMediaLifecycleAdapter, resolveSurplusMediaRoute, SURPLUS_MEDIA_ROUTES } from "./media-generation/surplus-lifecycle";
+
+export { resolveSurplusImageRoute } from "./image-gen/surplus";
+
+export { readBoundedMediaJson, readBoundedMediaBytes, MediaResponseReadError, MAX_MEDIA_METADATA_JSON_BYTES, MAX_IMAGE_RESPONSE_JSON_BYTES } from "./providers/media-response";

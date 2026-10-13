@@ -1004,3 +1004,35 @@ describe("retired Desktop agent shell dispatch", () => {
     expect(sandboxCalls).toBe(0);
   });
 });
+
+
+describe("trusted user environment command policy", () => {
+  test("HOME credentials are admitted only by local Development authority while internal state stays masked", () => {
+    const home = mkTmp("trusted-user-home-");
+    const policy = buildProtectedPathPolicy({ homeDir: home, platform: "darwin", nautiloRoots: {
+      privateRoot: join(home, ".nautilo", "private"), dataRoot: join(home, ".nautilo", "data"),
+      auditRoot: join(home, ".nautilo", "audit"),
+    } });
+    const normal = selectSandboxProtectedPaths(policy);
+    const development = selectSandboxProtectedPaths(policy, home);
+    expect(normal).toContain(join(home, ".config", "gh"));
+    expect(normal).toContain(join(home, ".ssh"));
+    expect(development).not.toContain(join(home, ".config", "gh"));
+    expect(development).not.toContain(join(home, ".ssh"));
+    expect(development).not.toContain(join(home, "Library", "Keychains"));
+    expect(development).toContain(join(home, ".nautilo", "private"));
+    expect(development).toContain(join(home, ".nautilo", "data"));
+    expect(development).toContain(join(home, ".nautilo", "audit"));
+    expect(development).toContain("/etc/shadow");
+    expect(selectSandboxProtectedPaths(policy, join(home, "other"))).toEqual(normal);
+    const base = baseEnvelope();
+    const scratch = { workspace: home, protectedFileMaskPath: join(home, "mask") };
+    const ordinary = buildShellBindingSandboxEnvelope(base, { readOnlyRoots: [], writableRoots: [] }, policy, "/usr/bin", scratch);
+    expect(ordinary.config.writablePaths).not.toContain(home);
+    const trusted = buildShellBindingSandboxEnvelope(base, { readOnlyRoots: [], writableRoots: [] }, policy, "/usr/bin", scratch,
+      { mode: "host" }, base.workspace, { home, writablePaths: ["/fixture/install"], readOnlyPaths: ["/fixture/gh"] });
+    expect(trusted.config.writablePaths).toEqual([home, "/fixture/install"]);
+    expect(trusted.config.readOnlyPaths).toEqual(["/fixture/gh"]);
+    expect(trusted.config.protectedPaths).toEqual(development);
+  });
+});

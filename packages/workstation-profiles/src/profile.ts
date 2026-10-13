@@ -39,7 +39,12 @@ export type ProfileCapabilityBackend = (typeof PROFILE_CAPABILITY_BACKENDS)[numb
  * only permitted as typed {@link ProfileToolchainCapability} entries that
  * declare a backend and typed operation identifiers.
  */
-export const PROFILE_CAPABILITIES = ["background_processes", "device_control", "mcp_hosts"] as const;
+export const PROFILE_CAPABILITIES = [
+  "background_processes",
+  "device_control",
+  "mcp_hosts",
+  "user_environment",
+] as const;
 export type ProfileCapability = (typeof PROFILE_CAPABILITIES)[number];
 
 /**

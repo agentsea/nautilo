@@ -1,4 +1,3 @@
-import type { GitHubPublishApproval } from "@nautilo/types";
 import { createContext, useContext } from "react";
 import type { DesktopBrowserResearchIntervention } from "../lib/desktop";
 import type {
@@ -809,7 +808,6 @@ export interface ApprovalAskState {
   scopeInfo: ApprovalScopeInfo[];
   localMcpInstall: LocalMcpInstallApproval | null;
   mediaGeneration: MediaGenerationApproval | null;
-  github?: GitHubPublishApproval | null;
   structuredSsh: StructuredSshApproval | null;
   requiresExplicitReview: boolean;
   /** Last submit error (HTTP failure, etc.). null when clean. */

@@ -13,7 +13,7 @@ import { createRunDeepResearchTool } from "../../src/tools/research/run-deep-res
 import { setTaskToolRuntime, type TaskToolCreateInput, type TaskToolRuntime } from "../../src/tools/tasks/task-tool-runtime";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 
-const laneModels: Record<PersonalCapabilityRole, string> = {
+const laneModels: Partial<Record<PersonalCapabilityRole, string>> = {
   webSearchSynthesis: "openrouter:web-search",
   deepResearchSupervisor: "openrouter:supervisor",
   deepResearchResearcher: "openrouter:researcher",
@@ -28,7 +28,7 @@ function capabilitySession(observed: string[]): CapabilityFundingSession {
     humanUserId: "human-research",
     resolveModel: async (role) => {
       observed.push(`resolve:${role}`);
-      return { modelId: laneModels[role], preferenceRevision: 7 };
+      return { modelId: laneModels[role] ?? (() => { throw new Error("Unexpected research role"); })(), preferenceRevision: 7 };
     },
     openModel: async (modelId, workload, prior) => {
       observed.push(`model:${workload}:${modelId}:${prior ? "prior" : "fresh"}`);

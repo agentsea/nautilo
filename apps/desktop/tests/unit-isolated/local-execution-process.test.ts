@@ -23,7 +23,11 @@ const prepared = { program: "/bin/sh", args: [], cwd: "/tmp", env: {}, dispose()
 const errno = (code: string) => Object.assign(new Error(code), { code });
 afterEach(() => mock.restore());
 
-function fixture(responses: readonly (true | string)[], tty = false) {
+function fixture(
+  responses: readonly (true | string)[],
+  tty = false,
+  command = prepared,
+) {
   child = new Child();
   let index = 0;
   const kill = spyOn(process, "kill").mockImplementation(() => {
@@ -32,11 +36,21 @@ function fixture(responses: readonly (true | string)[], tty = false) {
     if (result !== true) throw errno(result);
     return true;
   });
-  const owned = spawnLocalExecutionProcess(prepared, tty, () => {});
+  const owned = spawnLocalExecutionProcess(command, tty, () => {});
   return { owned, kill };
 }
 
 describe("owned process-group cleanup certainty", () => {
+  test("accepts credentials admitted by prepared environment policy", async () => {
+    const { owned } = fixture(["ESRCH"], false, {
+      ...prepared,
+      env: { GH_TOKEN: "synthetic-user-export" },
+    });
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    expect(await owned.exited).toEqual({ exitCode: 0, signal: null });
+  });
+
   test("successful kill and direct absence need no probe", async () => {
     const { owned, kill } = fixture([true, "ESRCH"]);
     owned.terminate();

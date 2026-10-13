@@ -3,6 +3,7 @@ export * from "./schemas/memory-processor-transport";
 export {
   NautiloApiClient,
   ApiError,
+  VoiceFundingApiError,
   InviteShareApiError,
   ProviderCredentialApiError,
   VideoGenerationPreparationError,

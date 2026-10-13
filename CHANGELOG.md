@@ -7,6 +7,38 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Generated media can use Surplus when its catalogue lists the exact selected
+  model and the request is compatible. Missing or unsupported marketplace
+  routes fall back to the same model's direct provider within the admitted
+  funding source, without substituting model versions. Marketplace media
+  approvals label current estimates and explain that final charges can differ.
+  Active marketplace video/music cards offer cancellation while polling preserves
+  the provider’s eventual result and charge.
+
+- Personal provider keys can fund image generation and editing, video/music,
+  ElevenLabs speech and transcription, and existing Groq transcription under
+  the administrator's funding policy. Personal capability settings include
+  image, video, music and speech models with inherited server defaults. Media
+  jobs and voice streams retain their creating account, and Costs distinguishes
+  estimates, actual charges and unresolved attempts. Voice funding errors link to
+  the relevant key or model settings; previews accept up to 500 characters.
+
+- Long Genie turns retain their newest progress across context refreshes without
+  applying the older-history message count to the current run. Journal and
+  recalled Records remain available, concurrent Room activity is labelled as
+  surrounding history, and admitted replies keep their chronological position.
+
+- Existing Development profiles can open the updated scope review and PIN dialog
+  after a Desktop upgrade. Activation still requires consent to the exact reviewed
+  revision and rejects stale or changed profiles. The Agent access popup links
+  directly to Workstation access and Ready to work settings.
+  Ready to work preserves confirmed Voice and Auto-approve status while
+  Development remains independently enabled.
+
+- Separate Genie tool calls keep their own arguments, results, and history even
+  when a model provider reuses call IDs. Approval resumes and repeated delivery
+  continue to use the original invocation identity.
+
 - Personal Browser Use and CloudConvert keys can fund website work and file
   conversion under the administrator's credential policy. Existing browser
   profiles and submitted conversions retain their creating account through
@@ -22,20 +54,19 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Creating a background Task no longer invalidates unrelated foreground command
   grants. Tasks that can start managed commands also retain their output and
   cancellation tool, including existing command-only task whitelists.
-- GitHub account status can be checked through the admitted account tool.
-  Connections and Genie guidance now describe the supported GitHub operations
-  and the limits of credentialed shell commands consistently.
-
-- Development commands use the same controlled real-HOME environment in foreground
-  and delegated pipes or contained terminals. The revised profile narrows shared
-  toolchain writes and requires consent for its new revision.
-- Compatible Desktop and server versions support typed authenticated GitHub reads,
-  clone/fetch/fast-forward pull, and separately reviewed push, comment and pull
-  request creation. Credentials stay inside the account broker. Uncertain publishing
-  outcomes never authorize an automatic retry.
+- Development commands can use the user's HOME credentials, native authentication
+  helpers and login-shell environment through ordinary `git`, `gh` and developer
+  CLIs. User package installs and local listeners work within the active profile
+  and administrator network policy. The broader authority requires consent to
+  the revised shipped Developer profile; older and customized profiles retain
+  their existing authority. Basic and Full Mac behavior is unchanged.
+- Removed the separate typed Git/GitHub Agent tools and account-operation approval
+  lane. GitHub Connections still provides native CLI sign-in and status. Foreground
+  and delegated commands use the same Development environment and existing managed
+  command permissions, output, cancellation and revocation.
 - Security managers can set a separate local-computer network ceiling. It combines
-  with each computer's execution profile; unsupported executors and authenticated
-  account operations are unavailable under a restricted ceiling.
+  with each computer's execution profile; unsupported executors remain unavailable
+  under a restricted ceiling.
 - Local preview opens only after verifying a live listener owned by the selected
   execution. Legacy Agent shell and terminal execution is retired; new commands
   require the current Desktop/server contract. Saved results remain readable, and
@@ -122,9 +153,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Compatible Desktop versions retain supported execution capabilities when
   reconnecting to an older server. Pure output reads retain actor permission
   checks without asking to reactivate Development access.
-  Typed local Git operations are available through `local_git`, and retained
-  shell output can be paged or searched through `read_shell_output`, without
-  launching another shell command.
+  Git runs through ordinary managed commands. Retained shell output can be
+  paged or searched through `read_shell_output` without launching another
+  shell command.
   Basic commands can use installed utilities inside the selected project without
   activating Development access. They use a private temporary home, isolated
   networking, and the existing chat, encryption, and approval checks. Continuing

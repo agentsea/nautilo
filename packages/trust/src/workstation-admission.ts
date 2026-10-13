@@ -50,9 +50,6 @@ export interface FullWorkstationSessionEvidence {
  *     Electron grant + sandbox profile. Eligible for `auto` admission only
  *     as a `run_shell` attempt under an exact active session + plan; local
  *     Electron enforcement remains authoritative at execution.
- *   - `typed_broker` — a profile-listed, schema-bounded broker operation
- *     with local binding / audit / cancel / revoke. It uses the same exact
- *     active-session + plan proof as the profile-bound shell lane.
  *   - `real_workstation` — the explicit raw host-command lane. Routine
  *     `run_shell` attempts may auto-admit past command-shape approval, but
  *     Electron's exact local consent remains final execution authority.
@@ -61,7 +58,6 @@ export interface FullWorkstationSessionEvidence {
 export type WorkstationExecutionClass =
   | "basic_sandbox"
   | "profile_bound_sandbox"
-  | "typed_broker"
   | "real_workstation";
 
 /**
@@ -114,11 +110,8 @@ export interface WorkstationAdmissionEvidence {
  * it does NOT override the normal approval decision, which runs unchanged.
  */
 export type WorkstationAdmissionReason =
-  // Retained for audit compatibility with plans written before typed-broker
-  // admission was enabled; new decisions use the normal session/plan gates.
-  "typed_broker_not_wired"
   // No active authenticated Full Workstation session.
-  | "no_active_session"
+  "no_active_session"
   // No live admitted+revalidated plan pins this dispatch.
   | "no_admitted_plan"
   // Compatibility reason for an unsupported tool/execution-class combination.
@@ -156,8 +149,7 @@ export type WorkstationAdmissionDecision =
  *      off; normal approval + client ask→auto run unchanged).
  *   3. The exact-plan gate: no live admitted+revalidated plan ⇒
  *      `no_admitted_plan` — auto REQUIRES a live exact plan.
- *   4. The tool gate: `run_shell`, contained managed execution, or
- *      `local_git` in its typed-broker class. Other tools fail closed. This
+ *   4. The tool gate: `run_shell` or contained managed execution. Other tools fail closed. This
  *      classification does not claim Electron has constructed a sandbox.
  *   5. Every gate passed ⇒ `auto`.
  *
@@ -211,8 +203,7 @@ export function resolveWorkstationAdmission(
   // ---- Concrete contained command identity only ---------------------------
 
   if (tool.name !== "run_shell" && !(executionClass === "profile_bound_sandbox"
-    && (tool.name === "exec_command" || tool.name === "write_stdin"))
-    && !(executionClass === "typed_broker" && tool.name === "local_git")) {
+    && (tool.name === "exec_command" || tool.name === "write_stdin"))) {
     return none(
       executionClass,
       "run_shell_required",
@@ -220,7 +211,7 @@ export function resolveWorkstationAdmission(
     );
   }
 
-  // ---- Every gate passed: profile-bound or typed-broker admission ---------
+  // ---- Every gate passed: profile-bound admission -------------------------
 
   return { override: "auto", executionClass };
 }

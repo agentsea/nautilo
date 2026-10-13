@@ -1,4 +1,3 @@
-import { parseRelayGitHubInvocationBinding, type RelayGitHubInvocationBinding } from "@nautilo/relay";
 import { parseRelayHumanTerminalBinding, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import type { ForegroundModelControlSnapshot } from "../config/foreground-model-controls";
 import { Annotation } from "@langchain/langgraph";
@@ -60,10 +59,15 @@ export interface ForegroundContextRefreshRequest {
 /** Runtime-stamped source needed to rebuild the accepted foreground request once. */
 export interface ForegroundContextRefreshSource {
   readonly acceptedMessages: BaseMessage[];
+  /** Durable coordinates aligned to exact entries in `acceptedMessages`. */
+  readonly acceptedMessageCoordinates?: readonly Readonly<{
+    acceptedMessageIndex: number;
+    messageId: number;
+  }>[];
   /** Exact non-Human suffix not yet covered by the durable transcript cut. */
   readonly retainedMessages?: BaseMessage[];
   readonly acceptedMessageIds?: readonly number[];
-  /** Stable foreground execution identity used to exclude concurrent turns. */
+  /** Stable foreground identity used to label this execution's progress. */
   readonly executionId?: string;
   readonly triggerMessageId?: number;
   readonly throughMessageIdInclusive?: number;
@@ -264,11 +268,6 @@ export const NautiloStateAnnotation = Annotation.Root({
     default: () => ({}),
   }),
 
-  githubInvocationBindings: Annotation<Readonly<Record<string, RelayGitHubInvocationBinding>>>({
-    reducer: (_, update) => Object.fromEntries(Object.entries(update ?? {}).flatMap(([id, value]) => {
-      const parsed = parseRelayGitHubInvocationBinding(value); return parsed && parsed.toolCallId === id ? [[id, parsed]] : [];
-    })), default: () => ({}),
-  }),
   /** Server-admitted exact handoff generation for each queued call. */
   humanTerminalInvocationBindings: Annotation<Readonly<Record<string, RelayHumanTerminalBinding>>>({
     reducer: (_, update) => Object.fromEntries(Object.entries(update ?? {}).flatMap(([id, value]) => {
@@ -995,7 +994,6 @@ export type NautiloState = Omit<
   | "desktopAutomationRouteBinding"
   | "computerUseInvocationBindings"
   | "humanTerminalInvocationBindings"
-  | "githubInvocationBindings"
   | "fullMacInvocationBindings"
   | "delegatedLocalExecutionBindings"
   | "protectedRepoDocsCheckpoint"
@@ -1071,7 +1069,6 @@ export type NautiloState = Omit<
   /** Absent on ordinary and legacy checkpoints. */
   protectedRepoDocsCheckpoint?: import("../runtime/protected-repo-docs").ProtectedRepoDocsCheckpointV1 | null;
   fullMacInvocationBindings?: Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>;
-  githubInvocationBindings?: Readonly<Record<string, RelayGitHubInvocationBinding>>;
   humanTerminalInvocationBindings?: Readonly<Record<string, RelayHumanTerminalBinding>>;
   ordinaryContentAccessBindings?: Readonly<Record<string, OrdinaryContentAccessBinding>>;
   ordinaryContentAccessRejectedToolCallIds?: string[];

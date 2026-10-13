@@ -3,6 +3,7 @@ import type { ThreadMessageLike } from "@assistant-ui/react";
 import type { RoomMessagesAroundPage } from "@nautilo/types";
 import {
   createRoomHistoryAroundController,
+  findMountedCanonicalToolCardIndex,
   mergeRoomMessagesAround,
   nextMountedHistoryPrioritySelection,
   mountedRoomHistoryPrioritySelection,
@@ -54,6 +55,36 @@ function aroundPage(targetId: string, options?: Partial<RoomMessagesAroundPage>)
 
 function text(id: string, label: string): ThreadMessageLike {
   return { id, role: "assistant", content: [{ type: "text", text: label }] };
+}
+
+function tool(
+  id: string,
+  toolCallId: string,
+  result: string,
+  metadata?: ThreadMessageLike["metadata"],
+): ThreadMessageLike {
+  return {
+    id,
+    role: "assistant",
+    content: [{
+      type: "tool-call",
+      toolCallId,
+      toolName: "lookup",
+      args: { query: "launch" },
+      result,
+    }],
+    ...(metadata === undefined ? {} : { metadata }),
+  };
+}
+
+function toolCallIdOfForTest(message: ThreadMessageLike): string | undefined {
+  const content: unknown = message.content;
+  const part: unknown = Array.isArray(content) ? content[0] : undefined;
+  if (part === null || typeof part !== "object") return undefined;
+  const record = part as Record<string, unknown>;
+  return record["type"] === "tool-call" && typeof record["toolCallId"] === "string"
+    ? record["toolCallId"]
+    : undefined;
 }
 
 describe("around-message history controller", () => {
@@ -248,6 +279,135 @@ describe("around-message history controller", () => {
     expect(result[1]).toBe(live);
     expect(result[2]).toBe(optimistic);
     expect(result[3]).toBe(tail);
+  });
+
+  test("adopts one persisted row id for its canonical hot card and keeps newer live fields", () => {
+    const callId = "nc_0123456789abcdef0123456789abcdef_0";
+    const older = text("1", "loaded older row");
+    const hot = tool(`tool-${callId}`, callId, "new live result", {
+      custom: {
+        laneKey: "room:room-a",
+        authorAgentId: "agent-live",
+        liveOnly: true,
+      },
+    });
+    const optimistic = text("optimistic-1", "optimistic draft");
+    const tail = text("99", "latest tail");
+    const companion = text("5", "assistant tool invocation");
+    const persisted = tool("7", callId, "stale persisted result", {
+      custom: { sentAt: "2026-01-01T00:00:06.000Z", persistedOnly: true },
+    });
+
+    const result = mergeRoomMessagesAround(
+      [older, hot, optimistic, tail],
+      [companion, persisted],
+    );
+
+    expect(result.map((message) => String(message.id))).toEqual([
+      "1", "5", "7", "optimistic-1", "99",
+    ]);
+    expect(result[2]).toMatchObject({
+      id: "7",
+      content: [{
+        type: "tool-call",
+        toolCallId: callId,
+        result: "new live result",
+      }],
+      metadata: { custom: {
+        authorAgentId: "agent-live",
+        laneKey: "room:room-a",
+        liveOnly: true,
+        persistedOnly: true,
+        sentAt: "2026-01-01T00:00:06.000Z",
+      } },
+    });
+    expect(result[0]).toBe(older);
+    expect(result[3]).toBe(optimistic);
+    expect(result[4]).toBe(tail);
+    expect(findMountedCanonicalToolCardIndex(result, {
+      toolCallId: callId,
+      laneKey: "room:room-a",
+      authorAgentId: "agent-live",
+    })).toBe(2);
+
+    const ended = result.map((message, index) => index === findMountedCanonicalToolCardIndex(
+      result,
+      { toolCallId: callId, laneKey: "room:room-a", authorAgentId: "agent-live" },
+    ) ? tool("7", callId, "late terminal result", message.metadata) : message);
+    expect(ended).toHaveLength(5);
+    expect(ended[2]).toMatchObject({
+      id: "7",
+      content: [{ toolCallId: callId, result: "late terminal result" }],
+    });
+
+    // A replayed start resolves the adopted row, so the runtime does not append
+    // another synthetic card.
+    expect(findMountedCanonicalToolCardIndex(ended, {
+      toolCallId: callId,
+      laneKey: "room:room-a",
+      authorAgentId: "agent-live",
+    })).toBe(2);
+
+    const repeated = mergeRoomMessagesAround(ended, [companion, persisted]);
+    expect(repeated.map((message) => String(message.id))).toEqual([
+      "1", "5", "7", "optimistic-1", "99",
+    ]);
+    expect(repeated[2]).toBe(ended[2]);
+  });
+
+  test("never coalesces legacy provider ids or ambiguous canonical rows", () => {
+    const legacyId = "provider-reused";
+    const canonicalId = "nc_fedcba9876543210fedcba9876543210_1";
+    const legacyHot = tool(`tool-${legacyId}`, legacyId, "live legacy result");
+    const canonicalHot = tool(`tool-${canonicalId}`, canonicalId, "live canonical result");
+    const restored = [
+      tool("7", legacyId, "first legacy result"),
+      tool("8", legacyId, "second legacy result"),
+      tool("9", canonicalId, "first canonical result"),
+      tool("10", canonicalId, "second canonical result"),
+    ];
+
+    const result = mergeRoomMessagesAround([legacyHot, canonicalHot], restored);
+
+    expect(result.map((message) => String(message.id))).toEqual([
+      "7", "8", "9", "10", `tool-${legacyId}`, `tool-${canonicalId}`,
+    ]);
+    expect(result.filter((message) => toolCallIdOfForTest(message) === legacyId)).toHaveLength(3);
+    expect(result.filter((message) => toolCallIdOfForTest(message) === canonicalId)).toHaveLength(3);
+  });
+
+  test("cold canonical cards absorb lifecycle replays while owner conflicts fail closed", () => {
+    const callId = "nc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_2";
+    const cold = tool("7", callId, "persisted result", {
+      custom: { authorAgentId: "agent-a", laneKey: "room:room-a" },
+    });
+    expect(findMountedCanonicalToolCardIndex([cold], {
+      toolCallId: callId,
+      toolName: "lookup",
+      authorAgentId: "agent-a",
+      laneKey: "room:room-a",
+    })).toBe(0);
+    expect(findMountedCanonicalToolCardIndex([cold], {
+      toolCallId: callId,
+      authorAgentId: "agent-b",
+      laneKey: "room:room-a",
+    })).toBe(-1);
+    expect(findMountedCanonicalToolCardIndex([cold], {
+      toolCallId: callId,
+      toolName: "delete",
+      authorAgentId: "agent-a",
+      laneKey: "room:room-a",
+    })).toBe(-1);
+
+    const hot = tool(`tool-${callId}`, callId, "live result", {
+      custom: { authorAgentId: "agent-a", laneKey: "room:room-a" },
+    });
+    const wrongOwner = tool("8", callId, "other owner's result", {
+      custom: { authorAgentId: "agent-b" },
+    });
+    const result = mergeRoomMessagesAround([hot], [wrongOwner]);
+    expect(result.map((message) => String(message.id))).toEqual(["8", `tool-${callId}`]);
+    expect(result).toHaveLength(2);
   });
 
   test("keeps a live row that arrives while the around request is pending", async () => {

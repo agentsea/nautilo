@@ -1,6 +1,6 @@
 {
-  "id": "f32d340b-cd6d-4320-96cd-d390ba5e8daa",
-  "prevId": "edbeec46-09a6-44ec-adf5-237c26329109",
+  "id": "b7fcbfef-e86e-4d8d-8264-4c8abfa35609",
+  "prevId": "b5cf9b63-78e2-4d27-8cc4-e847d66f0668",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -14038,7 +14038,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -16508,24 +16508,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pause_request_id": {
-          "name": "pause_request_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pause_requested_at": {
-          "name": "pause_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pause_reason": {
-          "name": "pause_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_error": {
           "name": "last_error",
           "type": "text",
@@ -16809,10 +16791,6 @@
         "tasks_crypto_access_revision_nonnegative": {
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
-        },
-        "tasks_protected_pause_intent_coherent": {
-          "name": "tasks_protected_pause_intent_coherent",
-          "value": "(\n      \"tasks\".\"pause_request_id\" is null and \"tasks\".\"pause_requested_at\" is null and \"tasks\".\"pause_reason\" is null\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"pause_request_id\" is not null and \"tasks\".\"pause_requested_at\" is not null\n      and \"tasks\".\"pause_reason\" in ('manual_pause', 'time_limit')\n    )"
         },
         "tasks_protected_requester_owns_content": {
           "name": "tasks_protected_requester_owns_content",
@@ -17430,12 +17408,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "historical_repair": {
-          "name": "historical_repair",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "operational_metadata": {
           "name": "operational_metadata",
           "type": "jsonb",
@@ -17610,10 +17582,6 @@
         }
       },
       "checkConstraints": {
-        "task_definition_crypto_revisions_historical_repair": {
-          "name": "task_definition_crypto_revisions_historical_repair",
-          "value": "\"task_definition_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_definition_crypto_revisions\".\"representation\" = 'dual' and \"task_definition_crypto_revisions\".\"content_revision\" = 1\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_definition_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
-        },
         "task_definition_crypto_revisions_revision_positive": {
           "name": "task_definition_crypto_revisions_revision_positive",
           "value": "\"task_definition_crypto_revisions\".\"content_revision\" > 0"
@@ -17752,12 +17720,6 @@
           "type": "bytea",
           "primaryKey": false,
           "notNull": true
-        },
-        "historical_repair": {
-          "name": "historical_repair",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "completion": {
           "name": "completion",
@@ -17954,10 +17916,6 @@
         }
       },
       "checkConstraints": {
-        "task_run_result_crypto_revisions_historical_repair": {
-          "name": "task_run_result_crypto_revisions_historical_repair",
-          "value": "\"task_run_result_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_run_result_crypto_revisions\".\"representation\" = 'dual' and \"task_run_result_crypto_revisions\".\"result_revision\" = 1\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
-        },
         "task_run_result_crypto_revisions_revision_positive": {
           "name": "task_run_result_crypto_revisions_revision_positive",
           "value": "\"task_run_result_crypto_revisions\".\"result_revision\" > 0"
@@ -37292,12 +37250,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "raw_result_message_intent": {
-          "name": "raw_result_message_intent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "accepted_policy_revision": {
           "name": "accepted_policy_revision",
           "type": "bigint",
@@ -37401,10 +37353,6 @@
         "task_terminal_message_staging_delivery_intent_hash_size": {
           "name": "task_terminal_message_staging_delivery_intent_hash_size",
           "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"delivery_intent_hash\") = 32"
-        },
-        "task_terminal_message_staging_raw_intent_object": {
-          "name": "task_terminal_message_staging_raw_intent_object",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"raw_result_message_intent\" is null or jsonb_typeof(\"task_terminal_message_crypto_staging_receipts\".\"raw_result_message_intent\") = 'object'"
         },
         "task_terminal_message_staging_policy_revision_positive": {
           "name": "task_terminal_message_staging_policy_revision_positive",
@@ -42344,9 +42292,27 @@
           "primaryKey": false,
           "notNull": true
         },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "provider_queue_id": {
           "name": "provider_queue_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_requested_at": {
+          "name": "cancellation_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_provider_acknowledged_at": {
+          "name": "cancellation_provider_acknowledged_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
@@ -42391,6 +42357,12 @@
           "type": "integer",
           "primaryKey": false,
           "notNull": true
+        },
+        "actual_usd_micros": {
+          "name": "actual_usd_micros",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
         },
         "state": {
           "name": "state",
@@ -42724,9 +42696,9 @@
           "name": "media_generations_receipt_portable",
           "value": "octet_length(\"media_generations\".\"receipt_id\") between 1 and 128 and \"media_generations\".\"receipt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
         },
-        "media_generations_provider_fixed": {
-          "name": "media_generations_provider_fixed",
-          "value": "\"media_generations\".\"provider\" = 'venice' and octet_length(\"media_generations\".\"provider_model\") between 1 and 256 and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128"
+        "media_generations_provider_shape": {
+          "name": "media_generations_provider_shape",
+          "value": "\n      \"media_generations\".\"provider\" in ('venice', 'surplus')\n      and octet_length(\"media_generations\".\"provider_model\") between 1 and 256\n      and octet_length(\"media_generations\".\"provider_account_fingerprint\") between 16 and 128\n      and ((\"media_generations\".\"funding_binding\" is null and \"media_generations\".\"provider\" = 'venice') or coalesce((\n        jsonb_typeof(\"media_generations\".\"funding_binding\") = 'object'\n        and \"media_generations\".\"funding_binding\" ?& array['humanUserId', 'provider', 'binding', 'credentialFingerprint']\n        and \"media_generations\".\"funding_binding\" - 'humanUserId' - 'provider' - 'binding' - 'credentialFingerprint' = '{}'::jsonb\n        and (\"media_generations\".\"owner_id\" is null or \"media_generations\".\"funding_binding\"->>'humanUserId' = \"media_generations\".\"owner_id\"::text)\n        and \"media_generations\".\"funding_binding\"->>'provider' = \"media_generations\".\"provider\"\n        and \"media_generations\".\"funding_binding\"->>'credentialFingerprint' = \"media_generations\".\"provider_account_fingerprint\"\n        and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding') = 'object'\n        and \"media_generations\".\"funding_binding\"->'binding'->>'providerRoute' = \"media_generations\".\"provider\"\n        and (\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'server'\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' = '{}'::jsonb)\n          or\n          (\"media_generations\".\"funding_binding\"->'binding'->>'kind' = 'personal'\n            and (\"media_generations\".\"funding_binding\"->'binding') ?& array['credentialId', 'credentialRevision']\n            and (\"media_generations\".\"funding_binding\"->'binding') - 'kind' - 'providerRoute' - 'credentialId' - 'credentialRevision' = '{}'::jsonb\n            and jsonb_typeof(\"media_generations\".\"funding_binding\"->'binding'->'credentialRevision') = 'number'\n            and (\"media_generations\".\"funding_binding\"->'binding'->>'credentialRevision')::numeric >= 1)\n        )\n      ), false))\n    "
         },
         "media_generations_digests": {
           "name": "media_generations_digests",
@@ -42735,6 +42707,10 @@
         "media_generations_quote_nonnegative": {
           "name": "media_generations_quote_nonnegative",
           "value": "\"media_generations\".\"quoted_usd_micros\" >= 0"
+        },
+        "media_generations_actual_cost_nonnegative": {
+          "name": "media_generations_actual_cost_nonnegative",
+          "value": "\"media_generations\".\"actual_usd_micros\" is null or \"media_generations\".\"actual_usd_micros\" >= 0"
         },
         "media_generations_revision_nonnegative": {
           "name": "media_generations_revision_nonnegative",
@@ -42747,6 +42723,10 @@
         "media_generations_admission_shape": {
           "name": "media_generations_admission_shape",
           "value": "\n      (\"media_generations\".\"admission_token\" is null) = (\"media_generations\".\"admission_started_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null) = (\"media_generations\".\"accepted_at\" is null)\n      and (\"media_generations\".\"provider_queue_id\" is null or \"media_generations\".\"admission_token\" is not null)\n      and (\"media_generations\".\"state\" <> 'prequeue' or (\"media_generations\".\"admission_token\" is null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" <> 'admitting' or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is null))\n      and (\"media_generations\".\"state\" not in ('queued', 'retrieving', 'saving', 'ready') or (\"media_generations\".\"admission_token\" is not null and \"media_generations\".\"provider_queue_id\" is not null))\n      and (\"media_generations\".\"state\" <> 'unknown' or \"media_generations\".\"admission_token\" is not null)\n    "
+        },
+        "media_generations_cancellation_shape": {
+          "name": "media_generations_cancellation_shape",
+          "value": "\n      (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_requested_at\" is not null)\n      and (\"media_generations\".\"cancellation_requested_at\" is null or (\n        \"media_generations\".\"provider\" = 'surplus'\n        and \"media_generations\".\"provider_queue_id\" is not null\n        and \"media_generations\".\"accepted_at\" is not null\n      ))\n      and (\"media_generations\".\"cancellation_provider_acknowledged_at\" is null or \"media_generations\".\"cancellation_provider_acknowledged_at\" >= \"media_generations\".\"cancellation_requested_at\")\n    "
         },
         "media_generations_safe_json": {
           "name": "media_generations_safe_json",
@@ -45655,294 +45635,6 @@
         "protected_task_continuation_receipts_shape_coherent": {
           "name": "protected_task_continuation_receipts_shape_coherent",
           "value": "(\n        \"protected_task_continuation_receipts\".\"kind\" = 'checkpoint_safe_v1'\n        and \"protected_task_continuation_receipts\".\"reason\" in ('manual_pause', 'time_limit', 'grant_refresh')\n        and \"protected_task_continuation_receipts\".\"effect_disposition\" = 'none_v1'\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" is null\n        and \"protected_task_continuation_receipts\".\"operation_id\" is null\n        and \"protected_task_continuation_receipts\".\"request_digest\" is null\n        and \"protected_task_continuation_receipts\".\"required_authority_digest\" is null\n        and \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n        and \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n      ) or (\n        \"protected_task_continuation_receipts\".\"kind\" = 'pre_effect_interrupt_v1'\n        and \"protected_task_continuation_receipts\".\"reason\" in ('grant_refresh', 'additional_authority')\n        and \"protected_task_continuation_receipts\".\"effect_disposition\" = 'not_started_v1'\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" is not null\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_continuation_receipts\".\"operation_id\" is not null\n        and \"protected_task_continuation_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_continuation_receipts\".\"request_digest\" is not null\n        and octet_length(\"protected_task_continuation_receipts\".\"request_digest\") = 32\n        and \"protected_task_continuation_receipts\".\"required_authority_digest\" is not null\n        and octet_length(\"protected_task_continuation_receipts\".\"required_authority_digest\") = 32\n        and (\n          \"protected_task_continuation_receipts\".\"reason\" = 'grant_refresh'\n          and \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n          and \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n          or \"protected_task_continuation_receipts\".\"reason\" = 'additional_authority'\n          and (\n            \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n            or octet_length(\"protected_task_continuation_receipts\".\"stable_routing_digest\") = 32\n          )\n          and (\n            \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n            or jsonb_typeof(\"protected_task_continuation_receipts\".\"semantic_authority_requirements\") = 'array'\n          )\n        )\n      )"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_content_backfill_failures": {
-      "name": "task_content_backfill_failures",
-      "schema": "",
-      "columns": {
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "entity_id": {
-          "name": "entity_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_revision": {
-          "name": "source_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_updated_at": {
-          "name": "source_updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_status": {
-          "name": "source_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_completed_at": {
-          "name": "source_completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "policy_revision": {
-          "name": "policy_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "idx_task_content_backfill_failures_task": {
-          "name": "idx_task_content_backfill_failures_task",
-          "columns": [
-            {
-              "expression": "task_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "task_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "task_content_backfill_failures_kind_entity_id_pk": {
-          "name": "task_content_backfill_failures_kind_entity_id_pk",
-          "columns": [
-            "kind",
-            "entity_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {
-        "task_content_backfill_failures_product": {
-          "name": "task_content_backfill_failures_product",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true",
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_content_backfill_failures_coordinate": {
-          "name": "task_content_backfill_failures_coordinate",
-          "value": "(\n    \"task_content_backfill_failures\".\"kind\" = 'definition' and \"task_content_backfill_failures\".\"entity_id\" = \"task_content_backfill_failures\".\"task_id\" and \"task_content_backfill_failures\".\"task_run_id\" is null\n  ) or (\n    \"task_content_backfill_failures\".\"kind\" = 'result' and \"task_content_backfill_failures\".\"entity_id\" = \"task_content_backfill_failures\".\"task_run_id\" and \"task_content_backfill_failures\".\"task_run_id\" is not null\n  )"
-        },
-        "task_content_backfill_failures_revision": {
-          "name": "task_content_backfill_failures_revision",
-          "value": "\"task_content_backfill_failures\".\"source_revision\" >= 0 and \"task_content_backfill_failures\".\"policy_revision\" > 0"
-        },
-        "task_content_backfill_failures_reason": {
-          "name": "task_content_backfill_failures_reason",
-          "value": "\"task_content_backfill_failures\".\"reason\" in ('unsupported', 'no_content', 'integrity', 'waiting_parent')"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_content_backfill_scans": {
-      "name": "task_content_backfill_scans",
-      "schema": "",
-      "columns": {
-        "human_actor_id": {
-          "name": "human_actor_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "phase": {
-          "name": "phase",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'definition'"
-        },
-        "cursor_at": {
-          "name": "cursor_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cursor_task_id": {
-          "name": "cursor_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cursor_task_run_id": {
-          "name": "cursor_task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "through_at": {
-          "name": "through_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "through_task_id": {
-          "name": "through_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "through_task_run_id": {
-          "name": "through_task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "sweep_started_at": {
-          "name": "sweep_started_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "last_sweep_at": {
-          "name": "last_sweep_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_active_at": {
-          "name": "last_active_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "resume_at": {
-          "name": "resume_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_token": {
-          "name": "lease_token",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_device_id": {
-          "name": "lease_device_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "claim": {
-          "name": "claim",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_content_backfill_scans_human_actor_id_actors_id_fk": {
-          "name": "task_content_backfill_scans_human_actor_id_actors_id_fk",
-          "tableFrom": "task_content_backfill_scans",
-          "tableTo": "actors",
-          "columnsFrom": [
-            "human_actor_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "task_content_backfill_scans_product": {
-          "name": "task_content_backfill_scans_product",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true",
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_content_backfill_scans_phase": {
-          "name": "task_content_backfill_scans_phase",
-          "value": "\"task_content_backfill_scans\".\"phase\" in ('definition', 'result')"
-        },
-        "task_content_backfill_scans_cursor": {
-          "name": "task_content_backfill_scans_cursor",
-          "value": "(\n    (\"task_content_backfill_scans\".\"cursor_at\" is null and \"task_content_backfill_scans\".\"cursor_task_id\" is null and \"task_content_backfill_scans\".\"cursor_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'definition' and \"task_content_backfill_scans\".\"cursor_at\" is not null\n      and \"task_content_backfill_scans\".\"cursor_task_id\" is not null and \"task_content_backfill_scans\".\"cursor_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'result' and \"task_content_backfill_scans\".\"cursor_at\" is not null\n      and \"task_content_backfill_scans\".\"cursor_task_id\" is not null and \"task_content_backfill_scans\".\"cursor_task_run_id\" is not null)\n  )"
-        },
-        "task_content_backfill_scans_through": {
-          "name": "task_content_backfill_scans_through",
-          "value": "(\n    (\"task_content_backfill_scans\".\"through_at\" is null and \"task_content_backfill_scans\".\"through_task_id\" is null and \"task_content_backfill_scans\".\"through_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'definition' and \"task_content_backfill_scans\".\"through_at\" is not null\n      and \"task_content_backfill_scans\".\"through_task_id\" is not null and \"task_content_backfill_scans\".\"through_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'result' and \"task_content_backfill_scans\".\"through_at\" is not null\n      and \"task_content_backfill_scans\".\"through_task_id\" is not null and \"task_content_backfill_scans\".\"through_task_run_id\" is not null)\n  )"
-        },
-        "task_content_backfill_scans_lease": {
-          "name": "task_content_backfill_scans_lease",
-          "value": "case when \"task_content_backfill_scans\".\"lease_token\" is null\n    then \"task_content_backfill_scans\".\"lease_device_id\" is null and \"task_content_backfill_scans\".\"lease_expires_at\" is null and \"task_content_backfill_scans\".\"claim\" is null\n    else \"task_content_backfill_scans\".\"lease_device_id\" is not null and \"task_content_backfill_scans\".\"lease_expires_at\" is not null and \"task_content_backfill_scans\".\"claim\" is not null end"
         }
       },
       "isRLSEnabled": true

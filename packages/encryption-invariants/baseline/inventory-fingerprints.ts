@@ -10,10 +10,10 @@ export const SOURCE_ALARM_BASELINE = {
 // 0295 migration, followed by the execution-input message lookup index at 0296
 // for selected-message interruption summaries. No migration body was edited.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 352,
-  "snapshots": 323,
-  "tip": 351,
-  "sha256": "7451555a6b46b1fb9ca16481dfbe2d762097fbbe1166fb31398593e512cb8a05"
+  "migrations": 355,
+  "snapshots": 326,
+  "tip": 354,
+  "sha256": "153d0cd90c2dc942fb3f54149288f9634957f50dd0be55978ad9418b64350f12"
 } as const;
 
 /**

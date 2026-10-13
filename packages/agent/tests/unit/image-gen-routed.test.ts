@@ -3,6 +3,7 @@ import {
   generateImagesOpenRouter,
   generateImagesVenice,
   imageUsageModelId,
+  DirectImageAttemptError,
   type GenerateImagesArgs,
 } from "../../src/image-gen";
 
@@ -88,7 +89,7 @@ describe("routed image adapters", () => {
     globalThis.fetch = ((_input: string | URL, init?: RequestInit) => {
       if (typeof init?.body !== "string") throw new Error("expected JSON request body");
       body = JSON.parse(init.body) as Record<string, unknown>;
-      return Promise.resolve(new Response(JSON.stringify({ images: [PNG] }), { status: 200 }));
+      return Promise.resolve(new Response(JSON.stringify({ images: [PNG, PNG] }), { status: 200 }));
     }) as typeof fetch;
 
     await generateImagesVenice(args("seedream-v5-pro"), "vk-key");
@@ -103,11 +104,33 @@ describe("routed image adapters", () => {
   test("provider failures are labeled without leaking authorization", async () => {
     globalThis.fetch = (() =>
       Promise.resolve(new Response("secret-key should never escape", { status: 400 }))) as unknown as typeof fetch;
-    expect(
-      generateImagesOpenRouter(args("openai/gpt-image-2"), "secret-key"),
-    ).rejects.toThrow("OpenRouter image generation failed (HTTP 400).");
+    const refusal = await generateImagesOpenRouter(
+      args("openai/gpt-image-2"),
+      "secret-key",
+    ).catch((error: unknown) => error);
+    expect(refusal).toBeInstanceOf(DirectImageAttemptError);
+    expect(refusal).toMatchObject({
+      message: "OpenRouter image generation failed (HTTP 400).",
+      attemptOutcome: "failed",
+      failureCode: "provider_refused",
+    });
     expect(generateImagesVenice(args("gpt-image-2"), "secret-key")).rejects.toThrow(
       "Venice image generation failed (HTTP 400).",
     );
+  });
+
+  test("classifies transport loss as uncertain without exposing its raw error", async () => {
+    globalThis.fetch = (() => Promise.reject(new Error("secret transport detail"))) as unknown as typeof fetch;
+    const error = await generateImagesOpenRouter(
+      args("openai/gpt-image-2"),
+      "secret-key",
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DirectImageAttemptError);
+    expect(error).toMatchObject({
+      attemptOutcome: "unknown",
+      failureCode: "provider_transport_unknown",
+    });
+    expect((error as Error).message).not.toContain("secret transport detail");
   });
 });

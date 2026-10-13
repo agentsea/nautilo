@@ -1,6 +1,7 @@
 /** D525 Phase 3.2 — authenticated Workspace playback for generated video/music. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
+import type { MediaGenerationStatusDtoV1 } from "@nautilo/api-client";
 import { apiClient } from "../../../lib/api";
 import { useRoomNavigation } from "../../../contexts/room-navigation-context";
 import { requestOpenFile } from "../../../adapters/open-file-ref";
@@ -26,14 +27,96 @@ function isGeneratedMediaTerminal(state: GeneratedMediaEnvelope["state"]): boole
 function useHydratedGeneratedMediaEnvelope(
   initial: GeneratedMediaEnvelope,
   roomId: string | undefined,
-): GeneratedMediaEnvelope {
+): {
+  envelope: GeneratedMediaEnvelope;
+  canCancel: boolean;
+  cancellationRequested: boolean;
+  cancelBusy: boolean;
+  cancelError: string | null;
+  requestCancel: () => Promise<void>;
+} {
   const [current, setCurrent] = useState(initial);
   const currentRef = useRef(initial);
+  const latestRevision = useRef(-1);
+  const identity = `${roomId ?? ""}:${initial.receiptId ?? ""}`;
+  const identityRef = useRef(identity);
+  identityRef.current = identity;
+  const [control, setControl] = useState({ identity: "", canCancel: false, cancellationRequested: false, revision: -1 });
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const cancelRequest = useRef<AbortController | null>(null);
+
+  const acceptStatus = useCallback((dto: MediaGenerationStatusDtoV1): boolean => {
+    if (dto.receiptId !== initial.receiptId || dto.revision < latestRevision.current) return false;
+    const mapped = mapMediaGenerationStatusToEnvelope(dto, currentRef.current);
+    if (!mapped) return false;
+    setControl(previous => {
+      const next = {
+        identity,
+        canCancel: dto.canCancel ?? false,
+        cancellationRequested: dto.cancellationRequested ?? false,
+        revision: dto.revision,
+      };
+      return previous.identity === next.identity && previous.canCancel === next.canCancel &&
+        previous.cancellationRequested === next.cancellationRequested &&
+        previous.revision === next.revision ? previous : next;
+    });
+    if (dto.cancellationRequested || isGeneratedMediaTerminal(dto.state)) setCancelError(null);
+    // Repeated revisions must not reset the display-only elapsed clock.
+    if (dto.revision !== latestRevision.current) {
+      latestRevision.current = dto.revision;
+      currentRef.current = mapped;
+      setCurrent(mapped);
+    }
+    return true;
+  }, [identity, initial.receiptId]);
 
   useEffect(() => {
     currentRef.current = initial;
     setCurrent(initial);
-  }, [initial]);
+    latestRevision.current = -1;
+    setControl({ identity: "", canCancel: false, cancellationRequested: false, revision: -1 });
+    setCancelBusy(false);
+    setCancelError(null);
+    return () => {
+      cancelRequest.current?.abort();
+      cancelRequest.current = null;
+    };
+  }, [initial, roomId]);
+
+  const requestCancel = useCallback(async () => {
+    const receiptId = initial.receiptId;
+    if (!receiptId || !roomId || control.identity !== identity || !control.canCancel || cancelRequest.current) return;
+    const requestIdentity = identity;
+    const controller = new AbortController();
+    cancelRequest.current = controller;
+    setCancelBusy(true);
+    setCancelError(null);
+    const isCurrent = () => !controller.signal.aborted && identityRef.current === requestIdentity;
+    try {
+      const dto = await apiClient.cancelMediaGeneration(receiptId, {
+        roomId,
+        expectedRevision: control.revision,
+        signal: controller.signal,
+      });
+      if (isCurrent() && !acceptStatus(dto) &&
+        !(dto.receiptId === receiptId && dto.revision < latestRevision.current)) {
+        setCancelError("Cancellation could not be confirmed. Check the updated status before trying again.");
+      }
+    } catch {
+      if (!isCurrent()) return;
+      // Reconcile a lost response with a read only; never resend this action.
+      setControl(previous => ({ ...previous, canCancel: false }));
+      try {
+        const dto = await apiClient.getMediaGenerationStatus(receiptId, { roomId, signal: controller.signal });
+        if (isCurrent() && acceptStatus(dto) && (dto.cancellationRequested || isGeneratedMediaTerminal(dto.state))) return;
+      } catch { /* Keep truthful uncertainty while the normal status poll continues. */ }
+      if (isCurrent()) setCancelError("Cancellation could not be confirmed. Check the updated status before trying again.");
+    } finally {
+      if (cancelRequest.current === controller) cancelRequest.current = null;
+      if (isCurrent()) setCancelBusy(false);
+    }
+  }, [acceptStatus, control.canCancel, control.identity, control.revision, identity, initial.receiptId, roomId]);
 
   useEffect(() => {
     const receiptId = initial.receiptId;
@@ -43,7 +126,6 @@ function useHydratedGeneratedMediaEnvelope(
     let timer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
     let failureCount = 0;
-    let latestRevision = -1;
     let inFlight = false;
 
     const clearTimer = () => {
@@ -69,26 +151,11 @@ function useHydratedGeneratedMediaEnvelope(
           signal: controller.signal,
         });
         if (stopped) return;
-        if (dto.receiptId !== receiptId || dto.revision < latestRevision) {
+        if (!acceptStatus(dto)) {
           schedule(STATUS_POLL_DELAYS_MS[0]);
           return;
         }
         failureCount = 0;
-        // A repeated durable revision carries no new provider observation.
-        // Keeping the current envelope object intact lets the display-only
-        // elapsed clock continue from its prior anchor between real updates.
-        if (dto.revision === latestRevision) {
-          schedule(STATUS_POLL_DELAYS_MS[0]);
-          return;
-        }
-        const mapped = mapMediaGenerationStatusToEnvelope(dto, currentRef.current);
-        if (!mapped) {
-          schedule(STATUS_POLL_DELAYS_MS[0]);
-          return;
-        }
-        latestRevision = dto.revision;
-        currentRef.current = mapped;
-        setCurrent(mapped);
         if (!isGeneratedMediaTerminal(dto.state)) schedule(STATUS_POLL_DELAYS_MS[0]);
       } catch {
         if (!stopped && !controller.signal.aborted) {
@@ -114,9 +181,11 @@ function useHydratedGeneratedMediaEnvelope(
       controller?.abort();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [initial, roomId]);
+  }, [acceptStatus, initial, roomId]);
 
-  return current;
+  return { envelope: current, canCancel: control.identity === identity && control.canCancel,
+    cancellationRequested: control.identity === identity && control.cancellationRequested,
+    cancelBusy, cancelError, requestCancel };
 }
 
 type WorkspaceArtifactSummary = {
@@ -240,14 +309,14 @@ function safeSettingsSummary(settings: GeneratedMediaEnvelope["settings"]): stri
 function generationProgressCopy(envelope: GeneratedMediaEnvelope): string | null {
   switch (envelope.state) {
     case "submitting":
-      return "Submitted to Venice. Awaiting acknowledgement; Nautilo will not duplicate this paid request.";
+      return "Submitted. Awaiting acknowledgement; Nautilo will not duplicate this paid request.";
     case "queued":
-      return "Submitted to Venice. Checking progress…";
+      return "Submitted. Checking progress…";
     case "generating": {
       const elapsed = envelope.progress?.elapsedSeconds;
       const typical = envelope.progress?.estimatedSeconds;
       if (elapsed !== undefined && typical !== undefined && elapsed > typical) {
-        return "This run is taking longer than typical, but Venice still reports it active.";
+        return "This run is taking longer than typical, but the provider still reports it active.";
       }
       return "Generation is active.";
     }
@@ -583,7 +652,8 @@ function HydratedGeneratedMediaExpanded({
   initial: GeneratedMediaEnvelope;
   roomId: string | undefined;
 }): ReactElement {
-  const envelope = useHydratedGeneratedMediaEnvelope(initial, roomId);
+  const { envelope, canCancel, cancellationRequested, cancelBusy, cancelError, requestCancel } =
+    useHydratedGeneratedMediaEnvelope(initial, roomId);
   const ambientState = envelope.state === "submitting" ? "queued" :
     envelope.state === "queued" || envelope.state === "generating" ||
       envelope.state === "downloading" || envelope.state === "saving" ? envelope.state : null;
@@ -615,6 +685,22 @@ function HydratedGeneratedMediaExpanded({
         onShow={() => setIsProgressVisible(true)}
         onHide={() => setIsProgressVisible(false)}
       />
+      {canCancel && (
+        <button
+          type="button"
+          disabled={cancelBusy}
+          className="rounded border border-border px-2 py-1 text-[0.7rem] font-medium text-foreground-muted disabled:opacity-50"
+          onClick={() => { void requestCancel(); }}
+        >
+          {cancelBusy ? "Requesting cancellation…" : "Cancel generation"}
+        </button>
+      )}
+      {cancellationRequested && !isGeneratedMediaTerminal(envelope.state) && (
+        <p role="status" className="text-xs text-foreground-muted">
+          Cancellation requested. Generation may still complete; costs will reflect the provider’s outcome.
+        </p>
+      )}
+      {cancelError && <p role="alert" className="text-xs text-tool-error">{cancelError}</p>}
       {showVisualSlot && (
         <section
           aria-label="generated media visual"

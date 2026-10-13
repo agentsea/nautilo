@@ -34,6 +34,25 @@ function createRecovery(
 }
 
 describe("Surplus automatic financial recovery", () => {
+  test("image recovery uses exact model/account proof without an invented processor pin", async () => {
+    const writes: unknown[] = [];
+    const media = { ...row, endpoint: "/v1/images/generations", provider: "venice", model: "venice:gpt-image-2",
+      metadata: { catalogModelId: "venice:gpt-image-2", surplusModelId: "venice-gpt-image-2",
+        surplusCredentialFingerprint: surplusCredentialFingerprint(key), surplusUnpinnedMedia: true } };
+    const recovery = createRecovery({
+      resolveCredential: () => available(), list: async () => [media],
+      fetchCost: async ({ binding }) => {
+        expect(binding).toEqual({ requestId: "request-1", surplusModelId: "venice-gpt-image-2", providerPin: null });
+        return { status: "settled", costMicro: 8800 };
+      },
+      settle: async (input) => { writes.push(input); return true; },
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(writes).toHaveLength(1);
+  });
+
   test("restart uses durable request binding and settles the same row once", async () => {
     let resolveSettled!: () => void;
     const settled = new Promise<void>((resolve) => { resolveSettled = resolve; });
@@ -127,7 +146,7 @@ describe("Surplus automatic financial recovery", () => {
     let reads = 0;
     let classified: unknown;
     const recovery = createRecovery({
-      list: async () => [{ ...row, endpoint: "/v1/images/generations" }],
+      list: async () => [{ ...row, endpoint: "/v1/audio/speech" }],
       resolveCredential: () => available(),
       fetchCost: async () => { reads++; return { status: "settled", costMicro: 0 }; },
       classify: async (input) => { classified = input; return true; },
