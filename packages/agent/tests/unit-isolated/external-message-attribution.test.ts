@@ -27,7 +27,16 @@ const fakeDb = {
   execute: () => Promise.resolve(rows),
 };
 const database = await import("@nautilo/db");
+const unexpectedDatabaseAccess = () => { throw new Error("unexpected-database-access-in-attribution-test"); };
 mock.module("@nautilo/db", () => ({ ...database, agentDb: fakeDb,
+  db: new Proxy({} as typeof database.db, { get: unexpectedDatabaseAccess }),
+  getSharedDirectDb: unexpectedDatabaseAccess,
+  getSharedDirectAgentDb: unexpectedDatabaseAccess,
+  // These text-only history fixtures retain a turn fingerprint but no attachments.
+  getAttachmentsForTurns: async (turnIds: readonly string[]) => {
+    expect(turnIds).toEqual(["turn"]);
+    return [];
+  },
   getBolterCanonicalAttributions: (ctx: { userId: string }, ids: readonly number[]) => {
     expect(activeViewerTransactions).toBe(0);
     ordinaryReads++; provenanceOwners.push(ctx.userId);
@@ -63,6 +72,7 @@ test("authorized non-sponsor history verifies the selected row's receipt owner w
   expect(provenanceOwners).toEqual([sponsor]);
   expect(result.messages[0]?.externalOrigin).toEqual(origin);
   expect(result.messages[0]).not.toHaveProperty("sourceUserId");
+  expect(result.messages[0]).not.toHaveProperty("attachments");
 });
 test("structural history detects receipt linkage without reading ordinary metadata or origin labels", async () => {
   rows = [fixture()]; selections.length = 0; ordinaryReads = 0;
@@ -92,6 +102,7 @@ test("forged metadata stays unverified and the ordinary session reader retains v
   expect(result[0]?.content).toBe("Outside content");
   expect(result[0]?.externalAttributionInvalid).toBe(true);
   expect(result[0]).not.toHaveProperty("externalOrigin");
+  expect(result[0]).not.toHaveProperty("attachments");
 });
 test("cursor history releases its viewer transaction before borrowing a provenance connection", async () => {
   rows = [fixture()]; canonical = new Map([[1, { status: "verified", origin }]]);
