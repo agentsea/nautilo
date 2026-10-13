@@ -3,12 +3,13 @@ import { File, Paths } from "expo-file-system";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import type { VoiceFundingRecovery } from "@nautilo/types";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
 import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
-import { createVoiceSettingsController, type VoiceSettingsController } from "@/features/settings/voice-settings-controller";
+import { createVoiceSettingsController, mobileVoiceFundingDestination, type VoiceSettingsController } from "@/features/settings/voice-settings-controller";
 import { VoicePreviewSession } from "@/features/settings/voice-preview-session";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
 import { getApiClient } from "@/lib/api";
@@ -105,6 +106,14 @@ export default function VoicePickerScreen() {
     else if (outcome.status === "failed") setNotice(outcome.message);
   };
   const goBack = (): void => { if (router.canGoBack()) router.back(); else router.replace("/(drawer)/(tabs)/settings/voice"); };
+  const openRecovery = (recovery: VoiceFundingRecovery): void => {
+    const destination = mobileVoiceFundingDestination(recovery);
+    if (destination.kind === "mobile") {
+      router.push(destination.href);
+    } else if (activeServer) {
+      void Linking.openURL(new URL(destination.href, activeServer.serverUrl).toString());
+    }
+  };
   const languageLabel = role === "default" ? null : catalog.languageGroups.find((group) => group.language === role)?.label ?? displayLanguage(role);
   const catalogLanguageLabel = catalog.language ? catalog.languageGroups.find((group) => group.language === catalog.language)?.label ?? displayLanguage(catalog.language) : null;
   const title = role === "default" ? "Choose primary voice" : `Choose ${languageLabel} voice`;
@@ -152,6 +161,7 @@ export default function VoicePickerScreen() {
           {loadErrors.length ? <Pressable onPress={() => { void controller.load(); void controller.loadCatalog(); }} style={styles.retryButton} accessibilityRole="button" accessibilityLabel="Retry loading voices"><Text style={styles.secondaryButtonText}>Retry</Text></Pressable> : null}
           {notice ? <SettingsStatus tone="error">{notice}</SettingsStatus> : null}
           {previewState.error ? <SettingsStatus tone="warning">{previewState.error}</SettingsStatus> : null}
+          {catalog.recovery ?? previewState.recovery ? <Pressable onPress={() => openRecovery((catalog.recovery ?? previewState.recovery)!)} style={styles.retryButton} accessibilityRole="button" accessibilityLabel="Open voice settings"><Text style={styles.secondaryButtonText}>Open voice settings</Text></Pressable> : null}
           {catalog.hasMore ? <Pressable onPress={() => void controller.loadMore()} disabled={catalog.loadingMore} style={styles.loadMore} accessibilityRole="button" accessibilityLabel="Load more voices"><Text style={styles.secondaryButtonText}>{catalog.loadingMore ? "Loading…" : "Load more voices"}</Text></Pressable> : null}
           {!catalog.loading && catalog.voices.length === 0 && catalog.elevenLabsConfigured ? <Text style={styles.empty}>No voices match these filters.</Text> : null}
         </View>

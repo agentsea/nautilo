@@ -422,6 +422,8 @@ import {
   normalizeRemoteOrdinaryRequestBody,
   parseLiveShadowMessageRealtimeEventV1,
   parseFullEncryptionMessageRealtimeContentEventV2,
+  parseVoiceFundingRecovery,
+  voiceFundingFailureMessage,
 } from "@nautilo/types";
 import {
   deviceAdmissionChallengeFromDto,
@@ -14221,6 +14223,7 @@ const ONBOARDING_IPC_CHANNELS = [
   "onboarding:get-server-url",
   "onboarding:complete",
   "onboarding:cancel",
+  "onboarding:open-voice-funding-recovery",
   "onboarding:load-existing-profile",
   "onboarding:get-config-flags",
   "onboarding:get-start-at",
@@ -14244,6 +14247,13 @@ function ipcOk<T>(data: T): IpcResult<T> {
 function ipcErr(error: unknown): IpcResult<never> {
   const msg = error instanceof Error ? error.message : String(error);
   return { ok: false, error: msg };
+}
+
+function voiceFundingIpcError(payload: unknown): IpcResult<never> | null {
+  const recovery = parseVoiceFundingRecovery(payload);
+  return recovery
+    ? { ok: false, error: voiceFundingFailureMessage(recovery), recovery }
+    : null;
 }
 
 const PROFILE_SAVED_AVATAR_UNVERIFIED_ERROR =
@@ -14335,6 +14345,7 @@ async function proxyFetch<T>(
   endpoint: string,
   init: RequestInit,
   bearerToken: string | null,
+  preserveVoiceFundingRecovery = false,
 ): Promise<IpcResult<T>> {
   try {
     const headers: Record<string, string> = {
@@ -14353,17 +14364,23 @@ async function proxyFetch<T>(
       headers,
     });
     if (!resp.ok) {
+      if (preserveVoiceFundingRecovery) {
+        const recoveryFailure = voiceFundingIpcError(await resp.json().catch(() => null));
+        if (recoveryFailure) return recoveryFailure;
+      }
       // 404 on /api/profile is a legitimate "no profile yet" signal
       // for some endpoints; callers handle that case explicitly
       // before calling proxyFetch. Everything else is a real error.
       return ipcErr(
-        `${init.method ?? "GET"} ${endpoint} → ${resp.status} ${resp.statusText}`,
+        preserveVoiceFundingRecovery
+          ? "Voice request failed."
+          : `${init.method ?? "GET"} ${endpoint} → ${resp.status} ${resp.statusText}`,
       );
     }
     const json = (await resp.json()) as T;
     return ipcOk(json);
   } catch (err) {
-    return ipcErr(err);
+    return preserveVoiceFundingRecovery ? ipcErr("Could not complete the voice request.") : ipcErr(err);
   }
 }
 
@@ -14503,6 +14520,20 @@ function showOnboardingWizard(
       win.close();
       reject(new Error("Onboarding wizard cancelled"));
     });
+    ipcMain.handle("onboarding:open-voice-funding-recovery", (e, input: unknown) => {
+      if (!senderOk(e)) return;
+      const recovery = parseVoiceFundingRecovery(input);
+      const active = serverSessions.active;
+      const view = active?.view;
+      if (!recovery || !active || !view || active.serverUrl !== serverUrl || view.webContents.isDestroyed()) {
+        return;
+      }
+      navigateServerSessionView(view, new URL(recovery.href, serverUrl).toString());
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
 
     // ── Hydration handlers ─────────────────────────────────────────
     ipcMain.handle("onboarding:load-existing-profile", async (e) => {
@@ -14570,7 +14601,7 @@ function showOnboardingWizard(
     ipcMain.handle("onboarding:get-voices", async (e) => {
       if (!senderOk(e)) return ipcErr("sender mismatch");
       const bearer = await getWizardBearer();
-      return proxyFetch(serverUrl, "/api/voices", { method: "GET" }, bearer);
+      return proxyFetch(serverUrl, "/api/voices", { method: "GET" }, bearer, true);
     });
     ipcMain.handle(
       "onboarding:list-voice-catalog",
@@ -14589,6 +14620,7 @@ function showOnboardingWizard(
           `/api/voices/catalog${qs}`,
           { method: "GET" },
           bearer,
+          true,
         );
       },
     );
@@ -14623,8 +14655,10 @@ function showOnboardingWizard(
           },
         );
         if (!resp.ok) {
+          const recoveryFailure = voiceFundingIpcError(await resp.json().catch(() => null));
+          if (recoveryFailure) return recoveryFailure;
           return ipcErr(
-            `POST /api/voices/${voiceId}/preview → ${resp.status} ${resp.statusText}`,
+            "Voice preview request failed.",
           );
         }
         const bytes = Buffer.from(await resp.arrayBuffer());
@@ -14639,7 +14673,8 @@ function showOnboardingWizard(
           audioUrl: pathToFileURL(previewPath).toString(),
         });
       } catch (err) {
-        return ipcErr(err);
+        void err;
+        return ipcErr("Could not prepare the voice preview.");
       }
     });
     ipcMain.handle("onboarding:generate-soul", async (e, input: unknown) => {

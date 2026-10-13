@@ -489,6 +489,52 @@ describe("audio content adapter", () => {
     }
   });
 
+  test("audio adapter replaces arbitrary provider exceptions with a closed failure", async () => {
+    const secret = "synthetic-provider-body-with-secret";
+    const bytes = enc.encode("RIFF....WAVEfmt ");
+    const input = envelope({
+      filename: "meeting.wav",
+      claimedMime: "audio/wav",
+      sizeBytes: bytes.byteLength,
+      bytes,
+    });
+    const classification = await classifyAttachment(input);
+    const provider: TranscriptionProvider = {
+      id: "openai",
+      available: async () => true,
+      transcribe: async () => { throw new Error(secret); },
+    };
+
+    const result = await attachmentAudioToTranscriptBlock(input, classification, provider);
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: "provider_error",
+      providerFailureCode: "provider_unavailable",
+      providerStatus: null,
+      reason: "Transcription provider request failed (provider_unavailable).",
+    });
+    expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  test.each([
+    ["Groq", (fetchImpl: typeof fetch) => new GroqTranscriptionProvider("gsk_test_key", fetchImpl)],
+    ["ElevenLabs", (fetchImpl: typeof fetch) => new ElevenLabsTranscriptionProvider("xi_test_key", fetchImpl)],
+  ] as const)("%s transcription drops failed response bodies", async (_name, createProvider) => {
+    const secret = "synthetic-remote-account-secret";
+    const provider = createProvider((async () =>
+      new Response(secret, { status: 429 })) as unknown as typeof fetch);
+
+    const error = await provider.transcribe({
+      bytes: enc.encode("RIFF....WAVEfmt "),
+      filename: "meeting.wav",
+      mime: "audio/wav",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: "rate_limited", status: 429 });
+    expect(String(error)).not.toContain(secret);
+  });
+
   test("Groq provider posts multipart transcription request", async () => {
     let seenUrl = "";
     let seenAuth = "";

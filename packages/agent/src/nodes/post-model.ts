@@ -1164,7 +1164,7 @@ export function createPostModelNode(
           approval: {
             ...forced,
             verb: "ask",
-            reason: "Starting this media generation spends the exact USD amount shown below.",
+            reason: "Starting this media generation spends money and needs your approval.",
           },
         });
         continue;
@@ -1468,7 +1468,7 @@ export function createPostModelNode(
     }
 
     // Paid media asks are also exact, one-tool approvals. Preparation
-    // normalizes the complete request and obtains an exact quote before the
+    // normalizes the complete request and obtains a provider-appropriate price before the
     // interrupt; only the bounded public preview leaves this checkpoint.
     let mediaGenerationApproval: MediaGenerationApproval | undefined;
     let mediaGenerationApprovalKey: string | undefined;
@@ -1540,7 +1540,7 @@ export function createPostModelNode(
             warn("[post_model] media generation quote preparation failed");
             denialMessages.push(denialMessage(
               entry.tc,
-              "The exact media quote is unavailable right now. Try again later. No generation was started.",
+              "The current media price is unavailable right now. Try again later. No generation was started.",
             ));
           }
         }
@@ -2783,7 +2783,7 @@ export function buildAskPayload(
     tools: batch.map(({ tc }) => isManageLocalMcpInstall(tc)
       ? { ...toolEntry(tc), args: { action: "install" } }
       : isMediaGenerationToolCall(tc) ? { ...toolEntry(tc), args: {} } : toolEntry(tc)),
-    reason: combinedReason,
+    reason: mediaGeneration?.preview.spendNotice ?? combinedReason,
     reasonCode: classifyReasonCodeForBatch(batch),
     ...(networkContextForAskBatch(batch) !== null
       ? { network: networkContextForAskBatch(batch)! }

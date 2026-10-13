@@ -441,7 +441,7 @@ async function start() {
       }
     }
   });
-  log(`[server] Venice media generation ${mediaGenerationAvailable ? "available" : "unavailable"}`);
+  log(`[server] Media generation ${mediaGenerationAvailable ? "available" : "unavailable"}`);
 
   await hydrateModelCapabilitiesCache();
   log("[server] Model capability catalog hydrated");
@@ -699,7 +699,7 @@ async function start() {
   await app.listen({ port, host });
   markReady("listening");
   const mediaGenerationWorkerAvailable = !TEST_MODE_ONLY && installProductionMediaGenerationWorker();
-  log(`[server] Venice media reconciliation ${mediaGenerationWorkerAvailable ? "running" : "unavailable"}`);
+  log(`[server] Media reconciliation ${mediaGenerationWorkerAvailable ? "running" : "unavailable"}`);
   if (!TEST_MODE_ONLY) {
     const refreshMediaCredentials = createMediaGenerationCredentialRefresh({
       resolveKey: () => process.env["VENICE_API_KEY"] ?? null,

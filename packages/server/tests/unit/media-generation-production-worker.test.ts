@@ -38,12 +38,24 @@ function claim(namespaceId = "33333333-3333-4333-8333-333333333333"): ClaimedMed
     state: "saving",
     revision: 7,
     kind: "video",
+    provider: "venice",
+    providerAccountFingerprint: "a".repeat(32),
+    fundingBinding: {
+      humanUserId: "11111111-1111-4111-8111-111111111111",
+      provider: "venice",
+      binding: { kind: "server", providerRoute: "venice" },
+      credentialFingerprint: "a".repeat(32),
+    },
     providerModel: "seedance-2-5-text-to-video-basic",
     providerQueueId: "private-provider-coordinate",
     providerExecutionSeconds: null,
     providerAverageExecutionSeconds: null,
     artifactInternalId: null,
     cleanupState: "pending",
+    quotedUsdMicros: 410_000,
+    actualUsdMicros: null,
+    cancellationRequestedAt: null,
+    cancellationProviderAcknowledgedAt: null,
   };
 }
 

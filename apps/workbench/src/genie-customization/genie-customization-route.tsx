@@ -77,6 +77,9 @@ function GenieCustomizationRouteReady({
     getAccessToken: () => sessionRef.current.getAccessToken(),
     getCanonicalProfile: () => ({ ok: true, data: profileResponse }),
     onCancel: () => returnToWorkbenchRef.current(),
+    onOpenVoiceFundingRecovery: (recovery) => {
+      window.open(recovery.href, "_blank", "noopener,noreferrer");
+    },
     onComplete: async () => {
       window.dispatchEvent(new Event("nautilo:profile-changed"));
       await refreshRef.current();

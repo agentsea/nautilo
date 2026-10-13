@@ -11,6 +11,8 @@ import {
   MediaGenerationReconciler,
   VENICE_MEDIA_MODELS,
   VeniceMediaLifecycleAdapter,
+  VeniceMediaLifecycleError,
+  SurplusMediaLifecycleAdapter,
   resolveProviderKey,
   type CommittedMediaArtifactIdentity,
   type MediaArtifactIndexCommit,
@@ -22,6 +24,7 @@ import {
 import { getArtifactsRoot } from "@nautilo/config";
 import {
   attachArtifactToNamespace,
+  acknowledgeClaimedMediaGenerationCancellation,
   claimDueMediaGenerations,
   claimDueMediaGenerationCompletionWakes,
   completeClaimedMediaGenerationCleanup,
@@ -57,9 +60,14 @@ import {
   getPolicyResolver,
 } from "@nautilo/trust";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { providerAccountFingerprint } from "../lib/provider-catalog-cache";
+import { runWithDurableServiceFunding } from "../lib/service-funding";
+import { settleServerProviderCostAttempt } from "../costs/provider-cost-recorder";
 
 const DEFAULT_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH = 4;
+const VENICE_DELIVERY_HOSTS_ENV = "NAUTILO_VENICE_MEDIA_SIGNED_DELIVERY_HOSTS";
+const SURPLUS_DELIVERY_HOSTS_ENV = "NAUTILO_SURPLUS_MEDIA_SIGNED_DELIVERY_HOSTS";
 
 type MediaCompletionWakeJobManager = Pick<typeof jobManager, "createSystemForegroundJob">;
 
@@ -178,6 +186,7 @@ export function createProductionMediaGenerationWorkerRepository(
     claimDue: (input) => claimDueMediaGenerations(db, input),
     readClaimed: (input) => readClaimedMediaGeneration(db, input),
     renew: (input) => renewMediaGenerationClaim(db, input),
+    acknowledgeCancellation: (input) => acknowledgeClaimedMediaGenerationCancellation(db, input),
     transition: (input) => transitionClaimedMediaGeneration(db, input),
     reschedule: (input) => rescheduleClaimedMediaGeneration(db, input),
     rescheduleCleanup: (input) => rescheduleClaimedMediaGenerationCleanup(db, input),
@@ -467,24 +476,121 @@ export interface InstallProductionMediaGenerationWorkerOptions {
   readonly intervalMs?: number;
   readonly workerId?: string;
   readonly schedulerFactory?: typeof createMediaGenerationWorkerScheduler;
+  readonly runFunding?: typeof runWithDurableServiceFunding;
+  readonly veniceSignedDeliveryAllowedHosts?: readonly string[];
+  readonly surplusSignedDeliveryAllowedHosts?: readonly string[];
+}
+
+function signedDeliveryHostsFromEnvironment(name: typeof VENICE_DELIVERY_HOSTS_ENV | typeof SURPLUS_DELIVERY_HOSTS_ENV): readonly string[] {
+  const configured = process.env[name]?.trim();
+  if (!configured) return [];
+  return [...new Set(configured.split(",").map((host) => host.trim().toLowerCase()).filter(Boolean))];
+}
+
+function usdFromMicros(value: number): string {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("media cost must be nonnegative USD micros");
+  return `${Math.floor(value / 1_000_000)}.${String(value % 1_000_000).padStart(6, "0")}00`;
+}
+
+function fundingProvenance(claim: ClaimedMediaGeneration): import("@nautilo/agent").UsageFundingProvenance {
+  const funding = claim.fundingBinding;
+  if (!funding) return { kind: "server", humanUserId: claim.ownerId, providerRoute: claim.provider };
+  return funding.binding.kind === "server"
+    ? { kind: "server", humanUserId: funding.humanUserId, providerRoute: funding.provider }
+    : {
+        kind: "personal", humanUserId: funding.humanUserId, payerHumanId: funding.humanUserId,
+        providerRoute: funding.provider, credentialId: funding.binding.credentialId,
+        credentialRevision: funding.binding.credentialRevision,
+      };
 }
 
 export function installProductionMediaGenerationWorker(
   options: InstallProductionMediaGenerationWorkerOptions = {},
 ): boolean {
   stopProductionMediaGenerationWorker();
-  const apiKey = (options.resolveKey ?? (() => resolveProviderKey("venice")))()?.trim();
-  if (!apiKey) return false;
+  const configuredKey = options.resolveKey?.()?.trim();
+  if (options.resolveKey && !configuredKey) return false;
+  const legacyKey = configuredKey || resolveProviderKey("venice")?.trim() || null;
+  const runFunding = options.runFunding ?? runWithDurableServiceFunding;
   const db = options.db ?? getServerDirectDb();
   const artifactRoot = options.artifactRoot ?? getArtifactsRoot();
-  const lifecycle = new VeniceMediaLifecycleAdapter({
-    apiKey,
-    ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
-    signedDeliveryAllowedHosts: [],
-  });
+  const lifecycleFor = (claim: ClaimedMediaGeneration) => {
+    const run = async <T>(callback: (apiKey: string) => Promise<T>): Promise<T> => {
+      try {
+        if (!claim.fundingBinding) {
+          if (claim.provider !== "venice" || !legacyKey ||
+              providerAccountFingerprint(legacyKey) !== claim.providerAccountFingerprint) {
+            throw new Error("legacy media creating account is unavailable");
+          }
+          return callback(legacyKey);
+        }
+        return await runFunding(claim.fundingBinding, "recover", ({ apiKey }) => callback(apiKey));
+      } catch (error) {
+        if (error instanceof VeniceMediaLifecycleError) throw error;
+        throw new VeniceMediaLifecycleError(claim.receiptId, {
+          code: claim.provider === "surplus" ? "SURPLUS_AUTHENTICATION" : "VENICE_AUTHENTICATION",
+          phase: "retrieve",
+          retrySafe: false,
+          stateChanged: true,
+          completionCertainty: "accepted",
+          chargeCertainty: "unknown",
+          recoveryActions: ["repair_credentials"],
+          message: "The creating media account is unavailable. Repair that exact account to continue this receipt.",
+        });
+      }
+    };
+    const adapter = (apiKey: string) => claim.provider === "surplus"
+      ? new SurplusMediaLifecycleAdapter({
+          apiKey,
+          ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+          signedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ??
+            signedDeliveryHostsFromEnvironment(SURPLUS_DELIVERY_HOSTS_ENV),
+        })
+      : new VeniceMediaLifecycleAdapter({
+          apiKey,
+          ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+          signedDeliveryAllowedHosts: options.veniceSignedDeliveryAllowedHosts ??
+            signedDeliveryHostsFromEnvironment(VENICE_DELIVERY_HOSTS_ENV),
+        });
+    return Promise.resolve({
+      retrieve: (input: Parameters<VeniceMediaLifecycleAdapter["retrieve"]>[0]) =>
+        run((apiKey) => adapter(apiKey).retrieve(input)),
+      downloadSignedDelivery: (input: Parameters<VeniceMediaLifecycleAdapter["downloadSignedDelivery"]>[0]) =>
+        run((apiKey) => adapter(apiKey).downloadSignedDelivery(input)),
+      ...(claim.provider === "surplus" ? {
+        cancel: (input: Parameters<SurplusMediaLifecycleAdapter["cancel"]>[0]) =>
+          run((apiKey) => new SurplusMediaLifecycleAdapter({
+            apiKey,
+            ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+            signedDeliveryAllowedHosts: options.surplusSignedDeliveryAllowedHosts ??
+              signedDeliveryHostsFromEnvironment(SURPLUS_DELIVERY_HOSTS_ENV),
+          }).cancel(input)),
+      } : {}),
+      complete: (input: Parameters<VeniceMediaLifecycleAdapter["complete"]>[0]) =>
+        run((apiKey) => adapter(apiKey).complete(input)),
+    });
+  };
   const reconciler = new MediaGenerationReconciler({
     repository: createProductionMediaGenerationWorkerRepository(db),
-    lifecycle,
+    lifecycleFor,
+    async settleCost(claim, evidence) {
+      await settleServerProviderCostAttempt({
+        identity: `media-generation:${claim.receiptId}`,
+        receiptId: claim.receiptId,
+        usageFunding: fundingProvenance(claim),
+        userId: claim.ownerId,
+        roomId: claim.roomId,
+        agentId: claim.initiatingAgentId ?? null,
+        workload: "media_generation",
+        provider: claim.provider,
+        operation: "generate",
+        ...(evidence.actualUsdMicros === undefined
+          ? { evidenceState: "unknown" as const }
+          : { evidenceState: "actual" as const, actualCostUsd: usdFromMicros(evidence.actualUsdMicros) }),
+        attemptOutcome: evidence.outcome,
+        ...(evidence.failureCode === undefined ? {} : { failureCode: evidence.failureCode }),
+      });
+    },
     artifacts: createProductionMediaArtifactCustody({ db, artifactRoot }),
     serverArtifactRoot: artifactRoot,
     maxBytesFor(claim) {

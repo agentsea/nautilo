@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/await-thenable -- Bun's expect().resolves/rejects is thenable, but the rule cannot infer that. */
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
@@ -412,6 +412,17 @@ describe("Compose personal provider custody", () => {
     const incoming = join(root, "instance.env.incoming");
     const server = join(root, "server.env");
     const incomingServer = join(root, "server.env.incoming");
+    const syncBin = join(root, "bin");
+    const syncTrace = join(root, "sync.trace");
+    mkdirSync(syncBin);
+    const syncExecutable = join(syncBin, "sync");
+    writeFileSync(syncExecutable, [
+      "#!/bin/sh",
+      'if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then exit 73; fi',
+      'printf "%s\\n" "$1" >> "$NAUTILO_SYNC_TRACE"',
+      "",
+    ].join("\n"));
+    chmodSync(syncExecutable, 0o700);
     const serialized = serializePersonalProviderCustody(resetCustody);
     writeFileSync(canonical, `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\nCANONICAL=1\n`);
     writeFileSync(incoming, "INCOMING=1\n");
@@ -423,7 +434,14 @@ describe("Compose personal provider custody", () => {
       incomingServerEnvPath: incomingServer,
     });
 
-    const result = Bun.spawnSync({ cmd: ["sh", "-c", script] });
+    const result = Bun.spawnSync({
+      cmd: ["sh", "-c", script],
+      env: {
+        ...process.env,
+        PATH: `${syncBin}:${process.env["PATH"] ?? ""}`,
+        NAUTILO_SYNC_TRACE: syncTrace,
+      },
+    });
     expect(result.exitCode, result.stderr.toString()).toBe(0);
     await expect(Bun.file(canonical).text()).resolves.toBe(
       `INCOMING=1\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
@@ -431,6 +449,19 @@ describe("Compose personal provider custody", () => {
     await expect(Bun.file(server).text()).resolves.toBe(
       `SERVER=1\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serialized}\n`,
     );
+    const syncTargets = (await Bun.file(syncTrace).text()).trimEnd().split("\n");
+    expect(syncTargets).toHaveLength(3);
+    const configPrefix = `${canonical}.tmp.`;
+    const configTarget = syncTargets[0] ?? "";
+    expect(configTarget.startsWith(configPrefix)).toBe(true);
+    const shellPid = configTarget.slice(configPrefix.length);
+    expect(shellPid).toMatch(/^\d+$/u);
+    expect(syncTargets[1]).toBe(`${server}.tmp.${shellPid}`);
+    expect(syncTargets[2]).toBe(root);
+    expect(existsSync(incoming)).toBe(false);
+    expect(existsSync(incomingServer)).toBe(false);
+    expect(statSync(canonical).mode & 0o777).toBe(0o600);
+    expect(statSync(server).mode & 0o777).toBe(0o600);
   });
 
   test("post-restore health evidence requires ready authenticated rows and matching identity", () => {

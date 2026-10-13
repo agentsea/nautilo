@@ -1,4 +1,4 @@
-export type MediaGenerationPhase = "validation" | "quote" | "admission" | "retrieve" | "download" | "persistence" | "cleanup";
+export type MediaGenerationPhase = "validation" | "quote" | "admission" | "cancel" | "retrieve" | "download" | "persistence" | "cleanup";
 export type CompletionCertainty = "not_started" | "accepted" | "unknown" | "unavailable";
 export type ChargeCertainty = "not_charged" | "charged_or_committed" | "unknown" | "refunded";
 export type MediaGenerationRecoveryAction =
@@ -46,7 +46,7 @@ function failure(input: VeniceFailureInput, overrides: Omit<MediaGenerationFailu
 }
 
 function accepted(input: VeniceFailureInput): boolean {
-  return input.acceptedReceipt === true || input.phase === "retrieve" || input.phase === "download" || input.phase === "persistence" || input.phase === "cleanup";
+  return input.acceptedReceipt === true || input.phase === "cancel" || input.phase === "retrieve" || input.phase === "download" || input.phase === "persistence" || input.phase === "cleanup";
 }
 
 function retryAcceptedWork(input: VeniceFailureInput): MediaGenerationFailure {

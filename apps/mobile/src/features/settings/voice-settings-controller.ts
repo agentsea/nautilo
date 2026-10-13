@@ -1,4 +1,5 @@
-import { genieVoiceSampleTextForLanguage, type AgentProfileFull, type AgentProfileResponse, type CatalogLanguageGroup, type CatalogQuery, type CatalogResponse, type CatalogVoice } from "@nautilo/types";
+import { VoiceFundingApiError } from "@nautilo/api-client/browser";
+import { genieVoiceSampleTextForLanguage, voiceFundingFailureMessage, type AgentProfileFull, type AgentProfileResponse, type CatalogLanguageGroup, type CatalogQuery, type CatalogResponse, type CatalogVoice, type VoiceFundingRecovery } from "@nautilo/types";
 
 import {
   createSettingsDataState,
@@ -31,6 +32,7 @@ export interface VoiceCatalogState {
   readonly loading: boolean;
   readonly loadingMore: boolean;
   readonly error: Error | null;
+  readonly recovery: VoiceFundingRecovery | null;
   readonly hasMore: boolean;
   readonly elevenLabsConfigured: boolean | null;
 }
@@ -87,7 +89,7 @@ export function createVoiceSettingsController(
     const scope = catalog.scope;
     if (disposed || !scope || (append && (!catalog.hasMore || catalog.loading || catalog.loadingMore))) return;
     const generation = ++catalogGeneration;
-    replaceCatalog({ ...catalog, loading: !append, loadingMore: append, error: null });
+    replaceCatalog({ ...catalog, loading: !append, loadingMore: append, error: null, recovery: null });
     const query: CatalogQuery = { page: append ? pageFor(catalog.voices.length) : 0, page_size: PAGE_SIZE };
     if (catalog.search.trim()) query.search = catalog.search.trim();
     if (catalog.language) query.language = catalog.language;
@@ -105,7 +107,7 @@ export function createVoiceSettingsController(
       );
       replaceCatalog({
         ...catalog, voices, languageGroups: response.languageGroups, loading: false, loadingMore: false,
-        error: response.error ? new Error(response.error) : null, hasMore: response.hasMore,
+        error: response.error ? new Error(response.error) : null, recovery: null, hasMore: response.hasMore,
         elevenLabsConfigured: response.elevenLabsConfigured,
       });
       catalogCache.set(catalogKey(catalog), {
@@ -116,7 +118,14 @@ export function createVoiceSettingsController(
       });
     } catch (error) {
       if (!validCatalog(scope, generation)) return;
-      replaceCatalog({ ...catalog, loading: false, loadingMore: false, error: toError(error) });
+      const funding = error instanceof VoiceFundingApiError ? error.recovery : null;
+      replaceCatalog({
+        ...catalog,
+        loading: false,
+        loadingMore: false,
+        error: funding ? new Error(voiceFundingFailureMessage(funding)) : toError(error),
+        recovery: funding,
+      });
     }
   };
   const mutation = async (fn: (api: VoiceSettingsApi, profile: AgentProfileFull) => Promise<void>): Promise<VoiceSettingsOutcome> => {
@@ -199,7 +208,24 @@ function voiceSettingsErrorMessage(error: unknown): string {
 }
 
 function emptyCatalog(scope: SettingsDataScope | null): VoiceCatalogState {
-  return { scope, voices: [], languageGroups: [], search: "", language: null, category: null, gender: null, age: null, accent: "", useCase: null, loading: false, loadingMore: false, error: null, hasMore: false, elevenLabsConfigured: null };
+  return { scope, voices: [], languageGroups: [], search: "", language: null, category: null, gender: null, age: null, accent: "", useCase: null, loading: false, loadingMore: false, error: null, recovery: null, hasMore: false, elevenLabsConfigured: null };
+}
+
+export type MobileVoiceFundingDestination =
+  | { readonly kind: "mobile"; readonly href: "/(drawer)/(tabs)/settings/provider-keys" | "/(drawer)/(tabs)/settings/capability-models" }
+  | { readonly kind: "server"; readonly href: "/admin#provider-credentials" };
+
+/** Map the closed shared recovery hrefs to the current Human's selected server. */
+export function mobileVoiceFundingDestination(
+  recovery: VoiceFundingRecovery,
+): MobileVoiceFundingDestination {
+  if (recovery.href === "/settings#capability-models") {
+    return { kind: "mobile", href: "/(drawer)/(tabs)/settings/capability-models" };
+  }
+  if (recovery.href === "/admin#provider-credentials") {
+    return { kind: "server", href: recovery.href };
+  }
+  return { kind: "mobile", href: "/(drawer)/(tabs)/settings/provider-keys" };
 }
 function catalogKey(catalog: Pick<VoiceCatalogState, "search" | "language" | "category" | "gender" | "age" | "accent" | "useCase">): string {
   return JSON.stringify([

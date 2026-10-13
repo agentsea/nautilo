@@ -3,12 +3,13 @@ import { File, Paths } from "expo-file-system";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, Linking, Pressable, StyleSheet, Text, View } from "react-native";
+import type { VoiceFundingRecovery } from "@nautilo/types";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
 import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
-import { createVoiceSettingsController, type VoiceSettingsController } from "@/features/settings/voice-settings-controller";
+import { createVoiceSettingsController, mobileVoiceFundingDestination, type VoiceSettingsController } from "@/features/settings/voice-settings-controller";
 import { VoicePreviewSession } from "@/features/settings/voice-preview-session";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
 import { getApiClient } from "@/lib/api";
@@ -76,6 +77,14 @@ export default function VoiceSettingsScreen() {
   };
   const goBack = (): void => { if (router.canGoBack()) router.back(); else router.replace("/(drawer)/(tabs)/settings"); };
   const openPicker = (role: string): void => router.push({ pathname: "/(drawer)/(tabs)/settings/voice-picker", params: { role } } as Href);
+  const openRecovery = (recovery: VoiceFundingRecovery): void => {
+    const destination = mobileVoiceFundingDestination(recovery);
+    if (destination.kind === "mobile") {
+      router.push(destination.href as Href);
+    } else if (activeServer) {
+      void Linking.openURL(new URL(destination.href, activeServer.serverUrl).toString());
+    }
+  };
   const profile = state.data;
   const languageVoices = profile ? Object.entries(profile.voices).filter(([key]) => key !== "default").sort(([a], [b]) => a.localeCompare(b)) : [];
 
@@ -95,6 +104,7 @@ export default function VoiceSettingsScreen() {
         {state.loadError ? <SettingsStatus tone="error">{state.loadError.message}</SettingsStatus> : null}
         {notice ? <SettingsStatus tone="error">{notice}</SettingsStatus> : null}
         {previewState.error ? <SettingsStatus tone="warning">{previewState.error}</SettingsStatus> : null}
+        {previewState.recovery ? <Pressable onPress={() => openRecovery(previewState.recovery!)} style={styles.changeButton} accessibilityRole="button" accessibilityLabel="Open voice settings"><Text style={styles.changeButtonText}>Open voice settings</Text></Pressable> : null}
         {profile ? <>
           <Text style={styles.sectionTitle}>Primary voice</Text>
           <View style={styles.card}>

@@ -18,7 +18,7 @@ let allowPersonalProviderKeys = false;
 let capabilities = ["use_server_provider_credentials"];
 let producedFunding: "server" | "personal" | "mixed" = "server";
 let rejectPersonalRevalidation = false;
-const laneModels: Record<PersonalCapabilityRole, string> = {
+const laneModels: Partial<Record<PersonalCapabilityRole, string>> = {
   webSearchSynthesis: "openrouter:web-search",
   deepResearchSupervisor: "openrouter:supervisor",
   deepResearchResearcher: "openrouter:researcher",
@@ -30,7 +30,7 @@ const laneModels: Record<PersonalCapabilityRole, string> = {
 
 const fundingSession: CapabilityFundingSession = {
   humanUserId: HUMAN,
-  resolveModel: async (role) => ({ modelId: laneModels[role], preferenceRevision: 3 }),
+  resolveModel: async (role) => ({ modelId: laneModels[role] ?? (() => { throw new Error("Unexpected research role"); })(), preferenceRevision: 3 }),
   openModel: async (modelId, _workload, prior) => {
     if (prior?.kind === "personal" && rejectPersonalRevalidation) {
       throw new TestModelFundingError("personal_credentials_forbidden");

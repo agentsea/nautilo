@@ -34,7 +34,8 @@ export function surplusReceiptTelemetry(receipt: SurplusWireReceipt): Record<str
 export interface SurplusSettlementBinding {
   requestId: string;
   surplusModelId: string;
-  providerPin: string;
+  /** Null is reserved for explicitly unpinned media receipts. */
+  providerPin: string | null;
 }
 
 export type SurplusSettlementReadResult =
@@ -62,7 +63,11 @@ export function readConfirmedSurplusSettlement(value: unknown, binding: SurplusS
   // Surplus resolves provider aliases to a canonical model in request detail;
   // that spelling change must not discard a confirmed financial receipt.
   // Model/answer correctness is a separate execution concern.
-  if (row["request_id"] !== binding.requestId || row["provider"] !== binding.providerPin) return null;
+  if (row["request_id"] !== binding.requestId) return null;
+  if (binding.providerPin === null) {
+    if (row["model"] !== binding.surplusModelId
+      || typeof row["provider"] !== "string" || !row["provider"].trim()) return null;
+  } else if (row["provider"] !== binding.providerPin) return null;
   if (row["settlement_status"] !== "accrued" || row["settlement_type"] !== "credit"
     || (row["settlement_error"] !== undefined && row["settlement_error"] !== null)) return null;
   const confirmedAt = row["confirmed_at"];

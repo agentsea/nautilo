@@ -104,21 +104,63 @@ describe("turn-owned streaming speech", () => {
     await until(() => h.controls.some(item => item.event["type"] === "voice.stream.abort"));
   });
 
+  test("uses and attributes the exact admitted personal ElevenLabs account", async () => {
+    const humanUserId = "11111111-1111-4111-8111-111111111111";
+    const admitted = {
+      humanUserId,
+      provider: "elevenlabs" as const,
+      binding: { kind: "personal" as const, providerRoute: "elevenlabs", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 4 },
+      credentialFingerprint: "a".repeat(64),
+    };
+    let admissions = 0;
+    let rechecks = 0;
+    const h = harness({
+      funding: {
+        admit: async (actualHumanUserId, provider) => {
+          expect(actualHumanUserId).toBe(humanUserId);
+          expect(provider).toBe("elevenlabs");
+          admissions += 1;
+          return admitted;
+        },
+        run: async (binding, intent, callback) => {
+          expect(binding).toBe(admitted);
+          expect(intent).toBe("spend");
+          rechecks += 1;
+          return callback({
+            apiKey: "personal-elevenlabs-key",
+            usageFunding: { kind: "personal", humanUserId, payerHumanId: humanUserId, providerRoute: "elevenlabs", credentialId: admitted.binding.credentialId, credentialRevision: 4 },
+          });
+        },
+      },
+    });
+    h.service.enqueue(sentence(humanUserId));
+    h.service.finish(humanUserId, "turn-a", false);
+    await until(() => h.receipts.length === 1);
+    expect(admissions).toBe(1);
+    expect(rechecks).toBe(1);
+    expect(new Headers(h.requests[0]!.init.headers).get("xi-api-key")).toBe("personal-elevenlabs-key");
+    expect(h.receipts[0]).toMatchObject({
+      usageFunding: { kind: "personal", payerHumanId: humanUserId, credentialRevision: 4 },
+      attemptOutcome: "succeeded",
+    });
+  });
+
   test("enabling voice after the first segment does not admit a partial turn", async () => {
     const h = harness(); h.service.enqueue(sentence("owner-a", "turn-a", 1));
     await Bun.sleep(1); expect(h.requests).toHaveLength(0);
   });
 
   for (const scenario of ["missing", "invalid", "lookup failure"] as const) {
-    test(`uses Jessica when the voice assignment is ${scenario}`, async () => {
+    test(`does not substitute another voice when the assignment is ${scenario}`, async () => {
       const h = harness({ voices: async () => {
         if (scenario === "lookup failure") throw new Error("Profile unavailable");
         return scenario === "missing" ? {} : { default: { voiceId: "invalid/id", voiceName: "Invalid" } };
       } });
       h.service.enqueue(sentence()); h.service.finish("owner-a", "turn-a", false);
-      await until(() => h.receipts.length === 1);
-      expect(new URL(h.requests[0]!.url).pathname).toBe("/v1/text-to-speech/cgSgspJ2msm6clMCkdW9/stream");
-      expect(h.audio).toHaveLength(1);
+      await Bun.sleep(10);
+      expect(h.requests).toHaveLength(0);
+      expect(h.receipts).toHaveLength(0);
+      expect(h.audio).toHaveLength(0);
     });
   }
 

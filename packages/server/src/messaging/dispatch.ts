@@ -1296,7 +1296,7 @@ export async function dispatchRoomMessageSend(
     const hasNonImageAttachments = attachmentRefs.length > 0 && !(await pendingChatAttachmentsAreImages(
       uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope),
     ));
-    const hasAuxiliaryWorkload = voiceMode || fullPrepared || hasNonImageAttachments
+    const hasAuxiliaryWorkload = fullPrepared || hasNonImageAttachments
       || artifactRefs.length > 0 || focusedResources.length > 0 || activeMiniApp !== null
       || liveMiniAppSession !== null || handledAgentSlash;
     let personalChatCandidate = ownPrivateDm
@@ -1318,7 +1318,7 @@ export async function dispatchRoomMessageSend(
     if (personalChatCandidate && hasAuxiliaryWorkload) {
       return reply.code(422).send({
         code: "unsupported_workload",
-        error: "Personal provider credentials support chat and image attachments only.",
+        error: "Personal provider credentials support chat, image attachments, and voice only.",
       });
     }
     if (!personalChatCandidate) {

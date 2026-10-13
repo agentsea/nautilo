@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { transcribeUploadedAudio } from "../../src/routes/stt";
+import Fastify from "fastify";
+import { createFundedTranscriptionProvider, sttRoutes, transcribeUploadedAudio } from "../../src/routes/stt";
 import type { TranscriptionProvider } from "@nautilo/attachments";
+import type { VoiceServiceFunding } from "../../src/realtime/voice-service-funding";
+import { ModelFundingError } from "../../src/lib/model-funding";
 
 const enc = new TextEncoder();
 
@@ -10,6 +13,27 @@ const STT_ENV_KEYS = ["ELEVENLABS_API_KEY", "GROQ_API_KEY"] as const;
 function wavBytes(): Uint8Array {
   return enc.encode("RIFF....WAVEfmt ");
 }
+
+test("HTTP transcription rejects missing feature capability before upload or funding", async () => {
+  let fundingAdmissions = 0;
+  const app = Fastify({ logger: false });
+  app.decorateRequest("sessionUserId", null);
+  app.addHook("preHandler", async request => { request.sessionUserId = "ordinary-user"; });
+  sttRoutes(app, {
+    getCapabilities: async () => [],
+    funding: {
+      admit: async () => { fundingAdmissions += 1; throw new Error("must not admit"); },
+      run: async () => { throw new Error("must not run"); },
+    },
+  });
+  try {
+    const response = await app.inject({ method: "POST", url: "/api/stt" });
+    expect(response.statusCode).toBe(403);
+    expect(fundingAdmissions).toBe(0);
+  } finally {
+    await app.close();
+  }
+});
 
 describe("transcribeUploadedAudio", () => {
   let sttEnvSnap: Partial<Record<(typeof STT_ENV_KEYS)[number], string | undefined>>;
@@ -157,5 +181,85 @@ describe("transcribeUploadedAudio", () => {
       expect(result.detail).not.toContain("SECRET");
       expect(result.detail).not.toContain("upstream leaked");
     }
+  });
+});
+
+describe("funded transcription provider", () => {
+  const humanUserId = "11111111-1111-4111-8111-111111111111";
+  const binding = (provider: "elevenlabs" | "groq") => ({
+    humanUserId,
+    provider,
+    binding: { kind: "personal" as const, providerRoute: provider, credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 3 },
+    credentialFingerprint: provider === "elevenlabs" ? "a".repeat(64) : "b".repeat(64),
+  });
+
+  test("falls back to Groq only when ElevenLabs admission proves credentials missing", async () => {
+    const admissions: string[] = [];
+    const funding: VoiceServiceFunding = {
+      admit: async (_human, provider) => {
+        admissions.push(provider);
+        if (provider === "elevenlabs") throw new ModelFundingError("personal_credential_missing");
+        return binding("groq");
+      },
+      run: async (_binding, _intent, callback) => callback({
+        apiKey: "groq-personal-key",
+        usageFunding: { kind: "personal", humanUserId, payerHumanId: humanUserId, providerRoute: "groq", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 3 },
+      }),
+    };
+    const provider = await createFundedTranscriptionProvider(humanUserId, {
+      funding,
+      beginCost: async () => {},
+      settleCost: async () => {},
+    });
+    expect(provider.id).toBe("groq");
+    expect(admissions).toEqual(["elevenlabs", "groq"]);
+  });
+
+  test("does not fall back when the selected credential is stale", async () => {
+    const admissions: string[] = [];
+    const funding: VoiceServiceFunding = {
+      admit: async (_human, provider) => {
+        admissions.push(provider);
+        throw new ModelFundingError("personal_credential_stale");
+      },
+      run: async () => { throw new Error("unreachable"); },
+    };
+    const error = await createFundedTranscriptionProvider(humanUserId, {
+      funding,
+      beginCost: async () => {},
+      settleCost: async () => {},
+    }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "personal_credential_stale" });
+    expect(admissions).toEqual(["elevenlabs"]);
+  });
+
+  test("rechecks the exact account and settles a pre-dispatch cost attempt", async () => {
+    const events: string[] = [];
+    const personalBinding = binding("elevenlabs");
+    const funding: VoiceServiceFunding = {
+      admit: async () => personalBinding,
+      run: async (actual, intent, callback) => {
+        expect(actual).toBe(personalBinding);
+        expect(intent).toBe("spend");
+        events.push("recheck");
+        return callback({
+          apiKey: "elevenlabs-personal-key",
+          usageFunding: { kind: "personal", humanUserId, payerHumanId: humanUserId, providerRoute: "elevenlabs", credentialId: "22222222-2222-4222-8222-222222222222", credentialRevision: 3 },
+        });
+      },
+    };
+    const provider = await createFundedTranscriptionProvider(humanUserId, {
+      funding,
+      beginCost: async receipt => { events.push("begin"); expect(receipt.usageFunding?.kind).toBe("personal"); },
+      settleCost: async receipt => { events.push(`settle:${receipt.attemptOutcome}`); },
+      createProvider: () => ({
+        id: "elevenlabs",
+        available: async () => true,
+        transcribe: async () => { events.push("provider"); return { text: "hello", provider: "elevenlabs", model: "scribe_v2" }; },
+      }),
+    });
+    const result = await provider.transcribe({ bytes: wavBytes(), filename: "recording.wav", mime: "audio/wav" });
+    expect(result).toMatchObject({ text: "hello" });
+    expect(events).toEqual(["recheck", "begin", "provider", "settle:succeeded"]);
   });
 });

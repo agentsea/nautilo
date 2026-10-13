@@ -244,3 +244,54 @@ export function genieVoiceSampleTextForLanguage(language: string): string {
   const base = language.trim().toLowerCase().split("-")[0] || "en";
   return GENIE_VOICE_SAMPLE_PHRASES[base] ?? GENIE_VOICE_SAMPLE_PHRASES["en"]!;
 }
+
+/** Closed, secret-free recovery metadata for direct voice funding failures. */
+const VOICE_FUNDING_RECOVERY_RULES = {
+  personal_credentials_disabled: ["contact_operator", "/settings#personal-provider-keys"],
+  personal_credentials_forbidden: ["contact_operator", "/settings#personal-provider-keys"],
+  server_credentials_forbidden: ["contact_operator", "/settings#personal-provider-keys"],
+  personal_credential_missing: ["configure_provider_credentials", "/settings#personal-provider-keys"],
+  personal_credential_stale: ["replace_provider_credential", "/settings#personal-provider-keys"],
+  personal_credential_unavailable: ["repair_provider_credential", "/settings#personal-provider-keys"],
+  funding_source_changed: ["retry_voice_operation", "/settings#personal-provider-keys"],
+  unsupported_provider: ["choose_supported_speech_model", "/settings#capability-models"],
+  unsupported_workload: ["choose_supported_speech_model", "/settings#capability-models"],
+  provider_credentials_missing: ["contact_operator", "/settings#personal-provider-keys"],
+} as const;
+
+export type VoiceFundingRecovery = Readonly<{
+  errorCode: keyof typeof VOICE_FUNDING_RECOVERY_RULES;
+  repairAction: typeof VOICE_FUNDING_RECOVERY_RULES[keyof typeof VOICE_FUNDING_RECOVERY_RULES][0] | "configure_server_provider_credentials";
+  href: "/settings#personal-provider-keys" | "/settings#capability-models" | "/admin#provider-credentials";
+}>;
+
+export function parseVoiceFundingRecovery(raw: unknown): VoiceFundingRecovery | null {
+  if (!isRecord(raw) || typeof raw["errorCode"] !== "string" ||
+      !Object.hasOwn(VOICE_FUNDING_RECOVERY_RULES, raw["errorCode"])) return null;
+  const errorCode = raw["errorCode"] as VoiceFundingRecovery["errorCode"];
+  const [action, href] = VOICE_FUNDING_RECOVERY_RULES[errorCode];
+  if (raw["repairAction"] === action && raw["href"] === href) {
+    return { errorCode, repairAction: action, href };
+  }
+  if (errorCode === "provider_credentials_missing" &&
+      raw["repairAction"] === "configure_server_provider_credentials" &&
+      raw["href"] === "/admin#provider-credentials") {
+    return { errorCode, repairAction: "configure_server_provider_credentials", href: "/admin#provider-credentials" };
+  }
+  return null;
+}
+
+export function voiceFundingFailureMessage(recovery: VoiceFundingRecovery): string {
+  switch (recovery.errorCode) {
+    case "personal_credentials_disabled": return "Personal voice funding is disabled.";
+    case "personal_credentials_forbidden":
+    case "server_credentials_forbidden": return "Voice funding is not permitted for this account.";
+    case "personal_credential_missing":
+    case "provider_credentials_missing": return "Voice provider credentials are not configured.";
+    case "personal_credential_stale": return "The saved voice provider credential changed.";
+    case "personal_credential_unavailable": return "The saved voice provider credential is unavailable.";
+    case "funding_source_changed": return "Voice funding changed before the request completed.";
+    case "unsupported_provider":
+    case "unsupported_workload": return "The selected speech model cannot use voice funding.";
+  }
+}

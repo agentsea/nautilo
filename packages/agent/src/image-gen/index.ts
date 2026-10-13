@@ -32,11 +32,34 @@ export type {
   GenerateImagesArgs,
   GenerateImagesResult,
   GenerateImagesStreamEvent,
+  ImageGenerationProviderReceipt,
+  ImageGenerationReference,
 } from "./types";
 export { generateImagesOpenAi, generateImagesOpenAiStream } from "./openai";
 export { generateImagesGoogle } from "./google";
 export { generateImagesOpenRouter } from "./openrouter";
 export { generateImagesVenice } from "./venice";
+export {
+  generateImagesSurplus,
+  resolveSurplusImageRoute,
+  SurplusImageAttemptError,
+  type QualifiedSurplusImageRoute,
+  type SurplusImageTransportObservation,
+} from "./surplus";
+export {
+  invokeSurplusImageAttempt,
+  type SurplusImageAttemptDeps,
+  type SurplusImageAttemptInput,
+} from "./surplus-attempt";
+export { runFundedDirectImageAttempt } from "./funded-attempt";
+export {
+  DirectImageAttemptError,
+  type DirectImageAttemptOutcome,
+} from "./errors";
+export {
+  assertImageOutputBounds,
+  decodeBoundedImageBase64,
+} from "./bounds";
 
 export interface ProviderCreds {
   readonly openaiKey?: string;
@@ -49,29 +72,30 @@ export async function generateImages(
   args: GenerateImagesArgs,
   creds: ProviderCreds,
   provider: ImageProvider,
+  options: { readonly meterUsage?: boolean } = {},
 ): Promise<GenerateImagesResult> {
+  const meter = options.meterUsage === false
+    ? (result: GenerateImagesResult) => result
+    : (result: GenerateImagesResult) => meterImages(result, provider);
   if (provider === "openai") {
     if (!creds.openaiKey) {
       throw new Error("OpenAI image-generation credential is not configured.");
     }
-    return meterImages(await generateImagesOpenAi(args, creds.openaiKey), "openai");
+    return meter(await generateImagesOpenAi(args, creds.openaiKey));
   }
   if (provider === "google") {
     if (!creds.googleKey) {
       throw new Error("Google image-generation credential is not configured.");
     }
-    return meterImages(await generateImagesGoogle(args, creds.googleKey), "google");
+    return meter(await generateImagesGoogle(args, creds.googleKey));
   }
   if (provider === "openrouter") {
     if (!creds.openrouterKey) throw new Error("OpenRouter API key not configured.");
-    return meterImages(
-      await generateImagesOpenRouter(args, creds.openrouterKey),
-      "openrouter",
-    );
+    return meter(await generateImagesOpenRouter(args, creds.openrouterKey));
   }
   if (provider === "venice") {
     if (!creds.veniceKey) throw new Error("Venice API key not configured.");
-    return meterImages(await generateImagesVenice(args, creds.veniceKey), "venice");
+    return meter(await generateImagesVenice(args, creds.veniceKey));
   }
   throw new Error(`Unknown image provider: ${String(provider)}`);
 }

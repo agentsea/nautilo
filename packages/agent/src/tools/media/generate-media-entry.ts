@@ -7,7 +7,7 @@ const filename = z.string().trim().min(1).max(180)
   .refine((value) => !/[\\/\0\r\n]/u.test(value), "Filename cannot contain a path or newline.")
   .optional();
 
-const COMMON_DESCRIPTION = `For ordinary generation, omit model to use the server default. Choose an explicit model only when requested by the user or needed for specific capabilities such as reference video or lyrics. This is a paid, asynchronous media action. Nautilo validates the exact settings and obtains an exact USD quote before showing a Once/Deny approval. Approval starts that exact request once; do not ask for a second confirmation. The result is a local generation card and Workspace receipt, not provider URLs or queue identifiers. Provider safety filters may still refuse a request; preserve the user's intent and follow the recovery shown by the card.`;
+const COMMON_DESCRIPTION = `For ordinary generation, omit model to use the server default. Choose an explicit model only when requested by the user or needed for specific capabilities such as reference video or lyrics. This is a paid, asynchronous media action. Nautilo validates the exact settings and obtains a current USD price before showing a Once/Deny approval; the approval says whether that amount is an exact direct quote or a marketplace estimate whose final cost can differ. Approval starts that exact request once; do not ask for a second confirmation. The result is a local generation card and Workspace receipt, not provider URLs or queue identifiers. Provider safety filters may still refuse a request; preserve the user's intent and follow the recovery shown by the card.`;
 
 export const PrepareVideoSchema = z.object({
   action: z.literal("prepare"),
@@ -52,11 +52,11 @@ export const GenerateVideoSchema = z.object({
 
 export const GenerateMusicSchema = z.object({
   model: z.enum(["sonilo-v1-1-music", "minimax-music-v26"]).optional()
-    .describe("Omit to use the server default. Sonilo is duration-controlled and always instrumental; MiniMax supports lyrics or instrumental mode."),
+    .describe('Omit to use the server default. For instrumental MiniMax, set model="minimax-music-v26" and forceInstrumental=true, then omit durationSeconds and lyrics. Sonilo is duration-controlled and always instrumental.'),
   prompt: z.string().trim().min(1).max(4_096),
-  durationSeconds: z.number().int().optional().describe("Sonilo only. MiniMax Music does not accept a requested duration."),
-  lyrics: z.string().optional().describe("MiniMax Music only. Omit for instrumental music and for Sonilo."),
-  forceInstrumental: z.boolean().optional().describe("MiniMax Music only. Sonilo is always instrumental."),
+  durationSeconds: z.number().int().nullable().optional().describe('Sonilo only. For model="minimax-music-v26", omit this key or send null; MiniMax Music rejects every numeric duration.'),
+  lyrics: z.string().nullable().optional().describe('MiniMax vocal output only. Omit this key or send null when forceInstrumental=true and for Sonilo.'),
+  forceInstrumental: z.boolean().optional().describe('MiniMax Music only. Set true for instrumental MiniMax output and omit lyrics; Sonilo is always instrumental.'),
   filename,
 }).strict();
 
@@ -71,7 +71,7 @@ function invalidVideoPreparation(message: string) {
 export function createGenerateVideoTool() {
   return new DynamicStructuredTool({
     name: "generate_video",
-    description: `Create a video with Venice-hosted generation models. For ordinary text-to-video and every paid execution, set action="generate"; the server validates the exact settings, quotes it, and requests Once/Deny approval. Use action="prepare" only when the user wants the Advanced/reference workcard. That no-spend call uses a useful editable prompt draft and settings without model or reference fields, then opens a workcard where the user uploads/selects, orders, and removes reference media. Never require a pre-focused file and never ask the user to type a path. When the workcard continues, call this same tool with action="generate", the completed Seedance reference model request, and authoritative ordered Workspace paths; that execution enters exact-quote Once/Deny approval. Prefer Seedance 2.5 for general/latest generation; use MiniMax H3 when its 2K tier or different rendering character materially fits the request. Honor an explicit model choice; when the tradeoff matters and the user did not choose, ask. Seedance 2.5 text and reference modes support 4–30 seconds, 480p/720p/1080p, and configurable audio. Reference execution accepts up to 30 ordered Workspace images, 10 videos, and 10 MP3/WAV audio donors. Each audio/video donor must be 2–30 seconds and each kind may total at most 30 seconds; at least one image or video is still required. <Image 1>, <Video 1>, and <Audio 1> map to the first item of their ordered fields. Public Seedance may reject person-bearing reference media. MiniMax H3 supports 5–15 seconds, 768P/2K, with provider-managed audio. ${COMMON_DESCRIPTION}`,
+    description: `Create a video with supported generation models. For ordinary text-to-video and every paid execution, set action="generate"; the server validates the exact settings, prices it, and requests Once/Deny approval. Use action="prepare" only when the user wants the Advanced/reference workcard. That no-spend call uses a useful editable prompt draft and settings without model or reference fields, then opens a workcard where the user uploads/selects, orders, and removes reference media. Never require a pre-focused file and never ask the user to type a path. When the workcard continues, call this same tool with action="generate", the completed Seedance reference model request, and authoritative ordered Workspace paths; that execution enters price-bound Once/Deny approval. Prefer Seedance 2.5 for general/latest generation; use MiniMax H3 when its 2K tier or different rendering character materially fits the request. Honor an explicit model choice; when the tradeoff matters and the user did not choose, ask. Seedance 2.5 text and reference modes support 4–30 seconds, 480p/720p/1080p, and configurable audio. Reference execution accepts up to 30 ordered Workspace images, 10 videos, and 10 MP3/WAV audio donors. Each audio/video donor must be 2–30 seconds and each kind may total at most 30 seconds; at least one image or video is still required. <Image 1>, <Video 1>, and <Audio 1> map to the first item of their ordered fields. Public Seedance may reject person-bearing reference media. MiniMax H3 supports 5–15 seconds, 768P/2K, with provider-managed audio. ${COMMON_DESCRIPTION}`,
     schema: GenerateVideoSchema,
     // InvocationService intercepts this name and executes only the exact
     // checkpoint-prepared approval. A direct call has no paid authority.
@@ -106,7 +106,7 @@ export function createGenerateVideoTool() {
       return Promise.resolve(JSON.stringify(createUnboundMediaGenerationFailure({
         toolName: "generate_video",
         code: "APPROVAL_REQUIRED",
-        message: "Request a fresh exact quote before starting video generation.",
+        message: "Request a fresh price approval before starting video generation.",
       })));
     },
   });
@@ -115,14 +115,14 @@ export function createGenerateVideoTool() {
 export function createGenerateMusicTool() {
   return new DynamicStructuredTool({
     name: "generate_music",
-    description: `Generate music with a Venice-hosted generation model. Omit model to use the server's music default; specify a model when the user requests one or the required capabilities differ. Sonilo creates 1–600 seconds of instrumental music; MiniMax Music 2.6 supports a 10–300 character direction plus optional lyrics or instrumental-only output. ${COMMON_DESCRIPTION}`,
+    description: `Generate music with a Venice-hosted generation model. Omit model to use the server's music default; specify a model when the user requests one or the required capabilities differ. Sonilo creates 1–600 seconds of instrumental music and accepts optional durationSeconds. MiniMax Music 2.6 supports a 10–300 character direction plus either lyrics or instrumental-only output, but never a numeric durationSeconds. For instrumental MiniMax, send model="minimax-music-v26", prompt, and forceInstrumental=true; omit durationSeconds and lyrics or send them as null. ${COMMON_DESCRIPTION}`,
     schema: GenerateMusicSchema,
     // InvocationService intercepts this name and executes only the exact
     // checkpoint-prepared approval. A direct call has no paid authority.
     func: () => Promise.resolve(JSON.stringify(createUnboundMediaGenerationFailure({
       toolName: "generate_music",
       code: "APPROVAL_REQUIRED",
-      message: "Request a fresh exact quote before starting music generation.",
+      message: "Request a fresh price approval before starting music generation.",
     }))),
   });
 }

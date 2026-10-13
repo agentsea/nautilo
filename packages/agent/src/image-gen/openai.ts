@@ -3,6 +3,9 @@ import type {
   GenerateImagesResult,
   GenerateImagesStreamEvent,
 } from "./types";
+import { readBoundedMediaJson, MAX_IMAGE_RESPONSE_JSON_BYTES, MediaResponseReadError } from "../providers/media-response";
+import { assertImageOutputBounds, decodeBoundedImageBase64 } from "./bounds";
+import { directImageHttpError, directImageInvalidResponse, directImageTransportError } from "./errors";
 
 const MIME_FOR_FORMAT: Record<GenerateImagesArgs["format"], string> = {
   png: "image/png",
@@ -14,10 +17,6 @@ type Uint8StreamReadResult =
   | { readonly done: true; readonly value?: undefined }
   | { readonly done: false; readonly value: Uint8Array };
 
-function truncateBody(text: string, max = 300): string {
-  return text.length <= max ? text : text.slice(0, max);
-}
-
 /**
  * OpenAI Images API — `POST /v1/images/generations`.
  */
@@ -26,6 +25,39 @@ export async function generateImagesOpenAi(
   apiKey: string,
 ): Promise<GenerateImagesResult> {
   const n = Math.min(4, Math.max(1, Math.floor(Number(args.count)) || 1));
+  const references = args.references ?? [];
+  if (references.length > 0) {
+    const body = new FormData();
+    body.set("model", args.model);
+    body.set("prompt", args.prompt);
+    body.set("n", String(n));
+    body.set("output_format", args.format);
+    body.set("background", args.background);
+    body.set("quality", args.quality);
+    if (args.size !== "auto") body.set("size", args.size);
+    for (const [index, reference] of references.entries()) {
+      const extension = reference.mime === "image/jpeg"
+        ? "jpg"
+        : reference.mime.slice("image/".length);
+      body.append(
+        "image[]",
+        new Blob([reference.bytes], { type: reference.mime }),
+        `reference-${index + 1}.${extension}`,
+      );
+    }
+    let res: Response;
+    try {
+      res = await fetch("https://api.openai.com/v1/images/edits", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body,
+        redirect: "error",
+      });
+    } catch {
+      throw directImageTransportError("OpenAI");
+    }
+    return parseOpenAiImageResponse(res, n, args);
+  }
   const body: Record<string, unknown> = {
     model: args.model,
     prompt: args.prompt,
@@ -39,41 +71,58 @@ export async function generateImagesOpenAi(
     body["size"] = args.size;
   }
 
-  const res = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      redirect: "error",
+    });
+  } catch {
+    throw directImageTransportError("OpenAI");
+  }
 
-  const bodyText = await res.text().catch(() => "");
+  return parseOpenAiImageResponse(res, n, args);
+}
+
+async function parseOpenAiImageResponse(
+  res: Response,
+  count: number,
+  args: GenerateImagesArgs,
+): Promise<GenerateImagesResult> {
   if (!res.ok) {
-    throw new Error(
-      `OpenAI image generation failed (HTTP ${res.status}): ${truncateBody(bodyText)}`,
-    );
+    await res.body?.cancel().catch(() => undefined);
+    throw directImageHttpError("openai", res.status);
   }
 
   let data: unknown;
   try {
-    data = JSON.parse(bodyText) as unknown;
-  } catch {
-    throw new Error(
-      `OpenAI image generation failed (HTTP ${res.status}): invalid JSON body`,
-    );
+    data = await readBoundedMediaJson(res, MAX_IMAGE_RESPONSE_JSON_BYTES);
+  } catch (error) {
+    if (error instanceof MediaResponseReadError) {
+      throw directImageInvalidResponse("OpenAI", error.reason === "too_large" ? "oversized response" : "invalid response");
+    }
+    throw error;
   }
 
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    throw directImageInvalidResponse("OpenAI", "invalid response envelope");
+  }
   const row = data as { data?: Array<{ b64_json?: string }> };
   const items = row.data ?? [];
   const buffers: Buffer[] = [];
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < count; i++) {
     const b64 = items[i]?.b64_json;
     if (typeof b64 !== "string" || !b64.length) {
-      throw new Error("OpenAI image generation failed: missing b64_json in response");
+      throw directImageInvalidResponse("OpenAI", "missing b64_json in response");
     }
-    buffers.push(Buffer.from(b64, "base64"));
+    buffers.push(decodeBoundedImageBase64(b64, "OpenAI"));
   }
+  assertImageOutputBounds(buffers, "OpenAI");
 
   return {
     bytes: buffers,
@@ -111,6 +160,26 @@ function parseSseFrames(frames: readonly string[]): Array<{ event: string | null
   return events;
 }
 
+function parseStreamEvent(data: string): {
+  type?: unknown;
+  b64_json?: unknown;
+  partial_image_index?: unknown;
+} {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("invalid envelope");
+    }
+    return parsed as {
+      type?: unknown;
+      b64_json?: unknown;
+      partial_image_index?: unknown;
+    };
+  } catch {
+    throw directImageInvalidResponse("OpenAI", "invalid streaming response");
+  }
+}
+
 /**
  * OpenAI Images API streaming mode. Uses `stream: true` and `partial_images`
  * so callers can show progressive `image_generation.partial_image` previews
@@ -136,21 +205,24 @@ export async function* generateImagesOpenAiStream(
     body["size"] = args.size;
   }
 
-  const res = await fetch("https://api.openai.com/v1/images/generations", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: "text/event-stream",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "text/event-stream",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw directImageTransportError("OpenAI");
+  }
 
   if (!res.ok) {
-    const bodyText = await res.text().catch(() => "");
-    throw new Error(
-      `OpenAI image generation failed (HTTP ${res.status}): ${truncateBody(bodyText)}`,
-    );
+    await res.body?.cancel().catch(() => undefined);
+    throw directImageHttpError("openai", res.status);
   }
   if (!res.body) {
     throw new Error("OpenAI image generation failed: missing streaming body");
@@ -160,23 +232,29 @@ export async function* generateImagesOpenAiStream(
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {
-    const readResult = (await reader.read()) as Uint8StreamReadResult;
+    let readResult: Uint8StreamReadResult;
+    try {
+      readResult = (await reader.read()) as Uint8StreamReadResult;
+    } catch {
+      throw directImageTransportError("OpenAI");
+    }
     if (readResult.done) break;
     const value = readResult.value;
     buffer += decoder.decode(value, { stream: true });
+    if (Buffer.byteLength(buffer, "utf8") > MAX_IMAGE_RESPONSE_JSON_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw directImageInvalidResponse("OpenAI", "oversized streaming response");
+    }
     const { frames, remainder } = splitSseFrames(buffer);
     buffer = remainder;
     for (const event of parseSseFrames(frames)) {
       if (event.data === "[DONE]") continue;
-      const parsed = JSON.parse(event.data) as {
-        type?: unknown;
-        b64_json?: unknown;
-        partial_image_index?: unknown;
-      };
+      const parsed = parseStreamEvent(event.data);
       if (
         parsed.type === "image_generation.partial_image" &&
         typeof parsed.b64_json === "string"
       ) {
+        decodeBoundedImageBase64(parsed.b64_json, "OpenAI");
         yield {
           type: "partial",
           b64Json: parsed.b64_json,
@@ -192,6 +270,7 @@ export async function* generateImagesOpenAiStream(
         parsed.type === "image_generation.completed" &&
         typeof parsed.b64_json === "string"
       ) {
+        decodeBoundedImageBase64(parsed.b64_json, "OpenAI");
         yield {
           type: "completed",
           b64Json: parsed.b64_json,
@@ -204,15 +283,12 @@ export async function* generateImagesOpenAiStream(
   if (buffer.trim()) {
     for (const event of parseSseFrames([buffer])) {
       if (event.data === "[DONE]") continue;
-      const parsed = JSON.parse(event.data) as {
-        type?: unknown;
-        b64_json?: unknown;
-        partial_image_index?: unknown;
-      };
+      const parsed = parseStreamEvent(event.data);
       if (
         parsed.type === "image_generation.partial_image" &&
         typeof parsed.b64_json === "string"
       ) {
+        decodeBoundedImageBase64(parsed.b64_json, "OpenAI");
         yield {
           type: "partial",
           b64Json: parsed.b64_json,
@@ -228,6 +304,7 @@ export async function* generateImagesOpenAiStream(
         parsed.type === "image_generation.completed" &&
         typeof parsed.b64_json === "string"
       ) {
+        decodeBoundedImageBase64(parsed.b64_json, "OpenAI");
         yield {
           type: "completed",
           b64Json: parsed.b64_json,

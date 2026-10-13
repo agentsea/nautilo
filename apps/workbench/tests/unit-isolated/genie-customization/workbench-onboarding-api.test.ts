@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import type { AgentProfileResponse } from "@nautilo/types";
+import { VoiceFundingApiError } from "@nautilo/api-client/browser";
 
 const profileWrite = {
   name: "Genie",
@@ -57,6 +58,7 @@ function adapterOptions(overrides: Partial<Parameters<typeof createWorkbenchOnbo
     startAt: null,
     onComplete: () => {},
     onCancel: () => {},
+    onOpenVoiceFundingRecovery: () => {},
     ...overrides,
   };
 }
@@ -122,6 +124,30 @@ describe("Workbench onboarding adapter", () => {
     await expect(generation).resolves.toEqual({ ok: false, error: "The request was cancelled." });
     expect(fetchStub).toHaveBeenCalledTimes(1);
     expect(streamSignal?.aborted).toBe(true);
+  });
+
+  test("preserves closed voice funding recovery before generic 403 handling", async () => {
+    const recovery = {
+      errorCode: "personal_credential_stale",
+      repairAction: "replace_provider_credential",
+      href: "/settings#personal-provider-keys",
+    } as const;
+    apiClient.getVoiceCustomizationHydration.mockRejectedValueOnce(
+      new VoiceFundingApiError(403, recovery),
+    );
+    const opened: unknown[] = [];
+    const adapter = createWorkbenchOnboardingApi(adapterOptions({
+      onOpenVoiceFundingRecovery: (value) => opened.push(value),
+    }));
+
+    await expect(adapter.api.getVoices()).resolves.toEqual({
+      ok: false,
+      error: "The saved voice provider credential changed.",
+      recovery,
+    });
+    await adapter.api.openVoiceFundingRecovery?.(recovery);
+    expect(opened).toEqual([recovery]);
+    adapter.dispose();
   });
 
   test("hydrates an existing incomplete profile and leaves voice assignment to Reveal", async () => {

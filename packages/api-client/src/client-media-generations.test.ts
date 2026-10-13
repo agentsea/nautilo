@@ -11,6 +11,8 @@ function queuedDto(): MediaGenerationStatusDtoV1 {
     state: "queued",
     modelId: "venice:seedance-2-5-text-to-video-basic",
     settings: { durationSeconds: 5, resolution: "720p", aspectRatio: "16:9", audioEnabled: true },
+    canCancel: false,
+    cancellationRequested: false,
     progress: { phase: "queued" },
     recoveryActions: [],
   };
@@ -59,6 +61,34 @@ describe("D525 media generation status client", () => {
     await expectFailure(client.getMediaGenerationStatus("mg_1234567890abcdef", { roomId: "room-1" }));
   });
 
+  test("posts an exact revision-fenced cancellation and parses the updated receipt", async () => {
+    let request: { url: string; init: RequestInit | undefined } | undefined;
+    const updated = { ...queuedDto(), revision: 3, cancellationRequested: true };
+    const client = new NautiloApiClient("https://nautilo.test", {
+      fetchImpl: async (url, init) => {
+        request = {
+          url: typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url,
+          init,
+        };
+        return new Response(JSON.stringify(updated), { status: 200, headers: { "content-type": "application/json" } });
+      },
+    });
+    client.setToken("test-token");
+    const controller = new AbortController();
+
+    expect(await client.cancelMediaGeneration("mg_1234567890abcdef", {
+      roomId: "room-1",
+      expectedRevision: 2,
+      signal: controller.signal,
+    })).toEqual(updated);
+    expect(request?.url).toBe("https://nautilo.test/api/media-generations/mg_1234567890abcdef/cancel");
+    expect(request?.init?.method).toBe("POST");
+    if (typeof request?.init?.body !== "string") throw new Error("expected serialized cancellation body");
+    expect(JSON.parse(request.init.body)).toEqual({ roomId: "room-1", expectedRevision: 2 });
+    expect(new Headers(request?.init?.headers).get("authorization")).toBe("Bearer test-token");
+    expect(request?.init?.signal).toBe(controller.signal);
+  });
+
   test("rejects unbound/provider-shaped identity before transport", async () => {
     let calls = 0;
     const client = new NautiloApiClient("https://nautilo.test", {
@@ -69,6 +99,7 @@ describe("D525 media generation status client", () => {
     });
     await expectFailure(client.getMediaGenerationStatus("provider-queue-id", { roomId: "room-1" }));
     await expectFailure(client.getMediaGenerationStatus("mg_1234567890abcdef", { roomId: " " }));
+    await expectFailure(client.cancelMediaGeneration("mg_1234567890abcdef", { roomId: "room-1", expectedRevision: -1 }));
     expect(calls).toBe(0);
   });
 

@@ -17,9 +17,12 @@
  */
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { mkdir, writeFile } from "node:fs/promises";
 import { posix } from "node:path";
 import { z } from "zod";
+import {
+  ATTACHMENT_POLICY,
+  readAttachmentBytesVerifiedSize,
+} from "@nautilo/attachments";
 import { log, warn } from "@nautilo/logger";
 import { getArtifactsRoot } from "@nautilo/config";
 import {
@@ -34,12 +37,36 @@ import {
 } from "../../config/image-models";
 import { resolveProviderKey } from "../../resolve-provider-key";
 import { generateImages } from "../../image-gen";
+import { runFundedDirectImageAttempt } from "../../image-gen/funded-attempt";
+import { invokeSurplusImageAttempt } from "../../image-gen/surplus-attempt";
 import {
-  applyWorkspaceArtifactRowChange,
+  assertSurplusImageRequestCompatible,
+  isSafeSurplusImageDirectFallback,
+  resolveSurplusImageRoute,
+} from "../../image-gen/surplus";
+import type {
+  GenerateImagesArgs,
+  ImageGenerationReference,
+} from "../../image-gen/types";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
+import type {
+  AdmittedCapabilityMedia,
+  CapabilityFundingSession,
+} from "../../runtime/capability-funding";
+import {
+  beginToolProviderCostAttempt,
+} from "../../usage/provider-cost-recorder";
+import type { ToolContext } from "@nautilo/catalog";
+import {
   envelopeFactsForArtifacts,
   resolveWorkspaceArtifact,
-  type WorkspaceArtifactPatchMeta,
+  type EnvelopeFacts,
 } from "../file/artifact-store";
+import {
+  preflightGeneratedImagePublication,
+  publishGeneratedImages,
+  type GeneratedImagePublicationDeps,
+} from "./generated-image-publication";
 
 interface GenerateImageContext {
   memoryAccessEnvelope: MemoryAccessEnvelope | null;
@@ -48,6 +75,9 @@ interface GenerateImageContext {
 
 export interface GenerateImageToolDeps {
   assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  getCapabilityFundingSession?: () => CapabilityFundingSession | undefined;
+  beginProviderCostAttempt?: typeof beginToolProviderCostAttempt;
+  publication?: GeneratedImagePublicationDeps;
 }
 
 function contextFromUnknown(ctx: unknown): GenerateImageContext {
@@ -89,6 +119,14 @@ const GenerateImageSchema = z.object({
     .string()
     .optional()
     .describe('Optional override (e.g. "openai:gpt-image-2.5-sunburst", "openai:gpt-image-2.5-flare", "google:gemini-2.5-flash-image").'),
+  referencePaths: z
+    .array(z.string().min(1))
+    .max(8)
+    .refine((paths) => new Set(paths).size === paths.length, {
+      message: "Reference image paths must be unique and ordered.",
+    })
+    .optional()
+    .describe("Ordered Workspace image paths for an edit. The first is the base image; later images are references."),
 });
 
 function slugify(s: string): string {
@@ -111,6 +149,111 @@ function mimeForFormat(fmt: z.infer<typeof GenerateImageSchema>["format"]): stri
   return "image/png";
 }
 
+function formatForMime(mime: string): "png" | "webp" | "jpeg" | null {
+  if (mime === "image/png") return "png";
+  if (mime === "image/webp") return "webp";
+  if (mime === "image/jpeg") return "jpeg";
+  return null;
+}
+
+function assertDirectImageRequestCompatible(
+  provider: ImageModelConfig["provider"],
+  args: GenerateImagesArgs,
+): void {
+  if ((args.references?.length ?? 0) === 0) return;
+  if (provider !== "openai" && provider !== "google") {
+    throw new Error(
+      `${provider} has no qualified reference-edit request shape for this image model.`,
+    );
+  }
+}
+
+function requiresDirectImageTransport(
+  modelId: string,
+  args: GenerateImagesArgs,
+): boolean {
+  const route = resolveSurplusImageRoute(modelId);
+  if (!route) return true;
+  try {
+    assertSurplusImageRequestCompatible(route, args);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function assertSamePayerDirectFallback(
+  prior: AdmittedCapabilityMedia,
+  direct: AdmittedCapabilityMedia,
+  model: ImageModelConfig,
+): void {
+  if (direct.modelId !== model.id || direct.family !== "image") {
+    throw new Error("The direct image fallback changed the selected model.");
+  }
+  if (direct.funding.humanUserId !== prior.funding.humanUserId
+    || direct.funding.binding.kind !== prior.funding.binding.kind) {
+    throw new Error("The direct image fallback changed the admitted payer.");
+  }
+  if (direct.funding.provider !== model.provider
+    || direct.funding.binding.providerRoute !== model.provider) {
+    throw new Error("The direct image fallback does not match the selected model provider.");
+  }
+}
+
+async function readAuthorizedReferences(
+  paths: readonly string[],
+  facts: EnvelopeFacts,
+): Promise<readonly ImageGenerationReference[]> {
+  const references: ImageGenerationReference[] = [];
+  let totalBytes = 0;
+  for (const logicalPath of paths) {
+    const resolution = await resolveWorkspaceArtifact({
+      logicalPath,
+      facts,
+      intent: "read",
+    });
+    if (!resolution.ok || !resolution.artifact) {
+      throw new Error(resolution.ok
+        ? `Workspace reference image "${logicalPath}" is unavailable.`
+        : resolution.reason);
+    }
+    const mime = resolution.artifact.mimeType;
+    if (mime !== "image/png" && mime !== "image/jpeg" && mime !== "image/webp") {
+      throw new Error(`Workspace reference "${logicalPath}" is not a supported image artifact.`);
+    }
+    const bounded = await readBoundedImageReference(
+      resolution.physicalPath,
+      resolution.artifact.size,
+      totalBytes,
+    );
+    totalBytes = bounded.totalBytes;
+    references.push({ bytes: bounded.bytes, mime });
+  }
+  return references;
+}
+
+/** Single-handle bounded reference read, exported for hermetic race/limit tests. */
+export async function readBoundedImageReference(
+  physicalPath: string,
+  expectedSize: number,
+  priorTotalBytes: number,
+): Promise<{ readonly bytes: Buffer; readonly totalBytes: number }> {
+  if (!Number.isSafeInteger(expectedSize) || expectedSize < 0
+    || expectedSize > ATTACHMENT_POLICY.maxImageBytes) {
+    throw new Error("Workspace reference image exceeds the supported image size.");
+  }
+  const totalBytes = priorTotalBytes + expectedSize;
+  if (!Number.isSafeInteger(totalBytes)
+    || totalBytes > ATTACHMENT_POLICY.maxAcceptedBytesPerMessage) {
+    throw new Error("Workspace reference images exceed the supported total size.");
+  }
+  const read = await readAttachmentBytesVerifiedSize(physicalPath, expectedSize);
+  if (!read.ok) {
+    throw new Error("Workspace reference image changed or could not be read safely.");
+  }
+  return { bytes: read.bytes, totalBytes };
+}
+
 export function createGenerateImageTool(
   context?: unknown,
   deps: GenerateImageToolDeps = {},
@@ -119,20 +262,30 @@ export function createGenerateImageTool(
   return new DynamicStructuredTool({
     name: "generate_image",
     description: `Generate 1–4 images from a text prompt and save them as workspace artifacts under generated-images/<YYYY-MM-DD>/. They appear in the Workspace tab and can be re-read with file({command:"read", zone:"workspace", path:"generated-images/.../foo.png"}).
-Default model follows the server catalog (typically OpenAI gpt-image-2.5-sunburst). Optional model override with full Nautilo id (e.g. openai:gpt-image-2.5-flare or google:gemini-2.5-flash-image).
+Default model follows the admitted personal/server preference and catalog. Optional model override with full Nautilo id (e.g. openai:gpt-image-2.5-flare or google:gemini-2.5-flash-image) is authoritative. To edit, pass ordered Workspace referencePaths; the first image is the base. Masks are not supported.
 Provider filters are at minimum strength (OpenAI moderation low; Gemini safety BLOCK_NONE). Refusals may still occur from account-level provider policy.
 
 Returns a JSON envelope with the shape:
-  { images: [{ artifactId, path, zone, mime, bytes }, ...], model, provider, prompt }
+  { generationCompleted, publication, images: [{ artifactId, path, zone, mime, bytes }, ...], pendingPublications, model, provider, prompt }
 where 'artifactId' is the stable external id (use it with share_artifact / file zone="workspace") and 'path' is the workspace-relative POSIX path (e.g. "generated-images/2026-05-08/red-square-01.png"). Absolute filesystem paths are NOT returned — bytes live under the server-owned artifact root and are addressed by artifactId + logical path.
+
+Only entries in 'images' are registered Workspace artifacts. If publication is partial or pending, report the returned recovery message and do not call generate_image again for the same output; entries in 'pendingPublications' are recovery records, not accessible images, and any 'recoveryRef' is opaque operator correlation rather than an artifactId.
 
 When telling the user where the images are, ALWAYS use the exact 'path' value verbatim from the result envelope. Refer to them as living in the user's Workspace tab — do NOT print absolute paths, do NOT abbreviate filenames with ellipses, do NOT invent slugs. The workbench already renders the gallery with thumbnails inline; your reply only needs to acknowledge what was generated and where, briefly.`,
     schema: GenerateImageSchema,
     func: async (args) => {
+      const capabilityFunding = (deps.getCapabilityFundingSession
+        ?? getCapabilityFundingSession)();
       let modelEntry: ImageModelConfig | undefined;
       try {
-        modelEntry = args.model
-          ? getImageModel(args.model)
+        const selectedModelId = capabilityFunding
+          ? (await capabilityFunding.resolveModel(
+              "imageGeneration",
+              args.model ?? null,
+            )).modelId
+          : args.model;
+        modelEntry = selectedModelId
+          ? getImageModel(selectedModelId)
           : getDefaultImageModel();
       } catch (error) {
         return `Error: ${error instanceof Error ? error.message : "no image model is available"}`;
@@ -140,19 +293,15 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
       if (!modelEntry) {
         return `Error: unknown image model "${args.model}".`;
       }
-      if (!modelEntry.enabled) {
+      // Request-local funding may make a catalogue row runnable even when its
+      // direct server credential is absent. The funding owner rechecks the
+      // exact model, payer, transport, and credential before dispatch.
+      if (!modelEntry.enabled && !capabilityFunding) {
         return (
           `Error: image model "${modelEntry.id}" is unavailable: `
           + `${modelEntry.unavailableReason ?? "catalog row is not selectable"}.`
         );
       }
-
-      const openaiKey = resolveProviderKey("openai", {}) ?? "";
-      const googleKey = resolveProviderKey("google", {}) ?? "";
-      const openrouterKey = resolveProviderKey("openrouter", {}) ?? "";
-      const veniceKey = resolveProviderKey("venice", {}) ?? "";
-      const providerKey = { openai: openaiKey, google: googleKey, openrouter: openrouterKey, venice: veniceKey }[modelEntry.provider];
-      if (!providerKey) return `Error: ${modelEntry.provider} API credential is not configured.`;
 
       const factsResult = envelopeFactsForArtifacts(ctx.memoryAccessEnvelope);
       if (!factsResult.ok) return `Error: ${factsResult.reason}`;
@@ -165,26 +314,159 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
       }
       const targetNamespaceId = facts.writableNamespaces[0]!;
 
-      let result: Awaited<ReturnType<typeof generateImages>>;
+      let references: readonly ImageGenerationReference[];
       try {
-        if (!ctx.causalHumanUserId) {
-          throw new ServerProviderCredentialsDeniedError("", "image_generation");
+        references = await readAuthorizedReferences(args.referencePaths ?? [], facts);
+      } catch (error) {
+        return `Error: ${error instanceof Error ? error.message : "reference image authorization failed"}`;
+      }
+      const imageArgs: GenerateImagesArgs = {
+        model: modelEntry.apiModel,
+        prompt: args.prompt,
+        count: args.count,
+        size: args.size,
+        quality: args.quality,
+        background: args.background,
+        format: args.format,
+        ...(references.length === 0 ? {} : { references }),
+      };
+
+      let actualProvider = modelEntry.provider as string;
+      let funded: AdmittedCapabilityMedia | undefined;
+      let providerKey = "";
+      try {
+        if (capabilityFunding) {
+          if (!capabilityFunding.openMedia) {
+            throw new Error("Image funding is unavailable for this request.");
+          }
+          funded = await capabilityFunding.openMedia(
+            modelEntry.id,
+            "image",
+            {
+              operation: references.length > 0 ? "edit" : "generate",
+              directOnly: requiresDirectImageTransport(modelEntry.id, imageArgs),
+            },
+          );
+          actualProvider = funded.funding.provider;
+          if (actualProvider === "surplus") {
+            const route = resolveSurplusImageRoute(modelEntry.id);
+            if (!route) throw new Error(`${modelEntry.id} has no qualified Surplus image route.`);
+            assertSurplusImageRequestCompatible(route, imageArgs);
+          } else {
+            if (actualProvider !== modelEntry.provider) {
+              throw new Error("The admitted direct image credential does not match the selected model provider.");
+            }
+            assertDirectImageRequestCompatible(modelEntry.provider, imageArgs);
+          }
+        } else {
+          if (!ctx.causalHumanUserId) {
+            throw new ServerProviderCredentialsDeniedError("", "image_generation");
+          }
+          await (deps.assertCanUseServerProviderCredentials
+            ?? assertCanUseServerProviderCredentials)(ctx.causalHumanUserId, "image_generation");
+          assertDirectImageRequestCompatible(modelEntry.provider, imageArgs);
+          providerKey = resolveProviderKey(modelEntry.provider, {}) ?? "";
+          if (!providerKey) {
+            throw new Error(`${modelEntry.provider} API credential is not configured.`);
+          }
         }
-        await (deps.assertCanUseServerProviderCredentials
-          ?? assertCanUseServerProviderCredentials)(ctx.causalHumanUserId, "image_generation");
-        result = await generateImages(
-          {
-            model: modelEntry.apiModel,
-            prompt: args.prompt,
-            count: args.count,
-            size: args.size,
-            quality: args.quality,
-            background: args.background,
-            format: args.format,
-          },
-          { openaiKey, googleKey, openrouterKey, veniceKey },
-          modelEntry.provider,
-        );
+      } catch (err) {
+        if (err instanceof ServerProviderCredentialsDeniedError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        warn(`[generate_image] admission failed: ${msg}`);
+        return `Error: ${msg}`;
+      }
+
+      const today = new Date().toISOString().slice(0, 10);
+      const subdirRel = posix.join("generated-images", today);
+      const requestedExt = extForFormat(args.format);
+      const requestedMime = mimeForFormat(args.format);
+      const rand = Date.now().toString(36);
+      const baseStem =
+        args.filename?.replace(/\.[^/.]+$/, "").trim() ||
+        `${slugify(args.prompt).slice(0, 60)}-${rand}`;
+      let publicationPlan: Awaited<ReturnType<typeof preflightGeneratedImagePublication>>;
+      try {
+        publicationPlan = await preflightGeneratedImagePublication({
+          baseStem,
+          subdirRel,
+          requestedCount: args.count,
+          requestedMime,
+          requestedExtension: requestedExt,
+          facts,
+          ...(deps.publication === undefined ? {} : { deps: deps.publication }),
+        });
+      } catch (error) {
+        return `Error: ${error instanceof Error ? error.message : "image publication authorization failed"}`;
+      }
+
+      let result: Awaited<ReturnType<typeof generateImages>>;
+      const runFundedDirectAttempt = (
+        admitted: AdmittedCapabilityMedia,
+      ): Promise<Awaited<ReturnType<typeof generateImages>>> => admitted.runAttempt(
+        ({ apiKey, usageFunding }) => runFundedDirectImageAttempt({
+          ...(context == null ? {} : { context: context as ToolContext }),
+          canonicalModelId: modelEntry.id,
+          provider: modelEntry.provider,
+          usageFunding,
+          args: imageArgs,
+          ...(deps.beginProviderCostAttempt === undefined
+            ? {}
+            : { beginProviderCostAttempt: deps.beginProviderCostAttempt }),
+          invoke: () => generateImages(
+            imageArgs,
+            modelEntry.provider === "openai" ? { openaiKey: apiKey }
+              : modelEntry.provider === "google" ? { googleKey: apiKey }
+                : modelEntry.provider === "openrouter" ? { openrouterKey: apiKey }
+                  : { veniceKey: apiKey },
+            modelEntry.provider,
+            { meterUsage: false },
+          ),
+        }),
+      );
+      try {
+        if (funded) {
+          if (actualProvider === "surplus") {
+            try {
+              result = await funded.runAttempt(({ apiKey, usageFunding }) => {
+                const route = resolveSurplusImageRoute(modelEntry.id);
+                if (!route) throw new Error(`${modelEntry.id} has no qualified Surplus image route.`);
+                return invokeSurplusImageAttempt({
+                  route,
+                  canonicalModelId: modelEntry.id,
+                  args: imageArgs,
+                  apiKey,
+                  funding: usageFunding,
+                });
+              });
+            } catch (error) {
+              if (!isSafeSurplusImageDirectFallback(error)) throw error;
+              if (!capabilityFunding?.openMedia) {
+                throw new Error("Image funding is unavailable for direct fallback.");
+              }
+              const direct = await capabilityFunding.openMedia(modelEntry.id, "image", {
+                operation: references.length > 0 ? "edit" : "generate",
+                directOnly: true,
+                transport: "direct",
+                prior: funded.funding,
+              });
+              assertSamePayerDirectFallback(funded, direct, modelEntry);
+              actualProvider = direct.funding.provider;
+              result = await runFundedDirectAttempt(direct);
+            }
+          } else {
+            result = await runFundedDirectAttempt(funded);
+          }
+        } else {
+          result = await generateImages(
+            imageArgs,
+            modelEntry.provider === "openai" ? { openaiKey: providerKey }
+              : modelEntry.provider === "google" ? { googleKey: providerKey }
+                : modelEntry.provider === "openrouter" ? { openrouterKey: providerKey }
+                  : { veniceKey: providerKey },
+            modelEntry.provider,
+          );
+        }
       } catch (err) {
         if (err instanceof ServerProviderCredentialsDeniedError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
@@ -192,88 +474,52 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
         return `Error: ${msg}`;
       }
 
-      const today = new Date().toISOString().slice(0, 10);
-      const subdirRel = posix.join("generated-images", today);
-      const ext = extForFormat(args.format);
-      const mime = mimeForFormat(args.format);
-      const rand = Date.now().toString(36);
-      const baseStem =
-        args.filename?.replace(/\.[^/.]+$/, "").trim() ||
-        `${slugify(args.prompt).slice(0, 60)}-${rand}`;
-
-      // Flat layout under getArtifactsRoot — the date is purely a logical
-      // grouping. Do not create the storage root until the exact output has
-      // crossed Artifact-write admission below.
-      const artifactsRoot = getArtifactsRoot();
-
-      const written: Array<{
-        artifactId: string;
-        path: string;
-        zone: "workspace";
-        mime: string;
-        bytes: number;
-      }> = [];
-
-      for (let i = 0; i < result.bytes.length; i++) {
-        const suffix =
-          result.bytes.length === 1 ? "" : `-${String(i + 1).padStart(2, "0")}`;
-        const stem = `${baseStem}${suffix}`;
-        const logicalPath = posix.join(subdirRel, `${stem}.${ext}`);
-
-        const resolution = await resolveWorkspaceArtifact({
-          logicalPath,
-          facts,
-          intent: "create",
-        });
-        if (!resolution.ok) {
-          return `Error: ${resolution.reason}`;
-        }
-
-        const bytes = result.bytes[i]!;
-        try {
-          await mkdir(artifactsRoot, { recursive: true });
-          await writeFile(resolution.physicalPath, bytes);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return `Error: writing image bytes failed: ${msg}`;
-        }
-
-        const meta: WorkspaceArtifactPatchMeta = {
-          mode: "create",
-          artifactId: resolution.artifactId,
-          logicalPath: resolution.logicalPath,
-          namespaceId: targetNamespaceId,
-          storageUri: resolution.storageUri,
-          mimeType: mime,
-        };
-        try {
-          await applyWorkspaceArtifactRowChange(
-            meta,
-            bytes.byteLength,
-            facts.userId,
-            facts.agentId,
-            { kind: "agent", agentId: facts.agentId },
-          );
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          return `Error: indexing generated image as artifact failed: ${msg}`;
-        }
-
-        written.push({
-          artifactId: resolution.artifactId,
-          path: logicalPath,
-          zone: "workspace",
+      const resultFormat = formatForMime(result.mime) ?? args.format;
+      const ext = extForFormat(resultFormat);
+      const mime = mimeForFormat(resultFormat);
+      let published: Awaited<ReturnType<typeof publishGeneratedImages>>;
+      try {
+        published = await publishGeneratedImages({
+          plan: publicationPlan,
+          bytes: result.bytes,
           mime,
-          bytes: bytes.byteLength,
+          extension: ext,
+          facts,
+          targetNamespaceId,
+          ...(deps.publication === undefined ? {} : { deps: deps.publication }),
         });
+      } catch (error) {
+        try {
+          warn(`[generate_image] unexpected publication failure after generation: ${error instanceof Error ? error.message : String(error)}`);
+        } catch {
+          // Diagnostics must not replace the paid provider result.
+        }
+        published = {
+          images: [],
+          pendingPublications: result.bytes.map((bytes, index) => ({
+            path: `${subdirRel}/${baseStem}${result.bytes.length === 1 ? "" : `-${String(index + 1).padStart(2, "0")}`}.${ext}`,
+            mime,
+            bytes: bytes.byteLength,
+            retained: false,
+          })),
+          publication: {
+            status: "pending",
+            publishedCount: 0,
+            pendingCount: result.bytes.length,
+            recovery: "Generation completed, but Workspace publication could not be verified. Do not regenerate or retry the paid request; doing so can bill the user again.",
+          },
+        };
       }
 
-      log(`[generate_image] wrote ${written.length} artifact(s) under ${artifactsRoot}`);
+      log(`[generate_image] published ${published.images.length} artifact(s) under ${getArtifactsRoot()}`);
 
       return JSON.stringify({
-        images: written,
+        generationCompleted: true,
+        ...published,
         model: modelEntry.id,
-        provider: modelEntry.provider,
+        provider: actualProvider,
+        canonicalProvider: modelEntry.provider,
+        operation: references.length > 0 ? "edit" : "generate",
         prompt: args.prompt,
       });
     },

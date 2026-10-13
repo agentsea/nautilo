@@ -62,6 +62,8 @@ function readyDto(overrides: Partial<MediaGenerationStatusDtoV1> = {}): MediaGen
     state: "ready",
     modelId: "venice:seedance-2-5-text-to-video-basic",
     settings: { durationSeconds: 5 },
+    canCancel: false,
+    cancellationRequested: false,
     artifact: safeArtifact(),
     recoveryActions: [],
     ...overrides,
@@ -86,6 +88,16 @@ describe("D525 media-generation status DTO v1", () => {
       expect(dto.state).toBe(clientState);
       expect(parseMediaGenerationStatusDtoV1(dto)).toEqual(dto);
     }
+  });
+
+  test("defaults additive cancellation flags for older status responses", () => {
+    const current = readyDto();
+    const { canCancel: _canCancel, cancellationRequested: _cancellationRequested, ...older } = current;
+    expect(parseMediaGenerationStatusDtoV1(older)).toEqual(current);
+    expect(mapMediaGenerationStatusV1(source("retrieving", {
+      canCancel: true,
+      cancellationRequested: false,
+    }))).toMatchObject({ canCancel: true, cancellationRequested: false });
   });
 
   test("maps admitting to submitting, not provider-queued, and supports proven generating progress", () => {

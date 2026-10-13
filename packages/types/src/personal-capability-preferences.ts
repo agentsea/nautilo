@@ -6,10 +6,25 @@ export const PERSONAL_CAPABILITY_ROLES = [
   "deepResearchCompression",
   "deepResearchFinalReport",
   "decision",
+  "imageGeneration",
+  "videoGeneration",
+  "musicGeneration",
+  "speech",
 ] as const;
 
 export type PersonalCapabilityRole =
   (typeof PERSONAL_CAPABILITY_ROLES)[number];
+
+export type ResearchCapabilityRole = Exclude<PersonalCapabilityRole,
+  "decision" | "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech">;
+
+export type MediaCapabilityRole = Extract<PersonalCapabilityRole,
+  "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech">;
+
+export function isMediaCapabilityRole(role: PersonalCapabilityRole): role is MediaCapabilityRole {
+  return role === "imageGeneration" || role === "videoGeneration"
+    || role === "musicGeneration" || role === "speech";
+}
 
 /**
  * Sparse Human-owned choices. An absent key means inherit the current

@@ -10,6 +10,7 @@ import {
   sanitizeVeniceProviderCode,
   type MediaGenerationFailure,
 } from "./errors";
+import { readBoundedMediaJson } from "../providers/media-response";
 
 /**
  * Venice's paid media API is deliberately a separate lifecycle from its quote
@@ -79,6 +80,8 @@ export type VeniceBinaryResult = Readonly<{
   receiptId: string;
   contentType: string | null;
   body: ReadableStream<Uint8Array>;
+  /** Provider-reported terminal buyer charge when the lifecycle exposes one. */
+  actualCostUsdMicros?: number;
 }>;
 
 export type VeniceSignedDeliveryResult = Readonly<{
@@ -86,6 +89,8 @@ export type VeniceSignedDeliveryResult = Readonly<{
   receiptId: string;
   /** Internal server-only URL, validated immediately before the download lane uses it. */
   signedDeliveryUrl: string;
+  /** Provider-reported terminal buyer charge when the lifecycle exposes one. */
+  actualCostUsdMicros?: number;
 }>;
 
 export type VeniceRetrieveResult = VeniceProcessingResult | VeniceBinaryResult | VeniceSignedDeliveryResult;
@@ -112,6 +117,7 @@ export interface VeniceMediaLifecycleConfig {
 export class VeniceMediaLifecycleError extends Error {
   readonly receiptId: string;
   readonly failure: MediaGenerationFailure;
+  actualCostUsdMicros?: number;
 
   constructor(receiptId: string, failure: MediaGenerationFailure) {
     super(failure.message);
@@ -123,7 +129,9 @@ export class VeniceMediaLifecycleError extends Error {
 
 function proofModelOrThrow(proof: MediaGenerationAdmissionProof): VeniceMediaModel {
   const payloadModel = proof.requestPayload.model;
-  if (proof.providerModel !== payloadModel ||
+  if (proof.provider !== "venice" || proof.fundingBinding.provider !== "venice" ||
+      proof.providerAccountFingerprint !== proof.fundingBinding.credentialFingerprint ||
+      proof.providerModel !== payloadModel ||
       (payloadModel !== "seedance-2-5-text-to-video-basic" && payloadModel !== "seedance-2-5-reference-to-video-basic" && payloadModel !== "minimax-h3-enhanced-text-to-video" &&
         payloadModel !== "sonilo-v1-1-music" && payloadModel !== "minimax-music-v26")) {
     throw new Error("DB admission proof has an unsupported or mismatched provider model");
@@ -248,7 +256,7 @@ function safeNumber(value: unknown): number | undefined {
 async function safeErrorDetails(response: Response): Promise<{ code?: string; creditsRefunded?: boolean }> {
   let body: unknown;
   try {
-    body = await response.json();
+    body = await readBoundedMediaJson(response as unknown as Parameters<typeof readBoundedMediaJson>[0]);
   } catch {
     return {};
   }
@@ -261,9 +269,9 @@ async function safeErrorDetails(response: Response): Promise<{ code?: string; cr
   };
 }
 
-async function jsonBody(response: { json(): Promise<unknown> }): Promise<unknown> {
+async function jsonBody(response: unknown): Promise<unknown> {
   try {
-    return await response.json();
+    return await readBoundedMediaJson(response as Parameters<typeof readBoundedMediaJson>[0]);
   } catch {
     return undefined;
   }

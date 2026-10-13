@@ -139,9 +139,13 @@ describe("generate_image tool", () => {
     const out = await tool.invoke({ prompt: "a red circle" });
     expect(typeof out).toBe("string");
     const parsed = JSON.parse(out) as {
+      generationCompleted?: boolean;
+      publication?: { status?: string };
       model?: string;
       images?: Array<{ artifactId: string; path: string; zone: string; mime: string; bytes: number }>;
     };
+    expect(parsed.generationCompleted).toBe(true);
+    expect(parsed.publication?.status).toBe("complete");
     expect(parsed.model).toBe("venice:gpt-image-2");
     expect(parsed.images?.length).toBe(1);
     const img = parsed.images![0]!;
@@ -160,6 +164,39 @@ describe("generate_image tool", () => {
     const st = statSync(diskPath);
     expect(st.isFile()).toBe(true);
     expect(st.size).toBe(img.bytes);
+  });
+
+  test("rejects an occupied output path before image provider dispatch", async () => {
+    const generate = mock(async () => ({
+      bytes: [Buffer.from("must-not-run")],
+      model: "gpt-image-2",
+      mime: "image/png",
+    }));
+    mock.module("../../src/image-gen/index.ts", () => ({ generateImages: generate }));
+    process.env["VENICE_API_KEY"] = "vk-test";
+    const spFind = spyOn(db, "findArtifactByPathForNamespaces").mockResolvedValue({
+      id: "occupied-row",
+      artifactId: "occupied-artifact",
+      revision: 1,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      deletedAt: null,
+      path: "generated-images/occupied.png",
+      mimeType: "image/png",
+      size: 4,
+      storageUri: "file:///retained/occupied-artifact",
+    });
+    restores.push(() => spFind.mockRestore());
+
+    const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
+    const tool = createGenerateImageTool({
+      memoryAccessEnvelope: mkEnvelope(),
+      causalHumanUserId: CAUSAL_HUMAN_USER_ID,
+    });
+    const out = await tool.invoke({ prompt: "occupied", filename: "occupied" });
+
+    expect(out).toContain("An artifact already exists");
+    expect(generate).not.toHaveBeenCalled();
   });
 
   test("catalog-discovered Seedream reaches the Venice adapter", async () => {

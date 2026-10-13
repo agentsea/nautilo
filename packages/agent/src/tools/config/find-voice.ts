@@ -18,6 +18,11 @@ import {
   ServerProviderCredentialsDeniedError,
 } from "@nautilo/trust";
 import { causalHumanForExecution } from "../../runtime/causal-human-context";
+import {
+  getCapabilityFundingSession,
+  type CapabilityFundingSession,
+} from "../../runtime/capability-funding";
+import { readBoundedMediaJson } from "../../providers/media-response";
 
 /** Curated slug → primary language subtag (matches server catalog metadata). */
 const CURATED_VOICE_LANGUAGE: Record<string, string> = {
@@ -47,6 +52,47 @@ const DEFAULT_BROWSE_LIMIT = 12;
 const MAX_BROWSE_LIMIT = 15;
 const MAX_SHARED_PAGES = 4;
 const SHARED_PAGE_SIZE = 30;
+const VOICE_FUNDING_FAILURE_CODES = new Set([
+  "personal_credentials_disabled",
+  "personal_credentials_forbidden",
+  "personal_credential_missing",
+  "server_credentials_forbidden",
+  "provider_credentials_missing",
+  "personal_credential_stale",
+  "personal_credential_unavailable",
+  "funding_source_changed",
+  "unsupported_workload",
+  "unsupported_provider",
+]);
+
+class VoiceCatalogRequestError extends Error {
+  constructor(readonly status: number | null) {
+    super(status === null
+      ? "Voice catalog request failed."
+      : `Voice catalog request failed (HTTP ${status}).`);
+    this.name = "VoiceCatalogRequestError";
+  }
+}
+
+function stableFundingFailureCode(error: unknown): string | null {
+  const code = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return typeof code === "string" && VOICE_FUNDING_FAILURE_CODES.has(code) ? code : null;
+}
+
+function voiceCatalogWarning(error: unknown): string {
+  if (error instanceof VoiceCatalogRequestError) {
+    return error.status === null
+      ? "Voice catalog request failed; showing curated voices only."
+      : `Voice catalog request failed (HTTP ${error.status}); showing curated voices only.`;
+  }
+  const fundingCode = stableFundingFailureCode(error);
+  if (fundingCode) {
+    return `Voice funding is unavailable (${fundingCode}); showing curated voices only.`;
+  }
+  return "Voice catalog request failed; showing curated voices only.";
+}
 
 export type ElevenLabsSharedVoiceRaw = {
   voice_id: string;
@@ -84,6 +130,7 @@ type VoiceDiscoveryContext = {
 
 export type VoiceDiscoveryDependencies = {
   readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
+  readonly getCapabilityFundingSession?: () => CapabilityFundingSession | undefined;
 };
 
 function catalogLanguageLabel(language: string | null | undefined): string {
@@ -328,27 +375,57 @@ function buildUpstreamParams(input: DiscoverVoicesInput): Record<string, string>
 async function fetchSharedVoicesPage(
   apiKey: string,
   params: Record<string, string>,
+  signal?: AbortSignal,
 ): Promise<{ voices: ElevenLabsSharedVoiceRaw[]; hasMore: boolean }> {
   const url = new URL("https://api.elevenlabs.io/v1/shared-voices");
   for (const [key, value] of Object.entries(params)) {
     url.searchParams.set(key, value);
   }
-  const res = await fetch(url.toString(), { headers: { "xi-api-key": apiKey } });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`ElevenLabs shared-voices ${res.status}: ${body.slice(0, 200)}`);
+  let res: Response;
+  try {
+    res = await fetch(url.toString(), {
+      headers: { "xi-api-key": apiKey },
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    throw new VoiceCatalogRequestError(null);
   }
-  const data = (await res.json()) as {
-    voices?: ElevenLabsSharedVoiceRaw[];
-    has_more?: boolean;
-  };
-  return { voices: data.voices ?? [], hasMore: data.has_more ?? false };
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {});
+    throw new VoiceCatalogRequestError(res.status);
+  }
+  let data: unknown;
+  try {
+    data = await readBoundedMediaJson(res);
+  } catch {
+    throw new VoiceCatalogRequestError(null);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new VoiceCatalogRequestError(null);
+  }
+  const voices = (data as Record<string, unknown>)["voices"];
+  const hasMore = (data as Record<string, unknown>)["has_more"];
+  if (!Array.isArray(voices) || (hasMore !== undefined && typeof hasMore !== "boolean")) {
+    throw new VoiceCatalogRequestError(null);
+  }
+  if (!voices.every((voice): voice is ElevenLabsSharedVoiceRaw => (
+    Boolean(voice)
+    && typeof voice === "object"
+    && !Array.isArray(voice)
+    && typeof (voice as Record<string, unknown>)["voice_id"] === "string"
+    && typeof (voice as Record<string, unknown>)["name"] === "string"
+  ))) {
+    throw new VoiceCatalogRequestError(null);
+  }
+  return { voices, hasMore: hasMore ?? false };
 }
 
 async function fetchSharedCatalog(
   apiKey: string,
   input: DiscoverVoicesInput,
   targetCount: number,
+  signal?: AbortSignal,
 ): Promise<{ voices: CatalogVoice[]; consideredCount: number }> {
   const params = buildUpstreamParams(input);
   const collected: CatalogVoice[] = [];
@@ -361,7 +438,7 @@ async function fetchSharedCatalog(
       ...params,
       page: String(page),
       page_size: String(SHARED_PAGE_SIZE),
-    });
+    }, signal);
     const normalized = filterAndNormalizeSharedCatalog(upstream.voices);
     considered += normalized.length;
     collected.push(...normalized);
@@ -397,33 +474,57 @@ export async function discoverVoices(
   input: DiscoverVoicesInput,
   context?: VoiceDiscoveryContext,
   dependencies: VoiceDiscoveryDependencies = {},
+  signal?: AbortSignal,
 ): Promise<FindVoiceToolResult> {
   const limit = Math.min(
     Math.max(input.limit ?? DEFAULT_BROWSE_LIMIT, 1),
     MAX_BROWSE_LIMIT,
   );
-  const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
   const warnings: string[] = [];
 
   let pool = curatedCatalogVoices();
   let consideredCount = pool.length;
 
-  if (apiKey) {
-    await (dependencies.assertCanUseServerProviderCredentials
-      ?? assertCanUseServerProviderCredentials)(
-        causalHumanForExecution(context?.causalHumanUserId),
-        "voice_catalog_discovery",
-      );
+  const capability = (dependencies.getCapabilityFundingSession
+    ?? getCapabilityFundingSession)();
+  let configured = false;
+  if (capability) {
+    const humanUserId = causalHumanForExecution(context?.causalHumanUserId);
+    if (capability.humanUserId !== humanUserId) {
+      throw new Error("Voice funding identity does not match the causal Human");
+    }
     try {
-      const remote = await fetchSharedCatalog(apiKey, input, limit);
+      const service = await capability.openService("elevenlabs");
+      configured = true;
+      const remote = await service.runAttempt(({ apiKey }) =>
+        fetchSharedCatalog(apiKey, input, limit, signal));
       pool = dedupeVoices([...pool, ...remote.voices]);
       consideredCount = remote.consideredCount + curatedCatalogVoices().length;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      warnings.push(`ElevenLabs catalog fetch failed (${msg}); showing curated voices only.`);
+      if (signal?.aborted) throw e;
+      if (stableFundingFailureCode(e)) configured = false;
+      warnings.push(voiceCatalogWarning(e));
     }
   } else {
-    warnings.push("ELEVENLABS_API_KEY not set; curated defaults only.");
+    const apiKey = process.env["ELEVENLABS_API_KEY"]?.trim();
+    configured = Boolean(apiKey);
+    if (apiKey) {
+      await (dependencies.assertCanUseServerProviderCredentials
+        ?? assertCanUseServerProviderCredentials)(
+          causalHumanForExecution(context?.causalHumanUserId),
+          "voice_catalog_discovery",
+        );
+      try {
+        const remote = await fetchSharedCatalog(apiKey, input, limit, signal);
+        pool = dedupeVoices([...pool, ...remote.voices]);
+        consideredCount = remote.consideredCount + curatedCatalogVoices().length;
+      } catch (e) {
+        if (signal?.aborted) throw e;
+        warnings.push(voiceCatalogWarning(e));
+      }
+    } else {
+      warnings.push("ElevenLabs credentials are not configured; curated defaults only.");
+    }
   }
 
   const filtered = applyLocalFilters(pool, input);
@@ -433,7 +534,7 @@ export async function discoverVoices(
   const result: FindVoiceToolResult = {
     candidates,
     consideredCount,
-    elevenLabsConfigured: Boolean(apiKey),
+    elevenLabsConfigured: configured,
   };
   if (warnings.length > 0) result.warnings = warnings;
   return result;
@@ -479,29 +580,31 @@ After the user listens via audition_voices, lock in with manage_voices add.`,
         .describe("Max candidates (10–15 browse window)"),
     }),
 
-    func: async ({ query, language, accent, gender, age, qualityPreference, limit }) => {
+    func: async ({ query, language, accent, gender, age, qualityPreference, limit }, _runManager, config) => {
       try {
         const input: DiscoverVoicesInput = { query, qualityPreference, limit };
         if (language !== undefined) input.language = language;
         if (accent !== undefined) input.accent = accent;
         if (gender !== undefined) input.gender = gender;
         if (age !== undefined) input.age = age;
-        const result = await discoverVoices(input, context, dependencies);
+        const result = await discoverVoices(input, context, dependencies, config?.signal);
         if (result.candidates.length === 0) {
           return JSON.stringify({
             ...result,
-            error: `No voices matched the filters. Try broader keywords or set ELEVENLABS_API_KEY for the full catalog.`,
+            error: result.elevenLabsConfigured
+              ? "No voices matched the filters. Try broader keywords."
+              : "No voices matched the filters. Try broader keywords or configure voice provider access for the full catalog.",
           });
         }
         return JSON.stringify(result);
       } catch (e) {
+        if (config?.signal?.aborted) throw e;
         if (e instanceof ServerProviderCredentialsDeniedError) throw e;
-        const msg = e instanceof Error ? e.message : String(e);
         return JSON.stringify({
           candidates: [],
           consideredCount: 0,
-          elevenLabsConfigured: Boolean(process.env["ELEVENLABS_API_KEY"]?.trim()),
-          error: `find_voice failed: ${msg}`,
+          elevenLabsConfigured: false,
+          error: "find_voice failed: voice discovery is unavailable",
         } satisfies FindVoiceToolResult);
       }
     },

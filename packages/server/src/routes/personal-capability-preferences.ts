@@ -21,9 +21,12 @@ import {
   type PersonalCapabilityPreferenceProjection,
   type PersonalCapabilityPreferences,
   type PersonalCapabilityRole,
+  type ResearchCapabilityRole,
+  isMediaCapabilityRole,
 } from "@nautilo/types";
 import { createCapabilityFundingSession } from "../lib/capability-funding";
 import { createModelFundingSnapshot } from "../lib/model-funding";
+import { personalMediaModels } from "../lib/media-model-preferences";
 import { getServerDirectDb } from "../lib/server-direct-db";
 
 const RESEARCH_ROLE = {
@@ -33,7 +36,7 @@ const RESEARCH_ROLE = {
   deepResearchSummarization: { modelRole: "deepResearchSynthesis", tools: false },
   deepResearchCompression: { modelRole: "deepResearchSynthesis", tools: false },
   deepResearchFinalReport: { modelRole: "deepResearchFinalReport", tools: false },
-} satisfies Record<Exclude<PersonalCapabilityRole, "decision">, { modelRole: ModelRole; tools: boolean }>;
+} satisfies Record<ResearchCapabilityRole, { modelRole: ModelRole; tools: boolean }>;
 
 const PRESENTATION: Readonly<Record<PersonalCapabilityRole, { label: string; description: string }>> = {
   webSearchSynthesis: { label: "Search synthesis", description: "Writes an answer from gathered web sources." },
@@ -42,6 +45,10 @@ const PRESENTATION: Readonly<Record<PersonalCapabilityRole, { label: string; des
   deepResearchSummarization: { label: "Research summarization", description: "Summarizes research evidence between stages." },
   deepResearchCompression: { label: "Research compression", description: "Compresses retained research context for continuation." },
   deepResearchFinalReport: { label: "Final research report", description: "Writes the final Deep Research report." },
+  imageGeneration: { label: "Image generation", description: "Creates and edits images with supported models." },
+  videoGeneration: { label: "Video generation", description: "Creates videos; accepted jobs keep their selected model and account." },
+  musicGeneration: { label: "Music generation", description: "Creates music; accepted jobs keep their selected model and account." },
+  speech: { label: "Speech", description: "Uses an ElevenLabs speech model with the Genie's selected voice." },
   decision: { label: "Decisions", description: "Evaluates supported choices, scores, and strict decision questions." },
 };
 
@@ -62,7 +69,7 @@ export interface PersonalCapabilityPreferenceRouteDeps {
   readonly listModels?: (role: PersonalCapabilityRole) => readonly StructuralModel[];
 }
 
-function researchModels(role: Exclude<PersonalCapabilityRole, "decision">): StructuralModel[] {
+function researchModels(role: ResearchCapabilityRole): StructuralModel[] {
   const definition = RESEARCH_ROLE[role];
   const rows = getEligibleModels({
     includeUnavailable: true,
@@ -96,7 +103,8 @@ function decisionModels(): StructuralModel[] {
 }
 
 function listPersonalCapabilityModels(role: PersonalCapabilityRole): readonly StructuralModel[] {
-  return role === "decision" ? decisionModels() : researchModels(role);
+  return isMediaCapabilityRole(role) ? personalMediaModels(role)
+    : role === "decision" ? decisionModels() : researchModels(role);
 }
 
 function errorCode(error: unknown): string | null {
@@ -131,11 +139,13 @@ async function projectPreferences(
   const readiness = new Map<string, Promise<PersonalCapabilityModelReadiness>>();
   const readinessFor = (modelId: string, role: PersonalCapabilityRole) => {
     const workload = role === "decision" ? "decision" : "research";
-    const key = `${workload}:${modelId}`;
+    const key = `${isMediaCapabilityRole(role) ? role : workload}:${modelId}`;
     const cached = readiness.get(key);
     if (cached) return cached;
-    const pending = session.openModel(modelId, workload)
-      .then(({ binding }) => ({
+    const admission = isMediaCapabilityRole(role)
+      ? (session.projectMediaFunding?.(modelId, role) ?? Promise.reject(new Error("Media projection unavailable")))
+      : session.openModel(modelId, workload).then(({ binding }) => binding);
+    const pending = admission.then((binding) => ({
         status: "ready",
         reason: null,
         fundingSource: binding.kind,

@@ -33,6 +33,23 @@ export function listSpeechModels(env: NodeJS.ProcessEnv = process.env): SpeechMo
     });
 }
 
+/** Validate signed speech semantics; the caller separately admits its exact credential. */
+export function resolveFundedSpeechModel(modelId: string): SpeechModel {
+  const model = listSpeechModels({}).find((row) => row.id === modelId);
+  const resolved = resolveCatalogModel(modelId, { env: {} });
+  if (!model || !["selectable", "missing_credentials"].includes(resolved.availability)
+    || model.provider !== "elevenlabs"
+    || !["elevenlabs-tts-http", "elevenlabs-dialogue-http"].includes(model.speech.transport)
+    || !model.speech.outputFormats.includes("pcm_24000")
+    || !model.speech.outputFormats.includes("mp3_44100_128")) {
+    throw new Error("Configured speech model is unavailable");
+  }
+  const selected = { ...model };
+  delete selected.unavailableReason;
+  return { ...selected, available: true,
+    speech: { ...model.speech, outputFormats: [...model.speech.outputFormats] } };
+}
+
 /** Freeze this result at reply admission; an admin change applies to the next reply. */
 export function getServerSpeechModel(
   selection: string | null = getCachedServerModelConfigRow()?.speechModel ?? null,

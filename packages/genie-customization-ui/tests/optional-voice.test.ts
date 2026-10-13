@@ -70,6 +70,7 @@ describe("D510 optional voice", () => {
       loading: false,
       curated: [],
       error: null,
+      recovery: null,
       elevenLabsConfigured: false,
     };
     expect(voiceViewStateForCatalog(noKeyCatalog)).toBe("unconfigured");
@@ -103,6 +104,7 @@ describe("D510 optional voice", () => {
         loading: false,
         curated: [],
         error: "sanitized",
+        recovery: null,
         elevenLabsConfigured: true,
       }),
     ).toBe("runtime-unavailable");

@@ -71,12 +71,9 @@ describe("personal tool readiness", () => {
     });
   });
 
-  test("deferred media, security, and paid multi-agent workflows remain denied inside capability scope", () => {
+  test("deferred security and paid multi-agent workflows remain denied inside capability scope", () => {
     runWithCapabilityFundingSession(capabilityFunding, () => {
       for (const name of [
-        "generate_image",
-        "generate_video",
-        "transcribe_audio",
         "security_scan",
         "ask_peer",
         "in_scope",

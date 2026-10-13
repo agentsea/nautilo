@@ -121,7 +121,8 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           );
           continue;
         }
-        if (row.endpoint !== "/v1/chat/completions" && row.endpoint !== "/v1/decisions") {
+        const imageEndpoint = row.endpoint === "/v1/images/generations" || row.endpoint === "/v1/images/edits";
+        if (!imageEndpoint && row.endpoint !== "/v1/chat/completions" && row.endpoint !== "/v1/decisions") {
           await classify(row, "blocked_repair", "receipt_endpoint_unsupported");
           continue;
         }
@@ -131,7 +132,7 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           : binding?.["surplusProviderPin"];
         if (typeof binding?.["surplusCredentialFingerprint"] !== "string"
           || typeof binding["surplusModelId"] !== "string"
-          || typeof binding["surplusProviderPin"] !== "string"
+          || (imageEndpoint ? binding["surplusUnpinnedMedia"] !== true : typeof binding["surplusProviderPin"] !== "string")
           || catalogProvider !== row.provider) {
           await classify(row, "blocked_repair", "receipt_binding_invalid");
           continue;
@@ -168,7 +169,7 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
             binding: {
               requestId: row.providerRequestId,
               surplusModelId: binding["surplusModelId"],
-              providerPin: binding["surplusProviderPin"],
+              providerPin: imageEndpoint ? null : binding["surplusProviderPin"] as string,
             },
             signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(10_000)]),
           });

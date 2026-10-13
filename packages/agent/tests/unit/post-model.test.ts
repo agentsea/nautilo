@@ -12,6 +12,7 @@ import type { NautiloState } from "../../src/agent/state";
 import { MAX_SUBAGENT_DEPTH, NautiloStateAnnotation } from "../../src/agent/state";
 import type { PolicyResolver, ToolAccessDecision } from "@nautilo/trust";
 import type { PostModelDeps } from "../../src/nodes/post-model";
+import type { MediaGenerationApproval } from "@nautilo/types";
 import { clearToolCatalog, initToolCatalog, ToolCatalog } from "@nautilo/catalog";
 import { registerAllTools } from "../../src/tools/register-all";
 import type { ProjectionSnapshot } from "../../src/tools/memory/projection-sharing";
@@ -297,6 +298,46 @@ describe("run_shell long-wait approval intent", () => {
     expect(entry.runShellTimeout?.reason).toContain("Bearer [redacted]");
     expect(entry.runShellTimeout?.reason).not.toContain("Ab3_Cd4-Ef5_Gh6-Ij7_Kl8-Mn9_Op0-Qr1_St2");
   });
+});
+
+test("uses the prepared media quote kind for the approval reason", () => {
+  const entry = {
+    tc: { id: "media-call", name: "generate_music", args: {} },
+    approval: {
+      verb: "ask" as const,
+      reason: "Starting this media generation spends the exact USD amount shown below.",
+      severity: "destructive-medium" as const,
+    },
+  };
+  const exact: MediaGenerationApproval = {
+    version: "media-generation-approval-v1",
+    digest: "a".repeat(64),
+    quoteDigest: "b".repeat(64),
+    revision: 1,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+    preview: {
+      mediaKind: "music",
+      model: "minimax-music-v26",
+      settings: { forceInstrumental: true },
+      prompt: { characterCount: 12, summary: "Ambient tune", truncated: false },
+      quote: { currency: "USD", amountMicros: 60_000, display: "USD 0.060000" },
+      spendNotice: "Approving starts a paid generation using this exact quote.",
+    },
+  };
+  expect(buildAskPayload([entry], "human", undefined, undefined, exact, "approval").reason)
+    .toBe(exact.preview.spendNotice);
+
+  const estimate: MediaGenerationApproval = {
+    ...exact,
+    preview: {
+      ...exact.preview,
+      quote: { ...exact.preview.quote, kind: "estimate" },
+      spendNotice: "Approving starts a paid generation using this current estimate. The final cost can be different.",
+    },
+  };
+  const reason = buildAskPayload([entry], "human", undefined, undefined, estimate, "approval").reason;
+  expect(reason).toBe(estimate.preview.spendNotice);
+  expect(reason).not.toContain("exact");
 });
 
 // ===========================================================================

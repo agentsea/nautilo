@@ -297,7 +297,7 @@ describe("personal provider credential routes", () => {
     expect(serializedProviders).not.toContain("formatCheck");
     expect(serializedProviders).not.toContain("doctorHints");
     expect(providers.find(({ id }) => id === "openai")?.["purpose"]).toBe(
-      "OpenAI text models; embeddings remain server-managed",
+      "OpenAI text and image models; embeddings remain server-managed",
     );
     expect(providers.some(({ id }) => id === "gateway" || id === "nautilo-gateway")).toBe(false);
     const personalChatIds = definitions
