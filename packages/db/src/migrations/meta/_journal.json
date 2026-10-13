@@ -2388,6 +2388,13 @@
       "when": 1791822943496,
       "tag": "0340_omniscient_norman_osborn",
       "breakpoints": true
+    },
+    {
+      "idx": 341,
+      "version": "7",
+      "when": 1791882158810,
+      "tag": "0341_certain_fabian_cortez",
+      "breakpoints": true
     }
   ]
 }

@@ -5,6 +5,10 @@ import { estimateCostFromPrice, resolveModelPrice, PRICING_VERSION } from "../co
 import { getUsageContext, normalizeUsageRoomId, runWithUsageContext } from "./usage-context";
 import type { ExtractedUsage } from "./usage-callback";
 import { classifyError } from "../utils/errors";
+import {
+  getPersonalLlmAttemptOwner,
+  type PersonalLlmAttemptOwnerBinding,
+} from "./personal-llm-attempt-owner";
 
 /** Admission/accounting failure occurs before the wire and must not trigger model fallback. */
 export class PersonalAttemptLedgerUnavailableError extends Error {
@@ -56,6 +60,17 @@ export function classifyPersonalAttemptFailure(
 }
 
 type SettlePersonalAttempt = (input: SettlePersonalLlmAttemptInput) => Promise<void>;
+type PersonalAttemptDependencies = Readonly<{
+  begin: typeof beginPersonalLlmAttempt;
+  settle: SettlePersonalAttempt;
+  owner: () => PersonalLlmAttemptOwnerBinding | null;
+}>;
+
+const defaultDependencies: PersonalAttemptDependencies = {
+  begin: beginPersonalLlmAttempt,
+  settle: settlePersonalLlmAttempt,
+  owner: getPersonalLlmAttemptOwner,
+};
 
 /** Retry one exact idempotent settlement without replaying inference. */
 async function settlePersonalAttemptWithRetry(
@@ -126,14 +141,16 @@ export async function runPersonalLlmAttempt<T>(input: {
   signal?: AbortSignal | undefined;
   hasObservedProviderWork?: (() => boolean) | undefined;
   invoke: () => Promise<T>;
-}, deps = { begin: beginPersonalLlmAttempt, settle: settlePersonalLlmAttempt }): Promise<T> {
+}, deps: PersonalAttemptDependencies = defaultDependencies): Promise<T> {
   const context = getUsageContext();
   const funding = context?.funding;
   if (!context || funding?.kind !== "personal" || funding.providerRoute === "surplus") return input.invoke();
+  const owner = deps.owner();
+  if (owner === null) throw new PersonalAttemptLedgerUnavailableError();
   const id = randomUUID();
   const pricing = structuredClone(resolveModelPrice(input.modelId, context.modelControl?.servingProfileId));
   try {
-    await deps.begin({ id, userId: funding.humanUserId,
+    await deps.begin({ id, ownerToken: owner.ownerToken, userId: funding.humanUserId,
       roomId: normalizeUsageRoomId(context.roomId),
       ...(typeof context.metadata?.["taskId"] === "string" ? { taskId: context.metadata["taskId"] } : {}),
       callType: context.callType, model: input.modelId,
@@ -165,7 +182,8 @@ export async function runPersonalLlmAttempt<T>(input: {
       : hasTokenEvidence ? "estimated" as const : "unknown" as const;
     const providerRequestId = evidence?.providerRequestId ?? terminalProviderRequestId;
     try {
-      await settlePersonalAttemptWithRetry(deps.settle, { attemptId: id, outcome, costState,
+      await settlePersonalAttemptWithRetry(deps.settle, { attemptId: id, ownerToken: owner.ownerToken,
+        outcome, costState,
         ...(preserveOutcome ? { preserveOutcome: true } : {}),
         ...(evidence && (hasTokenEvidence || evidence.actualCostUsd !== null)
           ? { inputTokens: evidence.inputTokens, outputTokens: evidence.outputTokens,

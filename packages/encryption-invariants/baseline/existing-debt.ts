@@ -4,6 +4,7 @@ import {
   REVIEWED_MAIN_2026_09_17_DEBT_LINKS,
 } from "./reviewed-main-2026-09-17-coverage";
 import { REVIEWED_PAID_SERVICE_FUNDING_COVERAGE } from "./reviewed-paid-service-funding-coverage";
+import { REVIEWED_PERSONAL_ATTEMPT_LEASE_COVERAGE } from "./reviewed-personal-attempt-lease-coverage";
 import { REVIEWED_DRAFT_RECOVERY_COVERAGE } from "./reviewed-main-2026-09-12-draft-recovery";
 import {
   REVIEWED_MAIN_2026_09_12_WIRE_COVERAGE_ENTRIES,
@@ -1840,6 +1841,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...REVIEWED_MAIN_2026_09_12_WIRE_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_2026_09_17_COVERAGE,
     ...REVIEWED_PAID_SERVICE_FUNDING_COVERAGE,
+    ...REVIEWED_PERSONAL_ATTEMPT_LEASE_COVERAGE,
     ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_COVERAGE,
     ...REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
   ].filter((entry) =>
