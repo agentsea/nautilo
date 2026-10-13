@@ -34,7 +34,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Review & send. Incoming messages and receiver status update live; unrelated
   archived rooms no longer block external replies. Provider system notices no
   longer stall queued messages. Replies support provider text blocks while
-  excluding reasoning content. Sign-in updates automatically, and interrupted
+  excluding reasoning content. Ordinary Genie text replies need no additional
+  local approval; tools and private resources remain unavailable. Sign-in updates automatically, and interrupted
   or uncertain delivery remains visible. Initial support is text on macOS Desktop with
   plaintext server content mode; protected-content modes remain unavailable.
 
