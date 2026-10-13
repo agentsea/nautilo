@@ -34,4 +34,13 @@ export const REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS:
     reason:
       "This exact warning emits one fixed hosted cost-settlement-unavailable literal. It includes no Human, Room, Agent, tool, provider, request, response, credential, URL, error object, or content value.",
   },
+  {
+    locator:
+      "packages/server/src/lib/personal-llm-attempt-owner.ts#log_emitter:dd9ce09822966263:1",
+    owner: "packages/server",
+    closure: "reviewed_exclusion",
+    exclusionId: "exclusion.paid-service-funding.personal-attempt-owner-heartbeat-warning",
+    reason:
+      "This exact heartbeat warning emits one fixed operational literal and the fixed failureCode attempt_owner_heartbeat_failed. It includes no Human, Room, Agent, provider, attempt, owner token, credential, request, response, error object, URL, prompt, or content value; packages/encryption-invariants/tests/integration/reviewed-personal-attempt-owner-source-alarm.test.ts executable evidence fixes the complete emitted shape.",
+  },
 ];
