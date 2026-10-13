@@ -117,6 +117,9 @@ function assertOwnerOnlyLockDirectory(lockPath: string, verified: Set<string>): 
     verified.add(identity);
   } catch (error) {
     if (isCode(error, "ENOENT")) return;
+    // Windows keeps a claim exclusively open while its owner writes it; the
+    // caller polls again, and nothing was recorded as verified.
+    if (process.platform === "win32" && isCode(error, "EBUSY")) return;
     throw error;
   }
 }
