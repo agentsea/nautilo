@@ -569,13 +569,16 @@ class DesktopRelaySidecarClient implements RelayClient {
     const generation = this.#generation;
     if (child === null || generation === null || generation !== expectedGeneration || child.exitCode !== null) return false;
     try {
-      return child.stdin.write(encodeRelayHostFrame({
+      // write() returning false only signals backpressure; the frame is still
+      // queued in order. Windows pipes report it even for small frames.
+      child.stdin.write(encodeRelayHostFrame({
         protocolVersion: RELAY_HOST_PROTOCOL_VERSION,
         kind: "transport-send",
         generation,
         transport,
         payload,
       }));
+      return true;
     } catch {
       return false;
     }
