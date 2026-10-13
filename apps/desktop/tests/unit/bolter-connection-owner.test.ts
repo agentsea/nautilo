@@ -28,7 +28,7 @@ function fake() {
     finish(code = 0) { child.exitCode = code; child.emit("close", code); } };
 }
 function fixture(options: { decoders?: BolterQualifiedDecoders | undefined; attest?: (p: BolterCliInvocation) => Promise<boolean>;
-  attestHelper?: (p: string) => Promise<boolean> } = {}) {
+  attestHelper?: (p: string) => Promise<boolean>; onIgnoredEvent?: (kind: string | null) => void } = {}) {
   let current = true;
   let bound = true;
   const calls: BolterCliInvocation[] = [];
@@ -373,8 +373,112 @@ test("retained system notices drain with later Human messages only after server 
   }
 });
 
+test("ignored-event-only records drain without admission and a throwing diagnostic cannot block the next Human message", async () => {
+  const path = await directory();
+  const ignored = { type: "control", kind: "ignored_event", eventKind: "profile_requested",
+    payload: "Untrusted event prose must be discarded" };
+  const records = new Map([
+    ["ignored", { id: "ignored", fingerprint: "ignored-fingerprint", jsonl: JSON.stringify(ignored) }],
+    ["human", { id: "human", fingerprint: "human-fingerprint", jsonl: JSON.stringify(message) }],
+  ]);
+  const acknowledgements: string[] = [];
+  const diagnostics: Array<string | null> = [];
+  const f = fixture({ onIgnoredEvent: kind => { diagnostics.push(kind); throw new Error("Synthetic logging failure"); } });
+  const spool = {
+    store: () => Promise.reject(new Error("No handover expected")),
+    pending: () => Promise.resolve([...records.keys()]),
+    read: (id: string) => Promise.resolve(records.get(id)!),
+    acknowledge: (receipt: { id: string }) => { acknowledgements.push(receipt.id); records.delete(receipt.id); return Promise.resolve(); },
+  };
+  try {
+    expect((await f.owner.confirmIdentity()).status).toBe("confirmed");
+    expect(await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool })).toBe(true);
+    const admissions: unknown[][] = [];
+    expect(await f.owner.flushInbox(items => { admissions.push([...items]); return Promise.resolve(true); })).toBe("accepted");
+    expect(admissions).toEqual([[message]]);
+    expect(diagnostics).toEqual(["profile_requested"]);
+    expect(acknowledgements).toEqual(["ignored", "human"]);
+    expect([...records.keys()]).toEqual([]);
+  } finally {
+    for (const child of f.children) if (child.value.exitCode === null) child.finish();
+    await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
+});
 
-test("system notice handover establishes listening while unknown controls do not", async () => {
+test("mixed ignored events stay durable with rejected Human admission and never reach accepted items", async () => {
+  const path = await directory();
+  const later = { ...message, messageId: "synthetic-later-input", content: "Later synthetic external text" };
+  const ignored = { type: "control", kind: "ignored_event", eventKind: "future_event",
+    eventText: "Untrusted event prose", data: { secret: "Untrusted event metadata" } };
+  const connected = { type: "control", kind: "connected" };
+  const records = new Map([
+    ["mixed", { id: "mixed", fingerprint: "mixed-fingerprint",
+      jsonl: [ignored, connected, message].map(item => JSON.stringify(item)).join("\n") }],
+    ["later", { id: "later", fingerprint: "later-fingerprint", jsonl: JSON.stringify(later) }],
+  ]);
+  const acknowledgements: string[] = [];
+  const diagnostics: Array<string | null> = [];
+  const f = fixture({ onIgnoredEvent: kind => { diagnostics.push(kind); } });
+  const spool = {
+    store: () => Promise.reject(new Error("No handover expected")),
+    pending: () => Promise.resolve([...records.keys()]),
+    read: (id: string) => Promise.resolve(records.get(id)!),
+    acknowledge: (receipt: { id: string }) => { acknowledgements.push(receipt.id); records.delete(receipt.id); return Promise.resolve(); },
+  };
+  try {
+    expect((await f.owner.confirmIdentity()).status).toBe("confirmed");
+    expect(await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool })).toBe(true);
+    const rejected: unknown[][] = [];
+    expect(await f.owner.flushInbox(items => { rejected.push([...items]); return Promise.resolve(false); })).toBe("blocked");
+    expect(rejected).toEqual([[connected, message]]);
+    expect(acknowledgements).toEqual([]);
+    expect([...records.keys()]).toEqual(["mixed", "later"]);
+
+    const accepted: unknown[][] = [];
+    expect(await f.owner.flushInbox(items => { accepted.push([...items]); return Promise.resolve(true); })).toBe("accepted");
+    expect(accepted).toEqual([[connected, message], [later]]);
+    expect(diagnostics).toEqual(["future_event", "future_event"]);
+    expect(acknowledgements).toEqual(["mixed", "later"]);
+    expect([...records.keys()]).toEqual([]);
+  } finally {
+    for (const child of f.children) if (child.value.exitCode === null) child.finish();
+    await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
+});
+
+test("default ignored-event logging escapes the kind and never includes discarded payload fields", async () => {
+  const path = await directory();
+  const eventKind = "future_event\nforged: true";
+  const record = { id: "ignored", fingerprint: "ignored-fingerprint", jsonl: JSON.stringify({
+    type: "control", kind: "ignored_event", eventKind, payload: "PRIVATE_EVENT_PAYLOAD",
+  }) };
+  let pending = true;
+  const warning = spyOn(console, "warn").mockImplementation(() => undefined);
+  const f = fixture();
+  const spool = {
+    store: () => Promise.reject(new Error("No handover expected")),
+    pending: () => Promise.resolve(pending ? [record.id] : []),
+    read: () => Promise.resolve(record),
+    acknowledge: () => { pending = false; return Promise.resolve(); },
+  };
+  try {
+    expect((await f.owner.confirmIdentity()).status).toBe("confirmed");
+    expect(await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool })).toBe(true);
+    expect(await f.owner.flushInbox(() => { throw new Error("Ignored-only record must bypass admission"); })).toBe("accepted");
+    expect(warning).toHaveBeenCalledTimes(1);
+    const output = warning.mock.calls[0]!.map(value => String(value)).join(" ");
+    expect(output).toContain(JSON.stringify({ kind: eventKind }));
+    expect(output).not.toContain("PRIVATE_EVENT_PAYLOAD");
+    expect(output).not.toContain("\n");
+  } finally {
+    warning.mockRestore();
+    for (const child of f.children) if (child.value.exitCode === null) child.finish();
+    await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
+});
+
+
+test("ignored events alone do not establish listening while a mixed connected batch does", async () => {
   const path = await directory();
   const f = fixture();
   const states: boolean[] = [];
@@ -390,11 +494,14 @@ test("system notice handover establishes listening while unknown controls do not
     expect(await f.owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool,
       onStateChange: () => { states.push(f.owner.listening); } })).toBe(true);
     const descriptor = parseBolterHandoverDescriptor(f.calls.find(plan => plan.args[0] === "serve")!.env["NAUTILO_BOLTER_HANDOVER"]!)!;
-    async function* packet(kind: string) { yield Buffer.from(JSON.stringify({ type: "control", kind }) + "\n"); }
-    expect(await handOverBolterBatch(descriptor, packet("unknown_control"))).toBe(true);
+    async function* packet(items: readonly unknown[]) {
+      yield Buffer.from(items.map(item => JSON.stringify(item)).join("\n") + "\n");
+    }
+    const ignored = { type: "control", kind: "ignored_event", eventKind: "profile_requested" };
+    expect(await handOverBolterBatch(descriptor, packet([ignored]))).toBe(true);
     expect(f.owner.listening).toBe(false);
     expect(states).toEqual([]);
-    expect(await handOverBolterBatch(descriptor, packet("system_message"))).toBe(true);
+    expect(await handOverBolterBatch(descriptor, packet([ignored, { type: "control", kind: "connected" }]))).toBe(true);
     expect(f.owner.listening).toBe(true);
     expect(states).toEqual([true]);
     expect(stored).toHaveLength(2);

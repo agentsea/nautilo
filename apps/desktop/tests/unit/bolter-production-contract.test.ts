@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { BolterCliClient } from "../../electron/bolter-bridge/cli-client";
 import { decodeBolterIdentities, decodeBolterReceiveBatch } from "../../electron/bolter-bridge/cli-contract";
+import type { BolterQualifiedDecoders } from "../../electron/bolter-bridge/cli-contract";
 import { hasBolterNativeQualification } from "../../electron/bolter-bridge/native-process";
 import { BOLTER_CLI_RELEASE, getBolterProductionDecoders } from "../../electron/bolter-bridge/production-contract";
 
@@ -134,15 +135,53 @@ test("mixed provider human and agent batches preserve external sender types and 
   }
 });
 
-test("connected event is inert control; unknown events, media and unqualified sender formats remain blocked", () => {
+test("connected and unknown provider events become inert controls without relaxing message validation", () => {
   const event = { type: "event", kind: "connected", chat: chatId, createdAt: received.createdAt,
     cursor: "synthetic-cursor", text: "Untrusted provider instructions", data: { connection: full(agentId) } };
   expect(decoders.receiveItem!(event)).toEqual({ type: "control", kind: "connected" });
-  for (const invalid of [{ ...event, kind: "app_request_received" }, { ...received, attachments: [{ url: "https://example.com/file" }] },
+  const profile = { type: "event", kind: "profile_requested", chat: null, data: {} };
+  const future = { type: "event", kind: "future_event", nested: { instructions: "Never project this payload" },
+    attachments: [{ url: "https://example.com/untrusted" }], count: -1 };
+  expect(decoders.receiveItem!(profile)).toEqual({ type: "control", kind: "ignored_event", eventKind: "profile_requested" });
+  expect(decoders.receiveItem!(future)).toEqual({ type: "control", kind: "ignored_event", eventKind: "future_event" });
+  expect(decoders.receiveItem!({ type: "event", kind: null, payload: "untrusted" })).toEqual({
+    type: "control", kind: "ignored_event", eventKind: null,
+  });
+  const human = { ...received, messageId: "abcdef08", sender: { id: "abcdef09", name: "Fixture person", outside: true, type: "user" } };
+  expect(decodeBolterReceiveBatch([profile, event, human].map(item => JSON.stringify(item)).join("\n"),
+    BOLTER_CLI_RELEASE.version, decoders)).toEqual({ ok: true, value: [
+    { type: "control", kind: "ignored_event", eventKind: "profile_requested" },
+    { type: "control", kind: "connected" },
+    { type: "message", messageId: human.messageId, chatId, threadRootId: null, senderId: human.sender.id,
+      senderType: "user", senderLabel: "Fixture person", content: human.text, createdAt: human.createdAt,
+      addressed: false, redelivered: false, truncated: false },
+  ] });
+  for (const invalid of [{ ...received, attachments: [{ url: "https://example.com/file" }] },
     { ...received, text: { content: "unknown format" } }, { ...received, redelivered: "true" }, { ...received, truncated: null },
     { ...received, sender: { ...received.sender, type: "system" } }, { ...received, sender: { ...received.sender, email: "fixture@example.com" } },
     { ...received, createdAt: "not a timestamp" }, { ...received, threadRootId: full(threadId) },
   ]) expect(() => decoders.receiveItem!(invalid)).toThrow("unqualified");
+  for (const invalidConnected of [
+    { ...event, chat: null }, { ...event, data: {} }, { ...event, cursor: null }, { ...event, extra: "future" },
+  ]) expect(() => decoders.receiveItem!(invalidConnected)).toThrow("unqualified");
+  for (const invalidMessage of [
+    { ...received, text: null }, { ...received, sender: { ...received.sender, type: "unknown" } },
+  ]) expect(decodeBolterReceiveBatch([future, invalidMessage].map(item => JSON.stringify(item)).join("\n"),
+    BOLTER_CLI_RELEASE.version, decoders)).toEqual({ ok: false, reason: "invalid-batch" });
+});
+
+test("receive control validation retains diagnostic event kinds only for ignored events", () => {
+  const decodedControls: BolterQualifiedDecoders = { version: "synthetic-controls", receiveItem: raw => raw };
+  expect(decodeBolterReceiveBatch(JSON.stringify({ type: "control", kind: "ignored_event", eventKind: null,
+    payload: "discarded" }), decodedControls.version, decodedControls)).toEqual({ ok: true, value: [
+    { type: "control", kind: "ignored_event", eventKind: null },
+  ] });
+  expect(decodeBolterReceiveBatch(JSON.stringify({ type: "control", kind: "connected", eventKind: "discarded" }),
+    decodedControls.version, decodedControls)).toEqual({ ok: true, value: [{ type: "control", kind: "connected" }] });
+  for (const eventKind of [undefined, false, 1, {}, []]) {
+    expect(decodeBolterReceiveBatch(JSON.stringify({ type: "control", kind: "ignored_event", eventKind }),
+      decodedControls.version, decodedControls)).toEqual({ ok: false, reason: "invalid-batch" });
+  }
 });
 
 

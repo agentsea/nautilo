@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Unknown Bolter events, including profile requests, are logged locally and
+  ignored so later messages can reach their linked room. Profile support remains
+  deferred; message and sender validation are unchanged.
+
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace
   routes fall back to the same model's direct provider within the admitted

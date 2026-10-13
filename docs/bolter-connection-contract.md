@@ -60,8 +60,11 @@ use their durable server identity and sealed Desktop recovery descriptor.
 The initial implementation selects pinned macOS ARM64 or x64 CLI artifacts and
 text-only messages. The conversation picker lists main timelines; it does not
 enumerate threads. The transport preserves exact thread bindings and receipts
-when such a binding exists. Unknown event, sender, or media formats remain blocked
-rather than interpreted as instructions or silently discarded.
+when such a binding exists. Unknown provider events, including `profile_requested`,
+are ignored and logged locally by event kind without their text or payload. They
+do not reach a Genie or block later queued messages, and do not establish Listening
+on their own. Profile requests currently receive no response. Malformed recognized
+events and unqualified message, sender, or media formats remain blocked.
 
 Only the server's plaintext content mode is eligible. Protected-content modes
 remain unavailable; connecting never changes that mode. Local credential homes

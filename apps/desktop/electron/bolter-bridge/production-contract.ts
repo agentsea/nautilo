@@ -63,6 +63,10 @@ export function getBolterProductionDecoders(version: string): BolterQualifiedDec
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw unqualified();
     const input = raw as Record<string, unknown>;
     if (input["type"] === "event") {
+      // Hosted event kinds can evolve independently of the pinned CLI. Keep unknown
+      // events inert and retain only their kind for local diagnostics, never their prose.
+      if (input["kind"] !== "connected") return { type: "control", kind: "ignored_event",
+        eventKind: typeof input["kind"] === "string" ? input["kind"] : null };
       const event = record(input, ["chat", "createdAt", "cursor", "data", "kind", "text", "type"]);
       const data = record(event["data"], ["connection"]);
       if (event["kind"] !== "connected" || !alias(event["chat"]) || !timestamp(event["createdAt"])
