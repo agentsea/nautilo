@@ -1,3 +1,4 @@
+import { BOLTER_RELAY_PROTOCOL_VERSION, isRelayBolterCapability, type RelayBolterDesktopMessage, type RelayBolterServerMessage } from "./bolter-protocol";
 import { parseHumanTerminalOwner, type HumanTerminalOwner } from "../../types/src/human-terminal";
 import { parseLocalExecutionDelegation, type LocalExecutionDelegation, isLocalExecutionReadArgs } from "@nautilo/types";
 import type { RelaySecurityScanProgressMessage, SecurityScanProgress } from "./security-scan-progress";
@@ -167,7 +168,8 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
-export const RELAY_PROTOCOL_VERSION = 29;
+/** v30 adds the finite owned Bolter adapter lane. */
+export const RELAY_PROTOCOL_VERSION = 30;
 /** Minimum admission contract after retiring legacy Agent shell execution. */
 export const RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION = 29;
 /** Retained shell-output reads were introduced in protocol v22. */
@@ -284,6 +286,7 @@ export function projectRelayCapabilitiesForProtocol(
   if (protocolVersion < CLAUDE_CONNECTION_DISCOVERY_PROTOCOL_VERSION) {
     delete compatible.claude;
   }
+  if (protocolVersion < BOLTER_RELAY_PROTOCOL_VERSION || compatible.profile !== "desktop-agent" || !isRelayBolterCapability(compatible.bolter)) delete compatible.bolter;
   if (protocolVersion < 18) {
     delete compatible.claudeExecution;
   } else if (
@@ -888,6 +891,7 @@ export type RelayClientMessage =
   | RelayCodexRequestMessage
   | RelayCodexEventMessage
   | RelayAcpClientMessage
+  | RelayBolterDesktopMessage
   | RelayClaudeConnectionDiscoveryResult
   | RelayClaudeExecutionDesktopEvent;
 
@@ -1170,6 +1174,7 @@ export type RelayServerMessage =
   | RelayCodexCreditMessage
   | RelayCodexRequestResponseMessage
   | RelayAcpServerMessage
+  | RelayBolterServerMessage
   | RelayClaudeConnectionDiscoverCommand
   | RelayClaudeExecutionCommand;
 

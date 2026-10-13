@@ -20,6 +20,7 @@ import {
 } from "@nautilo/agent";
 import {
   assertCanInvokeAgent,
+  getExternalRoomPolicy,
   envelopeReadableNamespaces,
   envelopeWritableNamespaces,
   loadUserTimezone,
@@ -465,6 +466,7 @@ export async function executeAgentMediatedRoomMessage(args: {
         })
       : ordinaryForegroundTurnCandidate;
 
+    const externalRoom = await getExternalRoomPolicy(roomId);
     let job;
     try {
       job = await deps.createForegroundJob(memoryOwnerId, sessionUserId, laneKey, {
@@ -537,7 +539,7 @@ export async function executeAgentMediatedRoomMessage(args: {
       args.acceptanceAuthority,
       args.liveShadowCapability
         ? liveShadowConversationExecutionRoute()
-        : ordinaryConversationExecutionRoute(),
+        : { ...ordinaryConversationExecutionRoute(), ...(externalRoom ? { contention: "serialize" as const } : {}) },
       args.invocationAuthority,
       foregroundTurnCandidate,
       args.preferredVirtualJobId,

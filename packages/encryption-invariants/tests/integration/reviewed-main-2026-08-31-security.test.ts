@@ -17,7 +17,7 @@ import {
   SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-08-31-source-alarms";
 import { SUPERSEDED_M301_DTO_LOCATORS } from "../../baseline/reviewed-m301-dto";
-import { SUPERSEDED_D565_RELAY_DTO_LOCATORS } from "../../baseline/reviewed-d565-relay-dto";
+import { SUPERSEDED_RELAY_BINDING_DTO_LOCATORS } from "../../baseline/reviewed-relay-binding-dto";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
 
 const RELEASE_EXTRACTION_REMOVED_SOURCE_ALARM_LOCATORS = [
@@ -40,7 +40,7 @@ describe("reviewed main 2026-08-31 encryption inventory", () => {
     for (const declaration of REVIEWED_MAIN_2026_08_31_DTO_DECLARATIONS) {
       if (
         SUPERSEDED_M301_DTO_LOCATORS.has(declaration.locator)
-        || SUPERSEDED_D565_RELAY_DTO_LOCATORS.has(declaration.locator)
+        || SUPERSEDED_RELAY_BINDING_DTO_LOCATORS.has(declaration.locator)
       ) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) =>
           candidate.locator === declaration.locator
@@ -58,7 +58,7 @@ describe("reviewed main 2026-08-31 encryption inventory", () => {
       }
     }
     for (const locator of SUPERSEDED_MAIN_2026_08_31_DTO_LOCATORS) {
-      if (SUPERSEDED_D565_RELAY_DTO_LOCATORS.has(locator)) {
+      if (SUPERSEDED_RELAY_BINDING_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter(
           (declaration) => declaration.locator === locator,
         )).toHaveLength(1);

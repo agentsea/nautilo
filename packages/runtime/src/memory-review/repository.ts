@@ -114,6 +114,7 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
     const resolver = getPolicyResolver();
     if (!resolver) throw new Error("authority_changed");
     const envelope = await resolver.buildEnvelope(claim.actorId, `room:${claim.roomId}`, claim.agentId, claim.roomId);
+    if (envelope.externalContext === true) throw new Error("external_room_memory_review_unavailable");
     if (envelope.ownerId !== claim.ownerId || envelope.agentId !== claim.agentId || (!claim.scopeId && !envelope.writableNamespaces.length)) throw new Error("authority_changed");
     if (claim.scopeId) return { memoryMode: "scope", ownerId: envelope.ownerId, actorId: envelope.actorId, agentId: envelope.agentId, roomId: envelope.roomId, scopeId: claim.scopeId, toolPolicy: envelope.toolPolicy };
     return envelope;

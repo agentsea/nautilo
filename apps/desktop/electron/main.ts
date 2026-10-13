@@ -3,6 +3,10 @@ import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
 import { parseReadyToWorkComponentSelection, type AgentAccessStatus } from "./ready-to-work-contract";
 
+import { createBolterNativeRelayPort } from "./bolter-bridge/relay-port";
+import { createManagedBolterConnectionFactory } from "./bolter-bridge/managed-connection";
+import { createBolterHelper } from "./bolter-bridge/helper-runtime";
+import { createBolterSpoolCipher } from "./bolter-bridge/spool-cipher";
 import {
   app,
   BaseWindow,
@@ -3080,6 +3084,7 @@ async function bootRelayIfPossible(serverUrl: string): Promise<void> {
  * torn down before the target's is started).
  */
 async function startRelayForSession(session: ServerSession): Promise<void> {
+  const bolterAuthGeneration = miniAppRecoveryAuthGeneration;
   const serverUrl = session.serverUrl;
   // Establish or transition the server-scoped local authority before any
   // target-server auth/token early return. A switch to an unavailable or
@@ -3168,7 +3173,23 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
   // newly paired desktop useful immediately. Current Folder remains the
   // optional Human project selection; passing it through a provider never
   // creates, replaces, or persists it during relay boot/pairing.
+  const bolterAuthority = authoritativeConnectionSnapshot();
+  const bolterOrigin = new URL(serverUrl).origin;
   const relayOpts: StartRelayOptions = {
+    bolterHostPort: bolterAuthority.scope === bolterOrigin && bolterAuthority.serverFingerprint ? createBolterNativeRelayPort({
+      isCurrent: () => {
+        const current = authoritativeConnectionSnapshot();
+        return serverSessions.active === session && session.signedIn && miniAppRecoveryAuthGeneration === bolterAuthGeneration
+          && current.scope === bolterOrigin && current.serverFingerprint === bolterAuthority.serverFingerprint
+          && current.revision === bolterAuthority.revision && current.connectionAttemptId === bolterAuthority.connectionAttemptId;
+      },
+      createConnection: createManagedBolterConnectionFactory({ appDataDirectory: app.getPath("userData"),
+        serverId: JSON.stringify([bolterOrigin, bolterAuthority.serverFingerprint, desktopInstance.instanceId]),
+        userId, cipher: createBolterSpoolCipher(safeStorage),
+        helper: createBolterHelper(app.isPackaged ? path.join(process.resourcesPath, "tools-bolter-handover")
+          : path.join(__dirname, "bolter-handover"), process.arch,
+          app.isPackaged ? { resourcesPath: process.resourcesPath, executablePath: process.execPath } : undefined) }),
+    }) : undefined,
     serverUrl,
     userId,
     localExecutionHistoryWriter: localExecutionHistoryWriter(serverUrl, userId),

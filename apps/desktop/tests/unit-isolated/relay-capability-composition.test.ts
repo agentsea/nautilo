@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { RelayCapabilities } from "@nautilo/relay";
+import { BOLTER_RELAY_PROTOCOL_VERSION, type RelayCapabilities } from "@nautilo/relay";
+import { InMemoryRelayRegistry } from "../../../../packages/runtime/src/relay-registry";
 
 import {
   composeDesktopNonComputerUseCapabilities,
   type DesktopNonComputerUseCapabilityFragment,
 } from "../../electron/relay-capabilities.ts";
-import type { HostedCapabilityFragment } from "../../electron/relay-hosted-adapters.ts";
+import { createDesktopHostedRelayAdapter, type HostedCapabilityFragment } from "../../electron/relay-hosted-adapters.ts";
 
 function compose(overrides: Partial<{
   browserRuntime: Pick<RelayCapabilities, "canControlBrowser" | "browserSessionId">;
@@ -175,4 +176,49 @@ describe("composeDesktopNonComputerUseCapabilities", () => {
     expect(result).not.toHaveProperty("desktopAutomation");
     expect(Object.keys(result).some((key) => /media/i.test(key))).toBe(false);
   });
+});
+
+test("ready hosted Bolter survives Desktop composition and acknowledged registry admission, then revokes", async () => {
+  let ready = false;
+  let unavailable = false;
+  const hosted = createDesktopHostedRelayAdapter({ bolterHostPort: {
+    isReady() { if (unavailable) throw new Error("Synthetic readiness failure"); return ready; },
+    onRegistered() {}, onCommand() {}, onBatchAck() {}, onAuthorized() {},
+  } });
+  const capabilities = (): RelayCapabilities => ({ profile: "desktop-agent", ...compose({ hosted: hosted.capabilities() }) });
+  expect(compose({ hosted: createDesktopHostedRelayAdapter({}).capabilities() })).not.toHaveProperty("bolter");
+  expect(capabilities()).not.toHaveProperty("bolter");
+  ready = true;
+  unavailable = true;
+  expect(capabilities()).not.toHaveProperty("bolter");
+  unavailable = false;
+  expect(capabilities().bolter).toEqual({ version: 1, hostKind: "electron" });
+
+  const registry = new InMemoryRelayRegistry();
+  try {
+    await registry.register("relay-fixture", "human-fixture", capabilities(), () => {},
+      BOLTER_RELAY_PROTOCOL_VERSION, "desktop-fixture", 0, "pairing-fixture");
+    expect(registry.listBolterSessions("human-fixture")).toEqual([]);
+    expect(registry.publishBolterContext("relay-fixture", "other-human")).toBeFalse();
+    expect(registry.publishBolterContext("relay-fixture", "human-fixture")).toBeTrue();
+    expect(registry.listBolterSessions("human-fixture")).toHaveLength(1);
+    expect(registry.listBolterSessions("other-human")).toEqual([]);
+
+    ready = false;
+    expect(registry.updateCapabilities({ relayId: "relay-fixture", userId: "human-fixture",
+      desktopSessionId: "desktop-fixture", capabilityRevision: 1, capabilities: capabilities() })).toEqual({ ok: true });
+    expect(registry.getBolterSession("relay-fixture", "human-fixture")).toBeNull();
+    expect(registry.publishBolterContext("relay-fixture", "human-fixture")).toBeFalse();
+
+    ready = true;
+    expect(registry.updateCapabilities({ relayId: "relay-fixture", userId: "human-fixture",
+      desktopSessionId: "desktop-fixture", capabilityRevision: 2, capabilities: capabilities() })).toEqual({ ok: true });
+    expect(registry.listBolterSessions("human-fixture")).toEqual([]);
+    expect(registry.publishBolterContext("relay-fixture", "human-fixture")).toBeTrue();
+    expect(registry.getBolterSession("relay-fixture", "human-fixture")?.capabilityRevision).toBe(2);
+    await registry.unregister("relay-fixture");
+    expect(registry.listBolterSessions("human-fixture")).toEqual([]);
+  } finally {
+    registry.stop();
+  }
 });

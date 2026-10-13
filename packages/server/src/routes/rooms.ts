@@ -1,3 +1,5 @@
+import { getBolterCanonicalAttributions } from "@nautilo/db";
+import { externalMessageAttributionFields } from "@nautilo/types";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -1156,6 +1158,11 @@ export function roomsRoutes(
           reason: "protected_representation_required",
         });
       }
+      const external = detail.anchor.role !== "user" ? {} : detail.anchor.sourceUserId
+        ? externalMessageAttributionFields(detail.anchor.role, undefined,
+          (await getBolterCanonicalAttributions({ userId: detail.anchor.sourceUserId }, [detail.anchor.id])).get(detail.anchor.id),
+          detail.anchor.externalAuthorship)
+        : { externalAttributionInvalid: true as const };
       const response: ThreadDetailResponse = {
         parentRoomId: detail.parentRoomId,
         subthreadRoomId: detail.subthreadRoomId,
@@ -1173,8 +1180,9 @@ export function roomsRoutes(
           replyCount: detail.anchor.replyCount,
           lastReplyAt: detail.anchor.lastReplyAt?.toISOString() ?? null,
           summaryRevision: detail.anchor.summaryRevision,
-          sourceUserId: detail.anchor.sourceUserId,
-          ...(detail.anchor.authorAgentId
+          ...external,
+          ...(external.externalOrigin || external.externalAttributionInvalid ? {} : { sourceUserId: detail.anchor.sourceUserId }),
+          ...((detail.anchor.role === "assistant" || detail.anchor.role === "tool") && detail.anchor.authorAgentId
             ? { authorAgentId: detail.anchor.authorAgentId }
             : {}),
         },

@@ -27,6 +27,7 @@ the repository.
 - **Genies and websites:** [tool activation](progressive-tool-activation.md),
   [application navigation](genie-application-bridge.md), and
   [Connected Websites](connected-web-browser-contract.md).
+- **External conversations:** [Bolter connections](bolter-connection-contract.md).
 - **Documents and media:** [Office engines](office-engines/README.md),
   [Video media browser](video-media-browser.md), and
   [generation recovery](video-generation-recovery.md).

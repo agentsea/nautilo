@@ -30,7 +30,16 @@ export function publicNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolean
 
 /** M227 — fail closed for resolvers that require a human-only audience. */
 export function privateNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolean> {
-  return sql<boolean>`NOT ${publicNamespaceBoundarySql(namespaceId)}`;
+  return sql<boolean>`NOT ${publicNamespaceBoundarySql(namespaceId)} AND NOT ${externalNamespaceBoundarySql(namespaceId)}`;
+}
+
+/** A linked external audience is permanently confined to its own Namespace. */
+function externalNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolean> {
+  return sql<boolean>`EXISTS (
+    SELECT 1 FROM rooms AS external_boundary_room
+    WHERE external_boundary_room.namespace_id = ${namespaceId}
+      AND external_boundary_room.external_context = true
+  )`;
 }
 
 /**
@@ -42,8 +51,15 @@ export function privateNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolea
 export function createNamespaceBoundaryProjection() {
   const sourceRoom = alias(rooms, "namespace_source_room");
   const publicBoundaryRoom = alias(rooms, "public_boundary_room");
+  const externalBoundaryRoom = alias(rooms, "external_boundary_room");
   return {
     sourceRoom,
+    externalBoundaryRoom,
+    externalBoundaryJoin: and(
+      eq(externalBoundaryRoom.namespaceId, sourceRoom.namespaceId),
+      eq(externalBoundaryRoom.externalContext, true),
+    )!,
+    externalBoundaryRoomId: externalBoundaryRoom.id,
     publicBoundaryRoom,
     publicBoundaryJoin: and(
       eq(publicBoundaryRoom.namespaceId, sourceRoom.namespaceId),
@@ -66,7 +82,9 @@ export function namespaceSubsetPredicate(
     humanActorIds.map((id) => sql`${id}`),
     sql`, `,
   )}]::uuid[]`;
-  return isPublicNamespaceBoundary
-    ? and(containsSourceHumans, eq(rooms.kind, "open"))!
-    : containsSourceHumans;
+  return and(
+    containsSourceHumans,
+    sql`NOT ${externalNamespaceBoundarySql(rooms.namespaceId)}`,
+    isPublicNamespaceBoundary ? eq(rooms.kind, "open") : undefined,
+  )!;
 }

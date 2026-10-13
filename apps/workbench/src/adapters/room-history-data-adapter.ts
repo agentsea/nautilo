@@ -128,8 +128,15 @@ export function createRoomHistoryDataAdapter(input: Readonly<{
       if (selectedRole !== record.coordinate.role) {
         throw new ClassifiedDataOperationError("integrity", "Selected Room history role disagrees");
       }
+      const external = selectedRole === "user" && (ordinary.externalAttributionInvalid === true
+        || ("representationMode" in record && record.representationMode === "protected-only"
+          && record.selectedSource.externalAttributionInvalid === true));
+      if (external && (ordinary.sourceUserId !== undefined || ordinary.authorAgentId !== undefined)) {
+        throw new ClassifiedDataOperationError("integrity", "External history cannot identify a local author");
+      }
       const selectedSource = Object.freeze({
         role: selectedRole,
+        ...(external ? { externalAttributionInvalid: true as const } : {}),
         ...(ordinary.logicalMessageKey === undefined ? {} : {
           logicalMessageKey: ordinary.logicalMessageKey,
         }),

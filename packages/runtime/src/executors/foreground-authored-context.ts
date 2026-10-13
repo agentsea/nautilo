@@ -22,6 +22,7 @@ export async function loadForegroundAuthoredContext(input: Readonly<{
   agentId: string;
   ownerId: string;
   isGuest: boolean;
+  externalContext?: boolean;
 }>, deps: Readonly<{
   getExecutionConfigByAgentId(agentId: string): Promise<ForegroundExecutionConfig | null>;
   resolveEnabledBodies(
@@ -30,7 +31,7 @@ export async function loadForegroundAuthoredContext(input: Readonly<{
     options: { isGuest: boolean },
   ): Promise<readonly ForegroundSkillBody[]>;
 }>): Promise<ForegroundAuthoredContext> {
-  if (input.isGuest) {
+  if (input.isGuest || input.externalContext === true) {
     return Object.freeze({
       profile: null,
       soulFile: "",

@@ -930,6 +930,27 @@ describe("M275 Browser Room-history Shadow reader", () => {
     expect(state.openedNamespaceKeyClasses()).toEqual([keyClass]);
     expect(result.records[0]).toMatchObject({ status: "verified",
       verification: "signed_representation_authenticated", payload: state.payload });
+    const { sourceUserId: _sponsor, ...externalProjection } = record.protectedMessage.projection;
+    const external: RoomHistoryHumanEditedRepresentationRecordTransportV1 = {
+      ...record,
+      selectedSource: { role: "user", logicalMessageKey: "logical:m275:275",
+        externalAttributionInvalid: true },
+      protectedMessage: { ...record.protectedMessage, projection: externalProjection },
+    };
+    const externalResult = await state.createReader().reconcile({ ...base, authority, records: [external] });
+    expect(externalResult.records[0]).toMatchObject({ status: "verified", payload: state.payload,
+      externalAttributionInvalid: true });
+    expect(externalResult.records[0]).not.toHaveProperty("externalOrigin");
+    const conflicted = await state.createReader().reconcile({ ...base, authority,
+      records: [{ ...external, selectedSource: { ...external.selectedSource,
+        sourceUserId: COORDINATES.userId } }] });
+    expect(conflicted.records[0]).toMatchObject({ status: "fallback", reason: "integrity_failure",
+      externalAttributionInvalid: true });
+    expect(conflicted.records[0]).not.toHaveProperty("payload");
+    const malformedFlag = await state.createReader().reconcile({ ...base, authority,
+      records: [{ ...external, selectedSource: { ...external.selectedSource,
+        externalAttributionInvalid: false } } as unknown as RoomHistoryHumanEditedRepresentationRecordTransportV1] });
+    expect(malformedFlag.records[0]).toMatchObject({ status: "fallback", reason: "integrity_failure" });
     const { selectedSource: _selectedSource, representationMode: _mode, ...coordinates } = record;
     const repeated: RoomHistoryHumanEditedRepresentationRecordTransportV1 = {
       ...coordinates, representationMode: "ordinary-and-protected",

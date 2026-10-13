@@ -1,3 +1,4 @@
+import { isExternalRoomState, prepareExternalRoomTextContext } from "../tools/external-room-policy";
 import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { personalToolReady } from "../runtime/personal-tool-readiness";
 import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
@@ -572,6 +573,7 @@ export async function preModelNode(
   personalOnlyTaskModelIds?: readonly string[],
 ): Promise<Partial<NautiloState>> {
   if (state.noProgressPendingStop) throw new NoProgressError(state.noProgressPendingStop);
+  if (isExternalRoomState(state)) return prepareExternalRoomTextContext(state);
   assertResearchDesktopAvailable(state);
   const config = fromRuntimeConfig();
   const ordinaryContentAccessContext = await ordinaryContentAccessToolContextForState(state, ordinaryContentAccessForState);

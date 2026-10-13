@@ -8,6 +8,7 @@ import type {
   RoomMemberDto,
 } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
+import { BolterRoomSection } from "../../../components/bolter-room-section";
 import { ConfirmDialog } from "../../../components/confirm-dialog";
 import { useToast } from "../../../components/toast";
 import {
@@ -610,6 +611,8 @@ export function MembersPanel({
           </header>
 
           <div className="flex-1 overflow-y-auto px-2 py-2">
+            <BolterRoomSection key={`${roomId}:${viewerActorId}:${apiClient.getCredentialGeneration()}`}
+              roomId={roomId} scopeKey={`${viewerActorId}:${apiClient.getCredentialGeneration()}`} />
             <RoomSettingsSection
               label={roomLabel}
               kind={roomKind}

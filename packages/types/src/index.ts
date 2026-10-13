@@ -1,3 +1,4 @@
+export * from "./external-message-origin";
 export * from "./human-presence";
 export * from "./api";
 export * from "./workspace-media";
@@ -74,3 +75,5 @@ export { isLocalExecutionReadArgs } from "./local-execution-read";
 
 
 export * from "./local-execution-delegation";
+
+export * from "./bolter";

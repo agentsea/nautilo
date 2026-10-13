@@ -22,7 +22,8 @@ type FundingPortInput = Readonly<{
   modelId: string;
   roomId: string;
   agentId: string;
-  entrypoint: "foreground.main" | "foreground.fork";
+  entrypoint: "foreground.main" | "foreground.fork" | "foreground.external_room";
+  assertExternalRoomSponsorship?: () => Promise<void>;
   prior?: ForegroundFundingSnapshot;
 }>;
 
@@ -106,7 +107,12 @@ export async function openForegroundChatFundingSession(
   if (!caps.includes("use_personal_provider_credentials")) {
     if (!serverAllowed || input.prior?.binding.kind === "personal") throw new ModelFundingError("personal_credentials_forbidden");
   }
-  if (!(await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId))) {
+  const external = input.entrypoint === "foreground.external_room";
+  if (external) {
+    if (!input.assertExternalRoomSponsorship) throw new ModelFundingError("unsupported_workload");
+    await input.assertExternalRoomSponsorship();
+  }
+  if (!external && !(await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId))) {
     // A member who also has server funding keeps the established foreign-DM
     // path. Personal-only callers cannot turn a foreign Room into server spend.
     if (serverAllowed && !input.prior) return null;
@@ -135,7 +141,8 @@ export async function openForegroundChatFundingSession(
     ...(priorDecision ? { priorDecision } : {}),
   });
   const recheckAuthority = async () => {
-    if (!await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId)) throw new ModelFundingError("unsupported_workload");
+    if (external) await input.assertExternalRoomSponsorship!();
+    else if (!await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId)) throw new ModelFundingError("unsupported_workload");
     await assertCanInvokeAgent({ humanUserId: input.humanUserId, origin: "room_message", roomId: input.roomId, agentId: input.agentId });
   };
   const resolveCandidate = async (modelId: string, transport?: "direct" | "surplus") => {
@@ -153,6 +160,7 @@ export async function openForegroundChatFundingSession(
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(external ? { contentPrivateDiagnostics: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
     capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind),
     personalTaskControls: admitted.kind === "personal"

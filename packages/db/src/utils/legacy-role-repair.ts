@@ -1,5 +1,5 @@
 import { buildEventFeedReaderRoleSql } from "./event-feed-role";
-import { buildAgentRoleGrantsSql } from "./agent-role-grants";
+import { buildAgentRoleGrantsSql, buildBolterBridgeRoleGrantsSql } from "./agent-role-grants";
 import { buildFullCryptoTablePrivilegeReconcileSql } from "./crypto-role-contract";
 
 /** Full-privilege runtime/migration role (M212 direct-transport contract). */
@@ -252,6 +252,8 @@ BEGIN
     END IF;
   END IF;
 END $task_evidence$;
+
+${buildBolterBridgeRoleGrantsSql()}
 `.trim();
 }
 

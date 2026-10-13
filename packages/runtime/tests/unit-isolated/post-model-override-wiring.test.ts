@@ -19,6 +19,8 @@ import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import type { WorkstationAdmissionDecision } from "@nautilo/trust";
 import * as realNautiloAgent from "@nautilo/agent";
 import * as realTrust from "@nautilo/trust";
+import * as realDatabase from "@nautilo/db";
+import * as externalRoomContext from "../../src/executors/external-room-context";
 
 let capturedDeps: unknown = undefined;
 let capturedPolicyResolver: unknown = undefined;
@@ -40,6 +42,26 @@ let snapshotsToLoad: ModelSnapshotFixture[] = [];
 const snapshotLoads: Array<[string, string, string | null]> = [];
 const capturedGraphInputs: Record<string, unknown>[] = [];
 const resolvedModelIds: string[] = [];
+const forkSourceLookups: string[][] = [];
+const assertForkRoomContextAllowed = externalRoomContext.assertForkRoomContextAllowed;
+
+// Model-selection fixtures have no external source Rooms. Keep the real fork
+// guard, but supply its canonical lookup instead of consulting a live database.
+mock.module("../../src/executors/external-room-context", () => ({
+  ...externalRoomContext,
+  assertForkRoomContextAllowed: (input: Record<string, unknown>, fork: Parameters<typeof externalRoomContext.assertForkRoomContextAllowed>[1]) =>
+    assertForkRoomContextAllowed(input, fork, {
+      policy: async () => null,
+      roomIdsForThreads: async (threadIds) => {
+        forkSourceLookups.push([...threadIds]);
+        return [];
+      },
+    }),
+}));
+mock.module("@nautilo/db", () => ({
+  ...realDatabase,
+  getSharedDirectDb: () => { throw new Error("unexpected-database-access-in-model-wiring-test"); },
+}));
 
 // Match the production no-image result; an array would falsely signal completion.
 const noImageAssistance: typeof realNautiloAgent.maybeSummarizeImagesWithVisionFallback =
@@ -130,6 +152,7 @@ afterEach(() => {
   snapshotLoads.length = 0;
   capturedGraphInputs.length = 0;
   resolvedModelIds.length = 0;
+  forkSourceLookups.length = 0;
 });
 
 afterAll(() => {
@@ -200,6 +223,10 @@ async function driveForkOnce(input: Record<string, unknown>): Promise<void> {
     const msg = e instanceof Error ? e.message : String(e);
     if (!msg.includes("__halt_after_graph_input_capture__")) throw e;
   }
+  expect(forkSourceLookups.at(-1)).toEqual([
+    parentThreadId,
+    `${parentThreadId}:fork:turn-1:suffix`,
+  ]);
 }
 
 describe("langgraphExecutor — Full Workstation override resolver wiring", () => {

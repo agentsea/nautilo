@@ -51,6 +51,8 @@ export interface ForegroundFundingSnapshot {
 export interface ForegroundChatFundingSession {
   readonly admission?: ForegroundFundingSnapshot;
   readonly kind: "personal" | "server";
+  /** Trusted request-local diagnostics policy; independent of who pays. Never serialized. */
+  readonly contentPrivateDiagnostics?: true;
   /** Server-admitted operation family, never accepted from serialized input. */
   readonly workload?: "research" | "decision";
   /** Independently admitted child research/decision operations. Never serialized. */
@@ -88,4 +90,14 @@ export function runWithForegroundFundingSession<T>(session: ForegroundChatFundin
 }
 export function getForegroundFundingSession(): ForegroundChatFundingSession | undefined {
   return resumeFunding.getStore();
+}
+
+// This restriction carries no funding, invocation, or tool authority. Runtime
+// enables it after canonical external-Room admission, including local Human turns.
+const contentPrivateModelDiagnostics = new AsyncLocalStorage<true>();
+export function runWithContentPrivateModelDiagnostics<T>(run: () => T): T {
+  return contentPrivateModelDiagnostics.run(true, run);
+}
+export function hasContentPrivateModelDiagnostics(): boolean {
+  return contentPrivateModelDiagnostics.getStore() === true;
 }

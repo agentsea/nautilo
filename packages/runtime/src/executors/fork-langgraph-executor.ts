@@ -1,3 +1,4 @@
+import { assertForkRoomContextAllowed } from "./external-room-context";
 import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
 import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
 import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewSourceIds, memoryReviewCompletionState } from "../memory-review/admission";
@@ -167,6 +168,8 @@ export async function* forkLanggraphExecutor(
   if (!forkRun || forkRun.mode !== "fork") {
     throw new Error('forkLanggraphExecutor requires forkRun.mode === "fork"');
   }
+
+  await assertForkRoomContextAllowed(input, forkRun);
 
   const ownerId = typeof input["ownerId"] === "string" ? input["ownerId"] : "";
   const message = typeof input["message"] === "string" ? input["message"] : "";

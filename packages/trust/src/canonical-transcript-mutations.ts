@@ -7,6 +7,8 @@ import {
   and,
   count,
   eq,
+  getBolterReceiptMessageIdsWith,
+  getBolterOutboxMessageIdsWith,
   inArray,
   max,
   pushMessageCandidates,
@@ -19,6 +21,7 @@ import {
   type DirectDatabase,
 } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
+import { hasExternalMessageAssertion } from "@nautilo/types";
 import { MessageDeleteError } from "./membership";
 import {
   persistNotificationClassification,
@@ -745,6 +748,7 @@ export async function editCanonicalTranscriptMessageInTx<T = void>(
       sessionId: sessionMessages.sessionId,
       role: sessionMessages.role,
       fingerprint: sessionMessages.fingerprint,
+      externalAuthorship: sessionMessages.externalAuthorship,
       editRevision: sessionMessages.editRevision,
       ownerId: sessions.ownerId,
       roomId: sessions.roomId,
@@ -768,6 +772,7 @@ export async function editCanonicalTranscriptMessageInTx<T = void>(
           messageId: sessionMessages.id,
           sessionId: sessionMessages.sessionId,
           role: sessionMessages.role,
+          externalAuthorship: sessionMessages.externalAuthorship,
           editRevision: sessionMessages.editRevision,
         })
         .from(sessionMessages)
@@ -785,6 +790,7 @@ export async function editCanonicalTranscriptMessageInTx<T = void>(
         messageId: target.messageId,
         sessionId: target.sessionId,
         role: target.role,
+        externalAuthorship: target.externalAuthorship,
         editRevision: target.editRevision,
       }];
   const rows = physicalRows
@@ -794,6 +800,23 @@ export async function editCanonicalTranscriptMessageInTx<T = void>(
     rows.length === 0
     || rows.some((row) => row.editRevision !== input.expectedRevision)
   ) return null;
+
+  // The restrictive marker survives receipt cleanup and encryption transitions.
+  // It never authenticates a provider identity or grants authorship authority.
+  if (rows.some((row) => row.externalAuthorship === true)) return null;
+  // Retained receipts independently protect malformed or inactive imports.
+  if (target.role === "user" && (await getBolterReceiptMessageIdsWith(
+    tx,
+    { userId: target.ownerId },
+    rows.map((row) => row.messageId),
+  )).size > 0) return null;
+  // The outbox references these exact reply bytes, including uncertain sends.
+  // An edit must not silently replace the reply after publication admission.
+  if (target.role === "assistant" && (await getBolterOutboxMessageIdsWith(
+    tx,
+    { userId: target.ownerId },
+    rows.map((row) => row.messageId),
+  )).size > 0) return null;
 
   const protectedObjectByCoordinate = input.content === null
     ? new Map(input.protectedTargets.map((target) => [
@@ -971,6 +994,7 @@ async function appendRowsForResolvedSessionInTx<T>(
           id: messageId,
           sessionId,
           ...persistedRow,
+          externalAuthorship: row.role === "user" && hasExternalMessageAssertion(row.metadata),
           ...(reservedCreatedAt === undefined
             ? {}
             : { createdAt: new Date(reservedCreatedAt.getTime()) }),
@@ -993,7 +1017,12 @@ async function appendRowsForResolvedSessionInTx<T>(
       insertedCreatedAt = inserted[0].createdAt?.toISOString();
     } catch (error) {
       if (hooks.afterMessageIdAllocated) throw error;
-      const message = error instanceof Error ? error.message : String(error);
+      // Driver errors can contain SQL parameter values, including imported
+      // messages and generated replies. Keep this boundary's diagnostics inert.
+      const external = hasExternalMessageAssertion(row.metadata)
+        || (row.metadata !== null && Object.hasOwn(row.metadata, "externalFinalReply"));
+      const message = external ? "external_transcript_insert_failed"
+        : error instanceof Error ? error.message : String(error);
       warn(
         `[nautilo/store] session_messages row insert failed (idx=${rowIndex} role=${row.role} fpLen=${row.fingerprint?.length ?? 0}): ${message}`,
       );
@@ -1025,7 +1054,7 @@ async function appendRowsForResolvedSessionInTx<T>(
         === "counted";
 
     // Classification failures deliberately abort the entire transaction. A
-    // transcript row must never commit without its required M233 facts.
+    // transcript row must never commit without its required notification facts.
     if (
       row.protectedStructuralProjection !== undefined
       && row.role !== "user"

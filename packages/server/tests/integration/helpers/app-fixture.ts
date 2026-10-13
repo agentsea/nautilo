@@ -240,12 +240,12 @@ export interface AppFixture {
   /** Mint a bearer whose JWT `iat` is the given Unix seconds (exp still ~1h from now). */
   mintOwnerBearerIssuedAt: (iatUnixSeconds: number) => Promise<string>;
   /**
-   * M077 — mint a Logto JWT for another user row (`users.external_id` === `sub`).
+   * mint a Logto JWT for another user row (`users.external_id` === `sub`).
    * The peer user must have `external_id` populated before calling.
    */
   mintSessionBearerForUser: (actorId: string, userId: string) => Promise<string>;
   /**
-   * M126 — mint a Logto JWT for a `sub` with no matching `users.external_id`.
+   * mint a Logto JWT for a `sub` with no matching `users.external_id`.
    * Exercises the unknown-sub / no-JIT path without reaching into fixture signing.
    */
   mintBearerForOrphanSub: (sub: string) => Promise<string>;
@@ -264,7 +264,7 @@ export interface SetupOwnerAppFixtureOptions {
   ownerPin?: string | undefined;
   createAppExtras?: Partial<CreateAppOptions>;
   /**
-   * M077 — seed `agents` + `agent_ownership` group + owner private room
+   * seed `agents` + `agent_ownership` group + owner private room
    * (`graph_thread_id = room:<id>`) and set `NAUTILO_DEFAULT_AGENT_ID`
    * before `createApp` (for chat / WS multi-user integration tests).
    */
@@ -322,7 +322,7 @@ export async function seatPeerUser(
     });
   }
 
-  // M132 — peer profile is agent-keyed; mint the peer's personal agent
+  // peer profile is agent-keyed; mint the peer's personal agent
   // + mirror actor before the profile INSERT.
   const [peerAgent] = await db
     .insert(agents)
@@ -377,13 +377,13 @@ export async function seatPeerUser(
  * federated channel identity, and PIN credential — same discipline as
  * `auth.test.ts` pre-refactor.
  *
- * D202: refuses `(default)` unless `ALLOW_DEFAULT_DB_TESTS=1` or CI env
+ * refuses `(default)` unless `ALLOW_DEFAULT_DB_TESTS=1` or CI env
  * (see `tests/helpers/default-db-fixture-guard.ts`).
  */
 export async function setupOwnerAppFixture(
   opts: SetupOwnerAppFixtureOptions,
 ): Promise<AppFixture> {
-  // D266 Wave 1: route the scratch instance and refuse protected `(default)`
+  // Route the scratch instance and refuse protected `(default)`
   // BEFORE `ensureDatabase()` / `createDirectDb()`. `bootstrapTestDbInstance`
   // supersedes the assert-only `assertFixtureDbMutationAllowed` call: it also
   // defaults an unset `NAUTILO_INSTANCE_ID` to `test-cruft` and clears stale
@@ -406,7 +406,7 @@ export async function setupOwnerAppFixture(
       name: `${opts.suiteName}-owner`,
       email: null,
       handle: ownerHandle,
-      // D219 — `serverRole` retired; owner authority comes from the
+      // `serverRole` retired; owner authority comes from the
       // `owners`-Group membership seeded below.
       externalId: ownerLogtoSub,
     })
@@ -427,7 +427,7 @@ export async function setupOwnerAppFixture(
   if (!actor) throw new Error("Failed to create test actor");
   const ownerActorId = actor.id;
 
-  // M132 — the Profile is agent-keyed (`profiles.agent_id` NOT NULL
+  // the Profile is agent-keyed (`profiles.agent_id` NOT NULL
   // UNIQUE). Every owner fixture therefore needs a personal Agent +
   // its `actors` mirror before the profile INSERT. This mirrors
   // production (the redeem-invite tx seeds the agent, then the profile).
@@ -496,7 +496,7 @@ export async function setupOwnerAppFixture(
     groupId?: string;
   } = {};
 
-  // M133 — the session/room transcript gates now resolve authorization via
+  // the session/room transcript gates now resolve authorization via
   // `getUserCapabilities`, which is PURE server-wide Group membership (no
   // `serverRole='admin'` / bootstrap-owner fallback — that fallback only
   // survives for `actorRole` derivation). An owner fixture must therefore
@@ -534,7 +534,7 @@ export async function setupOwnerAppFixture(
       throw new Error("withDefaultAgentGraph: missing roles.slug=owner seed");
     }
 
-    // M132 — reuse the owner's personal agent + mirror actor created
+    // reuse the owner's personal agent + mirror actor created
     // above (the profile is keyed to it); don't mint a second agent.
     const ag = { id: ownerAgentId };
     const agentActor = { id: ownerAgentActorId };
@@ -587,16 +587,81 @@ export async function setupOwnerAppFixture(
     return signFixtureAccessTokenForSub(sub, iatSeconds);
   }
 
+  let app: FastifyInstance | undefined;
+  async function cleanup(): Promise<void> {
+    await app?.close();
+    const ownerSessionRows = await db
+      .select({ id: sessions.id })
+      .from(sessions)
+      .where(eq(sessions.ownerId, ownerId));
+    const ownerSessionIds = ownerSessionRows.map((r) => r.id);
+    if (ownerSessionIds.length > 0) {
+      await db
+        .delete(sessionMessages)
+        .where(inArray(sessionMessages.sessionId, ownerSessionIds));
+      await db.delete(sessions).where(inArray(sessions.id, ownerSessionIds));
+    }
+    if (graphIds.roomId) {
+      await db.delete(jobs).where(eq(jobs.roomId, graphIds.roomId));
+      await db.delete(roomMembers).where(eq(roomMembers.roomId, graphIds.roomId));
+      await db.delete(rooms).where(eq(rooms.id, graphIds.roomId));
+    }
+    if (graphIds.namespaceId) {
+      await db.delete(namespaces).where(eq(namespaces.id, graphIds.namespaceId));
+    }
+    if (graphIds.groupId) {
+      // `graphIds.groupId` now references the canonical
+      // server-wide `owners` Group (seeded by `seedTrustPersonal`),
+      // NOT a per-Agent ownership group minted by the fixture.
+      // Only remove the fixture-owner's membership row; NEVER drop
+      // the canonical Group itself: doing so would leave every unrelated
+      // user on the same database unable to resolve `owner` authority.
+      await db
+        .delete(groupMembers)
+        .where(
+          and(
+            eq(groupMembers.groupId, graphIds.groupId),
+            eq(groupMembers.userId, ownerId),
+          ),
+        );
+    }
+    setBootstrapDefaultAgentId(prevDefaultAgentEnv ?? "");
+    await db.delete(relayTokens).where(eq(relayTokens.userId, ownerId));
+    await db.delete(jobs).where(eq(jobs.ownerId, ownerId));
+    // delete the profile BEFORE the agent it references
+    // (`profiles.agent_id` FK is ON DELETE no action).
+    await db.delete(profiles).where(eq(profiles.userId, ownerId));
+    await db.delete(channelIdentities).where(eq(channelIdentities.userId, ownerId));
+    await db.delete(credentials).where(eq(credentials.userId, ownerId));
+    await db.delete(actors).where(eq(actors.ownerId, ownerId));
+    // owner agent + its mirror actor are now always created.
+    await db.delete(actors).where(eq(actors.agentId, ownerAgentId));
+    await db.delete(agents).where(eq(agents.id, ownerAgentId));
+    await db.delete(users).where(eq(users.id, ownerId));
+    await db.end();
+    setBootstrapOwnerId(prevOwnerId);
+    setBootstrapOwnerActorId(prevOwnerActorId);
+    _resetJwksForTests();
+    _resetClockSkewForTests();
+    _setProbeForTests(null);
+  }
+
   const resolver = new PersonalPolicyResolver(ownerId);
-  const app = await createApp({
-    silent: true,
-    policyResolver: resolver,
-    ownerActorId,
-    ownerId,
-    pinProvider: new PinChallengeProvider({ persistPath: null }),
-    trustBearerDefaultAgentId: graphIds.agentId ?? "",
-    ...opts.createAppExtras,
-  });
+  try {
+    app = await createApp({
+      silent: true,
+      policyResolver: resolver,
+      ownerActorId,
+      ownerId,
+      pinProvider: new PinChallengeProvider({ persistPath: null }),
+      trustBearerDefaultAgentId: graphIds.agentId ?? "",
+      ...opts.createAppExtras,
+    });
+  } catch (error) {
+    try { await cleanup(); }
+    catch (cleanupError) { throw new AggregateError([error, cleanupError], "App fixture initialization and cleanup failed"); }
+    throw error;
+  }
 
   async function mintOwnerBearer(): Promise<string> {
     return signAccessTokenForSub(ownerLogtoSub);
@@ -634,62 +699,6 @@ export async function setupOwnerAppFixture(
     ...(graphIds.agentId !== undefined ? { defaultAgentId: graphIds.agentId } : {}),
     ...(graphIds.roomId !== undefined ? { defaultRoomId: graphIds.roomId } : {}),
     ...(graphIds.groupId !== undefined ? { defaultOwnershipGroupId: graphIds.groupId } : {}),
-    cleanup: async () => {
-      await app.close();
-      const ownerSessionRows = await db
-        .select({ id: sessions.id })
-        .from(sessions)
-        .where(eq(sessions.ownerId, ownerId));
-      const ownerSessionIds = ownerSessionRows.map((r) => r.id);
-      if (ownerSessionIds.length > 0) {
-        await db
-          .delete(sessionMessages)
-          .where(inArray(sessionMessages.sessionId, ownerSessionIds));
-        await db.delete(sessions).where(inArray(sessions.id, ownerSessionIds));
-      }
-      if (graphIds.roomId) {
-        await db.delete(jobs).where(eq(jobs.roomId, graphIds.roomId));
-        await db.delete(roomMembers).where(eq(roomMembers.roomId, graphIds.roomId));
-        await db.delete(rooms).where(eq(rooms.id, graphIds.roomId));
-      }
-      if (graphIds.namespaceId) {
-        await db.delete(namespaces).where(eq(namespaces.id, graphIds.namespaceId));
-      }
-      if (graphIds.groupId) {
-        // M128 — `graphIds.groupId` now references the canonical
-        // server-wide `owners` Group (seeded by `seedTrustPersonal`),
-        // NOT a per-Agent ownership group minted by the fixture.
-        // Only remove the fixture-owner's membership row; NEVER drop
-        // the canonical Group itself: doing so would leave every unrelated
-        // user on the same database unable to resolve `owner` authority.
-        await db
-          .delete(groupMembers)
-          .where(
-            and(
-              eq(groupMembers.groupId, graphIds.groupId),
-              eq(groupMembers.userId, ownerId),
-            ),
-          );
-      }
-      setBootstrapDefaultAgentId(prevDefaultAgentEnv ?? "");
-      await db.delete(relayTokens).where(eq(relayTokens.userId, ownerId));
-      await db.delete(jobs).where(eq(jobs.ownerId, ownerId));
-      // M132 — delete the profile BEFORE the agent it references
-      // (`profiles.agent_id` FK is ON DELETE no action).
-      await db.delete(profiles).where(eq(profiles.userId, ownerId));
-      await db.delete(channelIdentities).where(eq(channelIdentities.userId, ownerId));
-      await db.delete(credentials).where(eq(credentials.userId, ownerId));
-      await db.delete(actors).where(eq(actors.ownerId, ownerId));
-      // M132 — owner agent + its mirror actor are now always created.
-      await db.delete(actors).where(eq(actors.agentId, ownerAgentId));
-      await db.delete(agents).where(eq(agents.id, ownerAgentId));
-      await db.delete(users).where(eq(users.id, ownerId));
-      await db.end();
-      setBootstrapOwnerId(prevOwnerId);
-      setBootstrapOwnerActorId(prevOwnerActorId);
-      _resetJwksForTests();
-      _resetClockSkewForTests();
-      _setProbeForTests(null);
-    },
+    cleanup,
   };
 }
