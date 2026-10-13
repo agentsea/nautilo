@@ -169,13 +169,46 @@ describe("media-generation request contract", () => {
     expect(normalizeMediaGenerationIntent({
       model: VENICE_MEDIA_MODELS.minimaxMusic,
       prompt: "Warm analog pulse with a gentle rise",
-      lyrics: "   ",
+      durationSeconds: null,
+      lyrics: null,
       forceInstrumental: true,
     })).toEqual({
       model: VENICE_MEDIA_MODELS.minimaxMusic,
       prompt: "Warm analog pulse with a gentle rise",
       forceInstrumental: true,
     });
+
+    expect(normalizeMediaGenerationIntent({
+      model: VENICE_MEDIA_MODELS.sonilo,
+      prompt: "Warm analog pulse",
+      durationSeconds: null,
+      lyrics: null,
+    })).toEqual({
+      model: VENICE_MEDIA_MODELS.sonilo,
+      prompt: "Warm analog pulse",
+      durationSeconds: 90,
+    });
+
+    for (const durationSeconds of [0, -1, 10]) {
+      expect(() => normalizeMediaGenerationIntent({
+        model: VENICE_MEDIA_MODELS.minimaxMusic,
+        prompt: "Warm analog pulse with a gentle rise",
+        durationSeconds,
+        forceInstrumental: true,
+      })).toThrow("Remove durationSeconds or choose Sonilo to preserve the duration");
+    }
+
+    expect(() => normalizeMediaGenerationRequest({
+      model: VENICE_MEDIA_MODELS.sonilo,
+      prompt: "Warm analog pulse",
+      durationSeconds: null,
+    })).toThrow(MediaGenerationValidationError);
+    expect(() => normalizeMediaGenerationRequest({
+      model: VENICE_MEDIA_MODELS.minimaxMusic,
+      prompt: "Warm analog pulse with a gentle rise",
+      lyrics: null,
+      forceInstrumental: true,
+    })).toThrow(MediaGenerationValidationError);
 
     expect(() => normalizeMediaGenerationIntent({
       model: VENICE_MEDIA_MODELS.sonilo,

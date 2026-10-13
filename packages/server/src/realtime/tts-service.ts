@@ -1,25 +1,34 @@
 import { getClientActionBindingRegistry } from "./client-action-binding-registry";
 import { splitSpeechText } from "./speech-text";
 import { randomUUID } from "node:crypto";
-import { DEFAULT_VOICE_KEY, VOICE_PCM_PACKET_BYTES, type ProfileVoices, type ServerEvent, type VoiceSentenceEvent } from "@nautilo/types";
+import { DEFAULT_VOICE_KEY, VOICE_PCM_PACKET_BYTES, type DurableServiceFundingBinding, type ProfileVoices, type ServerEvent, type VoiceSentenceEvent } from "@nautilo/types";
 import { eventBus } from "@nautilo/runtime";
-import { getVoices, getServerSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "@nautilo/agent";
+import { getVoices, resolveFundedSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "@nautilo/agent";
 import { log, warn } from "@nautilo/logger";
 import { broadcast } from "./ws-publisher";
 import { voiceDelivery, type VoiceAudience } from "./voice-delivery";
-import { SpeechCapacity } from "./speech-capacity";
+import { SpeechCapacityPool } from "./speech-capacity";
 import { dialogueSpeechResponse, type DialogueSpeechRequest } from "./dialogue-speech";
-import { safelyRecordProviderCost, type ServerProviderCostReceipt } from "../costs/provider-cost-recorder";
-import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
+import {
+  beginServerProviderCostAttempt,
+  settleServerProviderCostAttempt,
+  type ServerProviderCostAttemptAdmission,
+  type ServerProviderCostReceipt,
+} from "../costs/provider-cost-recorder";
+import {
+  directVoiceServiceFunding,
+  voiceFundingAccountKey,
+  type VoiceServiceFunding,
+} from "./voice-service-funding";
+import { createCapabilityFundingSession } from "../lib/capability-funding";
 
 const VOICE_SETTINGS = { stability: 0.5, similarity_boost: 0.75, style: 0, use_speaker_boost: true, speed: 1 };
-// Jessica is used only when the Genie has no usable voice assignment.
-const DEFAULT_VOICE_ID = "cgSgspJ2msm6clMCkdW9";
 const EMOJI_RE = /\p{Emoji_Presentation}|\p{Extended_Pictographic}/gu;
 type AdmittedSentence = VoiceSentenceEvent & { userId: string; roomId: string; agentId: string; turnId: string };
 type Turn = {
   key: string; userId: string; roomId: string; agentId: string; turnId: string;
   abort: AbortController; audience: VoiceAudience; voices: Promise<ProfileVoices>; model: Promise<SpeechModel>;
+  funding: Promise<DurableServiceFundingBinding>;
   queue: AdmittedSentence[]; terminal: boolean; busy: boolean; streamId: string; started: boolean; sequence: number;
   suggestions: Set<string>; settling: boolean; admittedAt: number; audioBytes: number;
 };
@@ -27,15 +36,20 @@ type Turn = {
 export interface TtsServiceDependencies {
   admit(userId: string, roomId: string, turnId?: string): VoiceAudience | null;
   voices(agentId: string): Promise<ProfileVoices>;
-  model(): SpeechModel;
+  resolveSpeechModel(humanUserId: string, configuredId?: string): Promise<SpeechModel>;
   fetch(input: string, init: RequestInit): Promise<Response>;
   dialogue(request: DialogueSpeechRequest): Promise<Response>;
-  apiKey(): string | undefined;
-  assertCanUseServerProviderCredentials(
-    humanUserId: string,
-    origin?: string,
-  ): Promise<void>;
-  record(receipt: ServerProviderCostReceipt): Promise<void>;
+  funding: VoiceServiceFunding;
+  beginCost(receipt: ServerProviderCostAttemptAdmission): Promise<void>;
+  settleCost(receipt: ServerProviderCostReceipt): Promise<void>;
+  /** @internal Legacy test seam; production uses `funding`. */
+  apiKey?(): string | undefined;
+  /** @internal Legacy test seam; production uses `resolveSpeechModel`. */
+  model?(): SpeechModel;
+  /** @internal Legacy test seam; production uses `funding`. */
+  assertCanUseServerProviderCredentials?(humanUserId: string, origin?: string): Promise<void>;
+  /** @internal Legacy test seam; production uses begin/settle cost lifecycle. */
+  record?(receipt: ServerProviderCostReceipt): Promise<void>;
   observe(metric: { streamId: string; stage: "admitted" | "first_audio" | "network_end" | "playback_end" | "aborted"; elapsedMs: number; audioBytes: number }): void;
 }
 
@@ -46,23 +60,47 @@ export class TtsService {
   private readonly activeTurns = new Map<string, string>();
   private busListener: ((event: ServerEvent) => void) | null = null;
   private readonly deps: TtsServiceDependencies;
-  private readonly capacity = new SpeechCapacity();
-  private readonly receiptCapacity = new SpeechCapacity();
+  private readonly capacity = new SpeechCapacityPool();
+  private readonly receiptCapacity = new SpeechCapacityPool();
   private readonly pendingReceipts = new Set<Promise<void>>();
   private readonly pendingSynthesis = new Set<Promise<void>>();
 
   constructor(deps: Partial<TtsServiceDependencies> = {}) {
+    const legacyFunding: VoiceServiceFunding | undefined = !deps.funding && deps.apiKey
+      ? {
+          admit: (humanUserId, provider) => Promise.resolve({
+            humanUserId,
+            provider,
+            binding: { kind: "server", providerRoute: provider },
+            credentialFingerprint: "0".repeat(64),
+          }),
+          run: async (binding, _intent, callback) => {
+            await deps.assertCanUseServerProviderCredentials?.(binding.humanUserId, "realtime_text_to_speech");
+            const apiKey = deps.apiKey?.();
+            if (!apiKey) throw new Error("Speech credentials unavailable");
+            return callback({
+              apiKey,
+              usageFunding: { kind: "server", humanUserId: binding.humanUserId, providerRoute: binding.provider },
+            });
+          },
+        }
+      : undefined;
     this.deps = {
       admit: (userId, roomId, turnId) => voiceDelivery.admit(userId, roomId, turnId ? getClientActionBindingRegistry()?.inspectTurnSocket(turnId) : undefined),
       voices: agentId => getVoices(agentId),
-      model: getServerSpeechModel,
+      resolveSpeechModel: deps.resolveSpeechModel
+        ?? (deps.model ? () => Promise.resolve(deps.model!()) : async (humanUserId) => {
+          const selection = await createCapabilityFundingSession(humanUserId).resolveModel("speech");
+          return resolveFundedSpeechModel(selection.modelId);
+        }),
       fetch: (...args) => fetch(...args),
       dialogue: dialogueSpeechResponse,
-      apiKey: () => process.env["ELEVENLABS_API_KEY"]?.trim(),
-      assertCanUseServerProviderCredentials,
-      record: safelyRecordProviderCost,
+      funding: legacyFunding ?? directVoiceServiceFunding,
+      beginCost: deps.beginCost ?? (deps.record ? async () => {} : beginServerProviderCostAttempt),
+      settleCost: deps.settleCost ?? deps.record ?? settleServerProviderCostAttempt,
       observe: metric => log(`[speech] ${JSON.stringify(metric)}`),
       ...deps,
+      ...(legacyFunding ? { funding: legacyFunding } : {}),
     };
   }
 
@@ -100,7 +138,7 @@ export class TtsService {
   }
 
   enqueue(event: VoiceSentenceEvent): void {
-    if (!event.userId || !event.roomId || !event.agentId || !event.turnId || !this.deps.apiKey()) return;
+    if (!event.userId || !event.roomId || !event.agentId || !event.turnId) return;
     const sentence = event as AdmittedSentence;
     const key = JSON.stringify([sentence.userId, sentence.agentId, sentence.turnId]);
     let turn = this.turns.get(key);
@@ -114,9 +152,13 @@ export class TtsService {
       const audience = this.deps.admit(sentence.userId, sentence.roomId, sentence.turnId);
       if (!audience) return;
       turn = { key, userId: sentence.userId, roomId: sentence.roomId, agentId: sentence.agentId, turnId: sentence.turnId,
-        audience, abort: new AbortController(), voices: this.deps.voices(sentence.agentId), model: (() => { try { return Promise.resolve(this.deps.model()); } catch (error) { return Promise.reject(error instanceof Error ? error : new Error("Speech model unavailable")); } })(), queue: [], terminal: false, busy: false, streamId: randomUUID(), started: false, sequence: 0, suggestions: new Set(), settling: false, admittedAt: performance.now(), audioBytes: 0 };
+        audience, abort: new AbortController(), voices: this.deps.voices(sentence.agentId),
+        model: this.deps.resolveSpeechModel(sentence.userId),
+        funding: this.deps.funding.admit(sentence.userId, "elevenlabs"),
+        queue: [], terminal: false, busy: false, streamId: randomUUID(), started: false, sequence: 0, suggestions: new Set(), settling: false, admittedAt: performance.now(), audioBytes: 0 };
       void turn.voices.catch(() => {});
       void turn.model.catch(() => {});
+      void turn.funding.catch(() => {});
       this.turns.set(key, turn);
       this.observe(turn, "admitted");
       const admitted = turn;
@@ -207,15 +249,17 @@ export class TtsService {
     if (turn.abort.signal.aborted) return;
     const selected = voices[sentence.lang ?? DEFAULT_VOICE_KEY] ?? voices[DEFAULT_VOICE_KEY];
     const voiceId = selected?.voiceId && /^[a-zA-Z0-9]+$/.test(selected.voiceId)
-      ? selected.voiceId : DEFAULT_VOICE_ID;
+      ? selected.voiceId : null;
+    if (!voiceId) throw new Error("The Genie has no usable voice assignment");
     const model = await turn.model;
+    const funding = await turn.funding;
     for (const part of splitSpeechText(text, model.speech.maxInputCharacters)) {
       if (turn.abort.signal.aborted) return;
-      await this.synthesizePart(turn, sentence, part, voiceId, model);
+      await this.synthesizePart(turn, sentence, part, voiceId, model, funding);
     }
   }
 
-  private async synthesizePart(turn: Turn, sentence: AdmittedSentence, text: string, voiceId: string, model: SpeechModel): Promise<void> {
+  private async synthesizePart(turn: Turn, sentence: AdmittedSentence, text: string, voiceId: string, model: SpeechModel, funding: DurableServiceFundingBinding): Promise<void> {
     const voices = await turn.voices.catch((): ProfileVoices => ({}));
     if (sentence.lang && !voices[sentence.lang] && !turn.suggestions.has(sentence.lang)) {
       turn.suggestions.add(sentence.lang);
@@ -225,83 +269,91 @@ export class TtsService {
     const attemptId = randomUUID();
     let submitted = false;
     let accepted = false;
+    let completed = false;
     let sequence = 0;
     let oddByte: number | null = null;
-    const apiKey = this.deps.apiKey();
-    if (!apiKey) throw new Error("Speech credentials unavailable");
+    const accountKey = voiceFundingAccountKey(funding);
     // Reserve bounded accounting capacity before incurring cost. Ordinary writes
     // run alongside playback/the next request; a stalled database backpressures
     // admission rather than creating an unbounded fire-and-forget queue.
-    const releaseReceipt = await this.receiptCapacity.acquire(turn.abort.signal);
+    const releaseReceipt = await this.receiptCapacity.forAccount(accountKey).acquire(turn.abort.signal);
     let release: (() => void) | undefined;
+    let receipt: ServerProviderCostReceipt | undefined;
+    let costBegun = false;
     try {
-      release = await this.capacity.acquire(turn.abort.signal);
+      release = await this.capacity.forAccount(accountKey).acquire(turn.abort.signal);
       if (turn.abort.signal.aborted) return;
-      await this.deps.assertCanUseServerProviderCredentials(
-        turn.userId,
-        "realtime_text_to_speech",
-      );
-      if (turn.abort.signal.aborted) return;
-      submitted = true;
-      const response = model.speech.transport === "elevenlabs-dialogue-http"
-        ? await this.deps.dialogue({ text, voiceId, model: model.providerModelId, format: turn.audience.format, apiKey, signal: turn.abort.signal, onSubmitted: () => { submitted = true; } })
-        : await this.deps.fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${turn.audience.format}`, {
-        method: "POST", headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
-        body: JSON.stringify({ text, model_id: model.providerModelId, voice_settings: VOICE_SETTINGS }), signal: turn.abort.signal,
-      });
-      accepted = response.ok;
-      this.capacity.observeMaximum(response.headers.get("maximum-concurrent-requests"));
-      this.receiptCapacity.observeMaximum(response.headers.get("maximum-concurrent-requests"));
-      if (!response.ok || !response.body) throw new Error("Speech provider unavailable");
-      if (turn.abort.signal.aborted) { await response.body.cancel(); return; }
-      if (!turn.started) {
-        turn.audience.control({ type: "voice.stream.start", version: 1, streamId, turnId: turn.turnId, roomId: turn.roomId, agentId: turn.agentId,
-          sampleRate: 24000, encoding: "pcm_s16le", channels: 1, model: model.id });
-        turn.started = true;
-      }
-      log(`[speech] model=${model.id} transport=${model.speech.transport === "elevenlabs-dialogue-http" ? "dialogue_http" : "tts_http"} stream=${streamId}`);
-      const reader = response.body.getReader();
-      try {
-        for (;;) {
-          const next = await reader.read();
-          if (next.done || turn.abort.signal.aborted) break;
-          const value: unknown = next.value;
-          if (!(value instanceof Uint8Array)) throw new Error("Invalid speech bytes");
-          const firstAudio = turn.audioBytes === 0 && value.byteLength > 0;
-          turn.audioBytes += value.byteLength;
-          if (firstAudio) this.observe(turn, "first_audio");
-          if (turn.audience.format === "mp3_44100_128") {
-            turn.audience.legacy({ type: "voice.audio", turnId: turn.turnId, data: Buffer.from(value).toString("base64"), chunkIndex: sequence++, sentenceIndex: sentence.index, final: false, userId: turn.userId, roomId: turn.roomId });
-          } else {
-            let bytes = value;
-            if (oddByte !== null) { const merged = new Uint8Array(bytes.length + 1); merged[0] = oddByte; merged.set(bytes, 1); bytes = merged; }
-            oddByte = bytes.length % 2 ? bytes[bytes.length - 1]! : null;
-            const evenLength = bytes.length - (oddByte === null ? 0 : 1);
-            for (let offset = 0; offset < evenLength; offset += VOICE_PCM_PACKET_BYTES) {
-              await turn.audience.audio({ streamId, sequence: turn.sequence++, pcm: bytes.slice(offset, Math.min(evenLength, offset + VOICE_PCM_PACKET_BYTES)) });
+      await this.deps.funding.run(funding, "spend", async ({ apiKey, usageFunding }) => {
+        if (turn.abort.signal.aborted) return;
+        receipt = {
+          identity: `elevenlabs:tts:${attemptId}`, userId: turn.userId, roomId: turn.roomId, agentId: turn.agentId,
+          usageFunding, provider: "elevenlabs", operation: "text_to_speech", evidenceState: "unknown", attemptOutcome: "unknown",
+        };
+        await this.deps.beginCost(receipt);
+        costBegun = true;
+        if (turn.abort.signal.aborted) return;
+        submitted = true;
+        const response = model.speech.transport === "elevenlabs-dialogue-http"
+          ? await this.deps.dialogue({ text, voiceId, model: model.providerModelId, format: turn.audience.format, apiKey, signal: turn.abort.signal, onSubmitted: () => { submitted = true; } })
+          : await this.deps.fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${turn.audience.format}`, {
+          method: "POST", headers: { "xi-api-key": apiKey, "Content-Type": "application/json" },
+          body: JSON.stringify({ text, model_id: model.providerModelId, voice_settings: VOICE_SETTINGS }), signal: turn.abort.signal,
+        });
+        accepted = response.ok;
+        this.capacity.forAccount(accountKey).observeMaximum(response.headers.get("maximum-concurrent-requests"));
+        this.receiptCapacity.forAccount(accountKey).observeMaximum(response.headers.get("maximum-concurrent-requests"));
+        if (!response.ok || !response.body) { await response.body?.cancel(); throw new Error("Speech provider unavailable"); }
+        if (turn.abort.signal.aborted) { await response.body.cancel(); return; }
+        if (!turn.started) {
+          turn.audience.control({ type: "voice.stream.start", version: 1, streamId, turnId: turn.turnId, roomId: turn.roomId, agentId: turn.agentId,
+            sampleRate: 24000, encoding: "pcm_s16le", channels: 1, model: model.id });
+          turn.started = true;
+        }
+        log(`[speech] model=${model.id} transport=${model.speech.transport === "elevenlabs-dialogue-http" ? "dialogue_http" : "tts_http"} stream=${streamId}`);
+        const reader = response.body.getReader();
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done || turn.abort.signal.aborted) break;
+            const value: unknown = next.value;
+            if (!(value instanceof Uint8Array)) throw new Error("Invalid speech bytes");
+            const firstAudio = turn.audioBytes === 0 && value.byteLength > 0;
+            turn.audioBytes += value.byteLength;
+            if (firstAudio) this.observe(turn, "first_audio");
+            if (turn.audience.format === "mp3_44100_128") {
+              turn.audience.legacy({ type: "voice.audio", turnId: turn.turnId, data: Buffer.from(value).toString("base64"), chunkIndex: sequence++, sentenceIndex: sentence.index, final: false, userId: turn.userId, roomId: turn.roomId });
+            } else {
+              let bytes = value;
+              if (oddByte !== null) { const merged = new Uint8Array(bytes.length + 1); merged[0] = oddByte; merged.set(bytes, 1); bytes = merged; }
+              oddByte = bytes.length % 2 ? bytes[bytes.length - 1]! : null;
+              const evenLength = bytes.length - (oddByte === null ? 0 : 1);
+              for (let offset = 0; offset < evenLength; offset += VOICE_PCM_PACKET_BYTES) {
+                await turn.audience.audio({ streamId, sequence: turn.sequence++, pcm: bytes.slice(offset, Math.min(evenLength, offset + VOICE_PCM_PACKET_BYTES)) });
+              }
             }
           }
+        } finally {
+          await reader.cancel().catch(() => {});
+          reader.releaseLock();
         }
-      } finally {
-        await reader.cancel().catch(() => {});
-        reader.releaseLock();
-      }
-      if (turn.abort.signal.aborted) return;
-      if (oddByte !== null) throw new Error("Incomplete PCM sample");
-      turn.audience.legacy({ type: "voice.audio", turnId: turn.turnId, data: "", chunkIndex: sequence, sentenceIndex: sentence.index, final: true, userId: turn.userId, roomId: turn.roomId });
+        if (turn.abort.signal.aborted) return;
+        if (oddByte !== null) throw new Error("Incomplete PCM sample");
+        turn.audience.legacy({ type: "voice.audio", turnId: turn.turnId, data: "", chunkIndex: sequence, sentenceIndex: sentence.index, final: true, userId: turn.userId, roomId: turn.roomId });
+        completed = true;
+      });
     } finally {
       release?.();
-      if (!submitted) releaseReceipt();
+      if (!receipt || !costBegun) releaseReceipt();
       else {
-        const receipt = Promise.resolve().then(() => this.deps.record({
-          identity: `elevenlabs:tts:${attemptId}`, userId: turn.userId, roomId: turn.roomId, agentId: turn.agentId,
-          provider: "elevenlabs", operation: "text_to_speech",
+        const settlement = Promise.resolve().then(() => this.deps.settleCost({
+          ...receipt!,
           estimatedCostUsd: accepted ? estimateSpeechCostUsd(text, model) : null,
           evidenceState: accepted ? "estimated" : "unknown",
+          attemptOutcome: completed ? "succeeded" : turn.abort.signal.aborted ? "cancelled" : submitted ? "failed" : "unknown",
         })).catch(() => warn("[tts] speech cost receipt unavailable")).finally(() => {
-          releaseReceipt(); this.pendingReceipts.delete(receipt);
+          releaseReceipt(); this.pendingReceipts.delete(settlement);
         });
-        this.pendingReceipts.add(receipt);
+        this.pendingReceipts.add(settlement);
       }
     }
   }

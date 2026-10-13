@@ -385,7 +385,8 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(detail?.textContent).toContain("842 characters, summary shown");
     expect(detail?.textContent).toContain("Duration5 seconds");
     expect(detail?.textContent).toContain("USD 1.250000");
-    expect(detail?.textContent).toContain("Approving starts paid generation");
+    expect(detail?.textContent).toContain("Exact quote");
+    expect(detail?.textContent).toContain("Approving starts a paid generation using this exact quote.");
     expect(host.querySelector('[data-verb="room"]')).toBeNull();
     expect(host.querySelector('[data-verb="always"]')).toBeNull();
     expect(host.textContent).not.toContain("provider.example");
@@ -397,6 +398,41 @@ describe("ApprovalAskDock (capability scope)", () => {
     expect(submitted).toEqual(["once"]);
     act(() => root.unmount()); mountedRoots.delete(root);
     host.remove();
+  });
+
+  test("replaces a stale exact reason with the canonical marketplace estimate", async () => {
+    askState = makeState({
+      reason: "Starting this media generation spends the exact USD amount shown below.",
+      tools: [{ name: "generate_music", args: {} }],
+      allowedVerbs: ["once", "deny"],
+      requiresExplicitReview: true,
+      mediaGeneration: {
+        version: "media-generation-approval-v1",
+        digest: "a".repeat(64),
+        quoteDigest: "b".repeat(64),
+        revision: 1,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        preview: {
+          mediaKind: "music",
+          model: "minimax-music-v26",
+          settings: { forceInstrumental: true },
+          prompt: { characterCount: 12, summary: "Ambient tune", truncated: false },
+          quote: { currency: "USD", amountMicros: 60_000, display: "USD 0.060000", kind: "estimate" },
+          spendNotice: "Approving starts a paid generation using this current estimate. The final cost can be different.",
+        },
+      },
+    });
+    const host = happyWindow.document.createElement("div");
+    happyWindow.document.body.appendChild(host);
+    const root = createDockRoot(host as unknown as HTMLElement);
+    act(() => root.render(<ApprovalAskDock />));
+    await flush();
+
+    expect(host.querySelector('[data-testid="media-generation-quote-kind"]')?.textContent).toBe("Estimated cost");
+    expect(host.querySelector('[data-testid="media-generation-quote"]')?.textContent).toBe("$0.06");
+    expect(host.textContent).toContain("The final cost can be different.");
+    expect(host.textContent).not.toContain("exact USD");
+    expect(host.textContent).not.toContain("Exact quote");
   });
 
   test("renders both exact endpoints for structured SSH copy approval", async () => {

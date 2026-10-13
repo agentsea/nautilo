@@ -377,6 +377,7 @@ import {
 import { createPostureMutator } from "./lib/posture-mutator";
 import { readPostureSidecar } from "./lib/posture-sidecar";
 import {
+  acceptsRequestedRoomIdFromBody,
   acceptsRequestedRoomIdFromUrl,
   extractChatRequestedRoomId,
   extractRequestedRoomIdFromUrl,
@@ -1539,14 +1540,7 @@ export async function createApp(options?: CreateAppOptions) {
       request.memoryEnvelope = request.policyContext.memoryAccess;
     };
 
-    const acceptsRequestedRoom =
-      request.method === "POST" &&
-      (routePath === "/api/chat" ||
-        routePath === "/api/file/invoke-direct" ||
-        routePath === "/api/apps/:appId/video-host-attestation" ||
-        routePath === "/api/video-generations/prepare" ||
-        routePath === "/api/video-generations/:takeId/submit" ||
-        routePath === "/api/rooms/:roomId/messages");
+    const acceptsRequestedRoom = acceptsRequestedRoomIdFromBody(request.method, routePath);
     // Artifact, media, office, conversion, and connected-app preview routes
     // narrow the bearer envelope by the same `?roomId=` contract. This keeps
     // every derived or fetched resource in the exact Room namespace.
@@ -3174,8 +3168,8 @@ export async function createApp(options?: CreateAppOptions) {
   markReady("eventBridge");
 
   // server-side TTS streaming. Subscribes to voice.sentence events on
-  // the event bus and broadcasts voice.audio chunks via WS. No-op when
-  // ELEVENLABS_API_KEY is unset.
+  // the event bus and broadcasts voice.audio chunks via WS. Each turn admits
+  // its initiating Human's direct ElevenLabs funding independently.
   getTtsService().start();
 
   // Full Workstation access wiring.

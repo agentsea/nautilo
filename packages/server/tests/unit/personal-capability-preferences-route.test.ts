@@ -59,6 +59,10 @@ async function harness(input: {
             if (input.missingCredentials) throw Object.assign(new Error("secret-free"), { code: "personal_credential_missing" });
             return { binding: { kind: "server", providerRoute: "openrouter" }, fundingSession: {} as never };
           },
+          projectMediaFunding: async () => {
+            if (input.missingCredentials) throw Object.assign(new Error("secret-free"), { code: "personal_credential_missing" });
+            return { kind: "server", providerRoute: "openrouter" };
+          },
           openService: async () => { throw new Error("not used"); },
         } as CapabilityFundingSession,
       };
@@ -98,7 +102,7 @@ describe("personal capability preference routes", () => {
     const body = parse(response);
     expect(body["overrides"]).toEqual({});
     const capabilities = body["capabilities"] as Array<Record<string, unknown>>;
-    expect(capabilities).toHaveLength(7);
+    expect(capabilities).toHaveLength(11);
     expect(capabilities[0]).toMatchObject({
       selection: { source: "inherited", modelId: null, displayName: "Automatic" },
       readiness: { status: "missing-credentials" },

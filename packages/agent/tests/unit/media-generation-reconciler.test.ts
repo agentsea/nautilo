@@ -12,6 +12,7 @@ import {
   type MediaGenerationReconcilerRepository,
   type VeniceAcceptedMediaWork,
   type VeniceArtifactCommitProof,
+  type VeniceBinaryResult,
   type VeniceRetrieveResult,
 } from "../../src/media-generation";
 import { classifyVeniceMediaFailure } from "../../src/media-generation/errors";
@@ -32,12 +33,19 @@ function claim(overrides: Partial<ClaimedMediaGeneration> = {}): ClaimedMediaGen
     state: "queued",
     revision: 1,
     kind: "video",
+    provider: "venice",
+    providerAccountFingerprint: "a".repeat(64),
+    fundingBinding: null,
     providerModel: "seedance-2-5-text-to-video-basic",
     providerQueueId: "provider-private-queue",
+    cancellationRequestedAt: null,
+    cancellationProviderAcknowledgedAt: null,
     providerExecutionSeconds: null,
     providerAverageExecutionSeconds: null,
     artifactInternalId: null,
     cleanupState: "pending",
+    quotedUsdMicros: 410_000,
+    actualUsdMicros: null,
     ...overrides,
   };
 }
@@ -76,12 +84,24 @@ class FakeRepository implements MediaGenerationReconcilerRepository {
     return this.current;
   }
 
+  async acknowledgeCancellation(input: { expectedRevision: number }): Promise<ClaimedMediaGeneration | null> {
+    if (!this.current || this.current.revision !== input.expectedRevision ||
+        this.current.cancellationRequestedAt === null) return null;
+    this.current = {
+      ...this.current,
+      cancellationProviderAcknowledgedAt: NOW,
+      revision: input.expectedRevision + 1,
+    };
+    return this.current;
+  }
+
   async transition(input: {
     expectedRevision: number;
     from: string;
     to: ClaimedMediaGeneration["state"];
     safeFailure?: MediaGenerationSafeFailure | null;
     artifactInternalId?: string;
+    actualUsdMicros?: number;
   }): Promise<ClaimedMediaGeneration | null> {
     if (this.staleTransitionTo === input.to || !this.current ||
         this.current.revision !== input.expectedRevision || this.current.state !== input.from) return null;
@@ -95,6 +115,7 @@ class FakeRepository implements MediaGenerationReconcilerRepository {
       state: input.to,
       revision: input.expectedRevision + 1,
       ...(input.artifactInternalId === undefined ? {} : { artifactInternalId: input.artifactInternalId }),
+      ...(input.actualUsdMicros === undefined ? {} : { actualUsdMicros: input.actualUsdMicros }),
       ...(input.to === "failed" || input.to === "needs_action" || input.to === "unknown"
         ? { cleanupState: this.current.cleanupState }
         : {}),
@@ -187,13 +208,19 @@ async function root(): Promise<string> {
 }
 
 function lifecycle(input: {
+  cancel?: (accepted: VeniceAcceptedMediaWork) => Promise<void>;
   retrieve?: (accepted: VeniceAcceptedMediaWork, attempt: number) => Promise<VeniceRetrieveResult>;
+  download?: (accepted: VeniceAcceptedMediaWork, signedDeliveryUrl: string) => Promise<VeniceBinaryResult>;
   complete?: (accepted: VeniceAcceptedMediaWork, proof: VeniceArtifactCommitProof) => Promise<void>;
 } = {}) {
-  const calls = { retrieve: 0, complete: 0, attempts: [] as number[], accepted: [] as VeniceAcceptedMediaWork[] };
+  const calls = { cancel: 0, retrieve: 0, download: 0, complete: 0, attempts: [] as number[], accepted: [] as VeniceAcceptedMediaWork[] };
   return {
     calls,
     port: {
+      async cancel(args: { accepted: VeniceAcceptedMediaWork }) {
+        calls.cancel += 1;
+        await input.cancel?.(args.accepted);
+      },
       async retrieve(args: { accepted: VeniceAcceptedMediaWork; attempt: number }) {
         calls.retrieve += 1;
         calls.attempts.push(args.attempt);
@@ -209,6 +236,15 @@ function lifecycle(input: {
         calls.complete += 1;
         await input.complete?.(args.accepted, args.commitProof);
       },
+      async downloadSignedDelivery(args: { accepted: VeniceAcceptedMediaWork; signedDeliveryUrl: string }) {
+        calls.download += 1;
+        return input.download?.(args.accepted, args.signedDeliveryUrl) ?? {
+          state: "binary" as const,
+          receiptId: args.accepted.receiptId,
+          contentType: "audio/mpeg",
+          body: mp4Stream(),
+        };
+      },
     },
   };
 }
@@ -219,6 +255,7 @@ async function reconciler(input: {
   custody?: ReturnType<typeof custody>;
   lifecycle?: ReturnType<typeof lifecycle>;
   maxBytes?: number;
+  settleCost?: ConstructorParameters<typeof MediaGenerationReconciler>[0]["settleCost"];
 }) {
   const repository = input.repository ?? new FakeRepository(input.initial ?? claim());
   const mediaCustody = input.custody ?? custody();
@@ -229,12 +266,176 @@ async function reconciler(input: {
     artifacts: mediaCustody,
     serverArtifactRoot: await root(),
     maxBytesFor: () => input.maxBytes ?? 1_000_000,
+    ...(input.settleCost === undefined ? {} : { settleCost: input.settleCost }),
     now: () => NOW,
   });
   return { worker, repository, mediaCustody, mediaLifecycle };
 }
 
 describe("D525 restart-safe media generation reconciler", () => {
+  test("persists one cancellation acknowledgement and keeps polling the same accepted receipt", async () => {
+    const mediaLifecycle = lifecycle({
+      retrieve: async (accepted) => ({
+        state: "processing",
+        receiptId: accepted.receiptId,
+        schedule: { delayMs: 60_000, nextAttemptAt: new Date(NOW.getTime() + 60_000) },
+      }),
+    });
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", cancellationRequestedAt: NOW }),
+      lifecycle: mediaLifecycle,
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel" })).toMatchObject({ rescheduled: 1 });
+    expect(mediaLifecycle.calls.cancel).toBe(1);
+    expect(mediaLifecycle.calls.retrieve).toBe(1);
+    expect(h.repository.current).toMatchObject({
+      state: "retrieving",
+      cancellationRequestedAt: NOW,
+      cancellationProviderAcknowledgedAt: NOW,
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel" })).toMatchObject({ rescheduled: 1 });
+    expect(mediaLifecycle.calls.cancel).toBe(1);
+    expect(mediaLifecycle.calls.retrieve).toBe(2);
+  });
+
+  test("a cancellation acknowledgement is not terminal and provider success still publishes", async () => {
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number }> = [];
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", cancellationRequestedAt: NOW }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "binary",
+          receiptId: accepted.receiptId,
+          contentType: "video/mp4",
+          body: mp4Stream(),
+          actualCostUsdMicros: 25_000,
+        }),
+      }),
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel-won" })).toMatchObject({ completed: 1 });
+    expect(h.mediaLifecycle.calls.cancel).toBe(1);
+    expect(h.mediaCustody.commits).toBe(1);
+    expect(h.repository.current).toMatchObject({ state: "ready", actualUsdMicros: 25_000 });
+    expect(settlements).toEqual([{ outcome: "succeeded", actualUsdMicros: 25_000 }]);
+  });
+
+  test("retries a failing best-effort DELETE while GET still reaches paid success on the same job", async () => {
+    let polls = 0;
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number }> = [];
+    const mediaLifecycle = lifecycle({
+      cancel: async (accepted) => {
+        throw new VeniceMediaLifecycleError(accepted.receiptId, {
+          code: "SURPLUS_CANCEL_RETRY", phase: "cancel", retrySafe: true,
+          stateChanged: true, completionCertainty: "accepted", chargeCertainty: "unknown",
+          recoveryActions: ["wait"], message: "Marketplace cancellation is temporarily unavailable.",
+        });
+      },
+      retrieve: async (accepted) => {
+        polls += 1;
+        if (polls === 1) {
+          return {
+            state: "processing",
+            receiptId: accepted.receiptId,
+            schedule: { delayMs: 60_000, nextAttemptAt: new Date(NOW.getTime() + 60_000) },
+          };
+        }
+        return {
+          state: "binary",
+          receiptId: accepted.receiptId,
+          contentType: "video/mp4",
+          body: mp4Stream(),
+          actualCostUsdMicros: 105_600,
+        };
+      },
+    });
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", cancellationRequestedAt: NOW }),
+      lifecycle: mediaLifecycle,
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel-retry" })).toMatchObject({ rescheduled: 1 });
+    expect(h.repository.current).toMatchObject({
+      state: "retrieving",
+      cancellationRequestedAt: NOW,
+      cancellationProviderAcknowledgedAt: null,
+    });
+    expect(await h.worker.runOnce({ workerId: "worker-cancel-retry" })).toMatchObject({ completed: 1 });
+    expect(mediaLifecycle.calls.cancel).toBe(2);
+    expect(mediaLifecycle.calls.retrieve).toBe(2);
+    expect(mediaLifecycle.calls.accepted.map((accepted) => ({
+      receiptId: accepted.receiptId,
+      providerQueueId: accepted.providerQueueId,
+    }))).toEqual([
+      { receiptId: "mg_0123456789abcdef", providerQueueId: "provider-private-queue" },
+      { receiptId: "mg_0123456789abcdef", providerQueueId: "provider-private-queue" },
+    ]);
+    expect(h.mediaCustody.commits).toBe(1);
+    expect(h.repository.current).toMatchObject({
+      state: "ready",
+      actualUsdMicros: 105_600,
+      cancellationProviderAcknowledgedAt: null,
+    });
+    expect(settlements).toEqual([{ outcome: "succeeded", actualUsdMicros: 105_600 }]);
+  });
+
+  test("does not poll under another account when the exact creating account cannot be opened for cancellation", async () => {
+    const mediaLifecycle = lifecycle({
+      cancel: async (accepted) => {
+        throw new VeniceMediaLifecycleError(accepted.receiptId, {
+          code: "SURPLUS_AUTHENTICATION", phase: "cancel", retrySafe: false,
+          stateChanged: true, completionCertainty: "accepted", chargeCertainty: "unknown",
+          recoveryActions: ["repair_credentials"],
+          message: "The creating media account is unavailable.",
+        });
+      },
+      retrieve: async () => {
+        throw new Error("must not poll without the exact creating account");
+      },
+    });
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", cancellationRequestedAt: NOW }),
+      lifecycle: mediaLifecycle,
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel-account-unavailable" })).toMatchObject({ terminal: 1 });
+    expect(mediaLifecycle.calls.cancel).toBe(1);
+    expect(mediaLifecycle.calls.retrieve).toBe(0);
+    expect(h.repository.current).toMatchObject({
+      state: "needs_action",
+      cancellationProviderAcknowledgedAt: null,
+    });
+  });
+
+  test("a provider-cancelled receipt settles its real captured fee", async () => {
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number; failureCode?: string }> = [];
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", cancellationRequestedAt: NOW }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => {
+          const error = new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_CANCELLED", phase: "retrieve", retrySafe: false,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "charged_or_committed",
+            recoveryActions: ["start_new_generation"], message: "The marketplace generation was cancelled.",
+          });
+          error.actualCostUsdMicros = 2_400;
+          throw error;
+        },
+      }),
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancelled" })).toMatchObject({ terminal: 1 });
+    expect(settlements).toEqual([{
+      outcome: "cancelled", actualUsdMicros: 2_400, failureCode: "surplus_cancelled",
+    }]);
+    expect(h.repository.current).toMatchObject({ state: "failed", actualUsdMicros: 2_400 });
+  });
+
   test("resumes the same durable receipt, uses a fixed honest cadence, and reschedules processing", async () => {
     const mediaLifecycle = lifecycle({
       retrieve: async (accepted) => ({
@@ -321,6 +522,140 @@ describe("D525 restart-safe media generation reconciler", () => {
     expect(h.repository.current).toMatchObject({ state: "ready", cleanupState: "completed" });
   });
 
+  test("keeps a durably committed result ready while cost settlement is retried", async () => {
+    let settlementAttempts = 0;
+    const repository = new FakeRepository(claim({ provider: "surplus" }));
+    const mediaLifecycle = lifecycle({
+      retrieve: async (accepted) => ({
+        state: "binary",
+        receiptId: accepted.receiptId,
+        contentType: "video/mp4",
+        body: mp4Stream(),
+        actualCostUsdMicros: 105_600,
+      }),
+    });
+    const first = await reconciler({
+      repository,
+      lifecycle: mediaLifecycle,
+      settleCost: async () => {
+        settlementAttempts += 1;
+        throw new Error("recorder unavailable");
+      },
+    });
+
+    expect(await first.worker.runOnce({ workerId: "worker-cost" })).toMatchObject({ rescheduled: 1 });
+    expect(repository.current).toMatchObject({
+      state: "ready",
+      cleanupState: "pending",
+      actualUsdMicros: 105_600,
+      artifactInternalId: identity().artifactInternalId,
+    });
+    expect(first.mediaCustody.commits).toBe(1);
+    expect(first.mediaLifecycle.calls.complete).toBe(0);
+    expect(repository.cleanupReschedules.at(-1)?.failure.code).toBe("MEDIA_COST_SETTLEMENT_RETRY");
+
+    let settledActual: number | undefined;
+    const restarted = await reconciler({
+      repository,
+      custody: custody({ existing: identity() }),
+      lifecycle: mediaLifecycle,
+      settleCost: async (_claim, evidence) => {
+        settlementAttempts += 1;
+        settledActual = evidence.actualUsdMicros;
+      },
+    });
+    expect(await restarted.worker.runOnce({ workerId: "worker-cost" })).toMatchObject({ completed: 1 });
+    expect(settlementAttempts).toBe(2);
+    expect(settledActual).toBe(105_600);
+    expect(restarted.mediaLifecycle.calls.retrieve).toBe(1);
+    expect(repository.current).toMatchObject({ state: "ready", cleanupState: "completed" });
+  });
+
+  test("retains captured Surplus cost when signed delivery is terminally unsafe", async () => {
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number; failureCode?: string }> = [];
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", kind: "music", providerModel: "minimax-music-v26" }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "signed_delivery",
+          receiptId: accepted.receiptId,
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/provider-private-queue/0",
+          actualCostUsdMicros: 105_600,
+        }),
+        download: async (accepted) => {
+          throw new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_DELIVERY_UNSAFE", phase: "download", retrySafe: false,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "charged_or_committed",
+            recoveryActions: ["contact_support"], message: "Unsafe delivery route.",
+          });
+        },
+      }),
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-unsafe" })).toMatchObject({ terminal: 1 });
+    expect(settlements).toEqual([{
+      outcome: "failed", actualUsdMicros: 105_600, failureCode: "surplus_delivery_unsafe",
+    }]);
+    expect(h.repository.current).toMatchObject({ state: "failed", actualUsdMicros: 105_600 });
+  });
+
+  test("retains captured Surplus cost as outcome-unknown while an interrupted download retries", async () => {
+    const settlements: Array<{ outcome: string; actualUsdMicros?: number; failureCode?: string }> = [];
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", kind: "music", providerModel: "minimax-music-v26" }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "signed_delivery",
+          receiptId: accepted.receiptId,
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/provider-private-queue/0",
+          actualCostUsdMicros: 40_000,
+        }),
+        download: async (accepted) => {
+          throw new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_DOWNLOAD_RETRY", phase: "download", retrySafe: true,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "unknown",
+            recoveryActions: ["retry_download"], message: "Download interrupted.",
+          });
+        },
+      }),
+      settleCost: async (_claim, evidence) => { settlements.push(evidence); },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-download" })).toMatchObject({ rescheduled: 1 });
+    expect(settlements).toEqual([{
+      outcome: "unknown", actualUsdMicros: 40_000, failureCode: "surplus_download_retry",
+    }]);
+    expect(h.repository.current).toMatchObject({ state: "retrieving", actualUsdMicros: null });
+    expect(h.repository.reschedules.at(-1)?.failure).toMatchObject({ chargeCertainty: "charged" });
+  });
+
+  test("does not invent cost when an interrupted Surplus download has no confirmed fee", async () => {
+    let settlements = 0;
+    const h = await reconciler({
+      initial: claim({ provider: "surplus", kind: "music", providerModel: "minimax-music-v26" }),
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "signed_delivery",
+          receiptId: accepted.receiptId,
+          signedDeliveryUrl: "https://api.surplusintelligence.ai/v1/media/artifacts/provider-private-queue/0",
+        }),
+        download: async (accepted) => {
+          throw new VeniceMediaLifecycleError(accepted.receiptId, {
+            code: "SURPLUS_DOWNLOAD_RETRY", phase: "download", retrySafe: true,
+            stateChanged: true, completionCertainty: "accepted", chargeCertainty: "unknown",
+            recoveryActions: ["retry_download"], message: "Download interrupted.",
+          });
+        },
+      }),
+      settleCost: async () => { settlements += 1; },
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-no-cost" })).toMatchObject({ rescheduled: 1 });
+    expect(settlements).toBe(0);
+    expect(h.repository.current).toMatchObject({ actualUsdMicros: null });
+  });
+
   test("an over-cap accepted result stays on the same receipt and safely reschedules persistence", async () => {
     const h = await reconciler({ maxBytes: 8 });
     expect(await h.worker.runOnce({ workerId: "worker-cap" })).toMatchObject({
@@ -338,6 +673,28 @@ describe("D525 restart-safe media generation reconciler", () => {
     });
     expect(h.mediaCustody.commits).toBe(0);
     expect(h.mediaLifecycle.calls.retrieve).toBe(1);
+  });
+
+  test("retains captured cost on the saving receipt when persistence retries", async () => {
+    const h = await reconciler({
+      initial: claim({ provider: "surplus" }),
+      maxBytes: 8,
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "binary",
+          receiptId: accepted.receiptId,
+          contentType: "video/mp4",
+          body: mp4Stream(),
+          actualCostUsdMicros: 72_500,
+        }),
+      }),
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-persistence" })).toMatchObject({ rescheduled: 1 });
+    expect(h.repository.current).toMatchObject({ state: "saving", actualUsdMicros: 72_500 });
+    expect(h.repository.reschedules.at(-1)?.failure).toMatchObject({
+      code: "MEDIA_ARTIFACT_TOO_LARGE", phase: "save",
+    });
   });
 
   test("recovers an already-indexed saving receipt after restart without retrieving or writing again", async () => {
@@ -367,6 +724,54 @@ describe("D525 restart-safe media generation reconciler", () => {
     expect(stale.mediaLifecycle.calls.retrieve).toBe(0);
   });
 
+  test("a concurrent cancellation that wins before saving cancels the downloaded stream and publishes nothing", async () => {
+    let streamCancelled = 0;
+    const repository = new FakeRepository(claim({ provider: "surplus" }));
+    repository.staleTransitionTo = "saving";
+    const h = await reconciler({
+      repository,
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "binary",
+          receiptId: accepted.receiptId,
+          contentType: "video/mp4",
+          body: new ReadableStream<Uint8Array>({
+            cancel() { streamCancelled += 1; },
+          }),
+        }),
+      }),
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel-race" })).toMatchObject({ lostLease: 1 });
+    expect(streamCancelled).toBe(1);
+    expect(h.mediaCustody.commits).toBe(0);
+    expect(h.repository.current).toMatchObject({ state: "retrieving", artifactInternalId: null });
+  });
+
+  test("a cancellation that wins during the provider poll cancels returned bytes before publication", async () => {
+    let streamCancelled = 0;
+    const repository = new FakeRepository(claim({ provider: "surplus" }));
+    repository.loseOnRenewCall = 2;
+    const h = await reconciler({
+      repository,
+      lifecycle: lifecycle({
+        retrieve: async (accepted) => ({
+          state: "binary",
+          receiptId: accepted.receiptId,
+          contentType: "video/mp4",
+          body: new ReadableStream<Uint8Array>({
+            cancel() { streamCancelled += 1; },
+          }),
+        }),
+      }),
+    });
+
+    expect(await h.worker.runOnce({ workerId: "worker-cancel-poll-race" })).toMatchObject({ lostLease: 1 });
+    expect(streamCancelled).toBe(1);
+    expect(h.mediaCustody.commits).toBe(0);
+    expect(h.repository.transitions.map(({ from, to }) => [from, to])).toEqual([["queued", "retrieving"]]);
+  });
+
   test("lease loss after artifact commit leaves saving custody recoverable on restart", async () => {
     const repository = new FakeRepository(claim());
     repository.loseOnRenewCall = 4;
@@ -393,6 +798,7 @@ describe("D525 restart-safe media generation reconciler", () => {
         return healthyRepository.readClaimed();
       },
       renew: (input) => healthyRepository.renew(input),
+      acknowledgeCancellation: (input) => healthyRepository.acknowledgeCancellation(input),
       transition: (input) => healthyRepository.transition(input),
       reschedule: (input) => healthyRepository.reschedule(input),
       rescheduleCleanup: (input) => healthyRepository.rescheduleCleanup(input),

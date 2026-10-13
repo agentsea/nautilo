@@ -97,3 +97,13 @@ describe("Surplus financial receipt boundary", () => {
     })).toEqual({ status: "retryable", failureCode: "receipt_not_found" });
   });
 });
+
+
+test("explicitly unpinned media receipts bind exact request and model without claiming provider containment", () => {
+  const media = { requestId: "image-request", surplusModelId: "venice-gpt-image-2", providerPin: null };
+  const value = { ...receipt, request_id: media.requestId, model: media.surplusModelId, provider: "different-marketplace-processor" };
+  expect(readConfirmedSurplusSettlement(value, media)).toBe(283);
+  expect(readConfirmedSurplusSettlement({ ...value, request_id: "other-request" }, media)).toBeNull();
+  expect(readConfirmedSurplusSettlement({ ...value, model: "other-model" }, media)).toBeNull();
+  expect(readConfirmedSurplusSettlement({ ...value, provider: "" }, media)).toBeNull();
+});

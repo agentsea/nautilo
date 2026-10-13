@@ -184,12 +184,16 @@ function modelChoices(model: unknown): readonly string[] {
   }
 }
 
-function normalizeEmptyModelAuthoredMusicFields(input: unknown): unknown {
+function normalizeUnsetModelAuthoredMusicFields(input: unknown): unknown {
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
   const value = input as Record<string, unknown>;
   if (value["model"] !== VENICE_MEDIA_MODELS.sonilo && value["model"] !== VENICE_MEDIA_MODELS.minimaxMusic) return input;
   const normalized = { ...value };
-  if (typeof normalized["lyrics"] === "string" && normalized["lyrics"].trim().length === 0) {
+  if (normalized["durationSeconds"] === null) {
+    delete normalized["durationSeconds"];
+  }
+  if (normalized["lyrics"] === null ||
+    (typeof normalized["lyrics"] === "string" && normalized["lyrics"].trim().length === 0)) {
     delete normalized["lyrics"];
   }
   if (normalized["model"] === VENICE_MEDIA_MODELS.sonilo && normalized["forceInstrumental"] === true) {
@@ -280,8 +284,9 @@ function assertReferenceInputs(value: { model: string; referenceImages?: readonl
 
 /** Model-authored tool intent. Internal artifact bindings are deliberately rejected here. */
 export function normalizeMediaGenerationIntent(input: unknown): NormalizedMediaGenerationIntent {
-  assertActionableModelIntent(input);
-  const parsed = intentSchema.safeParse(normalizeVideoGenerationEnvelope(normalizeEmptyModelAuthoredMusicFields(input)));
+  const normalizedMusic = normalizeUnsetModelAuthoredMusicFields(input);
+  assertActionableModelIntent(normalizedMusic);
+  const parsed = intentSchema.safeParse(normalizeVideoGenerationEnvelope(normalizedMusic));
   if (parsed.success) { assertReferenceInputs(parsed.data); return parsed.data; }
   const model = input && typeof input === "object" ? (input as Record<string, unknown>)["model"] : undefined;
   const message = parsed.error.issues[0]?.message ?? "The media generation request is invalid.";

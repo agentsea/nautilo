@@ -4,6 +4,13 @@ export const PAID_SERVICE_PROVIDERS = [
   "tavily",
   "browser-use",
   "cloudconvert",
+  "elevenlabs",
+  "groq",
+  "openai",
+  "openrouter",
+  "google",
+  "venice",
+  "surplus",
 ] as const;
 
 export type PaidServiceProvider = (typeof PAID_SERVICE_PROVIDERS)[number];

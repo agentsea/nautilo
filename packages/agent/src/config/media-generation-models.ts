@@ -51,6 +51,32 @@ export function listMediaGenerationModels(
     });
 }
 
+/** Shared Automatic order; explicit selections resolve by identity below. */
+export function listOrderedMediaGenerationModels(
+  kind: MediaGenerationFamily,
+  env: NodeJS.ProcessEnv = process.env,
+): MediaGenerationModel[] {
+  const models = listMediaGenerationModels(kind, env);
+  if (kind !== "image") return models;
+  const ordered: MediaGenerationModel[] = [];
+  const seen = new Set<string>();
+  const append = (model: MediaGenerationModel | undefined) => {
+    if (!model || seen.has(model.id)) return;
+    seen.add(model.id);
+    ordered.push(model);
+  };
+  const roleCandidates = candidatesForModelRole("imageGeneration");
+  for (const provider of IMAGE_PROVIDERS) {
+    for (const candidate of roleCandidates) {
+      append(models.find((model) => model.id === candidate && model.provider === provider));
+    }
+    for (const model of models) {
+      if (model.provider === provider) append(model);
+    }
+  }
+  return ordered;
+}
+
 /** Resolve at request preparation, never again for an approved or queued media job. */
 export function getDefaultMediaGenerationModel(
   kind: MediaGenerationFamily,
@@ -59,7 +85,7 @@ export function getDefaultMediaGenerationModel(
   const stored = getCachedServerModelConfigRow()?.[`${kind}Model`];
   // Keep the existing image operator override. Empty stored value explicitly selects Automatic.
   const selection = stored ?? (kind === "image" ? env["NAUTILO_IMAGE_MODEL"] : undefined);
-  const models = listMediaGenerationModels(kind, env);
+  const models = listOrderedMediaGenerationModels(kind, env);
   const id = selection?.trim();
   if (id) {
     const exact = models.find((model) => model.id === id);
@@ -71,19 +97,8 @@ export function getDefaultMediaGenerationModel(
     }
     return selected;
   }
-  if (kind === "image") {
-    // Provider preference also applies to newly released image models, not just the named defaults.
-    for (const provider of IMAGE_PROVIDERS) {
-      const preferred = candidatesForModelRole("imageGeneration")
-        .map((candidate) => models.find((model) => model.id === candidate && model.provider === provider && model.enabled))
-        .find((model) => model !== undefined);
-      const selected = preferred ?? models.find((model) => model.provider === provider && model.enabled);
-      if (selected) return selected;
-    }
-  } else {
-    const selected = models.find((model) => model.enabled);
-    if (selected) return selected;
-  }
+  const automatic = models.find((model) => model.enabled);
+  if (automatic) return automatic;
   throw new Error(`No configured, credentialed ${kind}-generation model is runnable.`);
 }
 

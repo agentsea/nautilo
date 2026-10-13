@@ -1,4 +1,11 @@
-import type { TranscriptionInput, TranscriptionProvider, TranscriptionResult } from "./provider";
+import {
+  TranscriptionProviderRequestError,
+  transcriptionProviderFailureForStatus,
+  transcriptionTransportFailure,
+  type TranscriptionInput,
+  type TranscriptionProvider,
+  type TranscriptionResult,
+} from "./provider";
 
 const ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text";
 /** ElevenLabs Speech-to-Text model id (matches legacy `/api/stt` wiring). */
@@ -18,7 +25,7 @@ export class ElevenLabsTranscriptionProvider implements TranscriptionProvider {
 
   async transcribe(input: TranscriptionInput): Promise<TranscriptionResult> {
     if (!this.apiKey) {
-      throw new Error("ELEVENLABS_API_KEY is not configured");
+      throw new TranscriptionProviderRequestError("authentication_failed");
     }
 
     const form = new FormData();
@@ -29,25 +36,39 @@ export class ElevenLabsTranscriptionProvider implements TranscriptionProvider {
     );
     form.append("model_id", ELEVENLABS_STT_MODEL);
 
-    const response = await this.fetchImpl(ELEVENLABS_STT_URL, {
-      method: "POST",
-      headers: {
-        "xi-api-key": this.apiKey,
-      },
-      body: form,
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(ELEVENLABS_STT_URL, {
+        method: "POST",
+        headers: {
+          "xi-api-key": this.apiKey,
+        },
+        body: form,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+    } catch (error) {
+      throw transcriptionTransportFailure(error, input.signal);
+    }
 
     if (!response.ok) {
-      // Body may be missing or non-UTF8; ignore stream errors so we still surface HTTP status.
-      const detail = await response.text().catch(() => "");
-      throw new Error(
-        `ElevenLabs transcription failed: HTTP ${response.status}${detail ? ` ${detail.slice(0, 200)}` : ""}`,
+      await response.body?.cancel().catch(() => {});
+      throw new TranscriptionProviderRequestError(
+        transcriptionProviderFailureForStatus(response.status),
+        response.status,
       );
     }
 
-    const result = (await response.json()) as { text?: unknown };
+    let result: { text?: unknown };
+    try {
+      result = (await response.json()) as { text?: unknown };
+    } catch {
+      throw new TranscriptionProviderRequestError("invalid_response", response.status);
+    }
+    if (typeof result.text !== "string") {
+      throw new TranscriptionProviderRequestError("invalid_response", response.status);
+    }
     return {
-      text: typeof result.text === "string" ? result.text : "",
+      text: result.text,
       provider: "elevenlabs",
       model: ELEVENLABS_STT_MODEL,
     };

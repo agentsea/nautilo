@@ -30,6 +30,15 @@ function envelope(overrides: Partial<MemoryAccessEnvelope> = {}): MemoryAccessEn
   } as MemoryAccessEnvelope;
 }
 
+function surplusFundingBinding(): NonNullable<MediaGeneration["fundingBinding"]> {
+  return {
+    humanUserId: OWNER_ID,
+    provider: "surplus",
+    binding: { kind: "server", providerRoute: "surplus" },
+    credentialFingerprint: "fingerprint-not-for-the-wire",
+  };
+}
+
 function generation(
   state: MediaGeneration["state"],
   overrides: Partial<MediaGeneration> = {},
@@ -45,6 +54,7 @@ function generation(
     provider: "venice",
     providerModel: "seeddance-2.5",
     providerAccountFingerprint: "fingerprint-not-for-the-wire",
+    fundingBinding: null,
     providerQueueId: "provider-queue-secret",
     admissionToken: "77777777-7777-4777-8777-777777777777",
     admissionStartedAt: new Date(),
@@ -77,6 +87,8 @@ function generation(
       : null,
     providerExecutionSeconds: null,
     providerAverageExecutionSeconds: null,
+    cancellationRequestedAt: null,
+    cancellationProviderAcknowledgedAt: null,
     artifactInternalId: state === "ready"
       ? "88888888-8888-4888-8888-888888888888"
       : null,
@@ -117,6 +129,9 @@ async function makeApp(input: {
   readonly sessionUserId?: string | null;
   readonly throwOnRead?: boolean;
   readonly onScope?: (scope: MediaGenerationScope) => void;
+  readonly onCancel?: (input: MediaGenerationScope & { receiptId: string; expectedRevision: number }) => void;
+  readonly cancelResult?: MediaGeneration | null;
+  readonly getCapabilities?: () => Promise<string[]>;
 } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   const currentEnvelope = input.envelope ?? envelope();
@@ -135,6 +150,11 @@ async function makeApp(input: {
       return receiptId === RECEIPT_ID ? input.row ?? generation("queued") : null;
     },
     findArtifactByInternalIdForNamespaces: async () => input.artifact === undefined ? artifact() : input.artifact,
+    requestCancellation: async (cancelInput) => {
+      input.onCancel?.(cancelInput);
+      return input.cancelResult ?? null;
+    },
+    getCapabilities: input.getCapabilities ?? (async () => ["use_media_generation"]),
   };
   mediaGenerationsRoutes(app, service);
   await app.ready();
@@ -146,6 +166,18 @@ async function read(app: FastifyInstance, receiptId = RECEIPT_ID, roomId = ROOM_
   return app.inject({
     method: "GET",
     url: `/api/media-generations/${receiptId}?roomId=${roomId}`,
+  });
+}
+
+async function cancel(
+  app: FastifyInstance,
+  body: Record<string, unknown> = { roomId: ROOM_ID, expectedRevision: 4 },
+  receiptId = RECEIPT_ID,
+) {
+  return app.inject({
+    method: "POST",
+    url: `/api/media-generations/${receiptId}/cancel`,
+    payload: body,
   });
 }
 
@@ -254,6 +286,120 @@ describe("media generation status route", () => {
     const response = await read(app);
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({ mediaKind: "audio", state: "queued" });
+  });
+
+  test("offers cancellation only for an accepted Surplus job before saving", async () => {
+    const fundingBinding = surplusFundingBinding();
+    const cancellable = await makeApp({
+      row: generation("retrieving", { provider: "surplus", fundingBinding, cancellationRequestedAt: null }),
+    });
+    expect(JSON.parse((await read(cancellable)).body)).toMatchObject({
+      canCancel: true,
+      cancellationRequested: false,
+    });
+
+    const requested = await makeApp({
+      row: generation("retrieving", {
+        provider: "surplus",
+        fundingBinding,
+        cancellationRequestedAt: new Date(),
+      }),
+    });
+    expect(JSON.parse((await read(requested)).body)).toMatchObject({
+      canCancel: false,
+      cancellationRequested: true,
+    });
+
+    const saving = await makeApp({ row: generation("saving", { provider: "surplus", fundingBinding }) });
+    expect(JSON.parse((await read(saving)).body)).toMatchObject({ canCancel: false });
+  });
+
+  test("cancels only the exact scoped revision and returns the updated receipt projection", async () => {
+    let cancelInput: MediaGenerationScope & { receiptId: string; expectedRevision: number } | undefined;
+    const cancellationRequestedAt = new Date("2026-08-14T12:00:00.000Z");
+    const app = await makeApp({
+      row: generation("retrieving", { provider: "surplus", fundingBinding: surplusFundingBinding() }),
+      cancelResult: generation("retrieving", {
+        provider: "surplus",
+        revision: 5,
+        cancellationRequestedAt,
+      }),
+      onCancel: (input) => { cancelInput = input; },
+    });
+
+    const response = await cancel(app);
+    expect(response.statusCode).toBe(200);
+    expect(cancelInput).toEqual({
+      ownerId: OWNER_ID,
+      roomId: ROOM_ID,
+      namespaceId: NAMESPACE_ID,
+      receiptId: RECEIPT_ID,
+      expectedRevision: 4,
+    });
+    expect(JSON.parse(response.body)).toMatchObject({
+      receiptId: RECEIPT_ID,
+      revision: 5,
+      canCancel: false,
+      cancellationRequested: true,
+    });
+    expect(response.body).not.toContain("provider-queue-secret");
+  });
+
+  test("rejects stale, malformed, and out-of-scope cancellation without widening authority", async () => {
+    const stale = await makeApp({ row: generation("retrieving", { provider: "surplus", revision: 6 }) });
+    expect((await cancel(stale)).statusCode).toBe(409);
+    expect((await cancel(stale, { roomId: ROOM_ID })).statusCode).toBe(400);
+    expect((await cancel(stale, { roomId: ROOM_ID, expectedRevision: 4, extra: true })).statusCode).toBe(400);
+
+    let calls = 0;
+    const wrongHuman = await makeApp({
+      sessionUserId: "99999999-9999-4999-8999-999999999999",
+      onCancel: () => { calls += 1; },
+    });
+    expect((await cancel(wrongHuman)).statusCode).toBe(404);
+    const ambiguousNamespace = await makeApp({
+      envelope: envelope({ writableNamespaces: [NAMESPACE_ID, OTHER_NAMESPACE_ID] }),
+      onCancel: () => { calls += 1; },
+    });
+    expect((await cancel(ambiguousNamespace)).statusCode).toBe(404);
+    expect(calls).toBe(0);
+  });
+
+  test("replays a persisted cancellation intent after later worker revisions", async () => {
+    const app = await makeApp({
+      row: generation("retrieving", {
+        provider: "surplus",
+        revision: 9,
+        cancellationRequestedAt: new Date("2026-08-14T12:00:00.000Z"),
+        cancellationProviderAcknowledgedAt: new Date("2026-08-14T12:00:01.000Z"),
+      }),
+    });
+
+    const response = await cancel(app, { roomId: ROOM_ID, expectedRevision: 4 });
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({
+      revision: 9,
+      canCancel: false,
+      cancellationRequested: true,
+    });
+  });
+
+  test("removes the cancellation action and denies mutation after capability revocation", async () => {
+    let granted = true;
+    let cancellationCalls = 0;
+    const app = await makeApp({
+      row: generation("retrieving", { provider: "surplus", fundingBinding: surplusFundingBinding() }),
+      getCapabilities: async () => granted ? ["use_media_generation"] : [],
+      onCancel: () => { cancellationCalls += 1; },
+    });
+
+    expect(JSON.parse((await read(app)).body)).toMatchObject({ canCancel: true });
+    granted = false;
+    expect(JSON.parse((await read(app)).body)).toMatchObject({ canCancel: false });
+    const response = await cancel(app);
+    expect(response.statusCode).toBe(403);
+    expect(response.body).toBe(JSON.stringify({ error: "Media generation capability required" }));
+    expect(cancellationCalls).toBe(0);
   });
 
   test("uses the exact owner, Room, and single writable namespace scope", async () => {

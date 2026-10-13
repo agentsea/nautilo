@@ -1,3 +1,6 @@
+import { VoiceFundingApiError } from "@nautilo/api-client/browser";
+import { voiceFundingFailureMessage, type VoiceFundingRecovery } from "@nautilo/types";
+
 /**
  * A single, cancellable native catalog-preview session. Preview synthesis is
  * deliberately bounded to one player and one cache file: selecting another
@@ -9,6 +12,7 @@ export interface VoicePreviewSnapshot {
   readonly status: VoicePreviewStatus;
   readonly voiceId: string | null;
   readonly error: string | null;
+  readonly recovery: VoiceFundingRecovery | null;
   /** Earliest retry time after a 429. `null` for all other states. */
   readonly retryAt: number | null;
 }
@@ -40,7 +44,7 @@ const RATE_LIMIT_DELAY_MS = 30_000;
 
 /** Imperative counterpart to Expo's lifecycle-managed useAudioPlayer hook. */
 export class VoicePreviewSession {
-  private snapshot: VoicePreviewSnapshot = { status: "idle", voiceId: null, error: null, retryAt: null };
+  private snapshot: VoicePreviewSnapshot = { status: "idle", voiceId: null, error: null, recovery: null, retryAt: null };
   private player: VoicePreviewPlayer | null = null;
   private file: VoicePreviewFile | null = null;
   private subscription: { remove(): void } | null = null;
@@ -69,7 +73,7 @@ export class VoicePreviewSession {
     }
     this.stop();
     const generation = ++this.generation;
-    this.replace({ status: "loading", voiceId, error: null, retryAt: null });
+    this.replace({ status: "loading", voiceId, error: null, recovery: null, retryAt: null });
     try {
       const payload = await request();
       const bytes = await previewBytes(payload);
@@ -93,19 +97,22 @@ export class VoicePreviewSession {
           this.finishWithError("Could not play this voice preview.");
         } else if (status.didJustFinish) {
           this.release();
-          this.replace({ status: "idle", voiceId: null, error: null, retryAt: null });
+          this.replace({ status: "idle", voiceId: null, error: null, recovery: null, retryAt: null });
         }
       });
       player.play();
-      if (this.isCurrent(generation)) this.replace({ status: "playing", voiceId, error: null, retryAt: null });
+      if (this.isCurrent(generation)) this.replace({ status: "playing", voiceId, error: null, recovery: null, retryAt: null });
     } catch (error) {
       if (!this.isCurrent(generation)) return;
-      if (statusOf(error) === 429) {
+      if (error instanceof VoiceFundingApiError) {
+        this.finishWithError(voiceFundingFailureMessage(error.recovery), error.recovery);
+      } else if (statusOf(error) === 429) {
         this.release();
         this.replace({
           status: "rate-limited",
           voiceId,
           error: "Preview requests are temporarily limited. Please try again shortly.",
+          recovery: null,
           retryAt: this.now() + RATE_LIMIT_DELAY_MS,
         });
       } else {
@@ -118,7 +125,7 @@ export class VoicePreviewSession {
     ++this.generation;
     this.release();
     if (this.snapshot.status !== "idle" || this.snapshot.voiceId !== null) {
-      this.replace({ status: "idle", voiceId: null, error: null, retryAt: null });
+      this.replace({ status: "idle", voiceId: null, error: null, recovery: null, retryAt: null });
     }
   }
 
@@ -132,9 +139,9 @@ export class VoicePreviewSession {
     return generation === this.generation;
   }
 
-  private finishWithError(message: string): void {
+  private finishWithError(message: string, recovery: VoiceFundingRecovery | null = null): void {
     this.release();
-    this.replace({ status: "error", voiceId: null, error: message, retryAt: null });
+    this.replace({ status: "error", voiceId: null, error: message, recovery, retryAt: null });
   }
 
   private release(): void {

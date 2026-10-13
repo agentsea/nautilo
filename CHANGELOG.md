@@ -100,6 +100,22 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   on the search path.
 - Windows tests retain an event-loop reference while each test runs, allowing
   unref timers and test timeouts to settle instead of leaving a busy test process.
+- Generated media can use Surplus when its catalogue lists the exact selected
+  model and the request is compatible. Missing or unsupported marketplace
+  routes fall back to the same model's direct provider within the admitted
+  funding source, without substituting model versions. Marketplace media
+  approvals label current estimates and explain that final charges can differ.
+  Active marketplace video/music cards offer cancellation while polling preserves
+  the provider’s eventual result and charge.
+
+- Personal provider keys can fund image generation and editing, video/music,
+  ElevenLabs speech and transcription, and existing Groq transcription under
+  the administrator's funding policy. Personal capability settings include
+  image, video, music and speech models with inherited server defaults. Media
+  jobs and voice streams retain their creating account, and Costs distinguishes
+  estimates, actual charges and unresolved attempts. Voice funding errors link to
+  the relevant key or model settings; previews accept up to 500 characters.
+
 - Long Genie turns retain their newest progress across context refreshes without
   applying the older-history message count to the current run. Journal and
   recalled Records remain available, concurrent Room activity is labelled as

@@ -7,7 +7,7 @@ import type {
   PersonalProviderCapability,
   ServerModerationPolicy,
 } from "@nautilo/types";
-import { PERSONAL_PROVIDER_CAPABILITIES } from "@nautilo/types";
+import { PERSONAL_PROVIDER_CAPABILITIES, parseVoiceFundingRecovery, voiceFundingFailureMessage, type VoiceFundingRecovery } from "@nautilo/types";
 import { moderationPolicySchema, moderationPolicyUpdateSchema, moderationPersonSchema, moderationReceiptSchema,
   enrollmentStatusSchema, enrollmentPageSchema, moderationPeopleSchema } from "./schemas/moderation";
 import {
@@ -2276,6 +2276,22 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+
+export class VoiceFundingApiError extends ApiError {
+  constructor(status: number, readonly recovery: VoiceFundingRecovery) {
+    super(status, voiceFundingFailureMessage(recovery));
+    this.name = "VoiceFundingApiError";
+  }
+}
+
+function voiceFundingApiError(status: number, body: unknown): ApiError {
+  const recovery = parseVoiceFundingRecovery(body);
+  return recovery ? new VoiceFundingApiError(status, recovery) : new ApiError(status, "Voice service unavailable.");
+}
+
+const voiceFundingStatusErrors = Object.fromEntries(
+  [400, 401, 403, 409, 422, 503].map((status) => [status, (body: unknown) => voiceFundingApiError(status, body)]),
+);
 
 export class InviteShareApiError extends ApiError {
   constructor(status: number, readonly code: string) {
@@ -8664,6 +8680,7 @@ export class NautiloApiClient {
       path: "/api/voices",
       auth: "session-fresh",
       defaultErrorPrefix: "GET /api/voices",
+      statusErrors: voiceFundingStatusErrors,
     });
   }
 
@@ -8687,6 +8704,7 @@ export class NautiloApiClient {
       path: `/api/voices/catalog${qs ? `?${qs}` : ""}`,
       auth: "session-fresh",
       defaultErrorPrefix: "GET /api/voices/catalog",
+      statusErrors: voiceFundingStatusErrors,
     });
   }
 
@@ -8711,12 +8729,9 @@ export class NautiloApiClient {
       const errJson = (await res.json().catch(() => ({}))) as Record<string, unknown> & {
         error?: unknown;
       };
-      throw new ApiError(
-        res.status,
-        typeof errJson.error === "string" && errJson.error.length > 0
-          ? errJson.error
-          : `POST /api/voices/${voiceId}/preview failed: ${res.status}`,
-      );
+      const recovery = parseVoiceFundingRecovery(errJson);
+      if (recovery) throw new VoiceFundingApiError(res.status, recovery);
+      throw new ApiError(res.status, "Voice preview unavailable.", parseRetryAfterMs(res.headers.get("retry-after")));
     }
     const contentType = res.headers.get("content-type")?.toLowerCase() ?? "";
     if (!contentType.startsWith("audio/")) {
@@ -12564,6 +12579,28 @@ export class NautiloApiClient {
       path: `/api/media-generations/${encodeURIComponent(receiptId)}?${params.toString()}`,
       schema: mediaGenerationStatusDtoV1Schema,
       defaultErrorPrefix: "GET /api/media-generations/:receiptId",
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+  }
+
+  /** Request best-effort cancellation of one accepted Surplus job. */
+  async cancelMediaGeneration(
+    receiptId: string,
+    opts: { roomId: string; expectedRevision: number; signal?: AbortSignal },
+  ): Promise<MediaGenerationStatusDtoV1> {
+    if (!/^mg_[A-Za-z0-9_-]{16,128}$/u.test(receiptId)) {
+      throw new TypeError("Media generation receipt must be a server-local opaque id.");
+    }
+    if (opts.roomId.trim().length === 0) throw new TypeError("Media generation cancellation requires a Room.");
+    if (!Number.isSafeInteger(opts.expectedRevision) || opts.expectedRevision < 0) {
+      throw new TypeError("Media generation cancellation requires a nonnegative expected revision.");
+    }
+    return this.request({
+      method: "POST",
+      path: `/api/media-generations/${encodeURIComponent(receiptId)}/cancel`,
+      body: { roomId: opts.roomId, expectedRevision: opts.expectedRevision },
+      schema: mediaGenerationStatusDtoV1Schema,
+      defaultErrorPrefix: "POST /api/media-generations/:receiptId/cancel",
       ...(opts.signal ? { signal: opts.signal } : {}),
     });
   }

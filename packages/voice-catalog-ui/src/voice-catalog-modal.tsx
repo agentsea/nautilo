@@ -4,7 +4,9 @@ import type {
   CatalogQuery,
   CatalogResponse,
   CatalogVoice,
+  VoiceFundingRecovery,
 } from "@nautilo/types";
+import { parseVoiceFundingRecovery } from "@nautilo/types";
 
 /** D261 — primary (`default`) or a BCP-47 language key written to `voices[lang]`. */
 export type VoiceCatalogAssignRole = string;
@@ -73,6 +75,12 @@ export interface SharedVoiceCatalogModalProps {
     label: string;
     title?: string;
   };
+  onOpenFundingRecovery?: (recovery: VoiceFundingRecovery) => void;
+}
+
+function recoveryFromError(error: unknown): VoiceFundingRecovery | null {
+  if (!error || typeof error !== "object" || !("recovery" in error)) return null;
+  return parseVoiceFundingRecovery((error as { recovery?: unknown }).recovery);
 }
 
 function languageBase(lang: string): string {
@@ -185,6 +193,11 @@ function usePreviewPlayer() {
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
   const [playingSource, setPlayingSource] = useState<VoiceCatalogPreviewSource | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [recovery, setRecovery] = useState<VoiceFundingRecovery | null>(null);
+  const setFailure = useCallback((failure: unknown) => {
+    setError(failure instanceof Error ? failure.message : "Could not play this voice preview.");
+    setRecovery(recoveryFromError(failure));
+  }, []);
 
   const stop = useCallback(() => {
     if (ref.current) {
@@ -216,6 +229,7 @@ function usePreviewPlayer() {
       }
       stop();
       setError(null);
+      setRecovery(null);
       setPlayingVoiceId(voiceId);
       setPlayingSource(source);
       try {
@@ -236,13 +250,13 @@ function usePreviewPlayer() {
       } catch (e) {
         setPlayingVoiceId(null);
         setPlayingSource(null);
-        setError(e instanceof Error ? e.message : "Could not play this voice preview.");
+        setFailure(e);
       }
     },
-    [playingSource, playingVoiceId, stop],
+    [playingSource, playingVoiceId, setFailure, stop],
   );
 
-  return { play, stop, playingVoiceId, playingSource, error, setError } as const;
+  return { play, stop, playingVoiceId, playingSource, error, recovery, setFailure } as const;
 }
 
 export function SharedVoiceCatalogModal({
@@ -259,6 +273,7 @@ export function SharedVoiceCatalogModal({
   initialLanguage = null,
   defaultAssignRole,
   generatedSampleLabel,
+  onOpenFundingRecovery,
 }: SharedVoiceCatalogModalProps) {
   const preview = usePreviewPlayer();
   const requestSeqRef = useRef(0);
@@ -282,6 +297,7 @@ export function SharedVoiceCatalogModal({
   const [refreshing, setRefreshing] = useState(false);
   const [missingKey, setMissingKey] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetchRecovery, setFetchRecovery] = useState<VoiceFundingRecovery | null>(null);
   const [assigningId, setAssigningId] = useState<string | null>(null);
   const [generatingId, setGeneratingId] = useState<string | null>(null);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(null);
@@ -325,6 +341,7 @@ export function SharedVoiceCatalogModal({
         if (cached) setRefreshing(true);
         else setLoading(true);
         setFetchError(null);
+        setFetchRecovery(null);
         setMissingKey(false);
       } else {
         setLoadingMore(true);
@@ -367,6 +384,15 @@ export function SharedVoiceCatalogModal({
       } catch (e) {
         if (seq !== requestSeqRef.current) return;
         const message = e instanceof Error ? e.message : "Failed to load voice catalog";
+        const recovery = recoveryFromError(e);
+        setFetchRecovery(recovery);
+        if (recovery) {
+          setFetchError(message);
+          setMissingKey(false);
+          setVoices([]);
+          setLanguageGroups([]);
+          return;
+        }
         const lower = message.toLowerCase();
         if (lower.includes("elevenlabs") || lower.includes("eleven_labs")) {
           setMissingKey(true);
@@ -397,6 +423,7 @@ export function SharedVoiceCatalogModal({
       setHasMore(cached.hasMore);
       setLoading(false);
       setFetchError(null);
+      setFetchRecovery(null);
       setMissingKey(false);
     } else {
       voicesRef.current = [];
@@ -424,6 +451,7 @@ export function SharedVoiceCatalogModal({
     setUseCase("any");
     setMissingKey(false);
     setFetchError(null);
+    setFetchRecovery(null);
     setRefreshing(false);
     setGeneratingId(null);
     setSelectedVoiceId(null);
@@ -590,7 +618,18 @@ export function SharedVoiceCatalogModal({
                   Showing: {shownLabel}
                 </div>
                 {fetchError ?? preview.error ? (
-                  <p style={styles.error}>{fetchError ?? preview.error}</p>
+                  <div style={styles.error}>
+                    <p>{fetchError ?? preview.error}</p>
+                    {(fetchRecovery ?? preview.recovery) && onOpenFundingRecovery ? (
+                      <button
+                        type="button"
+                        style={styles.secondaryButton}
+                        onClick={() => onOpenFundingRecovery(fetchRecovery ?? preview.recovery!)}
+                      >
+                        Open voice settings
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
                 {refreshing && voices.length > 0 ? (
                   <p style={styles.refreshing} data-testid="voice-catalog-refreshing">
@@ -744,8 +783,8 @@ export function SharedVoiceCatalogModal({
                                         onClose();
                                       })
                                       .catch((e) =>
-                                        preview.setError(
-                                          e instanceof Error ? e.message : "Failed to save voice",
+                                        preview.setFailure(
+                                          e instanceof Error ? e : new Error("Failed to save voice"),
                                         ),
                                       )
                                       .finally(() => setAssigningId(null));
@@ -822,8 +861,8 @@ export function SharedVoiceCatalogModal({
                       onClose();
                     })
                     .catch((e) =>
-                      preview.setError(
-                        e instanceof Error ? e.message : "Failed to save voice",
+                      preview.setFailure(
+                        e instanceof Error ? e : new Error("Failed to save voice"),
                       ),
                     )
                     .finally(() => setAssigningId(null));

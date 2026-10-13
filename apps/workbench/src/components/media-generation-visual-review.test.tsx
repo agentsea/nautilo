@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { MediaGenerationApproval } from "@nautilo/types";
 import { apiClient } from "../lib/api";
-import { friendlyReferenceName, generationPrice, loadApprovalReference, MediaGenerationVisualReview } from "./media-generation-visual-review";
+import { friendlyReferenceName, generationPrice, generationQuoteLabel, loadApprovalReference, MediaGenerationVisualReview } from "./media-generation-visual-review";
 
 const bytes = new TextEncoder().encode("reference bytes").buffer;
 const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
@@ -15,7 +15,7 @@ const approval: MediaGenerationApproval = {
   preview: { mediaKind: "video", model: "seedance-2-5-reference-to-video-basic", settings: { durationSeconds: 4, resolution: "480p", aspectRatio: "16:9", audio: false },
     referenceImages: [reference], referenceVideos: [{ ...reference, artifactId: "public-video", label: "mg_internal.mp4", durationSeconds: 4.042, content: { ...reference.content, mimeType: "video/mp4" } }],
     referenceAudios: [audioReference],
-    prompt: { characterCount: 24, summary: "Internal compiled prompt", truncated: true }, quote: { currency: "USD", amountMicros: 930_000, display: "USD 0.930000" }, spendNotice: "Approving starts paid generation." },
+    prompt: { characterCount: 24, summary: "Internal compiled prompt", truncated: true }, quote: { currency: "USD", amountMicros: 930_000, display: "USD 0.930000" }, spendNotice: "Approving starts a paid generation using this exact quote." },
 };
 let win: Window;
 const previous: Record<string, unknown> = {};
@@ -70,6 +70,8 @@ test("human review shows image, playable video and exact-byte audio, friendly na
     expect(host.textContent).toContain("Continuing from Opening");
     expect(host.textContent).toContain("Keep the blue sphere turning slowly.");
     expect(host.textContent).toContain("$0.93");
+    expect(host.textContent).toContain("Exact quote");
+    expect(host.textContent).toContain("Approving starts a paid generation using this exact quote.");
     expect(host.textContent).not.toContain("mg_internal");
     expect(host.textContent).not.toContain("70e34034");
     expect(host.querySelector("details")?.open).toBe(false);
@@ -83,4 +85,31 @@ test("storage labels stay out of the main review and sub-cent prices stay exact"
   expect(friendlyReferenceName("mg_internal.mp4", "Video reference 1")).toBe("Video reference 1");
   expect(friendlyReferenceName("Ocean sunset.mp4", "Video reference 1")).toBe("Ocean sunset.mp4");
   expect(generationPrice({ ...approval, preview: { ...approval.preview, quote: { ...approval.preview.quote, amountMicros: 930_001 } } })).toBe("$0.930001");
+  expect(generationQuoteLabel(approval)).toBe("Exact quote");
+});
+
+test("marketplace estimates are labelled beside the price with a visible final-cost warning", () => {
+  const estimate: MediaGenerationApproval = {
+    ...approval,
+    preview: {
+      mediaKind: "music",
+      model: "minimax-music-v26",
+      settings: { forceInstrumental: true },
+      prompt: { characterCount: 12, summary: "Ambient tune", truncated: false },
+      quote: { currency: "USD", amountMicros: 60_000, display: "USD 0.060000", kind: "estimate" },
+      spendNotice: "Approving starts a paid generation using this current estimate. The final cost can be different.",
+    },
+  };
+  const host = document.createElement("div"); document.body.appendChild(host);
+  const root = createRoot(host);
+  try {
+    act(() => root.render(<MediaGenerationVisualReview approval={estimate} technicalDetails={<p>Technical</p>} />));
+    expect(host.querySelector('[data-testid="media-generation-quote-kind"]')?.textContent).toBe("Estimated cost");
+    expect(host.querySelector('[data-testid="media-generation-quote"]')?.textContent).toBe("$0.06");
+    expect(host.textContent).toContain("The final cost can be different.");
+    expect(host.textContent).not.toContain("Exact quote");
+  } finally {
+    act(() => root.unmount());
+    host.remove();
+  }
 });

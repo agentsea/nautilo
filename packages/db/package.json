@@ -34,7 +34,8 @@
     "clean": "rm -rf dist .turbo node_modules",
     "db:generate:m314-public-rooms": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name m314_public_room_message_authority && bun scripts/finalize-m314-public-room-message-authority.ts",
     "db:generate:m314-participant-set": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name m314_participant_set_authority && bun scripts/finalize-m314-public-room-message-authority.ts",
-    "db:generate:task-evidence-immutability": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name task_execution_evidence_immutability && bun scripts/finalize-task-execution-evidence.ts --immutability"
+    "db:generate:task-evidence-immutability": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name task_execution_evidence_immutability && bun scripts/finalize-task-execution-evidence.ts --immutability",
+    "db:generate:media-funding-binding-immutability": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name media_generation_funding_binding_immutability && bun scripts/finalize-media-funding-binding.ts"
   },
   "dependencies": {
     "@nautilo/config": "workspace:*",

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { withMediaGenerationDefault } from "../../config/media-generation-models";
+import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 import {
   MEDIA_GENERATION_APPROVAL_REVISION,
   MEDIA_GENERATION_APPROVAL_VERSION,
@@ -360,10 +361,11 @@ export function createMediaGenerationPreparedApproval(input: {
   /** Reserved server-local id. The preparer must return the same id on replay. */
   readonly receiptId: string;
   readonly quoteUsdMicros: number;
+  readonly quoteKind?: "exact" | "estimate";
   readonly expiresAt: string;
 }): MediaGenerationPreparedApproval<NormalizedMediaGenerationRequest> {
   if (!/^mg_[A-Za-z0-9_-]{16,128}$/.test(input.receiptId)) throw new Error("invalid local media receipt id");
-  if (!Number.isSafeInteger(input.quoteUsdMicros) || input.quoteUsdMicros < 0) throw new Error("invalid exact media quote");
+  if (!Number.isSafeInteger(input.quoteUsdMicros) || input.quoteUsdMicros < 0) throw new Error("invalid media price snapshot");
   const expires = new Date(input.expiresAt);
   if (!Number.isFinite(expires.getTime()) || expires.toISOString() !== input.expiresAt) {
     throw new Error("invalid media approval expiry");
@@ -378,7 +380,8 @@ export function createMediaGenerationPreparedApproval(input: {
   if (mediaGenerationKindForModel(preparation.request.model) !== expectedKind) {
     throw new Error("media tool and normalized request kind disagree");
   }
-  const quoteDigest = digest({ currency: "USD", amountMicros: input.quoteUsdMicros });
+  const quoteKind = input.quoteKind ?? "exact";
+  const quoteDigest = digest({ currency: "USD", amountMicros: input.quoteUsdMicros, kind: quoteKind });
   const identity = {
     userId: actor.userId,
     roomId: actor.roomId,
@@ -389,7 +392,7 @@ export function createMediaGenerationPreparedApproval(input: {
     revision: MEDIA_GENERATION_APPROVAL_REVISION,
     expiresAt: input.expiresAt,
   } as const;
-  const approvalDigest = digest({ identity, request: preparation.request, quoteUsdMicros: input.quoteUsdMicros });
+  const approvalDigest = digest({ identity, request: preparation.request, quoteUsdMicros: input.quoteUsdMicros, quoteKind });
   const binding: MediaGenerationApprovalBinding = origin.kind === "genie_tool"
     ? {
         ...identity,
@@ -428,8 +431,11 @@ export function createMediaGenerationPreparedApproval(input: {
       currency: "USD",
       amountMicros: input.quoteUsdMicros,
       display: `USD ${Math.floor(input.quoteUsdMicros / 1_000_000)}.${String(input.quoteUsdMicros % 1_000_000).padStart(6, "0")}`,
+      kind: quoteKind,
     },
-    spendNotice: "Approving starts a paid generation using this exact quote.",
+    spendNotice: quoteKind === "exact"
+      ? "Approving starts a paid generation using this exact quote."
+      : "Approving starts a paid generation using this current estimate. The final cost can be different.",
   };
   return {
     version: MEDIA_GENERATION_PREPARED_VERSION,
@@ -497,7 +503,10 @@ export function verifyMediaGenerationPreparedApproval(
     binding.revision !== expected.revision || binding.revision !== MEDIA_GENERATION_APPROVAL_REVISION ||
     new Date(binding.expiresAt).getTime() <= (expected.now ?? new Date()).getTime()
   ) return false;
-  const quoteDigest = digest({ currency: "USD", amountMicros: prepared.quoteUsdMicros });
+  const quoteKind = prepared.preview.quote.kind;
+  const quoteDigest = quoteKind === undefined
+    ? digest({ currency: "USD", amountMicros: prepared.quoteUsdMicros })
+    : digest({ currency: "USD", amountMicros: prepared.quoteUsdMicros, kind: quoteKind });
   if (quoteDigest !== binding.quoteDigest) return false;
   // Genie compatibility mirrors are not approval identity: the closed origin
   // already carries those exact graph coordinates. Keeping the digest over
@@ -512,7 +521,9 @@ export function verifyMediaGenerationPreparedApproval(
     revision: binding.revision,
     expiresAt: binding.expiresAt,
   };
-  const approvalDigest = digest({ identity, request, quoteUsdMicros: prepared.quoteUsdMicros });
+  const approvalDigest = quoteKind === undefined
+    ? digest({ identity, request, quoteUsdMicros: prepared.quoteUsdMicros })
+    : digest({ identity, request, quoteUsdMicros: prepared.quoteUsdMicros, quoteKind });
   return approvalDigest === binding.approvalDigest &&
     prepared.preview.quote.amountMicros === prepared.quoteUsdMicros &&
     prepared.preview.model === request.model &&
@@ -542,63 +553,79 @@ export function prepareMediaGenerationApproval(input: {
     }
     return existing.promise;
   }
-  let request: NormalizedMediaGenerationIntent;
-  try {
-    const intent = "origin" in input ? input.intent
-      : withMediaGenerationDefault(input.toolName === "generate_music" ? "music" : "video", input.intent);
-    request = normalizeMediaGenerationIntent(intent);
-  } catch (error) {
-    return Promise.resolve({
-      ok: false,
-      code: "request_invalid",
-      recovery: error instanceof MediaGenerationValidationError
-        ? `${error.message} No generation was started.`
-        : "Review the media settings and try again. No generation was started.",
-    });
-  }
-  const kind = mediaGenerationKindForModel(request.model);
-  const origin: MediaGenerationApprovalOrigin = "origin" in input
-    ? input.origin
-    : { kind: "genie_tool", threadId: input.threadId, turnId: input.turnId, laneKey: input.laneKey, toolCallId: input.toolCallId, toolName: input.toolName };
-  if (mediaKindForOrigin(origin) !== (kind === "video" ? "video" : "audio")) {
-    return Promise.resolve({
-      ok: false,
-      code: "request_invalid",
-      recovery: "Choose a model supported by this media tool and try again. No generation was started.",
-    });
-  }
-  // A server can boot legitimately without Venice configured. Preparation is
-  // the no-spend boundary, so surface that state through its typed contract
-  // instead of letting the strict runtime getter turn it into an HTTP 500.
-  // Keep this after request/origin validation so malformed requests retain
-  // their existing result, and do not cache it so runtime registration can
-  // make an unchanged retry immediately eligible for a fresh quote.
-  const approvalRuntime = runtime;
-  if (!approvalRuntime) {
-    return Promise.resolve({
-      ok: false,
-      code: "quote_unavailable",
-      recovery: "Configure Venice for media generation, then request a fresh quote. No generation was started.",
-    });
-  }
-  const preparation: MediaGenerationPreparationInput = origin.kind === "video_app"
-    ? {
-        // Workspace references are resolved by the server preparer before
-        // quoting. The prepared approval still requires fully bound bytes.
-        request,
-        approvalId: input.approvalId,
-        origin,
+  const promise = (async (): Promise<MediaGenerationPreparationResult> => {
+    let request: NormalizedMediaGenerationIntent;
+    try {
+      const family = "origin" in input
+        ? "video"
+        : input.toolName === "generate_music" ? "music" : "video";
+      const capabilityFunding = getCapabilityFundingSession();
+      let intent = "origin" in input || capabilityFunding
+        ? input.intent
+        : withMediaGenerationDefault(family, input.intent);
+      if (capabilityFunding && intent && typeof intent === "object" && !Array.isArray(intent)) {
+        const record = intent as Record<string, unknown>;
+        const explicit = typeof record["model"] === "string"
+          ? `venice:${record["model"]}`
+          : null;
+        const selected = await capabilityFunding.resolveModel(
+          family === "music" ? "musicGeneration" : "videoGeneration",
+          explicit,
+        );
+        if (!selected.modelId.startsWith("venice:") || selected.modelId.length <= "venice:".length) {
+          throw new Error("selected media model is not supported by this generator");
+        }
+        intent = { ...record, model: selected.modelId.slice("venice:".length) };
       }
-    : {
-        request,
-        approvalId: input.approvalId,
-        ...origin,
+      request = normalizeMediaGenerationIntent(intent);
+    } catch (error) {
+      return {
+        ok: false,
+        code: "request_invalid",
+        recovery: error instanceof MediaGenerationValidationError
+          ? `${error.message} No generation was started.`
+          : "Review the media settings and try again. No generation was started.",
       };
-  const promise = approvalRuntime.prepare(input.actor, preparation).then((result) => {
+    }
+    const kind = mediaGenerationKindForModel(request.model);
+    const origin: MediaGenerationApprovalOrigin = "origin" in input
+      ? input.origin
+      : { kind: "genie_tool", threadId: input.threadId, turnId: input.turnId, laneKey: input.laneKey, toolCallId: input.toolCallId, toolName: input.toolName };
+    if (mediaKindForOrigin(origin) !== (kind === "video" ? "video" : "audio")) {
+      return {
+        ok: false,
+        code: "request_invalid",
+        recovery: "Choose a model supported by this media tool and try again. No generation was started.",
+      };
+    }
+    // A server can boot legitimately without media generation funding. Keep
+    // this after request/origin validation, and do not cache the failure.
+    const approvalRuntime = runtime;
+    if (!approvalRuntime) {
+      return {
+        ok: false,
+        code: "quote_unavailable",
+        recovery: "Configure media generation funding, then request a fresh price. No generation was started.",
+      };
+    }
+    const preparation: MediaGenerationPreparationInput = origin.kind === "video_app"
+      ? {
+          // Workspace references are resolved by the server preparer before
+          // pricing. The prepared approval still requires fully bound bytes.
+          request,
+          approvalId: input.approvalId,
+          origin,
+        }
+      : {
+          request,
+          approvalId: input.approvalId,
+          ...origin,
+        };
+    const result = await approvalRuntime.prepare(input.actor, preparation);
     if (!result.ok) return result;
     return verifyMediaGenerationPreparedApproval(result.prepared, {
       ...input.actor,
-    origin: originForPreparation(preparation),
+      origin: originForPreparation(preparation),
       approvalId: preparation.approvalId,
       receiptId: result.prepared.binding.receiptId,
       digest: result.prepared.binding.approvalDigest,
@@ -607,9 +634,9 @@ export function prepareMediaGenerationApproval(input: {
     }) ? result : {
       ok: false as const,
       code: "quote_unavailable" as const,
-      recovery: "The exact quote could not be bound safely. Request a fresh quote.",
+      recovery: "The media price could not be bound safely. Request a fresh price.",
     };
-  });
+  })();
   preparations.set(input.approvalId, { intentDigest, promise });
   if (preparations.size > MAX_PREPARATIONS) preparations.delete(preparations.keys().next().value as string);
   return promise;
