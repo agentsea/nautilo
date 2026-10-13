@@ -6910,7 +6910,18 @@ export function NautiloRuntimeProvider({
       });
       const sweeps = createCoalescedBackgroundAuthorizationSweepV2({
         signal: abort.signal,
-        sweep: () => client.service({signal: abort.signal}),
+        sweep: async () => {
+          const result = await client.service({signal: abort.signal});
+          if (!abort.signal.aborted) {
+            console.info("[nautilo-runtime] Background authorization sweep", JSON.stringify({
+              status: result.status, reason: result.reason,
+              pages: result.pages, discovered: result.discovered,
+              responded: result.responded, deferred: result.deferred,
+              stale: result.stale, invalid: result.invalid,
+            }));
+          }
+          return result;
+        },
       });
       request = () => sweeps.request();
       idle = () => sweeps.idle();

@@ -33,6 +33,7 @@ const RECIPIENT_GENERATION = 4;
 const DEVICE_GENERATION = 7;
 const POLICY_REVISION = 11;
 const HOST_AUTHORIZATION_REVISION = 13;
+const LEGACY_PROFILE_HOST_AUTHORIZATION_REVISION = 4;
 
 const DOMAIN: DomainForegroundAuthorityEntry = Object.freeze({
   domainId: "task-runtime-domain-907",
@@ -132,7 +133,7 @@ function domainAuthority(observedRooms: string[]):
 }
 
 describe("Task Runtime device authorization responder", () => {
-  test("mints the existing Runtime authorization for the exact current device and Domain set", async () => {
+  test("mints for the current MLS security revision independently of the legacy profile revision", async () => {
     const value = await fixture();
     const observedRooms: string[] = [];
     let borrowedSigningKey: Uint8Array | undefined;
@@ -154,7 +155,7 @@ describe("Task Runtime device authorization responder", () => {
                   "10000000-0000-4000-8000-000000000907",
                 lineageGeneration: 2,
                 epoch: 3,
-                securityRevision: 4,
+                securityRevision: HOST_AUTHORIZATION_REVISION,
                 headDigest: new Uint8Array(32).fill(0x41),
                 signingPublicKeyHash: value.crypto.hash(
                   value.signer.publicKey,
@@ -162,7 +163,8 @@ describe("Task Runtime device authorization responder", () => {
               },
               signingPrivateKey: borrowedSigningKey,
               policyRevision: POLICY_REVISION,
-              hostAuthorizationRevision: HOST_AUTHORIZATION_REVISION,
+              hostAuthorizationRevision:
+                LEGACY_PROFILE_HOST_AUTHORIZATION_REVISION,
             });
           } finally {
             borrowedSigningKey.fill(0);
@@ -215,7 +217,17 @@ describe("Task Runtime device authorization responder", () => {
     }
   });
 
-  test("refuses changed current-device authority after opening exact Domains", async () => {
+  test.each([
+    ["device generation", DEVICE_GENERATION + 1, POLICY_REVISION,
+      "device_authority_changed"],
+    ["policy revision", DEVICE_GENERATION, POLICY_REVISION + 1,
+      "policy_changed"],
+  ] as const)("refuses changed %s after opening exact Domains", async (
+    _coordinate,
+    deviceGeneration,
+    policyRevision,
+    reason,
+  ) => {
     const value = await fixture();
     const observedRooms: string[] = [];
     try {
@@ -228,11 +240,51 @@ describe("Task Runtime device authorization responder", () => {
           issuer: {
             humanId: HUMAN_ID,
             deviceId: DEVICE_ID,
-            deviceGeneration: DEVICE_GENERATION + 1,
+            deviceGeneration,
             serverInstanceId: "10000000-0000-4000-8000-000000000907",
             lineageGeneration: 2,
             epoch: 3,
-            securityRevision: 4,
+            securityRevision: HOST_AUTHORIZATION_REVISION,
+            headDigest: new Uint8Array(32).fill(0x41),
+            signingPublicKeyHash: value.crypto.hash(value.signer.publicKey),
+          },
+          signingPrivateKey: value.signer.privateKey,
+          policyRevision,
+          hostAuthorizationRevision:
+            LEGACY_PROFILE_HOST_AUTHORIZATION_REVISION,
+        }),
+      });
+      expect(result).toEqual({
+        status: "stale",
+        reason,
+      });
+      expect(observedRooms).toEqual([ROOM_ID]);
+    } finally {
+      destroyDomainForegroundAuthorizationPlanV2(value.plan);
+      value.requestBytes.fill(0);
+      value.signer.privateKey.fill(0);
+      value.recipient.privateKey.fill(0);
+    }
+  });
+
+  test("refuses a changed MLS security revision even when the legacy profile revision matches the plan", async () => {
+    const value = await fixture();
+    const observedRooms: string[] = [];
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority(observedRooms),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: async (use) => use({
+          issuer: {
+            humanId: HUMAN_ID,
+            deviceId: DEVICE_ID,
+            deviceGeneration: DEVICE_GENERATION,
+            serverInstanceId: "10000000-0000-4000-8000-000000000907",
+            lineageGeneration: 2,
+            epoch: 3,
+            securityRevision: HOST_AUTHORIZATION_REVISION + 1,
             headDigest: new Uint8Array(32).fill(0x41),
             signingPublicKeyHash: value.crypto.hash(value.signer.publicKey),
           },

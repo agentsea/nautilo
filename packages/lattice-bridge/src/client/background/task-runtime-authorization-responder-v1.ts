@@ -104,7 +104,8 @@ function currentAuthorityMatches(
     && authority.issuer.deviceId === plan.committerDeviceId
     && authority.issuer.deviceGeneration
       === plan.committerDeviceSigningGeneration
-    && authority.hostAuthorizationRevision === plan.hostAuthorizationRevision
+    // Task carriers bind this coordinate to the authenticated MLS group head.
+    && authority.issuer.securityRevision === plan.hostAuthorizationRevision
     ? "current"
     : "device_authority_changed";
 }
