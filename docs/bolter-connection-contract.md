@@ -74,6 +74,18 @@ input is rejected, never acknowledged as a truncated success. The final encoded
 Relay frame is checked separately. This is a local admission policy, not a claim
 about Bolter's maximum supported message size.
 
+## Backup and restore
+
+Backups retain Bolter connection, binding, provenance, publication and execution
+claim data. Development restore currently rejects both full archives and legacy
+SQL snapshots containing any of these rows before changing the target. Empty
+Bolter tables and older backups without them remain eligible for normal restore
+checks. A paused or disconnected connection still has durable history, so it
+does not remove this restriction. Keep the backup: restoring populated Bolter
+authority needs explicit reconciliation to prevent duplicate delivery or reuse
+of an execution claim. Restore does not silently discard receipts or clear
+claims, and database backups do not replace Desktop credential custody.
+
 ## Ownership and verification
 
 - `apps/desktop/electron/bolter-bridge`: provider parsing, isolated credentials,

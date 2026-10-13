@@ -4,7 +4,6 @@ import type {
   ActiveMiniAppRequestContext,
   TrustedLiveMiniAppSessionContext,
 } from "@nautilo/types";
-import { executeAgentMediatedRoomMessage } from "../../src/messaging/agent-mediated";
 import type { ChatRoutesDeps } from "../../src/routes/chat";
 import {
   createAcceptedInvocationAuthority,
@@ -14,6 +13,16 @@ import {
   ClientActionBindingRegistry,
   installClientActionBindingRegistry,
 } from "../../src/realtime/client-action-binding-registry";
+import * as trust from "@nautilo/trust";
+
+// These mini-app fixtures are ordinary rooms; their canonical policy read must
+// stay in the isolated unit seam rather than contact a live database.
+const trustExports = { ...trust };
+mock.module("@nautilo/trust", () => ({
+  ...trustExports,
+  getExternalRoomPolicy: async (_roomId: string) => null,
+}));
+const { executeAgentMediatedRoomMessage } = await import("../../src/messaging/agent-mediated");
 
 function assertExactInvocation(humanUserId: string) {
   return mock(async (input: AgentInvocationAdmissionInput) => {

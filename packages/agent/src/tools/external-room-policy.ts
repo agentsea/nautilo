@@ -93,7 +93,7 @@ export async function prepareExternalRoomTextContext(state: NautiloState): Promi
   };
 }
 
-export function externalRoomToolDenial(call: { id?: string; name: string }): ToolMessage {
+function externalRoomToolDenial(call: { id?: string; name: string }): ToolMessage {
   return new ToolMessage({ content: EXTERNAL_ROOM_TOOL_DENIAL, tool_call_id: call.id ?? call.name,
     name: call.name, additional_kwargs: { nautilo_tool_status: "error" } });
 }

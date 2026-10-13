@@ -89,6 +89,8 @@ const getRoomManageDetail = mock(async (roomId: string) => {
 mock.module("../../../../lib/api", () => ({
   apiClient: {
     getTokenProvider: () => async () => null,
+    getCredentialGeneration: () => 0,
+    getBolterRoomLink: async () => ({ link: null }),
     getRoomManageDetail,
     getRoomPresence: async () => ({ members: [] }),
     listAddableUsersForRoom: async () => addableUsers,

@@ -152,6 +152,11 @@ export async function inspectSnapshotTables(name: string): Promise<TableRowCount
     throw new Error(`Snapshot "${name}" has no database.sql.gz`);
   }
 
+  return inspectDatabaseDumpTables(dbPath);
+}
+
+/** Read-only row inventory shared by restore admission for both dump formats. */
+export async function inspectDatabaseDumpTables(dbPath: string): Promise<TableRowCount[]> {
   interface InFlight {
     table: string;
     columns: string[];
@@ -161,58 +166,62 @@ export async function inspectSnapshotTables(name: string): Promise<TableRowCount
   let current: InFlight | null = null;
   let buffer = "";
 
-  const copyRe = /^COPY (public\.[a-zA-Z0-9_]+) \(([^)]+)\) FROM stdin/;
-
+  // Both supported archive producers emit qualified COPY blocks. Quoted
+  // identifiers are equivalent; INSERT-format/custom data dumps are refused.
+  const identifier = '(?:"[a-zA-Z0-9_]+"|[a-zA-Z0-9_]+)';
+  const copyRe = new RegExp(`^COPY\\s+(${identifier})\\s*\\.\\s*(${identifier})\\s*\\(([^)]+)\\)\\s+FROM\\s+stdin;?\\s*$`, "i");
+  let functionBodyDelimiter: string | null = null;
+  const normalizeIdentifier = (raw: string): string => raw.startsWith('"') ? parsePgDumpIdentifier(raw) : raw.toLowerCase();
+  const consumeLine = (line: string): void => {
+    if (current) {
+      if (line === "\\.") {
+        if (current.table.startsWith("public.")) {
+          tables.push({ table: current.table.slice("public.".length), columns: current.columns, rowCount: current.count });
+        }
+        current = null;
+      } else if (line.length > 0) current.count++;
+      return;
+    }
+    // Full archives include function definitions before data. Their quoted
+    // bodies are schema, not executable top-level COPY/INSERT data statements.
+    if (functionBodyDelimiter !== null) {
+      if (line.includes(functionBodyDelimiter)) functionBodyDelimiter = null;
+      return;
+    }
+    const trimmed = line.trim();
+    const bodyStart = /^(?:(?:CREATE(?: OR REPLACE)? (?:FUNCTION|PROCEDURE)\b.*\b)?AS|DO)\s+(\$[a-zA-Z0-9_]*\$)/i.exec(trimmed);
+    if (bodyStart) {
+      const delimiter = bodyStart[1]!;
+      if (!trimmed.slice(bodyStart.index + bodyStart[0].length).includes(delimiter)) functionBodyDelimiter = delimiter;
+      return;
+    }
+    if (/^INSERT\b/i.test(trimmed)) throw new Error("Database restore inspection requires COPY-format data; INSERT-format dumps are unsupported.");
+    const match = copyRe.exec(trimmed);
+    if (match) {
+      current = { table: `${normalizeIdentifier(match[1]!)}.${normalizeIdentifier(match[2]!)}`,
+        columns: match[3]!.split(",").map(parsePgDumpIdentifier), count: 0 };
+    } else if (/^COPY\b/i.test(trimmed)) {
+      throw new Error("Unsupported database dump COPY header");
+    }
+  };
   const sink = new Writable({
     write(chunk: Buffer, _enc, cb) {
-      buffer += chunk.toString("utf8");
-      let idx = buffer.indexOf("\n");
-      while (idx !== -1) {
-        const line = buffer.slice(0, idx);
-        buffer = buffer.slice(idx + 1);
-
-        if (current) {
-          if (line === "\\.") {
-            tables.push({
-              table: current.table.replace(/^public\./, ""),
-              columns: current.columns,
-              rowCount: current.count,
-            });
-            current = null;
-          } else if (line.length > 0) {
-            current.count++;
-          }
-        } else {
-          const m = copyRe.exec(line);
-          if (m) {
-            current = {
-              table: m[1]!,
-              columns: (m[2] ?? "").split(",").map(parsePgDumpIdentifier),
-              count: 0,
-            };
-          }
+      try {
+        buffer += chunk.toString("utf8");
+        let idx = buffer.indexOf("\n");
+        while (idx !== -1) {
+          consumeLine(buffer.slice(0, idx).replace(/\r$/u, ""));
+          buffer = buffer.slice(idx + 1);
+          idx = buffer.indexOf("\n");
         }
-
-        idx = buffer.indexOf("\n");
-      }
-      cb();
+        cb();
+      } catch (error) { cb(error instanceof Error ? error : new Error("Database dump inspection failed")); }
     },
   });
-
   await pipeline(createReadStream(dbPath), createGunzip(), sink);
-
-  // TS's control-flow narrowing wrongly concludes that `current` is
-  // `never` after the await — it does not see that the closure may
-  // leave it non-null. Force-cast through unknown so we can safely
-  // finalize an in-flight COPY block when the dump is truncated.
-  const trailing = current as unknown as InFlight | null;
-  if (trailing !== null) {
-    tables.push({
-      table: trailing.table.replace(/^public\./, ""),
-      columns: trailing.columns,
-      rowCount: trailing.count,
-    });
-  }
+  if (buffer.length > 0) consumeLine(buffer.replace(/\r$/u, ""));
+  if (current !== null) throw new Error("Database dump contains an unterminated COPY block");
+  if (functionBodyDelimiter !== null) throw new Error("Database dump contains an unterminated function body");
 
   return tables.sort((a, b) => a.table.localeCompare(b.table));
 }

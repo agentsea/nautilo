@@ -38,6 +38,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   local approval; tools and private resources remain unavailable. Sign-in updates automatically, and interrupted
   or uncertain delivery remains visible. Initial support is text on macOS Desktop with
   plaintext server content mode; protected-content modes remain unavailable.
+  Backups retain bridge history, but development restore rejects populated
+  Bolter records before changing the target until safe authority reconciliation
+  is supported.
 
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed

@@ -1672,6 +1672,10 @@ const reviewedBridgeProductConsumerInventory = [
   // adapters. Cryptographic protocol and crypto-table ownership remain in the
   // lattice bridge; product clients own only local sealed custody and UI.
   "apps/desktop/electron/encryption-recovery-readiness.ts -> @nautilo/lattice-bridge/client/electron",
+  // Electron main supplies its OS safeStorage codec for the sealed Bolter
+  // inbox and recovery descriptor. This type-only facade import grants no
+  // Namespace keys, protected-content admission, or renderer/CLI custody.
+  "apps/desktop/electron/bolter-bridge/spool-cipher.ts -> @nautilo/lattice-bridge/client/electron",
   "apps/desktop/package.json dependency @nautilo/lattice-bridge -> workspace:*",
   "apps/workbench/src/adapters/nautilo-runtime.tsx -> @nautilo/lattice-bridge/client/browser",
   // Protected Done/Cancel supplies the current browser device ID via

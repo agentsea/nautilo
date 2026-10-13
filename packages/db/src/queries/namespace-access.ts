@@ -34,7 +34,7 @@ export function privateNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolea
 }
 
 /** A linked external audience is permanently confined to its own Namespace. */
-export function externalNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolean> {
+function externalNamespaceBoundarySql(namespaceId: SQLWrapper): SQL<boolean> {
   return sql<boolean>`EXISTS (
     SELECT 1 FROM rooms AS external_boundary_room
     WHERE external_boundary_room.namespace_id = ${namespaceId}

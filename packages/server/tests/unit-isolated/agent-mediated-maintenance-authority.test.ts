@@ -3,11 +3,18 @@ import type { FastifyRequest } from "fastify";
 import {
   createMaintenanceAcceptanceAuthority,
 } from "@nautilo/runtime";
-import { executeAgentMediatedRoomMessage } from "../../src/messaging/agent-mediated";
 import type { ChatRoutesDeps } from "../../src/routes/chat";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import * as trust from "@nautilo/trust";
 
-describe("D420 group-conductor continuation authority", () => {
+// These continuation fixtures represent ordinary rooms. Keep their canonical
+// policy read inside the unit seam instead of querying a database with test IDs.
+const trustExports = { ...trust };
+const getExternalRoomPolicy = mock(async (_roomId: string) => null);
+mock.module("@nautilo/trust", () => ({ ...trustExports, getExternalRoomPolicy }));
+const { executeAgentMediatedRoomMessage } = await import("../../src/messaging/agent-mediated");
+
+describe("group-conductor continuation authority", () => {
   test("forwards accepted-work authority to the foreground Job admission seam", async () => {
     const authority = createMaintenanceAcceptanceAuthority();
     const invocationAuthority = createAcceptedInvocationAuthority("test-user");
@@ -50,6 +57,7 @@ describe("D420 group-conductor continuation authority", () => {
     });
 
     const call = createForegroundJob.mock.calls[0] as unknown[];
+    expect(getExternalRoomPolicy).toHaveBeenLastCalledWith("room-id");
     expect(call[5]).toBe(authority);
     expect(call[6]).toMatchObject({
       coalescing: "coalesce",
@@ -127,6 +135,7 @@ describe("D420 group-conductor continuation authority", () => {
     });
 
     const call = createForegroundJob.mock.calls[0] as unknown[];
+    expect(getExternalRoomPolicy).toHaveBeenLastCalledWith("room-id");
     expect(call[3]).toMatchObject({
       message: "opened protected text",
       turnId: humanTurnId,

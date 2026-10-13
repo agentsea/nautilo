@@ -1,7 +1,7 @@
 /**
- * D174 — `POST /api/rooms/:roomId/messages` agent-mediated routing (B1 fix).
+ * `POST /api/rooms/:roomId/messages` agent-mediated routing (B1 fix).
  *
- * D211 follow-up note: each test now constructs its OWN mock instances
+ * follow-up note: each test now constructs its OWN mock instances
  * for `createForegroundJob`, `loadRoomRoster`, `buildEnvelopeForRoom`,
  * and `getRoomDetailForMember` instead of sharing module-level mocks.
  * Pre-fix, these were `const mock = mock(...)` at module scope and
@@ -48,7 +48,7 @@ import {
   type RoomParticipant,
 } from "@nautilo/trust";
 
-// D211 — stub the @nautilo/trust capability helper reached by
+// stub the @nautilo/trust capability helper reached by
 // `dispatchRoomMessageSend()` so this unit test never opens a real
 // Postgres connection. The response-mode gate is deliberately retained as a
 // spy: strict 1-human/1-agent dispatch must not consult it at all.
@@ -87,6 +87,7 @@ mock.module("../../src/lib/foreground-chat-preflight", () => ({
 
 mock.module("@nautilo/trust", () => ({
   ...actualTrust,
+  getExternalRoomPolicy: async (_roomId: string) => null,
   shouldFireLLMTurn,
   assertCanInvokeAgent: async (input: actualTrust.AgentInvocationAdmissionInput) => {
     if (!invocationCapabilityEnabled) {
@@ -105,7 +106,7 @@ mock.module("@nautilo/trust", () => ({
   ],
 }));
 
-// D298 — `dispatchRoomMessageSend()` now gates archived rooms via
+// `dispatchRoomMessageSend()` now gates archived rooms via
 // `roomIsArchived()` / `roomRowExists()` in peer-broadcast, which use the
 // singleton `db` handle (not `createDirectDb`). Stub so this file stays a
 // DB-free unit test of routing/envelope logic.
@@ -160,7 +161,7 @@ bootstrapTestDbInstance();
 const R1_ID = "a1111111-1111-4111-8111-111111111111";
 const DEFAULT_ROOM_ID = "b2222222-2222-4222-8222-222222222222";
 const BOOTSTRAP_AGENT_ID = "c3333333-3333-4333-8333-333333333333";
-const CUSTOM_AGENT_ID = "d4444444-4444-4444-8444-444444444444";
+const CUSTOM_AGENT_ID = "44444444-4444-4444-8444-444444444444";
 const SENDER_USER_ID = "e5555555-5555-4555-8555-555555555555";
 const SENDER_ACTOR_ID = "f6666666-6666-4666-8666-666666666666";
 
@@ -1046,7 +1047,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("D566 keeps authenticated chat independent of denied optional mobile provenance", async () => {
+  test("keeps authenticated chat independent of denied optional mobile provenance", async () => {
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
       roomId === R1_ID ? r1Detail() : null,
@@ -2858,7 +2859,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("D420 rejects group executable work before persisting its human message", async () => {
+  test("rejects group executable work before persisting its human message", async () => {
     const drainingGate: MaintenanceGate = {
       async assertAcceptingNewWork() {
         throw new MaintenanceDrainError("draining");
@@ -3020,7 +3021,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("D426 direct one-to-one subthread forwards its existing child-room persistence id", async () => {
+  test("direct one-to-one subthread forwards its existing child-room persistence id", async () => {
     shouldFireLLMTurn.mockClear();
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>

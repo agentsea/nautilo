@@ -9,11 +9,11 @@ const link = { id: ID, revision: 3, roomId: ROOM, roomName: "Fixture exchange", 
   conversationLabel: "Fixture chat", chatId: "fixture-chat", threadRootId: null, providerAgentId: "fixture-agent", identityLabel: "Fixture agent",
   canManage: true, canSend: true, status: "active", receiver: "listening", outboundPolicy: "causal_replies_and_reviewed_messages", delivery: { pending: 0, uncertain: 0 } };
 const operation = { operationId: ID, status: "completed", connection };
-const delivery = { messageId: 1, outboxId: ID, state: "pending" };
+const delivery = { messageId: 1, outboxId: ID, state: "pending" as const };
 function transport(response: unknown) {
   const seen: { path: string; method: string; body: unknown; authorization: string | null }[] = [];
   const fetchImpl: NautiloApiFetch = async (url, init) => {
-    seen.push({ path: new URL(url).pathname, method: init?.method ?? "GET", body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
+    seen.push({ path: new URL(url instanceof Request ? url.url : url).pathname, method: init?.method ?? "GET", body: typeof init?.body === "string" ? JSON.parse(init.body) : null,
       authorization: new Headers(init?.headers).get("authorization") });
     return new Response(JSON.stringify(response), { headers: { "content-type": "application/json" } });
   };

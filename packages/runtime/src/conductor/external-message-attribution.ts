@@ -1,1 +1,1 @@
-export { formatExternalMessageForModel, formatUnverifiedExternalMessageForModel } from "@nautilo/types";
+export { formatExternalMessageForModel } from "@nautilo/types";
