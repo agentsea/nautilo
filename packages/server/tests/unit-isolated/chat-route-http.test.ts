@@ -1,7 +1,7 @@
 /**
  * Route-level /api/chat — attachment rejections become 202 + `attachments[]`, never 500.
  */
-import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 
 const createForegroundJob = mock(() =>
@@ -13,7 +13,6 @@ const createForegroundJob = mock(() =>
 const ROOM_ID = "11111111-1111-4111-8111-111111111111";
 const loadRoomRoster = mock((_roomId: string) => Promise.resolve([]));
 
-import { chatRoutes } from "../../src/routes/chat";
 import {
   AgentInvocationDeniedError,
   ServerProviderCredentialsDeniedError,
@@ -21,6 +20,27 @@ import {
   getBootstrapOwnerId,
   type AgentInvocationAdmissionInput,
 } from "@nautilo/trust";
+import * as trust from "@nautilo/trust";
+import * as agent from "@nautilo/agent";
+import * as db from "@nautilo/db";
+
+// Ordinary-room HTTP fixtures supply canonical policy and history explicitly;
+// neither read may fall through to an installed instance's database.
+const trustExports = { ...trust };
+const agentExports = { ...agent };
+mock.module("@nautilo/trust", () => ({
+  ...trustExports,
+  getExternalRoomPolicy: async (_roomId: string) => null,
+  loadUserTimezone: async (_userId: string) => null,
+}));
+mock.module("@nautilo/agent", () => ({
+  ...agentExports,
+  findLatestUserMessageAt: async () => null,
+}));
+const { chatRoutes } = await import("../../src/routes/chat");
+const liveDatabase = spyOn(db, "getSharedDirectDb").mockImplementation(() => {
+  throw new Error("Chat route unit fixture attempted live database access");
+});
 
 let prevOwnerId: string;
 
@@ -31,6 +51,8 @@ beforeAll(() => {
 
 afterAll(() => {
   setBootstrapOwnerId(prevOwnerId);
+  try { expect(liveDatabase).not.toHaveBeenCalled(); }
+  finally { liveDatabase.mockRestore(); }
 });
 
 async function makeChatApp(
@@ -207,7 +229,7 @@ describe("/api/chat route", () => {
           replyToMessageId: 42,
         },
       });
-      expect(res.statusCode).toBe(202);
+      expect(res.statusCode, res.body).toBe(202);
       expect(createForegroundJob).toHaveBeenCalled();
       const callArgs = createForegroundJob.mock.calls[0] as unknown as unknown[];
       const jobInput = callArgs[3] as Record<string, unknown>;
