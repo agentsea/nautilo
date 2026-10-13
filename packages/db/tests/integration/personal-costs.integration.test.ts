@@ -31,6 +31,7 @@ import {
 import { bootstrapTestDbInstance } from "../../src/testing/instance-guard";
 
 const FIXTURE_PREFIX = "personal-costs-integration";
+const DIRECT_ATTEMPT_OWNER_TOKEN = "99999999-9999-4999-8999-999999999999";
 const attemptIds: string[] = [];
 const providerCostKeys: string[] = [];
 const userIds: string[] = [];
@@ -113,6 +114,7 @@ describe("personal cost attempts and account isolation", () => {
     const taskId = await createTask(payerHumanId);
     const modelAttemptId = attemptId();
     await beginPersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       id: modelAttemptId,
       userId: payerHumanId,
       taskId,
@@ -125,6 +127,7 @@ describe("personal cost attempts and account isolation", () => {
       endpoint: "/v1/responses",
     });
     await settlePersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: modelAttemptId,
       outcome: "succeeded",
       costState: "actual",
@@ -426,6 +429,7 @@ describe("personal cost attempts and account isolation", () => {
     const id = attemptId();
     const credentialId = randomUUID();
     await beginPersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       id,
       userId: payerHumanId,
       callType: "chat",
@@ -437,6 +441,7 @@ describe("personal cost attempts and account isolation", () => {
       endpoint: "/v1/messages",
     });
     await settlePersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: id,
       outcome: "succeeded",
       costState: "estimated",
@@ -463,6 +468,7 @@ describe("personal cost attempts and account isolation", () => {
     const id = attemptId();
     const terminalAt = new Date("2026-10-05T10:00:00.000Z");
     await beginPersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       id,
       userId: payerHumanId,
       callType: "chat",
@@ -474,6 +480,7 @@ describe("personal cost attempts and account isolation", () => {
       endpoint: "/v1/messages",
     });
     await settlePersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: id,
       outcome: "interrupted",
       costState: "unknown",
@@ -481,6 +488,7 @@ describe("personal cost attempts and account isolation", () => {
       settledAt: terminalAt,
     });
     const lateSettlement = {
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: id,
       outcome: "interrupted" as const,
       costState: "estimated" as const,
@@ -508,6 +516,7 @@ describe("personal cost attempts and account isolation", () => {
     const id = attemptId();
     const settledAt = new Date("2026-10-06T10:00:00.000Z");
     await beginPersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       id,
       userId: payerHumanId,
       callType: "chat",
@@ -519,6 +528,7 @@ describe("personal cost attempts and account isolation", () => {
       endpoint: "/v1/messages",
     });
     const settlement = {
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: id,
       outcome: "succeeded" as const,
       costState: "estimated" as const,
@@ -677,6 +687,7 @@ describe("personal cost attempts and account isolation", () => {
     const since = new Date(Date.now() - 60_000).toISOString();
     const directId = attemptId();
     await beginPersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       id: directId,
       userId: payer,
       callType: "chat",
@@ -688,6 +699,7 @@ describe("personal cost attempts and account isolation", () => {
       endpoint: "/v1/messages",
     });
     await settlePersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: directId,
       outcome: "succeeded",
       costState: "estimated",
@@ -792,6 +804,7 @@ describe("personal cost attempts and account isolation", () => {
     }
     const otherId = attemptId();
     await beginPersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       id: otherId,
       userId: other,
       callType: "chat",
@@ -803,6 +816,7 @@ describe("personal cost attempts and account isolation", () => {
       endpoint: "/v1/responses",
     });
     await settlePersonalLlmAttempt({
+      ownerToken: DIRECT_ATTEMPT_OWNER_TOKEN,
       attemptId: otherId,
       outcome: "succeeded",
       costState: "actual",

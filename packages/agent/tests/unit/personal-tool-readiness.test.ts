@@ -71,18 +71,26 @@ describe("personal tool readiness", () => {
     });
   });
 
-  test("deferred security and paid multi-agent workflows remain denied inside capability scope", () => {
+  test("native Task workflows are ready while unsupported security workflow remains denied", () => {
     runWithCapabilityFundingSession(capabilityFunding, () => {
-      for (const name of [
-        "security_scan",
-        "ask_peer",
-        "in_scope",
-        "in_private_namespace",
-      ]) {
-        expect(personalToolReady(name)).toBe(false);
-        expect(personalToolCallSupported(call(name), true)).toBe(false);
-        expect(personalToolUnavailable(name)).toBe("Personal funding is not available for this workflow yet.");
+      for (const name of ["ask_peer", "in_scope", "in_private_namespace"]) {
+        expect(personalToolReady(name)).toBe(true);
+        expect(personalToolCallSupported(call(name), true)).toBe(true);
+        expect(personalToolUnavailable(name)).toBeNull();
       }
+      expect(personalToolReady("security_scan")).toBe(false);
+      expect(personalToolCallSupported(call("security_scan"), true)).toBe(false);
+      expect(personalToolUnavailable("security_scan"))
+        .toBe("Personal funding is not available for this workflow yet.");
+      expect(personalToolCallSupported(call("ask_peer", {
+        peer_handle: "peer", message_to_peer: "Are you free?",
+      }), false)).toBeTrue();
+      expect(personalToolCallSupported(call("ask_peer", {
+        peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"],
+      }), false)).toBeFalse();
+      // The argument fence is specific to peer Artifact handoff. Capability
+      // funding keeps the rest of the independently admitted tool surface.
+      expect(personalToolCallSupported(call("file", { command: "read" }), false)).toBeTrue();
     });
   });
 
@@ -94,7 +102,7 @@ describe("personal tool readiness", () => {
     });
   });
 
-  test("legacy personal text sessions retain only strict task controls", () => {
+  test("legacy personal text sessions retain native Task controls", () => {
     expect(personalToolCallSupported(call("task", {
       command: "create",
       prompt: "Summarize this",
@@ -111,7 +119,7 @@ describe("personal tool readiness", () => {
       command: "create",
       prompt: "Contact another Human",
       target_users: ["human-b"],
-    }), true)).toBe(false);
+    }), true)).toBe(true);
     expect(personalToolCallSupported(call("discover_models", {
       command: "search",
       workload: "research",

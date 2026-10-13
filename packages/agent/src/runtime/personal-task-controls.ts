@@ -2,10 +2,8 @@ import type { ToolCall } from "@langchain/core/messages/tool";
 
 /** The complete tool surface available to an admitted personal-funded parent. */
 export const PERSONAL_TASK_CONTROL_TOOL_NAMES = [
-  "task",
-  "in_background",
-  "schedule",
-  "discover_models",
+  "task", "in_background", "in_scope", "in_private_namespace", "ask_peer",
+  "schedule", "discover_models",
 ] as const;
 
 const PERSONAL_TASK_CONTROL_TOOL_NAME_SET = new Set<string>(
@@ -34,7 +32,7 @@ function isTrustedPersonalOnlyModel(
 
 /**
  * A server-funded foreground parent may select a caller-only model only for
- * the same bounded native root tool-free Task shape as personal controls.
+ * a native Task shape whose exact authority is rechecked by Task admission.
  * The trusted model set comes from graph composition, never model arguments.
  */
 export function isPersonalOnlyNativeTaskCreate(
@@ -51,29 +49,18 @@ export function isPersonalOnlyNativeTaskCreate(
 /**
  * Structural gate applied before the trusted server resolves an omitted,
  * profile-selected, or exact Task model. It deliberately says nothing about
- * funding; it only proves that converting the create to tool-free caller work
- * cannot smuggle a paid tool, peer, scope, harness, nested parent, or foreign
- * destination through an ordinary server-funded parent.
+ * funding. Supported native tools, targets and parent lineage are admitted by
+ * the Task owner; external harness configuration stays outside this path.
  */
 export function isBoundedPersonalNativeTaskCreate(
   args: Readonly<Record<string, unknown>>,
-  currentTaskId: string,
+  _currentTaskId: string,
 ): boolean {
   return args["command"] === "create"
-    && currentTaskId.length === 0
     && (args["harness"] === undefined || args["harness"] === "native")
-    && (args["tools"] === undefined
-      || (Array.isArray(args["tools"]) && args["tools"].length === 0))
-    && args["target_users"] === undefined
-    && (args["use_scope"] === undefined || args["use_scope"] === false)
-    && args["scope_id"] === undefined
-    && args["parent_task_id"] === undefined
     && args["collaboration_mode"] === undefined
     && args["harness_model_id"] === undefined
-    && args["working_directory"] === undefined
-    && (args["target_chat"] === undefined
-      || args["target_chat"] === "orphan"
-      || args["target_chat"] === "last_in_namespace");
+    && args["working_directory"] === undefined;
 }
 
 export function isPersonalOnlyNativeShortcutCreate(
@@ -90,16 +77,10 @@ export function isPersonalOnlyNativeShortcutCreate(
 /** Structural counterpart of {@link isBoundedPersonalNativeTaskCreate}. */
 export function isBoundedPersonalNativeShortcutCreate(
   args: Readonly<Record<string, unknown>>,
-  currentTaskId: string,
-  options: Readonly<{ allowTools: boolean }>,
+  _currentTaskId: string,
+  _options: Readonly<{ allowTools: boolean }>,
 ): boolean {
-  return currentTaskId.length === 0
-    && args["harness"] === undefined
-    && args["working_directory"] === undefined
-    && (!options.allowTools
-      ? args["tools"] === undefined
-      : args["tools"] === undefined
-        || (Array.isArray(args["tools"]) && args["tools"].length === 0));
+  return args["harness"] === undefined;
 }
 
 function isTaskControlArgs(args: Readonly<Record<string, unknown>>): boolean {
@@ -109,7 +90,8 @@ function isTaskControlArgs(args: Readonly<Record<string, unknown>>): boolean {
       "command", "prompt", "expected_output", "schedule_kind", "run_at",
       "cron", "timezone", "target_chat", "result_delivery",
       "time_limit_seconds", "model_selection_profile", "model_selection_spec",
-      "model_id",
+      "model_id", "target_users", "use_scope", "scope_id", "tools",
+      "parent_task_id",
     ]);
   }
   if (command === "update") {
@@ -117,7 +99,7 @@ function isTaskControlArgs(args: Readonly<Record<string, unknown>>): boolean {
       "command", "taskId", "prompt", "expected_output", "schedule_kind",
       "run_at", "cron", "timezone", "target_chat", "result_delivery",
       "time_limit_seconds", "model_selection_profile", "model_selection_spec",
-      "model_id",
+      "model_id", "tools",
     ]);
   }
   if (command === "read") {
@@ -138,9 +120,12 @@ function isTaskControlArgs(args: Readonly<Record<string, unknown>>): boolean {
 function isDiscoverModelsArgs(args: Readonly<Record<string, unknown>>): boolean {
   if (!hasOnlyKeys(args, [
     "command", "model_id", "query", "provider", "runnable_only",
-    "requires_reasoning", "workload", "output", "limit", "offset",
+    "decision_operation", "requires_reasoning", "workload", "output", "limit", "offset",
   ])) return false;
-  if (args["workload"] !== undefined && args["workload"] !== "chat") return false;
+  if (args["workload"] !== undefined
+    && args["workload"] !== "chat"
+    && args["workload"] !== "decision") return false;
+  if (args["decision_operation"] !== undefined && args["workload"] !== "decision") return false;
   if (args["output"] !== undefined && args["output"] !== "text") return false;
   return args["command"] === "list"
     || args["command"] === "search"
@@ -150,7 +135,7 @@ function isDiscoverModelsArgs(args: Readonly<Record<string, unknown>>): boolean 
 /**
  * Recheck raw model output before schema parsing. Zod strips unknown object
  * keys, so this predicate deliberately rejects them before they can smuggle a
- * peer, harness, resource, scope, nested parent, or worker-tool request.
+ * request outside the supported Task and model-discovery contracts.
  */
 export function isPersonalTaskControlCall(
   call: Pick<ToolCall, "name" | "args">,
@@ -162,11 +147,28 @@ export function isPersonalTaskControlCall(
   if (call.name === "task") return isTaskControlArgs(record);
   if (call.name === "in_background") {
     return hasOnlyKeys(record, [
-      "brief", "result_delivery", "model_selection", "model_id",
+      "brief", "result_delivery", "model_selection", "model_id", "tools",
+      "working_directory",
     ]);
   }
   if (call.name === "schedule") {
     return hasOnlyKeys(record, ["message", "when", "model_selection", "model_id"]);
+  }
+  if (call.name === "in_scope") {
+    return hasOnlyKeys(record, [
+      "brief", "tools", "expected_output", "scope_id", "model_selection", "model_id",
+    ]);
+  }
+  if (call.name === "in_private_namespace") {
+    return hasOnlyKeys(record, [
+      "brief", "bring_back", "model_selection", "model_id",
+    ]);
+  }
+  if (call.name === "ask_peer") {
+    return hasOnlyKeys(record, [
+      "peer_handle", "message_to_peer", "return_instructions", "tools",
+      "model_selection", "model_id",
+    ]);
   }
   return isDiscoverModelsArgs(record);
 }

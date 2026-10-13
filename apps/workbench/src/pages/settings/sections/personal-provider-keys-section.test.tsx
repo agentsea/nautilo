@@ -176,6 +176,63 @@ describe("PersonalProviderKeysSection", () => {
     await waitFor(() => expect(keyApi.deleteProviderCredential).toHaveBeenCalledWith("openai", { expectedRevision: 5 }));
   });
 
+  test("keeps newer metadata and a newer draft when an older save response arrives", async () => {
+    const staleSave = { ...saved, provider: "anthropic", revision: 5, masked: "old-…0005" };
+    const refreshed = { ...staleSave, revision: 6, masked: "new-…0006" };
+    let resolveSave!: (value: { credential: CredentialMetadata; committed: true }) => void;
+    const pendingSave = new Promise<{ credential: CredentialMetadata; committed: true }>((resolve) => { resolveSave = resolve; });
+    let reads = 0;
+    const list = mock(async () => listResponse(reads++ === 0 ? [] : [refreshed]));
+    const keyApi = api({
+      listProviderCredentials: list,
+      putProviderCredential: mock(() => pendingSave),
+    });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+
+    fireEvent.click(await view.findByRole("button", { name: "Add Anthropic key" }));
+    await enterSecret(view.getByLabelText("New Anthropic API key"), "submitted-secret");
+    fireEvent.click(view.getByRole("button", { name: "Save key" }));
+    fireEvent(window, new Event("focus"));
+    await view.findByText("new-…0006");
+
+    fireEvent.click(view.getByRole("button", { name: "Add Tavily key" }));
+    await enterSecret(view.getByLabelText("New Tavily API key"), "newer-draft");
+    await act(async () => resolveSave({ credential: staleSave, committed: true }));
+
+    await waitFor(() => expect(list).toHaveBeenCalledTimes(3));
+    expect(view.getByText("new-…0006")).toBeTruthy();
+    expect(view.queryByText("old-…0005")).toBeNull();
+    expect(view.getByDisplayValue("newer-draft")).toBeTruthy();
+    expect(keyApi.putProviderCredential).toHaveBeenCalledTimes(1);
+  });
+
+  test("keeps an accepted save when an older focus refresh finishes afterward", async () => {
+    const savedAnthropic = { ...saved, provider: "anthropic", revision: 5, masked: "saved-…0005" };
+    let resolveSave!: (value: { credential: CredentialMetadata; committed: true }) => void;
+    let resolveRefresh!: (value: ReturnType<typeof listResponse>) => void;
+    const pendingSave = new Promise<{ credential: CredentialMetadata; committed: true }>((resolve) => { resolveSave = resolve; });
+    let reads = 0;
+    const list = mock(() => reads++ === 0
+      ? Promise.resolve(listResponse())
+      : new Promise<ReturnType<typeof listResponse>>((resolve) => { resolveRefresh = resolve; }));
+    const keyApi = api({
+      listProviderCredentials: list,
+      putProviderCredential: mock(() => pendingSave),
+    });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+
+    fireEvent.click(await view.findByRole("button", { name: "Add Anthropic key" }));
+    await enterSecret(view.getByLabelText("New Anthropic API key"), "submitted-secret");
+    fireEvent.click(view.getByRole("button", { name: "Save key" }));
+    fireEvent(window, new Event("focus"));
+    await act(async () => resolveSave({ credential: savedAnthropic, committed: true }));
+    expect(await view.findByText("saved-…0005")).toBeTruthy();
+
+    await act(async () => resolveRefresh(listResponse()));
+    expect(view.getByText("saved-…0005")).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Add Anthropic key" })).toBeNull();
+  });
+
   test("offers retry only for transient load failures", async () => {
     const view = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: mock(async () => { throw new ProviderCredentialApiError(503, "credential_custody_unavailable", false, true, "contact_operator"); }) })} />);
     expect((await view.findByRole("alert")).textContent).toContain("Contact the Server operator");

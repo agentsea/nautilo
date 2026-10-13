@@ -7,6 +7,26 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal model funding now follows the initiating member across permitted
+  group Rooms, other members' Genies, Conductor routing and native nested,
+  delegated and scheduled Tasks. Existing invocation and content permissions
+  still apply. Each accepted operation retains its model, payer and credential
+  binding; scheduled shortcuts keep their original Room for report-back.
+  Interrupted direct-personal model attempts retain unknown costs after a
+  process failure and are recovered without repeating inference.
+- Personal key and capability readiness refresh safely after key changes,
+  including concurrent saves and account metadata reloads. Mobile capability
+  settings and personal Costs refresh when the app returns to the foreground.
+- Full database restores prepare the restricted event-feed reader role before
+  importing grants and policies, so backups can restore into fresh PostgreSQL
+  volumes. Unsafe existing role privileges still block the restore.
+- Local Compose restores and custody diagnostics verify personal credentials
+  through the selected server container, preserving the existing localhost
+  authorization boundary when Docker publishes the server port.
+- Mobile Web preserves a safe Task destination while connecting to its current
+  server or checking encryption policy after sign-in. It returns to that
+  destination after admission without carrying it to another account or server.
+
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace
   routes fall back to the same model's direct provider within the admitted

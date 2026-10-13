@@ -95,6 +95,26 @@ describe("ToolCatalog", () => {
     expect(catalog.get("needs-foreground")).not.toHaveProperty("unavailableInContext");
   });
 
+  test("authorization-only filtering can defer runtime prerequisites without bypassing policy", () => {
+    catalog.register(makeReg({
+      name: "needs-runtime-context",
+      exposure: "core",
+      isAvailable: () => false,
+      unavailableInContext: () => "A live turn is required.",
+    }));
+
+    expect(catalog.getFiltered().entries.map((entry) => entry.name))
+      .not.toContain("needs-runtime-context");
+    expect(catalog.getFiltered(undefined, undefined, {
+      deferRuntimePrerequisiteChecks: true,
+    }).entries.map((entry) => entry.name)).toContain("needs-runtime-context");
+    expect(catalog.getFiltered().entries.map((entry) => entry.name))
+      .not.toContain("needs-runtime-context");
+    expect(catalog.getFiltered({ "needs-runtime-context": "forbidden" }, undefined, {
+      deferRuntimePrerequisiteChecks: true,
+    }).entries.map((entry) => entry.name)).not.toContain("needs-runtime-context");
+  });
+
   describe("register", () => {
     test("registers and retrieves", () => {
       expect(catalog.register(makeReg({ name: "t" }))).toBe(true);

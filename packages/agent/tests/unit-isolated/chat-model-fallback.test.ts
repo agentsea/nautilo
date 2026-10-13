@@ -35,6 +35,7 @@ import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../sr
 import { classifyError } from "../../src/utils/errors";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
 import { getUsageContext, type UsageFundingProvenance } from "../../src/usage/usage-context";
+import { installPersonalLlmAttemptOwner } from "../../src/usage/personal-llm-attempt-owner";
 import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
@@ -218,8 +219,12 @@ const capturedEvents: ServerEvent[] = [];
 
 let _setFirstTokenTimeoutMsForTests: (ms: number | undefined) => void;
 let isPreparedContextExceededError: (error: unknown) => boolean;
+let uninstallPersonalAttemptOwner: (() => void) | undefined;
 
 beforeAll(async () => {
+  uninstallPersonalAttemptOwner = installPersonalLlmAttemptOwner({
+    ownerToken: "99999999-9999-4999-8999-999999999999",
+  });
   const mod = await import("../../src/utils/chat-model-invocation");
   invokeChatModelWithFallback = (messages, tools, initialModelId, userId, agentId, laneKey, invocationConfig, invokeOptions) =>
     mod.invokeChatModelWithFallback(messages, tools, initialModelId, userId, agentId, laneKey,
@@ -231,6 +236,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  uninstallPersonalAttemptOwner?.();
   resetRuntimeModelCatalog();
   setAgentEventSink(null);
   mock.restore();

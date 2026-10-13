@@ -536,6 +536,9 @@ describe("restore full bundle", () => {
       if (call.cmd === "docker" && call.args.includes("up")) events.push("up");
       if (call.cmd === "docker" && call.args.includes("stop")) events.push("stop-server");
       if (call.cmd === "docker" && call.args.includes("start")) events.push("start-server");
+      if (call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader")) {
+        events.push("prepare-event-feed-role");
+      }
       if (
         call.cmd === "sh" &&
         text.includes("gunzip") &&
@@ -587,6 +590,7 @@ describe("restore full bundle", () => {
       "resync-logto-tenant-passwords",
       "up",
       "stop-server",
+      "prepare-event-feed-role",
       "atomic-restore-nautilo",
       "atomic-restore-logto",
       "regrant-logto-tenant-roles",
@@ -615,6 +619,19 @@ describe("restore full bundle", () => {
     );
     expect(nautiloRestore).toBeDefined();
     expect(logtoRestore).toBeDefined();
+    const rolePreparation = exec.calls.find((call) =>
+      call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader"),
+    );
+    expect(rolePreparation).toBeDefined();
+    expect(commandText(rolePreparation!)).toContain(
+      "psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -f -",
+    );
+    expect(rolePreparation!.opts.stdin).toContain(
+      "CREATE ROLE nautilo_feed_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+    );
+    expect(rolePreparation!.opts.stdin).toContain(
+      "GRANT nautilo_feed_reader TO nautilo WITH INHERIT FALSE",
+    );
     for (const restoreCall of [nautiloRestore!, logtoRestore!]) {
       const text = commandText(restoreCall);
       expect(text).toContain("ON_ERROR_STOP=1");
@@ -675,6 +692,31 @@ describe("restore full bundle", () => {
     expect(restoreIndex).toBeGreaterThan(-1);
     expect(firstValidateIndex).toBeGreaterThan(-1);
     expect(firstValidateIndex).toBeLessThan(restoreIndex);
+    expect(exec.calls.indexOf(rolePreparation!)).toBeLessThan(restoreIndex);
+  });
+
+  test("role preparation fails before the database reset or archive import", async () => {
+    const exec = makeFakeExec((call) =>
+      call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader")
+        ? { code: 1, stdout: "", stderr: "role validation failed" }
+        : { code: 0, stdout: "", stderr: "" },
+    );
+    const bundlePath = writeBundle(join(home, "role-preparation-failure"));
+    const driver = new ComposeDriver(
+      makeDeps([], { exec: exec.exec, localExec: exec.exec }),
+    );
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(
+      driver.restore(baseProfile, { fromPath: bundlePath, force: true }),
+    ).rejects.toThrow(/event-feed reader role preparation failed/);
+
+    expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(
+      false,
+    );
+    expect(
+      exec.calls.some((call) => commandText(call).includes("--single-transaction")),
+    ).toBe(false);
   });
 
   test("rolled-back server is recreated WITH the server overlay (fixes instance-id + LOGTO loss)", async () => {
@@ -1094,18 +1136,11 @@ describe("restore full bundle", () => {
         keyHex: "ee".repeat(32),
       })}\n`,
     );
-    const custodyFetch = (async (input: string | URL) => {
+    const hostFetch = (async (input: string | URL) => {
       const url = String(input);
       if (url.includes("/api/health/personal-provider-custody")) {
-        events.push("custody-health");
-        return new Response(
-          JSON.stringify({
-            status: "unavailable",
-            recordsExist: true,
-            code: "credential_authentication_failed",
-          }),
-          { status: 200 },
-        );
+        events.push("host-custody-health");
+        return new Response("Owner identity or localhost required", { status: 403 });
       }
       if (url.includes("/health")) {
         events.push("health-poll");
@@ -1114,8 +1149,20 @@ describe("restore full bundle", () => {
       return new Response('{"setupState":"new"}', { status: 200 });
     }) as unknown as typeof fetch;
     const driver = new ComposeDriver(
-      makeDeps(events, { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
+      makeDeps(events, { exec: exec.exec, localExec: exec.exec, fetch: hostFetch }),
     );
+    driver.setLocalRestoreCustodyProbe(async (url) => {
+      events.push("custody-health");
+      expect(url).toBe("http://127.0.0.1:3001/api/health/personal-provider-custody");
+      return new Response(
+        JSON.stringify({
+          status: "unavailable",
+          recordsExist: true,
+          code: "credential_authentication_failed",
+        }),
+        { status: 200 },
+      );
+    });
 
     // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule cannot infer that.
     await expect(
@@ -1126,7 +1173,58 @@ describe("restore full bundle", () => {
       }),
     ).rejects.toThrow(/custody verification failed/);
     expect(events).toEqual(["server-start", "health-poll", "custody-health"]);
+    expect(events).not.toContain("host-custody-health");
     expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(true);
+  });
+
+  test("populated local restore fails closed when its custody probe is not wired", async () => {
+    const events: string[] = [];
+    const exec = makeFakeExec((call) => {
+      if (commandText(call).includes("start nautilo-server")) events.push("server-start");
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const bundlePath = writeBundle(join(home, "data-only-custody-transport-missing"));
+    const keyId = "123e4567-e89b-42d3-a456-426614174000";
+    writeFileSync(
+      join(bundlePath, "nautilo.sql.gz"),
+      personalCredentialDump([keyId]),
+    );
+    const targetRoot = join(home, ".nautilo", "runtime-config");
+    mkdirSync(targetRoot, { recursive: true });
+    writeFileSync(
+      join(targetRoot, "instance.env"),
+      `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody({
+        formatVersion: 1,
+        keyId,
+        keyHex: "ee".repeat(32),
+      })}\n`,
+    );
+    const hostFetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes("/api/health/personal-provider-custody")) {
+        events.push("host-custody-health");
+        return new Response("Owner identity or localhost required", { status: 403 });
+      }
+      if (url.includes("/health")) {
+        events.push("health-poll");
+        return new Response("ok", { status: 200 });
+      }
+      return new Response('{"setupState":"new"}', { status: 200 });
+    }) as unknown as typeof fetch;
+    const driver = new ComposeDriver(
+      makeDeps(events, { exec: exec.exec, localExec: exec.exec, fetch: hostFetch }),
+    );
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule cannot infer that.
+    await expect(
+      driver.restore(baseProfile, {
+        fromPath: bundlePath,
+        force: true,
+        mode: "data-only",
+      }),
+    ).rejects.toThrow(/custody verification failed/);
+    expect(events).toEqual(["server-start", "health-poll"]);
+    expect(events).not.toContain("host-custody-health");
   });
 
   test("data-only restore accepts a degraded disaster-reset transition", async () => {
@@ -1165,6 +1263,7 @@ describe("restore full bundle", () => {
     const driver = new ComposeDriver(
       makeDeps([], { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
     );
+    driver.setLocalRestoreCustodyProbe((url) => custodyFetch(url));
 
     await driver.restore(baseProfile, {
       fromPath: bundlePath,
@@ -1217,6 +1316,7 @@ describe("restore full bundle", () => {
     const driver = new ComposeDriver(
       makeDeps([], { exec: exec.exec, localExec: exec.exec, fetch: custodyFetch }),
     );
+    driver.setLocalRestoreCustodyProbe((url) => custodyFetch(url));
 
     await driver.restore(baseProfile, { fromPath: bundlePath, force: true });
     expect(exec.calls.some((call) => commandText(call).includes("DROP SCHEMA"))).toBe(true);
@@ -1364,6 +1464,9 @@ describe("restore full bundle", () => {
         else if (text.includes(" stop nautilo-server")) events.push("stop");
         else if (text.includes(" start nautilo-server")) events.push("start");
       }
+      if (call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader")) {
+        events.push("prepare-event-feed-role");
+      }
       if (
         text.includes("gunzip") &&
         text.includes("nautilo.sql.gz") &&
@@ -1428,6 +1531,7 @@ describe("restore full bundle", () => {
       "pull",
       "up",
       "stop",
+      "prepare-event-feed-role",
       "load-nautilo",
       "load-logto",
       "load-artifacts",
@@ -1440,6 +1544,20 @@ describe("restore full bundle", () => {
       exec.calls.every((call) => call.opts.env?.["DOCKER_HOST"] === undefined),
     ).toBe(true);
     expect(localExec.calls.some((call) => call.cmd === "rsync")).toBe(true);
+    const rolePreparationIndex = exec.calls.findIndex((call) =>
+      call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader"),
+    );
+    const nautiloImportIndex = exec.calls.findIndex(
+      (call) =>
+        commandText(call).includes("nautilo.sql.gz") &&
+        !commandText(call).includes("logto_nautilo.sql.gz") &&
+        commandText(call).includes("--single-transaction"),
+    );
+    expect(rolePreparationIndex).toBeGreaterThan(-1);
+    expect(nautiloImportIndex).toBeGreaterThan(rolePreparationIndex);
+    expect(commandText(exec.calls[rolePreparationIndex]!)).toContain(
+      "psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -f -",
+    );
 
     const remoteCompose = exec.calls
       .filter((call) => call.cmd === "sh" && (call.args[1] ?? "").includes("docker compose"))
@@ -2076,6 +2194,14 @@ describe("restore full bundle", () => {
     await driver.restore(baseProfile, { fromPath: legacyPath, force: true });
 
     const shell = localExecCalls.map(commandText).join("\n");
+    const rolePreparationIndex = localExecCalls.findIndex((call) =>
+      call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader"),
+    );
+    const restoreIndex = localExecCalls.findIndex((call) =>
+      commandText(call).includes(`gunzip -c ${legacyPath}`),
+    );
+    expect(rolePreparationIndex).toBeGreaterThan(-1);
+    expect(restoreIndex).toBeGreaterThan(rolePreparationIndex);
     expect(shell).toContain(`gunzip -c ${legacyPath}`);
     expect(shell).toContain("exec -T app-postgres psql -U postgres nautilo");
     expect(shell).not.toContain("manifest");

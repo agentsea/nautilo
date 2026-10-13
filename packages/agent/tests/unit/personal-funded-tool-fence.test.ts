@@ -13,6 +13,7 @@ import {
   PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT,
 } from "../../src/nodes/tools";
 import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
+import { runWithCapabilityFundingSession } from "../../src/runtime/capability-funding";
 
 afterEach(() => {
   clearToolCatalog();
@@ -113,7 +114,10 @@ function fundingSession(
 
 function registerControlFixtures(invoke: (name: string) => void = () => {}): void {
   const catalog = new ToolCatalog();
-  for (const name of ["task", "in_background", "schedule", "discover_models", "paid_fixture"]) {
+  for (const name of [
+    "task", "in_background", "in_scope", "in_private_namespace", "ask_peer",
+    "schedule", "discover_models", "paid_fixture",
+  ]) {
     catalog.register({
       name,
       category: name === "paid_fixture" ? "development" : "automation",
@@ -225,7 +229,56 @@ describe("personal-funded foreground tool fence", () => {
       .not.toContain("must-not-echo");
   });
 
-  test("pre-model exposes only bounded controls for a trusted function-calling personal parent", async () => {
+  test("personal capability ALS rejects peer Artifact args at the production post-model gate", async () => {
+    let policyChecks = 0;
+    const resolver = {
+      checkToolAccess: async () => {
+        policyChecks++;
+        return { type: "allow" as const };
+      },
+    } as unknown as PolicyResolver;
+    const call = { id: "peer-artifact", name: "ask_peer", args: {
+      peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"],
+    }, type: "tool_call" as const };
+
+    const patch = await runWithCapabilityFundingSession({
+      humanUserId: "human-1",
+      parentFundingKind: "personal",
+    } as never, () => createPostModelNode(resolver, {
+      foregroundChatFundingSession: fundingSession("personal"),
+    })(state({ messages: [new AIMessage({ content: "", tool_calls: [call] })] })));
+
+    expect(policyChecks).toBe(0);
+    expect(patch.approvedToolCalls).toEqual([]);
+    expect(patch.approvalDenied).toBe(true);
+    expect(patch.messages?.at(-1)?.content).toBe(PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT);
+  });
+
+  test("personal capability ALS rejects checkpointed peer Artifact args at the tools gate", async () => {
+    const invocations: string[] = [];
+    registerControlFixtures((name) => invocations.push(name));
+    const call = { id: "peer-artifact-resume", name: "ask_peer", args: {
+      peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"],
+    }, type: "tool_call" as const };
+
+    const patch = await runWithCapabilityFundingSession({
+      humanUserId: "human-1",
+      parentFundingKind: "personal",
+    } as never, () => createToolsNode({
+      personalFunding: true,
+      personalTaskControls: true,
+    })(state({
+      messages: [new AIMessage({ content: "", tool_calls: [call] })],
+      approvedToolCalls: [call],
+      activatedToolNames: ["ask_peer"],
+    })));
+
+    expect(invocations).toEqual([]);
+    expect(patch.approvalDenied).toBe(true);
+    expect(patch.messages?.at(-1)?.content).toBe(PERSONAL_FUNDING_TOOL_UNSUPPORTED_RESULT);
+  });
+
+  test("pre-model exposes native Task controls for a trusted function-calling personal parent", async () => {
     registerControlFixtures();
     setConfigOverrides({ nautilo_tool_exposure_mode: "eager" });
 
@@ -235,10 +288,12 @@ describe("personal-funded foreground tool fence", () => {
     );
 
     expect(patch.toolNames?.sort()).toEqual([
-      "discover_models", "in_background", "schedule", "task",
+      "ask_peer", "discover_models", "in_background", "in_private_namespace",
+      "in_scope", "schedule", "task",
     ]);
     expect(patch.activatedToolNames?.sort()).toEqual([
-      "discover_models", "in_background", "schedule", "task",
+      "ask_peer", "discover_models", "in_background", "in_private_namespace",
+      "in_scope", "schedule", "task",
     ]);
     expect(patch.toolNames).not.toContain("paid_fixture");
   });

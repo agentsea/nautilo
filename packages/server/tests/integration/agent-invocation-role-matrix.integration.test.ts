@@ -12,6 +12,7 @@ import {
   channelIdentities,
   credentials,
   eq,
+  getServerProviderPolicy,
   groupMembers,
   groups,
   namespaces,
@@ -25,6 +26,7 @@ import {
   inArray,
   upsertServerProviderPolicy,
 } from "@nautilo/db";
+import { installPersonalLlmAttemptOwner } from "@nautilo/agent";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import {
   seatPeerUser,
@@ -78,6 +80,8 @@ const paidDispatches: Array<{
 const fundingChecks: string[] = [];
 let fundingMode: "allow-test-provider" | "production-server" =
   "allow-test-provider";
+let priorPolicy: Awaited<ReturnType<typeof getServerProviderPolicy>> | undefined;
+let uninstallPersonalAttemptOwner: (() => void) | undefined;
 
 async function requireHuman(role: CanonicalRole): Promise<SeatedHuman> {
   const human = humans.get(role);
@@ -193,6 +197,9 @@ async function waitForPaidDispatchCount(expected: number): Promise<void> {
 }
 
 beforeAll(async () => {
+  uninstallPersonalAttemptOwner = installPersonalLlmAttemptOwner({
+    ownerToken: randomUUID(),
+  });
   fx = await setupOwnerAppFixture({
     suiteName: "invokeroles",
     withDefaultAgentGraph: true,
@@ -217,6 +224,7 @@ beforeAll(async () => {
       },
     },
   });
+  priorPolicy = await getServerProviderPolicy(fx.db);
 
   if (!fx.defaultAgentId) throw new Error("owner Genie fixture missing");
   humans.set("owner", {
@@ -277,7 +285,10 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  uninstallPersonalAttemptOwner?.();
   if (!fx) return;
+
+  if (priorPolicy) await upsertServerProviderPolicy(fx.db, priorPolicy);
 
   const directRooms = [...ownedRooms.values(), ...foreignRooms.values()];
   for (const room of directRooms) {
@@ -327,65 +338,98 @@ afterAll(async () => {
 describe.serial("exact Genie invocation role matrix", () => {
   test("real HTTP admission distinguishes each canonical Role's own and foreign Genie authority", async () => {
     fundingMode = "allow-test-provider";
+    const community = await requireHuman("community");
+    const communityModel = "openrouter:moonshotai/kimi-k2.6";
+    await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
+    const saved = await authedInject(fx.app, {
+      method: "PUT", url: "/api/account/provider-credentials/openrouter",
+      bearer: community.bearer, payload: { apiKey: "synthetic-role-matrix-community-key" },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const communityOwnRoom = ownedRooms.get("community");
+    if (!communityOwnRoom) throw new Error("missing Community own Room fixture");
+    const selected = await authedInject(fx.app, {
+      method: "PUT",
+      url: `/api/rooms/${communityOwnRoom.roomId}/agents/${communityOwnRoom.targetAgentId}/model-control-selection`,
+      bearer: community.bearer,
+      payload: { selection: { modelId: communityModel } },
+    });
+    expect(selected.statusCode, selected.body).toBe(200);
 
-    for (const { role } of ROLE_MATRIX) {
-      const human = await requireHuman(role);
-      const ownRoom = ownedRooms.get(role);
-      const foreignRoom = foreignRooms.get(role);
-      if (!ownRoom || !foreignRoom) throw new Error(`missing ${role} Rooms`);
+    try {
+      for (const { role } of ROLE_MATRIX) {
+        const human = await requireHuman(role);
+        const ownRoom = ownedRooms.get(role);
+        const foreignRoom = foreignRooms.get(role);
+        if (!ownRoom || !foreignRoom) throw new Error(`missing ${role} Rooms`);
 
-      const ownDispatchesBefore = paidDispatches.length;
-      const ownResponse = await sendDirectMessage(human, ownRoom);
-      if (role === "guest") {
-        expect(ownResponse.statusCode, `${role} own Genie`).toBe(403);
-        expect(JSON.parse(ownResponse.body)).toEqual({
-          error: "invoke_agents_required",
-          code: "invoke_agents_required",
-          capability: "invoke_agents",
-        });
-        expect(paidDispatches).toHaveLength(ownDispatchesBefore);
-      } else {
-        expect(ownResponse.statusCode, `${role} own Genie`).toBe(202);
-        expect(paidDispatches).toHaveLength(ownDispatchesBefore + 1);
-        expect(paidDispatches.at(-1)).toEqual({
-          requestorId: human.userId,
-          agentId: ownRoom.targetAgentId,
-          roomId: ownRoom.roomId,
-        });
+        const ownDispatchesBefore = paidDispatches.length;
+        const ownResponse = await sendDirectMessage(human, ownRoom);
+        if (role === "guest") {
+          expect(ownResponse.statusCode, `${role} own Genie`).toBe(403);
+          expect(JSON.parse(ownResponse.body)).toEqual({
+            error: "invoke_agents_required",
+            code: "invoke_agents_required",
+            capability: "invoke_agents",
+          });
+          expect(paidDispatches).toHaveLength(ownDispatchesBefore);
+        } else {
+          expect(ownResponse.statusCode, `${role} own Genie`).toBe(202);
+          expect(paidDispatches).toHaveLength(ownDispatchesBefore + 1);
+          expect(paidDispatches.at(-1)).toEqual({
+            requestorId: human.userId,
+            agentId: ownRoom.targetAgentId,
+            roomId: ownRoom.roomId,
+          });
+        }
+
+        const foreignDispatchesBefore = paidDispatches.length;
+        const foreignResponse = await sendDirectMessage(human, foreignRoom);
+        if (role === "community") {
+          expect(foreignResponse.statusCode, `${role} foreign Genie`).toBe(403);
+          expect(JSON.parse(foreignResponse.body)).toEqual({
+            error: "invoke_other_agents_required",
+            code: "invoke_other_agents_required",
+            capability: "invoke_other_agents",
+          });
+          expect(paidDispatches).toHaveLength(foreignDispatchesBefore);
+        } else if (role === "guest") {
+          expect(foreignResponse.statusCode, `${role} foreign Genie`).toBe(403);
+          expect(JSON.parse(foreignResponse.body)).toEqual({
+            error: "invoke_agents_required",
+            code: "invoke_agents_required",
+            capability: "invoke_agents",
+          });
+          expect(paidDispatches).toHaveLength(foreignDispatchesBefore);
+        } else {
+          expect(foreignResponse.statusCode, `${role} foreign Genie`).toBe(202);
+          await waitForPaidDispatchCount(foreignDispatchesBefore + 1);
+          expect(paidDispatches.at(-1)).toEqual({
+            requestorId: human.userId,
+            agentId: foreignRoom.targetAgentId,
+            roomId: foreignRoom.roomId,
+          });
+        }
       }
-
-      const foreignDispatchesBefore = paidDispatches.length;
-      const foreignResponse = await sendDirectMessage(human, foreignRoom);
-      if (role === "community") {
-        expect(foreignResponse.statusCode, `${role} foreign Genie`).toBe(403);
-        expect(JSON.parse(foreignResponse.body)).toEqual({
-          error: "invoke_other_agents_required",
-          code: "invoke_other_agents_required",
-          capability: "invoke_other_agents",
-        });
-        expect(paidDispatches).toHaveLength(foreignDispatchesBefore);
-      } else if (role === "guest") {
-        expect(foreignResponse.statusCode, `${role} foreign Genie`).toBe(403);
-        expect(JSON.parse(foreignResponse.body)).toEqual({
-          error: "invoke_agents_required",
-          code: "invoke_agents_required",
-          capability: "invoke_agents",
-        });
-        expect(paidDispatches).toHaveLength(foreignDispatchesBefore);
-      } else {
-        expect(foreignResponse.statusCode, `${role} foreign Genie`).toBe(202);
-        await waitForPaidDispatchCount(foreignDispatchesBefore + 1);
-        expect(paidDispatches.at(-1)).toEqual({
-          requestorId: human.userId,
-          agentId: foreignRoom.targetAgentId,
-          roomId: foreignRoom.roomId,
-        });
-      }
+    } finally {
+      const reset = await authedInject(fx.app, {
+        method: "PUT",
+        url: `/api/rooms/${communityOwnRoom.roomId}/agents/${communityOwnRoom.targetAgentId}/model-control-selection`,
+        bearer: community.bearer,
+        payload: { selection: null },
+      });
+      expect(reset.statusCode, reset.body).toBe(200);
+      await authedInject(fx.app, {
+        method: "DELETE", url: "/api/account/provider-credentials/openrouter",
+        bearer: community.bearer, payload: { expectedRevision: 1 },
+      });
+      await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
     }
   });
 
   test("production server funding preserves five active Roles and stops Community and Guest before paid dispatch", async () => {
     fundingMode = "production-server";
+    await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
 
     for (const { role } of ROLE_MATRIX) {
       const human = await requireHuman(role);
@@ -396,13 +440,12 @@ describe.serial("exact Genie invocation role matrix", () => {
 
       const response = await sendDirectMessage(human, ownRoom);
       if (role === "community") {
-        expect(response.statusCode, role).toBe(403);
+        expect(response.statusCode, role).toBe(422);
         expect(JSON.parse(response.body)).toEqual({
-          error: "server_provider_credentials_required",
-          code: "server_provider_credentials_required",
-          capability: "use_server_provider_credentials",
+          error: "The selected model cannot be funded.",
+          code: "server_credentials_forbidden",
         });
-        expect(fundingChecks).toHaveLength(fundingChecksBefore + 1);
+        expect(fundingChecks).toHaveLength(fundingChecksBefore);
         expect(paidDispatches).toHaveLength(dispatchesBefore);
       } else if (role === "guest") {
         expect(response.statusCode, role).toBe(403);
@@ -456,11 +499,13 @@ describe.serial("exact Genie invocation role matrix", () => {
       expect(fundingChecks).toHaveLength(fundingChecksBefore);
 
       const selected = await authedInject(fx.app, {
-        method: "PUT", url: "/api/profile", bearer: community.bearer,
-        payload: { defaultModel: modelId },
+        method: "PUT",
+        url: `/api/rooms/${ownRoom.roomId}/agents/${ownRoom.targetAgentId}/model-control-selection`,
+        bearer: community.bearer,
+        payload: { selection: { modelId } },
       });
       expect(selected.statusCode, selected.body).toBe(200);
-      expect(selected.json<{ agent: { defaultModel: string } }>().agent.defaultModel).toBe(modelId);
+      expect(selected.json<{ selection: { modelId: string } }>().selection).toEqual({ modelId });
       expect((await sendDirectMessage(community, ownRoom)).statusCode).toBe(202);
       expect(paidDispatches).toHaveLength(dispatchesBefore + 1);
       expect(fundingChecks).toHaveLength(fundingChecksBefore);
@@ -505,12 +550,31 @@ describe.serial("exact Genie invocation role matrix", () => {
         method: "GET", url: "/api/account/provider-credentials",
         bearer: community.bearer,
       });
-      expect(offRead.statusCode).toBe(404);
+      expect(offRead.statusCode).toBe(200);
+      expect(offRead.body).not.toContain("synthetic-community-replacement");
+      const disabledCredentials = offRead
+        .json<{ credentials: Array<{ provider: string; revision: number }> }>().credentials;
+      expect(disabledCredentials.some((credential) =>
+        credential.provider === "openrouter" && credential.revision === 2)).toBe(true);
       const offDispatchesBefore = paidDispatches.length;
-      expect((await sendDirectMessage(community, ownRoom)).statusCode).toBe(403);
+      const offFundingChecksBefore = fundingChecks.length;
+      const offDispatch = await sendDirectMessage(community, ownRoom);
+      expect(offDispatch.statusCode).toBe(422);
+      expect(JSON.parse(offDispatch.body)).toEqual({
+        error: "The selected model cannot be funded.",
+        code: "server_credentials_forbidden",
+      });
       expect(paidDispatches).toHaveLength(offDispatchesBefore);
+      expect(fundingChecks).toHaveLength(offFundingChecksBefore);
     } finally {
       await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
+      const reset = await authedInject(fx.app, {
+        method: "PUT",
+        url: `/api/rooms/${ownRoom.roomId}/agents/${ownRoom.targetAgentId}/model-control-selection`,
+        bearer: community.bearer,
+        payload: { selection: null },
+      });
+      expect(reset.statusCode, reset.body).toBe(200);
       await authedInject(fx.app, {
         method: "DELETE", url: "/api/account/provider-credentials/openrouter",
         bearer: community.bearer, payload: { expectedRevision: 2 },
@@ -519,36 +583,88 @@ describe.serial("exact Genie invocation role matrix", () => {
     }
   });
 
-  test("Contributor keeps server-funded foreign Genie admission after saving a personal key", async () => {
+  test("Contributor personally funds an authorized foreign Genie after saving a personal key", async () => {
     const contributor = await requireHuman("contributor");
+    const targetOwner = await requireHuman("owner");
     const foreignRoom = foreignRooms.get("contributor");
     if (!foreignRoom) throw new Error("missing Contributor foreign Room fixture");
+    const contributorKey = "synthetic-contributor-personal-key";
+    const targetOwnerKey = "synthetic-target-owner-readiness-key";
     fundingMode = "production-server";
     await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
     try {
       const saved = await authedInject(fx.app, {
         method: "PUT", url: "/api/account/provider-credentials/openrouter",
         bearer: contributor.bearer,
-        payload: { apiKey: "synthetic-contributor-personal-key" },
+        payload: { apiKey: contributorKey },
       });
       expect(saved.statusCode).toBe(200);
-      expect(await openForegroundChatFundingSession({
+      expect(saved.body).not.toContain(contributorKey);
+      const ownerReady = await authedInject(fx.app, {
+        method: "PUT", url: "/api/account/provider-credentials/openrouter",
+        bearer: targetOwner.bearer,
+        payload: { apiKey: targetOwnerKey },
+      });
+      expect(ownerReady.statusCode, ownerReady.body).toBe(200);
+      expect(ownerReady.body).not.toContain(targetOwnerKey);
+      const selected = await authedInject(fx.app, {
+        method: "PUT",
+        url: `/api/rooms/${foreignRoom.roomId}/agents/${foreignRoom.targetAgentId}/model-control-selection`,
+        bearer: targetOwner.bearer,
+        payload: { selection: { modelId: "openrouter:moonshotai/kimi-k2.6" } },
+      });
+      expect(selected.statusCode, selected.body).toBe(200);
+      const session = await openForegroundChatFundingSession({
         humanUserId: contributor.userId,
         modelId: "openrouter:moonshotai/kimi-k2.6",
         roomId: foreignRoom.roomId,
         agentId: foreignRoom.targetAgentId,
         entrypoint: "foreground.main",
-      })).toBeNull();
+      });
+      expect(session).toMatchObject({
+        kind: "personal",
+        admission: {
+          modelId: "openrouter:moonshotai/kimi-k2.6",
+          binding: { kind: "personal", providerRoute: "openrouter", credentialRevision: 1 },
+        },
+      });
+      expect(await session!.runAttempt(
+        "openrouter:moonshotai/kimi-k2.6",
+        async ({ personalCredential, usageFunding }) => ({
+          usesContributorKey: personalCredential?.apiKey === contributorKey,
+          usageFunding,
+        }),
+      )).toMatchObject({
+        usesContributorKey: true,
+        usageFunding: {
+          kind: "personal",
+          humanUserId: contributor.userId,
+          payerHumanId: contributor.userId,
+          providerRoute: "openrouter",
+          credentialRevision: 1,
+        },
+      });
       const fundingChecksBefore = fundingChecks.length;
       const dispatchesBefore = paidDispatches.length;
       expect((await sendDirectMessage(contributor, foreignRoom)).statusCode).toBe(202);
-      expect(fundingChecks).toHaveLength(fundingChecksBefore + 1);
+      expect(fundingChecks).toHaveLength(fundingChecksBefore);
       await waitForPaidDispatchCount(dispatchesBefore + 1);
       expect(paidDispatches).toHaveLength(dispatchesBefore + 1);
     } finally {
+      const reset = await authedInject(fx.app, {
+        method: "PUT",
+        url: `/api/rooms/${foreignRoom.roomId}/agents/${foreignRoom.targetAgentId}/model-control-selection`,
+        bearer: targetOwner.bearer,
+        payload: { selection: null },
+      });
+      expect(reset.statusCode, reset.body).toBe(200);
       await authedInject(fx.app, {
         method: "DELETE", url: "/api/account/provider-credentials/openrouter",
         bearer: contributor.bearer, payload: { expectedRevision: 1 },
+      });
+      await authedInject(fx.app, {
+        method: "DELETE", url: "/api/account/provider-credentials/openrouter",
+        bearer: targetOwner.bearer, payload: { expectedRevision: 1 },
       });
       await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
     }

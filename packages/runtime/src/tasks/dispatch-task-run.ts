@@ -69,7 +69,11 @@ import {
   restoreTaskReturnBindingFromCheckpoint,
 } from "./task-return-binding";
 import { resolveTaskMemoryEnvelope } from "./resolve-task-memory-envelope";
-import { assertTaskFundingAdmission, taskFundingFailureCode } from "../task-funding-port";
+import {
+  assertTaskFundingAdmission,
+  taskFundingFailureCode,
+  type TaskFundingAdmission,
+} from "../task-funding-port";
 
 export {
   selectTaskEnvelopeMode,
@@ -235,6 +239,7 @@ function readArtifactAwareAskPeerRefs(task: Task): ChatArtifactRef[] {
 export function resolveToolWhitelist(
   task: Pick<Task, "id" | "toolsMode" | "toolsWhitelist" | "depth">,
   envelope: MemoryAccessEnvelope,
+  fundingAdmission?: TaskFundingAdmission | null,
 ): string[] | undefined {
   switch (task.toolsMode) {
     case "none":
@@ -254,6 +259,13 @@ export function resolveToolWhitelist(
         // cloud-only. Without this distinction, a valid `run_shell` whitelist
         // would be rejected when the relay is temporarily disconnected.
         skipRelayLiveCheck: true,
+        // A successfully admitted caller-funded Task installs its exact
+        // capability session at native execution. Request/turn-local tool
+        // readiness is authoritative there; dispatch still enforces every
+        // durable catalog, policy, namespace, and relay authorization gate.
+        ...(fundingAdmission != null
+          ? { deferRuntimePrerequisiteChecks: true }
+          : {}),
         subagentDepth: task.depth + 1,
         subagentMaxDepth: MAX_SUBAGENT_DEPTH,
       });
@@ -291,6 +303,17 @@ export async function dispatchTaskRun(
   }
   const { db, jobManager } = deps;
   const resolver = deps.resolver ?? getPolicyResolver();
+  // Older caller-funded schedules predate creation-time destination pinning.
+  // Their accepted contract still says "report back here": derive the exact
+  // source Room and persist it before invocation/funding admission or any paid
+  // work. This intentionally does not affect generic Task namespace routing.
+  if (task.preset === "schedule" && task.fundingMode === "caller" && !task.targetRoomId) {
+    const resolved = await resolveTargetRoom(task, { db });
+    if (!task.callingRoomId || resolved.roomId !== task.callingRoomId) {
+      throw new Error("Caller-funded schedule destination does not match its source Room");
+    }
+    task = await memoizeTaskExecutionCoordinates(db, task, { targetRoomId: resolved.roomId });
+  }
   // A durable Task never carries creation-time authority. Re-read
   // the requestor's current RBAC state before resolving a Room, Scope, model,
   // TaskRun, or Job. Known absence is a lifecycle outcome; lookup failure is
@@ -614,7 +637,7 @@ export async function dispatchTaskRun(
   // 5. Create the subagent job on its OWN thread + a task-only lane, so no
   // human room lane is held. The executor runs `runScopeSubagentUntilPause`
   // and links the real job id onto the run row when it starts.
-  const toolWhitelist = resolveToolWhitelist(task, envelope);
+  const toolWhitelist = resolveToolWhitelist(task, envelope, fundingAdmission);
   // Server composition writes this tiny, non-authorizing intent only after it
   // has selected eligible live-app tools. A restart therefore cannot silently
   // degrade such a Task into cloud-only provider work.

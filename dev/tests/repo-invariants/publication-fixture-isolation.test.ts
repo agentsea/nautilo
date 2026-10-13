@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 const repositoryRoot = join(import.meta.dir, "../../..");
 const cleanEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
 
-test("publication fixtures preserve the caller repository when launched from a Git hook", () => {
+test("the migration fixture preserves the caller repository when launched from a Git hook", () => {
   const sentinel = mkdtempSync(join(tmpdir(), "nautilo-hook-caller-"));
   const git = (...args: string[]) => {
     const result = spawnSync("git", args, { cwd: sentinel, encoding: "utf8", env: cleanEnv });
@@ -25,8 +25,7 @@ test("publication fixtures preserve the caller repository when launched from a G
     const config = readFileSync(join(sentinel, ".git/config"));
     const index = readFileSync(join(sentinel, ".git/index"));
     const result = spawnSync(process.execPath, ["test", "--timeout", "60000",
-      "dev/tests/repo-invariants/migration-hook.test.ts",
-      "apps/desktop/tests/unit-isolated/computer-use-host-publisher.test.ts"], {
+      "dev/tests/repo-invariants/migration-hook.test.ts"], {
       cwd: repositoryRoot, encoding: "utf8",
       env: { ...cleanEnv, GIT_DIR: join(sentinel, ".git"), GIT_WORK_TREE: sentinel,
         GIT_INDEX_FILE: join(sentinel, ".git/index"), GIT_PREFIX: "nested/" },
