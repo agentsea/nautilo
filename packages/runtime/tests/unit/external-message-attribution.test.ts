@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { parseExternalMessageOrigin, type ExternalMessageAttribution } from "@nautilo/types";
-import { mapHistoryRows } from "../../src/conductor/history-search";
+import { attributedHistoryRows, mapHistoryRows } from "../../src/conductor/history-search";
 import { buildTranscriptContext } from "../../src/context/build-transcript-context";
 
 const origin = parseExternalMessageOrigin({ kind: "external_message", version: 1, provider: "bolter", origin: "https://bolter.chat",
@@ -61,4 +61,42 @@ test("receipt-free durable authorship reaches model context without recovering t
   expect(text).not.toContain("Local sponsor");
   expect(text).not.toContain("(@sponsor)");
   expect(text).not.toContain(origin.senderLabel);
+});
+
+test("selected history resolves receipt attribution by canonical source owner and exact user-row ids", async () => {
+  const reads: { userId: string; ids: readonly number[] }[] = [];
+  const hits = await attributedHistoryRows([
+    { ...row, source_user_id: "source-owner-one" },
+    { ...row, message_id: 2, source_user_id: "source-owner-two" },
+    { ...row, message_id: 3, role: "assistant", source_user_id: "source-owner-one" },
+    { ...row, message_id: 4, source_user_id: "source-owner-one" },
+  ], "full", async (ctx, ids) => {
+    reads.push({ userId: ctx.userId, ids });
+    return new Map(ids.map(id => [id, { status: "verified" as const, origin }]));
+  });
+  expect(reads).toEqual([
+    { userId: "source-owner-one", ids: [1, 4] },
+    { userId: "source-owner-two", ids: [2] },
+  ]);
+  expect(hits.map(hit => hit.messageId)).toEqual([1, 2, 3, 4]);
+  for (const hit of hits.filter(hit => hit.role === "user")) {
+    expect(hit.externalOrigin).toEqual(origin);
+    expect(hit.authorActorId).toBe("");
+    expect(hit.handle).toBe("external");
+  }
+  expect(hits[2]?.authorActorId).toBe("local-agent");
+});
+
+test("receipt lookup failure cannot fall back to product reads or sponsor authorship", async () => {
+  let calls = 0;
+  await Promise.resolve(expect(attributedHistoryRows([{ ...row, source_user_id: "source-owner" }], "full", async () => {
+    calls++;
+    throw new Error("Synthetic provenance unavailable");
+  })).rejects.toThrow("Synthetic provenance unavailable"));
+  expect(calls).toBe(1);
+  const unverified = await attributedHistoryRows([{ ...row }], "full", async () => {
+    throw new Error("Rows without a canonical source owner must not open a receipt read");
+  });
+  expect(unverified[0]?.externalAttributionInvalid).toBe(true);
+  expect(unverified[0]?.authorActorId).toBe("");
 });

@@ -7,8 +7,7 @@ import {
 } from "@nautilo/agent";
 import {
   actors,
-  getBolterCanonicalAttributionsWith,
-  type BolterBridgeDatabase,
+  getBolterCanonicalAttributions,
   agents,
   alias,
   and,
@@ -311,7 +310,7 @@ export async function searchRoomHistory(
     `,
   });
 
-  return result.ok ? attributedHistoryRows(db, result.rows) : [];
+  return result.ok ? attributedHistoryRows(result.rows) : [];
 }
 
 export async function searchRoomHistoryRelaxed(
@@ -336,10 +335,11 @@ export async function searchRoomHistoryRelaxed(
   return [];
 }
 
-async function attributedHistoryRows(
-  db: RoomHistorySearchDb,
-  rows: RawHistoryRow[],
+/** Enrich only already-authorized physical rows; provenance never expands the Room read. */
+export async function attributedHistoryRows(
+  rows: readonly RawHistoryRow[],
   projection: "snippet" | "full" = "snippet",
+  resolveAttributions: typeof getBolterCanonicalAttributions = getBolterCanonicalAttributions,
 ): Promise<RoomHistoryHit[]> {
   const canonical = new Map<number, ExternalMessageAttribution>();
   const owners = new Map<string, number[]>();
@@ -347,13 +347,15 @@ async function attributedHistoryRows(
     owners.set(row.source_user_id, [...(owners.get(row.source_user_id) ?? []), Number(row.message_id)]);
   }
   if (owners.size > 0) {
-    if (!("select" in db) || typeof db.select !== "function") throw new Error("Canonical external attribution requires the selected database handle");
     for (const [userId, messageIds] of owners) {
-      const values = await getBolterCanonicalAttributionsWith(db as Pick<BolterBridgeDatabase, "select">, { userId }, messageIds);
+      // The transcript's source owner is canonical, independent of the current
+      // viewer or bound Genie's sponsor. Receipt reads use their existing agent
+      // role + owner context; the product history handle has no full-receipt grant.
+      const values = await resolveAttributions({ userId }, messageIds);
       for (const [id, value] of values) canonical.set(id, value);
     }
   }
-  return mapHistoryRows(rows, projection, canonical);
+  return mapHistoryRows([...rows], projection, canonical);
 }
 
 export function mapHistoryRows(
@@ -492,7 +494,7 @@ export async function roomMessagesSince(
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(limit);
   // Newest-first from SQL; reverse to oldest-first for transcript rendering.
-  const hits = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw)));
+  const hits = (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(raw)));
   const oldestFirst = hits.reverse();
   return enrichWithReactions(oldestFirst, args.userId, args.agentId);
 }
@@ -536,7 +538,7 @@ export async function allRoomMessages(
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(CAP);
   // Newest-first from SQL; reverse to oldest-first for transcript rendering.
-  const oldestFirst = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw), "full")).reverse();
+  const oldestFirst = (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(raw), "full")).reverse();
   return enrichWithReactions(oldestFirst, args.userId, args.agentId);
 }
 
@@ -823,7 +825,7 @@ export async function recentBoundedRoomMessages(
       AND NOT (e.role = 'user' AND e.fingerprint IS NOT NULL AND e.fingerprint_ordinal > 1)
     ORDER BY e.ts ASC, e.message_id ASC
   `);
-  const hits = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw), "full"));
+  const hits = (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(raw), "full"));
   return enrichWithReactions(hits, args.userId, args.agentId);
 }
 
@@ -955,7 +957,7 @@ export async function parentMessagesUpToAnchor(
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(limit);
   // Newest-first from SQL; reverse to oldest-first (anchor ends the window).
-  return (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw), "full")).reverse();
+  return (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(raw), "full")).reverse();
 }
 
 /**
@@ -996,7 +998,7 @@ export async function subthreadContextWindow(
 
   if (total <= smallThreshold) {
     const raw = await subthreadRowsQuery(db, args.subthreadRoomId, "ASC", total);
-    return (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(raw)));
+    return (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(raw)));
   }
 
   // Long thread: first `headCount` (oldest) ++ last `tailCount` (newest).
@@ -1012,9 +1014,9 @@ export async function subthreadContextWindow(
     "DESC",
     tailCount,
   );
-  const head = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(headRaw)));
+  const head = (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(headRaw)));
   // Tail comes back newest-first; reverse to oldest-first before merging.
-  const tail = (await attributedHistoryRows(db, rowsFromExecute<RawHistoryRow>(tailRaw))).reverse();
+  const tail = (await attributedHistoryRows(rowsFromExecute<RawHistoryRow>(tailRaw))).reverse();
   const seen = new Set<number>();
   const merged: RoomHistoryHit[] = [];
   for (const hit of [...head, ...tail]) {
