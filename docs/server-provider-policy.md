@@ -24,8 +24,12 @@ a stored server-first preference.
 
 ## Runtime ownership
 
-Fresh supported own-Genie private-Room text-chat admission resolves the selected
-model's provider route through `resolveModelFunding`. The live enable flag and
+Fresh supported foreground and native Task admission resolves the selected
+model's provider route through `resolveModelFunding`. Ordinary permitted group
+Rooms, another Human's Genie, addressed turns, forks and the active Conductor
+retain the initiating Human. Exact membership, content and invocation authority
+are checked independently of funding; the addressed Genie's model remains
+configured and its owner does not sponsor the caller. The live enable flag and
 `use_personal_provider_credentials` govern personal funding;
 `use_server_provider_credentials` governs server funding. Priority grants no
 Capability. With both matching sources permitted and configured, the saved
@@ -39,12 +43,38 @@ failover. Live switch, Capability, ownership and credential-revision checks
 remain authoritative. Usage records the actual funding source; decrypted keys
 stay at the trusted provider boundary, outside Job and checkpoint state.
 
-This policy does not extend personal funding to background work or paid
-auxiliaries. Soul setup, embeddings and shared-memory maintenance retain their
-existing server service policies. Database restore restores the saved policy;
-restore does not establish credential custody readiness.
+Native background, nested/delegated and scheduled Tasks retain canonical
+causal lineage and their own admitted binding. Caller-funded schedule shortcuts
+report back to their original Room. Child Tasks and paid capabilities admit
+fresh work independently under the same policy; a failed parent cannot change
+its payer by launching a replacement attempt.
+
+Supported research/decisions, Browser Use, CloudConvert, generated media and
+direct speech/transcription have capability-specific funding owners. Those
+owners preserve the creating account through approvals, polling, cancellation
+and recovery; a personal-only caller cannot spend server credentials. Ordinary
+connected-account/local tools keep their existing authority, while hosted
+platform-key actions independently require server-spending permission.
+Surplus is an eligible transport within the chosen funding class. Its direct
+recovery keeps that payer and exact model, with each uncertain or failed attempt
+retained in Costs. Speech/transcription remain direct rather than Surplus.
+
+Protected chat, Artifact handoff through caller-funded peer Tasks and live
+mini-app Task adapters retain their current personal-funding exclusions. Memory
+review/reflection/summarization and common embeddings retain server-service
+funding until complete Memory-input provenance admission is implemented.
+A private Room or Record ownership alone does not prove personal Memory
+eligibility. Personal selections never change the common embedding model or
+vector space. Database restore restores the saved policy; restore does not
+establish credential custody readiness.
+
+Key save/validation/deletion notifications refresh account readiness projections.
+Personal historical Costs remain readable when spending is disabled. Attempt
+records retain actual, estimated, pending or unknown evidence rather than
+reporting an interrupted request as free. Content-free process leases recover
+abandoned direct-personal attempts without repeating model inference.
 
 Tests cover policy storage/concurrency, authenticated routes and client
-contracts, funding resolution, dispatch, catalogue union and foreground
-execution. Provider-boundary integration tests use distinct synthetic server
+contracts, funding resolution, dispatch, catalogue union, multi-user foreground/Conductor admission,
+native Task lineage and attempt recovery. Provider-boundary integration tests use distinct synthetic server
 and personal credentials with a fake transport.

@@ -7,6 +7,17 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal model funding now follows the initiating member across permitted
+  group Rooms, other members' Genies, Conductor routing and native nested,
+  delegated and scheduled Tasks. Existing invocation and content permissions
+  still apply. Each accepted operation retains its model, payer and credential
+  binding; scheduled shortcuts keep their original Room for report-back.
+  Interrupted direct-personal model attempts retain unknown costs after a
+  process failure and are recovered without repeating inference.
+- Personal key and capability readiness refresh safely after key changes,
+  including concurrent saves and account metadata reloads. Mobile capability
+  settings and personal Costs refresh when the app returns to the foreground.
+
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace
   routes fall back to the same model's direct provider within the admitted

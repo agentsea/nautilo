@@ -47,4 +47,10 @@ describe("nautilo doctor (M091 Phase 7)", () => {
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("purgedCount=0");
   });
+
+  test("doctor help exposes the personal provider custody diagnostic", () => {
+    const r = spawnCli(["doctor", "--help"]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("personal-provider-custody");
+  });
 });
