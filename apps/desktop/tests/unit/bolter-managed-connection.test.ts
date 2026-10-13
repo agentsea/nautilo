@@ -9,7 +9,9 @@ import { createManagedBolterConnectionFactory } from "../../electron/bolter-brid
 
 const cipher = { isAvailable: () => true, seal: (text: string) => Promise.resolve(Buffer.from(text).reverse()),
   open: (bytes: Uint8Array) => Promise.resolve(Buffer.from(bytes).reverse().toString()) };
-test("managed connection persists scoped local recovery metadata but cannot authenticate with unqualified production contract", async () => {
+// Bolter is unsupported on Windows (the CLI contract refuses win32); this case
+// relies on /tmp and POSIX permission bits.
+test.skipIf(process.platform === "win32")("managed connection persists scoped local recovery metadata but cannot authenticate with unqualified production contract", async () => {
   const appDataDirectory = await mkdtemp(join(await realpath("/tmp"), "nb-managed-"));
   await chmod(appDataDirectory, 0o700);
   try {

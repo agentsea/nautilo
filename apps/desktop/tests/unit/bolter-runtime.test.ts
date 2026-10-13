@@ -1,10 +1,14 @@
-import { expect, test } from "bun:test";
+import { expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createBolterConnectionDirectories, productionBolterArtifact, provisionBolterRuntime } from "../../electron/bolter-bridge/runtime";
 import { BOLTER_CLI_RELEASE, getBolterProductionDecoders } from "../../electron/bolter-bridge/production-contract";
 import { decodeBolterIdentities } from "../../electron/bolter-bridge/cli-contract";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); runtime
+// provisioning relies on POSIX permission bits.
+const test = bunTest.skipIf(process.platform === "win32");
 
 const version = "0".repeat(40);
 const bytes = Buffer.from("Synthetic executable bytes");

@@ -1,8 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createBolterHelper, verifyBolterHelperSignature } from "../../electron/bolter-bridge/helper-runtime";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); helper
+// verification relies on POSIX executable and permission bits.
+const test = bunTest.skipIf(process.platform === "win32");
 
 test("development helper requires exact executable bytes, architecture receipt and safe paths", async () => {
   const root = await mkdtemp(join(await realpath("/tmp"), "nb-helper-"));

@@ -1,9 +1,13 @@
-import { expect, test } from "bun:test";
+import { expect, test as bunTest } from "bun:test";
 import { mkdtemp, chmod, lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createConnection } from "node:net";
 import { createBolterHandoverServer, handOverBolterBatch, parseBolterHandoverDescriptor } from "../../electron/bolter-bridge/handover";
 import { runBolterHandover } from "../../electron/bolter-bridge/handover-main";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); the
+// handover relies on Unix sockets and POSIX permission bits.
+const test = bunTest.skipIf(process.platform === "win32");
 
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 async function directory() {

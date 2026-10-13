@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test as bunTest } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
@@ -9,6 +9,10 @@ import { BolterConnectionOwner } from "../../electron/bolter-bridge/connection-o
 import { BolterInboxSpool, createBolterSpoolDirectory } from "../../electron/bolter-bridge/inbox-spool";
 import { handOverBolterBatch, parseBolterHandoverDescriptor } from "../../electron/bolter-bridge/handover";
 import type { BolterCliInvocation, BolterQualifiedDecoders } from "../../electron/bolter-bridge/cli-contract";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); the owner
+// relies on Unix-socket handover and POSIX permission bits.
+const test = bunTest.skipIf(process.platform === "win32");
 
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 const runtime = { executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/synthetic-home", platform: "linux" as const, version: "synthetic-v1" };
