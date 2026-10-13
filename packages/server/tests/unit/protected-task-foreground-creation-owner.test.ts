@@ -7,16 +7,20 @@ import { createAcceptedInvocationAuthority, type CanonicalTranscriptTx } from "@
 import { createAgentTurnTaskCreationProvenance } from "@nautilo/runtime";
 import { tasks, type PostgresJsBridgeConnection, type PostgresJsBridgeExecutor } from "@nautilo/db";
 import { createProtectedTaskForegroundCreationOwner } from "../../src/routes/protected-task-foreground-creation-owner";
-import { createProtectedTaskForegroundReadableNamespaceResolver } from
+import { createGrantedForegroundReadableNamespaceResolver } from
   "../../src/routes/live-shadow-message-composition";
 
-test("shared-execution Task creation nominates the exact foreground grant Namespace set without a second resolver", async () => {
-  const namespaceIds = Object.freeze([
+test.each(["turn", "shared_execution", "shared_resume"] as const)("%s repair and creation revalidation nominate only the captured grant Namespace set", async source => {
+  const namespaceIds = [
     "30000000-0000-4000-8000-000000000001",
     "30000000-0000-4000-8000-000000000002",
-  ]);
-  const resolve = createProtectedTaskForegroundReadableNamespaceResolver({
-    source: "shared_execution",
+  ];
+  const admittedNamespaces = [...namespaceIds];
+  const sourceRoomId = source === "turn"
+    ? "20000000-0000-4000-8000-000000000002"
+    : "20000000-0000-4000-8000-000000000001";
+  const resolve = createGrantedForegroundReadableNamespaceResolver({
+    source,
     plan: {
       subjectHumanId: "10000000-0000-4000-8000-000000000001",
       roomId: "20000000-0000-4000-8000-000000000002",
@@ -25,45 +29,56 @@ test("shared-execution Task creation nominates the exact foreground grant Namesp
     },
     grant: {
       subjectHumanId: "10000000-0000-4000-8000-000000000001",
-      roomId: "20000000-0000-4000-8000-000000000001",
+      roomId: sourceRoomId,
       namespaceIds,
     },
   });
 
   const resolved = await resolve({
     humanActorId: "10000000-0000-4000-8000-000000000001",
-    roomId: "20000000-0000-4000-8000-000000000001",
+    roomId: sourceRoomId,
     agentId: "40000000-0000-4000-8000-000000000001",
   });
-  expect(resolved).toEqual(namespaceIds);
+  expect(resolved).toEqual(admittedNamespaces);
+  // A second current-authority load in the held repair transaction must not
+  // expand its lock set if the caller's original nominations change.
+  namespaceIds.push("30000000-0000-4000-8000-000000000009");
+  expect(await resolve({
+    humanActorId: "10000000-0000-4000-8000-000000000001",
+    roomId: sourceRoomId,
+    agentId: "40000000-0000-4000-8000-000000000001",
+  })).toBe(resolved);
+  expect(resolved).toEqual(admittedNamespaces);
   expect(resolved).not.toBe(namespaceIds);
   expect(Object.isFrozen(resolved)).toBe(true);
 
   for (const coordinates of [
     {
       humanActorId: "10000000-0000-4000-8000-000000000009",
-      roomId: "20000000-0000-4000-8000-000000000001",
+      roomId: sourceRoomId,
       agentId: "40000000-0000-4000-8000-000000000001",
     },
     {
       humanActorId: "10000000-0000-4000-8000-000000000001",
-      roomId: "20000000-0000-4000-8000-000000000002",
+      roomId: source === "turn"
+        ? "20000000-0000-4000-8000-000000000001"
+        : "20000000-0000-4000-8000-000000000002",
       agentId: "40000000-0000-4000-8000-000000000001",
     },
     {
       humanActorId: "10000000-0000-4000-8000-000000000001",
-      roomId: "20000000-0000-4000-8000-000000000001",
+      roomId: sourceRoomId,
       agentId: "40000000-0000-4000-8000-000000000009",
     },
   ]) {
     await Promise.resolve(expect(resolve(coordinates)).rejects.toThrow(
-      "Foreground Task readable Namespace coordinates changed",
+      "Foreground readable Namespace coordinates changed",
     ));
   }
 });
 
 test("Task creation rejects a foreground grant that omits its planned Namespace", () => {
-  expect(() => createProtectedTaskForegroundReadableNamespaceResolver({
+  expect(() => createGrantedForegroundReadableNamespaceResolver({
     source: "shared_execution",
     plan: {
       subjectHumanId: "10000000-0000-4000-8000-000000000001",
@@ -76,7 +91,7 @@ test("Task creation rejects a foreground grant that omits its planned Namespace"
       roomId: "20000000-0000-4000-8000-000000000001",
       namespaceIds: ["30000000-0000-4000-8000-000000000002"],
     },
-  })).toThrow("Foreground Task readable Namespace grant is inconsistent");
+  })).toThrow("Foreground readable Namespace grant is inconsistent");
 });
 
 function fixture() {

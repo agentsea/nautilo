@@ -1082,7 +1082,10 @@ export function createProductionProtectedTaskComposition(
     );
     if (privateRoom === null || (expectedNamespaceId !== undefined
       && privateRoom.namespaceId !== expectedNamespaceId)) return null;
-    return productAuthority.withCurrentPrivateRoom({
+    // Global policy reads must not borrow another pool connection while the
+    // private Room owner retains its product locks.
+    const policyRevision = await readPolicyRevision();
+    const current = await productAuthority.withCurrentPrivateRoom({
         subjectUserId: authority.userId,
         subjectHumanId: authority.subjectHumanId,
         roomId: privateRoom.roomId,
@@ -1103,13 +1106,22 @@ export function createProductionProtectedTaskComposition(
               namespaceId: privateRoom.namespaceId,
               domainId: domain.domainId,
               expectedAccessRevision: domain.namespaceAccessRevision,
-              expectedPolicyRevision: await readPolicyRevision(),
+              expectedPolicyRevision: policyRevision,
             }),
             bindingHash: domain.bundleDigest.slice(),
             keyGeneration: domain.namespaceKeyGeneration,
           });
         },
       });
+    if (current === null) return null;
+    try {
+      if (await readPolicyRevision() === policyRevision) return current;
+    } catch (error) {
+      current.bindingHash.fill(0);
+      throw error;
+    }
+    current.bindingHash.fill(0);
+    return null;
   };
 
   const buildPlan = async (

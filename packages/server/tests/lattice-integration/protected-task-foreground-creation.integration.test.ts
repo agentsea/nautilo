@@ -929,11 +929,30 @@ describe("protected foreground Task creation", () => {
             observer: { kick() {} },
             now: () => fixture.now + 25,
           });
-          const ready = await reader.ports.readDefinition({
+          // Occupy the other four slots without acquiring product row locks.
+          // This read must finish with the single remaining app connection.
+          const poolReady = Array.from({ length: 4 }, () => Promise.withResolvers<void>());
+          const poolRelease = Promise.withResolvers<void>();
+          const holders = poolReady.map(gate => getSharedDirectDb().transaction(async tx => {
+            await tx.select({ id: tasks.id }).from(tasks).where(eq(tasks.id, taskId!)).limit(1);
+            gate.resolve();
+            await poolRelease.promise;
+          }));
+          await Promise.all(poolReady.map(gate => gate.promise));
+          let timeout: ReturnType<typeof setTimeout> | undefined;
+          const reading = reader.ports.readDefinition({
             authority: { userId: fixture.userId, subjectHumanId: fixture.humanId,
               actorId: fixture.humanId, agentId: fixture.agentId, deviceId: fixture.deviceId,
               deviceGeneration: device.generation },
             taskId, objectId, contentRevision: 1, cryptoAccessRevision: 0,
+          });
+          const ready = await Promise.race([reading, new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Task read borrowed a nested app connection")), 10_000);
+          })]).finally(async () => {
+            clearTimeout(timeout);
+            poolRelease.resolve();
+            await Promise.all(holders);
+            await reading.catch(() => undefined);
           });
           expect(ready.status).toBe("ready");
           expect(ready.signerEvidence).toMatchObject([{ kind: "foreground_agent_accepted_execution" }]);

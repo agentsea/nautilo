@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 
 import type {
@@ -906,6 +906,14 @@ describe("protected Task native fixed Memory segment", () => {
   });
 
   test("publishes one generic failure after each protected setup owner unwinds", async () => {
+    const phaseCodes = {
+      definition: "PTFMS001",
+      context: "PTFMS002",
+      signer: "PTFMS003",
+      transcript: "PTFMS004",
+      memory: "PTFMS005",
+      checkpoint: "PTFMS006",
+    } as const;
     for (const stage of [
       "definition",
       "context",
@@ -967,40 +975,52 @@ describe("protected Task native fixed Memory segment", () => {
         fixedInput,
         fixedOverrides,
       );
-      await withTaskRuntimeExecutionEvidenceV1({
-        evidence: value.evidenceInput,
-        signal: new AbortController().signal,
-        now: () => NOW,
-        execute: async evidence => {
-          const prepared = await prepare({
-            occurrence: value.occurrence,
-            predispatch: value.predispatch,
-            policy: value.policy,
-            reference: value.reference,
-            stableRoutingDigest: value.stableRoutingDigest,
-          });
-          const transient = await prepared.openTransientInput({
-            occurrence: value.runningOccurrence,
-            reference: value.reference,
-            record: value.record,
-            domains: value.domains,
-            evidence,
-            signal: new AbortController().signal,
-          });
-          await consume(prepared.executor(
-            executorInput(value.occurrence, transient, terminal, calls),
-            JOB,
-            `task:${TASK}`,
-            new AbortController().signal,
-          ));
-        },
+      const diagnostics: string[] = [];
+      const logSpy = spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+        diagnostics.push(values.map(String).join(" "));
       });
+      try {
+        await withTaskRuntimeExecutionEvidenceV1({
+          evidence: value.evidenceInput,
+          signal: new AbortController().signal,
+          now: () => NOW,
+          execute: async evidence => {
+            const prepared = await prepare({
+              occurrence: value.occurrence,
+              predispatch: value.predispatch,
+              policy: value.policy,
+              reference: value.reference,
+              stableRoutingDigest: value.stableRoutingDigest,
+            });
+            const transient = await prepared.openTransientInput({
+              occurrence: value.runningOccurrence,
+              reference: value.reference,
+              record: value.record,
+              domains: value.domains,
+              evidence,
+              signal: new AbortController().signal,
+            });
+            await consume(prepared.executor(
+              executorInput(value.occurrence, transient, terminal, calls),
+              JOB,
+              `task:${TASK}`,
+              new AbortController().signal,
+            ));
+          },
+        });
+      } finally {
+        logSpy.mockRestore();
+      }
       expect(terminal).toEqual([{
         formatVersion: 1,
         resultText: null,
         lastError: "Protected Task execution failed",
       }]);
       expect(JSON.stringify(terminal)).not.toContain(sentinel);
+      expect(diagnostics).toEqual([
+        `[task-observer] protected fixed Memory segment rejected code=${phaseCodes[stage]}`,
+      ]);
+      expect(JSON.stringify(diagnostics)).not.toContain(sentinel);
       const finalOwnerClose = stage === "definition" || stage === "context"
         ? "definition-close"
         : stage === "signer" || stage === "transcript"
@@ -1547,12 +1567,21 @@ describe("protected Task native fixed Memory segment", () => {
           park: async () => { throw new Error("unexpected park"); },
           awaitSettled: async () => false,
         };
-        const failure = await consume(scenario.prepared.executor(
-          scenario.input,
-          JOB,
-          `task:${TASK}`,
-          new AbortController().signal,
-        )).then(() => null, (error: unknown) => error);
+        const diagnostics: string[] = [];
+        const logSpy = spyOn(console, "error").mockImplementation((...values: unknown[]) => {
+          diagnostics.push(values.map(String).join(" "));
+        });
+        let failure: unknown;
+        try {
+          failure = await consume(scenario.prepared.executor(
+            scenario.input,
+            JOB,
+            `task:${TASK}`,
+            new AbortController().signal,
+          )).then(() => null, (error: unknown) => error);
+        } finally {
+          logSpy.mockRestore();
+        }
         expect(failure).toBeInstanceOf(Error);
         if (!(failure instanceof Error)) throw failure;
         expect(failure.message).toContain("terminal publication failed");
@@ -1563,7 +1592,15 @@ describe("protected Task native fixed Memory segment", () => {
             resultText: null,
             lastError: "Protected Task execution failed",
           });
+          expect(diagnostics).toEqual([
+            "[task-observer] protected fixed Memory segment rejected code=PTFMS007",
+            "[task-observer] protected fixed Memory failure publication rejected code=PTFMS008 source=PTFMS007",
+          ]);
+        } else {
+          expect(diagnostics).toEqual([]);
         }
+        expect(JSON.stringify(diagnostics)).not.toContain("runner failed");
+        expect(JSON.stringify(diagnostics)).not.toContain("terminal publication failed");
         expect(scenario.calls.slice(-2)).toEqual([
           "definition-close",
           "request-destroy",

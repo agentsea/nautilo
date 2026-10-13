@@ -66,6 +66,7 @@ import {
   isNamespaceMemoryEnvelope,
   isScopeMemoryEnvelope,
 } from "@nautilo/trust";
+import { log } from "@nautilo/logger";
 
 import {
   withCurrentProtectedTaskMemoryAuthority,
@@ -230,6 +231,10 @@ const productionDependencies: Dependencies = Object.freeze({
 });
 
 const TRANSIENT_SEGMENT = "protectedTaskNativeFixedMemorySegment";
+
+type ProtectedTaskFixedMemoryFailurePhase =
+  | "PTFMS001" | "PTFMS002" | "PTFMS003" | "PTFMS004"
+  | "PTFMS005" | "PTFMS006" | "PTFMS007";
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
@@ -886,6 +891,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 );
               }
             };
+            let failurePhase: ProtectedTaskFixedMemoryFailurePhase = "PTFMS001";
             const outcome = await Promise.resolve().then(() =>
               dependencies.openDefinition({
                 restricted: input.restricted,
@@ -906,6 +912,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                     payload.protectedMetadata,
                     options.repoDocsSelection,
                   );
+                  failurePhase = "PTFMS002";
                   const context = exactExecutionContext(
                     await input.resolveExecutionContext({
                       occurrence: runningOccurrence,
@@ -928,12 +935,14 @@ export function createProtectedTaskNativeFixedMemorySegment(
                     ...baseExecutionContext
                   } = context;
                   const humanTurnId = runningOccurrence.run.id;
+                  failurePhase = "PTFMS003";
                   return dependencies.withSigner({
                     restricted: input.restricted,
                     crypto: input.crypto,
                     evidence: grant.evidence,
                     domains: grant.domains,
                     use: async (signer, history) => {
+                      failurePhase = "PTFMS004";
                       const publish = await input.createTranscriptPublisher({
                         occurrence: runningOccurrence,
                         record: grant.record,
@@ -973,6 +982,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                         );
                         return transcriptClose;
                       };
+                      failurePhase = "PTFMS005";
                       const segmentOutcome = await Promise.resolve().then(() =>
                         dependencies.withMemoryRepository({
                           authority,
@@ -985,7 +995,9 @@ export function createProtectedTaskNativeFixedMemorySegment(
                           agentProduct: input.agentProduct,
                           owner: input.owner,
                           embedding: input.embedding,
-                          execute: (repository, projection, access) => dependencies.withCheckpointSaver({
+                          execute: (repository, projection, access) => {
+                            failurePhase = "PTFMS006";
+                            return dependencies.withCheckpointSaver({
                             restricted: input.restricted,
                             crypto: input.crypto,
                             serverScope: input.serverScope,
@@ -1066,14 +1078,16 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                       }),
                                 }),
                               };
-                              const runSegment = (binding?: ProtectedTaskHumanResumeBindingV1) =>
-                                dependencies.runSegment({ ...segment,
+                              const runSegment = (binding?: ProtectedTaskHumanResumeBindingV1) => {
+                                failurePhase = "PTFMS007";
+                                return dependencies.runSegment({ ...segment,
                                   protectedTaskCheckpointPauseController: checkpointPauseController,
                                   execution: {
                                   ...segment.execution,
                                   ...(preparation.checkpointResume === true ? { continueFromCheckpoint: true } : {}),
                                   ...(binding === undefined ? {} : { protectedTaskHumanResume: binding }),
                                 } });
+                              };
                               const segmentOutcome = await Promise.resolve()
                                 .then(async () => {
                                   if (humanResume?.kind !== "await_reply") return runSegment(humanResume);
@@ -1133,7 +1147,8 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               }
                               return segmentOutcome.value;
                             },
-                          }),
+                          });
+                          },
                         })).then(
                         value => ({ status: "fulfilled", value } as const),
                         (error: unknown) =>
@@ -1153,7 +1168,13 @@ export function createProtectedTaskNativeFixedMemorySegment(
             );
             if (outcome.status === "rejected") {
               signal.throwIfAborted();
-              await publication.publish(createProtectedTaskFailurePayload());
+              log(`[task-observer] protected fixed Memory segment rejected code=${failurePhase}`);
+              try {
+                await publication.publish(createProtectedTaskFailurePayload());
+              } catch (error) {
+                log(`[task-observer] protected fixed Memory failure publication rejected code=PTFMS008 source=${failurePhase}`);
+                throw error;
+              }
               return;
             }
             const terminalPayload = outcome.value.value;

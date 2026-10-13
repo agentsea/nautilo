@@ -169,7 +169,7 @@ function errorCauseSummary(error: unknown): string {
   return parts.length > 0 ? parts.join(" <- ") : typeof error;
 }
 
-export function createProtectedTaskForegroundReadableNamespaceResolver(input: Readonly<{
+export function createGrantedForegroundReadableNamespaceResolver(input: Readonly<{
   source: "turn" | "shared_execution" | "shared_resume";
   plan: Readonly<{
     subjectHumanId: string;
@@ -193,7 +193,7 @@ export function createProtectedTaskForegroundReadableNamespaceResolver(input: Re
     || (input.source === "turn"
       && input.grant.roomId !== input.plan.roomId)
   ) {
-    throw new TypeError("Foreground Task readable Namespace grant is inconsistent");
+    throw new TypeError("Foreground readable Namespace grant is inconsistent");
   }
   const expectedRoomId = input.source === "turn"
     ? input.plan.roomId
@@ -206,7 +206,7 @@ export function createProtectedTaskForegroundReadableNamespaceResolver(input: Re
       || coordinates.agentId !== input.plan.recipientAgentId
     ) {
       return Promise.reject(
-        new TypeError("Foreground Task readable Namespace coordinates changed"),
+        new TypeError("Foreground readable Namespace coordinates changed"),
       );
     }
     return Promise.resolve(namespaceIds);
@@ -3905,6 +3905,21 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                               product,
                               crypto: completion,
                             });
+                          // Nominate only the accepted grant's Namespace set. The
+                          // scoped product owner revalidates it under current locks.
+                          const resolveGrantedReadableNamespaces =
+                            createGrantedForegroundReadableNamespaceResolver({
+                              source: retained.source,
+                              plan: foregroundPlan,
+                              grant: {
+                                subjectHumanId: description.subjectHumanId,
+                                roomId: "recipientKind" in description
+                                  ? description.topLevelRoomId : description.roomId,
+                                ...("recipientAgentId" in description
+                                  ? { recipientAgentId: description.recipientAgentId } : {}),
+                                namespaceIds: description.namespaceIds,
+                              },
+                            });
                           const repairProduct = await createForegroundMessageProductStore({
                             userId: authority!.causalHumanUserId,
                             agentId: foregroundPlan.recipientAgentId,
@@ -3946,16 +3961,8 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                         crypto, serverId, plan: foregroundPlan,
                                         representationMode: policy.mode === "encrypted_only" ? "full_encryption" : "shadow_encryption",
                                         source: retained.source,
-                                        resolveReadableNamespaces: async (coordinates) => {
-                                          const readable = [...new Set(await resolveReadableNamespaces(coordinates))].sort();
-                                          const admitted = [...description.namespaceIds].sort();
-                                          // Every revalidation locks the SAME full sorted Room set.
-                                          // A changed grant set must fail before acquiring more locks.
-                                          if (readable.length !== admitted.length || readable.some((id, index) => id !== admitted[index])) {
-                                            throw new Error("Foreground publication namespace authority changed");
-                                          }
-                                          return readable;
-                                        },
+                                        resolveReadableNamespaces:
+                                          resolveGrantedReadableNamespaces,
                                       });
                                       if (scoped === null) return null;
                                       try {
@@ -4456,22 +4463,6 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                 entities.signal,
                               );
                             const createProtected = async () => {
-                              const resolveProtectedTaskReadableNamespaces =
-                                createProtectedTaskForegroundReadableNamespaceResolver({
-                                  source: retained.source,
-                                  plan: foregroundPlan,
-                                  grant: {
-                                    subjectHumanId: description.subjectHumanId,
-                                    roomId: "recipientKind" in description
-                                      ? description.topLevelRoomId
-                                      : description.roomId,
-                                    ...("recipientAgentId" in description
-                                      ? { recipientAgentId:
-                                          description.recipientAgentId }
-                                      : {}),
-                                    namespaceIds: description.namespaceIds,
-                                  },
-                                });
                               const creation = createProtectedTaskForegroundCreationOwner({
                                 owner: taskContentOwner!(), crypto, entities, restricted: restrictedConnection,
                                 serverScope: serverId, representation: policy.mode === "encrypted_only" ? "protected" : "dual",
@@ -4494,7 +4485,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                   representationMode: policy.mode === "encrypted_only" ? "full_encryption" : "shadow_encryption",
                                   source: retained.source,
                                   resolveReadableNamespaces:
-                                    resolveProtectedTaskReadableNamespaces,
+                                    resolveGrantedReadableNamespaces,
                                 }),
                               });
                               try { return await withProtectedTaskForegroundCreationContext(creation.context, work); }
