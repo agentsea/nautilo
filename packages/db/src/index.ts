@@ -173,6 +173,7 @@ export {
   PROBE_NAUTILO_ESSENTIAL_SELECT_SQL,
   PROBE_PUBLIC_OBJECTS_NOT_OWNED_SQL,
 } from "./utils/legacy-role-repair";
+export { buildEventFeedReaderRoleSql } from "./utils/event-feed-role";
 export {
   createHostedDatabaseSecret,
   withHostedDatabaseSecret,

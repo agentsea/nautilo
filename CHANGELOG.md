@@ -17,6 +17,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Personal key and capability readiness refresh safely after key changes,
   including concurrent saves and account metadata reloads. Mobile capability
   settings and personal Costs refresh when the app returns to the foreground.
+- Full database restores prepare the restricted event-feed reader role before
+  importing grants and policies, so backups can restore into fresh PostgreSQL
+  volumes. Unsafe existing role privileges still block the restore.
+- Mobile Web preserves a safe Task destination while connecting to its current
+  server, instead of losing the requested Task during initial setup.
 
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace

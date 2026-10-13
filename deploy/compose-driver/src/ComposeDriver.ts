@@ -17,6 +17,7 @@ import {
 // path share credential reconciliation + runtime acceptance semantics through
 // this module.
 import {
+  buildEventFeedReaderRoleSql,
   parseDotenv,
   planCredentialReconciliation,
   runRuntimeAcceptance,
@@ -6342,6 +6343,10 @@ export class ComposeDriver {
         }
 
         if (shouldLoadData && manifest.contents.nautiloDb) {
+          await this.prepareEventFeedReaderRoleForRestore(
+            appPgExec,
+            stagedMode ? this.deps.exec : this.sqlPipelineExec(profile),
+          );
           // Atomic reset+restore: schema wipe and dump load share one psql
           // `--single-transaction` so a failed import rolls back the reset.
           // See {@link NAUTILO_SCHEMA_RESET_SQL} for the full wipe rationale.
@@ -6590,6 +6595,14 @@ export class ComposeDriver {
         `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
         `--project-name ${projectName} -f ${baseYml} ${volumesFlag}${caddyFlag}${envFileFlag}` +
         `exec -T app-postgres psql -U postgres nautilo`;
+      const legacyRepairPrefix =
+        `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
+        `--project-name ${projectName} -f ${baseYml} ${volumesFlag}${caddyFlag}${envFileFlag}` +
+        `exec -T app-postgres `;
+      await this.prepareEventFeedReaderRoleForRestore(
+        legacyRepairPrefix,
+        this.sqlPipelineExec(profile),
+      );
       const restoreCmd = failClosedRestoreScript(opts.fromPath, psqlPrefix);
       this.deps.log(`restore:   $ ${restoreCmd}`);
       const restoreRes = await this.deps.localExec("sh", ["-c", restoreCmd], {
@@ -6601,10 +6614,6 @@ export class ComposeDriver {
           `restore: legacy SQL restore failed (exit ${restoreRes.code}): ${restoreRes.stderr.trim()}`,
         );
       }
-      const legacyRepairPrefix =
-        `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
-        `--project-name ${projectName} -f ${baseYml} ${volumesFlag}${caddyFlag}${envFileFlag}` +
-        `exec -T app-postgres `;
       await this.repairAppDbOwnership(
         { transport: "staged_compose", execPrefix: legacyRepairPrefix },
         this.deps.localExec,
@@ -7322,6 +7331,7 @@ export class ComposeDriver {
     }
 
     if (shouldLoadData && bundle.contents.nautiloDb) {
+      await this.prepareEventFeedReaderRoleForRestore(appPgExec, this.deps.exec);
       await runPipeline(
         "nautilo DB restore",
         atomicDbRestoreScript(
@@ -9236,6 +9246,36 @@ export class ComposeDriver {
       );
     }
     return `${args.composePrefix}exec -T ${args.service} `;
+  }
+
+  /**
+   * Provision the canonical restricted role referenced by event-feed grants in
+   * a complete database archive. Cluster roles are outside a database dump, so
+   * a fresh target must create and validate this role before psql reads the
+   * first ACL or policy that names it. The canonical builder is idempotent and
+   * rejects privilege drift instead of normalizing an unsafe existing role.
+   */
+  private async prepareEventFeedReaderRoleForRestore(
+    appPgExec: string,
+    exec: ExecFn,
+  ): Promise<void> {
+    this.deps.log("restore: → event-feed reader role preparation");
+    const result = await exec(
+      "sh",
+      [
+        "-c",
+        `${appPgExec}psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -f -`,
+      ],
+      {
+        stdio: "pipe",
+        stdin: buildEventFeedReaderRoleSql(),
+      },
+    );
+    if (result.code !== 0) {
+      throw new Error(
+        `restore: event-feed reader role preparation failed (exit ${result.code}): ${result.stderr.trim()}`,
+      );
+    }
   }
 
   /**

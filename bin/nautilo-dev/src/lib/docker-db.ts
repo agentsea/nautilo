@@ -9,7 +9,10 @@ import {
 } from "node:fs";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { buildFullLegacyRoleRepairSql } from "@nautilo/db";
+import {
+  buildEventFeedReaderRoleSql,
+  buildFullLegacyRoleRepairSql,
+} from "@nautilo/db";
 import {
   RESTORE_MIGRATIONS,
   applyCopyHeaderRewrite,
@@ -58,6 +61,10 @@ export const NAUTILO_DB_POST_CREATE_GRANTS_SQL = `
 /** Full drop + recreate script run against the `postgres` maintenance DB. */
 export function buildDropAndRecreateNautiloDbSql(): string {
   return [
+    // Full archives preserve ACL/policy references to this cluster role. Check
+    // the existing role before the destructive database drop, then create it
+    // when absent. The canonical builder is repeat-safe and rejects drift.
+    buildEventFeedReaderRoleSql(),
     DROP_NAUTILO_DATABASE_SQL,
     `CREATE DATABASE ${DB_NAME} OWNER nautilo;`,
     NAUTILO_DB_POST_CREATE_GRANTS_SQL,
