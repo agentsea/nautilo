@@ -2,3 +2,6 @@
 *.sql text eol=lf
 *.sh text eol=lf
 *.patch text eol=lf
+# Desktop license verification compares these bytes exactly.
+apps/desktop/licenses/** text eol=lf
+apps/desktop/electron-builder.yml text eol=lf
