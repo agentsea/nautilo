@@ -69,7 +69,8 @@ jobs:
     name: Lint (eslint + query inventory + knip)
     needs: prepare-bun-cache
     runs-on: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    # Fork PRs that affect every package run uncached on the standard runner.
+    timeout-minutes: 30
     env:
       TURBO_TOKEN: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && secrets.TURBO_TOKEN || '' }}
       TURBO_TEAM: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.TURBO_TEAM || '' }}
@@ -101,6 +102,9 @@ jobs:
         run: bun install --frozen-lockfile --ignore-scripts
 
       - name: Lint
+        env:
+          # Ten concurrent type-aware ESLint processes exhaust runner memory.
+          TURBO_CONCURRENCY: "3"
         run: bash dev/scripts/ci-gates.sh lint-eslint
 
       - name: Test harness invariants
@@ -118,7 +122,8 @@ jobs:
     name: Typecheck
     needs: prepare-bun-cache
     runs-on: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    # Fork PRs that affect every package run uncached on the standard runner.
+    timeout-minutes: 30
     env:
       TURBO_TOKEN: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && secrets.TURBO_TOKEN || '' }}
       TURBO_TEAM: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.TURBO_TEAM || '' }}
@@ -165,7 +170,8 @@ jobs:
     name: Unit tests
     needs: prepare-bun-cache
     runs-on: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 15
+    # Fork PRs that affect every package run uncached on the standard runner.
+    timeout-minutes: 30
     env:
       TURBO_TOKEN: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && secrets.TURBO_TOKEN || '' }}
       TURBO_TEAM: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.TURBO_TEAM || '' }}
@@ -212,6 +218,10 @@ jobs:
           echo "NAUTILO_TEST_FFMPEG_VERSION=$(dpkg-query -W -f='${Version}' ffmpeg)" >> "$GITHUB_ENV"
 
       - name: Unit tests
+        env:
+          # Timing-sensitive suites exceed their budgets when ten packages
+          # share a four-core runner.
+          TURBO_CONCURRENCY: "2"
         run: bash dev/scripts/ci-gates.sh unit
 
   db-migration-integration:
