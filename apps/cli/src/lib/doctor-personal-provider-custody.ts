@@ -8,9 +8,16 @@ import {
 } from "./authenticated-admin-client.ts";
 import {
   buildAuthHeaders,
+  readActiveProfileName,
+  resolveServerForCommand,
   transportFetch,
   type ResolvedServer,
 } from "./profile-aware-server.ts";
+import { loadProfile, type Profile } from "./profile-schema.ts";
+import {
+  buildComposeOperatorTransport,
+} from "./compose-driver-factory.ts";
+import { resolveTransportEndpoint } from "./api-client.ts";
 
 const custodyErrorCodeSchema = z.enum([
   "custody_missing",
@@ -55,10 +62,93 @@ type CustodyFetch = (
   init: RequestInit,
 ) => Promise<Response>;
 
+const CUSTODY_PATH = "/api/health/personal-provider-custody";
+const LOCAL_COMPOSE_LOOPBACK = "http://127.0.0.1:3001";
+
 export interface PersonalProviderCustodyDoctorDependencies {
   readonly fetch?: CustodyFetch;
   readonly loadSession?: () => Promise<CliSessionV1Payload>;
   readonly resolveTargetBinding?: typeof sessionTargetBindingFor;
+}
+
+export interface PersonalProviderCustodyDoctorTarget {
+  readonly transport: ResolvedServer;
+  readonly fetch?: CustodyFetch;
+}
+
+export interface PersonalProviderCustodyDoctorTargetDependencies {
+  readonly home?: string;
+  readonly resolveServer?: typeof resolveServerForCommand;
+  readonly readActiveProfile?: typeof readActiveProfileName;
+  readonly loadProfile?: (name: string, home: string) => Profile;
+  readonly resolveEndpoint?: typeof resolveTransportEndpoint;
+  readonly buildOperatorTransport?: typeof buildComposeOperatorTransport;
+}
+
+/**
+ * Resolve the doctor target once, then substitute Docker container-loopback
+ * transport only for the active local Compose profile. Explicit server and
+ * environment targets keep their ordinary transport and session binding.
+ */
+export async function resolvePersonalProviderCustodyDoctorTarget(
+  serverFlag?: string,
+  dependencies: PersonalProviderCustodyDoctorTargetDependencies = {},
+): Promise<PersonalProviderCustodyDoctorTarget> {
+  const home = dependencies.home ?? process.env["HOME"];
+  const readProfileName = dependencies.readActiveProfile ?? readActiveProfileName;
+  const profileNameBeforeResolve = home && home.trim() !== ""
+    ? readProfileName(home)
+    : undefined;
+  const resolveServer = dependencies.resolveServer ?? resolveServerForCommand;
+  const transport = await resolveServer({
+    serverFlag,
+    ...(dependencies.home === undefined ? {} : { home: dependencies.home }),
+  });
+  if (transport.source !== "profile") return { transport };
+
+  if (!home || home.trim() === "") {
+    throw new Error("HOME is not set");
+  }
+  const profileNameAfterResolve = readProfileName(home);
+  if (
+    profileNameBeforeResolve === undefined ||
+    profileNameAfterResolve !== profileNameBeforeResolve
+  ) {
+    throw new Error("Active profile changed while resolving custody diagnostic");
+  }
+  const profile = (dependencies.loadProfile ?? loadProfile)(profileNameBeforeResolve, home);
+  const canonicalEndpoint = await (
+    dependencies.resolveEndpoint ?? resolveTransportEndpoint
+  )(profile, home);
+  if (
+    canonicalEndpoint.baseUrl !== transport.baseUrl ||
+    canonicalEndpoint.unixSocketPath !== transport.unixSocketPath
+  ) {
+    throw new Error("Active profile endpoint changed while resolving custody diagnostic");
+  }
+  if (profile.transport !== "local" || profile.lifecycle !== "compose") {
+    return { transport };
+  }
+  if (readProfileName(home) !== profileNameBeforeResolve) {
+    throw new Error("Active profile changed while resolving custody diagnostic");
+  }
+
+  const operatorTransport = (
+    dependencies.buildOperatorTransport ?? buildComposeOperatorTransport
+  )(profile);
+  if (operatorTransport.fetchFn === undefined) {
+    throw new Error("Local Compose custody transport is unavailable");
+  }
+  const localProbe = operatorTransport.fetchFn;
+  return {
+    transport: { baseUrl: LOCAL_COMPOSE_LOOPBACK, source: "profile" },
+    fetch: async (_transport, path, init) => {
+      if (path !== CUSTODY_PATH) {
+        throw new TypeError("Local Compose custody transport received an unsupported path");
+      }
+      return localProbe(`${LOCAL_COMPOSE_LOOPBACK}${CUSTODY_PATH}`, init);
+    },
+  };
 }
 
 export class PersonalProviderCustodyTargetMismatchError extends Error {
@@ -120,7 +210,7 @@ export async function inspectPersonalProviderCustody(
   try {
     response = await fetchImpl(
       transport,
-      "/api/health/personal-provider-custody",
+      CUSTODY_PATH,
       {
         method: "GET",
         headers: buildAuthHeaders(transport, sessionBearer),

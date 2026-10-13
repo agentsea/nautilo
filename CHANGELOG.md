@@ -20,6 +20,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Full database restores prepare the restricted event-feed reader role before
   importing grants and policies, so backups can restore into fresh PostgreSQL
   volumes. Unsafe existing role privileges still block the restore.
+- Local Compose restores and custody diagnostics verify personal credentials
+  through the selected server container, preserving the existing localhost
+  authorization boundary when Docker publishes the server port.
 - Mobile Web preserves a safe Task destination while connecting to its current
   server, instead of losing the requested Task during initial setup.
 

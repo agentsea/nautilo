@@ -12,10 +12,10 @@ import {
   inspectPersonalProviderCustody,
   PersonalProviderCustodyTargetMismatchError,
   resolvePersonalProviderCustodyBearer,
+  resolvePersonalProviderCustodyDoctorTarget,
   type PersonalProviderCustodyDoctorResult,
 } from "../lib/doctor-personal-provider-custody.ts";
 import { loadProfile } from "../lib/profile-schema.ts";
-import { resolveServerForCommand } from "../lib/profile-aware-server.ts";
 import { runRemoteDoctorChecks } from "../lib/remote-doctor.ts";
 
 function readHome(argv: Record<string, unknown>): string {
@@ -186,9 +186,13 @@ const personalProviderCustodyCmd: CommandModule = {
     let result: PersonalProviderCustodyDoctorResult;
     try {
       const serverFlag = typeof argv["server"] === "string" ? argv["server"] : undefined;
-      const transport = await resolveServerForCommand({ serverFlag });
-      const sessionBearer = await resolvePersonalProviderCustodyBearer(transport);
-      result = await inspectPersonalProviderCustody(transport, sessionBearer);
+      const target = await resolvePersonalProviderCustodyDoctorTarget(serverFlag);
+      const sessionBearer = await resolvePersonalProviderCustodyBearer(target.transport);
+      result = await inspectPersonalProviderCustody(
+        target.transport,
+        sessionBearer,
+        target.fetch === undefined ? {} : { fetch: target.fetch },
+      );
     } catch (error) {
       result = error instanceof PersonalProviderCustodyTargetMismatchError
         ? { status: "target_mismatch" }

@@ -4,6 +4,7 @@ import {
   formatPersonalProviderCustodyDoctorResult,
   inspectPersonalProviderCustody,
   resolvePersonalProviderCustodyBearer,
+  resolvePersonalProviderCustodyDoctorTarget,
 } from "../../src/lib/doctor-personal-provider-custody.ts";
 import type { ResolvedServer } from "../../src/lib/profile-aware-server.ts";
 
@@ -37,6 +38,211 @@ function session(overrides: Partial<CliSessionV1Payload> = {}): CliSessionV1Payl
 }
 
 describe("personal provider custody doctor", () => {
+  test("an active local Compose profile uses one exact container-loopback probe without a bearer", async () => {
+    let resolveCalls = 0;
+    let loadSessionCalls = 0;
+    let probeUrl = "";
+    let probeInit: RequestInit | undefined;
+    const target = await resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async (options) => {
+        resolveCalls += 1;
+        expect(options).toEqual({ serverFlag: undefined, home: "/test-home" });
+        return { baseUrl: "http://127.0.0.1:7401", source: "profile" };
+      },
+      readActiveProfile: () => "qa-local",
+      loadProfile: () => ({
+        name: "qa-local",
+        transport: "local",
+        lifecycle: "compose",
+        instance_id: "qa-local",
+      }),
+      resolveEndpoint: async () => ({ baseUrl: "http://127.0.0.1:7401" }),
+      buildOperatorTransport: () => ({
+        fetchFn: async (input, init) => {
+          probeUrl = typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+          probeInit = init;
+          return response({ status: "ready", recordsExist: true, keyId: KEY_ID });
+        },
+      }),
+    });
+
+    const bearer = await resolvePersonalProviderCustodyBearer(target.transport, {
+      loadSession: async () => {
+        loadSessionCalls += 1;
+        return session();
+      },
+    });
+    if (target.fetch === undefined) {
+      throw new Error("local Compose target omitted its custody transport");
+    }
+    const result = await inspectPersonalProviderCustody(target.transport, bearer, {
+      fetch: target.fetch,
+    });
+
+    expect(resolveCalls).toBe(1);
+    expect(loadSessionCalls).toBe(0);
+    expect(result).toEqual({ status: "ready", recordsExist: true, keyId: KEY_ID });
+    expect(probeUrl).toBe("http://127.0.0.1:3001/api/health/personal-provider-custody");
+    expect(probeInit?.method).toBe("GET");
+    expect(new Headers(probeInit?.headers).has("authorization")).toBe(false);
+  });
+
+  test.each([
+    ["explicit server", "flag" as const, "https://explicit.example", "https://explicit.example"],
+    ["environment server", "env" as const, "https://env.example", undefined],
+  ])("%s keeps the canonical public transport instead of borrowing local profile authority", async (
+    _case,
+    source,
+    baseUrl,
+    serverFlag,
+  ) => {
+    let profileReads = 0;
+    let capturedServerFlag: string | undefined;
+    const target = await resolvePersonalProviderCustodyDoctorTarget(serverFlag, {
+      home: "/test-home",
+      resolveServer: async (options) => {
+        capturedServerFlag = options.serverFlag;
+        return { baseUrl, source };
+      },
+      readActiveProfile: () => {
+        profileReads += 1;
+        return "qa-local";
+      },
+    });
+
+    expect(capturedServerFlag).toBe(serverFlag);
+    expect(target).toEqual({ transport: { baseUrl, source } });
+    expect(profileReads).toBe(1);
+  });
+
+  test.each([
+    ["remote Compose", { name: "remote", transport: "remote" as const, lifecycle: "compose" as const, ssh: { host: "remote.example", user: "root" } }],
+    ["local external", { name: "external", transport: "local" as const, lifecycle: "external" as const }],
+  ])("an active %s profile keeps its ordinary resolved transport", async (_case, profile) => {
+    const original: ResolvedServer = {
+      baseUrl: profile.transport === "remote" ? "https://remote.example" : "http://127.0.0.1:8123",
+      source: "profile",
+    };
+    const target = await resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async () => original,
+      readActiveProfile: () => profile.name,
+      loadProfile: () => profile,
+      resolveEndpoint: async () => ({
+        baseUrl: original.baseUrl,
+        ...(original.unixSocketPath === undefined
+          ? {}
+          : { unixSocketPath: original.unixSocketPath }),
+      }),
+      buildOperatorTransport: () => {
+        throw new Error("non-local-Compose profile must not get operator transport");
+      },
+    });
+    expect(target).toEqual({ transport: original });
+  });
+
+  test("no selected profile keeps the ordinary default transport", async () => {
+    let profileReads = 0;
+    const target = await resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async () => ({ baseUrl: "http://127.0.0.1:3001", source: "default" }),
+      readActiveProfile: () => {
+        profileReads += 1;
+        return undefined;
+      },
+    });
+    expect(target).toEqual({
+      transport: { baseUrl: "http://127.0.0.1:3001", source: "default" },
+    });
+    expect(profileReads).toBe(1);
+  });
+
+  test("a missing local Compose operator transport fails closed", async () => {
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's matcher settles the async assertion.
+    await expect(resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async () => ({ baseUrl: "http://127.0.0.1:7401", source: "profile" }),
+      readActiveProfile: () => "qa-local",
+      loadProfile: () => ({
+        name: "qa-local",
+        transport: "local",
+        lifecycle: "compose",
+        instance_id: "qa-local",
+      }),
+      resolveEndpoint: async () => ({ baseUrl: "http://127.0.0.1:7401" }),
+      buildOperatorTransport: () => ({}),
+    })).rejects.toThrow(/transport is unavailable/);
+  });
+
+  test("refuses when the effective profile changes during canonical server resolution", async () => {
+    const profileNames = ["qa-local", "other-local"];
+    let operatorBuilds = 0;
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's matcher settles the async assertion.
+    await expect(resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async () => ({ baseUrl: "http://127.0.0.1:7401", source: "profile" }),
+      readActiveProfile: () => profileNames.shift(),
+      loadProfile: () => {
+        throw new Error("drifted profile must not load");
+      },
+      buildOperatorTransport: () => {
+        operatorBuilds += 1;
+        return {};
+      },
+    })).rejects.toThrow(/Active profile changed/);
+    expect(operatorBuilds).toBe(0);
+  });
+
+  test("refuses when the captured profile endpoint does not match the resolved target", async () => {
+    let operatorBuilds = 0;
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's matcher settles the async assertion.
+    await expect(resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async () => ({ baseUrl: "http://127.0.0.1:7401", source: "profile" }),
+      readActiveProfile: () => "qa-local",
+      loadProfile: () => ({
+        name: "qa-local",
+        transport: "local",
+        lifecycle: "compose",
+        instance_id: "qa-local",
+      }),
+      resolveEndpoint: async () => ({ baseUrl: "http://127.0.0.1:8401" }),
+      buildOperatorTransport: () => {
+        operatorBuilds += 1;
+        return {};
+      },
+    })).rejects.toThrow(/endpoint changed/);
+    expect(operatorBuilds).toBe(0);
+  });
+
+  test("rechecks the captured profile immediately before constructing Docker transport", async () => {
+    const profileNames = ["qa-local", "qa-local", "other-local"];
+    let operatorBuilds = 0;
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's matcher settles the async assertion.
+    await expect(resolvePersonalProviderCustodyDoctorTarget(undefined, {
+      home: "/test-home",
+      resolveServer: async () => ({ baseUrl: "http://127.0.0.1:7401", source: "profile" }),
+      readActiveProfile: () => profileNames.shift(),
+      loadProfile: () => ({
+        name: "qa-local",
+        transport: "local",
+        lifecycle: "compose",
+        instance_id: "qa-local",
+      }),
+      resolveEndpoint: async () => ({ baseUrl: "http://127.0.0.1:7401" }),
+      buildOperatorTransport: () => {
+        operatorBuilds += 1;
+        return {};
+      },
+    })).rejects.toThrow(/Active profile changed/);
+    expect(operatorBuilds).toBe(0);
+  });
+
   test("reports ready with no records over the canonical transport options", async () => {
     let capturedPath = "";
     let capturedInit: RequestInit | undefined;
