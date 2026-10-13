@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   boolean,
   check,
@@ -6,6 +7,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgPolicy,
   pgRole,
   pgTable,
@@ -924,6 +926,12 @@ export const reflectionRecordSemanticWork = pgTable(
       enum: REFLECTION_RECORD_SEMANTIC_WORK_STATES,
     }).notNull(),
     claimGeneration: integer("claim_generation"),
+    /** Accepted content-free model/payer binding for this exact generation. */
+    acceptedModelBinding: jsonb("accepted_model_binding")
+      .$type<MemoryOperationBinding>(),
+    acceptedModelBindingGeneration: integer(
+      "accepted_model_binding_generation",
+    ),
     attemptCount: smallint("attempt_count").notNull().default(0),
     quarantineRound: integer("quarantine_round").notNull().default(0),
     recoveryPolicyVersion: integer("recovery_policy_version").notNull().default(0),
@@ -1011,6 +1019,17 @@ export const reflectionRecordSemanticWork = pgTable(
         and ${table.claimGeneration} is null
         and ${table.leaseToken} is null
         and ${table.leaseExpiresAt} is null
+      )`,
+    ),
+    check(
+      "reflection_record_semantic_work_model_binding_coherent",
+      sql`(
+        ${table.acceptedModelBinding} is null
+        and ${table.acceptedModelBindingGeneration} is null
+      ) or (
+        ${table.acceptedModelBinding} is not null
+        and ${table.acceptedModelBindingGeneration} is not null
+        and ${table.acceptedModelBindingGeneration} = ${table.generation}
       )`,
     ),
     check(

@@ -349,7 +349,7 @@ function modelExposureDependencyKey(
     : `source\u0000${value.sourceKind}\u0000${value.logicalObjectRef}`;
 }
 
-function normalizeModelExposureDependencies(
+export function normalizeRecordModelExposureDependenciesV1(
   value: unknown,
 ): readonly RecordPayloadModelExposureDependencyV1[] {
   const dependencies = arrayValue(value, "modelExposureDependencies")
@@ -452,7 +452,7 @@ function normalizeRecordPayloadV1(value: unknown): RecordPayloadV1 {
     ),
     ...(hasModelExposureDependencies
       ? {
-          modelExposureDependencies: normalizeModelExposureDependencies(
+          modelExposureDependencies: normalizeRecordModelExposureDependenciesV1(
             value["modelExposureDependencies"],
           ),
         }

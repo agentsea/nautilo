@@ -6,7 +6,7 @@ import {
   PersonalAttemptLedgerUnavailableError,
 } from "../../src/usage/personal-llm-attempt";
 import { getUsageContext, runWithUsageContext } from "../../src/usage/usage-context";
-import type { BeginPersonalLlmAttemptInput, SettlePersonalLlmAttemptInput } from "@nautilo/db";
+import type { BeginPersonalLlmAttemptInput, BeginServiceLlmAttemptInput, SettlePersonalLlmAttemptInput } from "@nautilo/db";
 import {
   getPersonalLlmAttemptOwner,
   installPersonalLlmAttemptOwner,
@@ -219,5 +219,38 @@ describe("personal direct attempt terminal classification", () => {
       .toEqual({ outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" });
     expect(classifyPersonalAttemptFailure({ status: 429 }, false, true))
       .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
+  });
+});
+
+
+describe("explicit nonpersonal Memory model attempts", () => {
+  for (const kind of ["server", "service"] as const) {
+    test(`${kind} review has one durable unknown-cost row even when successful usage is absent`, async () => {
+      const begun: BeginServiceLlmAttemptInput[] = [];
+      const settled: SettlePersonalLlmAttemptInput[] = [];
+      const ordinary = harness();
+      const begin = async (row: BeginServiceLlmAttemptInput) => { begun.push(row); };
+      const settle = async (row: SettlePersonalLlmAttemptInput) => { settled.push(row); };
+      await runWithUsageContext({ callType: "memory_review", funding: {kind, providerRoute:"openai"} },
+        () => runPersonalLlmAttempt({modelId,endpoint:"/v1/chat/completions",invoke:async()=> {
+          expect(begun).toHaveLength(1);
+          expect(getUsageContext()?.trackedAttemptId).toBe(begun[0]!.id);
+          return "complete";
+        }}, {...ordinary.deps, beginService:begin,settleService:settle,beginServer:begin,settleServer:settle}));
+      expect(ordinary.begun).toHaveLength(0);
+      expect(begun[0]!.userId).toBeNull();
+      expect(begun[0]).not.toHaveProperty("credentialId");
+      expect(settled[0]).toMatchObject({outcome:"succeeded",costState:"unknown"});
+    });
+  }
+  test("a service review cannot dispatch without the durable accounting owner", async () => {
+    let calls = 0;
+    const ordinary = harness();
+    const outcome = await runWithUsageContext({callType:"memory_review",funding:{kind:"service",providerRoute:"openai"}},
+      () => runPersonalLlmAttempt({modelId,endpoint:"/v1/chat/completions",invoke:async()=>{calls++;}},
+        {...ordinary.deps,owner:()=>null,beginService:async()=>{},settleService:async()=>{}}))
+      .then(() => null, (error: unknown) => error);
+    expect(outcome).toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
+    expect(calls).toBe(0);
   });
 });

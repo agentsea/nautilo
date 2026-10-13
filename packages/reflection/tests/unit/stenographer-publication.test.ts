@@ -90,6 +90,48 @@ describe("Stenographer observation publication", () => {
     });
   });
 
+  test("retains uncited model exposure separately from semantic support", () => {
+    const modelExposureDependencies = [
+      {
+        kind: "source" as const,
+        sourceKind: "message",
+        logicalSourceRef: "message:40",
+        observedRevision: "2",
+        observedContentFingerprint: "sha256:message-40-r2",
+        terminalAuthorityLeafHandle: "namespace:room-alpha",
+      },
+      {
+        kind: "source" as const,
+        sourceKind: "message",
+        logicalSourceRef: source.logicalMessageRef,
+        observedRevision: source.observedRevision,
+        observedContentFingerprint: source.observedContentFingerprint,
+        terminalAuthorityLeafHandle: source.terminalAuthorityLeafHandle,
+      },
+    ];
+    const plan = planStenographerObservationPublication({
+      recordRef: "record:event-alpha",
+      kind: "decision",
+      statement: "The Room selected PostgreSQL.",
+      roomAnchorRef: "room:alpha",
+      terminalAuthorityLeafHandle: "namespace:room-alpha",
+      sources: [source],
+      observedContentFingerprint: "sha256:event-alpha",
+      producerRef: "stenographer",
+      producerPolicyVersion: STENOGRAPHER_RECORD_POLICY_VERSION_V1,
+      processingGeneration: 2,
+      transition: { operation: "append" },
+      modelExposureDependencies,
+    });
+
+    expect(plan.record.semantic.sourceDependencies.map(
+      (dependency) => dependency.logicalSourceRef,
+    )).toEqual(["message:41"]);
+    expect(plan.record.semantic.modelExposureDependencies).toEqual(
+      modelExposureDependencies,
+    );
+  });
+
   test("rejects cross-Namespace sources, duplicates, and oversized statements", () => {
     expect(() => planStenographerObservationPublication({
       recordRef: "record:event-alpha",

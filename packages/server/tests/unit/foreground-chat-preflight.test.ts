@@ -31,7 +31,8 @@ describe("foreground auxiliary preflight model selection", () => {
       },
       getExecutionConfig: async (agentId) => {
         lookups.push(agentId);
-        return { name: "Genie", defaultModel: profile, soulFile: null };
+        return { profileId: "profile", userId: "caller", agentId, name: "Genie",
+          defaultModel: profile, soulFile: null, soulRevision: 0 };
       },
       defaultForegroundModelId: () => "openai:default",
       resolveFunding: async (input) => {
@@ -57,7 +58,8 @@ describe("foreground auxiliary preflight model selection", () => {
         serverReasoningPolicy: null,
         turnModelId: null,
       }),
-      getExecutionConfig: async () => ({ name: "Genie", defaultModel: null, soulFile: null }),
+      getExecutionConfig: async (agentId) => ({ profileId: "profile", userId: "caller", agentId,
+        name: "Genie", defaultModel: null, soulFile: null, soulRevision: 0 }),
       defaultForegroundModelId: () => {
         defaultReads += 1;
         return surplusOnlyDefault;

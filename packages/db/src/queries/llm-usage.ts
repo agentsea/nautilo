@@ -125,6 +125,10 @@ export interface BeginPersonalLlmAttemptInput {
   metadata?: Record<string, unknown> | null;
 }
 
+/** Explicit platform work has causal attribution but never a personal payer. */
+export type BeginServiceLlmAttemptInput = Omit<BeginPersonalLlmAttemptInput,
+  "userId" | "credentialId" | "credentialRevision"> & { userId?: string | null };
+
 export interface AttachSurplusRequestReceiptInput {
   attemptId: string;
   providerRequestId: string;
@@ -352,6 +356,21 @@ export async function beginPersonalLlmAttempt(
   if (!Number.isSafeInteger(input.credentialRevision) || input.credentialRevision < 1) {
     throw new Error("credentialRevision must be a positive integer");
   }
+  return beginDirectLlmAttempt(input, "personal");
+}
+
+export function beginServiceLlmAttempt(input: BeginServiceLlmAttemptInput): Promise<void> {
+  return beginDirectLlmAttempt(input, "service");
+}
+
+export function beginServerLlmAttempt(input: BeginServiceLlmAttemptInput): Promise<void> {
+  return beginDirectLlmAttempt(input, "server");
+}
+
+async function beginDirectLlmAttempt(
+  input: BeginPersonalLlmAttemptInput | BeginServiceLlmAttemptInput,
+  fundingKind: "personal" | "server" | "service",
+): Promise<void> {
   const ownerToken = assertNonEmpty(input.ownerToken, "ownerToken");
   const leaseNow = personalAttemptNow(undefined);
   await db()
@@ -359,7 +378,7 @@ export async function beginPersonalLlmAttempt(
     .values({
       id: input.id,
       ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
-      userId: input.userId,
+      userId: input.userId ?? null,
       roomId: input.roomId ?? null,
       taskId: input.taskId ?? null,
       callType: assertNonEmpty(input.callType, "callType"),
@@ -367,10 +386,10 @@ export async function beginPersonalLlmAttempt(
       model: assertNonEmpty(input.model, "model"),
       endpoint: assertNonEmpty(input.endpoint, "endpoint"),
       providerRoute: assertNonEmpty(input.providerRoute, "providerRoute"),
-      fundingKind: "personal",
-      payerHumanId: input.userId,
-      credentialId: input.credentialId,
-      credentialRevision: input.credentialRevision,
+      fundingKind,
+      payerHumanId: fundingKind === "personal" ? input.userId : null,
+      credentialId: fundingKind === "personal" && "credentialId" in input ? input.credentialId : null,
+      credentialRevision: fundingKind === "personal" && "credentialRevision" in input ? input.credentialRevision : null,
       attemptOutcome: "in_progress",
       costState: "pending",
       estimatedCostUsd: "0.00000000",
@@ -392,7 +411,7 @@ export async function renewPersonalLlmAttemptLeases(
   return db().transaction(async (tx) => {
     const candidates = await tx.select({ id: llmUsageEvents.id }).from(llmUsageEvents).where(and(
       eq(llmUsageEvents.attemptOwnerToken, ownerToken),
-      eq(llmUsageEvents.fundingKind, "personal"),
+      inArray(llmUsageEvents.fundingKind, ["personal", "server", "service"]),
       ne(llmUsageEvents.providerRoute, "surplus"),
       eq(llmUsageEvents.attemptOutcome, "in_progress"),
       isNotNull(llmUsageEvents.attemptLeaseExpiresAt),
@@ -426,7 +445,7 @@ async function interruptPersonalLlmAttemptPage(input: {
   const now = personalAttemptNow(input.now);
   return db().transaction(async (tx) => {
     const candidates = await tx.select({ id: llmUsageEvents.id }).from(llmUsageEvents).where(and(
-      eq(llmUsageEvents.fundingKind, "personal"),
+      inArray(llmUsageEvents.fundingKind, ["personal", "server", "service"]),
       ne(llmUsageEvents.providerRoute, "surplus"),
       eq(llmUsageEvents.attemptOutcome, "in_progress"),
       isNotNull(llmUsageEvents.attemptOwnerToken),
@@ -612,6 +631,18 @@ export async function settleSurplusLlmAttempt(
 export async function settlePersonalLlmAttempt(
   input: SettlePersonalLlmAttemptInput,
 ): Promise<void> {
+  return settleDirectLlmAttempt(input, "personal");
+}
+
+export function settleServiceLlmAttempt(input: SettlePersonalLlmAttemptInput): Promise<void> {
+  return settleDirectLlmAttempt(input, "service");
+}
+
+export function settleServerLlmAttempt(input: SettlePersonalLlmAttemptInput): Promise<void> {
+  return settleDirectLlmAttempt(input, "server");
+}
+
+async function settleDirectLlmAttempt(input: SettlePersonalLlmAttemptInput, fundingKind: "personal" | "server" | "service"): Promise<void> {
   const ownerToken = assertNonEmpty(input.ownerToken, "ownerToken");
   const actualCostUsd = optionalUsd(input.actualCostUsd, "actualCostUsd");
   const estimatedCostUsd = optionalUsd(input.estimatedCostUsd, "estimatedCostUsd");
@@ -671,7 +702,7 @@ export async function settlePersonalLlmAttempt(
     ...(input.preserveOutcome ? {} : { settledAt }),
   }).where(and(
     eq(llmUsageEvents.id, input.attemptId),
-    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.fundingKind, fundingKind),
     ne(llmUsageEvents.providerRoute, "surplus"),
     eq(llmUsageEvents.attemptOwnerToken, ownerToken),
     ...(providerRequestId === undefined ? [] : [or(
@@ -696,7 +727,7 @@ export async function settlePersonalLlmAttempt(
       settledAt: personalAttemptNow(undefined),
     }).where(and(
       eq(llmUsageEvents.id, input.attemptId),
-      eq(llmUsageEvents.fundingKind, "personal"),
+      eq(llmUsageEvents.fundingKind, fundingKind),
       ne(llmUsageEvents.providerRoute, "surplus"),
       eq(llmUsageEvents.attemptOwnerToken, ownerToken),
       ...(providerRequestId === undefined ? [] : [or(
@@ -710,7 +741,7 @@ export async function settlePersonalLlmAttempt(
   }
   const late = await db().update(llmUsageEvents).set(evidenceUpdate).where(and(
     eq(llmUsageEvents.id, input.attemptId),
-    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.fundingKind, fundingKind),
     ne(llmUsageEvents.providerRoute, "surplus"),
     eq(llmUsageEvents.attemptOwnerToken, ownerToken),
     ...(providerRequestId === undefined ? [] : [or(
@@ -744,7 +775,7 @@ export async function settlePersonalLlmAttempt(
     attemptOwnerToken: llmUsageEvents.attemptOwnerToken,
   }).from(llmUsageEvents).where(and(
     eq(llmUsageEvents.id, input.attemptId),
-    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.fundingKind, fundingKind),
     ne(llmUsageEvents.providerRoute, "surplus"),
   )).limit(1);
   const ownerRecovered = current?.attemptOutcome === "interrupted"

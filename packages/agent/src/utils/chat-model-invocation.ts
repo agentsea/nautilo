@@ -94,6 +94,14 @@ import { filterPersonalTaskControlTools } from "../runtime/personal-task-control
  */
 export type ModelFallbackMode = "agent_chain" | "none";
 
+/** Content-free terminal result used by durable Memory workers to quarantine replay. */
+export class MemoryProviderOutcomeUnknownError extends Error {
+  constructor() {
+    super("Memory provider outcome is unknown.");
+    this.name = "MemoryProviderOutcomeUnknownError";
+  }
+}
+
 /** One already-resolved foreground tuple, re-created for every fallback candidate. */
 export interface ResolvedForegroundModelControls {
   readonly canonicalModelId: string;
@@ -844,7 +852,7 @@ export async function invokeChatModelWithFallback(
   }
   // Direct callers receive the same model-tool fence as agentNode. The
   // server/legacy path preserves its existing tool binding unchanged.
-  tools = personalFunding && fundingSession?.workload !== "research" && !fundingSession?.capabilityFunding
+  tools = personalFunding && fundingSession?.workload !== "research" && fundingSession?.workload !== "memory" && !fundingSession?.capabilityFunding
     ? fundingSession?.personalTaskControls === true
       ? filterPersonalTaskControlTools(tools)
       : []
@@ -1250,7 +1258,17 @@ export async function invokeChatModelWithFallback(
       const personalAttemptError = providerError instanceof PersonalAttemptInvocationError
         ? providerError : undefined;
       const providerFailure = personalAttemptError?.cause ?? providerError;
-      if (providerFailure instanceof SurplusOutcomeUnknownError) throw providerFailure;
+      const memoryMaintenance = [
+        "memory_review", "room_stenographer", "room_reflection", "room_event_compaction",
+      ].includes(getUsageContext()?.callType ?? "");
+      if (providerFailure instanceof SurplusOutcomeUnknownError) {
+        if (memoryMaintenance) throw new MemoryProviderOutcomeUnknownError();
+        throw providerFailure;
+      }
+      if (memoryMaintenance && personalAttemptError?.disposition !== undefined
+        && personalAttemptError.disposition !== "safe_refusal") {
+        throw new MemoryProviderOutcomeUnknownError();
+      }
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.

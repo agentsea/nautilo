@@ -256,6 +256,27 @@ function count(value: unknown): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
+function nonEmptyMetadataString(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+/** Content-free correlation needed to prevent replay after a lost Memory result. */
+function memoryAttemptCorrelation(context: ReturnType<typeof getUsageContext>): Record<string, string> {
+  if (context?.callType === "memory_review") {
+    const workId = nonEmptyMetadataString(context.metadata, "workId");
+    const attemptId = nonEmptyMetadataString(context.metadata, "attemptId");
+    return workId && attemptId ? { workId, attemptId } : {};
+  }
+  if (context?.callType === "room_stenographer"
+    || context?.callType === "room_event_compaction"
+    || context?.callType === "room_reflection") {
+    const operationId = nonEmptyMetadataString(context.metadata, "operationId");
+    return operationId ? { operationId } : {};
+  }
+  return {};
+}
+
 /** A terminal usage receipt can carry cost when stream headers cannot. */
 export function readSurplusResponseUsage(message: AIMessage): {
   inputTokens?: number;
@@ -329,6 +350,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       ...(typeof context?.metadata?.["taskRunId"] === "string" ? { taskRunId: context.metadata["taskRunId"] } : {}),
       ...(typeof context?.metadata?.["agentId"] === "string" ? { agentId: context.metadata["agentId"] } : {}),
       ...(typeof context?.metadata?.["turnId"] === "string" ? { turnId: context.metadata["turnId"] } : {}),
+      ...memoryAttemptCorrelation(context),
     },
     });
   } catch {

@@ -1,3 +1,4 @@
+import { normalizeRecordModelExposureDependenciesV1, type RecordPayloadModelExposureDependencyV1 } from "@nautilo/reflection/payload";
 import {
   assertCanonicalJournalPayload,
   assertExactFields,
@@ -29,10 +30,12 @@ export interface RoomEventRollupPayloadV1 {
   readonly modelId: string;
   readonly compactorVersion: string;
   readonly createdAt: string;
+  /** Complete model input lineage is confidential; absent on legacy rollups. */
+  readonly modelExposureDependencies?: readonly RecordPayloadModelExposureDependencyV1[];
 }
 
 export type RoomEventRollupPayloadBindingV1 = Readonly<
-  Omit<RoomEventRollupPayloadV1, "content">
+  Omit<RoomEventRollupPayloadV1, "content" | "modelExposureDependencies">
 >;
 
 interface RoomEventRollupPayloadWireV1 extends RoomEventRollupPayloadV1 {
@@ -64,7 +67,7 @@ function normalizeRollupPayload(
     ...(expectsWireFields ? ["payloadKind", "payloadVersion"] : []),
     ...ROLLUP_FIELDS,
   ];
-  assertExactFields("room event rollup payload", value, requiredFields);
+  assertExactFields("room event rollup payload", value, [...requiredFields, "modelExposureDependencies"]);
   assertRequiredFields("room event rollup payload", value, requiredFields);
   if (expectsWireFields) {
     if (value["payloadKind"] !== ROOM_EVENT_ROLLUP_PAYLOAD_KIND_V1) {
@@ -78,6 +81,7 @@ function normalizeRollupPayload(
     }
   }
   return Object.freeze({
+    ...(value["modelExposureDependencies"] === undefined ? {} : { modelExposureDependencies: normalizeRecordModelExposureDependenciesV1(value["modelExposureDependencies"]) }),
     rollupId: canonicalUuid(
       "room event rollup rollupId",
       value["rollupId"],
@@ -180,7 +184,7 @@ function assertBindingRecord(
     { ...expected, content: "binding-placeholder" },
     false,
   );
-  const { content: _content, ...binding } = normalized;
+  const { content: _content, modelExposureDependencies: _exposure, ...binding } = normalized;
   return Object.freeze(binding);
 }
 

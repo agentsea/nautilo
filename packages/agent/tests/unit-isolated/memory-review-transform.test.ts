@@ -4,6 +4,8 @@ import { getUsageContext } from "../../src/usage/usage-context";
 import { setConfigOverrides } from "@nautilo/config";
 import { createMemoryReviewStaging, type MemoryReviewStagingPorts } from "../../src/memory/memory-review-staging";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import type { MemoryDetail } from "../../src/store/memory-store";
+import { MemoryProviderOutcomeUnknownError } from "../../src/utils/chat-model-invocation";
 
 const envelope: MemoryAccessEnvelope = { ownerId: "human", actorId: "actor", agentId: "agent", roomId: "room", readableNamespaces: ["ns"], mutableNamespaces: ["ns"], writableNamespaces: ["ns"], toolPolicy: {} };
 const embedding = { vector: [1, 0], provider: "openai" as const, canonicalModel: "model-a", dimensions: 2, contractVersion: 1 as const };
@@ -35,6 +37,16 @@ function setup() {
 function model(responses: BaseMessage[]) {
   return async () => { const response = responses.shift(); if (!response) throw new Error("unexpected model call"); return response; };
 }
+function memory(id = "memory-1", content = "Original fact"): MemoryDetail & {
+  type: string;
+  content: string;
+} {
+  return {
+    id, type: "fact", content, importance: 0.5, tier: 1,
+    createdAt: new Date(0), updatedAt: new Date(0), demotedAt: null,
+    demotedFrom: null, namespaceIds: ["ns"],
+  };
+}
 describe("Memory transform completion", () => {
   test("reviews complete supplied assistant and tool evidence, with stable staged writes", async () => {
     setup();
@@ -63,6 +75,99 @@ describe("Memory transform completion", () => {
     if (good.status === "prepared") expect(good.proposal.operations).toEqual([]);
     expect(await prepareMemoryReview([], { ...options, invokeModel: model([new AIMessage("")]) })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
   });
+  test("reports content-free exposure before the next paid call and publication", async () => {
+    setup();
+    const existing = memory();
+    activePorts.read = async () => existing;
+    activePorts.search = async () => [{ ...existing, score: 1 }];
+    const observations: unknown[] = [];
+    const result = await prepareMemoryReview([], {
+      workId: "work", modelId: "model", memoryAccessEnvelope: envelope,
+      onModelExposure: (snapshots) => { observations.push(snapshots); },
+      invokeModel: model([
+        new AIMessage({ content: "", tool_calls: [{
+          name: "search_memory", args: { query: "fact" },
+        }] }),
+        new AIMessage("Nothing to save."),
+      ]),
+    });
+    expect(result.status).toBe("prepared");
+    expect(observations).toHaveLength(3);
+    expect(observations[0]).toEqual([]);
+    expect(observations[1]).toEqual([expect.objectContaining({ memoryId: existing.id })]);
+    expect(observations[2]).toEqual(observations[1]);
+    expect(JSON.stringify(observations)).not.toContain(existing.content);
+  });
+  test("freezes canonical initial and retrieved dependencies on prepared writes", async () => {
+    setup();
+    const existing = memory();
+    activePorts.read = async () => existing;
+    activePorts.search = async () => [{ ...existing, score: 1 }];
+    const initial = {
+      kind: "source" as const,
+      sourceKind: "message",
+      logicalSourceRef: "message:41",
+      observedRevision: "3",
+      observedContentFingerprint: "sha256:message",
+      terminalAuthorityLeafHandle: "ns",
+    };
+    const retrieved = {
+      kind: "source" as const,
+      sourceKind: "memory",
+      logicalSourceRef: "memory:10000000-0000-4000-8000-000000000001",
+      observedRevision: "5",
+      observedContentFingerprint: "hmac-sha256:memory",
+      terminalAuthorityLeafHandle: "ns",
+    };
+    const result = await prepareMemoryReview([], {
+      workId: "work",
+      modelId: "model",
+      memoryAccessEnvelope: envelope,
+      modelExposureDependencies: [initial],
+      resolveMemoryExposureDependencies: async (snapshots) =>
+        snapshots.length === 0 ? [] : [retrieved],
+      invokeModel: model([
+        new AIMessage({ content: "", tool_calls: [{
+          name: "search_memory", args: { query: "fact" },
+        }] }),
+        new AIMessage({ content: "", tool_calls: [{
+          name: "manage_memory",
+          args: { action: "save", content: "New fact" },
+        }] }),
+        new AIMessage("Done."),
+      ]),
+    });
+
+    expect(result.status).toBe("prepared");
+    if (result.status !== "prepared") throw new Error("expected preparation");
+    expect(result.proposal.operations).toHaveLength(1);
+    expect(result.proposal.modelExposureDependencies).toEqual([
+      retrieved,
+      initial,
+    ]);
+  });
+  test("stops before the next model call when retrieved Memory changes", async () => {
+    setup();
+    const existing = memory();
+    let reads = 0;
+    activePorts.read = async () => {
+      reads += 1;
+      return reads === 1 ? existing : { ...existing, content: "Changed" };
+    };
+    activePorts.search = async () => [{ ...existing, score: 1 }];
+    let modelCalls = 0;
+    const result = await prepareMemoryReview([], {
+      workId: "work", modelId: "model", memoryAccessEnvelope: envelope,
+      invokeModel: async () => {
+        modelCalls += 1;
+        return new AIMessage({ content: "", tool_calls: [{
+          name: "search_memory", args: { query: "fact" },
+        }] });
+      },
+    });
+    expect(result).toMatchObject({ status: "failed", reason: "source_changed" });
+    expect(modelCalls).toBe(1);
+  });
   test("iteration exhaustion discards staged writes instead of reporting no-change", async () => {
     setup();
     const result = await prepareMemoryReview([], { workId: "work", modelId: "model", memoryAccessEnvelope: envelope, maxIterations: 1,
@@ -81,6 +186,8 @@ describe("Memory transform completion", () => {
     expect(embedding).toMatchObject({ status: "failed", reason: "embedding_failed" });
     const provider = await prepareMemoryReview([], { ...options, invokeModel: async () => { throw new Error("secret provider body"); } });
     expect(provider).toMatchObject({ status: "failed", reason: "provider_failed" });
+    const uncertain = await prepareMemoryReview([], { ...options, invokeModel: async () => { throw new MemoryProviderOutcomeUnknownError(); } });
+    expect(uncertain).toMatchObject({ status: "failed", reason: "provider_outcome_unknown" });
     expect(JSON.stringify(provider)).not.toContain("secret");
   });
   test("cancelled attempts do not open staging or accept late model responses", async () => {

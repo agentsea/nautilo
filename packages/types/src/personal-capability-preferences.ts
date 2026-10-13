@@ -10,13 +10,20 @@ export const PERSONAL_CAPABILITY_ROLES = [
   "videoGeneration",
   "musicGeneration",
   "speech",
+  "memoryReview",
+  "memoryReflection",
+  "memorySummarization",
 ] as const;
 
 export type PersonalCapabilityRole =
   (typeof PERSONAL_CAPABILITY_ROLES)[number];
 
 export type ResearchCapabilityRole = Exclude<PersonalCapabilityRole,
-  "decision" | "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech">;
+  "decision" | "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech"
+  | "memoryReview" | "memoryReflection" | "memorySummarization">;
+
+export type MemoryCapabilityRole = Extract<PersonalCapabilityRole,
+  "memoryReview" | "memoryReflection" | "memorySummarization">;
 
 export type MediaCapabilityRole = Extract<PersonalCapabilityRole,
   "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech">;
@@ -24,6 +31,11 @@ export type MediaCapabilityRole = Extract<PersonalCapabilityRole,
 export function isMediaCapabilityRole(role: PersonalCapabilityRole): role is MediaCapabilityRole {
   return role === "imageGeneration" || role === "videoGeneration"
     || role === "musicGeneration" || role === "speech";
+}
+
+export function isMemoryCapabilityRole(role: PersonalCapabilityRole): role is MemoryCapabilityRole {
+  return role === "memoryReview" || role === "memoryReflection"
+    || role === "memorySummarization";
 }
 
 /**

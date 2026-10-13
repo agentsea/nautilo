@@ -1,7 +1,9 @@
 import { MEMORY_REVIEW_AUTOMATIC_RETRY_CODES } from "@nautilo/types";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import type { MemoryOperationBinding } from "@nautilo/types";
 import {
-  createUniversalModel,
+  invokeChatModelWithFallback,
   MemoryReviewError,
   prepareMemoryReview,
   type MemoryReviewOptions,
@@ -22,6 +24,8 @@ import { runBackgroundModelInvocation } from "../background-processing/model-inv
 export interface MemoryReviewClaim {
   workId: string;
   attemptId: string;
+  priorAttemptIds?: readonly string[];
+  knownNonusableAttemptIds?: readonly string[];
   ownerId: string;
   actorId: string;
   agentId: string;
@@ -38,6 +42,16 @@ export interface MemoryReviewInput {
   memoryAccessEnvelope: MemoryReviewOptions["memoryAccessEnvelope"];
   assistantName?: string;
   soulFile?: string;
+  /** Undefined means at least one persisted model input lacks trusted complete evidence. */
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
+}
+
+export interface AdmittedMemoryReviewModel {
+  modelId: string;
+  invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]>;
+  assertCurrent(): Promise<void>;
+  onModelExposure?: NonNullable<MemoryReviewOptions["onModelExposure"]>;
+  resolveMemoryExposureDependencies?: NonNullable<MemoryReviewOptions["resolveMemoryExposureDependencies"]>;
 }
 
 export type MemoryReviewPhase = "reconciliation" | "access" | "input" | "model" | "publication";
@@ -60,6 +74,11 @@ export interface MemoryReviewRepository {
   claimNext(input: { now: Date }): Promise<MemoryReviewClaim | null>;
   assertCurrent(claim: MemoryReviewClaim): Promise<void>;
   load(claim: MemoryReviewClaim): Promise<MemoryReviewInput>;
+  modelReplaySafety?(claim: MemoryReviewClaim): Promise<"allow" | "block_unknown">;
+  /** Freezes the first service model accepted for every coalesced turn. */
+  getAcceptedModelOperation?(claim: MemoryReviewClaim): Promise<MemoryOperationBinding | null>;
+  bindModelOperation?(claim: MemoryReviewClaim, resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding>;
+  bindServiceModel?(claim: MemoryReviewClaim, resolveModelId: () => string): Promise<string>;
   /** Unknown outcome must remain non-executable until its durable receipt resolves. */
   reconcile(claim: MemoryReviewClaim): Promise<MemoryReviewPublicationState>;
   publish(input: {
@@ -78,7 +97,9 @@ export interface MemoryReviewWorkerDeps {
   repository: MemoryReviewRepository;
   /** Current enabled, maintenance and ordinary/protected availability admission. */
   checkAvailable(): Promise<boolean>;
-  resolveModelId(): string;
+  resolveModelId?(): string;
+  /** Trusted personal/service admission seam; implementations must retain their own live fences. */
+  admitModel?(claim: MemoryReviewClaim, input: MemoryReviewInput, assertCurrent: () => Promise<void>): Promise<AdmittedMemoryReviewModel | null>;
   openAccess?(identity: BackgroundAttemptIdentity, signal: AbortSignal, claim: MemoryReviewClaim): Promise<BackgroundAccessSession>;
   prepare?: typeof prepareMemoryReview;
   invokeModel?: NonNullable<MemoryReviewOptions["invokeModel"]>;
@@ -164,18 +185,37 @@ export class MemoryReviewWorker {
           phase = "input";
           const input = await this.deps.repository.load(claim);
           await context.assertCurrent();
+          if (await this.deps.repository.modelReplaySafety?.(claim) === "block_unknown") {
+            await this.fail(claim, "model", "provider_outcome_unknown", false);
+            return "failed";
+          }
           phase = "model";
-          const modelId = this.deps.resolveModelId();
-          const invokeModel = this.createInvoker(claim);
+          const admittedByPort = this.deps.admitModel
+            ? await this.deps.admitModel(claim, input, () => context.assertCurrent())
+            : null;
+          const admitted: AdmittedMemoryReviewModel = admittedByPort
+            ?? await this.admitServiceModel(claim, () => context.assertCurrent());
+          const invokeModel: NonNullable<MemoryReviewOptions["invokeModel"]> = async (invocation) => {
+            await context.assertCurrent();
+            await admitted.assertCurrent();
+            return admitted.invokeModel(invocation);
+          };
           const prepared: MemoryReviewPreparation = await (this.deps.prepare ?? prepareMemoryReview)(input.messages, {
             memoryAccessEnvelope: input.memoryAccessEnvelope,
             ...(input.assistantName === undefined ? {} : { assistantName: input.assistantName }),
             ...(input.soulFile === undefined ? {} : { soulFile: input.soulFile }),
-            modelId,
+            modelId: admitted.modelId,
             workId: claim.workId,
             attemptId: claim.attemptId,
             signal: context.signal,
             invokeModel,
+            ...(input.modelExposureDependencies === undefined ? {} : { modelExposureDependencies: input.modelExposureDependencies }),
+            ...(admitted.resolveMemoryExposureDependencies === undefined ? {} : { resolveMemoryExposureDependencies: admitted.resolveMemoryExposureDependencies }),
+            onModelExposure: async (snapshots) => {
+              await context.assertCurrent();
+              await admitted.assertCurrent();
+              await admitted.onModelExposure?.(snapshots);
+            },
           });
           if (prepared.status === "failed") {
             await this.fail(claim, phase, prepared.reason, retryableMemoryFailure(prepared.reason));
@@ -183,13 +223,16 @@ export class MemoryReviewWorker {
               : prepared.reason === "memory_unavailable" || prepared.reason === "model_unavailable" ? "unavailable" : "failed";
           }
           phase = "publication";
-          const published = await context.publish(() => this.deps.repository.publish({
-            claim,
-            proposal: prepared.proposal,
-            modelId: prepared.modelId,
-            now: this.now(),
-            durationMs: performance.now() - startedAt,
-          }));
+          const published = await context.publish(async () => {
+            await admitted.assertCurrent();
+            return this.deps.repository.publish({
+              claim,
+              proposal: prepared.proposal,
+              modelId: prepared.modelId,
+              now: this.now(),
+              durationMs: performance.now() - startedAt,
+            });
+          });
           if (published !== "published") {
             await this.fail(claim, phase, published === "unknown" ? "publication_uncertain" : "source_or_lease_changed", false);
             return published === "unknown" ? "failed" : "unavailable";
@@ -209,24 +252,54 @@ export class MemoryReviewWorker {
     return this.deps.repository.fail({ claim, phase, reason, retryable, now: this.now() });
   }
 
-  private createInvoker(claim: MemoryReviewClaim): NonNullable<MemoryReviewOptions["invokeModel"]> {
-    let boundInvoke: NonNullable<MemoryReviewOptions["invokeModel"]> | undefined;
+  private async admitServiceModel(claim: MemoryReviewClaim, assertCurrent: () => Promise<void>) {
+    const modelId = this.deps.repository.bindServiceModel
+      ? await this.deps.repository.bindServiceModel(claim, () => this.resolveServiceModelId())
+      : this.resolveServiceModelId();
+    const invokeModel = this.createServiceInvoker(claim);
+    return {
+      modelId,
+      invokeModel,
+      assertCurrent: async () => {
+        await assertCurrent();
+        if (!(await this.deps.checkAvailable())) throw new BackgroundAttemptUnavailableError();
+      },
+    };
+  }
+
+  private resolveServiceModelId(): string {
+    const resolved = this.deps.resolveModelId?.();
+    if (!resolved) throw new MemoryReviewError("model_unavailable");
+    return resolved;
+  }
+
+  private createServiceInvoker(claim: MemoryReviewClaim): NonNullable<MemoryReviewOptions["invokeModel"]> {
     return (input) => runBackgroundModelInvocation({
       usage: {
-        callType: "memory_review", userId: claim.ownerId, roomId: claim.roomId,
+        callType: "memory_review", userId: null, roomId: claim.roomId,
         metadata: { workId: claim.workId, attemptId: claim.attemptId, agentId: claim.agentId },
       },
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       invoke: async (signal) => {
         const invocation = { ...input, ...(signal === undefined ? {} : { signal }) };
         if (this.deps.invokeModel) return this.deps.invokeModel(invocation);
-        if (!boundInvoke) {
-          const model = await createUniversalModel(input.modelId, { useOpenAIResponsesApi: true, reasoningOutput: input.modelId.startsWith("openai:") });
-          if (!model.bindTools) throw new MemoryReviewError("model_unavailable");
-          const bound = model.bindTools(input.tools);
-          boundInvoke = (current) => bound.invoke(current.messages, current.signal ? { signal: current.signal } : {}) as Promise<BaseMessage>;
-        }
-        return boundInvoke(invocation);
+        const { response } = await invokeChatModelWithFallback(
+          invocation.messages,
+          invocation.tools,
+          invocation.modelId,
+          claim.ownerId,
+          claim.agentId,
+          `room:${claim.roomId}`,
+          invocation.signal ? { signal: invocation.signal } : undefined,
+          {
+            serverFundedService: "shared_memory_maintenance",
+            modelFallbackMode: "none",
+            sameModelRetryMode: "none",
+            useOpenAIResponsesApi: true,
+            reasoningOutput: invocation.modelId.startsWith("openai:"),
+          },
+        );
+        return response;
       },
     });
   }

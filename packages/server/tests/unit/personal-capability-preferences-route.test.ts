@@ -21,6 +21,7 @@ async function harness(input: {
   const rows = new Map<string, PersonalCapabilityPreferences>();
   const writes: Array<{ humanId: string; expectedRevision: number; overrides: unknown }> = [];
   let openedSessions = 0;
+  const openedWorkloads: string[] = [];
   let committed = false;
   const db = {} as ReturnType<NonNullable<PersonalCapabilityPreferenceRouteDeps["getDb"]>>;
   const deps: PersonalCapabilityPreferenceRouteDeps = {
@@ -55,7 +56,8 @@ async function harness(input: {
             if (input.missingCredentials) throw Object.assign(new Error("secret-free"), { code: "personal_credential_missing" });
             return { modelId: MODEL, preferenceRevision: rows.get(humanId)?.revision ?? 0 };
           },
-          openModel: async () => {
+          openModel: async (_modelId, workload) => {
+            openedWorkloads.push(workload);
             if (input.missingCredentials) throw Object.assign(new Error("secret-free"), { code: "personal_credential_missing" });
             return { binding: { kind: "server", providerRoute: "openrouter" }, fundingSession: {} as never };
           },
@@ -77,7 +79,7 @@ async function harness(input: {
   personalCapabilityPreferenceRoutes(app, deps);
   apps.push(app);
   await app.ready();
-  return { app, rows, writes, openedSessionCount: () => openedSessions };
+  return { app, rows, writes, openedWorkloads, openedSessionCount: () => openedSessions };
 }
 
 function parse(response: { body: string }) {
@@ -102,7 +104,7 @@ describe("personal capability preference routes", () => {
     const body = parse(response);
     expect(body["overrides"]).toEqual({});
     const capabilities = body["capabilities"] as Array<Record<string, unknown>>;
-    expect(capabilities).toHaveLength(11);
+    expect(capabilities).toHaveLength(14);
     expect(capabilities[0]).toMatchObject({
       selection: { source: "inherited", modelId: null, displayName: "Automatic" },
       readiness: { status: "missing-credentials" },
@@ -121,6 +123,14 @@ describe("personal capability preference routes", () => {
       })],
     });
     expect(source.openedSessionCount()).toBe(1);
+    expect(source.openedWorkloads).toContain("memory");
+    const capabilities = parse(response)["capabilities"] as Array<Record<string, unknown>>;
+    expect(capabilities.filter((entry) => String(entry["role"]).startsWith("memory"))
+      .map((entry) => [entry["role"], entry["label"]])).toEqual([
+        ["memoryReview", "Memory review"],
+        ["memoryReflection", "Memory reflection"],
+        ["memorySummarization", "Memory summarization"],
+      ]);
   });
 
   test("saves compatible choices without requiring ready credentials and resets by omission", async () => {

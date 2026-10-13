@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   COMPACTION_CONTRACT,
   EXTRACTION_CONTRACT,
+  planStenographerCompaction,
+  projectStenographerEvidence,
   runStenographerCompaction,
   runStenographerExtraction,
   type StenographerExtractionSnapshot,
@@ -14,13 +16,22 @@ const snapshot: StenographerExtractionSnapshot = {
     displayLabel: "Agent: Ada",
     text: "Postgres remains the supported database.",
   }],
-  rows: [{
-    createdAt: new Date("2026-08-01T12:00:00.000Z"),
-    role: "user",
-    displayLabel: "Human: Casey",
-    text: "We selected Postgres for transactional consistency.",
-    conversationalBoundary: true,
-  }],
+  rows: [
+    {
+      createdAt: new Date("2026-08-01T12:00:00.000Z"),
+      role: "user",
+      displayLabel: "Human: Casey",
+      text: "We selected Postgres for transactional consistency.",
+      conversationalBoundary: true,
+    },
+    {
+      createdAt: new Date("2026-08-01T12:00:01.000Z"),
+      role: "assistant",
+      displayLabel: "Agent: Ada",
+      text: "I recorded the decision.",
+      conversationalBoundary: false,
+    },
+  ],
   latestRollup: "The team is selecting durable infrastructure.",
   visibleEvents: [{
     localReference: "E1",
@@ -63,7 +74,59 @@ describe("shared Stenographer extraction", () => {
     expect(prompts[0]!.startsWith(`${EXTRACTION_CONTRACT}\n\n`)).toBe(true);
     expect(prompts[0]).toContain("P1");
     expect(prompts[0]).toContain("M1");
+    expect(prompts[0]).toContain("M2");
     expect(prompts[0]).toContain("E1 | open_question");
+    expect(result).toMatchObject({
+      modelExposure: {
+        currentRowPositions: [0, 1],
+        priorRowPositions: [0],
+        latestRollupIncluded: true,
+        visibleEventReferences: ["E1"],
+      },
+    });
+  });
+
+  test("reports only rows and journal context actually disclosed by projection", () => {
+    const projected = projectStenographerEvidence({
+      rows: [
+        {
+          createdAt: new Date("2026-08-01T12:00:00.000Z"),
+          role: "user",
+          displayLabel: "Human: Casey",
+          text: "Required boundary.",
+          conversationalBoundary: true,
+        },
+        {
+          createdAt: new Date("2026-08-01T12:00:01.000Z"),
+          role: "tool",
+          displayLabel: "Tool",
+          text: "x".repeat(12_000),
+          conversationalBoundary: false,
+        },
+      ],
+      priorRows: [{
+        createdAt: new Date("2026-08-01T11:59:00.000Z"),
+        role: "assistant",
+        displayLabel: "Agent: Ada",
+        text: "y".repeat(12_000),
+      }],
+      journalContext: "Current rollup and events.",
+      inputMaxCodePoints: 1_000,
+    });
+
+    expect(projected.ok).toBe(true);
+    if (!projected.ok) return;
+    expect(projected.visibleReferences).toEqual([{
+      localReference: "M1",
+      sourcePosition: 0,
+    }]);
+    expect(projected.modelExposure).toEqual({
+      currentRowPositions: [0],
+      priorRowPositions: [],
+      journalContextIncluded: true,
+    });
+    expect(projected.omittedEvidenceRowCount).toBe(1);
+    expect(projected.omittedPriorContextRowCount).toBe(1);
   });
 
   test("is deterministic for a fixed snapshot and model response", async () => {
@@ -148,6 +211,7 @@ describe("shared Stenographer extraction", () => {
       ok: true,
       attempts: 1,
       proposal: { operations: [] },
+      modelExposure: null,
     });
     expect(calls).toBe(0);
   });
@@ -187,8 +251,45 @@ describe("shared Stenographer compaction", () => {
       ok: true,
       content: "Supported state.",
       attempts: 2,
+      modelExposure: null,
     });
     expect(prompts[0]!.startsWith(`${COMPACTION_CONTRACT}\n\n`)).toBe(true);
     expect(signals).toEqual([controller.signal, controller.signal]);
+  });
+
+  test("returns the exact prior rollup, absorbed events, and visible tail", async () => {
+    const events = Array.from({ length: 52 }, (_, index) => ({
+      sequence: index + 11,
+      kind: "fact" as const,
+      statement: `event ${index + 11}`,
+      status: "active" as const,
+    }));
+    const planned = planStenographerCompaction({
+      events,
+      rollups: [{ throughEventSequence: 10, content: "prior state" }],
+      forceDue: true,
+    });
+    expect(planned.ok).toBe(true);
+    if (!planned.ok || !planned.plan) return;
+    expect(planned.plan.modelExposure).toEqual({
+      previousRollupThroughEventSequence: 10,
+      selectedEventSequences: [11, 12],
+      protectedTailEventSequences: Array.from(
+        { length: 50 },
+        (_, index) => index + 13,
+      ),
+    });
+
+    const result = await runStenographerCompaction({
+      prompt: planned.plan.prompt,
+      modelExposure: planned.plan.modelExposure,
+      invoke: () => Promise.resolve('{"content":"Compacted state."}'),
+    });
+    expect(result).toEqual({
+      ok: true,
+      content: "Compacted state.",
+      attempts: 1,
+      modelExposure: planned.plan.modelExposure,
+    });
   });
 });

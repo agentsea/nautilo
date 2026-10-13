@@ -12,9 +12,14 @@ import {
 import {
   REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
   createProductionReflectionMemoryRuntime,
+  selectRetainedReflectionRepair,
+  classifyReflectionModelInvocationFailure,
+  reflectionModelOperationId,
   resolveOrganizerPublicationLegacyLeaf,
   resolveOrganizerPublicationLegacyLeafOutcome,
 } from "../../src/reflection/production-reflection-memory";
+import { MemoryProviderOutcomeUnknownError } from "@nautilo/agent";
+import { DurableSleepProviderOutcomeUnknownError } from "@nautilo/reflection";
 
 interface TestProductClient {
   unsafe(statement: string): Promise<readonly unknown[]>;
@@ -50,6 +55,41 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 describe("production Reflection semantic policy", () => {
+  test("uses one opaque family identity with distinct primary and repair wires", () => {
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "test:model",
+      inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+    };
+    expect(reflectionModelOperationId(binding, "primary")).toBe(
+      `reflection:${binding.inputCommitment}:primary`,
+    );
+    expect(reflectionModelOperationId(binding, "repair")).toBe(
+      `reflection:${binding.inputCommitment}:repair`,
+    );
+  });
+  test("consumes exactly one live repair only for one complete cached family", () => {
+    const admission = {};
+    const other = {};
+    const consumed = new WeakSet<object>();
+    expect(selectRetainedReflectionRepair([undefined, undefined], consumed)).toBeNull();
+    expect(() => selectRetainedReflectionRepair([admission, undefined], consumed))
+      .toThrow("admission changed");
+    expect(() => selectRetainedReflectionRepair([admission, other], consumed))
+      .toThrow("admission changed");
+    expect(selectRetainedReflectionRepair([admission, admission], consumed)).toBe(admission);
+    consumed.add(admission);
+    expect(() => selectRetainedReflectionRepair([admission], consumed))
+      .toThrow("admission changed");
+  });
+  test("quarantines uncertain Memory provider outcomes instead of entering lane retry", () => {
+    expect(classifyReflectionModelInvocationFailure(
+      new MemoryProviderOutcomeUnknownError(),
+      "test:no-model",
+    )).toBeInstanceOf(DurableSleepProviderOutcomeUnknownError);
+  });
   test("binds one supplied data-operation pair into the existing worker", async () => {
     const claim: DurableSleepClaim = {
       logicalObjectRef: "logical:record:bound",
@@ -162,6 +202,25 @@ describe("production Reflection semantic policy", () => {
     expect(prepared).toContain("semanticWork.isClaimCurrent(claim)");
     expect(prepared).toContain("bindings.invocation.resolve(claim.recordRef)");
     expect(prepared).not.toContain("repository.read");
+  });
+
+  test("rechecks the accepted family and actual exposure before consuming a repair wire", () => {
+    const source = readFileSync(
+      new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
+      "utf8",
+    );
+    const dispatch = source.slice(
+      source.indexOf("const dispatchForRecords"),
+      source.indexOf("const invokeForRecords"),
+    );
+    expect(dispatch).toContain("await admitted.assertCurrent()");
+    expect(dispatch).toContain("await admitted.assertExposure(dependencies)");
+    const recheck = dispatch.indexOf("await assertInvocationCurrent()");
+    const consume = dispatch.indexOf("consumedRepairs.add(admitted)");
+    const wire = dispatch.indexOf("createRoomSideModelInvoker");
+    expect(recheck).toBeGreaterThan(-1);
+    expect(consume).toBeGreaterThan(recheck);
+    expect(wire).toBeGreaterThan(consume);
   });
 
   test("binds body-free structural Record search through the production authority-filtered selector", () => {

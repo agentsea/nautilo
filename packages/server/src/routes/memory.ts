@@ -1,3 +1,4 @@
+import { projectOrdinaryMemoryDetail } from "./memory-detail-response";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -1080,7 +1081,7 @@ export function memoryRoutes(
           }
         }
         return reply.send({
-          memory: { ...detail, accessList },
+          memory: { ...projectOrdinaryMemoryDetail(detail), accessList },
           memoryMode,
           ...(accessContext ? { accessContext } : {}),
           actionAuthority: projectMemoryActionAuthority({
@@ -1109,7 +1110,7 @@ export function memoryRoutes(
           return reply.code(404).send({ error: "Memory not found" });
         }
         return reply.send({
-          memory: detail,
+          memory: projectOrdinaryMemoryDetail(detail),
           memoryMode,
           actionAuthority: projectMemoryActionAuthority({
             canManageMemories,
@@ -1332,7 +1333,7 @@ export function memoryRoutes(
           return reply.code(404).send({ error: "Memory not found after update" });
         }
         return reply.send({
-          memory,
+          memory: projectOrdinaryMemoryDetail(memory),
           memoryMode,
           actionAuthority: projectMemoryActionAuthority({
             canManageMemories: true,
@@ -1379,7 +1380,7 @@ export function memoryRoutes(
           return reply.code(404).send({ error: "Memory not found after update" });
         }
         return reply.send({
-          memory,
+          memory: projectOrdinaryMemoryDetail(memory),
           memoryMode,
           actionAuthority: projectMemoryActionAuthority({
             canManageMemories: true,

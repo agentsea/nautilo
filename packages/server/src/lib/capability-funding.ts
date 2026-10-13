@@ -13,6 +13,7 @@ import {
   type PersonalCapabilityPreferences,
   type ResearchCapabilityRole,
   isMediaCapabilityRole,
+  isMemoryCapabilityRole,
   type TaskFundingBinding,
 } from "@nautilo/types";
 import { ModelFundingError, createModelFundingSnapshot, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
@@ -22,6 +23,7 @@ import { getServerDirectDb } from "./server-direct-db";
 import { openServiceFunding } from "./service-funding";
 import { mediaPreferenceFunding, resolvePersonalMediaModel } from "./media-model-preferences";
 import { openMediaFunding } from "./media-funding";
+import { currentMemoryOperatorDefaults, personalMemoryModels, resolveMemoryModelPreference } from "./memory-model-preferences";
 
 const RESEARCH_ROLES = {
   webSearchSynthesis: { role: "webSearchSynthesis", env: "NAUTILO_WEB_SEARCH_MODEL", tools: false },
@@ -34,14 +36,14 @@ const RESEARCH_ROLES = {
 
 function assertModel(
   modelId: string,
-  workload: "research" | "decision",
+  workload: "research" | "decision" | "memory",
   tools = false,
   resolveModel: typeof resolveCatalogModel = resolveCatalogModel,
 ): void {
   const row = resolveModel(modelId, { env: { NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] } });
   if (!["selectable", "missing_credentials"].includes(row.availability)
     || row.workload !== (workload === "decision" ? "decision" : "chat")
-    || (workload === "research" && !row.output.includes("text"))
+    || (workload !== "decision" && !row.output.includes("text"))
     || (workload === "decision" && !row.decision?.operations.includes("choice"))
     || (tools && !row.features.tools)) throw new ModelFundingError("unsupported_workload");
 }
@@ -100,6 +102,27 @@ export function createCapabilityFundingSession(
       const preferences = await readPreferences(humanUserId);
       if (isMediaCapabilityRole(role)) {
         return resolvePersonalMediaModel(humanUserId, role, configuredId, preferences, projectionDeps, validateProjectionCredential);
+      }
+      if (isMemoryCapabilityRole(role)) {
+        const snapshot = configuredId?.trim()
+          ? { ...preferences, overrides: { ...preferences.overrides, [role]: configuredId.trim() } }
+          : preferences;
+        const choices = personalMemoryModels(role);
+        const defaults = currentMemoryOperatorDefaults();
+        const exact = snapshot.overrides[role] || defaults[role];
+        const candidates = exact ? [resolveMemoryModelPreference(role, snapshot, defaults, choices)]
+          : choices.map((row) => ({ modelId: row.modelId, preferenceRevision: snapshot.revision }));
+        for (const selection of candidates) {
+          try {
+            assertModel(selection.modelId, "memory", role === "memoryReview", resolveCatalog);
+            const decision = await resolveModelFunding({ humanUserId, modelId: selection.modelId, workload: "memory" }, projectionDeps);
+            await validateProjectionCredential(decision);
+            return selection;
+          } catch (error) {
+            if (exact || !(error instanceof ModelFundingError)) throw error;
+          }
+        }
+        throw new ModelFundingError("provider_credentials_missing");
       }
       const explicit = configuredId?.trim() || preferences.overrides[role];
       const research = role === "decision" ? null : RESEARCH_ROLES[role];

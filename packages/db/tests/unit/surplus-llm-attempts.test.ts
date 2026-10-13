@@ -6,6 +6,8 @@ import {
   __setLlmUsageDbForTests,
   attachSurplusRequestReceipt,
   beginPersonalLlmAttempt,
+  beginServiceLlmAttempt,
+  beginServerLlmAttempt,
   beginSurplusLlmAttempt,
   interruptExpiredPersonalLlmAttempts,
   interruptPersonalLlmAttemptsByOwner,
@@ -16,6 +18,8 @@ import {
   requeueBlockedSurplusDecisionAttempts,
   renewPersonalLlmAttemptLeases,
   settlePersonalLlmAttempt,
+  settleServiceLlmAttempt,
+  settleServerLlmAttempt,
   settleSurplusLlmAttempt,
   type SurplusPendingAttempt,
 } from "../../src/queries/llm-usage";
@@ -98,6 +102,33 @@ function leaseDb(candidatePages: string[][]) {
   });
   return { handle: handle as unknown as DirectDatabase, selectedPredicates, updatePredicates, updated };
 }
+
+describe("explicit nonpersonal direct attempts", () => {
+  afterEach(() => __setLlmUsageDbForTests(undefined));
+  for (const [kind, begin, settle] of [
+    ["service", beginServiceLlmAttempt, settleServiceLlmAttempt],
+    ["server", beginServerLlmAttempt, settleServerLlmAttempt],
+  ] as const) {
+    test(`${kind} attempts keep causal Human separate from personal payer and fence settlement`, async () => {
+      const fake = mutationDb();
+      __setLlmUsageDbForTests(fake.handle);
+      await begin({ id: ATTEMPT_ID, ownerToken: OWNER_TOKEN, userId: "causal-human",
+        callType: "embedding", provider: "openai", model: "openai:text-embedding-3-small",
+        providerRoute: "openai", endpoint: "/v1/embeddings" });
+      expect(fake.inserted[0]).toMatchObject({ fundingKind: kind, userId: "causal-human",
+        payerHumanId: null, credentialId: null, credentialRevision: null,
+        attemptOutcome: "in_progress", costState: "pending", attemptOwnerToken: OWNER_TOKEN });
+      await settle({ attemptId: ATTEMPT_ID, ownerToken: OWNER_TOKEN,
+        outcome: "succeeded", costState: "unknown" });
+      expect(fake.updated[0]).toMatchObject({ attemptOutcome: "succeeded", costState: "unknown" });
+      const compiled = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
+      expect(compiled.params).toContain(kind);
+      expect(compiled.params).toContain(OWNER_TOKEN);
+      expect(compiled.params).toContain("in_progress");
+      expect(compiled.sql).toContain("attempt_lease_expires_at");
+    });
+  }
+});
 
 describe("Surplus durable LLM attempts", () => {
   afterEach(() => {

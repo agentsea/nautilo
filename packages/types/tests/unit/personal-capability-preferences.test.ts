@@ -18,6 +18,9 @@ describe("personal capability preference contract", () => {
       "videoGeneration",
       "musicGeneration",
       "speech",
+      "memoryReview",
+      "memoryReflection",
+      "memorySummarization",
     ]);
   });
 
@@ -25,7 +28,12 @@ describe("personal capability preference contract", () => {
     expect(parsePersonalCapabilityPreferenceOverrides({
       webSearchSynthesis: "  openrouter:model-a  ",
       speech: "elevenlabs:eleven_v3",
-    })).toEqual({ webSearchSynthesis: "openrouter:model-a", speech: "elevenlabs:eleven_v3" });
+      memoryReview: "openrouter:review-model",
+    })).toEqual({
+      webSearchSynthesis: "openrouter:model-a",
+      speech: "elevenlabs:eleven_v3",
+      memoryReview: "openrouter:review-model",
+    });
     expect(parsePersonalCapabilityPreferenceOverrides({})).toEqual({});
     expect(parsePersonalCapabilityPreferenceOverrides({ embeddings: "openai:embedding" })).toBeNull();
     expect(parsePersonalCapabilityPreferenceOverrides({ decision: " " })).toBeNull();

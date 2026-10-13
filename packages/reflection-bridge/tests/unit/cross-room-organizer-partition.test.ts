@@ -466,12 +466,64 @@ describe("cross-Room Organizer partition", () => {
     });
     expect(ordinaryPlans).toBe(0);
 
+    const otherCoordinate = {
+      kind: "record" as const,
+      role: "changed" as const,
+      recordRef: "record:other-batch-item",
+      processingGeneration: 7,
+      representationGeneration: 1,
+      authorityGeneration: 7,
+      read: { namespaceRef: "namespace:other", bindingRef: "binding:other" },
+    };
+    const otherExposure = {
+      kind: "record" as const,
+      recordRef: otherCoordinate.recordRef,
+      observedProcessingGeneration: otherCoordinate.processingGeneration,
+      terminalAuthorityLeafHandles: ["namespace:other"],
+    };
+    const otherToken = codec.seal({
+      ...candidate,
+      workRef: otherCoordinate.recordRef,
+      workGeneration: 3,
+      inputs: [otherCoordinate],
+      publicationPlan: {
+        ...candidate.publicationPlan!,
+        selectedInputs: [otherCoordinate],
+        modelExposureDependencies: [otherExposure],
+        idempotencyKey: "sleep:record:other-batch-item:3",
+      },
+    });
+    const batchExposure = [
+      ...candidate.publicationPlan!.modelExposureDependencies!,
+      otherExposure,
+    ];
+    expect(await partition.planPublication({
+      applicationPlanToken: result.applicationPlanToken,
+      applicationPlanTokens: [result.applicationPlanToken, otherToken],
+      proposal: { operation: "no_change" },
+      modelExposureDependencies: batchExposure,
+    })).toMatchObject({
+      status: "planned",
+      plan: { modelExposureDependencies: batchExposure },
+    });
+    const batchCall = exposureCalls.at(-1) as Readonly<{
+      candidatePlan: Readonly<{
+        inputs: readonly Readonly<{ recordRef?: string }>[];
+      }>;
+      modelExposureDependencies: unknown;
+    }>;
+    expect(batchCall.candidatePlan.inputs.map((input) => input.recordRef))
+      .toContain("record:changed");
+    expect(batchCall.candidatePlan.inputs.map((input) => input.recordRef))
+      .toContain("record:other-batch-item");
+    expect(batchCall.modelExposureDependencies).toEqual(batchExposure);
+
     emptyAudience = true;
     expect(await partition.augment(augmentation)).toEqual({
       status: "no_change",
       reason: "no_effective_audience",
     });
-    expect(seals).toBe(1);
+    expect(seals).toBe(2);
   });
 
   test("protected cross-Room unavailability preserves the existing same-Room view", async () => {

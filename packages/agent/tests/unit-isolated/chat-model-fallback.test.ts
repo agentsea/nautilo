@@ -34,7 +34,7 @@ import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
 import { classifyError } from "../../src/utils/errors";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
-import { getUsageContext, type UsageFundingProvenance } from "../../src/usage/usage-context";
+import { getUsageContext, runWithUsageContext, type UsageFundingProvenance } from "../../src/usage/usage-context";
 import { installPersonalLlmAttemptOwner } from "../../src/usage/personal-llm-attempt-owner";
 import {
   configureRuntimeModelCatalog,
@@ -219,6 +219,7 @@ const capturedEvents: ServerEvent[] = [];
 
 let _setFirstTokenTimeoutMsForTests: (ms: number | undefined) => void;
 let isPreparedContextExceededError: (error: unknown) => boolean;
+let MemoryProviderOutcomeUnknownError: typeof import("../../src/utils/chat-model-invocation").MemoryProviderOutcomeUnknownError;
 let uninstallPersonalAttemptOwner: (() => void) | undefined;
 
 beforeAll(async () => {
@@ -231,6 +232,7 @@ beforeAll(async () => {
       invocationConfig, { fundingHumanUserId: userId, ...invokeOptions });
   _setFirstTokenTimeoutMsForTests = mod._setFirstTokenTimeoutMsForTests;
   isPreparedContextExceededError = mod.isPreparedContextExceededError;
+  MemoryProviderOutcomeUnknownError = mod.MemoryProviderOutcomeUnknownError;
   // Wire a capturing sink so emitAgentEvent fans out to capturedEvents.
   setAgentEventSink({ emit: (e) => capturedEvents.push(e) });
 });
@@ -2980,6 +2982,21 @@ describe("personal marketplace invocation", () => {
     expect(missingDirect).toBeInstanceOf(PersonalDirectFundingUnavailableError);
     expect((missingDirect as PersonalDirectFundingUnavailableError).code).toBe("personal_credential_missing");
     expect(createUniversalModelMock).not.toHaveBeenCalled(); expect(fundingAdmission).not.toHaveBeenCalled();
+  });
+  test("shared Memory maintenance converts uncertain marketplace outcomes to its replay-safe typed failure", async () => {
+    cachedServerModelConfig = { preferSurplus: true };
+    invokeSurplusChatAttemptMock.mockImplementation(async () => {
+      throw new SurplusOutcomeUnknownError();
+    });
+    const failure = await runWithUsageContext({
+      callType: "memory_review", userId: null, roomId: "room",
+      metadata: { workId: "work", attemptId: "attempt" },
+    }, () => invokeChatModelWithFallback(
+      [new HumanMessage("review")], [], A, "service-owner", "agent-1", "room:room",
+      undefined, { serverFundedService: "shared_memory_maintenance", modelFallbackMode: "none", sameModelRetryMode: "none" },
+    )).then(() => null, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
   test("advances a foreground personal chain when safe Surplus fallback has no direct credential", async () => {
     cachedServerModelConfig = { preferSurplus: true };

@@ -1,8 +1,10 @@
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import {
   invokeChatModelWithFallback,
+  MemoryProviderOutcomeUnknownError,
   SurplusOutcomeUnknownError,
   type UsageCallType,
+  type ForegroundChatFundingSession,
 } from "@nautilo/agent";
 
 function extractText(message: BaseMessage): string {
@@ -20,7 +22,7 @@ function extractText(message: BaseMessage): string {
 }
 
 export interface RoomSideModelInvocationPolicy {
-  readonly maximumElapsedMs: number;
+  readonly maximumElapsedMs?: number;
   readonly modelFallbackMode: "agent_chain" | "none";
   readonly sameModelRetryMode: "none" | "short";
 }
@@ -36,7 +38,7 @@ export function classifyRoomSideInvocationFailure(
 
 export function createRoomSideModelInvoker(opts: {
   modelId: string;
-  userId: string;
+  userId?: string;
   roomId: string;
   laneKey: string;
   callType: Extract<
@@ -45,14 +47,18 @@ export function createRoomSideModelInvoker(opts: {
   >;
   operationId: string;
   invocationPolicy?: RoomSideModelInvocationPolicy;
+  fundingSession?: ForegroundChatFundingSession;
+  assertCurrent?: () => Promise<void>;
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {
     if (signal?.aborted) throw new Error("room_side_model_aborted");
+    await opts.assertCurrent?.();
     try {
       const { response } = await runBackgroundModelInvocation({
         usage: {
           callType: opts.callType,
-          userId: opts.userId,
+          // Maintenance has no inferred causal Human; Room ownership is not attribution.
+          userId: opts.fundingSession === undefined ? null : opts.userId ?? null,
           roomId: opts.roomId,
           metadata: { operationId: opts.operationId },
         },
@@ -63,17 +69,21 @@ export function createRoomSideModelInvoker(opts: {
             [new HumanMessage(prompt)],
             [],
             opts.modelId,
-            opts.userId,
+            opts.userId ?? "",
             null,
             opts.laneKey,
             invocationSignal === undefined ? undefined : { signal: invocationSignal },
             {
-              serverFundedService: "shared_memory_maintenance",
+              ...(opts.fundingSession === undefined
+                ? { serverFundedService: "shared_memory_maintenance" as const }
+                : { fundingSession: opts.fundingSession }),
               reasoningOutput: false,
-              modelFallbackMode: opts.invocationPolicy?.modelFallbackMode ?? "agent_chain",
+              modelFallbackMode: opts.fundingSession === undefined ? opts.invocationPolicy?.modelFallbackMode ?? "agent_chain" : "none",
               ...(opts.invocationPolicy === undefined ? {} : {
                 sameModelRetryMode: opts.invocationPolicy.sameModelRetryMode,
-                providerTimeoutMs: opts.invocationPolicy.maximumElapsedMs,
+                ...(opts.invocationPolicy.maximumElapsedMs === undefined ? {} : {
+                  providerTimeoutMs: opts.invocationPolicy.maximumElapsedMs,
+                }),
               }),
             },
           );
@@ -89,7 +99,7 @@ export function createRoomSideModelInvoker(opts: {
 export function mapModelFailure(
   error: unknown,
 ): "provider" | "provider_outcome_unknown" | "timeout" | "unknown" {
-  if (error instanceof SurplusOutcomeUnknownError) {
+  if (error instanceof SurplusOutcomeUnknownError || error instanceof MemoryProviderOutcomeUnknownError) {
     return "provider_outcome_unknown";
   }
   const text = error instanceof Error

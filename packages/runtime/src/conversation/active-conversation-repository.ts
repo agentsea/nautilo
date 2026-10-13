@@ -293,6 +293,10 @@ export type AgentTranscriptOpenResult<Value> =
 export type ActiveConversationTranscriptMessage = Readonly<{
   readonly messageId: number;
   readonly revision: number;
+  readonly roomId?: string;
+  readonly namespaceId?: string;
+  readonly sourceUserId?: string;
+  readonly authorAgentId?: string;
   readonly createdAt: Date;
   readonly author: Readonly<{
     readonly actorId: string;
@@ -305,6 +309,27 @@ export type ActiveConversationTranscriptMessage = Readonly<{
     readonly count: number;
   }>[];
 }>;
+
+export type OrdinaryConversationTranscriptExposureRow = Readonly<{
+  readonly messageId: number;
+  readonly sessionId: string;
+  readonly roomId: string;
+  readonly sourceUserId: string;
+  readonly editRevision: number;
+  readonly role: "user" | "assistant" | "tool" | "system";
+  readonly content: string;
+  readonly metadata: unknown;
+  readonly namespaceId: string;
+}>;
+
+export interface OrdinaryConversationTranscriptExposureReader {
+  readCurrent(input: Readonly<{
+    ownerId: string;
+    agentId: string;
+    roomIds: readonly string[];
+    messageIds: readonly number[];
+  }>): Promise<readonly OrdinaryConversationTranscriptExposureRow[]>;
+}
 
 export type AgentTranscriptOpenInput<Value> = Readonly<{
   readonly sessionId: string;

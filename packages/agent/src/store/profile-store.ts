@@ -18,6 +18,7 @@ export interface NautiloProfile {
   agentId: string;
   name: string;
   soulFile: string | null;
+  soulRevision: number;
   language: string;
   privacySpectrum: number | null;
   workLifeMode: string | null;
@@ -109,9 +110,13 @@ export async function getProfileByAgentId(agentId: string): Promise<NautiloProfi
 }
 
 export type AgentExecutionProfileConfig = Readonly<{
+  profileId: string;
+  userId: string;
+  agentId: string;
   name: string;
   defaultModel: string | null;
   soulFile: string | null;
+  soulRevision: number;
 }>;
 
 /** Narrow execution projection: identity/model plus the authored Soul exception. */
@@ -120,9 +125,13 @@ export async function getAgentExecutionConfigById(
 ): Promise<AgentExecutionProfileConfig | null> {
   const rows = await db
     .select({
+      profileId: profiles.id,
+      userId: profiles.userId,
+      agentId: profiles.agentId,
       name: profiles.name,
       defaultModel: profiles.defaultModel,
       soulFile: profiles.soulFile,
+      soulRevision: profiles.soulRevision,
     })
     .from(profiles)
     .where(eq(profiles.agentId, agentId));
@@ -222,7 +231,11 @@ export async function upsertProfile(
       set: {
         updatedAt: now,
         ...(data.name !== undefined ? { name: data.name } : {}),
-        ...(data.soulFile !== undefined ? { soulFile: data.soulFile } : {}),
+        ...(data.soulFile !== undefined ? {
+          soulFile: data.soulFile,
+          soulRevision: sql`CASE WHEN ${profiles.soulFile} IS DISTINCT FROM ${data.soulFile}
+            THEN ${profiles.soulRevision} + 1 ELSE ${profiles.soulRevision} END`,
+        } : {}),
         ...(data.language !== undefined ? { language: data.language } : {}),
         ...(data.privacySpectrum !== undefined ? { privacySpectrum: data.privacySpectrum } : {}),
         ...(data.workLifeMode !== undefined ? { workLifeMode: data.workLifeMode } : {}),
@@ -257,6 +270,7 @@ function mapProfile(row: typeof profiles.$inferSelect): NautiloProfile {
     agentId: row.agentId,
     name: row.name,
     soulFile: row.soulFile,
+    soulRevision: row.soulRevision,
     language: row.language,
     privacySpectrum: row.privacySpectrum,
     workLifeMode: row.workLifeMode,

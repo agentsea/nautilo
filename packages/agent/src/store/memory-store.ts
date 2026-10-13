@@ -42,6 +42,7 @@ import { fromRuntimeConfig } from "@nautilo/config";
 import { log } from "@nautilo/logger";
 import { emitAuthoredMemorySemanticChange } from "./authored-memory-semantic-change";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 
 const DEFAULT_IMPORTANCE: Record<string, number> = {
   identity: 1.0,
@@ -260,6 +261,8 @@ export interface MemoryListItem {
 export interface MemoryDetail extends MemoryListItem {
   demotedAt: Date | null;
   demotedFrom: number | null;
+  contentRevision?: number;
+  modelExposureDependencies?: readonly DurableModelExposureDependency[] | null;
 }
 
 export type HardDeleteMemoryResult =
@@ -299,6 +302,9 @@ export interface PromptBriefMemory {
   importance: number;
   tier: 1;
   createdAt: Date;
+  /** Exact current ordinary observation, retained only by authorized readers. */
+  contentRevision?: number;
+  namespaceId?: string;
 }
 
 export interface StagedPromptBriefMemories {
@@ -773,6 +779,7 @@ export async function saveMemoryWithDb(
     id?: string;
     expectedDedupId?: string | null;
     expectedNamespaceIds?: readonly string[];
+    modelExposureDependencies?: readonly DurableModelExposureDependency[];
   },
 ): Promise<{ id: string; action: "created" | "updated"; similarity?: number }> {
   const { type, content, namespaceId } = opts;
@@ -797,6 +804,8 @@ export async function saveMemoryWithDb(
     );
     await handle.update(memories).set({
       content, type, importance,
+      modelExposureDependencies:
+        prepared?.modelExposureDependencies ?? null,
       ...memoryEmbeddingValues(embedding, sql`${memories.contentRevision}`),
       updatedAt: new Date(),
     }).where(eq(memories.id, top.id));
@@ -807,7 +816,14 @@ export async function saveMemoryWithDb(
   const id = prepared?.id ?? crypto.randomUUID();
 
   await handle.insert(memories).values({
-    id, tier: 1, type, content, importance, ...memoryEmbeddingValues(embedding, 0),
+    id,
+    tier: 1,
+    type,
+    content,
+    importance,
+    modelExposureDependencies:
+      prepared?.modelExposureDependencies ?? null,
+    ...memoryEmbeddingValues(embedding, 0),
   });
 
   if (namespaceId) {
@@ -1021,6 +1037,7 @@ export async function commitForegroundMemoryOrdinaryFallback(
           content: input.content,
           type: input.type,
           importance: input.importance,
+          modelExposureDependencies: null,
           ...memoryEmbeddingValues(
             preparedEmbedding,
             sql`${memories.contentRevision}`,
@@ -1064,6 +1081,7 @@ export async function commitForegroundMemoryOrdinaryFallback(
       }
       await handle.update(memories).set({
         content: input.content,
+        modelExposureDependencies: null,
         ...memoryEmbeddingValues(
           preparedEmbedding,
           sql`${memories.contentRevision}`,
@@ -1254,6 +1272,7 @@ export async function replaceMemoryWithDb(
   newContent: string,
   mutableNamespaceIds?: string[],
   preparedEmbedding?: EmbeddingWithProvenanceV1,
+  modelExposureDependencies?: readonly DurableModelExposureDependency[],
 ): Promise<boolean> {
   if (mutableNamespaceIds && mutableNamespaceIds.length > 0) {
     const memoryNamespaceIds = await getMemoryNamespacesWithDb(
@@ -1288,6 +1307,7 @@ export async function replaceMemoryWithDb(
 
   await handle.update(memories).set({
     content: newContent,
+    modelExposureDependencies: modelExposureDependencies ?? null,
     ...memoryEmbeddingValues(embedding, sql`${memories.contentRevision}`),
     updatedAt: new Date(),
   }).where(eq(memories.id, memoryId));
@@ -1473,6 +1493,8 @@ async function selectPromptBriefRows(
       id: memories.id,
       type: memories.type,
       content: memories.content,
+      contentRevision: memories.contentRevision,
+      namespaceId: memoryNamespaces.namespaceId,
       importance: memories.importance,
       createdAt: memories.createdAt,
     })
@@ -1485,7 +1507,12 @@ async function selectPromptBriefRows(
       ),
     )
     .orderBy(desc(memories.importance), desc(memories.createdAt));
-  return rows.map((row) => {
+  const unique = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    const prior = unique.get(row.id);
+    if (prior === undefined || row.namespaceId < prior.namespaceId) unique.set(row.id, row);
+  }
+  return [...unique.values()].map((row) => {
     if (row.content === null || row.type === null) {
       throw new Error("Prompt brief Memory ordinary content is unavailable");
     }
@@ -1646,6 +1673,7 @@ export async function loadPromptBriefMemoryOrdinarySelections(
         type: memories.type,
         content: memories.content,
         contentRevision: memories.contentRevision,
+        namespaceId: memoryNamespaces.namespaceId,
         importance: memories.importance,
         createdAt: memories.createdAt,
         tier: memories.tier,
@@ -1658,7 +1686,11 @@ export async function loadPromptBriefMemoryOrdinarySelections(
           inArray(memoryNamespaces.namespaceId, [...namespaceIds]),
         ),
       );
-    const byId = new Map(rows.map((row) => [row.id, row]));
+    const byId = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      const prior = byId.get(row.id);
+      if (prior === undefined || row.namespaceId < prior.namespaceId) byId.set(row.id, row);
+    }
     return selections.flatMap((selection) => {
       const row = byId.get(selection.id);
       if (
@@ -1911,6 +1943,8 @@ export async function getMemoryById(
         updatedAt: memories.updatedAt,
         demotedAt: memories.demotedAt,
         demotedFrom: memories.demotedFrom,
+        contentRevision: memories.contentRevision,
+        modelExposureDependencies: memories.modelExposureDependencies,
       })
       .from(memories)
       .where(eq(memories.id, memoryId))
@@ -1934,6 +1968,8 @@ export async function getMemoryById(
       updatedAt: row.updatedAt,
       demotedAt: row.demotedAt,
       demotedFrom: row.demotedFrom,
+      contentRevision: row.contentRevision,
+      modelExposureDependencies: row.modelExposureDependencies,
       namespaceIds: visibleNs,
     };
   });
@@ -1988,6 +2024,7 @@ export async function updateMemory(
           const embedding = await embedTextWithProvenance(nextContent);
           await handle.update(memories).set({
             content: nextContent, importance: nextImportance,
+            modelExposureDependencies: null,
             ...memoryEmbeddingValues(embedding, sql`${memories.contentRevision}`),
             updatedAt: new Date(),
           }).where(eq(memories.id, memoryId));

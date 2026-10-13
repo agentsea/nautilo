@@ -3069,10 +3069,13 @@ export class PostgresProtectedJournalPublicationRepository {
       transaction,
       typedDb.update(roomJournalState)
         .set({
+          compactionAcceptedModelBinding: null,
+          compactionAcceptedPlan: null,
           compactionLeaseToken: null,
           compactionLeaseExpiresAt: null,
           compactionDueAt: null,
           compactionFailureCount: 0,
+          compactionLastAttemptKnownNonusable: false,
           compactionRetryAfter: null,
           lastCompactionCompletedAt: input.now,
           updatedAt: input.now,

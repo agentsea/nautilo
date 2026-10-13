@@ -302,14 +302,34 @@ describe("durable hierarchy Sleep state machine", () => {
       }],
       existingParents: [],
       maxSelectedChildren: 2,
+      applicationPlanToken: `plan:${recordRef}`,
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef,
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: [`leaf:${recordRef}`],
+      }, {
+        kind: "record",
+        recordRef: `neighbor:${recordRef}`,
+        observedProcessingGeneration: 2,
+        terminalAuthorityLeafHandles: [`leaf:neighbor:${recordRef}`],
+      }],
     });
     const semantic = semanticHarness(events);
+    const invokedExposures: unknown[] = [];
+    const appliedExposures: unknown[] = [];
     semantic.loadOrganizerView = (loadedClaim) => Promise.resolve({
       status: "ready",
       view: viewFor(loadedClaim.recordRef),
     });
-    semantic.invokeOrganizerBatch = (batchClaims) => {
+    semantic.invokeOrganizerBatch = (
+      batchClaims,
+      _prompt,
+      _signal,
+      modelExposureDependencies,
+    ) => {
       events.push(`batch:${batchClaims.length}`);
+      invokedExposures.push(modelExposureDependencies);
       return Promise.resolve(JSON.stringify({
         answers: batchClaims.map((_, index) => ({
           question: `Q${index + 1}`,
@@ -317,8 +337,13 @@ describe("durable hierarchy Sleep state machine", () => {
         })),
       }));
     };
-    semantic.applyProposal = ({ claim: appliedClaim }) => {
+    semantic.applyProposal = ({
+      claim: appliedClaim,
+      modelExposureDependencies,
+      applicationPlanTokens,
+    }) => {
       events.push(`apply:${appliedClaim.recordRef}`);
+      appliedExposures.push({ modelExposureDependencies, applicationPlanTokens });
       return Promise.resolve({
         status: "applied",
         operation: "no_change",
@@ -338,10 +363,83 @@ describe("durable hierarchy Sleep state machine", () => {
       "apply:record:a",
       "apply:record:b",
     ]);
+    expect(invokedExposures).toHaveLength(1);
+    expect(invokedExposures[0]).toHaveLength(4);
+    expect(appliedExposures).toEqual([
+      {
+        modelExposureDependencies: invokedExposures[0],
+        applicationPlanTokens: ["plan:record:a", "plan:record:b"],
+      },
+      {
+        modelExposureDependencies: invokedExposures[0],
+        applicationPlanTokens: ["plan:record:a", "plan:record:b"],
+      },
+    ]);
     expect(result).toMatchObject({
       completed: 2,
       usage: { modelCalls: 1 },
       diagnostics: { modelBatches: 1, modelBatchItems: 2, batchStaleRescheduled: 0 },
+    });
+  });
+
+  test("splits model batches before the producer exact-plan ceiling", async () => {
+    const events: string[] = [];
+    const claims = [
+      claim("record:a", "organization"),
+      claim("record:b", "organization"),
+    ];
+    const semantic = semanticHarness(events);
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        changed: {
+          handle: "R1",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+        candidates: [{
+          handle: "C1",
+          snapshot: snapshot(`neighbor:${current.recordRef}`),
+          dependency: {
+            kind: "record",
+            recordRef: `neighbor:${current.recordRef}`,
+          },
+        }],
+        existingParents: [],
+        maxSelectedChildren: 2,
+        modelExposureBatchMaximum: 2,
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: current.recordRef,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [`leaf:${current.recordRef}`],
+        }, {
+          kind: "record",
+          recordRef: `neighbor:${current.recordRef}`,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [`leaf:neighbor:${current.recordRef}`],
+        }],
+      },
+    });
+    const batches: string[][] = [];
+    semantic.invokeOrganizerBatch = async (batchClaims) => {
+      batches.push(batchClaims.map((current) => current.recordRef));
+      return JSON.stringify({
+        answers: [{ question: "Q1", proposal: { operation: "no_change" } }],
+      });
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: workHarness(claims, events).port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 2 },
+    });
+
+    expect(batches).toEqual([["record:a"], ["record:b"]]);
+    expect(result).toMatchObject({
+      completed: 2,
+      usage: { modelCalls: 2 },
+      diagnostics: { modelBatches: 2, modelBatchItems: 2 },
     });
   });
 

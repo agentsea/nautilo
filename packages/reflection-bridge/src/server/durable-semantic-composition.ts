@@ -30,6 +30,7 @@ import type { EffectiveAudienceAlternative } from "@nautilo/reflection/authority
 
 import {
   crossRoomApplicationPlanToken,
+  CROSS_ROOM_EXECUTION_PLAN_LIMITS,
   type CrossRoomApplicationPlanToken,
   type CrossRoomInputCoordinate,
   type CrossRoomPublicationPlan,
@@ -180,11 +181,13 @@ export interface DurableOrganizerModelPort {
     claim: DurableSleepClaim,
     prompt: string,
     signal?: AbortSignal,
+    modelExposureDependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string>;
   invokeBatch(
     claims: readonly DurableSleepClaim[],
     prompt: string,
     signal?: AbortSignal,
+    modelExposureDependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string>;
 }
 
@@ -195,6 +198,7 @@ export interface DurableOrganizerProposalApplicationPort {
     idempotencyKey: string;
     budget: Parameters<DurableSleepSemanticPort["applyProposal"]>[0]["budget"];
     publicationPlan?: CrossRoomPublicationPlan;
+    modelExposureDependencies?: readonly DurableModelExposureDependency[];
     signal?: AbortSignal;
   }>): Promise<DurableSleepApplyResult>;
 }
@@ -283,9 +287,14 @@ export interface CrossRoomOrganizerPartitionPort {
     }>[];
     signal?: AbortSignal;
   }>): Promise<CrossRoomOrganizerAugmentationResult>;
+  readModelExposureDependencies?(
+    applicationPlanToken: CrossRoomApplicationPlanToken,
+  ): readonly DurableModelExposureDependency[] | undefined;
   planPublication(input: Readonly<{
     applicationPlanToken: CrossRoomApplicationPlanToken;
+    applicationPlanTokens?: readonly CrossRoomApplicationPlanToken[];
     proposal: PartitionedOrganizeProposal;
+    modelExposureDependencies?: readonly DurableModelExposureDependency[];
     signal?: AbortSignal;
   }>): Promise<CrossRoomOrganizerPublicationPlanningResult>;
   planDependencyLoss?(input: Readonly<{
@@ -563,6 +572,9 @@ implements DurableSleepSemanticPort {
     }
 
     let applicationPlanToken: CrossRoomApplicationPlanToken | undefined;
+    let modelExposureDependencies:
+      | readonly DurableModelExposureDependency[]
+      | undefined;
     let unsupportedAuthorityShapes = 0;
     let authorityParentsResolved = 0;
     let authorityParentsSkipped = 0;
@@ -703,6 +715,8 @@ implements DurableSleepSemanticPort {
         existingParents.push({ ...entry, handle: `P${existingParents.length + 1}` });
       }
       applicationPlanToken = augmented.applicationPlanToken;
+      modelExposureDependencies = this.ports.crossRoom
+        .readModelExposureDependencies?.(applicationPlanToken);
       unsupportedAuthorityShapes = augmented.unsupportedAuthorityShapes;
       authorityParentsResolved = augmented.authorityParentsResolved;
       authorityParentsSkipped = augmented.authorityParentsSkipped;
@@ -721,6 +735,13 @@ implements DurableSleepSemanticPort {
         ...(applicationPlanToken === undefined
           ? {}
           : { applicationPlanToken }),
+        ...(modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies,
+              modelExposureBatchMaximum:
+                CROSS_ROOM_EXECUTION_PLAN_LIMITS.inputItems,
+            }),
         planning: {
           sameRoomPlans: 1,
           crossRoomPlans: applicationPlanToken === undefined ? 0 : 1,
@@ -741,16 +762,28 @@ implements DurableSleepSemanticPort {
     claim: DurableSleepClaim,
     prompt: string,
     signal?: AbortSignal,
+    modelExposureDependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string> {
-    return this.ports.model.invoke(claim, prompt, signal);
+    return this.ports.model.invoke(
+      claim,
+      prompt,
+      signal,
+      modelExposureDependencies,
+    );
   }
 
   invokeOrganizerBatch(
     claims: readonly DurableSleepClaim[],
     prompt: string,
     signal?: AbortSignal,
+    modelExposureDependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string> {
-    return this.ports.model.invokeBatch(claims, prompt, signal);
+    return this.ports.model.invokeBatch(
+      claims,
+      prompt,
+      signal,
+      modelExposureDependencies,
+    );
   }
 
   async resolveDependencyLoss(
@@ -902,7 +935,17 @@ implements DurableSleepSemanticPort {
     const planningStartedAt = now();
     const planned = await this.ports.crossRoom!.planPublication({
       applicationPlanToken,
+      ...(input.applicationPlanTokens === undefined
+        ? {}
+        : {
+            applicationPlanTokens: input.applicationPlanTokens.map(
+              crossRoomApplicationPlanToken,
+            ),
+          }),
       proposal: input.proposal,
+      ...(input.modelExposureDependencies === undefined
+        ? {}
+        : { modelExposureDependencies: input.modelExposureDependencies }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     const publicationPlanningElapsedMs = Math.max(

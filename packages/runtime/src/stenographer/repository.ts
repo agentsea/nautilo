@@ -19,6 +19,8 @@ import {
   or,
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPayloadRepresentations,
+  reflectionRecords,
+  resolveModelAttemptReplaySafety,
   roomMembers,
   roomEventRollups,
   roomEvents,
@@ -30,6 +32,7 @@ import {
   sessions,
   sql,
   type DirectDatabase,
+  type StenographerCompactionAcceptedPlan,
 } from "@nautilo/db";
 import {
   planStenographerBatch,
@@ -42,9 +45,16 @@ import type {
   RoomEventRollupView,
 } from "./types";
 import {
+  EVENT_COMPACTION_INPUT_MAX_CHARS,
+  EVENT_COMPACTION_PROTECTED_TAIL,
   planJournalCompaction,
   type JournalCompactionPlan,
 } from "@nautilo/reflection";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import {
+  stenographerJournalEventObservationFingerprint,
+  stenographerJournalRollupObservationFingerprint,
+} from "@nautilo/reflection-bridge/server";
 import {
   encodeRoomEventRollupPayloadV1,
   stenographerOrdinaryOutputFingerprint,
@@ -62,6 +72,8 @@ export type StenographerErrorCode =
 
 export interface ClaimedSourceRow extends StenographerSourceRow {
   displayLabel: string;
+  /** Absent only from legacy/test claims that cannot prove exact exposure. */
+  editRevision?: number;
 }
 
 export interface ExtractionClaim {
@@ -77,6 +89,7 @@ export interface ExtractionClaim {
   sourceRows: ClaimedSourceRow[];
   latestRollup: RoomEventRollupView | null;
   visibleEvents: EffectiveRoomEvent[];
+  namespaceId?: string;
   /** M230 — CAS token for an edit-triggered full Room rebuild. */
   rebuildGeneration?: number | null;
 }
@@ -87,7 +100,72 @@ export interface CompactionClaim {
   leaseToken: string;
   attemptCount: number;
   modelOperationId: string;
+  acceptedPlan: Extract<
+    StenographerCompactionAcceptedPlan,
+    { owner: "ordinary" }
+  >;
   plan: JournalCompactionPlan<EffectiveRoomEvent>;
+  namespaceId?: string;
+  /** Exact rollup view used by the prompt; absent on legacy/test claims. */
+  previousRollup?: RoomEventRollupView | null;
+}
+
+function acceptedOrdinaryCompactionPlan(
+  value: unknown,
+): Extract<
+  StenographerCompactionAcceptedPlan,
+  { owner: "ordinary" }
+> | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Accepted Stenographer compaction plan is malformed");
+  }
+  const row = value as Record<string, unknown>;
+  const keys = [
+    "version",
+    "owner",
+    "operationId",
+    "rebuildGeneration",
+    "previousRollupId",
+    "selectedEventIds",
+    "protectedTailEventIds",
+  ];
+  const ids = [row["selectedEventIds"], row["protectedTailEventIds"]];
+  if (
+    Object.keys(row).length !== keys.length
+    || keys.some((key) => !(key in row))
+    || row["version"] !== 1
+    || row["owner"] !== "ordinary"
+    || typeof row["operationId"] !== "string"
+    || row["operationId"].length === 0
+    || !Number.isSafeInteger(row["rebuildGeneration"])
+    || Number(row["rebuildGeneration"]) < 0
+    || !(row["previousRollupId"] === null
+      || typeof row["previousRollupId"] === "string")
+    || ids.some((value) =>
+      !Array.isArray(value)
+      || value.length > EVENT_COMPACTION_INPUT_MAX_CHARS
+      || value.some((id) => typeof id !== "string" || id.length === 0)
+      || new Set(value).size !== value.length
+    )
+    || (row["protectedTailEventIds"] as readonly unknown[]).length
+      > EVENT_COMPACTION_PROTECTED_TAIL
+  ) {
+    throw new TypeError("Accepted Stenographer compaction plan is malformed");
+  }
+  return Object.freeze({
+    version: 1,
+    owner: "ordinary",
+    operationId: row["operationId"],
+    rebuildGeneration: Number(row["rebuildGeneration"]),
+    previousRollupId: row["previousRollupId"],
+    selectedEventIds: Object.freeze([
+      ...(row["selectedEventIds"] as readonly string[]),
+    ]),
+    protectedTailEventIds: Object.freeze([
+      ...(row["protectedTailEventIds"] as readonly string[]),
+    ]),
+  });
 }
 
 interface StateRow {
@@ -101,7 +179,7 @@ interface StateRow {
   extraction_retry_after: string | Date | null;
   has_agent: boolean;
   upper_bound_message_id: number | string | null;
-  replay_batch_status: "completed" | "failed" | null;
+  replay_batch_status: "completed" | "failed" | "running" | null;
   replay_batch_error_code: string | null;
   replay_through_message_id: number | string | null;
   historical_backfill_status: "pending" | "completed" | "not_needed";
@@ -112,6 +190,7 @@ interface StateRow {
   rebuild_generation: number | string;
   rebuild_requested_at: string | Date | null;
   rebuild_target_message_id: number | string | null;
+  namespace_id: string;
 }
 
 interface SourceDbRow {
@@ -125,6 +204,7 @@ interface SourceDbRow {
   display_name: string | null;
   handle: string | null;
   excluded_from_evidence: boolean;
+  edit_revision?: number | string;
 }
 
 class StenographerSourceRepresentationUnavailableError extends Error {}
@@ -174,6 +254,61 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((byte, index) => byte === right[index]);
 }
 
+function canonicalModelExposureDependencies(
+  dependencies: readonly DurableModelExposureDependency[] | null | undefined,
+): string | null {
+  if (dependencies === null || dependencies === undefined) return null;
+  return JSON.stringify([...dependencies]
+    .sort((left, right) => {
+      const leftKey = left.kind === "record"
+        ? `record\u0000${left.recordRef}`
+        : `source\u0000${left.sourceKind}\u0000${left.logicalSourceRef}`;
+      const rightKey = right.kind === "record"
+        ? `record\u0000${right.recordRef}`
+        : `source\u0000${right.sourceKind}\u0000${right.logicalSourceRef}`;
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    })
+    .map((dependency) => dependency.kind === "record"
+      ? [
+          "record",
+          dependency.recordRef,
+          dependency.observedProcessingGeneration,
+          [...dependency.terminalAuthorityLeafHandles].sort(),
+        ]
+      : [
+          "source",
+          dependency.sourceKind,
+          dependency.logicalSourceRef,
+          dependency.observedRevision ?? null,
+          dependency.observedContentFingerprint ?? null,
+          dependency.terminalAuthorityLeafHandle,
+        ]));
+}
+
+function rollupPayloadExposureDependencies(
+  dependencies: readonly DurableModelExposureDependency[],
+) {
+  return dependencies.map((dependency) => dependency.kind === "record"
+    ? {
+        kind: "record" as const,
+        recordId: dependency.recordRef,
+        observedProcessingGeneration:
+          dependency.observedProcessingGeneration,
+        terminalAuthorityLeafHandles:
+          dependency.terminalAuthorityLeafHandles,
+      }
+    : {
+        kind: "source" as const,
+        sourceKind: dependency.sourceKind,
+        logicalObjectRef: dependency.logicalSourceRef,
+        observedRevision: dependency.observedRevision ?? null,
+        observedContentFingerprint:
+          dependency.observedContentFingerprint ?? null,
+        terminalAuthorityLeafHandle:
+          dependency.terminalAuthorityLeafHandle,
+      });
+}
+
 function eventStatement(row: EventRow): string {
   if (typeof row.statement !== "string") {
     throw new Error("selected Journal event representation is unavailable");
@@ -215,6 +350,9 @@ function claimedSourceRow(row: SourceDbRow): ClaimedSourceRow {
       (row.role === "user" || row.role === "assistant" || row.role === "tool"),
     excludedFromEvidence: row.excluded_from_evidence,
     displayLabel: dbLabel(row),
+    ...(row.edit_revision === undefined
+      ? {}
+      : { editRevision: asNumber(row.edit_revision) }),
   };
 }
 
@@ -428,15 +566,19 @@ export async function historicalCandidateRoomIds(
 async function loadPromptJournal(
   tx: JournalExecutor,
   roomId: string,
+  namespaceId: string,
 ): Promise<{
   latestRollup: RoomEventRollupView | null;
   visibleEvents: EffectiveRoomEvent[];
 }> {
   const rollupRows = await tx
     .select({
+      id: roomEventRollups.id,
       throughEventSequence: roomEventRollups.throughEventSequence,
       content: roomEventRollups.content,
       sourceEventCount: roomEventRollups.sourceEventCount,
+      compactorVersion: roomEventRollups.compactorVersion,
+      modelExposureDependencies: roomEventRollups.modelExposureDependencies,
     })
     .from(roomEventRollups)
     .where(eq(roomEventRollups.roomId, roomId))
@@ -455,6 +597,9 @@ async function loadPromptJournal(
     room_id: roomEvents.roomId,
     sequence: roomEvents.sequence,
     kind: roomEvents.kind,
+    projection_kind: roomEvents.projectionKind,
+    record_id: roomEvents.recordId,
+    processing_generation: reflectionRecords.processingGeneration,
     statement: sql<string | null>`CASE
       WHEN ${roomEvents.projectionKind} = 'legacy' THEN ${roomEvents.statement}
       ELSE convert_from(
@@ -467,6 +612,13 @@ async function loadPromptJournal(
     resolves_event_id: roomEvents.resolvesEventId,
   })
     .from(roomEvents)
+    .leftJoin(
+      reflectionRecords,
+      and(
+        eq(roomEvents.projectionKind, "native"),
+        eq(reflectionRecords.recordId, roomEvents.recordId),
+      ),
+    )
     .leftJoin(
       reflectionRecordPayloadRepresentationHeads,
       and(
@@ -507,9 +659,38 @@ async function loadPromptJournal(
   return {
     latestRollup: rollup
       ? {
+          id: rollup.id,
           throughEventSequence: through,
           content: rollup.content,
           sourceEventCount: rollup.sourceEventCount,
+          compactorVersion: rollup.compactorVersion,
+          ...(rollup.modelExposureDependencies === null
+            ? {}
+            : {
+                modelExposureDependencies:
+                  rollup.modelExposureDependencies,
+              }),
+          modelExposureDependency: {
+            kind: "source",
+            sourceKind: "journal_rollup",
+            logicalSourceRef: `journal-rollup:${rollup.id}`,
+            observedRevision:
+              `through:${through}:version:${rollup.compactorVersion}`,
+            observedContentFingerprint:
+              stenographerJournalRollupObservationFingerprint({
+                rollupId: rollup.id,
+                throughEventSequence: through,
+                content: rollup.content,
+                compactorVersion: rollup.compactorVersion,
+                ...(rollup.modelExposureDependencies === null
+                  ? {}
+                  : {
+                      modelExposureDependencies:
+                        rollup.modelExposureDependencies,
+                    }),
+              }),
+            terminalAuthorityLeafHandle: namespaceId,
+          },
         }
       : null,
     visibleEvents: eventRows.map((row) => ({
@@ -521,6 +702,38 @@ async function loadPromptJournal(
       status: row.status,
       supersedesEventId: row.supersedes_event_id,
       resolvesEventId: row.resolves_event_id,
+      ...(row.projection_kind === "native"
+        && row.record_id !== null
+        && row.processing_generation !== null
+        ? {
+            modelExposureDependency: {
+              kind: "record" as const,
+              recordRef: row.record_id,
+              observedProcessingGeneration:
+                row.processing_generation,
+              terminalAuthorityLeafHandles: [namespaceId],
+            },
+          }
+        : row.projection_kind === "legacy"
+          ? {
+              modelExposureDependency: {
+                kind: "source" as const,
+                sourceKind: "journal_event",
+                logicalSourceRef: `journal-event:${row.id}`,
+                observedRevision:
+                  `sequence:${asNumber(row.sequence)}:status:${row.status}`,
+                observedContentFingerprint:
+                  stenographerJournalEventObservationFingerprint({
+                    eventId: row.id,
+                    sequence: asNumber(row.sequence),
+                    kind: row.kind,
+                    statement: eventStatement(row),
+                    status: row.status,
+                  }),
+                terminalAuthorityLeafHandle: namespaceId,
+              },
+            }
+          : {}),
     })),
   };
 }
@@ -548,6 +761,7 @@ async function loadPriorContextRows(
         sm.role,
         sm.content,
         sm.fingerprint,
+        sm.edit_revision,
         sm.transcript_origin,
         sm.metadata->>'originatedBy' AS originated_by,
         COALESCE(aa.display_name, ua.display_name) AS display_name,
@@ -607,6 +821,7 @@ async function loadPriorContextRows(
       b.role,
       b.content,
       b.fingerprint,
+      b.edit_revision,
       b.transcript_origin,
       b.originated_by,
       b.display_name,
@@ -671,6 +886,7 @@ export async function tryClaimRoom(
           rjs.room_id,
           r.owner_id,
           r.kind,
+          r.namespace_id,
           rjs.last_processed_message_id,
           rjs.suspended_at,
           rjs.lease_token,
@@ -699,56 +915,43 @@ export async function tryClaimRoom(
             INNER JOIN actors a ON a.id = rm.actor_id
             WHERE rm.room_id = r.id AND a.kind = 'agent'
           ) AS has_agent,
-          COALESCE((
-            SELECT rjb.through_message_id_inclusive
-            FROM room_journal_batches rjb
-            WHERE rjb.room_id = r.id
-              AND rjb.lane = ${lane}
-              AND rjb.from_message_id_exclusive = ${cursorExpression}
-              AND rjb.status IN ('completed', 'failed')
-            ORDER BY
-              CASE WHEN rjb.status = 'completed' THEN 0 ELSE 1 END,
-              rjb.created_at DESC
-            LIMIT 1
-          ), ${pendingUpperBoundExpression}) AS upper_bound_message_id,
-          (
-            SELECT rjb.status
-            FROM room_journal_batches rjb
-            WHERE rjb.room_id = r.id
-              AND rjb.lane = ${lane}
-              AND rjb.from_message_id_exclusive = ${cursorExpression}
-              AND rjb.status IN ('completed', 'failed')
-            ORDER BY
-              CASE WHEN rjb.status = 'completed' THEN 0 ELSE 1 END,
-              rjb.created_at DESC
-            LIMIT 1
-          ) AS replay_batch_status,
-          (
-            SELECT rjb.error_code
-            FROM room_journal_batches rjb
-            WHERE rjb.room_id = r.id
-              AND rjb.lane = ${lane}
-              AND rjb.from_message_id_exclusive = ${cursorExpression}
-              AND rjb.status IN ('completed', 'failed')
-            ORDER BY
-              CASE WHEN rjb.status = 'completed' THEN 0 ELSE 1 END,
-              rjb.created_at DESC
-            LIMIT 1
-          ) AS replay_batch_error_code,
-          (
-            SELECT rjb.through_message_id_inclusive
-            FROM room_journal_batches rjb
-            WHERE rjb.room_id = r.id
-              AND rjb.lane = ${lane}
-              AND rjb.from_message_id_exclusive = ${cursorExpression}
-              AND rjb.status IN ('completed', 'failed')
-            ORDER BY
-              CASE WHEN rjb.status = 'completed' THEN 0 ELSE 1 END,
-              rjb.created_at DESC
-            LIMIT 1
-          ) AS replay_through_message_id
+          COALESCE(
+            replay_batch.through_message_id_inclusive,
+            ${pendingUpperBoundExpression}
+          ) AS upper_bound_message_id,
+          replay_batch.status AS replay_batch_status,
+          replay_batch.error_code AS replay_batch_error_code,
+          replay_batch.through_message_id_inclusive AS replay_through_message_id
         FROM room_journal_state rjs
         INNER JOIN rooms r ON r.id = rjs.room_id
+        LEFT JOIN LATERAL (
+          SELECT
+            rjb.status,
+            rjb.error_code,
+            rjb.through_message_id_inclusive
+          FROM room_journal_batches rjb
+          WHERE rjb.room_id = r.id
+            AND rjb.lane = ${lane}
+            AND rjb.from_message_id_exclusive = ${cursorExpression}
+            AND (
+              rjb.status IN ('completed', 'failed')
+              OR (
+                rjb.status = 'running'
+                AND (
+                  rjs.lease_token IS NULL
+                  OR rjs.lease_expires_at IS NULL
+                  OR rjs.lease_expires_at <= ${timestampParam(now)}::timestamptz
+                )
+              )
+            )
+          ORDER BY
+            CASE WHEN rjb.status = 'completed' THEN 0 ELSE 1 END,
+            CASE WHEN rjb.status = 'completed' THEN rjb.through_message_id_inclusive END DESC,
+            CASE WHEN rjb.status <> 'completed' THEN rjb.through_message_id_inclusive END ASC,
+            rjb.created_at ASC,
+            rjb.id ASC
+          LIMIT 1
+        ) replay_batch ON TRUE
         WHERE rjs.room_id = ${roomId}
         FOR UPDATE OF rjs
       `),
@@ -845,6 +1048,7 @@ export async function tryClaimRoom(
           sm.role,
           sm.content,
           sm.fingerprint,
+          sm.edit_revision,
           sm.transcript_origin,
           sm.metadata->>'originatedBy' AS originated_by,
           COALESCE(aa.display_name, ua.display_name) AS display_name,
@@ -892,7 +1096,9 @@ export async function tryClaimRoom(
       rows: sourceRows,
       now,
       fingerprintsAtOrBeforeCursor: priorFingerprints,
-      retryFixedRange: state.replay_batch_status === "failed",
+      retryFixedRange:
+        state.replay_batch_status === "failed"
+        || state.replay_batch_status === "running",
     });
     if (!plan) return null;
 
@@ -920,6 +1126,7 @@ export async function tryClaimRoom(
         ],
         set: {
           status: "running",
+          errorCode: null,
           attemptCount: sql`${roomJournalBatches.attemptCount} + 1`,
           startedAt: now,
           completedAt: null,
@@ -931,6 +1138,28 @@ export async function tryClaimRoom(
       });
     const batch = batchRows[0];
     if (!batch) throw new Error("journal batch upsert returned no row");
+    const replaySafety = await resolveModelAttemptReplaySafety({
+      kind: "operation",
+      roomId,
+      callType: "room_stenographer",
+      operationId: batch.id,
+    }, {
+      db: tx,
+      knownNonusableResult:
+        state.replay_batch_status === "failed"
+        && state.replay_batch_error_code === "invalid_output",
+    });
+    if (replaySafety.decision === "block_unknown") {
+      await tx.update(roomJournalBatches).set({
+        status: "failed", errorCode: "provider_outcome_unknown", lastErrorAt: now,
+      }).where(eq(roomJournalBatches.id, batch.id));
+      await tx.update(roomJournalState).set({
+        leaseToken: null, leaseExpiresAt: null, extractionRetryAfter: null,
+        lastExtractionErrorCode: "provider_outcome_unknown", lastExtractionErrorAt: now,
+        updatedAt: now,
+      }).where(eq(roomJournalState.roomId, roomId));
+      return null;
+    }
     await tx
       .update(roomJournalState)
       .set({
@@ -939,7 +1168,7 @@ export async function tryClaimRoom(
         updatedAt: now,
       })
       .where(eq(roomJournalState.roomId, roomId));
-    const journal = await loadPromptJournal(tx, roomId);
+    const journal = await loadPromptJournal(tx, roomId, state.namespace_id);
     const priorContextRows = await loadPriorContextRows(tx, {
       roomId,
       floorMessageIdExclusive: asNumber(state.prior_context_floor_message_id),
@@ -966,6 +1195,7 @@ export async function tryClaimRoom(
         .map((row) => sourceById.get(row.id))
         .filter((row): row is ClaimedSourceRow => row !== undefined),
       ...journal,
+      namespaceId: state.namespace_id,
       rebuildGeneration:
         state.rebuild_requested_at == null
           ? null
@@ -1096,9 +1326,12 @@ export async function prepareNextJournalRebuild(
             lastExtractionErrorAt: null,
             lastExtractionCompletedAt: null,
             compactionDueAt: null,
+            compactionAcceptedModelBinding: null,
+            compactionAcceptedPlan: null,
             compactionLeaseToken: null,
             compactionLeaseExpiresAt: null,
             compactionFailureCount: 0,
+            compactionLastAttemptKnownNonusable: false,
             compactionRetryAfter: null,
             lastCompactionErrorCode: null,
             lastCompactionErrorAt: null,
@@ -1215,12 +1448,16 @@ export async function claimNextHistoricalExtraction(
 async function loadAllRoomEvents(
   tx: JournalExecutor,
   roomId: string,
+  namespaceId: string,
 ): Promise<EffectiveRoomEvent[]> {
   const rows = await tx.select({
     id: roomEvents.id,
     room_id: roomEvents.roomId,
     sequence: roomEvents.sequence,
     kind: roomEvents.kind,
+    projection_kind: roomEvents.projectionKind,
+    record_id: roomEvents.recordId,
+    processing_generation: reflectionRecords.processingGeneration,
     statement: sql<string | null>`CASE
       WHEN ${roomEvents.projectionKind} = 'legacy' THEN ${roomEvents.statement}
       ELSE convert_from(
@@ -1233,6 +1470,13 @@ async function loadAllRoomEvents(
     resolves_event_id: roomEvents.resolvesEventId,
   })
     .from(roomEvents)
+    .leftJoin(
+      reflectionRecords,
+      and(
+        eq(roomEvents.projectionKind, "native"),
+        eq(reflectionRecords.recordId, roomEvents.recordId),
+      ),
+    )
     .leftJoin(
       reflectionRecordPayloadRepresentationHeads,
       and(
@@ -1275,6 +1519,37 @@ async function loadAllRoomEvents(
     status: row.status,
     supersedesEventId: row.supersedes_event_id,
     resolvesEventId: row.resolves_event_id,
+    ...(row.projection_kind === "native"
+      && row.record_id !== null
+      && row.processing_generation !== null
+      ? {
+          modelExposureDependency: {
+            kind: "record" as const,
+            recordRef: row.record_id,
+            observedProcessingGeneration: row.processing_generation,
+            terminalAuthorityLeafHandles: [namespaceId],
+          },
+        }
+      : row.projection_kind === "legacy"
+        ? {
+            modelExposureDependency: {
+              kind: "source" as const,
+              sourceKind: "journal_event",
+              logicalSourceRef: `journal-event:${row.id}`,
+              observedRevision:
+                `sequence:${asNumber(row.sequence)}:status:${row.status}`,
+              observedContentFingerprint:
+                stenographerJournalEventObservationFingerprint({
+                  eventId: row.id,
+                  sequence: asNumber(row.sequence),
+                  kind: row.kind,
+                  statement: eventStatement(row),
+                  status: row.status,
+                }),
+              terminalAuthorityLeafHandle: namespaceId,
+            },
+          }
+        : {}),
   }));
 }
 
@@ -1356,6 +1631,7 @@ export async function tryClaimCompactionRoom(
     await tx.execute(sql`SELECT id FROM rooms WHERE id = ${roomId} FOR UPDATE`);
     const stateRows = rowsFromExecute<{
       owner_id: string;
+      namespace_id: string;
       kind: string;
       suspended_at: string | Date | null;
       has_agent: boolean;
@@ -1365,10 +1641,15 @@ export async function tryClaimCompactionRoom(
       compaction_retry_after: string | Date | null;
       last_compaction_error_code: string | null;
       compaction_failure_count: number | string;
+      compaction_last_attempt_known_nonusable: boolean;
+      rebuild_generation: number | string;
+      compaction_accepted_model_binding: unknown;
+      compaction_accepted_plan: unknown;
     }>(
       await tx.execute(sql`
         SELECT
           r.owner_id,
+          r.namespace_id,
           r.kind,
           rjs.suspended_at,
           EXISTS (
@@ -1382,7 +1663,11 @@ export async function tryClaimCompactionRoom(
           rjs.compaction_lease_expires_at,
           rjs.compaction_retry_after,
           rjs.last_compaction_error_code,
-          rjs.compaction_failure_count
+          rjs.compaction_failure_count,
+          rjs.compaction_last_attempt_known_nonusable,
+          rjs.rebuild_generation,
+          rjs.compaction_accepted_model_binding,
+          rjs.compaction_accepted_plan
         FROM room_journal_state rjs
         INNER JOIN rooms r ON r.id = rjs.room_id
         WHERE rjs.room_id = ${roomId}
@@ -1393,6 +1678,12 @@ export async function tryClaimCompactionRoom(
     );
     const state = stateRows[0];
     if (!state || state.compaction_due_at === null) return null;
+    if (
+      (state.compaction_accepted_model_binding === null)
+        !== (state.compaction_accepted_plan === null)
+    ) {
+      throw new Error("Stenographer compaction acceptance is incoherent");
+    }
     if (state.last_compaction_error_code === "provider_outcome_unknown") {
       return null;
     }
@@ -1417,11 +1708,47 @@ export async function tryClaimCompactionRoom(
     ) {
       return null;
     }
-    const journal = await loadPromptJournal(tx, roomId);
-    const allEvents = await loadAllRoomEvents(tx, roomId);
+    const journal = await loadPromptJournal(tx, roomId, state.namespace_id);
+    const allEvents = await loadAllRoomEvents(
+      tx,
+      roomId,
+      state.namespace_id,
+    );
+    const rebuildGeneration = asNumber(state.rebuild_generation);
+    if (
+      state.compaction_accepted_plan !== null
+      && (
+        typeof state.compaction_accepted_plan !== "object"
+        || Array.isArray(state.compaction_accepted_plan)
+        || (state.compaction_accepted_plan as Record<string, unknown>)["owner"]
+          !== "ordinary"
+      )
+    ) return null;
+    const acceptedPlan = acceptedOrdinaryCompactionPlan(
+      state.compaction_accepted_plan,
+    );
+    const eventById = new Map(allEvents.map((event) => [event.id, event]));
+    const frozenEvents = acceptedPlan === null
+      ? null
+      : [
+          ...acceptedPlan.selectedEventIds,
+          ...acceptedPlan.protectedTailEventIds,
+        ].map((id) => eventById.get(id));
+    if (
+      acceptedPlan !== null
+      && (
+        acceptedPlan.rebuildGeneration !== rebuildGeneration
+        || acceptedPlan.previousRollupId
+          !== (journal.latestRollup?.id ?? null)
+        || (frozenEvents?.some((event) => event === undefined) ?? true)
+      )
+    ) return null;
     const planned = planJournalCompaction({
-      events: allEvents,
+      events: acceptedPlan === null
+        ? allEvents
+        : frozenEvents as EffectiveRoomEvent[],
       rollups: journal.latestRollup ? [journal.latestRollup] : [],
+      ...(acceptedPlan === null ? {} : { forceDue: true }),
     });
     if (!planned.ok) {
       const failureCount = asNumber(state.compaction_failure_count) + 1;
@@ -1450,12 +1777,54 @@ export async function tryClaimCompactionRoom(
         .where(eq(roomJournalState.roomId, roomId));
       return null;
     }
+    if (
+      acceptedPlan !== null
+      && (
+        JSON.stringify(planned.plan.selectedEvents.map((event) => event.id))
+          !== JSON.stringify(acceptedPlan.selectedEventIds)
+        || JSON.stringify(planned.plan.protectedTail.map((event) => event.id))
+          !== JSON.stringify(acceptedPlan.protectedTailEventIds)
+      )
+    ) return null;
+    const modelOperationId = acceptedPlan?.operationId
+      ?? `compaction:${roomId}:${rebuildGeneration}:${journal.latestRollup?.id ?? "initial"}:${planned.plan.throughEventSequence}:${planned.plan.protectedTail.at(-1)?.sequence ?? planned.plan.throughEventSequence}`;
+    const claimPlan = acceptedPlan ?? Object.freeze({
+      version: 1 as const,
+      owner: "ordinary" as const,
+      operationId: modelOperationId,
+      rebuildGeneration,
+      previousRollupId: journal.latestRollup?.id ?? null,
+      selectedEventIds: Object.freeze(
+        planned.plan.selectedEvents.map((event) => event.id),
+      ),
+      protectedTailEventIds: Object.freeze(
+        planned.plan.protectedTail.map((event) => event.id),
+      ),
+    });
+    const replaySafety = await resolveModelAttemptReplaySafety({
+      kind: "operation", roomId, callType: "room_event_compaction", operationId: modelOperationId,
+    }, {
+      db: tx,
+      knownNonusableResult:
+        state.compaction_last_attempt_known_nonusable
+        && state.compaction_lease_token === null
+        && acceptedPlan !== null,
+    });
+    if (replaySafety.decision === "block_unknown") {
+      await tx.update(roomJournalState).set({
+        compactionLeaseToken: null, compactionLeaseExpiresAt: null,
+        compactionRetryAfter: null, lastCompactionErrorCode: "provider_outcome_unknown",
+        lastCompactionErrorAt: now, updatedAt: now,
+      }).where(eq(roomJournalState.roomId, roomId));
+      return null;
+    }
     const leaseToken = randomUUID();
     await tx
       .update(roomJournalState)
       .set({
         compactionLeaseToken: leaseToken,
         compactionLeaseExpiresAt: new Date(now.getTime() + leaseMs),
+        compactionLastAttemptKnownNonusable: false,
         updatedAt: now,
       })
       .where(eq(roomJournalState.roomId, roomId));
@@ -1464,8 +1833,11 @@ export async function tryClaimCompactionRoom(
       ownerId: state.owner_id,
       leaseToken,
       attemptCount: asNumber(state.compaction_failure_count) + 1,
-      modelOperationId: randomUUID(),
+      modelOperationId,
+      acceptedPlan: claimPlan,
       plan: planned.plan,
+      namespaceId: state.namespace_id,
+      previousRollup: journal.latestRollup,
     };
   });
 }
@@ -1539,6 +1911,7 @@ export async function publishCompaction(input: {
   now?: Date;
   db?: DirectDatabase;
   ordinaryFallbackReason?: "device" | "authority";
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
 }): Promise<boolean> {
   const db = input.db ?? getSharedDirectDb();
   const now = input.now ?? new Date();
@@ -1558,6 +1931,9 @@ export async function publishCompaction(input: {
       suspendedAt: roomJournalState.suspendedAt,
       namespaceId: rooms.namespaceId,
       rebuildGeneration: roomJournalState.rebuildGeneration,
+      acceptedModelBinding:
+        roomJournalState.compactionAcceptedModelBinding,
+      acceptedPlan: roomJournalState.compactionAcceptedPlan,
       hasAgent: exists(agentMember),
     })
       .from(roomJournalState)
@@ -1568,32 +1944,96 @@ export async function publishCompaction(input: {
       !state ||
       state.compactionLeaseToken !== input.claim.leaseToken ||
       state.suspendedAt !== null ||
-      !state.hasAgent
+      !state.hasAgent ||
+      state.acceptedModelBinding === null
     ) {
       return false;
     }
+    const acceptedPlan = acceptedOrdinaryCompactionPlan(state.acceptedPlan);
+    if (
+      acceptedPlan === null
+      || acceptedPlan.operationId !== input.claim.acceptedPlan.operationId
+      || acceptedPlan.rebuildGeneration
+        !== input.claim.acceptedPlan.rebuildGeneration
+      || acceptedPlan.previousRollupId
+        !== input.claim.acceptedPlan.previousRollupId
+      || JSON.stringify(acceptedPlan.selectedEventIds)
+        !== JSON.stringify(input.claim.acceptedPlan.selectedEventIds)
+      || JSON.stringify(acceptedPlan.protectedTailEventIds)
+        !== JSON.stringify(input.claim.acceptedPlan.protectedTailEventIds)
+      || state.rebuildGeneration !== acceptedPlan.rebuildGeneration
+    ) return false;
     const selected = input.claim.plan.selectedEvents;
     if (selected.length === 0) return false;
-    const selectedRows = await tx
-      .select({
-        id: roomEvents.id,
-        sequence: roomEvents.sequence,
-        statement: roomEvents.statement,
-        status: roomEvents.status,
-      })
-      .from(roomEvents)
-      .where(
-        and(
-          eq(roomEvents.roomId, input.claim.roomId),
-          inArray(
-            roomEvents.id,
-            selected.map((event) => event.id),
-          ),
+    if (input.modelExposureDependencies !== undefined) {
+      const currentJournal = await loadPromptJournal(
+        tx,
+        input.claim.roomId,
+        state.namespaceId,
+      );
+      const currentEvents = await loadAllRoomEvents(
+        tx,
+        input.claim.roomId,
+        state.namespaceId,
+      );
+      const currentBySequence = new Map(
+        currentEvents.map((event) => [event.sequence, event]),
+      );
+      const exposure = input.claim.plan.modelExposure;
+      const dependencies: Array<DurableModelExposureDependency | undefined> = [
+        ...(exposure.previousRollupThroughEventSequence === null
+          ? []
+          : currentJournal.latestRollup?.throughEventSequence
+              === exposure.previousRollupThroughEventSequence
+            ? [currentJournal.latestRollup.modelExposureDependency]
+            : [undefined]),
+        ...exposure.selectedEventSequences.map((sequence) =>
+          currentBySequence.get(sequence)?.modelExposureDependency
         ),
-      )
-      .orderBy(asc(roomEvents.sequence));
+        ...exposure.protectedTailEventSequences.map((sequence) =>
+          currentBySequence.get(sequence)?.modelExposureDependency
+        ),
+      ];
+      if (
+        dependencies.length === 0
+        || dependencies.some((dependency) => dependency === undefined)
+        || canonicalModelExposureDependencies(
+          dependencies as DurableModelExposureDependency[],
+        ) !== canonicalModelExposureDependencies(
+          input.modelExposureDependencies,
+        )
+        || selected.some((expected) => {
+          const current = currentBySequence.get(expected.sequence);
+          return current === undefined
+            || current.id !== expected.id
+            || current.statement !== expected.statement
+            || current.status !== expected.status;
+        })
+      ) return false;
+    }
+    const selectedRows = input.modelExposureDependencies !== undefined
+      ? []
+      : await tx
+        .select({
+          id: roomEvents.id,
+          sequence: roomEvents.sequence,
+          statement: roomEvents.statement,
+          status: roomEvents.status,
+        })
+        .from(roomEvents)
+        .where(
+          and(
+            eq(roomEvents.roomId, input.claim.roomId),
+            inArray(
+              roomEvents.id,
+              selected.map((event) => event.id),
+            ),
+          ),
+        )
+        .orderBy(asc(roomEvents.sequence));
     if (
-      selectedRows.length !== selected.length ||
+      input.modelExposureDependencies === undefined
+      && (selectedRows.length !== selected.length ||
       selectedRows.some((row, index) => {
         const expected = selected[index]!;
         return (
@@ -1602,7 +2042,7 @@ export async function publishCompaction(input: {
           row.statement !== expected.statement ||
           row.status !== expected.status
         );
-      })
+      }))
     ) {
       return false;
     }
@@ -1612,6 +2052,8 @@ export async function publishCompaction(input: {
         roomId: input.claim.roomId,
         throughEventSequence: input.claim.plan.throughEventSequence,
         content: input.content,
+        modelExposureDependencies:
+          input.modelExposureDependencies ?? null,
         sourceEventCount:
           (input.claim.plan.previousRollup?.sourceEventCount ?? 0) +
           selected.length,
@@ -1644,6 +2086,8 @@ export async function publishCompaction(input: {
         ordinaryFallbackRebuildGeneration:
           roomEventRollups.ordinaryFallbackRebuildGeneration,
         ordinaryOutputFingerprint: roomEventRollups.ordinaryOutputFingerprint,
+        modelExposureDependencies:
+          roomEventRollups.modelExposureDependencies,
       })
       .from(roomEventRollups)
       .where(and(
@@ -1662,6 +2106,12 @@ export async function publishCompaction(input: {
     const insertedId = insertedRows[0]?.id ?? null;
     if (insertedId !== null && insertedId !== winner.id) {
       throw new Error("Stenographer compaction winner changed");
+    }
+    if (
+      canonicalModelExposureDependencies(winner.modelExposureDependencies)
+        !== canonicalModelExposureDependencies(input.modelExposureDependencies)
+    ) {
+      throw new Error("Stenographer compaction model exposure changed");
     }
     if (input.ordinaryFallbackReason !== undefined) {
       const existingReason = winner.ordinaryFallbackReason;
@@ -1686,6 +2136,15 @@ export async function publishCompaction(input: {
         modelId: winner.modelId,
         compactorVersion: winner.compactorVersion,
         createdAt: winner.createdAt.toISOString(),
+        ...(winner.modelExposureDependencies === null
+          || winner.modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies:
+                rollupPayloadExposureDependencies(
+                  winner.modelExposureDependencies,
+                ),
+            }),
       });
       const fingerprint = stenographerOrdinaryOutputFingerprint({
         kind: "compaction",
@@ -1743,9 +2202,12 @@ export async function publishCompaction(input: {
       )
       UPDATE room_journal_state rjs
       SET
+        compaction_accepted_model_binding = NULL,
+        compaction_accepted_plan = NULL,
         compaction_lease_token = NULL,
         compaction_lease_expires_at = NULL,
         compaction_failure_count = 0,
+        compaction_last_attempt_known_nonusable = FALSE,
         compaction_retry_after = NULL,
         last_compaction_completed_at = ${timestampParam(now)},
         compaction_due_at = CASE
@@ -1775,9 +2237,16 @@ export async function failCompaction(input: {
     await tx.execute(
       sql`SELECT id FROM rooms WHERE id = ${input.claim.roomId} FOR UPDATE`,
     );
-    const rows = rowsFromExecute<{ compaction_failure_count: number | string }>(
+    const rows = rowsFromExecute<{
+      compaction_failure_count: number | string;
+      compaction_accepted_model_binding: unknown;
+      compaction_accepted_plan: unknown;
+    }>(
       await tx.execute(sql`
-        SELECT compaction_failure_count
+        SELECT
+          compaction_failure_count,
+          compaction_accepted_model_binding,
+          compaction_accepted_plan
         FROM room_journal_state
         WHERE room_id = ${input.claim.roomId}
           AND compaction_lease_token = ${input.claim.leaseToken}
@@ -1785,13 +2254,20 @@ export async function failCompaction(input: {
       `),
     );
     if (!rows[0]) return;
-    const failureCount = asNumber(rows[0].compaction_failure_count) + 1;
+    const current = rows[0];
+    const failureCount = asNumber(current.compaction_failure_count) + 1;
     await tx
       .update(roomJournalState)
       .set({
         compactionLeaseToken: null,
         compactionLeaseExpiresAt: null,
         compactionFailureCount: failureCount,
+        compactionLastAttemptKnownNonusable:
+          input.errorCode === "invalid_output"
+          && current.compaction_accepted_model_binding !== null
+          && current.compaction_accepted_model_binding !== undefined
+          && current.compaction_accepted_plan !== null
+          && current.compaction_accepted_plan !== undefined,
         compactionRetryAfter: input.errorCode === "provider_outcome_unknown"
           ? null
           : new Date(now.getTime() + retryDelayMs(failureCount)),

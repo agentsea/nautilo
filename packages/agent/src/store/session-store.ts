@@ -7,6 +7,7 @@ import {
   type MemoryReviewAdmission,
   actors,
   roomMembers,
+  rooms,
   sessionMessages,
   sessions,
   getAttachmentsForTurns,
@@ -34,6 +35,10 @@ import {
   type AppendNotificationContext,
   ServerProviderCredentialsDeniedError,
 } from "@nautilo/trust";
+import {
+  encodeModelInputExposureForMetadata,
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+} from "../memory/model-input-exposure";
 import { withAgentTrustContext, withSerializableAgentTrustContext, type TrustAgentTx } from "./trust-agent-db";
 import { createUniversalModel } from "../providers/universal";
 import { runWithUsageContext } from "../usage/usage-context";
@@ -292,9 +297,20 @@ export function transcriptMetadataForMessage(message: BaseMessage, options: Appe
   const sourceMetadata = options.internalToolMetadata && (
     message instanceof ToolMessage || (AIMessage.isInstance(message) && message.tool_calls?.length)
   ) ? options.internalToolMetadata : options.metadata ?? null;
-  let metadata = sourceMetadata !== null && Object.keys(sourceMetadata).length > 0
-    ? sourceMetadata
+  const {
+    [MODEL_INPUT_EXPOSURE_METADATA_KEY]: _untrustedExposure,
+    ...trustedSourceMetadata
+  } = sourceMetadata ?? {};
+  let metadata = Object.keys(trustedSourceMetadata).length > 0
+    ? trustedSourceMetadata
     : null;
+  const trustedExposure = encodeModelInputExposureForMetadata(message);
+  if (trustedExposure !== undefined) {
+    metadata = {
+      ...(metadata ?? {}),
+      [MODEL_INPUT_EXPOSURE_METADATA_KEY]: trustedExposure,
+    };
+  }
   if (message instanceof ToolMessage
     && message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
     metadata = {
@@ -426,6 +442,104 @@ export interface SessionMessage extends TranscriptToolPresentation, ExternalMess
   fingerprint?: string | null | undefined;
   /** Closed, server-authored neutral presentation for a workcard continuation. */
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
+}
+
+export interface CurrentOrdinaryTranscriptExposureRow {
+  readonly messageId: number;
+  readonly sessionId: string;
+  readonly roomId: string;
+  readonly sourceUserId: string;
+  readonly editRevision: number;
+  readonly role: "user" | "assistant" | "tool" | "system";
+  readonly content: string;
+  readonly metadata: unknown;
+  readonly namespaceId: string;
+}
+
+export function projectCurrentOrdinaryTranscriptExposureRows(
+  messageIds: readonly number[],
+  rows: readonly Readonly<{
+    messageId: number;
+    sessionId: string;
+    roomId: string | null;
+    sourceUserId: string;
+    editRevision: number;
+    role: string;
+    content: string | null;
+    metadata: unknown;
+    namespaceId: string;
+  }>[],
+): readonly CurrentOrdinaryTranscriptExposureRow[] {
+  const expected = [...new Set(messageIds)].sort((left, right) => left - right);
+  if (rows.length !== expected.length) throw new Error("Ordinary transcript exposure source changed");
+  return Object.freeze(rows.map((row, index) => {
+    if (row.messageId !== expected[index]
+      || typeof row.sessionId !== "string"
+      || row.sessionId.length === 0
+      || typeof row.roomId !== "string"
+      || row.roomId.length === 0
+      || typeof row.sourceUserId !== "string"
+      || row.sourceUserId.length === 0
+      || !Number.isSafeInteger(row.editRevision)
+      || row.editRevision < 0
+      || row.content === null
+      || !["user", "assistant", "tool", "system"].includes(row.role)
+      || typeof row.namespaceId !== "string"
+      || row.namespaceId.length === 0) {
+      throw new Error("Ordinary transcript exposure source changed");
+    }
+    return Object.freeze({
+      messageId: row.messageId,
+      sessionId: row.sessionId,
+      roomId: row.roomId,
+      sourceUserId: row.sourceUserId,
+      editRevision: row.editRevision,
+      role: row.role as CurrentOrdinaryTranscriptExposureRow["role"],
+      content: row.content,
+      metadata: row.metadata,
+      namespaceId: row.namespaceId,
+    });
+  }));
+}
+
+/** Reopen exact selected transcript rows under current Room and Agent authority. */
+export async function readCurrentOrdinaryTranscriptExposureRows(input: Readonly<{
+  ownerId: string;
+  agentId: string;
+  roomIds: readonly string[];
+  messageIds: readonly number[];
+}>): Promise<readonly CurrentOrdinaryTranscriptExposureRow[]> {
+  const messageIds = [...new Set(input.messageIds)];
+  const roomIds = [...new Set(input.roomIds)];
+  if (messageIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw new TypeError("Ordinary transcript exposure coordinates are invalid");
+  }
+  if (roomIds.length === 0 || roomIds.some((id) => typeof id !== "string" || id.length === 0)) {
+    throw new TypeError("Ordinary transcript exposure Rooms are invalid");
+  }
+  if (messageIds.length === 0) return Object.freeze([]);
+  return withSerializableAgentTrustContext({ userId: input.ownerId, agentId: input.agentId }, async (tx) => {
+    const rows = await tx.select({
+      messageId: sessionMessages.id,
+      sessionId: sessions.id,
+      roomId: sessions.roomId,
+      sourceUserId: sessions.ownerId,
+      editRevision: sessionMessages.editRevision,
+      role: sessionMessages.role,
+      content: sessionMessages.content,
+      metadata: sessionMessages.metadata,
+      namespaceId: rooms.namespaceId,
+    }).from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+      .innerJoin(rooms, eq(rooms.id, sessions.roomId))
+      .where(and(
+        inArray(sessions.roomId, roomIds),
+        excludeSubagentTranscriptSessions(),
+        inArray(sessionMessages.id, messageIds),
+      ))
+      .orderBy(asc(sessionMessages.id));
+    return projectCurrentOrdinaryTranscriptExposureRows(messageIds, rows);
+  });
 }
 
 /**

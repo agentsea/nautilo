@@ -250,12 +250,105 @@ describe("PostgreSQL semantic work commitments and admission", () => {
     })).toEqual({ admitted: true, generation: 3 });
     expect(reason).toBe("dependency_lost");
     expect(lastWorkMutationStatement).toContain("ordinary_fallback_reason =");
+    expect(lastWorkMutationStatement).toContain("accepted_model_binding =");
+    expect(lastWorkMutationStatement).toContain(
+      "accepted_model_binding_generation =",
+    );
     expect(lastWorkMutationParameters).toContain("dependency_lost");
     expect(lastWorkMutationParameters).not.toContain("scheduled_review");
   });
 });
 
 describe("PostgreSQL semantic work leases", () => {
+  test("atomically binds a fresh family, reopens a bound subset, and rejects partial binding", async () => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    const accepted = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:fixed",
+      inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+    };
+    let mode: "fresh" | "resumed" | "subset" | "mixed" = "fresh";
+    const claims: DurableSleepClaim[] = ["b", "a"].map((suffix) => ({
+      logicalObjectRef: `record:${suffix}`,
+      recordRef: `record:${suffix}`,
+      generation: 3,
+      changeReason: "revised",
+      stage: "organization",
+      leaseToken: `lease:${suffix}`,
+    }));
+    const row = (claim: DurableSleepClaim, binding: unknown) => ({
+      record_id: claim.recordRef,
+      generation: claim.generation,
+      claim_generation: claim.generation,
+      lease_token: claim.leaseToken,
+      lease_expires_at: new Date(now.getTime() + 30_000),
+      state: "claimed",
+      stage: claim.stage,
+      change_reason: claim.changeReason,
+      accepted_model_binding: binding,
+      accepted_model_binding_generation: binding === null ? null : claim.generation,
+      disposition: "available",
+    });
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select")) {
+        const sorted = [...claims].sort((left, right) =>
+          left.recordRef.localeCompare(right.recordRef)
+        );
+        const selected = mode === "subset" ? sorted.slice(0, 1) : sorted;
+        return selected.map((claim, index) => row(
+          claim,
+          mode === "fresh" ? null : mode === "resumed" || index === 0
+            ? accepted
+            : null,
+        )) as unknown as Row[];
+      }
+      if (normalized.startsWith("update reflection_record_semantic_work")) {
+        return [{ record_id: "updated" }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+      clock: () => now,
+    });
+    let resolves = 0;
+    expect(await store.bindAcceptedModelOperation(claims, async () => {
+      resolves += 1;
+      return accepted;
+    })).toEqual(accepted);
+    expect(resolves).toBe(1);
+    expect(normalizedSql(value.queries[0]!.statement)).toContain(
+      "order by reflection_record_semantic_work.record_id asc for update",
+    );
+
+    mode = "resumed";
+    expect(await store.bindAcceptedModelOperation(claims, async () => {
+      resolves += 1;
+      return accepted;
+    })).toEqual(accepted);
+    expect(resolves).toBe(1);
+
+    mode = "subset";
+    const subset = [...claims].sort((left, right) =>
+      left.recordRef.localeCompare(right.recordRef)
+    ).slice(0, 1);
+    expect(await store.bindAcceptedModelOperation(subset, async () => {
+      resolves += 1;
+      return accepted;
+    })).toEqual(accepted);
+    expect(resolves).toBe(1);
+
+    mode = "mixed";
+    expect(store.bindAcceptedModelOperation(claims, async () => accepted))
+      .rejects.toThrow("partially bound");
+  });
+
   test("checks exact live claim metadata without reading payloads or changing work", async () => {
     const now = new Date("2026-09-05T10:00:00.000Z");
     let current = true;

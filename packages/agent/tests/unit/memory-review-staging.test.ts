@@ -51,6 +51,74 @@ describe("ordinary Memory review staging", () => {
     expect(await staging.search("fact", 10, false)).toEqual([]);
     expect((await staging.search("fact", 10, true))[0]?.tier).toBe(3);
   });
+  test("captures only the rows actually formatted for the model", async () => {
+    const first = ordinaryRow(row("first"));
+    const second = ordinaryRow(row("second"));
+    const reads: string[] = [];
+    const staging = createMemoryReviewStaging("work", ports({
+      read: async (id) => {
+        reads.push(id);
+        return id === first.id ? first : id === second.id ? second : null;
+      },
+      search: async () => [{ ...first, score: 1 }, { ...second, score: 0.5 }],
+    }));
+    const actualFormattedSubset = (await staging.search("fact", 10, false)).slice(0, 1);
+    await staging.captureModelExposure(actualFormattedSubset);
+    expect(reads).toEqual(["first"]);
+    expect(staging.prepared().exposureSnapshots).toEqual([{
+      memoryId: "first",
+      fingerprint: memoryReviewFingerprint(first),
+    }]);
+  });
+  test("rechecks original exposure without overwriting mutation snapshots after overlay changes", async () => {
+    const original = ordinaryRow(row("existing"));
+    let current = original;
+    const staging = createMemoryReviewStaging("work", ports({
+      read: async () => current,
+      readMutable: async () => current,
+      search: async () => [{ ...original, score: 1 }],
+    }));
+    await staging.mutate({ action: "replace", memory_id: original.id, content: "New fact" });
+    const exposed = await staging.search("fact", 10, false);
+    await staging.captureModelExposure(exposed);
+    expect(exposed[0]?.content).toBe("New fact");
+    expect(staging.prepared().snapshots).toEqual([{
+      memoryId: original.id,
+      fingerprint: memoryReviewFingerprint(original),
+    }]);
+    expect(staging.prepared().exposureSnapshots).toEqual(staging.prepared().snapshots);
+    await staging.assertCurrentExposure();
+    current = { ...original, content: "Changed concurrently", updatedAt: new Date(1) };
+    expect(await staging.assertCurrentExposure().catch((error: unknown) => error))
+      .toMatchObject({ code: "source_changed" });
+    expect(staging.prepared().snapshots[0]?.fingerprint)
+      .toBe(memoryReviewFingerprint(original));
+  });
+  test("search can capture readable shared rows without granting edit authority", async () => {
+    const shared = ordinaryRow(row("shared"));
+    const staging = createMemoryReviewStaging("work", ports({
+      read: async () => shared,
+      readMutable: async () => null,
+      search: async () => [{ ...shared, score: 1 }],
+    }));
+    const exposed = await staging.search("shared", 10, false);
+    await staging.captureModelExposure(exposed);
+    expect(staging.prepared().exposureSnapshots).toHaveLength(1);
+    expect(await staging.mutate({ action: "remove", memory_id: shared.id })
+      .catch((error: unknown) => error)).toMatchObject({ code: "memory_unavailable" });
+  });
+  test("staged new rows inherit their operation instead of fabricating original reads", async () => {
+    let reads = 0;
+    const staging = createMemoryReviewStaging("work", ports({
+      read: async () => { reads += 1; return null; },
+    }));
+    await staging.mutate({ action: "save", content: "New fact" });
+    const exposed = await staging.search("new", 10, false);
+    await staging.captureModelExposure(exposed);
+    expect(reads).toBe(0);
+    expect(staging.prepared().operations).toHaveLength(1);
+    expect(staging.prepared().exposureSnapshots).toEqual([]);
+  });
   test("uses canonical existing dedup target and prepares embedding", async () => {
     const staging = createMemoryReviewStaging("work", ports({ findSaveTarget: async () => ({ id: "existing", score: 1 }) }));
     await staging.mutate({ action: "save", content: "Fact" });

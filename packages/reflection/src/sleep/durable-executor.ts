@@ -3,6 +3,7 @@ import type {
   HierarchyBudgetUsage,
   RecordRef,
 } from "../contracts/hierarchy";
+import type { DurableModelExposureDependency } from "../persistence/repository";
 import {
   ORGANIZER_BATCH_MAX_ITEMS,
   partitionOrganizerProposal,
@@ -319,6 +320,10 @@ export interface DurableSleepOrganizerView {
   readonly candidates: readonly OrganizerRecordInput[];
   readonly existingParents: readonly OrganizerRecordInput[];
   readonly maxSelectedChildren: number;
+  /** Exact current evidence actually rendered into this Organizer prompt. */
+  readonly modelExposureDependencies?: readonly DurableModelExposureDependency[];
+  /** Producer-owned exact-plan ceiling for one combined provider prompt. */
+  readonly modelExposureBatchMaximum?: number;
   /**
    * Opaque bridge-owned exact-plan token. Reflection neither opens nor derives
    * product authority from it; it only returns the token with the accepted
@@ -424,6 +429,19 @@ export type DurableParentConflictResolutionResult =
 
 export type DurableSleepOrganizationOutcome = "completed" | "failed" | "unavailable" | "cancelled";
 
+function canonicalModelExposureDependencies(
+  dependencies: readonly DurableModelExposureDependency[],
+): readonly DurableModelExposureDependency[] {
+  const canonical = new Map<string, DurableModelExposureDependency>();
+  for (const dependency of dependencies) {
+    const key = JSON.stringify(dependency);
+    if (!canonical.has(key)) canonical.set(key, dependency);
+  }
+  return Object.freeze([...canonical.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, dependency]) => dependency));
+}
+
 /** One admitted organization lifetime; durable work and retries remain family-owned. */
 export interface DurableSleepOrganizationAttempt {
   assertCurrent(): Promise<void>;
@@ -489,6 +507,7 @@ export interface DurableSleepSemanticPort {
     claim: DurableSleepClaim,
     prompt: string,
     signal?: AbortSignal,
+    modelExposureDependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string>;
   /**
    * Optional production batching seam. Claims are already independently
@@ -498,12 +517,17 @@ export interface DurableSleepSemanticPort {
     claims: readonly DurableSleepClaim[],
     prompt: string,
     signal?: AbortSignal,
+    modelExposureDependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string>;
   /** Publishes or replays one immutable deterministic application. */
   applyProposal(input: {
     readonly claim: DurableSleepClaim;
     readonly proposal: PartitionedOrganizeProposal;
     readonly applicationPlanToken?: string;
+    /** Complete evidence exposed by every model call that produced this result. */
+    readonly modelExposureDependencies?: readonly DurableModelExposureDependency[];
+    /** Every authenticated candidate plan exposed by the producing batch. */
+    readonly applicationPlanTokens?: readonly string[];
     readonly idempotencyKey: string;
     readonly budget: HierarchyBudget;
     readonly signal?: AbortSignal;
@@ -1163,6 +1187,9 @@ export async function runDurableHierarchySleep(input: {
     accumulator?: ItemAccumulator;
     attempt?: DurableSleepOrganizationAttempt;
     outcome: DurableSleepOrganizationOutcome;
+    modelExposureDependencies?: readonly DurableModelExposureDependency[];
+    applicationPlanTokens?: readonly string[];
+    modelExposureIncomplete?: boolean;
   };
   const pendingOrganizer: PendingOrganizerItem[] = [];
   const executionWindowExhausted = () => modelWindowRemaining(input.executionWindow) <= 0;
@@ -1212,7 +1239,27 @@ export async function runDurableHierarchySleep(input: {
   };
   const flushOrganizerBatch = async (): Promise<void> => {
     if (pendingOrganizer.length === 0) return;
-    const batch = pendingOrganizer.splice(0, pendingOrganizer.length);
+    let batchLength = pendingOrganizer.length;
+    const exposureIdentities = new Set<string>();
+    let exposureMaximum = Number.POSITIVE_INFINITY;
+    for (const [index, item] of pendingOrganizer.entries()) {
+      if (item.view.modelExposureDependencies === undefined) continue;
+      exposureMaximum = Math.min(
+        exposureMaximum,
+        item.view.modelExposureBatchMaximum ?? Number.POSITIVE_INFINITY,
+      );
+      const next = new Set(exposureIdentities);
+      for (const dependency of item.view.modelExposureDependencies) {
+        next.add(JSON.stringify(dependency));
+      }
+      if (next.size > exposureMaximum && index > 0) {
+        batchLength = index;
+        break;
+      }
+      exposureIdentities.clear();
+      for (const identity of next) exposureIdentities.add(identity);
+    }
+    const batch = pendingOrganizer.splice(0, batchLength);
     try {
     if (input.signal?.aborted) {
       for (const item of batch) { item.outcome = "cancelled"; await pauseClaim(item.claim); }
@@ -1243,6 +1290,33 @@ export async function runDurableHierarchySleep(input: {
       signal?: AbortSignal,
     ): Promise<string> => {
       for (const item of invocationItems) await item.attempt?.assertCurrent();
+      const invocationDependencies = invocationItems.every(
+        (item) => item.view.modelExposureDependencies !== undefined,
+      )
+        ? canonicalModelExposureDependencies(invocationItems.flatMap(
+            (item) => item.view.modelExposureDependencies!,
+          ))
+        : undefined;
+      const invocationPlanTokens = invocationItems.flatMap((item) =>
+        item.view.applicationPlanToken === undefined
+          ? []
+          : [item.view.applicationPlanToken]
+      );
+      for (const item of invocationItems) {
+        if (invocationDependencies === undefined) {
+          item.modelExposureIncomplete = true;
+          delete item.modelExposureDependencies;
+        } else if (!item.modelExposureIncomplete) {
+          item.modelExposureDependencies = canonicalModelExposureDependencies([
+            ...(item.modelExposureDependencies ?? []),
+            ...invocationDependencies,
+          ]);
+        }
+        item.applicationPlanTokens = [...new Set([
+          ...(item.applicationPlanTokens ?? []),
+          ...invocationPlanTokens,
+        ])];
+      }
       const startedAt = now();
       try {
         return await runWithinModelWindow({
@@ -1273,11 +1347,13 @@ export async function runDurableHierarchySleep(input: {
                 invocationItems.map((item) => item.claim),
                 prompt,
                 modelSignal,
+                invocationDependencies,
               )
               : input.semantic.invokeOrganizer(
                 invocationItems[0]!.claim,
                 prompt,
                 modelSignal,
+                invocationDependencies,
               );
           },
         });
@@ -1448,6 +1524,12 @@ export async function runDurableHierarchySleep(input: {
             ...(item.view.applicationPlanToken === undefined
               ? {}
               : { applicationPlanToken: item.view.applicationPlanToken }),
+            ...(item.modelExposureDependencies === undefined
+              ? {}
+              : { modelExposureDependencies: item.modelExposureDependencies }),
+            ...(item.applicationPlanTokens === undefined
+              ? {}
+              : { applicationPlanTokens: item.applicationPlanTokens }),
             idempotencyKey:
               `sleep:${item.claim.logicalObjectRef}:${item.claim.generation}`,
             budget: remainingBudget(input.budget.hierarchy, usage),
@@ -1551,6 +1633,7 @@ export async function runDurableHierarchySleep(input: {
     } finally {
       for (const item of batch) await closeAttempt(item.attempt,
         item.outcome === "completed" ? "completed" : input.signal?.aborted ? "cancelled" : item.outcome);
+      if (pendingOrganizer.length > 0) await flushOrganizerBatch();
     }
   };
 

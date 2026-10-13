@@ -3,6 +3,7 @@ import { AIMessage, ToolMessage, type BaseMessage } from
 import {
   LiveShadowToolProtectionRequiredError,
   LiveShadowToolProtectionTerminalError,
+  copyModelInputExposure,
   type LiveShadowToolBoundary,
 } from "@nautilo/agent";
 import {
@@ -47,7 +48,7 @@ function openedMessage(
       }));
     }
     if (typeof source.id === "string") message.id = source.id;
-    return message;
+    return copyModelInputExposure(source, message);
   }
   if (payload.role === "tool") {
     const toolCallId = payload.sensitiveMetadata?.["toolCallId"];
@@ -63,7 +64,7 @@ function openedMessage(
       additional_kwargs: { ...(source.additional_kwargs ?? {}) },
     });
     if (typeof source.id === "string") message.id = source.id;
-    return message;
+    return copyModelInputExposure(source, message);
   }
   throw new TypeError("Live Shadow Runtime accepts only Agent/Tool payloads");
 }

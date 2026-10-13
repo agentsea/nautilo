@@ -41,6 +41,10 @@ import type {
   DurableRecordPublication,
   DurableSourceDependency,
 } from "@nautilo/reflection/durable";
+import {
+  parseMemoryOperationBinding,
+  type MemoryOperationBinding,
+} from "@nautilo/types";
 
 import {
   assertVerifiedRecordProductPostgresHandle,
@@ -647,6 +651,8 @@ export async function admitSemanticWorkWithinTransaction(
         completionOutcome: null,
         projectionRefreshOnly: false,
         ordinaryFallbackReason: null,
+        acceptedModelBinding: null,
+        acceptedModelBindingGeneration: null,
         dueSince: sql`greatest(${reflectionRecordSemanticWork.dueSince}, ${input.now})`,
         startedAt: null,
         completedAt: null,
@@ -1346,6 +1352,124 @@ export class PostgresSemanticWorkStore
     if (claim.logicalObjectRef !== claim.recordRef) return false;
     const rows = await executeTypedRecordProductQuery(this.options.handle, this.#currentClaimQuery(claim));
     return rows.length === 1;
+  }
+
+  /**
+   * Bind one exact Organizer provider operation to every claim in its model
+   * family. A partial prior binding cannot acquire new siblings: only an
+   * entirely fresh batch or a fully bound subset of one retained family is valid.
+   */
+  async bindAcceptedModelOperation(
+    claims: readonly DurableSleepClaim[],
+    resolve: () => Promise<MemoryOperationBinding>,
+  ): Promise<MemoryOperationBinding> {
+    if (claims.length < 1) throw new TypeError("Organizer model batch cannot be empty");
+    const sorted = [...claims].sort((left, right) =>
+      left.recordRef.localeCompare(right.recordRef)
+    );
+    if (
+      sorted.some((claim) => claim.logicalObjectRef !== claim.recordRef)
+      || sorted.some((claim, index) =>
+        index > 0 && claim.recordRef === sorted[index - 1]!.recordRef
+      )
+    ) throw new TypeError("Organizer model batch claims must be unique Records");
+    return this.options.handle.transaction(async (tx) => {
+      const now = this.#clock();
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordSemanticWork.recordId,
+          generation: reflectionRecordSemanticWork.generation,
+          claim_generation: reflectionRecordSemanticWork.claimGeneration,
+          lease_token: reflectionRecordSemanticWork.leaseToken,
+          lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt,
+          state: reflectionRecordSemanticWork.state,
+          stage: reflectionRecordSemanticWork.stage,
+          change_reason: reflectionRecordSemanticWork.changeReason,
+          accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
+          accepted_model_binding_generation:
+            reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+          disposition: reflectionRecords.disposition,
+        }).from(reflectionRecordSemanticWork)
+          .innerJoin(
+            reflectionRecords,
+            eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
+          )
+          .where(inArray(
+            reflectionRecordSemanticWork.recordId,
+            sorted.map((claim) => claim.recordRef),
+          ))
+          .orderBy(asc(reflectionRecordSemanticWork.recordId))
+          .for("update", { of: reflectionRecordSemanticWork }));
+      if (rows.length !== sorted.length) throw new Error("Reflection model lease changed");
+      const bindings: MemoryOperationBinding[] = [];
+      for (const [index, claim] of sorted.entries()) {
+        const row = rows[index]!;
+        const expiresAt = row["lease_expires_at"];
+        if (
+          row["record_id"] !== claim.recordRef
+          || row["generation"] !== claim.generation
+          || row["claim_generation"] !== claim.generation
+          || row["lease_token"] !== claim.leaseToken
+          || row["state"] !== "claimed"
+          || row["stage"] !== claim.stage
+          || row["change_reason"] !== claim.changeReason
+          || row["disposition"] !== "available"
+          || expiresAt === null
+          || expiresAt.getTime() <= now.getTime()
+        ) throw new Error("Reflection model lease changed");
+        const raw = row["accepted_model_binding"];
+        const bindingGeneration = row["accepted_model_binding_generation"];
+        if ((raw === null) !== (bindingGeneration === null)) {
+          throw new Error("Reflection model binding is incoherent");
+        }
+        if (raw !== null) {
+          if (bindingGeneration !== claim.generation) {
+            throw new Error("Reflection model binding generation changed");
+          }
+          const binding = parseMemoryOperationBinding(raw);
+          if (binding.role !== "memoryReflection") {
+            throw new Error("Reflection model binding role changed");
+          }
+          bindings.push(binding);
+        }
+      }
+      if (bindings.length !== 0 && bindings.length !== sorted.length) {
+        throw new Error("Reflection model batch is partially bound");
+      }
+      const first = bindings[0];
+      if (first !== undefined) {
+        if (bindings.some((binding) =>
+          JSON.stringify(binding) !== JSON.stringify(first)
+        )) throw new Error("Reflection model batch binding changed");
+        return first;
+      }
+      const accepted = parseMemoryOperationBinding(await resolve());
+      if (accepted.role !== "memoryReflection") {
+        throw new TypeError("Reflection model binding role is invalid");
+      }
+      for (const claim of sorted) {
+        const updated = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(reflectionRecordSemanticWork)
+            .set({
+              acceptedModelBinding: accepted,
+              acceptedModelBindingGeneration: claim.generation,
+              updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
+            })
+            .where(and(
+              eq(reflectionRecordSemanticWork.recordId, claim.recordRef),
+              eq(reflectionRecordSemanticWork.generation, claim.generation),
+              eq(reflectionRecordSemanticWork.claimGeneration, claim.generation),
+              eq(reflectionRecordSemanticWork.leaseToken, claim.leaseToken),
+              eq(reflectionRecordSemanticWork.state, "claimed"),
+              isNull(reflectionRecordSemanticWork.acceptedModelBinding),
+              isNull(reflectionRecordSemanticWork.acceptedModelBindingGeneration),
+              gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
+            ))
+            .returning({ record_id: reflectionRecordSemanticWork.recordId }));
+        if (updated.length !== 1) throw new Error("Reflection model lease changed");
+      }
+      return accepted;
+    }, { isolationLevel: "serializable" });
   }
 
   async settleCurrentState(input: Readonly<{

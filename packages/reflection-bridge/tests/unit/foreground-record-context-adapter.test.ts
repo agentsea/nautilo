@@ -3,6 +3,64 @@ import { describe, expect, test } from "bun:test";
 import { createForegroundRecordContextPort } from "../../src/server";
 
 describe("foreground Record context adapter", () => {
+  test("reopens an ordinary search result and attaches its exact canonical exposure", async () => {
+    const dependency = {
+      kind: "record" as const,
+      recordRef: "record:decision",
+      observedProcessingGeneration: 7,
+      terminalAuthorityLeafHandles: ["namespace:room"],
+    };
+    const port = createForegroundRecordContextPort({
+      bindingRef: "binding:room",
+      representation: "ordinary",
+      search: { async search() { return { status: "available", results: [{
+        recordRef: "record:decision", statement: "Use Postgres.", score: 0.9,
+        structuralHeight: 2, lifecycle: "current", directParentRecordRefs: [], backlinksTruncated: false,
+      }] }; } },
+      async reopenOrdinaryRecord(recordRef) {
+        expect(recordRef).toBe("record:decision");
+        return {
+          recordRef, statement: "Use Postgres.", structuralHeight: 2,
+          lifecycle: "current", modelExposureDependency: dependency,
+        };
+      },
+    });
+
+    expect(await port.select({ query: "database", limit: 5 })).toMatchObject({
+      status: "available",
+      records: [{ modelExposureDependency: dependency }],
+    });
+    expect(await port.reopenOrdinaryRecord?.("record:decision")).toMatchObject({
+      modelExposureDependency: dependency,
+    });
+  });
+
+  test("rejects a search result changed before its canonical reopen", async () => {
+    const port = createForegroundRecordContextPort({
+      bindingRef: "binding:room",
+      representation: "ordinary",
+      search: { async search() { return { status: "available", results: [{
+        recordRef: "record:decision", statement: "Old statement", score: 0.9,
+        structuralHeight: 2, lifecycle: "current", directParentRecordRefs: [], backlinksTruncated: false,
+      }] }; } },
+      async reopenOrdinaryRecord(recordRef) {
+        return {
+          recordRef, statement: "Changed statement", structuralHeight: 2,
+          lifecycle: "current",
+          modelExposureDependency: {
+            kind: "record", recordRef, observedProcessingGeneration: 8,
+            terminalAuthorityLeafHandles: ["namespace:room"],
+          },
+        };
+      },
+    });
+
+    expect(await port.select({ query: "database", limit: 5 })).toEqual({
+      status: "unavailable", representation: "ordinary",
+      queryEmbeddingStatus: "available", reason: "integrity_failure",
+    });
+  });
+
   test("selects protected Record coordinates without opening statements", async () => {
     let ordinaryCalls = 0;
     const port = createForegroundRecordContextPort({

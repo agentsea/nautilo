@@ -102,6 +102,12 @@ beforeEach(() => {
 });
 
 describe("personal capability preference editing", () => {
+  test("describes eligible personal Memory choices without merging Genie or Room settings", async () => {
+    const view = renderSection();
+    expect(await view.findByText(/eligible personal Memory processing/)).toBeTruthy();
+    expect(view.getByText(/Genie and Room model settings remain separate/)).toBeTruthy();
+  });
+
   test("changes one role without copying inherited defaults", () => {
     expect(nextPersonalCapabilityOverrides(
       { decision: "typesafe:jev-1.13.0" },

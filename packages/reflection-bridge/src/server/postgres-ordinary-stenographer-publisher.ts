@@ -1,4 +1,5 @@
 import type { RoomEventKind } from "@nautilo/reflection";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { stenographerOrdinaryOutputFingerprint } from "@nautilo/lattice-bridge";
 import {
   and,
@@ -8,10 +9,14 @@ import {
   or,
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPayloadRepresentations,
+  reflectionRecords,
+  roomEventRollups,
   roomEvents,
   roomJournalBatches,
   roomJournalRecordCutover,
   roomJournalState,
+  sessionMessages,
+  sessions,
   sql,
 } from "@nautilo/db";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -79,6 +84,8 @@ export interface OrdinaryStenographerExtractionPublicationV2 {
   readonly extractorVersion: string;
   readonly now: Date;
   readonly ordinaryFallbackReason?: "device" | "authority";
+  /** Complete exact prompt exposure; absent only for legacy/incomplete work. */
+  readonly modelExposureDependencies?: readonly DurableModelExposureDependency[];
 }
 
 export type OrdinaryStenographerExtractionPublicationResultV2 = Readonly<{
@@ -97,6 +104,86 @@ const DEADLOCK_FAILURE = "40P01";
 const MAX_TRANSACTION_ATTEMPTS = 3;
 const MAX_LEGACY_PREDECESSOR_CHAIN = 50;
 const encoder = new TextEncoder();
+
+function canonicalExposureDependencies(
+  dependencies: readonly DurableModelExposureDependency[] | undefined,
+): readonly unknown[] | null {
+  if (dependencies === undefined) return null;
+  return [...dependencies]
+    .sort((left, right) => {
+      const leftKey = left.kind === "record"
+        ? `record\u0000${left.recordRef}`
+        : `source\u0000${left.sourceKind}\u0000${left.logicalSourceRef}`;
+      const rightKey = right.kind === "record"
+        ? `record\u0000${right.recordRef}`
+        : `source\u0000${right.sourceKind}\u0000${right.logicalSourceRef}`;
+      return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+    })
+    .map((dependency) => dependency.kind === "record"
+      ? [
+          "record",
+          dependency.recordRef,
+          dependency.observedProcessingGeneration,
+          [...dependency.terminalAuthorityLeafHandles].sort(),
+        ]
+      : [
+          "source",
+          dependency.sourceKind,
+          dependency.logicalSourceRef,
+          dependency.observedRevision ?? null,
+          dependency.observedContentFingerprint ?? null,
+          dependency.terminalAuthorityLeafHandle,
+        ]);
+}
+
+function observationFingerprint(domain: string, fields: readonly unknown[]): string {
+  const canonical = JSON.stringify([domain, ...fields]);
+  return `sha256:${bytesToHex(sha256(encoder.encode(canonical)))}`;
+}
+
+export function stenographerMessageObservationFingerprint(input: Readonly<{
+  messageId: number;
+  editRevision: number;
+  content: string;
+}>): string {
+  return observationFingerprint("nautilo/stenographer/message-observation/v1", [
+    input.messageId,
+    input.editRevision,
+    input.content,
+  ]);
+}
+
+export function stenographerJournalEventObservationFingerprint(input: Readonly<{
+  eventId: string;
+  sequence: number;
+  kind: RoomEventKind;
+  statement: string;
+  status: "active" | "superseded" | "resolved";
+}>): string {
+  return observationFingerprint("nautilo/stenographer/journal-event-observation/v1", [
+    input.eventId,
+    input.sequence,
+    input.kind,
+    input.statement,
+    input.status,
+  ]);
+}
+
+export function stenographerJournalRollupObservationFingerprint(input: Readonly<{
+  rollupId: string;
+  throughEventSequence: number;
+  content: string;
+  compactorVersion: string;
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
+}>): string {
+  return observationFingerprint("nautilo/stenographer/journal-rollup-observation/v1", [
+    input.rollupId,
+    input.throughEventSequence,
+    input.compactorVersion,
+    input.content,
+    canonicalExposureDependencies(input.modelExposureDependencies),
+  ]);
+}
 
 function rowString(row: RecordProductPostgresRow, key: string): string {
   const value = row[key];
@@ -138,13 +225,208 @@ function retryable(error: unknown): boolean {
 }
 
 function messageFingerprint(row: RecordProductPostgresRow): string {
-  const canonical = JSON.stringify([
-    "nautilo/stenographer/message-observation/v1",
-    rowInteger(row, "id"),
-    rowInteger(row, "edit_revision"),
-    rowString(row, "content"),
-  ]);
-  return `sha256:${bytesToHex(sha256(encoder.encode(canonical)))}`;
+  return stenographerMessageObservationFingerprint({
+    messageId: rowInteger(row, "id"),
+    editRevision: rowInteger(row, "edit_revision"),
+    content: rowString(row, "content"),
+  });
+}
+
+function exactOptionalString(
+  value: string | undefined,
+  expected: string | null,
+): boolean {
+  return (value ?? null) === expected;
+}
+
+async function assertCurrentModelExposureDependencies(
+  tx: RecordProductPostgresExecutor,
+  input: Readonly<{
+    roomId: string;
+    namespaceId: string;
+    dependencies: readonly DurableModelExposureDependency[];
+  }>,
+): Promise<void> {
+  const fail = (): never => {
+    throw new Error("Stenographer model exposure changed before native publication");
+  };
+  const identities = new Set<string>();
+  for (const dependency of input.dependencies) {
+    const identity = dependency.kind === "record"
+      ? `record:${dependency.recordRef}`
+      : `source:${dependency.sourceKind}:${dependency.logicalSourceRef}`;
+    if (identities.has(identity)) fail();
+    identities.add(identity);
+    if (dependency.kind === "record") {
+      if (
+        dependency.terminalAuthorityLeafHandles.length !== 1
+        || dependency.terminalAuthorityLeafHandles[0] !== input.namespaceId
+      ) fail();
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_ref: reflectionRecords.recordId,
+          processing_generation: reflectionRecords.processingGeneration,
+        })
+          .from(roomEvents)
+          .innerJoin(
+            reflectionRecords,
+            eq(reflectionRecords.recordId, roomEvents.recordId),
+          )
+          .where(and(
+            eq(roomEvents.roomId, input.roomId),
+            eq(roomEvents.projectionKind, "native"),
+            eq(roomEvents.recordId, dependency.recordRef),
+            eq(reflectionRecords.lifecycle, "current"),
+            eq(reflectionRecords.disposition, "available"),
+          ))
+          .limit(2));
+      if (
+        rows.length !== 1
+        || rows[0]?.["record_id"] !== dependency.recordRef
+        || rowInteger(rows[0], "processing_generation")
+          !== dependency.observedProcessingGeneration
+      ) fail();
+      continue;
+    }
+    if (dependency.terminalAuthorityLeafHandle !== input.namespaceId) fail();
+    if (dependency.sourceKind === "message") {
+      const match = /^message:([1-9][0-9]*)$/.exec(
+        dependency.logicalSourceRef,
+      );
+      if (match === null) return fail();
+      const messageId = Number(match[1]);
+      if (!Number.isSafeInteger(messageId)) fail();
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          id: sessionMessages.id,
+          edit_revision: sessionMessages.editRevision,
+          content: sessionMessages.content,
+        })
+          .from(sessionMessages)
+          .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+          .where(and(
+            eq(sessions.roomId, input.roomId),
+            eq(sessionMessages.id, messageId),
+          ))
+          .limit(2));
+      const row = rows[0];
+      if (
+        rows.length !== 1
+        || row === undefined
+        || row["content"] === null
+        || !exactOptionalString(
+          dependency.observedRevision,
+          String(rowInteger(row, "edit_revision")),
+        )
+        || !exactOptionalString(
+          dependency.observedContentFingerprint,
+          stenographerMessageObservationFingerprint({
+            messageId,
+            editRevision: rowInteger(row, "edit_revision"),
+            content: rowString(row, "content"),
+          }),
+        )
+      ) fail();
+      continue;
+    }
+    if (dependency.sourceKind === "journal_event") {
+      const match = /^journal-event:(.+)$/.exec(dependency.logicalSourceRef);
+      if (match === null) return fail();
+      const eventId = match[1]!;
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          id: roomEvents.id,
+          sequence: roomEvents.sequence,
+          kind: roomEvents.kind,
+          statement: roomEvents.statement,
+          status: roomEvents.status,
+        })
+          .from(roomEvents)
+          .where(and(
+            eq(roomEvents.roomId, input.roomId),
+            eq(roomEvents.id, eventId),
+            eq(roomEvents.projectionKind, "legacy"),
+          ))
+          .limit(2));
+      const row = rows[0];
+      if (
+        rows.length !== 1
+        || row === undefined
+        || row["statement"] === null
+        || !exactOptionalString(
+          dependency.observedRevision,
+          `sequence:${rowInteger(row, "sequence")}:status:${rowString(row, "status")}`,
+        )
+        || !exactOptionalString(
+          dependency.observedContentFingerprint,
+          stenographerJournalEventObservationFingerprint({
+            eventId,
+            sequence: rowInteger(row, "sequence"),
+            kind: rowString(row, "kind") as RoomEventKind,
+            statement: rowString(row, "statement"),
+            status: rowString(row, "status") as "active" | "superseded" | "resolved",
+          }),
+        )
+      ) fail();
+      continue;
+    }
+    if (dependency.sourceKind === "journal_rollup") {
+      const match = /^journal-rollup:(.+)$/.exec(dependency.logicalSourceRef);
+      if (match === null) return fail();
+      const rollupId = match[1]!;
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          id: roomEventRollups.id,
+          through_event_sequence: roomEventRollups.throughEventSequence,
+          content: roomEventRollups.content,
+          compactor_version: roomEventRollups.compactorVersion,
+          model_exposure_dependencies:
+            sql<string | null>`${roomEventRollups.modelExposureDependencies}::text`
+            .as("model_exposure_dependencies"),
+        })
+          .from(roomEventRollups)
+          .where(and(
+            eq(roomEventRollups.roomId, input.roomId),
+            eq(roomEventRollups.id, rollupId),
+          ))
+          .limit(2));
+      const row = rows[0];
+      if (rows.length !== 1 || row === undefined || row["content"] === null) {
+        return fail();
+      }
+      let ancestry: readonly DurableModelExposureDependency[] | undefined;
+      const serialized = row["model_exposure_dependencies"];
+      if (typeof serialized === "string") {
+        try {
+          ancestry = JSON.parse(serialized) as DurableModelExposureDependency[];
+        } catch {
+          fail();
+        }
+      }
+      const through = rowInteger(row, "through_event_sequence");
+      const version = rowString(row, "compactor_version");
+      if (
+        !exactOptionalString(
+          dependency.observedRevision,
+          `through:${through}:version:${version}`,
+        )
+        || !exactOptionalString(
+          dependency.observedContentFingerprint,
+          stenographerJournalRollupObservationFingerprint({
+            rollupId,
+            throughEventSequence: through,
+            content: rowString(row, "content"),
+            compactorVersion: version,
+            ...(ancestry === undefined
+              ? {}
+              : { modelExposureDependencies: ancestry }),
+          }),
+        )
+      ) fail();
+      continue;
+    }
+    fail();
+  }
 }
 
 function transitionForInsert(
@@ -384,6 +666,14 @@ export class PostgresOrdinaryStenographerRecordPublisher {
     const rebuildGeneration = input.claim.rebuildGeneration
       ?? rowInteger(state, "rebuild_generation");
 
+    if (input.modelExposureDependencies !== undefined) {
+      await assertCurrentModelExposureDependencies(tx, {
+        roomId: input.claim.roomId,
+        namespaceId,
+        dependencies: input.modelExposureDependencies,
+      });
+    }
+
     const sourceIds = [...new Set(
       input.transition.inserts.flatMap((insert) => insert.sourceMessageIds),
     )].sort((left, right) => left - right);
@@ -469,6 +759,12 @@ export class PostgresOrdinaryStenographerRecordPublisher {
         transition: transitionForInsert(insert),
         publicationBindingRef:
           `journal:namespace:${namespaceId}:ordinary:v${this.options.selection.migrationGeneration}`,
+        ...(input.modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies:
+                input.modelExposureDependencies,
+            }),
       });
       const payloadBytes = encodeDurableRecordEnvelope(publication.record);
       const requestCommitment = this.options.commitment.commit(

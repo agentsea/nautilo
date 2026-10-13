@@ -47,6 +47,7 @@
     "@nautilo/logger": "workspace:*",
     "@nautilo/message-invariants": "workspace:*",
     "@nautilo/model-capabilities": "workspace:*",
+    "@nautilo/reflection": "workspace:*",
     "@nautilo/relay": "workspace:*",
     "@nautilo/sandbox": "workspace:*",
     "@nautilo/security": "workspace:*",

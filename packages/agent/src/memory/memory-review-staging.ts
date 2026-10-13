@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { EmbeddingWithProvenanceV1 } from "@nautilo/types";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import type { MemoryDetail, MemoryResult } from "../store/memory-store";
 
 export type MemoryReviewAction = "save" | "replace" | "promote" | "remove";
@@ -22,9 +23,16 @@ export type MemoryReviewSnapshot = { memoryId: string; fingerprint: string };
 export type PreparedMemoryWrites = {
   operations: StagedMemoryOperation[];
   snapshots: MemoryReviewSnapshot[];
+  /** Exact canonical Memory rows whose contents were exposed to the model. */
+  exposureSnapshots?: MemoryReviewSnapshot[];
+  /** Complete inputs to the model that prepared these content revisions. */
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
 };
 export interface MemoryReviewStagingPorts {
+  /** Read authority used to prove model exposure; it need not grant mutation. */
   read(id: string): Promise<MemoryDetail | null>;
+  /** Optional narrower mutation authority. Defaults to `read` for legacy ports. */
+  readMutable?(id: string): Promise<MemoryDetail | null>;
   search(query: string, limit: number, includeArchive: boolean): Promise<MemoryResult[]>;
   findSaveTarget(content: string, type: string, embedding: EmbeddingWithProvenanceV1, excludeMemoryIds: string[]): Promise<{ id: string; score: number } | null>;
   embed(content: string): Promise<EmbeddingWithProvenanceV1>;
@@ -42,6 +50,8 @@ export function memoryReviewFingerprint(row: MemoryDetail): string {
   return createHash("sha256").update(JSON.stringify([
     row.content, row.type, row.importance, row.tier, row.updatedAt.toISOString(),
     row.demotedAt?.toISOString() ?? null, row.demotedFrom,
+    row.contentRevision ?? null,
+    row.modelExposureDependencies ?? null,
     [...row.namespaceIds].sort(),
   ])).digest("hex");
 }
@@ -80,12 +90,13 @@ async function storageRead<T>(read: () => Promise<T>): Promise<T> {
 export function createMemoryReviewStaging(workId: string, ports: MemoryReviewStagingPorts) {
   const operations: StagedMemoryOperation[] = [];
   const snapshots = new Map<string, MemoryReviewSnapshot>();
+  const exposureSnapshots = new Map<string, MemoryReviewSnapshot>();
   const overlay = new Map<string, MemoryDetail & { embedding?: EmbeddingWithProvenanceV1 }>();
   const created = new Set<string>();
   async function read(id: string) {
     const staged = overlay.get(id);
     if (staged) return staged;
-    const row = await storageRead(() => ports.read(id));
+    const row = await storageRead(() => (ports.readMutable ?? ports.read)(id));
     if (!row) throw new MemoryReviewError("memory_unavailable");
     snapshots.set(id, { memoryId: id, fingerprint: memoryReviewFingerprint(row) });
     overlay.set(id, row);
@@ -100,6 +111,45 @@ export function createMemoryReviewStaging(workId: string, ports: MemoryReviewSta
       const merged = rows.map((row) => overlay.get(row.id) ?? row);
       for (const row of overlay.values()) if (!seen.has(row.id)) merged.push(row);
       return merged.filter((row) => includeArchive || row.tier <= 2);
+    },
+    async captureModelExposure(rows: readonly Pick<MemoryDetail, "id" | "content" | "type" | "tier">[]) {
+      for (const exposed of rows) {
+        if (exposed.content === null || exposed.type === null) {
+          throw new MemoryReviewError("memory_unavailable");
+        }
+        const staged = overlay.get(exposed.id);
+        if (staged) {
+          if (staged.content !== exposed.content || staged.type !== exposed.type
+            || staged.tier !== exposed.tier) throw new MemoryReviewError("source_changed");
+          // New rows inherit the staged operation's causal evidence. They do not
+          // pretend to be canonical reads that do not exist yet.
+          if (created.has(exposed.id)) continue;
+        }
+        const original = await storageRead(() => ports.read(exposed.id));
+        if (!original) throw new MemoryReviewError("memory_unavailable");
+        if (!staged && (original.content !== exposed.content || original.type !== exposed.type
+          || original.tier !== exposed.tier)) throw new MemoryReviewError("source_changed");
+        const snapshot = {
+          memoryId: original.id,
+          fingerprint: memoryReviewFingerprint(original),
+        };
+        const prior = exposureSnapshots.get(original.id);
+        if (prior && prior.fingerprint !== snapshot.fingerprint) {
+          throw new MemoryReviewError("source_changed");
+        }
+        exposureSnapshots.set(original.id, snapshot);
+      }
+    },
+    async assertCurrentExposure() {
+      for (const snapshot of exposureSnapshots.values()) {
+        const current = await storageRead(() => ports.read(snapshot.memoryId));
+        if (!current || memoryReviewFingerprint(current) !== snapshot.fingerprint) {
+          throw new MemoryReviewError("source_changed");
+        }
+      }
+    },
+    modelExposureSnapshots(): MemoryReviewSnapshot[] {
+      return [...exposureSnapshots.values()];
     },
     async mutate(input: MemoryReviewMutation): Promise<string> {
       if (!input || !["save", "replace", "promote", "remove"].includes(input.action)) throw new MemoryReviewError("invalid_proposal");
@@ -149,6 +199,12 @@ export function createMemoryReviewStaging(workId: string, ports: MemoryReviewSta
       });
       return `Staged ${input.action} (id: ${memoryId}); publication follows complete review.`;
     },
-    prepared(): PreparedMemoryWrites { return { operations: [...operations], snapshots: [...snapshots.values()] }; },
+    prepared(): PreparedMemoryWrites {
+      return {
+        operations: [...operations],
+        snapshots: [...snapshots.values()],
+        exposureSnapshots: [...exposureSnapshots.values()],
+      };
+    },
   };
 }

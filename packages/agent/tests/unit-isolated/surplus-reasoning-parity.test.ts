@@ -39,6 +39,7 @@ const {
   canUseQualifiedSurplusChatRoute,
   invokeSurplusChatAttempt,
 } = await import("../../src/providers/surplus-attempt");
+const { runWithUsageContext } = await import("../../src/usage/usage-context");
 
 const MODEL_ID = "openrouter:openai/gpt-5.6-sol";
 const ROUTE = {
@@ -187,6 +188,73 @@ describe("Surplus reasoning parity", () => {
     expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
       outcome: "succeeded", costState: "pending", providerRequestId: "recoverable-request",
     });
+  });
+
+  test("retains only canonical Memory replay correlation on the durable attempt", async () => {
+    const cases = [
+      {
+        callType: "memory_review" as const,
+        metadata: {
+          workId: "memory-work-1",
+          attemptId: "memory-attempt-1",
+          operationId: "not-a-review-key",
+          prompt: "must-not-persist",
+        },
+        expected: { workId: "memory-work-1", attemptId: "memory-attempt-1" },
+      },
+      {
+        callType: "room_stenographer" as const,
+        metadata: { operationId: "stenographer:room-1:7", workId: "must-not-persist" },
+        expected: { operationId: "stenographer:room-1:7" },
+      },
+      {
+        callType: "room_event_compaction" as const,
+        metadata: { operationId: "compaction:room-1:rollup-1:8", attemptId: "must-not-persist" },
+        expected: { operationId: "compaction:room-1:rollup-1:8" },
+      },
+      {
+        callType: "room_reflection" as const,
+        metadata: { operationId: "reflection:record-1:1", messages: ["must-not-persist"] },
+        expected: { operationId: "reflection:record-1:1" },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const response = new AIMessage({ content: "ok", response_metadata: { finish_reason: "stop" } });
+      await runWithUsageContext({
+        callType: testCase.callType,
+        roomId: "11111111-1111-4111-8111-111111111111",
+        metadata: testCase.metadata,
+      }, () => invokeSurplusChatAttempt({
+        route: ROUTE,
+        apiKey: "synthetic-surplus-key",
+        messages: [new HumanMessage("test")],
+        tools: [],
+        config: {},
+        maxOutputTokens: 256,
+        funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" },
+        hasDeliveredOutput: () => false,
+        invokeModel: async () => response,
+      }));
+    }
+
+    expect(beginAttempt).toHaveBeenCalledTimes(4);
+    for (const [index, testCase] of cases.entries()) {
+      const attempt = beginAttempt.mock.calls[index]?.[0];
+      expect(attempt).toMatchObject({
+        callType: testCase.callType,
+        roomId: "11111111-1111-4111-8111-111111111111",
+        metadata: testCase.expected,
+      });
+      expect(attempt?.["metadata"]).toEqual(expect.objectContaining(testCase.expected));
+      expect(JSON.stringify(attempt?.["metadata"])).not.toContain("must-not-persist");
+      if (testCase.callType === "memory_review") {
+        expect(attempt?.["metadata"]).not.toHaveProperty("operationId");
+      } else {
+        expect(attempt?.["metadata"]).not.toHaveProperty("workId");
+        expect(attempt?.["metadata"]).not.toHaveProperty("attemptId");
+      }
+    }
   });
 
   test("retries the same frozen settlement and preserves all terminal usage counts", async () => {

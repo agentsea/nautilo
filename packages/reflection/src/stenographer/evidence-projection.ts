@@ -27,12 +27,19 @@ export interface VisibleMessageReference {
   sourcePosition: number;
 }
 
+export interface StenographerProjectedModelExposure {
+  readonly currentRowPositions: readonly number[];
+  readonly priorRowPositions: readonly number[];
+  readonly journalContextIncluded: boolean;
+}
+
 export type StenographerEvidenceProjection =
   | {
       ok: true;
       prompt: string;
       codePoints: number;
       visibleReferences: VisibleMessageReference[];
+      modelExposure: StenographerProjectedModelExposure;
       omittedEvidenceRowCount: number;
       omittedToolRowCount: number;
       omittedPriorContextRowCount: number;
@@ -258,6 +265,16 @@ export function projectStenographerEvidence(input: {
     prompt,
     codePoints: countCodePoints(prompt),
     visibleReferences,
+    modelExposure: {
+      currentRowPositions: projectedRows
+        .filter((row) => selected.has(row.originalPosition))
+        .map((row) => row.originalPosition),
+      priorRowPositions: projectedPriorRows
+        .filter((row) => selectedPrior.has(row.originalPosition))
+        .map((row) => row.originalPosition),
+      journalContextIncluded: input.journalContext !== undefined
+        && input.journalContext.length > 0,
+    },
     omittedEvidenceRowCount: projectedRows.length - visibleReferences.length,
     omittedToolRowCount: projectedRows.filter(
       (row) => row.role === "tool" && !selected.has(row.originalPosition),

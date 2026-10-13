@@ -5,6 +5,8 @@ import {
   deriveMemoryCryptoObjectIdV1,
   fingerprintRequiredMemoryNamespaces,
 } from "../../src/memory/memory-repository";
+import { decodeMemoryPayloadV1 } from
+  "../../src/memory/memory-payload-v1";
 import {
   attachPostgresTaskNamespaceMemoryRepair,
   attachPostgresTaskScopeMemoryRepair,
@@ -60,6 +62,14 @@ function ordinaryRow(embeddingRevision = 0): Readonly<Record<string, unknown>> {
     id: MEMORY_ID,
     type: "fact",
     content: "the retained body",
+    model_exposure_dependencies: [{
+      kind: "source",
+      sourceKind: "message",
+      logicalSourceRef: "message:41",
+      observedRevision: "3",
+      observedContentFingerprint: "sha256:current",
+      terminalAuthorityLeafHandle: ORIGIN_NAMESPACE_ID,
+    }],
     importance: 0.8,
     tier: 1,
     created_at: CREATED_AT,
@@ -153,6 +163,14 @@ describe("Postgres Task Scope Memory repair", () => {
       },
     });
     expect(source.source.plaintextBytes).toBeInstanceOf(Uint8Array);
+    expect(decodeMemoryPayloadV1(source.source.plaintextBytes!))
+      .toMatchObject({
+        modelExposureDependencies: [{
+          kind: "source",
+          logicalObjectRef: "message:41",
+          terminalAuthorityLeafHandle: ORIGIN_NAMESPACE_ID,
+        }],
+      });
     const lifecycleRead = transaction.queries.find(query =>
       query.includes('from "memory_crypto_revisions"'));
     expect(lifecycleRead).toBeDefined();

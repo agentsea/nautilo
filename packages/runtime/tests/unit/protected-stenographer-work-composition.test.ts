@@ -1,4 +1,4 @@
-import { ProtectedStenographerBackgroundCoordinator } from "../../src/stenographer/protected-stenographer-background-coordinator";
+import { ProtectedStenographerBackgroundCoordinator, rejectedExecutionRequiresReplayQuarantine } from "../../src/stenographer/protected-stenographer-background-coordinator";
 import { InMemoryBackgroundAuthorizationRepository } from "../../src/protected-execution/background-authorization/repository";
 import { BackgroundAuthorizationProcessorCredentialClaimPort } from "../../src/protected-execution/background-authorization/processor-credential-claim-port";
 import {
@@ -263,6 +263,15 @@ function preparedRecord(
 }
 
 describe("protected Stenographer restart-safe work composition", () => {
+  test("retains terminal provider uncertainty across later processor cleanup failure", () => {
+    expect(rejectedExecutionRequiresReplayQuarantine({
+      status: "rejected", reason: "provider_outcome_unknown",
+    })).toBeTrue();
+    expect(rejectedExecutionRequiresReplayQuarantine({
+      status: "rejected", reason: "provider_failure",
+    })).toBeFalse();
+    expect(rejectedExecutionRequiresReplayQuarantine(undefined)).toBeFalse();
+  });
   test("builds the descriptor from a freshly recovered exact claim", async () => {
     const crypto = new LatticeCrypto(seededRng(24_101), {
       now: () => NOW,

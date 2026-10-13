@@ -13,6 +13,11 @@ import type {
   ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import {
+  normalizeRecordModelExposureDependenciesV1,
+  type RecordPayloadModelExposureDependencyV1,
+} from "@nautilo/reflection/payload";
 
 import { SOUL_FILE_HEADER } from "../prompts/templates.ts";
 import { normalizeModelToolCallIdentity } from "../nodes/model-tool-call-identity.ts";
@@ -23,8 +28,13 @@ import { runWithUsageContext } from "../usage/usage-context.ts";
 import {
   createProtectedBackgroundMemoryStaging,
   type ProtectedBackgroundMemoryOutputSlot,
+  type ProtectedBackgroundMemoryExposureSnapshot,
   type ProtectedBackgroundMemoryTierSlot,
 } from "./protected-background-memory-staging.ts";
+import {
+  bindModelInputExposure,
+  readModelInputExposure,
+} from "./model-input-exposure.ts";
 
 const PROMPTS = Object.freeze({
   "memory.review": [
@@ -43,7 +53,7 @@ const PROMPTS = Object.freeze({
   ].join(" "),
 });
 
-interface InvokableTool {
+export interface ProtectedMemoryReviewTool {
   readonly name: string;
   invoke(input: unknown, config?: Readonly<{
     configurable: Readonly<Record<string, unknown>>;
@@ -51,7 +61,7 @@ interface InvokableTool {
 }
 
 interface ReviewModel {
-  bindTools?(tools: readonly InvokableTool[]): ReviewModel;
+  bindTools?(tools: readonly ProtectedMemoryReviewTool[]): ReviewModel;
   invoke(messages: readonly BaseMessage[]): Promise<unknown>;
 }
 
@@ -137,6 +147,19 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
   mutationRequestId: string;
   signal?: AbortSignal;
   createModel?: (modelId: string) => Promise<ReviewModel>;
+  invokeModel?: (input: Readonly<{
+    modelId: string;
+    messages: readonly BaseMessage[];
+    tools: readonly ProtectedMemoryReviewTool[];
+    signal?: AbortSignal;
+  }>) => Promise<unknown>;
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
+  resolveMemoryExposureDependencies?: (
+    snapshots: readonly ProtectedBackgroundMemoryExposureSnapshot[],
+  ) => Promise<readonly DurableModelExposureDependency[] | undefined>;
+  onModelExposure?: (
+    snapshots: readonly ProtectedBackgroundMemoryExposureSnapshot[],
+  ) => void | Promise<void>;
 }>): Promise<readonly ProtectedAgentBackgroundMemoryWorkOutput[]> {
   if (
     !Number.isSafeInteger(input.maximumIterations)
@@ -167,7 +190,7 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });
   const memoryAccessEnvelope = envelope(input.authority, input.roomId);
-  const tools: InvokableTool[] = [
+  const tools: ProtectedMemoryReviewTool[] = [
     createSearchMemoryTool({
       memoryAccessEnvelope,
       protectedMemoryRepository: staging.repository,
@@ -177,10 +200,14 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
       protectedMemoryRepository: staging.repository,
     }),
   ];
-  const model = input.createModel === undefined
-    ? await createUniversalModel(input.modelId, { useOpenAIResponsesApi: true }) as ReviewModel
-    : await input.createModel(input.modelId);
-  const modelWithTools = model.bindTools?.(tools) ?? model;
+  const model = input.invokeModel === undefined
+    ? input.createModel === undefined
+      ? await createUniversalModel(input.modelId, {
+          useOpenAIResponsesApi: true,
+        }) as ReviewModel
+      : await input.createModel(input.modelId)
+    : undefined;
+  const modelWithTools = model?.bindTools?.(tools) ?? model;
   const messages = input.inputs.flatMap((entry, index) =>
     entry.productKind === "message" ? [messageFromInput(entry, index)] : []
   );
@@ -191,18 +218,47 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
     new SystemMessage(system),
     ...messages,
   ];
+  let admittedModelExposureDependencies:
+    | readonly DurableModelExposureDependency[]
+    | undefined;
+  let admittedSnapshots:
+    readonly ProtectedBackgroundMemoryExposureSnapshot[] = [];
+  const assertModelExposure = async (
+    snapshots: readonly ProtectedBackgroundMemoryExposureSnapshot[],
+  ) => {
+    await input.onModelExposure?.(snapshots);
+    const retrieved = snapshots.length === 0
+      ? []
+      : await input.resolveMemoryExposureDependencies?.(snapshots);
+    admittedModelExposureDependencies = canonicalModelExposureUnion(
+      input.modelExposureDependencies,
+      retrieved,
+    );
+  };
   for (let index = 0; index < input.maximumIterations; index += 1) {
     input.signal?.throwIfAborted();
+    admittedSnapshots = staging.modelExposureSnapshots();
+    await assertModelExposure(admittedSnapshots);
     const response = await runWithUsageContext(
       { callType: input.kind === "memory.review" ? "memory_review" : "memory_flush" },
-      () => modelWithTools.invoke(conversation),
+      () => input.invokeModel === undefined
+        ? modelWithTools!.invoke(conversation)
+        : input.invokeModel({
+            modelId: input.modelId,
+            messages: conversation,
+            tools,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          }),
     );
     if (!AIMessage.isInstance(response)) {
       throw new TypeError("Protected background Memory model response is invalid");
     }
     const admittedResponse = normalizeModelToolCallIdentity(response);
     conversation = [...conversation, admittedResponse];
-    if (!admittedResponse.tool_calls?.length) break;
+    if (!admittedResponse.tool_calls?.length) {
+      await assertModelExposure(admittedSnapshots);
+      break;
+    }
     for (const toolCall of admittedResponse.tool_calls) {
       const tool = tools.find((candidate) => candidate.name === toolCall.name);
       if (tool === undefined) continue;
@@ -224,5 +280,48 @@ export async function runProtectedBackgroundMemoryReview(input: Readonly<{
       })];
     }
   }
-  return staging.outputs();
+  await assertModelExposure(admittedSnapshots);
+  return staging.outputs(
+    wireModelExposureDependencies(admittedModelExposureDependencies),
+  );
+}
+
+function canonicalModelExposureUnion(
+  initial: readonly DurableModelExposureDependency[] | undefined,
+  retrieved: readonly DurableModelExposureDependency[] | undefined,
+): readonly DurableModelExposureDependency[] | undefined {
+  if (initial === undefined || retrieved === undefined) return undefined;
+  const carrier = bindModelInputExposure({}, {
+    status: "complete",
+    dependencies: [...initial, ...retrieved],
+  });
+  const normalized = readModelInputExposure(carrier);
+  return normalized?.status === "complete" ? normalized.dependencies : undefined;
+}
+
+function wireModelExposureDependencies(
+  dependencies: readonly DurableModelExposureDependency[] | undefined,
+): readonly RecordPayloadModelExposureDependencyV1[] | undefined {
+  if (dependencies === undefined) return undefined;
+  return normalizeRecordModelExposureDependenciesV1(
+    dependencies.map((dependency) => dependency.kind === "record"
+      ? {
+          kind: "record",
+          recordId: dependency.recordRef,
+          observedProcessingGeneration:
+            dependency.observedProcessingGeneration,
+          terminalAuthorityLeafHandles:
+            dependency.terminalAuthorityLeafHandles,
+        }
+      : {
+          kind: "source",
+          sourceKind: dependency.sourceKind,
+          logicalObjectRef: dependency.logicalSourceRef,
+          observedRevision: dependency.observedRevision ?? null,
+          observedContentFingerprint:
+            dependency.observedContentFingerprint ?? null,
+          terminalAuthorityLeafHandle:
+            dependency.terminalAuthorityLeafHandle,
+        }),
+  );
 }
