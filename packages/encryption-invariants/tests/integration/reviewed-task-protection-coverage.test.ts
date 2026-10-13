@@ -6,10 +6,10 @@ import {
 import { getTableConfig } from "drizzle-orm/pg-core";
 
 import {
-  RETIRED_TASK_PROTECTION_FROZEN_DEBT,
   REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES,
   REVIEWED_TASK_PROTECTION_DEBT_LINKS,
 } from "../../baseline/reviewed-task-protection-coverage";
+import { BASELINE_REGISTRY, WAVE_0_FROZEN_BASELINE_DEBT } from "../../baseline/existing-debt";
 
 describe("Task protection inventory review", () => {
   test("covers the exact new Task database and wire observations", () => {
@@ -124,14 +124,11 @@ describe("Task protection inventory review", () => {
     expect(links.get(
       "http:request_response:GET /api/tasks/:id/content-v1#response.body.runs[].content.transcript[].toolCalls[].args",
     )).toEqual(["debt.wire.arbitrary.19ijf0o"]);
-    expect(RETIRED_TASK_PROTECTION_FROZEN_DEBT).toHaveLength(1);
-    const retirement = RETIRED_TASK_PROTECTION_FROZEN_DEBT[0];
-    expect(retirement?.debtId).toBe("debt.wire.arbitrary.19ijf0o");
-    expect(retirement?.reason).toContain(
-      "explicit /api/tasks/:id/content-v1 route",
-    );
-    expect(retirement?.testEvidence).toContain(
-      "packages/server/tests/unit-isolated/task-content-detail-policy.test.ts",
-    );
+    const originalDebt = WAVE_0_FROZEN_BASELINE_DEBT.find((entry) => entry.id === "debt.wire.arbitrary.19ijf0o");
+    expect(originalDebt?.locator).toBe("http:request_response:GET /api/tasks/:id#response.body.runs[].transcript[].toolCalls[].args");
+    expect(BASELINE_REGISTRY.debt.some((entry) => entry.id === originalDebt?.id)).toBe(true);
+    // Plain callers still receive the original transcript detail. The new
+    // content-v1 entrance is additive; it cannot retire that existing debt.
+    expect(BASELINE_REGISTRY.retiredFrozenDebt?.some((entry) => entry.debtId === originalDebt?.id)).toBe(false);
   });
 });

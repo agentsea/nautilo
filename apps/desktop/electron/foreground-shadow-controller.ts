@@ -267,6 +267,7 @@ export class ElectronForegroundShadowController {
   readonly #backgroundAuthorizationSweeps:
     CoalescedBackgroundAuthorizationSweepV2;
   readonly #backgroundAuthorizationAbort = new AbortController();
+  readonly #externalRequestAbort = new AbortController();
   readonly #createId: () => string;
   #tail: Promise<void> = Promise.resolve();
   #authorizationTail: Promise<void> = Promise.resolve();
@@ -435,6 +436,32 @@ export class ElectronForegroundShadowController {
       ...input,
       isCurrent: () => !this.#disposed,
     }));
+  }
+
+  recoverProtectedTaskExternalRequests(input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+  }>): ReturnType<LiveShadowSender["recoverProtectedTaskExternalRequests"]> {
+    return this.#run(() => this.#sender.recoverProtectedTaskExternalRequests({
+      ...input,
+      signal: this.#externalRequestAbort.signal,
+      isCurrent: () => this.#isExternalRequestCurrent(),
+    }), "custody", { signal: this.#externalRequestAbort.signal });
+  }
+
+  respondProtectedTaskExternalRequest(input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: Parameters<
+      LiveShadowSender["respondProtectedTaskExternalRequest"]
+    >[0]["response"];
+  }>): ReturnType<LiveShadowSender["respondProtectedTaskExternalRequest"]> {
+    return this.#run(() => this.#sender.respondProtectedTaskExternalRequest({
+      ...input,
+      signal: this.#externalRequestAbort.signal,
+      isCurrent: () => this.#isExternalRequestCurrent(),
+    }), "custody", { signal: this.#externalRequestAbort.signal });
   }
 
   edit(
@@ -775,6 +802,7 @@ export class ElectronForegroundShadowController {
     this.cancelMessageBackfill();
     this.cancelTaskContentBackfill();
     this.#backgroundAuthorizationAbort.abort();
+    this.#externalRequestAbort.abort();
     const dispose = Promise.all([
       this.#tail,
       this.#authorizationTail,
@@ -928,6 +956,18 @@ export class ElectronForegroundShadowController {
     }
     if (!accountCurrent) {
       throw new ElectronForegroundShadowControllerUnavailableError();
+    }
+  }
+
+  async #isExternalRequestCurrent(): Promise<boolean> {
+    if (this.#disposed || this.#externalRequestAbort.signal.aborted) return false;
+    try {
+      if (!await this.#isBindingCurrent()) return false;
+      if (this.#isAccountCurrent !== undefined
+        && !await this.#isAccountCurrent()) return false;
+      return !this.#disposed && !this.#externalRequestAbort.signal.aborted;
+    } catch {
+      return false;
     }
   }
 

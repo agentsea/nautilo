@@ -1,3 +1,4 @@
+import { runWithProtectedTaskProjectFilePort, type ProtectedTaskProjectFilePort } from "../../src/runtime/protected-task-project-file";
 import { setConfigOverrides } from "@nautilo/config";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -3181,4 +3182,33 @@ test("canonical status agrees with command denial and preserves successful Error
   expect(successReceipt.additional_kwargs["nautilo_tool_status"]).toBe("success");
   expect(successReceipt.content).toBe("Error: this is successfully retrieved source text");
   expect(success.noProgressStreaks?.size).toBe(0);
+});
+
+
+describe("protected Task project file invocation", () => {
+  test("matches exact current Task identity and pin without fabricated foreground origin", async () => {
+    let invoked = 0;
+    register("file", async () => { invoked += 1; return JSON.stringify(getRequiredOrdinaryHostContext()); });
+    setOrdinaryHostResolver({ resolve: () => { throw new Error("Ordinary host lookup must not run"); } });
+    const port: ProtectedTaskProjectFilePort = { taskId: "task", taskRunId: "run", agentId: "agent", humanUserId: "owner",
+      relayId: "captured-relay", workspaceRoot: "/project/child", dispatch: () => { throw new Error("Fixture tool does not dispatch"); } };
+    const current = state({ taskRun: true, trustedExecutionEntrypoint: "background.task", currentTaskId: "task", currentTaskRunId: "run",
+      causalHumanUserId: "owner", requiredHostRelays: { "call-file": "captured-relay" }, verifiedOrdinaryOrigin: null });
+    const invoke = () => createNautiloToolInvocationSession(createServerToolInvocationContext(current, () => ({ status: "allowed" })))
+      .invoke(call("file", { command: "read", zone: "current", path: "README.md" }));
+    await runWithProtectedTaskProjectFilePort(port, async () => {
+      const allowed = await invoke();
+      expect(allowed.status).toBe("success");
+      expect(allowed.content).toContain('"workspaceRoot":"/project/child"');
+      expect(allowed.content).toContain('"relayId":"captured-relay"');
+      current.currentTaskRunId = "foreign";
+      expect((await invoke()).status).toBe("error");
+      current.currentTaskRunId = "run";
+      current.requiredHostRelays = { "call-file": "other-relay" };
+      expect((await invoke()).status).toBe("error");
+      current.requiredHostRelays = {};
+      expect((await invoke()).status).toBe("error");
+    });
+    expect(invoked).toBe(1);
+  });
 });

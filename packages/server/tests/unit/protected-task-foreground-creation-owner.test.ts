@@ -3,7 +3,8 @@ import { rejects } from "node:assert/strict";
 import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { LatticeCrypto, agentId, agentRuntimeGeneration } from "@nautilo/lattice-crypto";
 import type { DomainKeyV2LiveShadowCurrentAuthority } from "@nautilo/lattice-bridge/server";
-import type { CanonicalTranscriptTx } from "@nautilo/trust";
+import { createAcceptedInvocationAuthority, type CanonicalTranscriptTx } from "@nautilo/trust";
+import { createAgentTurnTaskCreationProvenance } from "@nautilo/runtime";
 import { tasks, type PostgresJsBridgeConnection, type PostgresJsBridgeExecutor } from "@nautilo/db";
 import { createProtectedTaskForegroundCreationOwner } from "../../src/routes/protected-task-foreground-creation-owner";
 
@@ -99,4 +100,42 @@ test("nested creation and retained disposed ports have no product custody", asyn
   } });
   f.dispose();
   await rejects(f.context.assertCurrent(), /foreground authority is unavailable/u);
+});
+
+
+test("Claude shape admission cannot escape the held foreground identity or substitute requester, Agent or calling Room", async () => {
+  for (const patch of [{ requestorId: "other-user" }, { agentId: "other-agent" }, { callingRoomId: "other-room" }]) {
+    const f = fixture();
+    const candidate = { ownerId: "user", requestorId: "user", agentId: "agent", callingRoomId: "room", prompt: "private", ...patch,
+      metadata: { execution: { version: 1, harnessId: "claude-code", source: "genie", profileRef: "profile", catalogModelId: "catalog", selectedModel: "model" } } };
+    const request = { db: {} as Parameters<typeof f.context.admission.admit>[0]["db"], candidate,
+      provenance: createAgentTurnTaskCreationProvenance({ ownerId: "user", invocation: { ownerId: "user", roomId: "room", entrypoint: "foreground.main" } }),
+      invocationAuthority: createAcceptedInvocationAuthority(candidate.requestorId) };
+    await rejects(f.context.admission.admit(request), /foreground authority is unavailable/u);
+    await rejects(f.context.withProduct({ taskId: "11111111-1111-4111-8111-111111111111", transaction: f.transaction, executor: f.executor,
+      use: () => f.context.admission.admit(request) }), /foreground authority is unavailable/u);
+    expect(f.events).not.toContain("borrowed-query");
+    f.dispose();
+  }
+});
+
+for (const execution of [
+  { version: 1, harnessId: "codex", source: "genie", collaborationMode: "work", harnessModelId: "model",
+    readiness: { relayId: "relay", pairingGenerationRef: "pairing", capabilityRevision: 4 }, workingDirectory: "/private/workspace" },
+  { version: 1, harnessId: "hermes-acp", source: "genie", readiness: { relayId: "relay", relaySessionId: "socket",
+    pairingGenerationRef: "pairing", desktopSessionId: "desktop", selectedProtocolVersion: 14, capabilityRevision: 4 } },
+]) test(`${execution.harnessId} shape cannot substitute foreground ownership or calling Room`, async () => {
+  for (const patch of [{ requestorId: "other-user" }, { ownerId: "other-user" }, { agentId: "other-agent" }, { callingRoomId: "other-room" }]) {
+    const f = fixture();
+    const candidate = { ownerId: "user", requestorId: "user", agentId: "agent", callingRoomId: "room", prompt: "private",
+      metadata: { execution }, ...patch };
+    const request = { db: {} as Parameters<typeof f.context.admission.admit>[0]["db"], candidate,
+      provenance: createAgentTurnTaskCreationProvenance({ ownerId: "user", invocation: { ownerId: "user", roomId: "room", entrypoint: "foreground.main" } }),
+      invocationAuthority: createAcceptedInvocationAuthority(candidate.requestorId) };
+    const refusal = "ownerId" in patch ? /server-authored provenance/u : /foreground authority is unavailable/u;
+    await rejects(f.context.admission.admit(request), refusal);
+    await rejects(f.context.withProduct({ taskId: "11111111-1111-4111-8111-111111111111", transaction: f.transaction, executor: f.executor,
+      use: () => f.context.admission.admit(request) }), refusal);
+    expect(f.events).not.toContain("borrowed-query"); f.dispose();
+  }
 });

@@ -152,3 +152,14 @@ describe("D452 Claude execution v18 protocol", () => {
     expect(parseRelayClaudeExecutionJsonFrame(JSON.stringify(command), "client").ok).toBe(false);
   });
 });
+
+
+test("root-message boundaries require protocol 31 and carry no caller fields", () => {
+  const boundary = event({ kind: "output_message_started" });
+  expect(parseRelayClaudeExecutionDesktopEvent(boundary)).toBeNull();
+  const current = { ...boundary, scope: { ...scope, selectedProtocolVersion: 31 } };
+  expect(parseRelayClaudeExecutionDesktopEvent(current)?.event).toEqual({ kind: "output_message_started" });
+  for (const extra of [{ text: "replacement" }, { offset: 1 }, { messageId: "invented" }]) {
+    expect(parseRelayClaudeExecutionDesktopEvent({ ...current, event: { kind: "output_message_started", ...extra } })).toBeNull();
+  }
+});

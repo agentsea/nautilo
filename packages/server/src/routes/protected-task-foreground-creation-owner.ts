@@ -1,3 +1,5 @@
+import { parseProtectedTaskCodexSelection } from "./protected-task-codex-selection";
+import { parseProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   acquireEncryptionPublicationFence, lockProtectedTaskForegroundCreationIdentity, eq, rooms,
@@ -11,6 +13,7 @@ import { createProtectedTaskCreationAdmissionV1, type ProtectedTaskCreationResol
 import { createProtectedTaskRequesterPrivateRoomResolver } from "./protected-task-requester-private-room";
 import { createProtectedTaskForegroundCreationPublication } from "./protected-task-foreground-creation-publication";
 import type { ProtectedTaskForegroundCreationContext } from "./protected-task-foreground-creation-context";
+import { parseClaudeTaskExecutionMetadata } from "../claude/task-execution-route";
 
 type Publication = Parameters<typeof createProtectedTaskForegroundCreationPublication>[0];
 type ProductLoan = Parameters<ProtectedTaskForegroundCreationContext["withProduct"]>[0];
@@ -94,10 +97,16 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
       if (conversation === undefined || !["orphan", "private", "group", "public", "open", "dm"].includes(conversation)) {
         return { status: "unavailable", reason: "task_shape_unsupported" };
       }
+      const execution = request.operationalMetadata["execution"];
+      const executor = execution === undefined ? "native" as const
+        : (parseClaudeTaskExecutionMetadata({ execution }) !== null
+          || parseProtectedTaskCodexSelection({ execution }) !== null
+          || parseProtectedTaskHermesSelection({ execution }) !== null) ? "external_harness" as const : null;
+      if (executor === null) return { status: "unavailable", reason: "task_shape_unsupported" };
       return { status: "resolved", shape: {
         conversation: conversation as "orphan" | "private" | "group" | "public" | "open" | "dm",
         memory: request.useScope ? "scope" : request.preset === "in_private_namespace" ? "private_wide" : "namespace",
-        executor: "native",
+        executor,
       } };
     },
   });

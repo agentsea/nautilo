@@ -96,6 +96,9 @@ import type { createProductionBackgroundAuthorizationComposition } from
 import { createProtectedTaskWakeForegroundAdmission } from "./protected-task-wake-foreground-admission";
 import { createProtectedTaskCheckpointPauseRecovery } from "./protected-task-checkpoint-pause-recovery";
 import { createProtectedTaskRuntimeMappedHeadReplan } from "./protected-task-runtime-mapped-head-replan";
+import { createProtectedTaskExecutionPreparation } from "./protected-task-execution-preparation";
+import type { ProductionProtectedTaskNativeExecution } from
+  "./protected-task-native-execution-composition";
 import type { ProtectedTaskCheckpointPauseRecoveryCursor } from "@nautilo/db";
 
 type DeviceHooks = Required<Pick<NonNullable<Parameters<
@@ -117,6 +120,7 @@ export type ProductionProtectedTaskRuntimeInitialCompositionInput = Readonly<{
   embedding?: ProtectedAgentMemoryEmbeddingPort;
   createDedicatedPool?: ProtectedTaskNativeFixedMemorySegmentInput["createDedicatedPool"];
   now?: () => number;
+  prepareExternalExecution?: Pick<Parameters<typeof createProtectedTaskExecutionPreparation>[0], "claude" | "codex" | "hermes" | "opencode" | "deepResearch">;
   wakeForeground?: Pick<Parameters<typeof createProtectedTaskWakeForegroundComposition>[0],
     "jobManager" | "executor" | "onDiagnostic"> & Readonly<{ wakeEffectRecovery(): void }>;
 }>;
@@ -144,6 +148,21 @@ const productionDependencies: Dependencies = Object.freeze({
   terminalMessageComposition: createProtectedTaskTerminalMessageComposition,
   localExecutionReadiness: inspectProtectedTaskLocalExecutionReadiness,
 });
+
+export function createProtectedTaskRuntimeInitialExecutionPreparation(
+  db: DirectDatabase,
+  nativeExecution: ProductionProtectedTaskNativeExecution,
+  external?: ProductionProtectedTaskRuntimeInitialCompositionInput[
+    "prepareExternalExecution"
+  ],
+) {
+  return createProtectedTaskExecutionPreparation({
+    db,
+    native: nativeExecution.prepareExecution,
+    ...(external === undefined ? {} : external),
+    repoDocs: nativeExecution.prepareRepoDocsExecution,
+  });
+}
 
 function projectOccurrence(
   row: Readonly<{
@@ -422,6 +441,11 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       : { createDedicatedPool: input.createDedicatedPool }),
     ...(input.now === undefined ? {} : { now }),
   });
+  const prepareExecution = createProtectedTaskRuntimeInitialExecutionPreparation(
+    input.db,
+    nativeExecution,
+    input.prepareExternalExecution,
+  );
   const plan = createProtectedTaskRuntimeGrantPlanBuilder({
     crypto,
     recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
@@ -448,7 +472,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     },
     acceptOutputBinding: value =>
       acceptProtectedTaskRunOutputBinding(input.db, value),
-    prepareExecution: nativeExecution.prepareExecution,
+    prepareExecution,
     startProtectedTaskRun: value => startProtectedTaskRun(input.db, value),
     deferBeforeExecution: value => recovery.recover(value, { immediate: true }),
     publishResult: nativeExecution.publishResult,
@@ -524,7 +548,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const parked = createProtectedTaskRuntimeParkedContinuation({
     db: input.db, restricted, crypto, serverScope, resolver: input.resolver,
     recipients: input.recipients, repository, withCurrentAuthority,
-    prepareExecution: nativeExecution.prepareExecution,
+    prepareExecution,
     publishResult: nativeExecution.publishResult,
     createDedicatedPool: input.createDedicatedPool ?? createDedicatedEncryptedCheckpointPool,
     recoverUnstarted: parkedRecovery,

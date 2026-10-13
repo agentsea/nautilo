@@ -11,6 +11,11 @@ import {
   type ProtectedTaskSemanticAuthorityRequirements,
 } from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
+import type {
+  ProtectedRepoDocsExecutionPort,
+  ProtectedRepoDocsOpenedSelection,
+  ProtectedTaskProjectFilePort,
+} from "@nautilo/agent";
 
 type TaskRunCheckpointSaver = NonNullable<
   RunScopeSubagentOpts["taskRunCheckpointSaver"]
@@ -68,6 +73,12 @@ export type ProtectedTaskNativeExecution = Readonly<{
     RunScopeSubagentOpts["foregroundChatFundingSession"];
   /** Grant-bound delegated local execution authority; process-local and nonserializable. */
   delegatedLocalExecutionPort?: RunScopeSubagentOpts["delegatedLocalExecutionPort"];
+  taskReportBackContinuation?: RunScopeSubagentOpts["taskReportBackContinuation"];
+  protectedRepoDocs?: Readonly<{
+    selection: ProtectedRepoDocsOpenedSelection;
+    executionPort: ProtectedRepoDocsExecutionPort;
+    createProjectFilePort(workDir: string): ProtectedTaskProjectFilePort;
+  }>;
 }>;
 
 export type RunProtectedTaskNativeSegmentInput = Readonly<{
@@ -143,7 +154,7 @@ const productionDependencies: ProtectedTaskNativeRunnerDependencies =
 
 function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
   if (
-    input.mode !== "native"
+    (input.mode !== "native" && input.mode !== "repo_docs")
     || typeof input.taskId !== "string"
     || input.taskId.length === 0
     || typeof input.taskRunId !== "string"
@@ -156,6 +167,15 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
     || typeof input.memoryHandoff !== "object"
     || input.memoryHandoff === null
     || input.execution.toolWhitelist?.includes("security_scan") === true
+    || (input.mode === "native" && input.execution.protectedRepoDocs !== undefined)
+    || (input.mode === "repo_docs" && (
+      input.execution.protectedRepoDocs === undefined
+      || input.execution.taskReportBackContinuation !== undefined
+      || input.execution.toolWhitelist === undefined
+      || input.execution.toolWhitelist.length !== 1
+      || input.execution.toolWhitelist[0] !== "file"
+      || typeof input.execution.protectedRepoDocs.createProjectFilePort !== "function"
+    ))
     || input.transientInput["taskId"] !== input.taskId
     || input.transientInput["currentTaskId"] !== input.taskId
     || input.transientInput["taskRunId"] !== input.taskRunId
@@ -389,6 +409,12 @@ function runnerOptions(
     ...(execution.delegatedLocalExecutionPort === undefined
       ? {}
       : { delegatedLocalExecutionPort: execution.delegatedLocalExecutionPort }),
+    ...(execution.taskReportBackContinuation === undefined
+      ? {}
+      : { taskReportBackContinuation: execution.taskReportBackContinuation }),
+    ...(execution.protectedRepoDocs === undefined
+      ? {}
+      : { protectedRepoDocs: execution.protectedRepoDocs }),
     taskRun: true,
     trustedExecutionEntrypoint: "background.task",
     currentTaskId: input.taskId,

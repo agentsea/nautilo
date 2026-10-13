@@ -198,6 +198,73 @@ describe("task tool", () => {
     });
   });
 
+  for (const plain of [true, false]) test(`Claude dispatch uses only its ${plain ? "ordinary" : "protected"} creator`, async () => {
+    const calls: string[] = [];
+    const received: unknown[] = [];
+    stubRuntime({ canUseLegacyTaskContent: async () => plain, claudeCodeTasksEnabled: true,
+      createTask: async () => { throw new Error("Native creator must not run"); },
+      createProtectedTask: async () => { throw new Error("Native protected creator must not run"); },
+      createHarnessTask: async input => { calls.push("ordinary"); received.push(input); return { taskId: "claude-task", status: "pending", execution: "claude-code", model: { catalogModelId: "catalog-model", selectedModel: "claude-sonnet-4-6" } }; },
+      createProtectedHarnessTask: async input => { calls.push("protected"); received.push(input); return { taskId: "claude-task", status: "pending", execution: "claude-code", model: { catalogModelId: "catalog-model", selectedModel: "claude-sonnet-4-6" } }; },
+    });
+    const result = JSON.parse(await dispatchTaskCommand({ command: "create", prompt: "private request",
+      harness: "claude-code", harness_model_id: "catalog-model" }, CTX)) as unknown;
+    expect(result).toMatchObject({ taskId: "claude-task", execution: "claude-code" });
+    expect(calls).toEqual([plain ? "ordinary" : "protected"]);
+    expect(received).toEqual([{ ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
+      callingRoomId: ROOM_ID, prompt: "private request", harness: "claude-code", harnessModelId: "catalog-model" }]);
+  });
+
+  test("protected Claude dispatch never falls back and rejects caller-owned routing or Scope overrides", async () => {
+    const calls: string[] = [];
+    stubRuntime({ canUseLegacyTaskContent: async () => false, claudeCodeTasksEnabled: true,
+      createHarnessTask: async () => { calls.push("ordinary"); return { taskId: "wrong", status: "pending", execution: "claude-code", model: { catalogModelId: "catalog-model", selectedModel: "claude-sonnet-4-6" } }; },
+    });
+    const request = { command: "create" as const, prompt: "private", harness: "claude-code" as const };
+    expect(await dispatchTaskCommand(request, CTX)).toContain("not yet available");
+    stubRuntime({ canUseLegacyTaskContent: async () => false, claudeCodeTasksEnabled: true,
+      createProtectedHarnessTask: async () => { calls.push("protected"); return { taskId: "wrong", status: "pending", execution: "claude-code", model: { catalogModelId: "catalog-model", selectedModel: "claude-sonnet-4-6" } }; },
+    });
+    for (const patch of [{ use_scope: true }, { target_chat: "orphan" as const }, { schedule_kind: "now" as const }]) {
+      expect(await dispatchTaskCommand({ ...request, ...patch }, CTX)).toContain("server-owned");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  for (const harness of ["codex", "hermes-acp"] as const) for (const plain of [true, false]) {
+    test(`${harness} uses only its ${plain ? "ordinary" : "protected"} creator`, async () => {
+      const calls: string[] = []; const received: unknown[] = [];
+      stubRuntime({ canUseLegacyTaskContent: async () => plain,
+        createTask: async () => { throw new Error("Native creator must not run"); },
+        createProtectedTask: async () => { throw new Error("Native protected creator must not run"); },
+        createHarnessTask: async input => { calls.push("ordinary"); received.push(input); return { taskId: "external-task", status: "pending", execution: harness }; },
+        createProtectedHarnessTask: async input => { calls.push("protected"); received.push(input); return { taskId: "external-task", status: "pending", execution: harness }; },
+      });
+      const result = JSON.parse(await dispatchTaskCommand({ command: "create", prompt: "private request", harness,
+        ...(harness === "codex" ? { harness_model_id: "catalog-model", working_directory: "/user/workspace", collaboration_mode: "plan" as const } : {}) }, CTX)) as unknown;
+      expect(result).toMatchObject({ taskId: "external-task", execution: harness });
+      expect(calls).toEqual([plain ? "ordinary" : "protected"]);
+      expect(received).toHaveLength(1);
+      expect(received[0]).toMatchObject({ ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
+        callingRoomId: ROOM_ID, prompt: "private request", harness });
+      if (harness === "codex") expect(received[0]).toMatchObject({ harnessModelId: "catalog-model", workingDirectory: "/user/workspace", collaborationMode: "plan" });
+      else expect(received[0]).toEqual({ ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
+        callingRoomId: ROOM_ID, prompt: "private request", harness });
+    });
+  }
+  test("protected Codex and Hermes forbid caller Scope/routing overrides and OpenCode stays unavailable", async () => {
+    const calls: string[] = [];
+    stubRuntime({ canUseLegacyTaskContent: async () => false,
+      createHarnessTask: async () => { throw new Error("Ordinary fallback forbidden"); },
+      createProtectedHarnessTask: async () => { calls.push("protected"); return { taskId: "wrong", status: "pending", execution: "codex" }; },
+    });
+    for (const harness of ["codex", "hermes-acp"] as const) for (const patch of [
+      { use_scope: true }, { scope_id: "scope" }, { target_chat: "orphan" as const }, { result_delivery: "wake" as const },
+    ]) expect(await dispatchTaskCommand({ command: "create", prompt: "private", harness, ...patch }, CTX)).toContain("server-owned");
+    expect(taskToolSchema.safeParse({ command: "create", prompt: "private", harness: "opencode-acp" }).success).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   test("non-Plain policy fences ordinary legacy Agent read, list, and update", async () => {
     stubRuntime({ canUseLegacyTaskContent: async () => false });
     const ordinary = {

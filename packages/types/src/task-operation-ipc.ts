@@ -116,7 +116,12 @@ export type TaskOperationOpenedDefinitionV1 = Readonly<{
         expectedOutput: string | null;
         lastError: string | null;
       }>
-    | Readonly<{ status: "protected"; payload: TaskOperationPayloadV1 }>;
+    | Readonly<{
+        status: "protected";
+        payload: TaskOperationPayloadV1;
+        /** Authenticated display snapshot; never Task lifecycle authority. */
+        retainedHistoricalError: string | null;
+      }>;
 }>;
 
 export type TaskOperationResponseV1 =

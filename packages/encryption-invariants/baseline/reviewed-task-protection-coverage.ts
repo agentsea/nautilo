@@ -1,5 +1,5 @@
 import type { EncryptionCoverageEntry } from "../src/model";
-import type { RetiredFrozenDebt, ReviewedDebtLink } from "../src/registry";
+import type { ReviewedDebtLink } from "../src/registry";
 
 const EVIDENCE = [
   "packages/encryption-invariants/tests/integration/reviewed-task-protection-coverage.test.ts",
@@ -417,18 +417,3 @@ export const REVIEWED_TASK_PROTECTION_DEBT_LINKS: readonly ReviewedDebtLink[] =
       "packages/server/tests/unit-isolated/task-content-detail-policy.test.ts",
     ],
   }));
-
-/**
- * The ordinary Task detail route moved behind the explicit content-v1
- * boundary. Its open tool-argument payload is unchanged and remains linked to
- * the immutable pre-existing debt row at the new exact locator.
- */
-export const RETIRED_TASK_PROTECTION_FROZEN_DEBT:
-  readonly RetiredFrozenDebt[] = [{
-  debtId: "debt.wire.arbitrary.19ijf0o",
-  reason: "The old /api/tasks/:id tool-argument locator was replaced by the explicit /api/tasks/:id/content-v1 route; the exact current locator remains linked to this immutable ordinary Task transport debt.",
-  testEvidence: [
-    ...EVIDENCE,
-    "packages/server/tests/unit-isolated/task-content-detail-policy.test.ts",
-  ],
-}];

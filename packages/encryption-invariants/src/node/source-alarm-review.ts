@@ -16,6 +16,14 @@ import {
   REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS,
   SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-paid-service-funding-source-alarms";
+import {
+  REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS,
+  SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-main-2026-10-13-source-alarms";
+import {
+  REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS,
+  SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-protected-task-provider-source-alarms";
 import { SOURCE_ALARM_BASELINE_REVIEWS } from "../../baseline/source-alarm-reviews";
 import {
   REVIEWED_WAVE_4_SOURCE_ALARMS,
@@ -358,7 +366,15 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = [
   .filter((review) =>
     !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator)
   )
-  .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS);
+  .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS)
+  .filter((review) =>
+    !SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS.has(review.locator)
+  )
+  .concat(REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS)
+  .filter((review) =>
+    !SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS.has(review.locator)
+  )
+  .concat(REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS);
 
 const LOCATOR_PATTERN =
   /^(?<path>[^#]+)#(?<kind>[a-z_]+):(?<signature>[0-9a-f]{16}):(?<occurrence>[1-9][0-9]*)$/u;

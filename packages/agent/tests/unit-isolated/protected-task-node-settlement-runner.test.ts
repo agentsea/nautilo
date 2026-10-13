@@ -201,6 +201,7 @@ describe("protected Task node settlement in the scope runner", () => {
     })();
 
     await protectedHandlerStarted.promise;
+    expect(capturedGraphDeps?.confidential).toBe(true);
     controller.abort();
     await Promise.resolve();
     await Promise.resolve();
@@ -215,6 +216,7 @@ describe("protected Task node settlement in the scope runner", () => {
 
   test("does not install a settlement scope on the Plain graph path", async () => {
     await runScopeSubagentUntilPause(baseOpts);
+    expect(capturedGraphDeps).not.toHaveProperty("confidential");
     expect(capturedGraphDeps).not.toHaveProperty(
       "protectedTaskNodeSettlementScope",
     );

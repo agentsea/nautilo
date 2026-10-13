@@ -35,7 +35,7 @@ import {
 import {
   deriveTaskHistoricalContentCryptoObjectIdV1,
 } from "../../src/task/task-historical-content-identity.ts";
-import { encodeTaskRunResultPayloadV1 } from
+import { encodeTaskDefinitionContentV2, encodeTaskRunResultPayloadV1 } from
   "../../src/task/task-payload-v1.ts";
 import { MemoryClientProfileVault } from
   "../../src/testing/client-profile-vault.ts";
@@ -261,6 +261,62 @@ async function setup() {
   return { crypto, signing, coordinates, vault, claim, source };
 }
 
+function definitionFixture(fixture: Awaited<ReturnType<typeof setup>>) {
+  const payloadBytes = encodeTaskDefinitionContentV2({
+    formatVersion: 2,
+    prompt: "historical prompt",
+    expectedOutput: null,
+    protectedMetadata: {},
+    retainedHistoricalError: "provider unavailable",
+  });
+  const sourceDigest = new Uint8Array(32).fill(0x61);
+  const sourcePayloadHash = fixture.crypto.hash(payloadBytes);
+  const coordinate = Object.freeze({
+    kind: "definition" as const,
+    taskId: TASK_ID,
+    contentRevision: 1 as const,
+  });
+  const objectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+    coordinate, sourceDigest, namespaceId: NAMESPACE_ID,
+  });
+  const unsignedPlan = Object.freeze({
+    ...fixture.source.plan,
+    coordinate,
+    objectId,
+    operationId: `task-historical-publish:${objectId.split(":").at(-1)!}`,
+    sourceDigestBase64url: base64url(sourceDigest),
+    sourcePayloadHashBase64url: base64url(sourcePayloadHash),
+  });
+  const { planDigestBase64url: _oldDigest, expiresAt, ...planCoordinates } = unsignedPlan;
+  const plan: TaskContentBackfillPublicationPlan = Object.freeze({
+    ...planCoordinates,
+    planDigestBase64url: base64url(fixture.crypto.hash(new TextEncoder().encode(
+      PLAN_DOMAIN + JSON.stringify(planCoordinates),
+    ))),
+    expiresAt,
+  });
+  const claim: TaskContentBackfillClaim = Object.freeze({
+    ...fixture.claim,
+    candidate: Object.freeze({
+      kind: "definition" as const,
+      taskId: TASK_ID,
+      sourceCreatedAt: NOW - 10_000,
+      sourceUpdatedAt: NOW - 5_000,
+      sourceRevision: 0 as const,
+      sourceStatus: "paused" as const,
+    }),
+  });
+  const source: TaskContentBackfillSourceResponse = Object.freeze({
+    status: "source" as const,
+    sourceRoomId: ROOM_ID,
+    plan,
+    payloadBytesBase64url: base64url(payloadBytes),
+  });
+  payloadBytes.fill(0);
+  sourceDigest.fill(0);
+  return { claim, source, sourcePayloadHash };
+}
+
 function createClient(
   fixture: Awaited<ReturnType<typeof setup>>,
   apiPort: DeviceTaskContentBackfillApiPort,
@@ -419,6 +475,45 @@ describe("device Task content backfill client", () => {
     });
     expect(upload!.payloadBytesBase64url).not.toContain("historical result");
     requestBytes.fill(0);
+  });
+
+  test("publishes canonical V2 historical definition content without reducing it to V1", async () => {
+    const fixture = await setup();
+    const definition = definitionFixture(fixture);
+    let upload: TaskContentBackfillPublishRequest | undefined;
+    let recoveries = 0;
+    const result = await createClient(fixture, api({
+      discoverTaskContentBackfill: () => Promise.resolve({
+        status: "ready", value: { status: "claimed", claim: definition.claim },
+      }),
+      recoverTaskContentBackfill: () => Promise.resolve({
+        status: ++recoveries === 1 ? "pending" : "mapped",
+      }),
+      readTaskContentBackfillSource: () => Promise.resolve(definition.source),
+      publishTaskContentBackfill: (value) => {
+        upload = value;
+        return Promise.resolve({ status: "published" });
+      },
+      acknowledgeTaskContentBackfill: () => Promise.resolve({
+        status: "ready", value: "acknowledged",
+      }),
+    })).runBatch({ signal: new AbortController().signal });
+    expect(result).toEqual({ state: "more", resumeAt: NOW });
+    expect(upload).toBeDefined();
+    const requestBytes = decodeBase64url(upload!.requestBytesBase64url);
+    const request = await verifyHumanExistingTaskRepresentationPublicationRequestV1(
+      fixture.crypto,
+      { requestBytes, now: NOW, resolveCurrentAuthority: () =>
+        Promise.resolve(fixture.signing.publicKey.slice()) },
+    );
+    expect(request).toMatchObject({
+      kind: "definition",
+      entityId: TASK_ID,
+      taskId: TASK_ID,
+      sourcePayloadHash: definition.sourcePayloadHash,
+    });
+    requestBytes.fill(0);
+    definition.sourcePayloadHash.fill(0);
   });
 
   test("releases a temporary Namespace-authority failure without permanent acknowledgement", async () => {

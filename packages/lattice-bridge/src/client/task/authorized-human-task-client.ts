@@ -20,8 +20,11 @@ import {
   deriveTaskHistoricalContentCryptoObjectIdV1,
 } from "../../task/task-historical-content-identity.ts";
 import {
+  decodeTaskDefinitionContent,
   decodeTaskPayloadV1,
   encodeTaskPayloadV1,
+  type DecodedTaskDefinitionContent,
+  type TaskDefinitionContent,
   type TaskPayloadV1,
 } from "../../task/task-payload-v1.ts";
 import { parseTaskHistoricalRepairProvenanceV1 } from
@@ -111,7 +114,7 @@ export interface HumanTaskDeviceContentPortV1 {
   }>): Promise<ProtectedTaskPreparedCreateRequestV1>;
   prepareUpdate(input: Readonly<{
     plan: TaskDefinitionPublicationPlanV1;
-    payload: TaskPayloadV1;
+    payload: TaskDefinitionContent;
     task: TaskOperationalUpdateV1;
   }>): Promise<ProtectedTaskPreparedUpdateRequestV1>;
   prepareDualCreate(input: Readonly<{
@@ -121,7 +124,7 @@ export interface HumanTaskDeviceContentPortV1 {
   }>): Promise<DualTaskPreparedCreateRequestV1>;
   prepareDualUpdate(input: Readonly<{
     plan: TaskDefinitionPublicationPlanV1;
-    payload: TaskPayloadV1;
+    payload: TaskDefinitionContent;
     task: TaskOperationalUpdateV1;
   }>): Promise<DualTaskPreparedUpdateRequestV1>;
   /** Authenticate the manifest chain, exact envelope and Namespace keyring before returning bytes. */
@@ -168,7 +171,11 @@ export type HumanTaskOpenedDefinitionV1 = Readonly<{
         expectedOutput: string | null;
         lastError: string | null;
       }>
-    | Readonly<{ status: "protected"; payload: TaskPayloadV1 }>;
+    | Readonly<{
+        status: "protected";
+        payload: TaskPayloadV1;
+        retainedHistoricalError: string | null;
+      }>;
 }>;
 
 function checkedProtectedList(list: TaskContentListV1): TaskContentListV1 {
@@ -317,6 +324,55 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
   ordinary?: HumanTaskOrdinaryPublicationPortV1;
   createOperationId: () => string;
 }>) {
+  const openProtectedDefinition = async (
+    task: TaskContentSummaryV1,
+  ): Promise<DecodedTaskDefinitionContent> => {
+    const taskId = task.id;
+    if (task.content.status === "unavailable") {
+      throw new ClassifiedDataOperationError(
+        unavailableReason(task.content.reason),
+        "Protected Task content is unavailable",
+      );
+    }
+    if (task.content.status !== "protected") {
+      throw new ClassifiedDataOperationError(
+        "recoverable_availability",
+        "Protected Task content is unavailable",
+      );
+    }
+    const envelope = await input.plans.readExact({ taskId, reference: task.content });
+    try {
+      checkedRead(taskId, task.content, envelope);
+      const bytes = await input.content.openExact({
+        reference: task.content,
+        envelope,
+        ...(task.agentId === null || task.agentId === undefined
+          ? {}
+          : { expectedAgentId: task.agentId }),
+      });
+      try {
+        return decodeTaskDefinitionContent(bytes);
+      } finally {
+        bytes.fill(0);
+      }
+    } finally {
+      wipeReadEnvelope(envelope);
+    }
+  };
+
+  const contentForUpdate = (
+    payload: TaskPayloadV1,
+    retainedHistoricalError: string | null,
+  ): TaskDefinitionContent => retainedHistoricalError === null
+    ? payload
+    : Object.freeze({
+        formatVersion: 2 as const,
+        prompt: payload.prompt,
+        expectedOutput: payload.expectedOutput,
+        protectedMetadata: payload.protectedMetadata,
+        retainedHistoricalError,
+      });
+
   const sendPrepared = async (
     mutation: PreparedHumanTaskMutation,
   ): Promise<TaskCreateResponse | TaskContentSummaryV1> => {
@@ -389,7 +445,7 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
       const taskId = task.id;
       const result = await input.owner.read<
         OrdinaryTaskDefinitionContentV1,
-        TaskPayloadV1,
+        DecodedTaskDefinitionContent,
         HumanTaskOpenedDefinitionV1["content"]
       >({
         ordinary: async () => {
@@ -400,42 +456,18 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
           }
           return detail.definition;
         },
-        protected: async () => {
-          if (task.content.status === "unavailable") {
-            throw new ClassifiedDataOperationError(
-              unavailableReason(task.content.reason),
-              "Protected Task content is unavailable",
-            );
-          }
-          if (task.content.status !== "protected") {
-            throw new ClassifiedDataOperationError("recoverable_availability", "Protected Task content is unavailable");
-          }
-          const envelope = await input.plans.readExact({ taskId, reference: task.content });
-          try {
-            checkedRead(taskId, task.content, envelope);
-            const bytes = await input.content.openExact({
-              reference: task.content,
-              envelope,
-              ...(task.agentId === null || task.agentId === undefined
-                ? {}
-                : { expectedAgentId: task.agentId }),
-            });
-            try {
-              return decodeTaskPayloadV1(bytes);
-            } finally {
-              bytes.fill(0);
-            }
-          } finally {
-            wipeReadEnvelope(envelope);
-          }
-        },
+        protected: () => openProtectedDefinition(task),
         consumeOrdinary: (content) => Object.freeze({
           status: "ordinary" as const,
           prompt: content.prompt,
           expectedOutput: content.expectedOutput,
           lastError: content.lastError,
         }),
-        consumeProtected: (payload) => Object.freeze({ status: "protected" as const, payload }),
+        consumeProtected: (content) => Object.freeze({
+          status: "protected" as const,
+          payload: content.payload,
+          retainedHistoricalError: content.retainedHistoricalError,
+        }),
       });
       return Object.freeze({ task, content: result.value });
     },
@@ -501,11 +533,13 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
               "recoverable_availability", "Protected Task content is unavailable",
             );
           }
+          const opened = await openProtectedDefinition(current);
+          const content = contentForUpdate(payload, opened.retainedHistoricalError);
           const operationId = input.createOperationId();
           const plan = checkedPlan(await input.plans.update({
             operationId, taskId, current, task: inputIntent.task,
           }), "update", operationId, taskId);
-          const request = await input.content.prepareUpdate({ plan, payload, task: inputIntent.task });
+          const request = await input.content.prepareUpdate({ plan, payload: content, task: inputIntent.task });
           checkedPrepared(request, plan);
           return { representation: "protected", request };
         },
@@ -516,13 +550,15 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
               "Protected Task content is unavailable",
             );
           }
+          const opened = await openProtectedDefinition(current);
+          const content = contentForUpdate(payload, opened.retainedHistoricalError);
           const operationId = input.createOperationId();
           const plan = checkedPlan(await input.plans.update({
             operationId, taskId, current, task: inputIntent.task,
           }), "update", operationId, taskId);
           const request = await input.content.prepareDualUpdate({
             plan,
-            payload,
+            payload: content,
             task: inputIntent.task,
           });
           checkedPrepared(request, plan);

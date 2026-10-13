@@ -101,6 +101,32 @@ export {
   type EncryptedCheckpointSaverQuiescence,
 } from "./checkpoints/encrypted-checkpoint-saver";
 export {
+  type ProtectedRepoDocsCheckpointV1,
+  type ProtectedRepoDocsCommandKind,
+  type ProtectedRepoDocsConfirmedReceiptV1,
+  type ProtectedRepoDocsExecutionPlan,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedRepoDocsExecutionRequest,
+  type ProtectedRepoDocsExecutionResult,
+  type ProtectedRepoDocsInspection,
+  type ProtectedRepoDocsMode,
+  type ProtectedRepoDocsOperationReceiptV1,
+  type ProtectedRepoDocsOpenedSelection,
+  type ProtectedRepoDocsPendingReceiptV1,
+  type ProtectedRepoDocsPublish,
+  type ProtectedRepoDocsCheckpointStore,
+  ProtectedRepoDocsOutcomeUnknownError,
+  createProtectedRepoDocsCheckpoint,
+  createProtectedRepoDocsRequest,
+  runProtectedRepoDocsOperation,
+} from "./runtime/protected-repo-docs";
+export {
+  bindDelegatedLocalExecution,
+  localExecutionId,
+  localExecutionOwnerKey,
+  sameLocalExecutionCaller,
+} from "./tools/local-execution/admission";
+export {
   readEncryptedCheckpointPhysicalManifest,
   type EncryptedCheckpointManifestPool,
   type EncryptedCheckpointPhysicalManifest,
@@ -1500,5 +1526,11 @@ export { readForegroundFundingForThread } from "./graph/turn-id";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
 
 export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";
+export {
+  getCurrentProtectedTaskProjectFilePort,
+  matchesProtectedTaskProjectFilePort,
+  runWithProtectedTaskProjectFilePort,
+  type ProtectedTaskProjectFilePort,
+} from "./runtime/protected-task-project-file";
 
 export { installConversionRuntime, uninstallConversionRuntime, type ConversionRuntime, type CloudConversionExecutionRequest, type CloudConversionExecutionResult, type CloudConversionRecoveryRequest, type CloudConversionSourceBinding, type CloudConversionDestinationBinding } from "./tools/convert/conversion-runtime";

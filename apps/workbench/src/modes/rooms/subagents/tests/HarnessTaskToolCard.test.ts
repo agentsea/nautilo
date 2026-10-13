@@ -1,6 +1,63 @@
+import "../../../../../tests/bun-dom-preload";
 import { ApiError } from "@nautilo/api-client/browser";
-import { describe, expect, jest, test } from "bun:test";
-import {
+import { cleanup, render, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, jest, mock, test } from "bun:test";
+import { createElement } from "react";
+import { harnessPresentation, harnessReceiptEmptyLabel } from "../harness-presentation";
+
+const readProtectedTask = mock(async () => ({
+  representation: "protected" as const,
+  opened: {
+    task: { id: "task-historical", status: "completed" },
+    content: {
+      status: "protected" as const,
+      payload: {
+        formatVersion: 1 as const,
+        prompt: "Private repaired task",
+        expectedOutput: null,
+        protectedMetadata: {},
+      },
+      retainedHistoricalError: "Provider unavailable before repair",
+    },
+  },
+  runs: [],
+}));
+const actualRuntimeContexts = await import("../../../../adapters/runtime-contexts");
+mock.module("../../../../adapters/runtime-contexts", () => ({
+  ...actualRuntimeContexts,
+  useConversationEncryptionPolicyMode: () => "encrypted_only" as const,
+  useRunningSubagents: () => ({ list: [], heartbeat: { count: 0, line: "" } }),
+  useToolActivity: () => [],
+}));
+const actualAuth = await import("../../../../hooks/use-auth");
+mock.module("../../../../hooks/use-auth", () => ({
+  ...actualAuth,
+  useAuth: () => ({
+    viewerGeneration: 1,
+    viewer: {
+      isVerified: true,
+      sessionUserId: "viewer-1",
+      sessionActorId: "actor-1",
+    },
+  }),
+}));
+const actualProtectedController = await import("../../../../lib/protected-human-task-controller");
+mock.module("../../../../lib/protected-human-task-controller", () => ({
+  ...actualProtectedController,
+  createWorkbenchProtectedHumanTaskController: () => ({}),
+  readWorkbenchTaskForViewer: readProtectedTask,
+}));
+mock.module("../use-subagent-transcript", () => ({
+  useSubagentTranscript: () => ({ messages: [], error: null }),
+}));
+const actualRecovery = await import("../TaskContentAccessRecoveryNotice");
+mock.module("../TaskContentAccessRecoveryNotice", () => ({
+  ...actualRecovery,
+  shouldShowTaskContentAccessRecovery: () => false,
+  TaskContentAccessRecoveryNotice: () => null,
+}));
+
+const {
   harnessTaskToolRenderers,
   harnessTaskFailureOutcome,
   harnessTaskCanonicalStatus,
@@ -15,10 +72,37 @@ import {
   startTaskDetailRefresh,
   taskActionScopeToken,
   taskFundingFailureFromApiError,
-} from "../HarnessTaskToolCard";
-import { harnessPresentation, harnessReceiptEmptyLabel } from "../harness-presentation";
+} = await import("../HarnessTaskToolCard");
+
+afterEach(() => {
+  cleanup();
+  readProtectedTask.mockClear();
+});
 
 describe("parseHarnessTaskResult", () => {
+  test("shows an authenticated retained historical error in the protected Task root", async () => {
+    const Renderer = harnessTaskToolRenderers.task;
+    const view = render(createElement(Renderer, {
+      toolName: "task",
+      toolCallId: "tool-historical",
+      args: {},
+      result: {
+        taskId: "task-historical",
+        status: "completed",
+        execution: "native",
+      },
+      status: { type: "complete" },
+    }));
+
+    await waitFor(() => {
+      expect(view.getByTestId("task-retained-historical-error").textContent)
+        .toBe("Earlier error: Provider unavailable before repair");
+    });
+    expect(readProtectedTask).toHaveBeenCalledTimes(1);
+    expect(view.getByTestId("harness-protected-task-definition").textContent)
+      .toContain("Private repaired task");
+  });
+
   test("routes both Codex dispatch tools through the live harness card", () => {
     expect(Object.keys(harnessTaskToolRenderers)).toEqual(["task", "in_background"]);
   });

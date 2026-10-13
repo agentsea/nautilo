@@ -127,6 +127,7 @@ const EVENT_ROUTING = {
   "task.awaiting_reply": "scoped",
   // owner-scoped mid-run progress for subagent activity cards.
   "task.progress": "scoped",
+  "task.external_request.changed": "scoped",
   // room-scoped in-thread working affordance (routed like message.tokens).
   "agent.progress": "scoped",
   // room-scoped, redacted Structured SSH activity projection.

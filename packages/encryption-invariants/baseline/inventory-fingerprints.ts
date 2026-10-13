@@ -1,6 +1,6 @@
 export const SOURCE_ALARM_BASELINE = {
-  "count": 3419,
-  "sha256": "8a8b431174d6caddf80ed1189f7e5316266131a4b9d816d5453f8dc738d15367"
+  "count": 3443,
+  "sha256": "9ed2294e1e2325a4e24ceb91c567d56b3117b20b29dcdb57db90a2cbcd250b69"
 } as const;
 
 // Reviewed public-browser receipt constraints (0289–0291), scoped media
@@ -10,10 +10,10 @@ export const SOURCE_ALARM_BASELINE = {
 // 0295 migration, followed by the execution-input message lookup index at 0296
 // for selected-message interruption summaries. No migration body was edited.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 332,
-  "snapshots": 303,
-  "tip": 331,
-  "sha256": "2128d755a2cac1f5615052505870263c0d6767c5de4ca29c82c6deda1c4d556c"
+  "migrations": 352,
+  "snapshots": 323,
+  "tip": 351,
+  "sha256": "7451555a6b46b1fb9ca16481dfbe2d762097fbbe1166fb31398593e512cb8a05"
 } as const;
 
 /**
@@ -41,13 +41,20 @@ export const MIGRATION_TREE_BASELINE = {
 // planner and conversation product-store unit suites; it never writes content.
 // Connected-web steering now fails closed when replacement-run budget cannot be
 // proven, removing its two run-rotation update callsites without adding writers.
+// Task execution review accounts for 103 added and 11 replaced locators. The
+// content boundaries are canonical Shadow Memory fallback, foreground Task
+// creation, and definition/result mapping; Full clears ordinary content while
+// Dual retains its admitted sibling. Other additions retain receipt, authority,
+// routing or lifecycle metadata. No new unresolved writer is admitted. The
+// migration review accounts for 20 added bodies, with all six earlier conversion
+// and funding bodies byte-identical after main's slot reconciliation.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1506,
-  "insert": 501,
-  "update": 811,
-  "delete": 177,
+  "count": 1598,
+  "insert": 522,
+  "update": 873,
+  "delete": 186,
   "unresolved": 17,
-  "sha256": "be157b6613c3ccb9a515aad4e08e2ad7713b866527f027944be8debb0e3c0d7e"
+  "sha256": "bb6cbec94eeef8b96eddeecf55bbe1aaa4253a21c153dff458ee06836a5a9b56"
 } as const;
 
 /**

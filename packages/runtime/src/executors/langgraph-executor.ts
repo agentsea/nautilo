@@ -214,11 +214,15 @@ export async function resolveForegroundProtectedMemoryGraphDeps(input: Readonly<
   policy: StrictShadowEnforcementPolicy | undefined;
   normalForeground: boolean;
 }>): Promise<NautiloGraphDeps> {
+  // Wake result text enters the foreground graph under invocation-local custody.
+  // Keep diagnostic redaction out of serialized state and ordinary foreground turns.
+  const confidentialDeps = getCurrentProtectedTaskWakeForegroundContext() === undefined
+    ? {} : { confidential: true as const };
   const repository = await resolveForegroundProtectedMemoryRepository(input);
   const envelope = input.envelope;
   const fullEncryptionOnlyForState = () => input.policy?.mode === "encrypted_only";
   if (repository === undefined || envelope === null || isScopeMemoryEnvelope(envelope)) {
-    return { fullEncryptionOnlyForState };
+    return { fullEncryptionOnlyForState, ...confidentialDeps };
   }
   const access = await input.session?.createForegroundMemoryAccessPort?.(envelope);
   const projection = await input.session?.createForegroundMemoryProjectionPort?.(envelope);
@@ -238,6 +242,7 @@ export async function resolveForegroundProtectedMemoryGraphDeps(input: Readonly<
   };
   return {
     fullEncryptionOnlyForState,
+    ...confidentialDeps,
     protectedMemoryRepositoryForState: (state) => { assertInvocation(state); return repository; },
     ...(access === undefined ? {} : {
       protectedMemoryAccessPortForState: (state: Parameters<typeof assertInvocation>[0]) => { assertInvocation(state); return access; },

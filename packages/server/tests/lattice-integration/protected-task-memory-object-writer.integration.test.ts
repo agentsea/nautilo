@@ -10,10 +10,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, test } from "bun:test";
 import { HumanMessage } from "@langchain/core/messages";
 import { Annotation, Command, END, START, StateGraph } from "@langchain/langgraph";
+import { AcpSemanticRelay } from "@nautilo/acp-host";
+import { validateAcpInitializeCapabilityTruth } from
+  "../../../acp-host/src/capability-truth";
 import { resolveModelRole, protectedMemoryAuthorityFromEnvelope, assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
   lockAtomicProjectionDestinationAuthority, fingerprintProjectionAudience,
   protectedTaskInterruptCoordinates, createProtectedTaskAdditionalAuthorityResumeMapV1,
-  invokeChatModelWithFallback,
+  invokeChatModelWithFallback, deepResearchTaskMetadata, admittedDeepResearchTaskMetadata,
   type ProtectedTaskMemoryAccessHandoff,
 } from "@nautilo/agent";
 import { createLiveShadowCheckpointSaver } from
@@ -43,6 +46,8 @@ import {
   createPostgresJsBridgeConnection,
   cryptoDomains,
   cryptoObjects,
+  codexAccountProfiles,
+  codexUserPreferences,
   foregroundMemoryCryptoPublicationReceipts,
   discoverTaskContentBackfill,
   claimTaskContentBackfill,
@@ -192,6 +197,7 @@ import {
   deriveTaskContentCryptoObjectIdV1,
   encodeMemoryPayloadV1,
   encodeTaskPayloadV1,
+  decodeTaskDefinitionContent,
   fingerprintRequiredMemoryNamespaces,
   MEMORY_OBJECT_TYPE,
   prepareTaskRuntimeAgentObject,
@@ -233,17 +239,48 @@ import type {
 import {
   InMemoryLaneLock,
   JobManager,
+  TaskObserver,
   TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   createTaskRuntimeDomainMemoryCryptoSession,
-  getCurrentLiveShadowTurnContext,
+  getCurrentLiveShadowTurnContext, getCurrentAcceptedInvocationAuthority, eventBus,
   pauseTask,
   unpauseTask,
   withNativeProtectedTaskCheckpointManifest,
 } from "@nautilo/runtime";
 import {
+  ACP_RELAY_PROTOCOL_VERSION,
+  CODEX_RELAY_PROTOCOL_VERSION,
+  OPENCODE_ACP_RELAY_PROTOCOL_VERSION,
+  type AcpExecutionScope,
+  type AcpProcessScope,
+  type RelayAcpSemanticEvent,
+  type RelayAcpTerminalEvent,
+} from "@nautilo/relay";
+import {
   PersonalPolicyResolver,
-  findActorByOwnerId,
+  findActorByOwnerId, assertAcceptedInvocationAuthoritySubject, getAcceptedInvocationAuthorityOrigin,
 } from "@nautilo/trust";
+import { createProtectedTaskNativeTranscriptPublisher } from "../../src/routes/protected-task-native-transcript-composition";
+import { createProtectedTaskDeepResearchExecution } from "../../src/routes/protected-task-deep-research-execution";
+import { createProtectedTaskHermesExecution } from
+  "../../src/routes/protected-task-hermes-execution";
+import { createProtectedTaskOpenCodeExecution } from
+  "../../src/routes/protected-task-opencode-execution";
+import { createProtectedTaskCodexExecution } from
+  "../../src/routes/protected-task-codex-execution";
+import { CodexExecutionAdmissionFactory } from
+  "../../src/codex/admission-factory";
+import { createCodexTaskBindingLookup } from
+  "../../src/codex/binding-session";
+import { createCodexCanonicalFactsReader } from
+  "../../src/codex/canonical-facts";
+import { assertCodexExecutionAdmission } from
+  "../../src/codex/execution-admission";
+import { CodexHarnessPreferenceStore } from
+  "../../src/codex/harness-admission";
+import { CodexPersistenceAdapter } from
+  "../../src/codex/persistence";
+import { createProductionProtectedTaskNativeExecutionContext } from "../../src/routes/protected-task-native-execution-context";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 import type { LocalExecutionDelegation } from "@nautilo/types";
 import {
@@ -296,6 +333,8 @@ import {
   createProductionProtectedTaskRuntimeInitialComposition,
   loadInitialProtectedTaskOccurrence,
 } from "../../src/routes/protected-task-runtime-initial-composition.ts";
+import { createTaskOccurrencePolicyPorts } from
+  "../../src/routes/task-occurrence-policy.ts";
 import {
   createProtectedTaskRequesterPrivateRoomResolver,
 } from "../../src/routes/protected-task-requester-private-room.ts";
@@ -1008,6 +1047,14 @@ async function createBaseFixture(
       await admin.delete(actors).where(eq(actors.ownerId, userId));
       await admin.delete(agents).where(eq(agents.id, productAgentId));
       await admin.delete(serverAdmission).where(eq(serverAdmission.userId, userId));
+      await admin.delete(codexUserPreferences).where(eq(
+        codexUserPreferences.userId,
+        userId,
+      ));
+      await admin.delete(codexAccountProfiles).where(eq(
+        codexAccountProfiles.userId,
+        userId,
+      ));
       await admin.delete(users).where(eq(users.id, userId));
     } finally {
       try {
@@ -2339,7 +2386,7 @@ async function objectRowCounts(
 }
 
 async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
-  repairOptions: Readonly<{ expireAfterStage?: boolean; now?: () => number; afterStage?: () => void }> = {},
+  repairOptions: Readonly<{ expireAfterStage?: boolean; now?: () => number; afterStage?: () => void; expectedRetainedHistoricalError?: string | null }> = {},
 ): Promise<string> {
   const discovery = await discoverTaskContentBackfill(base.admin, {
     humanActorId: base.humanActorId, deviceId: base.deviceId, now: new Date(NOW),
@@ -2404,6 +2451,8 @@ async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
   expect(renewedSource.plan.planDigestBase64url).toBe(plan.planDigestBase64url);
   base.objectIds.add(plan.objectId);
   const plaintext = Buffer.from(source.payloadBytesBase64url, "base64url");
+  expect(decodeTaskDefinitionContent(plaintext).retainedHistoricalError)
+    .toBe(repairOptions.expectedRetainedHistoricalError ?? null);
   const encrypted = encryptObjectPayload(base.crypto, {
     objectId: objectId(plan.objectId), keyClass: "ai", objectType: "nautilo-task-definition-v1",
     createdAt: unixTimestamp(NOW),
@@ -2468,7 +2517,7 @@ async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
   return plan.objectId;
 }
 
-async function createConnectedHistoricalTask(base: BaseFixture) {
+async function createConnectedHistoricalTask(base: BaseFixture, retainedHistoricalError: string | null = null) {
   const taskId = randomUUID();
   const taskRunId = randomUUID();
   const graphThreadId = `subagent:task:${taskId}:${taskRunId}`;
@@ -2483,9 +2532,9 @@ async function createConnectedHistoricalTask(base: BaseFixture) {
     preset: "task", scheduleKind: "now", callingRoomId: base.roomId,
     resultDelivery: "wake", targetChat: "last_in_namespace", targetRoomId: base.roomId,
     targetUserIds: [base.userId], useScope: false, toolsMode: "none",
-    fundingMode: "legacy_server", requestedModelId, status: "pending", metadata: {},
+    fundingMode: "legacy_server", requestedModelId, status: "pending", metadata: {}, lastError: retainedHistoricalError,
   });
-  const inputObjectId = await repairHistoricalTaskDefinition(base, taskId);
+  const inputObjectId = await repairHistoricalTaskDefinition(base, taskId, { expectedRetainedHistoricalError: retainedHistoricalError });
   expect(inputObjectId).toMatch(/^task-historical:v1:[0-9a-f]{64}$/u);
   const [mapped] = await base.admin.select({ objectId: tasks.cryptoObjectId,
     revision: tasks.contentRevision, representation: tasks.contentRepresentation,
@@ -2494,7 +2543,9 @@ async function createConnectedHistoricalTask(base: BaseFixture) {
     prompt: "Complete the connected protected Task", status: "pending" });
   const startedAt = new Date(NOW);
   await base.admin.transaction(async tx => {
-    await tx.update(tasks).set({ status: "awaiting" }).where(eq(tasks.id, taskId));
+    // A new occurrence resets the operational error independently of the
+    // immutable historical snapshot retained in its encrypted definition.
+    await tx.update(tasks).set({ status: "awaiting", lastError: null }).where(eq(tasks.id, taskId));
     await tx.insert(taskRuns).values({ id: taskRunId, taskId, graphThreadId, status: "awaiting", startedAt });
   });
   return Object.freeze({ taskId, taskRunId, graphThreadId, startedAt, inputObjectId,
@@ -2512,6 +2563,7 @@ async function createConnectedProtectedTask(
     fundingMode?: "legacy_server" | "caller";
     requestedModelId?: string;
     tools?: readonly string[];
+    metadata?: Readonly<Record<string, unknown>>;
     createLocalExecutionDelegation?(input: Readonly<{
       taskId: string;
       taskRunId: string;
@@ -2548,6 +2600,10 @@ async function createConnectedProtectedTask(
     expectedAccessRevision: base.namespace.accessRevision,
     expectedPolicyRevision: base.policyRevision,
   });
+  const classified = classifyProtectedTaskMetadataV1(options.metadata ?? {});
+  if (classified.status !== "supported") {
+    throw new Error("Connected protected Task metadata was not supported");
+  }
   const encrypted = encryptObjectPayload(base.crypto, {
     objectId: objectId(cryptoObjectId),
     keyClass: "ai",
@@ -2557,7 +2613,7 @@ async function createConnectedProtectedTask(
     formatVersion: 1,
     prompt: "Complete the connected protected Task",
     expectedOutput: null,
-    protectedMetadata: {},
+    protectedMetadata: classified.protectedContent,
   }));
   const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
   const envelopeBytes = encodeNamespaceObjectEnvelopeV2(
@@ -2591,10 +2647,6 @@ async function createConnectedProtectedTask(
     object: encryptedObjectWriteRecord(payloadBytes),
     access,
   });
-  const classified = classifyProtectedTaskMetadataV1({});
-  if (classified.status !== "supported") {
-    throw new Error("Empty protected Task metadata was not supported");
-  }
   const repository = createDormantTaskContentShadowRepository({
     product: new PostgresTaskContentProductStore(
       base.product.handle,
@@ -2649,7 +2701,7 @@ async function createConnectedProtectedTask(
     requestedModelId,
     localExecutionDelegation,
     status: "pending",
-    metadata: classified.operational,
+    metadata: representation === "dual" ? options.metadata ?? {} : classified.operational,
   });
   expect(await repository.completeRevision({ coordinate, prepared }))
     .toMatchObject({ status: "mapped" });
@@ -3166,13 +3218,51 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   }, 60_000);
 
-  test.each(["result", "historical repaired definition", "historical repaired definition Full", "historical checkpoint pause resume", "scoped result", "caller funded delegated local", "fresh result read", "fresh raw Message publication", "raw staging compatible-policy restart", "wake foreground full", "wake foreground shadow", "wake projection grant resume", "wake projection rollback recovery", "parked continuation", "checkpoint pause resume", "checkpoint policy refresh resume", "grant refresh resume", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "abandoned running recovery", "cancellation recovery", "cancellation terminal message", "cancellation terminal message shadow", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
-    const historicalDefinitionFull = scenario ===
-      "historical repaired definition Full";
+  test.each(["result", "Deep Research Full", "Deep Research Shadow", "Deep Research v2 Full", "Deep Research v2 Shadow", "Codex Full", "Codex Shadow", "Hermes Full", "Hermes Shadow", "OpenCode Full", "OpenCode Shadow", "historical repaired definition", "historical repaired definition Full", "historical repaired error definition", "historical repaired error definition Full", "historical checkpoint pause resume", "scoped result", "caller funded delegated local", "fresh result read", "fresh raw Message publication", "recurring encrypted occurrences", "raw staging compatible-policy restart", "wake foreground full", "wake foreground shadow", "wake projection grant resume", "wake projection rollback recovery", "parked continuation", "checkpoint pause resume", "checkpoint policy refresh resume", "grant refresh resume", "attachment recovery", "publication recovery", "unmapped recovery", "unmapped expired grant recovery", "missing ciphertext recovery", "pre-execution recovery", "abandoned running recovery", "cancellation recovery", "cancellation terminal message", "cancellation terminal message shadow", "cancellation publication archive serialization", "cancellation settlement archive serialization", "cancellation settlement product rollback recovery", "cancellation archive-first denial", "linked cancellation"] as const)("executes one genuine-role protected Task through %s", async scenario => {
+    const historicalDefinitionError = scenario === "historical repaired error definition"
+      || scenario === "historical repaired error definition Full";
+    const historicalDefinitionFull = scenario === "historical repaired definition Full"
+      || scenario === "historical repaired error definition Full";
     const historicalCheckpointPauseResume = scenario ===
       "historical checkpoint pause resume";
     const historicalDefinition = scenario === "historical repaired definition"
-      || historicalDefinitionFull || historicalCheckpointPauseResume;
+      || historicalDefinitionFull || historicalCheckpointPauseResume || historicalDefinitionError;
+    const deepResearchV2 = scenario === "Deep Research v2 Full" || scenario === "Deep Research v2 Shadow";
+    const deepResearchShadow = scenario === "Deep Research Shadow" || scenario === "Deep Research v2 Shadow";
+    const deepResearch = scenario === "Deep Research Full" || deepResearchShadow || deepResearchV2;
+    const protectedCodex = scenario === "Codex Full" || scenario === "Codex Shadow";
+    const protectedCodexShadow = scenario === "Codex Shadow";
+    const protectedAcpProvider = scenario.startsWith("Hermes ")
+      ? "hermes" as const
+      : scenario.startsWith("OpenCode ")
+        ? "opencode" as const
+        : null;
+    const protectedAcpShadow = scenario === "Hermes Shadow"
+      || scenario === "OpenCode Shadow";
+    const protectedExternal = protectedCodex || protectedAcpProvider !== null;
+    const protectedExternalResultText = protectedCodex
+      ? "Connected protected Codex result"
+      : protectedAcpProvider === null
+        ? "Connected protected result"
+      : `Connected protected ${protectedAcpProvider === "hermes" ? "Hermes" : "OpenCode"} result`;
+    const researchModel = resolveModelRole("chat");
+    const researchModelPlan = Object.freeze({ version: 1 as const,
+      supervisorModel: researchModel, researchModel, summarizationModel: researchModel,
+      compressionModel: researchModel, finalReportModel: researchModel });
+    const researchLaneFunding = Object.freeze({ kind: "server" as const, providerRoute: "openrouter" });
+    const researchOperational = { modelPlan: researchModelPlan, invokingModelId: researchModel };
+    const researchV2Funding = {
+      preferenceRevisions: { supervisor: 2, research: 3, summarization: 4, compression: 5, finalReport: 6 },
+      modelFunding: { supervisor: researchLaneFunding, research: researchLaneFunding,
+        summarization: researchLaneFunding, compression: researchLaneFunding, finalReport: researchLaneFunding },
+      tavilyFunding: { kind: "server" as const, providerRoute: "tavily" },
+    };
+    const researchMetadata = deepResearchV2
+      ? admittedDeepResearchTaskMetadata({ reportLanguage: "Portuguese", ...researchOperational, ...researchV2Funding })
+      : deepResearchTaskMetadata({ reportLanguage: "Portuguese", ...researchOperational });
+    const researchStreamCalls: unknown[][] = [];
+    const researchEvents: unknown[] = [];
+    const onResearchEvent: Parameters<typeof eventBus.on>[0] = event => { researchEvents.push(event); };
     const scopedResult = scenario === "scoped result";
     const callerLocalExecution = scenario === "caller funded delegated local";
     const unmappedRecovery = scenario === "unmapped recovery"
@@ -3202,6 +3292,8 @@ describePostgres("sealed protected Task Memory object writer", () => {
       || checkpointContinuationScenario;
     const rawStagingCompatiblePolicyRestart = scenario ===
       "raw staging compatible-policy restart";
+    const recurringEncryptedOccurrences = scenario ===
+      "recurring encrypted occurrences";
     const wakeForegroundShadow = scenario === "wake foreground shadow";
     const wakeProjectionRollback = scenario === "wake projection rollback recovery";
     const wakeProjectionContinuation = scenario === "wake projection grant resume" || wakeProjectionRollback;
@@ -3209,8 +3301,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
       || wakeForegroundShadow || wakeProjectionContinuation;
     const freshRawMessagePublication = scenario ===
       "fresh raw Message publication" || rawStagingCompatiblePolicyRestart
-      || wakeForegroundScenario;
-    const freshOutputRead = freshResultRead || freshRawMessagePublication;
+      || wakeForegroundScenario || recurringEncryptedOccurrences;
+    const freshOutputRead = freshResultRead || freshRawMessagePublication
+      || protectedExternal;
     const liveOutputClock = cancellationTerminalMessage || freshOutputRead
       || wakeForegroundScenario;
     const cancellationArchiveScenario = cancellationArchivePhase !== null
@@ -3246,6 +3339,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
     let connectedJobId: string | null = null;
     let parkedPriorJobId: string | null = null;
     let jobManager: JobManager | null = null;
+    const recurringObserver: { current: TaskObserver | null } = {
+      current: null,
+    };
     let closeComposition: (() => Promise<void>) | null = null;
     let callerFunding: Awaited<ReturnType<
       typeof installSyntheticPersonalOpenRouter
@@ -3257,12 +3353,313 @@ describePostgres("sealed protected Task Memory object writer", () => {
     const projectionCiphertextHash: { current: Uint8Array | null } = { current: null };
     let projectionRollbackRecovered = false;
     const wakeProjectionRoomLabel = `Task wake projection ${base.roomId}`;
+    const codexProfileId = randomUUID();
+    const codexModelId = "gpt-5";
+    const codexReadiness = protectedCodex ? Object.freeze({
+      relayId: `protected-codex-relay-${codexProfileId}`,
+      pairingGenerationRef: `protected-codex-pairing-${codexProfileId}`,
+      capabilityRevision: 3,
+    }) : null;
+    const codexMetadata = codexReadiness === null ? null : Object.freeze({
+        execution: Object.freeze({
+          version: 1,
+          harnessId: "codex",
+          source: "genie",
+          collaborationMode: "work",
+          harnessModelId: codexModelId,
+          readiness: codexReadiness,
+        }),
+      });
+    const codexCalls: string[] = [];
+    const codexBindingIds: string[] = [];
+    const codexPartitionIdentities: Array<Readonly<{
+      relayId: string;
+      bindingId: string;
+      bindingGeneration: number;
+      taskId: string;
+      jobId: string;
+    }>> = [];
+    const acpReadiness = protectedAcpProvider === null ? null : Object.freeze({
+      relayId: `protected-${protectedAcpProvider}-relay`,
+      relaySessionId: `protected-${protectedAcpProvider}-socket`,
+      pairingGenerationRef: `protected-${protectedAcpProvider}-pairing`,
+      desktopSessionId: `protected-${protectedAcpProvider}-desktop`,
+      selectedProtocolVersion: protectedAcpProvider === "hermes"
+        ? ACP_RELAY_PROTOCOL_VERSION
+        : OPENCODE_ACP_RELAY_PROTOCOL_VERSION,
+      capabilityRevision: 3,
+    });
+    const acpMetadata: Readonly<Record<string, unknown>> | null =
+      protectedAcpProvider === null || acpReadiness === null
+        ? null
+        : Object.freeze({
+            execution: Object.freeze({
+              version: 1,
+              harnessId: protectedAcpProvider === "hermes"
+                ? "hermes-acp"
+                : "opencode-acp",
+              source: "genie",
+              ...(protectedAcpProvider === "opencode"
+                ? { executionProfile: "autonomous" as const }
+                : {}),
+              readiness: acpReadiness,
+            }),
+          });
+    const acpProcess: AcpProcessScope = Object.freeze({
+      connectionId: `protected-${protectedAcpProvider ?? "unused"}-connection`,
+      processGeneration: 1,
+      acpSessionId: `protected-${protectedAcpProvider ?? "unused"}-session`,
+      turnGeneration: 1,
+      turnRef: `protected-${protectedAcpProvider ?? "unused"}-turn`,
+    });
+    const acpCalls: string[] = [];
+    const acpPrompts: string[] = [];
+    const acpScopes: AcpExecutionScope[] = [];
+    const acpAcknowledgements: Array<Readonly<{
+      eventId: string;
+      eventSequence: number;
+    }>> = [];
+    let acpCloseCalls = 0;
+    let acpContainCalls = 0;
+    let acpMinted = 0;
+    let acpEvents: Array<RelayAcpSemanticEvent | RelayAcpTerminalEvent> = [];
+    let acpCursor = 0;
+    const produceAcpEvents = async (
+      registrationId: "hermes-acp" | "opencode-acp",
+      scope: AcpExecutionScope,
+    ): Promise<void> => {
+      let sequence = 1;
+      const capabilities = { requests: "unsupported" as const };
+      const truth = validateAcpInitializeCapabilityTruth({
+        protocolVersion: 1,
+        agentCapabilities: {},
+      });
+      const producer = new AcpSemanticRelay({
+        scope: Object.freeze({
+          ...scope.socket,
+          ...scope.binding,
+          ...scope.workspace,
+        }),
+        process: acpProcess,
+        roomId: null,
+        capabilities: truth,
+        mintRequestId: () => "protected-acp-request",
+        emit: frame => {
+          const payload = frame.payload;
+          const identity = Object.freeze({
+            registrationId,
+            scope,
+            process: acpProcess,
+            eventId: `protected-${registrationId}-event-${++sequence}`,
+            eventSequence: sequence,
+          });
+          if (payload.kind === "terminal") {
+            acpEvents.push(Object.freeze({
+              ...identity,
+              type: "relay:acp-terminal" as const,
+              status: payload.status,
+              ...(payload.code === undefined ? {} : { code: payload.code }),
+            }));
+          } else if (payload.kind === "output_delta"
+            || payload.kind === "assistant_completed") {
+            acpEvents.push(Object.freeze({
+              ...identity,
+              type: "relay:acp-semantic" as const,
+              capabilities,
+              payload: Object.freeze({
+                kind: payload.kind,
+                vendorItemId: payload.attribution.vendorItemId,
+                text: payload.text,
+              }),
+            }));
+          } else {
+            throw new Error("Unexpected protected ACP semantic event");
+          }
+        },
+      });
+      await producer.project({
+        kind: "agent_text_chunk",
+        sessionId: acpProcess.acpSessionId,
+        messageId: "protected-acp-answer",
+        text: protectedExternalResultText,
+      });
+      await producer.complete({
+        sessionId: acpProcess.acpSessionId,
+        stopReason: "end_turn",
+      });
+    };
+    type HermesRelay = Parameters<
+      typeof createProtectedTaskHermesExecution
+    >[0]["relay"];
+    type OpenCodeRelay = Parameters<
+      typeof createProtectedTaskOpenCodeExecution
+    >[0]["relay"];
+    const acpWorkspace = Object.freeze({
+      workspaceReceiptId: "protected-acp-workspace",
+      workspaceRevision: "1",
+      workspaceFingerprint: "protected-acp-workspace-fingerprint",
+      workspaceExpiresAt: "2099-01-01T00:00:00.000Z",
+    });
+    const hermesRelay: HermesRelay | null = acpReadiness === null
+      ? null
+      : Object.freeze({
+          listConnected: async () => {
+            acpCalls.push("list-connected");
+            return [acpReadiness.relayId];
+          },
+          getAcpSession: (relayId, userId) => {
+            acpCalls.push("session");
+            return relayId === acpReadiness.relayId
+              && (userId === undefined || userId === base.userId)
+              ? Object.freeze({ ...acpReadiness, userId: base.userId })
+              : null;
+          },
+          requestAcpReadiness: async input => {
+            acpCalls.push("readiness");
+            expect(input.registrationId).toBe("hermes-acp");
+            expect(input.userId).toBe(base.userId);
+            return "ready" as const;
+          },
+          requestAcpPrepare: async input => {
+            acpCalls.push("prepare");
+            expect(input.userId).toBe(base.userId);
+            expect(input.binding.ownerId).toBe(base.userId);
+            return acpWorkspace;
+          },
+          requestAcpStart: async input => {
+            acpCalls.push("start");
+            acpPrompts.push(input.prompt);
+            acpScopes.push(input.scope);
+            acpEvents = [];
+            acpCursor = 0;
+            await produceAcpEvents("hermes-acp", input.scope);
+            return Object.freeze({
+              type: "relay:acp-started" as const,
+              registrationId: "hermes-acp" as const,
+              scope: input.scope,
+              process: acpProcess,
+              capabilities: { requests: "unsupported" as const },
+              eventId: "protected-hermes-started",
+              eventSequence: 1,
+            });
+          },
+          subscribeAcpExecution: (scope, process) => {
+            acpCalls.push("subscribe");
+            const [startedScope] = acpScopes;
+            if (startedScope === undefined) {
+              throw new Error("Protected Hermes start scope is unavailable");
+            }
+            expect(scope).toEqual(startedScope);
+            expect(process).toEqual(acpProcess);
+            return Object.freeze({
+              next: async () => acpEvents[acpCursor++] ?? null,
+              acknowledge: (eventId, eventSequence) => {
+                acpAcknowledgements.push({ eventId, eventSequence });
+              },
+              close: () => { acpCloseCalls += 1; },
+            });
+          },
+          containAcpExecution: () => {
+            acpContainCalls += 1;
+            return true;
+          },
+        });
+    const openCodeRelay: OpenCodeRelay | null = acpReadiness === null
+      ? null
+      : Object.freeze({
+          listConnected: async () => {
+            acpCalls.push("list-connected");
+            return [acpReadiness.relayId];
+          },
+          getAcpSessionForRegistration: (relayId, userId, registrationId) => {
+            acpCalls.push("session");
+            expect(registrationId).toBe("opencode-acp");
+            return relayId === acpReadiness.relayId && userId === base.userId
+              ? Object.freeze({ ...acpReadiness, userId: base.userId })
+              : null;
+          },
+          requestAcpReadiness: async input => {
+            acpCalls.push("readiness");
+            expect(input.registrationId).toBe("opencode-acp");
+            expect(input.userId).toBe(base.userId);
+            return "ready" as const;
+          },
+          requestAcpPrepare: async input => {
+            acpCalls.push("prepare");
+            expect(input.registrationId).toBe("opencode-acp");
+            expect(input.binding.ownerId).toBe(base.userId);
+            return acpWorkspace;
+          },
+          requestAcpStart: async input => {
+            acpCalls.push("start");
+            expect(input.registrationId).toBe("opencode-acp");
+            expect(input.executionProfile).toBe("autonomous");
+            acpPrompts.push(input.prompt);
+            acpScopes.push(input.scope);
+            acpEvents = [];
+            acpCursor = 0;
+            await produceAcpEvents("opencode-acp", input.scope);
+            return Object.freeze({
+              type: "relay:acp-started" as const,
+              registrationId: "opencode-acp" as const,
+              scope: input.scope,
+              process: acpProcess,
+              capabilities: { requests: "unsupported" as const },
+              eventId: "protected-opencode-started",
+              eventSequence: 1,
+            });
+          },
+          subscribeAcpExecution: (scope, process, registrationId) => {
+            acpCalls.push("subscribe");
+            expect(registrationId).toBe("opencode-acp");
+            const [startedScope] = acpScopes;
+            if (startedScope === undefined) {
+              throw new Error("Protected OpenCode start scope is unavailable");
+            }
+            expect(scope).toEqual(startedScope);
+            expect(process).toEqual(acpProcess);
+            return Object.freeze({
+              next: async () => acpEvents[acpCursor++] ?? null,
+              acknowledge: (eventId, eventSequence) => {
+                acpAcknowledgements.push({ eventId, eventSequence });
+              },
+              close: () => { acpCloseCalls += 1; },
+            });
+          },
+          containAcpExecution: (_scope, _process, registrationId) => {
+            expect(registrationId).toBe("opencode-acp");
+            acpContainCalls += 1;
+            return true;
+          },
+        });
     try {
+      if (codexReadiness !== null) {
+        await base.admin.insert(codexAccountProfiles).values({
+          id: codexProfileId,
+          userId: base.userId,
+          relayId: codexReadiness.relayId,
+          homeHandle: `protected-codex-home-${codexProfileId}`,
+          label: "Protected Codex fixture",
+          profileGeneration: 2,
+          accountGeneration: 3,
+          registrationState: "registered",
+          authState: "signed_in",
+          removalState: "active",
+        });
+        await base.admin.insert(codexUserPreferences).values({
+          userId: base.userId,
+          enabled: true,
+          accountProfileId: codexProfileId,
+          defaultPosture: "codex_default",
+        });
+      }
       if (wakeForegroundScenario) {
         await base.admin.update(rooms).set({ label: wakeProjectionRoomLabel })
           .where(eq(rooms.id, base.roomId));
       }
-      if (cancellationTerminalShadow || wakeForegroundShadow || historicalDefinition) {
+      if (cancellationTerminalShadow || wakeForegroundShadow || deepResearchShadow
+        || protectedCodexShadow || protectedAcpShadow
+        || historicalDefinition || recurringEncryptedOccurrences) {
         await base.admin.update(encryptionTransitionPolicy).set({
           mode: "shadow_encryption", shadowBehavior: "strict",
           shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW),
@@ -3283,13 +3680,19 @@ describePostgres("sealed protected Task Memory object writer", () => {
           responseText: "Synthetic caller-funded protected response.",
         });
       }
-      connected = historicalDefinition ? await createConnectedHistoricalTask(base) : await createConnectedProtectedTask(base, {
+      connected = historicalDefinition ? await createConnectedHistoricalTask(base,
+        historicalDefinitionError ? "Earlier private provider failure retained after repair." : null) : await createConnectedProtectedTask(base, {
         useScope: scopedResult,
+        ...(deepResearch ? { metadata: researchMetadata } : {}),
+        ...(codexMetadata === null ? {} : { metadata: codexMetadata }),
+        ...(acpMetadata === null ? {} : { metadata: acpMetadata }),
         noDelivery: scenario === "publication recovery"
           || unmappedRecovery || missingCiphertextRecovery,
         ...(liveOutputClock ? { resultDelivery: wakeForegroundScenario
           ? "raw_and_wake" as const : "raw" as const } : {}),
-        ...(cancellationTerminalShadow || wakeForegroundShadow || historicalDefinition
+        ...(cancellationTerminalShadow || wakeForegroundShadow || deepResearchShadow
+          || protectedCodexShadow || protectedAcpShadow
+          || historicalDefinition || recurringEncryptedOccurrences
           ? { representation: "dual" as const } : {}),
         ...(callerLocalExecution ? {
           fundingMode: "caller" as const,
@@ -3915,7 +4318,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
         policy: {
           resolve: () => Promise.resolve({
             policy: {
-              mode: cancellationTerminalShadow || wakeForegroundShadow
+              mode: cancellationTerminalShadow || wakeForegroundShadow || deepResearchShadow
+                || protectedCodexShadow || protectedAcpShadow
+                || recurringEncryptedOccurrences
                 || historicalDefinition && !historicalDefinitionFull
                 ? "shadow_encryption" as const
                 : "encrypted_only" as const,
@@ -3931,6 +4336,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           },
         },
       });
+      if (deepResearch || protectedExternal) {
+        eventBus.on(onResearchEvent);
+      }
       let kicks = 0;
       const composition = await createProductionProtectedTaskRuntimeInitialComposition({
         db: base.productDb,
@@ -3949,6 +4357,308 @@ describePostgres("sealed protected Task Memory object writer", () => {
         crypto: base.crypto,
         serverScope: SERVER_SCOPE,
         now: liveOutputClock ? Date.now : () => recoveryNow,
+        ...(deepResearch ? { prepareExternalExecution: {
+          deepResearch: async (selection, preparation) => {
+            expect(selection).toEqual({ deepResearch: deepResearchV2
+              ? { version: 2, ...researchOperational, ...researchV2Funding }
+              : { version: 1, ...researchOperational } });
+            expect(JSON.stringify(selection)).not.toContain("Portuguese");
+            const context = createProductionProtectedTaskNativeExecutionContext({ db: base.productDb });
+            const prepare = createProtectedTaskDeepResearchExecution({
+              db: base.productDb, restricted: base.restricted, crypto: base.crypto,
+              serverScope: SERVER_SCOPE, owner, now: () => recoveryNow,
+              executionContext: contextInput => traceNative("context", () => context(contextInput)),
+              requests: { register: async () => { throw new Error("Research must not install provider questions"); } },
+              stream: async function* (...args) {
+                researchStreamCalls.push([...args]);
+                const [request, executionId, signal, requesterId, attribution, options] = args;
+                expect(request).toEqual({ research_brief: "Complete the connected protected Task",
+                  report_language: "Portuguese", deep_research_model_plan: researchModelPlan,
+                  ...(deepResearchV2 ? { deep_research_funding: { version: 2, reportLanguage: "Portuguese",
+                    ...researchOperational, ...researchV2Funding } } : {}) });
+                expect(executionId).toBe(activeConnected.taskRunId);
+                expect(requesterId).toBe(base.userId);
+                expect(attribution).toEqual({ roomId: base.roomId, taskId: activeConnected.taskId,
+                  taskRunId: activeConnected.taskRunId, agentId: base.productAgentId });
+                expect(options).toEqual({ confidential: true });
+                signal?.throwIfAborted();
+                const invocation = getCurrentAcceptedInvocationAuthority();
+                if (invocation === undefined) throw new Error("Research invocation authority missing");
+                assertAcceptedInvocationAuthoritySubject(invocation, base.userId);
+                expect(getAcceptedInvocationAuthorityOrigin(invocation)).toEqual({ originTaskId: activeConnected.taskId });
+                yield { phase: "private_research_progress_canary" };
+                signal?.throwIfAborted();
+                return "Connected protected result";
+              },
+            }, {
+              definition: definitionInput => traceNative("definition", () => withNativeProtectedTaskDefinitionV1(definitionInput)),
+              transcript: transcriptInput => {
+                const factory = createProtectedTaskNativeTranscriptPublisher(transcriptInput);
+                return async segment => {
+                  const publish = await traceNative("transcript", () => factory(segment));
+                  return request => traceNative("transcript", () => publish(request));
+                };
+              },
+            })(selection);
+            let prepared: Awaited<ReturnType<typeof prepare>>;
+            try { prepared = await prepare(preparation); }
+            catch (error) { recordNativeError("prepare", error); throw error; }
+            const executor: typeof prepared.executor = async function* (...args) {
+              try { yield* prepared.executor(...args); }
+              catch (error) { recordNativeError("execute", error); throw error; }
+            };
+            const openTransientInput: typeof prepared.openTransientInput = async grant => {
+              try { return await prepared.openTransientInput(grant); }
+              catch (error) { recordNativeError("open", error); throw error; }
+            };
+            return { ...prepared, executor, openTransientInput };
+          },
+        } } : {}),
+        ...(protectedCodex ? {
+          prepareExternalExecution: {
+            codex: async (selection, preparation) => {
+              if (codexReadiness === null || codexMetadata === null) {
+                throw new Error("Protected Codex readiness receipt is unavailable");
+              }
+              expect(selection).toEqual(codexMetadata);
+              const relaySessionId = `protected-codex-socket-${codexProfileId}`;
+              const desktopSessionId = `protected-codex-desktop-${codexProfileId}`;
+              const workspace = Object.freeze({
+                workspaceRef: `protected-codex-workspace-${codexProfileId}`,
+                revision: 7,
+                fingerprint: `protected-codex-workspace-fingerprint-${codexProfileId}`,
+                issuedAt: new Date(Date.now() - 60_000).toISOString(),
+                expiresAt: new Date(Date.now() + 60_000).toISOString(),
+              });
+              const session = Object.freeze({
+                relayId: codexReadiness.relayId,
+                userId: base.userId,
+                relaySessionId,
+                pairingGenerationRef: codexReadiness.pairingGenerationRef,
+                desktopSessionId,
+                selectedProtocolVersion: CODEX_RELAY_PROTOCOL_VERSION,
+                capability: Object.freeze({ version: 1, hostKind: "electron" }),
+                capabilityRevision: codexReadiness.capabilityRevision,
+                currentCapabilityRevision: codexReadiness.capabilityRevision,
+                currentRuntimeGeneration: 5,
+                statusCorrelation: Object.freeze({
+                  relayId: codexReadiness.relayId,
+                  relaySessionId,
+                  desktopSessionId,
+                  pairingGenerationRef: codexReadiness.pairingGenerationRef,
+                  selectedProtocolVersion: CODEX_RELAY_PROTOCOL_VERSION,
+                  capabilityRevision: codexReadiness.capabilityRevision,
+                }),
+                status: Object.freeze({
+                  state: "ready" as const,
+                  compatibility: "certified" as const,
+                  features: Object.freeze({
+                    stableConversation: true,
+                    explicitSteer: true,
+                    codexApprovals: true,
+                    requestUserInput: true,
+                    collaborationMode: true,
+                  }),
+                  runtimeGeneration: 5,
+                  profiles: Object.freeze([Object.freeze({
+                    profileHandle: codexProfileId,
+                    profileGeneration: 2,
+                    accountGeneration: 3,
+                    childGeneration: 6,
+                    state: "signed_in" as const,
+                  })]),
+                  workspace: Object.freeze({ state: "bound" as const, receipt: workspace }),
+                }),
+              });
+              const bindings = createCodexTaskBindingLookup(base.admin);
+              const preferences = new CodexHarnessPreferenceStore(base.admin);
+              const mutations = new CodexPersistenceAdapter(base.admin);
+              const prepare = createProtectedTaskCodexExecution({
+                db: base.productDb,
+                restricted: base.restricted,
+                crypto: base.crypto,
+                serverScope: SERVER_SCOPE,
+                owner,
+                now: Date.now,
+                preferences,
+                preflight: {
+                  prepare: async profile => {
+                    codexCalls.push("preflight");
+                    expect(profile).toMatchObject({
+                      id: codexProfileId,
+                      userId: base.userId,
+                      relayId: codexReadiness.relayId,
+                    });
+                  },
+                },
+                models: {
+                  list: async profile => {
+                    codexCalls.push("models");
+                    expect(profile.id).toBe(codexProfileId);
+                    return { models: [{ id: codexModelId, model: codexModelId }] };
+                  },
+                },
+                limits: {
+                  resolve: async modelId => {
+                    codexCalls.push("limits");
+                    expect(modelId).toBe(`openai:${codexModelId}`);
+                    return { modelId, catalogVersion: "protected-codex-catalog-1",
+                      contextTokens: 128_000, maxOutputTokens: 16_384 };
+                  },
+                },
+                canonicalReader: createCodexCanonicalFactsReader(base.admin),
+                sessions: {
+                  getCodexSession: (relayId, userId) => {
+                    codexCalls.push("session");
+                    return relayId === codexReadiness.relayId && userId === base.userId
+                      ? session
+                      : null;
+                  },
+                },
+                mutations,
+                admissionFactory: new CodexExecutionAdmissionFactory({
+                  bindings,
+                  mintId: () => {
+                    const id = randomUUID();
+                    codexBindingIds.push(id);
+                    return id;
+                  },
+                }),
+                execution: {
+                  async *start(admission) {
+                    assertCodexExecutionAdmission(admission);
+                    codexCalls.push("start");
+                    expect(admission).toMatchObject({
+                      taskId: activeConnected.taskId,
+                      taskRunId: activeConnected.taskRunId,
+                      ownerId: base.userId,
+                      requesterId: base.userId,
+                      roomId: base.roomId,
+                      prompt: "Complete the connected protected Task",
+                      codex: {
+                        selectedModel: codexModelId,
+                        collaborationMode: "work",
+                        workingDirectory: null,
+                        bindingKind: "task",
+                      },
+                    });
+                    const attribution = Object.freeze({
+                      taskId: admission.taskId,
+                      roomId: admission.roomId,
+                      bindingId: admission.binding.id,
+                      bindingGeneration: admission.binding.generation,
+                      vendorSessionId: "protected-codex-session",
+                      vendorTurnId: "protected-codex-turn",
+                      vendorItemId: "protected-codex-item",
+                    });
+                    yield Object.freeze({ kind: "assistant_completed" as const,
+                      attribution, text: protectedExternalResultText });
+                    yield Object.freeze({ kind: "terminal" as const,
+                      attribution, status: "completed" as const });
+                  },
+                  respond: async () => {
+                    throw new Error("Codex must not receive provider questions");
+                  },
+                },
+                requestBroker: { hasLiveRequest: () => false },
+                requestPartition: {
+                  protect: identity => {
+                    codexCalls.push("protect");
+                    expect(identity.taskId).toBe(activeConnected.taskId);
+                    expect(identity.jobId).toMatch(
+                      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+                    );
+                    expect(identity.bindingGeneration).toBe(0);
+                    codexPartitionIdentities.push(Object.freeze({ ...identity }));
+                    let closed = false;
+                    return Object.freeze({
+                      close() {
+                        if (closed) throw new Error("Codex request partition closed twice");
+                        closed = true;
+                        codexCalls.push("retire");
+                      },
+                    });
+                  },
+                },
+                requests: {
+                  register: async () => {
+                    throw new Error("Codex must not install provider questions");
+                  },
+                },
+              })(selection);
+              try {
+                return await prepare(preparation);
+              } catch (error) {
+                recordNativeError("prepare", error);
+                throw error;
+              }
+            },
+          },
+        } : {}),
+        ...(protectedAcpProvider === "hermes" ? {
+          prepareExternalExecution: {
+            hermes: async (selection, preparation) => {
+              if (hermesRelay === null || acpReadiness === null) {
+                throw new Error("Protected Hermes relay fixture is unavailable");
+              }
+              expect(selection).toEqual({
+                execution: {
+                  version: 1,
+                  harnessId: "hermes-acp",
+                  source: "genie",
+                  readiness: acpReadiness,
+                },
+              });
+              return createProtectedTaskHermesExecution({
+                db: base.productDb,
+                restricted: base.restricted,
+                crypto: base.crypto,
+                serverScope: SERVER_SCOPE,
+                owner,
+                now: Date.now,
+                relay: hermesRelay,
+                mintId: () => `protected-hermes-opaque-${++acpMinted}`,
+                requests: {
+                  register: async () => {
+                    throw new Error("Hermes must not install provider questions");
+                  },
+                },
+              })(selection)(preparation);
+            },
+          },
+        } : protectedAcpProvider === "opencode" ? {
+          prepareExternalExecution: {
+            opencode: async (selection, preparation) => {
+              if (openCodeRelay === null || acpReadiness === null) {
+                throw new Error("Protected OpenCode relay fixture is unavailable");
+              }
+              expect(selection).toEqual({
+                execution: {
+                  version: 1,
+                  harnessId: "opencode-acp",
+                  source: "genie",
+                  executionProfile: "autonomous",
+                  readiness: acpReadiness,
+                },
+              });
+              return createProtectedTaskOpenCodeExecution({
+                db: base.productDb,
+                restricted: base.restricted,
+                crypto: base.crypto,
+                serverScope: SERVER_SCOPE,
+                owner,
+                now: Date.now,
+                relay: openCodeRelay,
+                mintId: () => `protected-opencode-opaque-${++acpMinted}`,
+                requests: {
+                  register: async () => {
+                    throw new Error("OpenCode must not install provider questions");
+                  },
+                },
+              })(selection)(preparation);
+            },
+          },
+        } : {}),
         ...(wakeForegroundScenario || scopedResult ? {
           embedding: { embed: async () => ({ status: "success" as const,
             value: { vector: new Array<number>(1536).fill(0.25), provider: "openai",
@@ -3991,7 +4701,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
                 } : {}),
               },
             ),
-            segment: segmentInput => createProtectedTaskNativeFixedMemorySegment({
+            segment: (segmentInput, _segmentOverrides, segmentOptions) => createProtectedTaskNativeFixedMemorySegment({
               ...segmentInput,
               resolveExecutionContext: context => traceNative(
                 "context",
@@ -4245,50 +4955,64 @@ describePostgres("sealed protected Task Memory object writer", () => {
                   });
                 },
               },
+              segmentOptions,
             ),
           });
-          return Object.freeze({
-            prepareExecution: async preparation => {
-              let prepared: Awaited<ReturnType<typeof native.prepareExecution>>;
+          const prepare = async (
+            preparation: Parameters<typeof native.prepareExecution>[0],
+            repoDocsSelection?: Parameters<
+              typeof native.prepareRepoDocsExecution
+            >[0],
+          ) => {
+            let prepared: Awaited<ReturnType<typeof native.prepareExecution>>;
+            try {
+              prepared = repoDocsSelection === undefined
+                ? await native.prepareExecution(preparation)
+                : await native.prepareRepoDocsExecution(
+                    repoDocsSelection,
+                    preparation,
+                  );
+            } catch (error) {
+              recordNativeError("prepare", error);
+              throw error;
+            }
+            const executor: typeof prepared.executor = async function* (
+              ...args: Parameters<typeof prepared.executor>
+            ) {
               try {
-                prepared = await native.prepareExecution(preparation);
+                yield* prepared.executor(...args);
               } catch (error) {
-                recordNativeError("prepare", error);
+                recordNativeError("execute", error);
                 throw error;
               }
-              const executor: typeof prepared.executor = async function* (
-                ...args: Parameters<typeof prepared.executor>
-              ) {
+            };
+            const openTransientInput: typeof prepared.openTransientInput =
+              async grant => {
                 try {
-                  yield* prepared.executor(...args);
+                  if (scenario === "pre-execution recovery") {
+                    throw new Error("synthetic protected setup failure");
+                  }
+                  return await prepared.openTransientInput(grant);
                 } catch (error) {
-                  recordNativeError("execute", error);
+                  recordNativeError("open", error);
                   throw error;
                 }
               };
-              const openTransientInput: typeof prepared.openTransientInput =
-                async grant => {
-                  try {
-                    if (scenario === "pre-execution recovery") {
-                      throw new Error("synthetic protected setup failure");
-                    }
-                    return await prepared.openTransientInput(grant);
-                  } catch (error) {
-                    recordNativeError("open", error);
-                    throw error;
-                  }
-                };
-              return Object.freeze({
-                executor,
-                openTransientInput,
-                ...(prepared.requestCheckpointPause === undefined
-                  ? {}
-                  : {
-                      requestCheckpointPause:
-                        prepared.requestCheckpointPause,
-                    }),
-              });
-            },
+            return Object.freeze({
+              executor,
+              openTransientInput,
+              ...(prepared.requestCheckpointPause === undefined
+                ? {}
+                : {
+                    requestCheckpointPause:
+                      prepared.requestCheckpointPause,
+                  }),
+            });
+          };
+          return Object.freeze({
+            prepareExecution: preparation => prepare(preparation),
+            prepareRepoDocsExecution: (selection, preparation) =>
+              prepare(preparation, selection),
             publishResult: async publication => {
               try {
                 if (scenario === "abandoned running recovery") {
@@ -4336,7 +5060,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           ),
         ]);
       expect(currentPolicy).toMatchObject({
-        mode: cancellationTerminalShadow || wakeForegroundShadow
+        mode: cancellationTerminalShadow || wakeForegroundShadow || deepResearchShadow
+          || protectedCodexShadow || protectedAcpShadow
+          || recurringEncryptedOccurrences
           || historicalDefinition && !historicalDefinitionFull
           ? "shadow_encryption"
           : "encrypted_only",
@@ -4395,7 +5121,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           headDigest: base.currentDevice.headDigest.slice(),
           expiresAt: NOW + (grantRefreshResume
             ? 2 * TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS
-            : wakeProjectionContinuation ? 180_000 : 60_000),
+            : wakeProjectionContinuation || recurringEncryptedOccurrences
+              ? 180_000
+              : 60_000),
         }),
       });
       const grantRequest = async (
@@ -6110,6 +6838,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
             authorizationState: authorization?.state ?? "missing",
             segmentCalls,
             nativeErrors,
+            ...(protectedCodex ? { codexCalls } : {}),
           })}`);
         }
         await waitForConnectedRelease(
@@ -6190,7 +6919,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           taskId: connected.taskId,
           jobId: terminal.job.id,
           status: "completed",
-          resultRepresentation: wakeForegroundShadow
+          resultRepresentation: wakeForegroundShadow || deepResearchShadow
+            || protectedCodexShadow || protectedAcpShadow
+            || recurringEncryptedOccurrences
             || historicalDefinition && !historicalDefinitionFull
             ? "dual"
             : "protected",
@@ -6199,12 +6930,14 @@ describePostgres("sealed protected Task Memory object writer", () => {
           resultCryptoObjectId: connected.resultObjectId,
           resultCryptoAccessRevision: 0,
           resultCryptoMappingState: "verified",
-          resultText: wakeForegroundShadow
+          resultText: wakeForegroundShadow || deepResearchShadow
+            || protectedCodexShadow || protectedAcpShadow
+            || recurringEncryptedOccurrences
             || historicalDefinition && !historicalDefinitionFull
-            ? "Connected protected result"
+            ? protectedExternalResultText
             : null,
           lastError: null,
-          modelId: connected.requestedModelId,
+          modelId: protectedExternal ? null : connected.requestedModelId,
           ...(callerLocalExecution && callerFunding !== null ? {
             fundingBinding: {
               kind: "personal",
@@ -6214,6 +6947,18 @@ describePostgres("sealed protected Task Memory object writer", () => {
             },
           } : {}),
         });
+        if (protectedExternal) {
+          expect(terminal.run.graphThreadId).toBe(connected.graphThreadId);
+          expect(terminal.run.startedAt).toEqual(connected.startedAt);
+          expect(terminal.run.completedAt).toBeInstanceOf(Date);
+          expect(terminal.run.fundingBinding).toBeNull();
+          expect(terminal.run.fundingPredecessorRunId).toBeNull();
+          expect(Buffer.from(
+            terminal.run.resultCryptoRequiredNamespaceFingerprint ?? [],
+          )).toEqual(Buffer.from(
+            occurrence.task.cryptoRequiredNamespaceFingerprint,
+          ));
+        }
         if (freshOutputRead) {
           const output = createProtectedTaskOutputReadComposition({ db: base.productDb,
             restricted: base.restricted, crypto: base.crypto, owner, serverScope: SERVER_SCOPE,
@@ -6233,7 +6978,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           expect(readRecord?.authoritySet?.namespaceRequirements).toHaveLength(1);
           expect(readRecord?.authoritySet?.namespaceRequirements[0]?.operations).toEqual(["decrypt", "encrypt"]);
           expect(recipients.size).toBe(1);
-          expect(segmentCalls).toHaveLength(1);
+          expect(segmentCalls).toHaveLength(
+            protectedExternal ? 0 : 1,
+          );
           if (prepared.status !== "created" && prepared.status !== "exact_replay"
             || readRecord?.snapshot.formatVersion !== 3) throw new Error("Fresh read grant not ready");
           let openedResultCalls = 0;
@@ -6277,7 +7024,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
                   execute: async (messageSource, assertCurrentSource) => {
                     await assertCurrentSource(); await publication.assertCurrentClaim();
                     expect(messageSource.payload.role).toBe("assistant");
-                    expect(messageSource.payload.content).toBe("Connected protected result");
+                    expect(messageSource.payload.content).toBe(
+                      protectedExternalResultText,
+                    );
                     openedResultCalls += 1;
                   } });
                 expect(source.status).toBe("available");
@@ -6386,7 +7135,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
               id: messageId,
               sessionId,
               role: "assistant",
-              content: wakeForegroundShadow
+              content: wakeForegroundShadow || recurringEncryptedOccurrences
                 ? "Connected protected result"
                 : null,
               toolCalls: null,
@@ -6535,8 +7284,8 @@ describePostgres("sealed protected Task Memory object writer", () => {
           base.jobIds.add(wakeJobId);
           base.requestIds.add(wakeRequestId);
 
-          // The first pass records the stable content-free wake Job. The
-          // second prepares its fresh destination grant; neither may infer.
+          // Recovery advances bounded pages per observer tick. A populated
+          // clone may require further ticks before this exact wake is reached.
           await composition.coordinator.recoverBeforeObservation(100);
           await composition.coordinator.recoverBeforeObservation(100);
           const authorizationRepository =
@@ -6544,6 +7293,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
           let awaitingWake = await authorizationRepository.get(wakeRequestId);
           const preparationDeadline = Date.now() + 10_000;
           while (awaitingWake === null && Date.now() < preparationDeadline) {
+            await composition.coordinator.recoverBeforeObservation(100);
             await new Promise<void>(resolve => setTimeout(resolve, 10));
             awaitingWake = await authorizationRepository.get(wakeRequestId);
           }
@@ -6619,8 +7369,26 @@ describePostgres("sealed protected Task Memory object writer", () => {
               completedAt: jobs.completedAt,
             }).from(jobs).where(eq(jobs.id, wakeJobId));
           }
-          if (settledWake?.status !== "completed" && nativeErrors.length > 0) {
-            throw new Error(`Protected wake failed: ${JSON.stringify(nativeErrors)}`);
+          if (settledWake?.status !== "completed") {
+            const finalWakeAuthorization =
+              await authorizationRepository.get(wakeRequestId);
+            throw new Error(`Protected wake did not complete: ${JSON.stringify({
+              job: settledWake ?? null,
+              authorizationState:
+                finalWakeAuthorization?.snapshot.state ?? "missing",
+              recipientGeneration:
+                finalWakeAuthorization?.snapshot.recipientGeneration ?? null,
+              initialWakeGeneration,
+              wakeProjectionRotationPending,
+              additionalNamespacePublished,
+              additionalWakeGrantIssued,
+              additionalRoomPrepared: additionalProjectionRoom.current !== null,
+              wakeProjectionModelCalls,
+              wakeProjectionGraphCalls,
+              wakeExecutions,
+              recipientCount: recipients.size,
+              nativeErrors,
+            })}`);
           }
           expect(settledWake?.status).toBe("completed");
           expect(settledWake?.startedAt).toBeInstanceOf(Date);
@@ -6702,11 +7470,446 @@ describePostgres("sealed protected Task Memory object writer", () => {
             wakeRequestId,
           ))).toEqual([{ requestId: wakeRequestId }]);
         }
+        const recurringProofs: Array<Readonly<{
+          taskRunId: string;
+          graphThreadId: string;
+          jobId: string;
+          requestId: string;
+          resultObjectId: string;
+          messageId: number;
+          messageObjectId: string;
+          nextFireAt: Date;
+        }>> = [];
+        if (recurringEncryptedOccurrences) {
+          let observerNow = new Date(Date.now() + 1_000);
+          const [armed] = await base.admin.update(tasks).set({
+            scheduleKind: "cron",
+            cron: "* * * * *",
+            timezone: "UTC",
+            status: "pending",
+            nextFireAt: observerNow,
+            lastFiredAt: null,
+            fireLockId: null,
+            fireLockedAt: null,
+          }).where(eq(tasks.id, activeConnected.taskId)).returning({
+            taskId: tasks.id,
+            definitionObjectId: tasks.cryptoObjectId,
+            definitionRevision: tasks.contentRevision,
+            representation: tasks.contentRepresentation,
+            nextFireAt: tasks.nextFireAt,
+          });
+          expect(armed).toEqual({
+            taskId: activeConnected.taskId,
+            definitionObjectId: activeConnected.inputObjectId,
+            definitionRevision: 1,
+            representation: "dual",
+            nextFireAt: observerNow,
+          });
+          const dueProtectedRows = await base.admin.select({
+            taskId: tasks.id,
+            status: tasks.status,
+            pauseRequestId: tasks.pauseRequestId,
+            representation: tasks.contentRepresentation,
+            mappingState: tasks.cryptoMappingState,
+            nextFireAt: tasks.nextFireAt,
+            fireLockId: tasks.fireLockId,
+          }).from(tasks);
+          expect(dueProtectedRows.filter(row =>
+            row.status === "pending"
+              && row.pauseRequestId === null
+              && (row.representation === "dual"
+                || row.representation === "protected")
+              && row.mappingState === "verified"
+              && row.nextFireAt !== null
+              && row.nextFireAt.getTime() <= observerNow.getTime()
+              && row.fireLockId === null,
+          ).map(row => row.taskId)).toEqual([activeConnected.taskId]);
+
+          const occurrencePorts = createTaskOccurrencePolicyPorts(
+            owner,
+            async () => composition.coordinator,
+          );
+          const observer = new TaskObserver({
+            db: base.productDb,
+            jobManager,
+            batch: 20,
+            now: () => new Date(observerNow.getTime()),
+            maintenanceGate: {
+              assertAcceptingNewWork: () => Promise.resolve(),
+              isAcceptingWork: () => Promise.resolve(true),
+            },
+            ordinaryOccurrencePort: occurrencePorts.ordinary,
+            protectedOccurrencePort: occurrencePorts.protected,
+            protectedOccurrenceRecoveryPort: occurrencePorts.protected,
+          });
+          recurringObserver.current = observer;
+
+          const publishRecurringMessage = async (
+            taskRunId: string,
+            completedAt: Date,
+          ): Promise<Readonly<{
+            messageId: number;
+            messageObjectId: string;
+          }>> => {
+            const output = createProtectedTaskOutputReadComposition({
+              db: base.productDb,
+              restricted: base.restricted,
+              crypto: base.crypto,
+              owner,
+              serverScope: SERVER_SCOPE,
+              recipients,
+              recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
+              now: Date.now,
+            });
+            const prepared = await output.preparation.prepare({
+              taskId: activeConnected.taskId,
+              taskRunId,
+              kind: "raw",
+            });
+            if (prepared.status !== "created"
+              && prepared.status !== "exact_replay") {
+              throw new Error(
+                `Recurring Task result read was unavailable: ${prepared.status}`,
+              );
+            }
+            const requestId =
+              `task-run-delivery-result-authorization:${taskRunId}`;
+            base.requestIds.add(requestId);
+            const outputDevice = createProductionBackgroundAuthorizationComposition({
+              crypto: base.crypto,
+              serverScope: SERVER_SCOPE,
+              now: Date.now,
+              restricted: () => base.restricted,
+              bindTaskRecipient: output.bindTaskRecipient,
+              withTaskAuthority: output.withTaskAuthority,
+              isTaskRecipientActive: output.isTaskRecipientActive,
+              wakeProtectedTask: () => undefined,
+            });
+            await grantRequest(outputDevice, requestId);
+            const repository = new PostgresBackgroundAuthorizationRepository(
+              base.cryptoHandle,
+            );
+            const record = await repository.get(requestId);
+            if (record?.snapshot.formatVersion !== 3) {
+              throw new Error("Recurring Task result grant was unavailable");
+            }
+            expect(record).toMatchObject({
+              workKind: "task.deliver_result",
+              snapshot: { state: "grant_ready" },
+            });
+            const recover = createProtectedTaskRunResultMessageRecovery({
+              db: base.productDb,
+              restricted: base.restricted,
+              crypto: base.crypto,
+              owner,
+              serverScope: SERVER_SCOPE,
+            });
+            const publish = createProtectedTaskRunResultMessagePublication({
+              restricted: base.restricted,
+              crypto: base.crypto,
+              owner,
+              serverScope: SERVER_SCOPE,
+              authority: output.authority,
+              recover: async coordinates =>
+                await recover(coordinates) === "mapped"
+                  ? "mapped"
+                  : "pending",
+            });
+            const claim = createProtectedTaskOutputReadClaim({
+              workKind: "task.deliver_result",
+              authority: output.authority,
+              recipients,
+              now: Date.now,
+              repository: async connection =>
+                new PostgresBackgroundAuthorizationRepository(
+                  await verifyCryptoPostgresHandle(connection),
+                ),
+              publish,
+            });
+            const readyRecord = record as
+              BackgroundAuthorizationTaskRuntimeRecordV3;
+            expect((await claim({
+              plan: prepared.plan,
+              record: readyRecord,
+              restricted: base.restricted,
+              signal: new AbortController().signal,
+            }))?.snapshot.state).toBe("completed");
+            expect(recipients.size).toBe(0);
+
+            const [binding, association, receipt] = await Promise.all([
+              base.admin.select({
+                resultObjectId: protectedTaskRunOutputBindings.resultObjectId,
+                resultAttachedAt:
+                  protectedTaskRunOutputBindings.resultAttachedAt,
+                messageOperationId:
+                  protectedTaskRunOutputBindings.messageOperationId,
+                messageId: protectedTaskRunOutputBindings.messageId,
+                messagePublishedAt:
+                  protectedTaskRunOutputBindings.messagePublishedAt,
+                completedAt: protectedTaskRunOutputBindings.completedAt,
+              }).from(protectedTaskRunOutputBindings).where(eq(
+                protectedTaskRunOutputBindings.taskRunId,
+                taskRunId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                sessionId: taskRunMessageAssociations.sessionId,
+                messageId: taskRunMessageAssociations.messageId,
+                kind: taskRunMessageAssociations.kind,
+                publicationKey: taskRunMessageAssociations.publicationKey,
+              }).from(taskRunMessageAssociations).where(eq(
+                taskRunMessageAssociations.taskRunId,
+                taskRunId,
+              )).then(rows => rows[0]),
+              base.admin.select({
+                objectId:
+                  taskTerminalMessageCryptoStagingReceipts.cryptoObjectId,
+              }).from(taskTerminalMessageCryptoStagingReceipts).where(eq(
+                taskTerminalMessageCryptoStagingReceipts.requestId,
+                requestId,
+              )).then(rows => rows[0]),
+            ]);
+            if (binding?.messageId === null
+              || binding?.messageId === undefined
+              || association === undefined
+              || receipt === undefined) {
+              throw new Error("Recurring Task Message receipt was unavailable");
+            }
+            expect(binding).toMatchObject({
+              resultAttachedAt: completedAt,
+              messageId: association.messageId,
+              completedAt: binding.messagePublishedAt,
+            });
+            expect(binding.messagePublishedAt).toBeInstanceOf(Date);
+            expect(association).toMatchObject({
+              messageId: binding.messageId,
+              kind: "raw_delivery",
+              publicationKey: binding.messageOperationId,
+            });
+            const [message, revision] = await Promise.all([
+              base.admin.select({
+                role: sessionMessages.role,
+                content: sessionMessages.content,
+                objectId: sessionMessages.cryptoObjectId,
+              }).from(sessionMessages).where(and(
+                eq(sessionMessages.sessionId, association.sessionId),
+                eq(sessionMessages.id, association.messageId),
+              )).then(rows => rows[0]),
+              base.admin.select({
+                completion: sessionMessageCryptoRevisions.completion,
+                disposition: sessionMessageCryptoRevisions.disposition,
+                objectId: sessionMessageCryptoRevisions.cryptoObjectId,
+              }).from(sessionMessageCryptoRevisions).where(and(
+                eq(sessionMessageCryptoRevisions.sessionId,
+                  association.sessionId),
+                eq(sessionMessageCryptoRevisions.messageId,
+                  association.messageId),
+              )).then(rows => rows[0]),
+            ]);
+            expect(message).toEqual({
+              role: "assistant",
+              content: "Connected protected result",
+              objectId: receipt.objectId,
+            });
+            expect(revision).toEqual({
+              completion: "complete",
+              disposition: "mapped",
+              objectId: receipt.objectId,
+            });
+            expect(receipt.objectId).toMatch(/^message:v2:[0-9a-f]{64}$/u);
+            base.objectIds.add(receipt.objectId);
+            return Object.freeze({
+              messageId: association.messageId,
+              messageObjectId: receipt.objectId,
+            });
+          };
+
+          const seenRunIds = new Set<string>([activeConnected.taskRunId]);
+          for (let occurrenceIndex = 0; occurrenceIndex < 2;
+            occurrenceIndex += 1) {
+            const scheduledFor = new Date(observerNow.getTime());
+            await observer.tick();
+            const allRuns = await base.admin.select({
+              id: taskRuns.id,
+              graphThreadId: taskRuns.graphThreadId,
+              status: taskRuns.status,
+              jobId: taskRuns.jobId,
+            }).from(taskRuns).where(eq(taskRuns.taskId, activeConnected.taskId));
+            const createdRuns = allRuns.filter(run => !seenRunIds.has(run.id));
+            expect(createdRuns).toHaveLength(1);
+            const createdRun = createdRuns[0];
+            if (createdRun === undefined) {
+              throw new Error("Recurring protected TaskRun was unavailable");
+            }
+            expect(createdRun).toMatchObject({
+              status: "awaiting",
+              jobId: null,
+            });
+            seenRunIds.add(createdRun.id);
+            base.sessionThreadIds.add(createdRun.graphThreadId);
+            const executionRequestId =
+              `task-run-authorization:${createdRun.id}`;
+            base.requestIds.add(executionRequestId);
+            base.requestIds.add(
+              `task-run-delivery-result-authorization:${createdRun.id}`,
+            );
+            await grantConnectedRequest(executionRequestId);
+            await observer.tick();
+
+            const completionDeadline = Date.now() + 45_000;
+            let completedRun: typeof taskRuns.$inferSelect | undefined;
+            let completedJob: typeof jobs.$inferSelect | undefined;
+            while (Date.now() < completionDeadline) {
+              [completedRun] = await base.admin.select().from(taskRuns)
+                .where(eq(taskRuns.id, createdRun.id));
+              if (completedRun?.jobId !== null
+                && completedRun?.jobId !== undefined) {
+                [completedJob] = await base.admin.select().from(jobs)
+                  .where(eq(jobs.id, completedRun.jobId));
+              }
+              if (completedRun?.status === "completed"
+                && completedJob?.status === "completed") break;
+              if (nativeErrors.length > 0) {
+                throw new Error(
+                  `Recurring protected Task failed: ${JSON.stringify(nativeErrors)}`,
+                );
+              }
+              await new Promise<void>(resolve => setTimeout(resolve, 20));
+            }
+            if (completedRun?.status !== "completed"
+              || completedRun.jobId === null
+              || !(completedRun.completedAt instanceof Date)
+              || completedJob?.status !== "completed"
+              || !(completedJob.completedAt instanceof Date)) {
+              throw new Error("Recurring protected Task did not complete");
+            }
+            base.jobIds.add(completedRun.jobId);
+            const resultObjectId = deriveTaskContentCryptoObjectIdV1({
+              kind: "run_result",
+              taskId: activeConnected.taskId,
+              taskRunId: createdRun.id,
+              contentRevision: 1,
+            });
+            base.objectIds.add(resultObjectId);
+            expect(completedRun).toMatchObject({
+              taskId: activeConnected.taskId,
+              graphThreadId: createdRun.graphThreadId,
+              resultRepresentation: "dual",
+              resultRevision: 1,
+              resultCryptoObjectId: resultObjectId,
+              resultCryptoMappingState: "verified",
+              resultText: "Connected protected result",
+              lastError: null,
+            });
+            expect(completedJob).toMatchObject({
+              result: null,
+              message: null,
+            });
+            expect(completedJob.input).toMatchObject({
+              kind: "protected_task_run_v1",
+              taskId: activeConnected.taskId,
+              taskRunId: createdRun.id,
+              inputObjectId: activeConnected.inputObjectId,
+              resultObjectId,
+              authorizationRequestId: executionRequestId,
+              executionSegment: 1,
+            });
+            await waitForConnectedRelease(
+              base,
+              executionRequestId,
+              recipients,
+            );
+            const [executionAuthorization] = await base.admin.select({
+              state: backgroundCryptoAuthorizationRequests.state,
+              workId: backgroundCryptoAuthorizationRequests.workId,
+            }).from(backgroundCryptoAuthorizationRequests).where(eq(
+              backgroundCryptoAuthorizationRequests.requestId,
+              executionRequestId,
+            ));
+            expect(executionAuthorization).toEqual({
+              state: "completed",
+              workId: createdRun.id,
+            });
+            const message = await publishRecurringMessage(
+              createdRun.id,
+              completedRun.completedAt,
+            );
+            expect(await objectRowCounts(base, resultObjectId)).toEqual({
+              payload: 1,
+              head: 1,
+              manifest: 1,
+              envelope: 1,
+            });
+            const [scheduled] = await base.admin.select({
+              status: tasks.status,
+              definitionObjectId: tasks.cryptoObjectId,
+              definitionRevision: tasks.contentRevision,
+              lastFiredAt: tasks.lastFiredAt,
+              nextFireAt: tasks.nextFireAt,
+              fireLockId: tasks.fireLockId,
+            }).from(tasks).where(eq(tasks.id, activeConnected.taskId));
+            expect(scheduled).toMatchObject({
+              status: "pending",
+              definitionObjectId: activeConnected.inputObjectId,
+              definitionRevision: 1,
+              lastFiredAt: scheduledFor,
+              fireLockId: null,
+            });
+            if (!(scheduled?.nextFireAt instanceof Date)
+              || scheduled.nextFireAt.getTime() <= observerNow.getTime()) {
+              throw new Error("Recurring protected Task did not advance");
+            }
+            recurringProofs.push(Object.freeze({
+              taskRunId: createdRun.id,
+              graphThreadId: createdRun.graphThreadId,
+              jobId: completedRun.jobId,
+              requestId: executionRequestId,
+              resultObjectId,
+              messageId: message.messageId,
+              messageObjectId: message.messageObjectId,
+              nextFireAt: scheduled.nextFireAt,
+            }));
+
+            await observer.tick();
+            expect(await base.admin.select({ id: taskRuns.id })
+              .from(taskRuns).where(eq(taskRuns.taskId, activeConnected.taskId)))
+              .toHaveLength(seenRunIds.size);
+            observerNow = new Date(scheduled.nextFireAt.getTime());
+          }
+          await observer.stop();
+          recurringObserver.current = null;
+          expect(new Set(recurringProofs.map(proof => proof.taskRunId)).size)
+            .toBe(2);
+          expect(new Set(recurringProofs.map(proof => proof.graphThreadId)).size)
+            .toBe(2);
+          expect(new Set(recurringProofs.map(proof => proof.jobId)).size)
+            .toBe(2);
+          expect(new Set(recurringProofs.map(proof => proof.requestId)).size)
+            .toBe(2);
+          expect(new Set(recurringProofs.map(proof => proof.resultObjectId)).size)
+            .toBe(2);
+          expect(new Set(recurringProofs.map(proof => proof.messageId)).size)
+            .toBe(2);
+          expect(new Set(recurringProofs.map(proof => proof.messageObjectId)).size)
+            .toBe(2);
+          expect(recurringProofs[1]!.nextFireAt.getTime())
+            .toBeGreaterThan(recurringProofs[0]!.nextFireAt.getTime());
+        }
         const exactRuns = await base.admin.select({ id: taskRuns.id })
           .from(taskRuns).where(eq(taskRuns.taskId, connected.taskId));
         const exactJobs = await base.admin.select({ id: jobs.id })
           .from(jobs).where(eq(jobs.laneKey, `task:${connected.taskId}`));
-        expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
+        if (recurringEncryptedOccurrences) {
+          expect(new Set(exactRuns.map(run => run.id))).toEqual(new Set([
+            connected.taskRunId,
+            ...recurringProofs.map(proof => proof.taskRunId),
+          ]));
+          expect(new Set(exactJobs.map(job => job.id))).toEqual(new Set([
+            terminal.job.id,
+            ...recurringProofs.map(proof => proof.jobId),
+          ]));
+        } else {
+          expect(exactRuns).toEqual([{ id: connected.taskRunId }]);
+        }
         if (continuedExecution) {
           expect(parkedPriorJobId).not.toBeNull();
           expect(terminal.job.id).not.toBe(parkedPriorJobId);
@@ -6752,7 +7955,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
             ].sort((left, right) =>
               left.requestId.localeCompare(right.requestId)));
           }
-        } else {
+        } else if (!recurringEncryptedOccurrences) {
           expect(exactJobs).toEqual([{ id: terminal.job.id }]);
         }
         const [terminalTask] = await base.admin.select({
@@ -6762,8 +7965,10 @@ describePostgres("sealed protected Task Memory object writer", () => {
           lastError: tasks.lastError,
         }).from(tasks).where(eq(tasks.id, connected.taskId));
         expect(terminalTask).toEqual({
-          status: "completed",
-          prompt: wakeForegroundShadow || historicalDefinition
+          status: recurringEncryptedOccurrences ? "pending" : "completed",
+          prompt: wakeForegroundShadow || deepResearchShadow
+            || protectedCodexShadow || protectedAcpShadow || historicalDefinition
+            || recurringEncryptedOccurrences
             ? "Complete the connected protected Task"
             : "",
           expectedOutput: null,
@@ -6793,14 +7998,32 @@ describePostgres("sealed protected Task Memory object writer", () => {
           expect(await objectRowCounts(base, connected.inputObjectId))
             .toEqual({ payload: 1, head: 1, manifest: 1, envelope: 1 });
         }
-        expect(segmentCalls).toEqual(Array.from(
-          { length: continuedExecution ? 2 : 1 },
-          () => ({
-            taskId: activeConnected.taskId,
-            taskRunId: activeConnected.taskRunId,
-            graphThreadId: activeConnected.graphThreadId,
-          }),
-        ));
+        if (recurringEncryptedOccurrences) {
+          expect(segmentCalls).toEqual([
+            {
+              taskId: activeConnected.taskId,
+              taskRunId: activeConnected.taskRunId,
+              graphThreadId: activeConnected.graphThreadId,
+            },
+            ...recurringProofs.map(proof => ({
+              taskId: activeConnected.taskId,
+              taskRunId: proof.taskRunId,
+              graphThreadId: proof.graphThreadId,
+            })),
+          ]);
+          expect(segmentContinuationModes).toEqual([false, false, false]);
+        } else {
+          expect(segmentCalls).toEqual(Array.from(
+            { length: deepResearch || protectedExternal
+              ? 0
+              : continuedExecution ? 2 : 1 },
+            () => ({
+              taskId: activeConnected.taskId,
+              taskRunId: activeConnected.taskRunId,
+              graphThreadId: activeConnected.graphThreadId,
+            }),
+          ));
+        }
         if (callerLocalExecution) {
           if (callerFunding === null || delegatedLocal.current === null) {
             throw new Error("Caller/local protected Task fixture was unavailable");
@@ -6861,11 +8084,114 @@ describePostgres("sealed protected Task Memory object writer", () => {
           agentId: base.productAgentId,
           roomId: base.roomId,
         });
-        expect(await base.admin.select({ id: sessionMessages.id })
-          .from(sessionMessages).where(eq(
-            sessionMessages.sessionId,
-            sessionRows[0]!.id,
-          ))).toHaveLength(0);
+        const transcriptRows = await base.admin.select({ id: sessionMessages.id,
+          role: sessionMessages.role, content: sessionMessages.content,
+          objectId: sessionMessages.cryptoObjectId })
+          .from(sessionMessages).where(eq(sessionMessages.sessionId, sessionRows[0]!.id));
+        expect(transcriptRows).toHaveLength(
+          deepResearch || protectedExternal ? 1 : 0,
+        );
+        if (deepResearch || protectedExternal) {
+          if (deepResearch) expect(researchStreamCalls).toHaveLength(1);
+          expect(transcriptRows[0]).toMatchObject({ role: "assistant",
+            content: deepResearchShadow || protectedCodexShadow || protectedAcpShadow
+              ? protectedExternalResultText
+              : null });
+          const objectId = transcriptRows[0]?.objectId;
+          if (!objectId) throw new Error("External protected transcript object missing");
+          base.objectIds.add(objectId);
+          expect(await objectRowCounts(base, objectId)).toEqual({ payload: 1, head: 1, manifest: 1, envelope: 1 });
+          expect(await base.admin.select({ completion: sessionMessageCryptoRevisions.completion,
+            disposition: sessionMessageCryptoRevisions.disposition, objectId: sessionMessageCryptoRevisions.cryptoObjectId })
+            .from(sessionMessageCryptoRevisions).where(eq(sessionMessageCryptoRevisions.messageId, transcriptRows[0]!.id)))
+            .toEqual([{ completion: "complete", disposition: "mapped", objectId }]);
+          if (deepResearch) {
+            expect(JSON.stringify(researchEvents)).not.toContain("private_research_progress_canary");
+            expect(JSON.stringify(researchEvents)).not.toContain("Complete the connected protected Task");
+            expect(JSON.stringify(researchEvents)).not.toContain("Connected protected result");
+            expect(researchEvents.filter(event => event !== null && typeof event === "object"
+              && Reflect.get(event, "type") === "task.progress")).toEqual([]);
+          }
+        }
+        if (protectedCodex) {
+          if (codexReadiness === null) {
+            throw new Error("Protected Codex readiness receipt disappeared");
+          }
+          expect(codexBindingIds).toHaveLength(1);
+          const [codexBindingId] = codexBindingIds;
+          if (codexBindingId === undefined) {
+            throw new Error("Protected Codex binding identity disappeared");
+          }
+          expect(codexPartitionIdentities).toEqual([{
+            relayId: codexReadiness.relayId,
+            bindingId: codexBindingId,
+            bindingGeneration: 0,
+            taskId: activeConnected.taskId,
+            jobId: terminal.job.id,
+          }]);
+          expect(codexCalls.filter(call => call === "start")).toHaveLength(1);
+          expect(codexCalls.filter(call => call === "protect")).toHaveLength(1);
+          expect(codexCalls.filter(call => call === "retire")).toHaveLength(1);
+          expect(codexCalls.filter(call => call === "preflight")).toHaveLength(3);
+          expect(codexCalls.filter(call => call === "models")).toHaveLength(3);
+          expect(codexCalls.filter(call => call === "limits")).toHaveLength(3);
+          expect(codexCalls.indexOf("protect")).toBeLessThan(
+            codexCalls.indexOf("start"),
+          );
+          expect(codexCalls.indexOf("retire")).toBeGreaterThan(
+            codexCalls.indexOf("start"),
+          );
+          expect(JSON.stringify(terminal.job)).not.toContain(
+            protectedExternalResultText,
+          );
+          expect(JSON.stringify(terminal.job)).not.toContain(
+            "Complete the connected protected Task",
+          );
+          expect(JSON.stringify(researchEvents)).not.toContain(
+            protectedExternalResultText,
+          );
+          expect(researchEvents.filter(event => event !== null
+            && typeof event === "object"
+            && Reflect.get(event, "type") === "task.progress")).toEqual([]);
+        }
+        if (protectedAcpProvider !== null) {
+          if (acpReadiness === null) {
+            throw new Error("Protected ACP readiness receipt is unavailable");
+          }
+          expect(acpPrompts).toEqual(["Complete the connected protected Task"]);
+          expect(acpScopes).toHaveLength(1);
+          expect(acpScopes[0]?.binding).toMatchObject({
+            ownerId: base.userId,
+            taskId: activeConnected.taskId,
+            taskRunId: activeConnected.taskRunId,
+            jobId: terminal.job.id,
+          });
+          expect(acpScopes[0]?.socket).toEqual(acpReadiness);
+          expect(acpCalls.filter(call => call === "start")).toHaveLength(1);
+          expect(acpCalls.filter(call => call === "subscribe")).toHaveLength(1);
+          expect(acpCalls.filter(call => call === "readiness")).toHaveLength(1);
+          expect(acpCalls.filter(call => call === "prepare")).toHaveLength(1);
+          expect(acpAcknowledgements).toHaveLength(3);
+          expect(acpAcknowledgements.map(value => value.eventSequence))
+            .toEqual([2, 3, 4]);
+          expect(acpCloseCalls).toBe(1);
+          expect(acpContainCalls).toBe(0);
+          expect(JSON.stringify(terminal.job)).not.toContain(
+            protectedExternalResultText,
+          );
+          expect(JSON.stringify(terminal.job)).not.toContain(
+            "Complete the connected protected Task",
+          );
+          expect(JSON.stringify(researchEvents)).not.toContain(
+            protectedExternalResultText,
+          );
+          expect(JSON.stringify(researchEvents)).not.toContain(
+            "Complete the connected protected Task",
+          );
+          expect(researchEvents.filter(event => event !== null
+            && typeof event === "object"
+            && Reflect.get(event, "type") === "task.progress")).toEqual([]);
+        }
         expect(recipients.size).toBe(0);
       }
       }
@@ -6873,7 +8199,17 @@ describePostgres("sealed protected Task Memory object writer", () => {
     } catch (error) {
       testError = error;
     }
+    if (deepResearch || protectedExternal) {
+      eventBus.off(onResearchEvent);
+    }
     projectionRollback.current?.restore();
+    if (recurringObserver.current !== null) {
+      try {
+        await recurringObserver.current.stop();
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
     if (closeComposition !== null) {
       try {
         await closeComposition();
@@ -7558,8 +8894,10 @@ describePostgres("sealed protected Task Memory object writer", () => {
       expect(cancelled).toMatchObject({
         transitioned: true,
         outcome: "transitioned",
-        task: { status: "cancelled" },
-        run: { status: "cancelled" },
+        task: undefined,
+        run: undefined,
+        protectedTask: { status: "cancelled" },
+        protectedRun: { status: "cancelled" },
       });
       expect(await objectRowCounts(base, writerFirst.memoryObjectId)).toEqual({
         payload: 1,
@@ -8767,7 +10105,12 @@ describePostgres("sealed protected Task Memory object writer", () => {
 });
 
 
-test.each([false, true])("historical Task repair stages and maps atomically (expired admission after crypto commit: %s)", async expireAfterStage => {
+test.each([
+  { expireAfterStage: false, retainedHistoricalError: null },
+  { expireAfterStage: true, retainedHistoricalError: null },
+  { expireAfterStage: false, retainedHistoricalError: "Earlier private Task failure." },
+  { expireAfterStage: true, retainedHistoricalError: "Earlier private Task failure." },
+])("historical Task repair stages and maps atomically %j", async ({ expireAfterStage, retainedHistoricalError }) => {
   let currentNow = NOW;
   const base = await createBaseFixture({ cryptoNow: () => currentNow });
   const taskId = randomUUID();
@@ -8782,10 +10125,10 @@ test.each([false, true])("historical Task repair stages and maps atomically (exp
       agentId: base.productAgentId, prompt: "Historical private Task",
       expectedOutput: "Preserve this output", scheduleKind: "now",
       status: "paused", callingRoomId: base.roomId, targetChat: "orphan",
-      useScope: false, scopeId: null,
+      useScope: false, scopeId: null, lastError: retainedHistoricalError,
     });
     const historicalObjectId = await repairHistoricalTaskDefinition(base, taskId, {
-      expireAfterStage, now: () => currentNow, afterStage: () => { currentNow = NOW + 25_000; },
+      expectedRetainedHistoricalError: retainedHistoricalError, expireAfterStage, now: () => currentNow, afterStage: () => { currentNow = NOW + 25_000; },
     });
     const [mapped] = await base.admin.select({ prompt: tasks.prompt, expectedOutput: tasks.expectedOutput,
       status: tasks.status, representation: tasks.contentRepresentation,

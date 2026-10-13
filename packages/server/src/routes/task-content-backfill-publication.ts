@@ -4,7 +4,7 @@ import {
   authenticatePreparedHistoricalTaskContentCryptoRevisionV1,
   createDormantTaskContentShadowRepository,
   deriveTaskHistoricalContentCryptoObjectIdV1,
-  encodeTaskPayloadV1, encodeTaskRunResultPayloadV1,
+  encodeTaskDefinitionContent, encodeTaskRunResultPayloadV1,
   type EncryptionDataOperationOwner,
   type TaskContentCoordinateV1,
 } from "@nautilo/lattice-bridge";
@@ -207,7 +207,7 @@ export function createTaskContentBackfillPublication(input: Input) {
         const preparedPlan = plan(current);
         if (preparedPlan === null) throw new Error("Supported historical Task source has no publication plan");
         const payload = classification.kind === "definition"
-          ? encodeTaskPayloadV1(classification.payload)
+          ? encodeTaskDefinitionContent(classification.payload)
           : encodeTaskRunResultPayloadV1(classification.payload);
         try {
           return Promise.resolve(Object.freeze({ status: "source" as const, plan: preparedPlan,

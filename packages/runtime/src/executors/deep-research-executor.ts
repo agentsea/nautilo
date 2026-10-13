@@ -1,4 +1,4 @@
-import type { ServerEvent } from "@nautilo/types";
+import { TASK_FUNDING_FAILURE_CODES, type ServerEvent } from "@nautilo/types";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import {
   appendTranscriptMessages,
@@ -154,6 +154,19 @@ export class DeepResearchSearchUnavailableError extends Error {
   }
 }
 
+export interface DeepResearchStreamOptions {
+  readonly confidential?: true;
+}
+
+function confidentialFailure(error: unknown): Error {
+  if (error instanceof DeepResearchFundingUnavailableError || error instanceof DeepResearchSearchUnavailableError) return error;
+  const code: unknown = error instanceof Error ? Object.getOwnPropertyDescriptor(error, "code")?.value : undefined;
+  if (typeof code === "string" && TASK_FUNDING_FAILURE_CODES.some(known => known === code)) {
+    return Object.assign(new Error(code), { code });
+  }
+  return new Error("deep_research_failed");
+}
+
 export interface DeepResearchExecutionProgress {
   readonly phase: string;
   readonly detail?: string;
@@ -175,6 +188,7 @@ type DeepResearchReportStreamFactory = (
   input: Record<string, unknown>,
   executionId: string,
   signal: AbortSignal,
+  options?: DeepResearchStreamOptions,
 ) => DeepResearchReportStream;
 
 type DeepResearchEventStreamFactory = (
@@ -204,7 +218,9 @@ async function* runDeepResearchReportStream(
   input: Record<string, unknown>,
   executionId: string,
   signal: AbortSignal,
+  options?: DeepResearchStreamOptions,
 ): DeepResearchReportStream {
+  const confidential = options?.confidential === true;
   const researchBrief =
     typeof input["research_brief"] === "string" ? input["research_brief"] : "";
 
@@ -228,10 +244,11 @@ async function* runDeepResearchReportStream(
     throw error;
   }
 
-  log(`[deep-research-executor] Starting background research: "${researchBrief.slice(0, 80)}..."`);
+  if (!confidential) log(`[deep-research-executor] Starting background research: "${researchBrief.slice(0, 80)}..."`);
   yield { phase: "Starting deep research..." };
 
-  const graph = createDeepResearchGraph(undefined, researchConfiguration);
+  const graph = createDeepResearchGraph(undefined, confidential
+    ? { ...researchConfiguration, confidential: true } : researchConfiguration);
   const threadId = `bg-research:${executionId}`;
   let finalReport = "";
 
@@ -302,12 +319,12 @@ async function* runDeepResearchReportStream(
     if (!finalReport.trim()) {
       throw new Error("Deep Research completed without a report");
     }
-    log(`[deep-research-executor] Research complete, report length: ${finalReport.length}`);
+    if (!confidential) log(`[deep-research-executor] Research complete, report length: ${finalReport.length}`);
     return finalReport.trim();
   } catch (error) {
     if (signal.aborted) return "";
     const msg = error instanceof Error ? error.message : String(error);
-    warn(`[deep-research-executor] Research failed: ${msg}`);
+    if (!confidential) warn(`[deep-research-executor] Research failed: ${msg}`);
     yield {
       phase: "Error",
       detail: "Deep Research could not complete. Please try again.",
@@ -322,12 +339,15 @@ export function streamDeepResearchReport(
   signal: AbortSignal,
   initiatingHumanUserId?: string,
   attribution?: DeepResearchUsageAttribution,
+  options?: DeepResearchStreamOptions,
 ): DeepResearchReportStream {
+  const confidential = options?.confidential === true;
   const originatingUsageContext = getUsageContext();
   const source = (reportStreamOverrideForTests ?? runDeepResearchReportStream)(
     input,
     executionId,
     signal,
+    confidential ? { confidential: true } : undefined,
   );
   const humanUserId = initiatingHumanUserId?.trim() ?? "";
   return (async function* (): DeepResearchReportStream {
@@ -352,18 +372,22 @@ export function streamDeepResearchReport(
     };
     let sourceComplete = false;
     try {
-      for (;;) {
-        const next = await runWithUsageContext(usageContext, () => source.next());
-        if (next.done) {
-          sourceComplete = true;
-          return next.value;
+      try {
+        for (;;) {
+          const next = await runWithUsageContext(usageContext, () => source.next());
+          if (next.done) {
+            sourceComplete = true;
+            return next.value;
+          }
+          yield confidential ? { phase: "deep_research_running" } : next.value;
         }
-        yield next.value;
+      } finally {
+        if (!sourceComplete) {
+          await runWithUsageContext(usageContext, () => source.return(""));
+        }
       }
-    } finally {
-      if (!sourceComplete) {
-        await runWithUsageContext(usageContext, () => source.return(""));
-      }
+    } catch (error) {
+      throw confidential ? confidentialFailure(error) : error;
     }
   })();
 }

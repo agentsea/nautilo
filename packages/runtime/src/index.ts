@@ -775,3 +775,4 @@ export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-termi
 export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type TaskLocalExecutionSource, type DelegatedTaskIdentity } from "./tasks/local-execution-delegation";
 
 export { setTaskLocalExecutionSourceComposition, resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable, isTaskLocalExecutionOfflineSourceReady } from "./tasks/local-execution-delegation";
+export { streamDeepResearchReport, type DeepResearchReportStream } from "./executors/deep-research-executor";

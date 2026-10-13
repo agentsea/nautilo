@@ -54,7 +54,7 @@ import {
 } from "../../task/task-content-repository.ts";
 import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
   "../../task/task-historical-content-identity.ts";
-import { encodeTaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { encodeTaskDefinitionContent } from "../../task/task-payload-v1.ts";
 import { parseTaskHistoricalRepairProvenanceV1 } from
   "../../task/task-historical-repair-provenance.ts";
 import {
@@ -208,7 +208,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
     let bindingHash: Uint8Array | undefined;
     let operationalFieldsDigest: Uint8Array | undefined;
     try {
-      plaintext = encodeTaskPayloadV1(input.payload);
+      plaintext = encodeTaskDefinitionContent(input.payload);
       const encrypted = encryptObjectPayload(dependencies.crypto, {
         objectId: objectId(cryptoObjectId),
         keyClass: "ai",

@@ -38,6 +38,8 @@ import type {
   HumanEditLeaseStoreResult,
   LiveShadowMessageRealtimeEventV1,
   FullEncryptionMessageRealtimeContentEventV2,
+  CodexRequestEvent,
+  CodexRequestResponse,
   RegisterHumanEditLeaseRequest,
   ReleaseHumanEditLeaseRequest,
   RenewHumanEditLeaseRequest,
@@ -2047,6 +2049,28 @@ const foregroundShadowAPI = {
     "foregroundShadow:recoverTaskPendingAttention",
     input,
   ) as Promise<import("@nautilo/api-client").TaskPendingAttentionRecoveryResponse>,
+  recoverProtectedTaskExternalRequests: (input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:recoverProtectedTaskExternalRequests",
+    input,
+  ) as Promise<
+    | Readonly<{ status: "ready"; entries: readonly Readonly<{
+        event: CodexRequestEvent;
+        responseCapability: string;
+      }>[] }>
+    | Readonly<{ status: "unavailable"; entries: readonly [] }>
+  >,
+  respondProtectedTaskExternalRequest: (input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: CodexRequestResponse;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:respondProtectedTaskExternalRequest",
+    input,
+  ) as Promise<Readonly<{ status: "responded" | "unavailable" }>>,
   memory: {
     list: (options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;

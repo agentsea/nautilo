@@ -345,6 +345,22 @@ export interface DesktopForegroundShadowAPI {
   recoverTaskPendingAttention?(input: Readonly<{
     clientActionSessionId: string;
   }>): Promise<import("@nautilo/api-client/browser").TaskPendingAttentionRecoveryResponse>;
+  recoverProtectedTaskExternalRequests?(input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+  }>): Promise<
+    | Readonly<{ status: "ready"; entries: readonly Readonly<{
+        event: import("@nautilo/types").CodexRequestEvent;
+        responseCapability: string;
+      }>[] }>
+    | Readonly<{ status: "unavailable"; entries: readonly [] }>
+  >;
+  respondProtectedTaskExternalRequest?(input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: import("@nautilo/types").CodexRequestResponse;
+  }>): Promise<Readonly<{ status: "responded" | "unavailable" }>>;
   memory: {
     list(options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;

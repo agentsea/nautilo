@@ -52,9 +52,9 @@ import {
   taskContentObjectTypeV1,
 } from "../../task/task-content-repository.ts";
 import {
-  decodeTaskPayloadV1,
+  decodeTaskDefinitionContent,
   decodeTaskRunResultPayloadV1,
-  encodeTaskPayloadV1,
+  encodeTaskDefinitionContent,
   encodeTaskRunResultPayloadV1,
 } from "../../task/task-payload-v1.ts";
 import {
@@ -188,9 +188,19 @@ function canonicalPayload(
   sourceBytes: Uint8Array,
 ): Uint8Array {
   try {
-    return source.plan.coordinate.kind === "definition"
-      ? encodeTaskPayloadV1(decodeTaskPayloadV1(sourceBytes))
-      : encodeTaskRunResultPayloadV1(decodeTaskRunResultPayloadV1(sourceBytes));
+    if (source.plan.coordinate.kind !== "definition") {
+      return encodeTaskRunResultPayloadV1(decodeTaskRunResultPayloadV1(sourceBytes));
+    }
+    const content = decodeTaskDefinitionContent(sourceBytes);
+    return encodeTaskDefinitionContent(content.retainedHistoricalError === null
+      ? content.payload
+      : {
+          formatVersion: 2,
+          prompt: content.payload.prompt,
+          expectedOutput: content.payload.expectedOutput,
+          protectedMetadata: content.payload.protectedMetadata,
+          retainedHistoricalError: content.retainedHistoricalError,
+        });
   } catch (error) {
     throw new ClassifiedDataOperationError(
       "integrity",

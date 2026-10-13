@@ -7,7 +7,10 @@ import {
   assertProtectedTaskOperationalMetadataProjectionV1,
   type ProtectedTaskOperationalMetadataProjectionV1,
 } from "@nautilo/types";
-import { decodeTaskPayloadV1 } from "./task-payload-v1.ts";
+import {
+  decodeTaskDefinitionContent,
+  decodeTaskPayloadV1,
+} from "./task-payload-v1.ts";
 
 const DOMAIN = "nautilo/task-operational-fields/v1\n";
 const OPERATIONAL_METADATA_DOMAIN = "nautilo/task-operational-metadata/v1\n";
@@ -108,7 +111,11 @@ export function fingerprintTaskDualPublicationFieldsV1(
   if (!(canonicalOrdinaryPayloadBytes instanceof Uint8Array)) {
     throw new TypeError("Dual Task ordinary payload bytes must be Uint8Array");
   }
-  decodeTaskPayloadV1(canonicalOrdinaryPayloadBytes);
+  if (operation === "create") {
+    decodeTaskPayloadV1(canonicalOrdinaryPayloadBytes);
+  } else {
+    decodeTaskDefinitionContent(canonicalOrdinaryPayloadBytes);
+  }
   const operationalBytes = encodeTaskOperationalFieldsV1(
     operation,
     operationalFields,

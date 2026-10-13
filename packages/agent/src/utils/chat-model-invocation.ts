@@ -814,6 +814,8 @@ export async function invokeChatModelWithFallback(
     firstProgressTimeoutMs?: number;
     /** Concurrent tool-free advice uses a local supervisor, never the auditor's ambient turn sink. */
     isolatedProgress?: boolean;
+    /** Trusted confidential execution: omit provider details from diagnostics. */
+    confidential?: true;
     /** server resolver, called afresh for every candidate attempt. */
     resolveForegroundControls?: ResolveForegroundModelControls;
     /** content-free boundary used to project cache metadata per attempt. */
@@ -1276,7 +1278,7 @@ export async function invokeChatModelWithFallback(
       }
       if (personalFunding) {
         log(`[nautilo/agent] Personal-funded model ${currentModelId} failed (${classified.category}, retryable=${classified.retryable})`);
-      } else {
+      } else if (!invokeOptions?.confidential) {
         log(
           `[nautilo/agent] Model ${currentModelId} failed: ${providerError instanceof Error ? providerError.message : String(providerError)} ` +
             `(${classified.category}, retryable=${classified.retryable})`,
@@ -1287,7 +1289,7 @@ export async function invokeChatModelWithFallback(
       }
 
       if (!personalFunding && shouldCooldownAfterFailure(classified)) {
-        markModelInvokeFailure(currentModelId, classified.message);
+        markModelInvokeFailure(currentModelId, invokeOptions?.confidential ? classified.category : classified.message);
       }
 
       const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);

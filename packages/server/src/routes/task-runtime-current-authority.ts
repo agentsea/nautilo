@@ -1,4 +1,14 @@
+import { parseProtectedTaskOpenCodeSelection, protectedTaskOpenCodeSelectionProjection, type ProtectedTaskOpenCodeSelection } from "./protected-task-opencode-selection";
+import { parseProtectedTaskDeepResearchSelection, protectedTaskDeepResearchSelectionProjection, type ProtectedTaskDeepResearchSelection } from "./protected-task-deep-research-selection";
+import { parseProtectedTaskCodexSelection, protectedTaskCodexSelectionProjection, type ProtectedTaskCodexSelection } from "./protected-task-codex-selection";
+import { parseProtectedTaskHermesSelection, protectedTaskHermesSelectionProjection, type ProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
+import { parseProtectedTaskRepoDocsSelection, protectedTaskRepoDocsSelectionProjection, type ProtectedTaskRepoDocsSelection } from "./protected-task-repo-docs-selection";
 import { validateCurrentTaskDefinitionIdentity } from "./protected-task-runtime-definition-identity";
+import {
+  parseProtectedTaskClaudeSelection,
+  protectedTaskClaudeSelectionProjection,
+  type ProtectedTaskClaudeSelection,
+} from "./protected-task-claude-selection";
 import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
@@ -59,6 +69,13 @@ export type CurrentProtectedTaskRuntimeLifecycleFacts = Readonly<{
   run: CurrentRun;
   /** Content-free result of inspecting the locked Task's execution route. */
   nativeExecutionSupported: boolean;
+  /** Closed operational selection; never the complete Task metadata. */
+  claudeExecutionSelection?: ProtectedTaskClaudeSelection | null;
+  codexExecutionSelection?: ProtectedTaskCodexSelection | null;
+  hermesExecutionSelection?: ProtectedTaskHermesSelection | null;
+  opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null;
+  deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null;
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection | null;
 }>;
 
 type CurrentRequesterPrivateRoomFacts = Readonly<{
@@ -87,6 +104,12 @@ export type HeldProtectedTaskRuntimeAuthority = Readonly<{
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
   /** Absent on legacy/test adapters; native execution must treat absence as false. */
   nativeExecutionSupported?: boolean;
+  claudeExecutionSelection?: ProtectedTaskClaudeSelection | null;
+  codexExecutionSelection?: ProtectedTaskCodexSelection | null;
+  hermesExecutionSelection?: ProtectedTaskHermesSelection | null;
+  opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null;
+  deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null;
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection | null;
 }>;
 
 const NATIVE_TASK_PRESETS: readonly Task["preset"][] = [
@@ -190,6 +213,12 @@ export function destroyAcceptedTaskRuntimeRecord(
 export function copyProtectedTaskRuntimeAuthority(
   authority: CurrentTaskRuntimeAuthority,
   nativeExecutionSupported: boolean,
+  claudeExecutionSelection?: ProtectedTaskClaudeSelection | null,
+  codexExecutionSelection?: ProtectedTaskCodexSelection | null,
+  hermesExecutionSelection?: ProtectedTaskHermesSelection | null,
+  deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null,
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection | null,
+  opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null,
 ): HeldProtectedTaskRuntimeAuthority {
   const plan = authority.plan;
   return Object.freeze({
@@ -227,6 +256,15 @@ export function copyProtectedTaskRuntimeAuthority(
       })),
     ),
     nativeExecutionSupported,
+    ...(claudeExecutionSelection === undefined ? {} : {
+      claudeExecutionSelection: claudeExecutionSelection === null ? null
+        : Object.freeze({ ...claudeExecutionSelection }),
+    }),
+    ...(codexExecutionSelection === undefined ? {} : { codexExecutionSelection: parseProtectedTaskCodexSelection(codexExecutionSelection) }),
+    ...(opencodeExecutionSelection === undefined ? {} : { opencodeExecutionSelection: parseProtectedTaskOpenCodeSelection(opencodeExecutionSelection) }),
+    ...(hermesExecutionSelection === undefined ? {} : { hermesExecutionSelection: parseProtectedTaskHermesSelection(hermesExecutionSelection) }),
+    ...(deepResearchExecutionSelection === undefined ? {} : { deepResearchExecutionSelection: parseProtectedTaskDeepResearchSelection(deepResearchExecutionSelection) }),
+    ...(repoDocsSelection === undefined ? {} : { repoDocsSelection: parseProtectedTaskRepoDocsSelection(repoDocsSelection) }),
   });
 }
 
@@ -267,6 +305,12 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
       )
       else false
     end`.as("native_execution_supported"),
+    claude_execution_selection: protectedTaskClaudeSelectionProjection(),
+    codex_execution_selection: protectedTaskCodexSelectionProjection(),
+    hermes_execution_selection: protectedTaskHermesSelectionProjection(),
+    opencode_execution_selection: protectedTaskOpenCodeSelectionProjection(),
+    deep_research_execution_selection: protectedTaskDeepResearchSelectionProjection(),
+    repo_docs_selection: protectedTaskRepoDocsSelectionProjection(),
   }).from(tasks).where(eq(tasks.id, input.occurrence.task.id))
     .limit(2).for("update"));
   if (taskRows.length !== 1) return null;
@@ -333,6 +377,12 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
     task: Object.freeze(task),
     run: Object.freeze(run),
     nativeExecutionSupported: taskRow.native_execution_supported === true,
+    claudeExecutionSelection: parseProtectedTaskClaudeSelection(taskRow.claude_execution_selection),
+    codexExecutionSelection: parseProtectedTaskCodexSelection(taskRow.codex_execution_selection),
+    hermesExecutionSelection: parseProtectedTaskHermesSelection(taskRow.hermes_execution_selection),
+    opencodeExecutionSelection: parseProtectedTaskOpenCodeSelection(taskRow.opencode_execution_selection),
+    deepResearchExecutionSelection: parseProtectedTaskDeepResearchSelection(taskRow.deep_research_execution_selection),
+    repoDocsSelection: parseProtectedTaskRepoDocsSelection(taskRow.repo_docs_selection),
   });
 }
 
@@ -506,7 +556,10 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
       phase,
       dependencies,
       (authority, facts) =>
-        copyProtectedTaskRuntimeAuthority(authority, facts.nativeExecutionSupported),
+        copyProtectedTaskRuntimeAuthority(authority, facts.nativeExecutionSupported,
+          facts.claudeExecutionSelection, facts.codexExecutionSelection,
+          facts.hermesExecutionSelection, facts.deepResearchExecutionSelection,
+          facts.repoDocsSelection, facts.opencodeExecutionSelection),
     );
     if (held === null) return null;
     try {
@@ -562,6 +615,9 @@ export function createCurrentProtectedTaskRuntimeClaimAuthorityPort(
         const held = copyProtectedTaskRuntimeAuthority(
           authority,
           facts.nativeExecutionSupported,
+          facts.claudeExecutionSelection, facts.codexExecutionSelection,
+          facts.hermesExecutionSelection, facts.deepResearchExecutionSelection,
+          facts.repoDocsSelection, facts.opencodeExecutionSelection,
         );
         try {
           const value = await input.use(

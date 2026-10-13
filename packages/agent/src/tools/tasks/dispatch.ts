@@ -293,7 +293,9 @@ export async function dispatchTaskCommand(
         const protectedTaskCreator = rt.createProtectedTask;
         if (
           !canUseLegacyTaskContent
-          && (args.harness !== undefined || !protectedTaskCreator)
+          && (args.harness !== undefined
+            ? !rt.createProtectedHarnessTask
+            : !protectedTaskCreator)
         ) {
           return "Cannot create task: protected Task creation is not yet available from this Agent tool.";
         }
@@ -339,10 +341,11 @@ export async function dispatchTaskCommand(
           ) {
             return "Cannot create Claude Code task: scheduling, routing, scope, tools, delivery, and native model settings are server-owned.";
           }
-          if (rt.claudeCodeTasksEnabled !== true || !rt.createHarnessTask) {
+          if (rt.claudeCodeTasksEnabled !== true
+            || (canUseLegacyTaskContent ? !rt.createHarnessTask : !rt.createProtectedHarnessTask)) {
             return claudeCodeHarnessUnavailable();
           }
-          const created = await rt.createHarnessTask({
+          const request = {
             ownerId: ctx.ownerId,
             requestorId: ctx.causalHumanUserId,
             agentId: ctx.agentId,
@@ -350,7 +353,9 @@ export async function dispatchTaskCommand(
             callingRoomId: ctx.roomId,
             harness: "claude-code",
             ...(args.harness_model_id === undefined ? {} : { harnessModelId: args.harness_model_id }),
-          } satisfies TaskToolClaudeCodeHarnessCreateInput);
+          } satisfies TaskToolClaudeCodeHarnessCreateInput;
+          const created = canUseLegacyTaskContent ? await rt.createHarnessTask!(request)
+            : await rt.createProtectedHarnessTask!(request);
           if (created.execution !== "claude-code") return claudeCodeHarnessUnavailable();
           return JSON.stringify({
             taskId: created.taskId,
@@ -477,7 +482,7 @@ export async function dispatchTaskCommand(
           ...toolsFields,
         };
         if (args.harness === "codex" || args.harness === "hermes-acp") {
-          if (!rt.createHarnessTask) {
+          if (canUseLegacyTaskContent ? !rt.createHarnessTask : !rt.createProtectedHarnessTask) {
             return genieRecoveryResult("task", "Codex harness execution is unavailable on this server. Open Codex setup, connect Desktop, then try again.", { requirement: "desktop" });
           }
           if (args.harness === "hermes-acp") {
@@ -492,7 +497,8 @@ export async function dispatchTaskCommand(
                 : {}),
               harness: "hermes-acp",
             };
-            const created = await rt.createHarnessTask(hermesInput);
+            const created = canUseLegacyTaskContent ? await rt.createHarnessTask!(hermesInput)
+              : await rt.createProtectedHarnessTask!(hermesInput);
             return JSON.stringify({
               taskId: created.taskId,
               status: created.status,
@@ -507,7 +513,7 @@ export async function dispatchTaskCommand(
             selectionSpec: _selectionSpec,
             ...sealedInput
           } = input;
-          const created = await rt.createHarnessTask({
+          const request = {
             ...sealedInput,
             harness: "codex",
             collaborationMode: args.collaboration_mode ?? "work",
@@ -517,7 +523,9 @@ export async function dispatchTaskCommand(
             ...(args.working_directory !== undefined
               ? { workingDirectory: args.working_directory }
               : {}),
-          } satisfies TaskToolHarnessCreateInput);
+          } satisfies TaskToolHarnessCreateInput;
+          const created = canUseLegacyTaskContent ? await rt.createHarnessTask!(request)
+            : await rt.createProtectedHarnessTask!(request);
           return JSON.stringify({
             taskId: created.taskId,
             status: created.status,

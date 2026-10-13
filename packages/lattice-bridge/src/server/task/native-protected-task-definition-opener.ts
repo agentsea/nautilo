@@ -19,7 +19,7 @@ import {
   taskContentRevisionObjectIdV1,
   TASK_DEFINITION_OBJECT_TYPE_V1,
 } from "../../task/task-content-repository.ts";
-import { decodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { decodeTaskDefinitionContent, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
 import {
   PostgresDomainKeyAuthorityRepository,
   type DomainForegroundNamespaceAuthorityInspectionV2,
@@ -330,7 +330,7 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
           const plaintext = decryptObjectThroughNamespace(input.crypto, key, openedEnvelope, payload);
           if (plaintext === null) throw new TypeError("Native Task definition could not be opened");
           try {
-            const decoded = decodeTaskPayloadV1(plaintext);
+            const decoded = decodeTaskDefinitionContent(plaintext).payload;
             const value = await input.execute(decoded, assertCurrentOccurrence);
             await assertCurrentOccurrence();
             // Preserve a callback's legitimate null return distinctly from

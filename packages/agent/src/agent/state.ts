@@ -254,6 +254,11 @@ export const NautiloStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
     default: () => ({}),
   }),
+  /** Encrypted operational receipts for the fixed protected repo-docs wrapper. */
+  protectedRepoDocsCheckpoint: Annotation<import("../runtime/protected-repo-docs").ProtectedRepoDocsCheckpointV1 | null>({
+    reducer: (_, update) => update,
+    default: () => null,
+  }),
   fullMacInvocationBindings: Annotation<Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>>({
     reducer: (_, update) => update,
     default: () => ({}),
@@ -993,6 +998,7 @@ export type NautiloState = Omit<
   | "githubInvocationBindings"
   | "fullMacInvocationBindings"
   | "delegatedLocalExecutionBindings"
+  | "protectedRepoDocsCheckpoint"
   | "ordinaryContentAccessBindings" | "ordinaryContentAccessRejectedToolCallIds"
   | "autoApprove"
   | "requiredHostRelays"
@@ -1062,6 +1068,8 @@ export type NautiloState = Omit<
   /** per-call admission metadata; an absent/malformed map is empty. */
   computerUseInvocationBindings?: Readonly<Record<string, ComputerUseInvocationBinding>>;
   delegatedLocalExecutionBindings?: Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>;
+  /** Absent on ordinary and legacy checkpoints. */
+  protectedRepoDocsCheckpoint?: import("../runtime/protected-repo-docs").ProtectedRepoDocsCheckpointV1 | null;
   fullMacInvocationBindings?: Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>;
   githubInvocationBindings?: Readonly<Record<string, RelayGitHubInvocationBinding>>;
   humanTerminalInvocationBindings?: Readonly<Record<string, RelayHumanTerminalBinding>>;

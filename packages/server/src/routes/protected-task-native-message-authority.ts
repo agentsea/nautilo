@@ -360,7 +360,10 @@ function exactFixedProjection(
   expected: NativeTaskMessageAuthority,
 ): boolean {
   const { occurrence, evidence, coordinates, productAuthority } = input;
-  return input.record.snapshot.state === "running"
+  // Transient input captures the claimed record before the Runtime commits
+  // running and invokes work. The product guard rechecks the running Job/Run.
+  return (input.record.snapshot.state === "claimed"
+      || input.record.snapshot.state === "running")
     && input.record.snapshot.claimId === evidence.claimId
     && input.record.snapshot.requestId === evidence.requestId
     && input.record.snapshot.workId === evidence.workId

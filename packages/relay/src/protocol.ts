@@ -26,6 +26,7 @@ import { isIP } from "node:net";
 import * as path from "node:path";
 import {
   parseRelayClaudeExecutionCapability,
+  parseRelayLocalExecutionCapability,
 } from "./types";
 import type {
   RelayCapabilities,
@@ -168,7 +169,10 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
-export const RELAY_PROTOCOL_VERSION = 29;
+// v31 forwards SDK-observed Claude root-message boundaries.
+export const RELAY_PROTOCOL_VERSION = 31;
+/** Typed local-file may borrow only the exact captured Task project grant. */
+export const RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION = 30;
 export const RELAY_GITHUB_PROTOCOL_VERSION = 29;
 /** Minimum admission contract after retiring legacy Agent shell execution. */
 export const RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION = 29;
@@ -270,6 +274,7 @@ export function projectRelayCapabilitiesForProtocol(
   protocolVersion: number,
 ): RelayCapabilities {
   const compatible = { ...capabilities };
+  if (protocolVersion < RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION) delete compatible.canUseTaskProjectFiles;
   if (protocolVersion < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION) {
     delete compatible.canExecuteLocal;
     delete compatible.localExecution;
@@ -3902,6 +3907,50 @@ export interface RelayLocalExecutionBindingV4 extends Omit<RelayLocalExecutionBi
     readonly delegation: LocalExecutionDelegation;
   };
 }
+/** Transport admission only. Electron still reloads the captured grant and
+ * validates every concrete filesystem operation against its local authority. */
+export function isRelayTaskProjectFileDispatch(input: Readonly<{
+  request: Pick<RelayDispatchRequest, "toolName" | "executionClass" | "args" | "localExecutionBinding"
+    | "hostedBy" | "desktopFilesystemGrantRequest" | "localExecutionHistoryBinding" | "workstationShellBinding"
+    | "uncontainedHostCommandsSession">;
+  capabilities: RelayCapabilities;
+  protocolVersion: number;
+  userId: string;
+  relayId: string;
+  desktopSessionId: string | null | undefined;
+  pairingGeneration: string | null | undefined;
+  instanceId?: string;
+}>): boolean {
+  const { request, capabilities } = input;
+  const binding = parseRelayLocalExecutionBinding(request.localExecutionBinding);
+  const capability = parseRelayLocalExecutionCapability(capabilities.localExecution);
+  const operation = request.args["operation"];
+  const roots = request.args["allowedRoots"];
+  const envelope = request as unknown as Readonly<Record<string, unknown>>;
+  const separateAuthority = ["githubBinding", "humanTerminalBinding", "sshBinding", "desktopAutomationBinding",
+    "computerUseRequest", "localExecutionDelegationCapture"];
+  return binding?.version === 4 && capability !== null
+    && request.toolName === "local-file" && request.executionClass === "local-file"
+    && request.hostedBy === undefined && request.desktopFilesystemGrantRequest === undefined
+    && request.localExecutionHistoryBinding === undefined && request.workstationShellBinding === undefined
+    && request.uncontainedHostCommandsSession !== true
+    && separateAuthority.every(key => envelope[key] === undefined)
+    && (envelope["sandboxProfile"] === undefined || isRecord(operation) && operation["kind"] === "search")
+    && capabilities.profile === "desktop-agent" && capabilities.localFileExecution === true
+    && capabilities.canUseTaskProjectFiles === true && capabilities.canDelegateLocalExecution === true
+    && input.protocolVersion >= RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION
+    && (binding.operation === "read" || binding.operation === "input")
+    && binding.generation === capability.generation
+    && binding.owner.humanUserId === input.userId && binding.owner.relayId === input.relayId
+    && binding.owner.desktopSessionId === input.desktopSessionId && binding.owner.pairingGeneration === input.pairingGeneration
+    && (input.instanceId === undefined || binding.owner.instanceId === input.instanceId)
+    && Object.keys(request.args).length === 2 && isRecord(operation)
+    && ["file", "history", "search"].includes(String(operation["kind"]))
+    && Array.isArray(roots) && roots.length === 1 && typeof roots[0] === "string"
+    && path.isAbsolute(roots[0]) && path.normalize(roots[0]) === roots[0]
+    && roots[0].endsWith(`${path.sep}nautilo-repo-docs${path.sep}task-run-${binding.authority.taskRunId}`);
+}
+
 export interface RelayLocalExecutionDelegationCapture {
   readonly version: 1;
   readonly invocationId: string;

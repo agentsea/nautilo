@@ -8,6 +8,9 @@ import {
   resolveTaskModel,
   type NautiloProfile,
   type ForegroundChatFundingSession,
+  type ProtectedRepoDocsOpenedSelection,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedTaskProjectFilePort,
   type RunScopeSubagentOpts,
 } from "@nautilo/agent";
 import {
@@ -46,10 +49,14 @@ import {
   getAcceptedInvocationAuthorityOrigin,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
-import { parseTaskFundingBinding, type TaskFundingBinding } from "@nautilo/types";
+import { parseLocalExecutionDelegation, parseTaskFundingBinding, type TaskFundingBinding } from "@nautilo/types";
 
 import { withProtectedTaskFundingAuthority } from "../lib/native-task-funding";
 import { resolveProtectedTaskLocalExecutionPort } from "./protected-task-local-execution";
+import { createProtectedTaskRepoDocsLocalExecutionPort } from "./protected-task-repo-docs-local-execution";
+import { createProtectedTaskRepoDocsProjectFilePort } from "./protected-task-repo-docs-project-file";
+import { parseProtectedTaskRepoDocsSelection, protectedTaskRepoDocsSelectionProjection,
+  sameProtectedTaskRepoDocsSelection } from "./protected-task-repo-docs-selection";
 
 type FixedExecutionContext = Omit<
   ProtectedTaskNativeExecution,
@@ -63,12 +70,16 @@ type FixedExecutionContext = Omit<
   | "actorRole"
   | "roomId"
   | "callingRoomId"
->;
+  | "protectedRepoDocs"
+> & Readonly<{
+  protectedRepoDocsExecutionPort?: ProtectedRepoDocsExecutionPort;
+  createProtectedRepoDocsProjectFilePort?(workDir: string): ProtectedTaskProjectFilePort;
+}>;
 
 type JobReference = TaskRuntimeGrantClaimPlan["reference"];
 type OperationalTask = Readonly<Omit<TaskFundingTaskSource, "metadata"> & Pick<Task,
   | "scheduleKind" | "status" | "localExecutionDelegation"
->>;
+> & { repoDocsSelection?: unknown }>;
 type OperationalRun = Readonly<TaskFundingRunSource & Pick<TaskRun,
   | "startedAt" | "completedAt" | "resultRepresentation"
   | "resultContentNamespaceId" | "resultRevision" | "resultCryptoObjectId"
@@ -110,6 +121,7 @@ export type ProtectedTaskNativeExecutionContextInput = Readonly<{
   occurrence: ProtectedTaskRunningOccurrence;
   predispatch: ProtectedTaskPredispatchPlan;
   protectedMetadata: TaskPayloadV1["protectedMetadata"];
+  repoDocs?: ProtectedRepoDocsOpenedSelection;
   signal: AbortSignal;
   assertCurrentTaskAuthority(): Promise<void>;
 }>;
@@ -137,6 +149,8 @@ export type ProductionProtectedTaskNativeExecutionContextDependencies =
     withProtectedTaskFundingAuthority?:
       typeof withProtectedTaskFundingAuthority;
     resolveLocalExecutionPort?: typeof resolveProtectedTaskLocalExecutionPort;
+    createRepoDocsLocalExecutionPort?: typeof createProtectedTaskRepoDocsLocalExecutionPort;
+    createRepoDocsProjectFilePort?: typeof createProtectedTaskRepoDocsProjectFilePort;
     resolveTaskReturnBinding?: typeof resolveTaskReturnBinding;
     resolveRelayCapabilities?: (
       ownerId: string,
@@ -172,6 +186,7 @@ async function readOperationalTask(
     depth: tasks.depth,
     fundingMode: tasks.fundingMode,
     localExecutionDelegation: tasks.localExecutionDelegation,
+    repoDocsSelection: protectedTaskRepoDocsSelectionProjection(),
     contentRepresentation: tasks.contentRepresentation,
     contentNamespaceId: tasks.contentNamespaceId,
     contentRevision: tasks.contentRevision,
@@ -621,6 +636,13 @@ export function createProductionProtectedTaskNativeExecutionContext(
     if (!task || !run || !job) {
       throw new TypeError("Protected Task execution is no longer current");
     }
+    if (task.preset === "repo_docs" ? input.repoDocs === undefined
+      || !sameProtectedTaskRepoDocsSelection(parseProtectedTaskRepoDocsSelection(task.repoDocsSelection),
+        { mode: input.repoDocs.mode, publish: input.repoDocs.publish })
+      || task.toolsMode !== "whitelist" || task.toolsWhitelist.length !== 1 || task.toolsWhitelist[0] !== "file"
+      : input.repoDocs !== undefined) {
+      throw new TypeError("Protected Task repo docs selection changed");
+    }
     const reference = currentJob(input.occurrence, task, job);
     if (reference === null) {
       throw new TypeError("Protected Task execution Job is no longer current");
@@ -642,7 +664,9 @@ export function createProductionProtectedTaskNativeExecutionContext(
     }
     const admittedFundingTask = fundingTaskSource(
       task,
-      input.protectedMetadata,
+      input.repoDocs === undefined ? input.protectedMetadata : {
+        ...input.protectedMetadata, mode: input.repoDocs.mode, publish: input.repoDocs.publish,
+      },
     );
     const admittedFundingRun = fundingRunSource(run);
 
@@ -747,6 +771,10 @@ export function createProductionProtectedTaskNativeExecutionContext(
         fundingBinding,
       )
       || executionSelection(currentTask) !== expectedSelection
+      || input.repoDocs !== undefined && !sameProtectedTaskRepoDocsSelection(
+        parseProtectedTaskRepoDocsSelection(currentTask.repoDocsSelection),
+        { mode: input.repoDocs.mode, publish: input.repoDocs.publish },
+      )
       || finalReference === null
       || !sameReference(reference, finalReference)) {
       throw new TypeError("Protected Task execution changed after model binding");
@@ -756,7 +784,9 @@ export function createProductionProtectedTaskNativeExecutionContext(
     if (callerFunding) {
       const currentFundingTask = fundingTaskSource(
         currentTask,
-        input.protectedMetadata,
+        input.repoDocs === undefined ? input.protectedMetadata : {
+          ...input.protectedMetadata, mode: input.repoDocs.mode, publish: input.repoDocs.publish,
+        },
       );
       const currentFundingRun = fundingRunSource(currentRun);
       fundingSession = await withFundingAuthority(
@@ -783,6 +813,31 @@ export function createProductionProtectedTaskNativeExecutionContext(
     );
     const hasReturnBinding = returnBinding.status === "available";
     const currentRelayCapabilities = relayCapabilities(currentTask.ownerId);
+    let protectedRepoDocsExecutionPort: ProtectedRepoDocsExecutionPort | undefined;
+    let createProtectedRepoDocsProjectFilePort: ((workDir: string) => ProtectedTaskProjectFilePort) | undefined;
+    if (input.repoDocs !== undefined) {
+      if (delegatedLocalExecutionPort === undefined) {
+        throw new TypeError("Protected repo docs project authority is unavailable");
+      }
+      const delegation = parseLocalExecutionDelegation(currentTask.localExecutionDelegation);
+      if (delegation === null) throw new TypeError("Protected repo docs project source is unavailable");
+      const repoDocsRegistry = getRelayRegistry();
+      if (repoDocsRegistry === null) throw new TypeError("Protected repo docs relay is unavailable");
+      const repoDocsContext = {
+        delegated: delegatedLocalExecutionPort, registry: repoDocsRegistry,
+        state: { currentTaskId: currentTask.id, currentTaskRunId: currentRun.id,
+          agentId: currentTask.agentId, roomId: input.predispatch.scheduling.roomId,
+          currentThreadId: currentRun.graphThreadId, langgraphThreadId: currentRun.graphThreadId,
+          causalHumanUserId: currentTask.requestorId, trustedExecutionEntrypoint: "background.task" as const },
+        selection: input.repoDocs, modelId, signal: input.signal, assertCurrent: input.assertCurrentTaskAuthority,
+      };
+      protectedRepoDocsExecutionPort = (
+        dependencies.createRepoDocsLocalExecutionPort ?? createProtectedTaskRepoDocsLocalExecutionPort
+      )(repoDocsContext);
+      createProtectedRepoDocsProjectFilePort = workDir => (
+        dependencies.createRepoDocsProjectFilePort ?? createProtectedTaskRepoDocsProjectFilePort
+      )({ ...repoDocsContext, workspaceRoot: workDir, relayId: delegation.target.relayId });
+    }
     return Object.freeze({
       ...(toolWhitelist === undefined
         ? {}
@@ -809,6 +864,8 @@ export function createProductionProtectedTaskNativeExecutionContext(
       ...(delegatedLocalExecutionPort === undefined
         ? {}
         : { delegatedLocalExecutionPort }),
+      ...(protectedRepoDocsExecutionPort === undefined ? {} : { protectedRepoDocsExecutionPort }),
+      ...(createProtectedRepoDocsProjectFilePort === undefined ? {} : { createProtectedRepoDocsProjectFilePort }),
       modelFallbackMode: exactModel ? "none" : "agent_chain",
     });
   };

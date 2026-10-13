@@ -11,6 +11,10 @@ import {
   type CurrentProtectedTaskRuntimeAuthorityPort,
 } from "./task-runtime-current-authority";
 import type { ProtectedTaskRunningOccurrence } from "@nautilo/runtime";
+import {
+  sameProtectedTaskRepoDocsSelection,
+  type ProtectedTaskRepoDocsSelection,
+} from "./protected-task-repo-docs-selection";
 
 export type LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput = Readonly<
   Omit<
@@ -25,6 +29,7 @@ type Dependencies = Readonly<{
 
 type Options = Readonly<{
   requireNativeExecution?: true;
+  requireRepoDocsSelection?: ProtectedTaskRepoDocsSelection;
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
@@ -70,6 +75,8 @@ export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
     ?? productionDependencies.withCurrentAuthority;
 
   return async input => {
+    if (options.requireNativeExecution === true
+      && options.requireRepoDocsSelection !== undefined) return null;
     if (!hasExactDefinitionCoordinates(input)) return null;
     const { occurrence, request } = input;
     return withCurrentAuthority({
@@ -77,6 +84,11 @@ export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
       use: current => {
         if (options.requireNativeExecution === true
           && current.nativeExecutionSupported !== true) return null;
+        if (options.requireRepoDocsSelection !== undefined
+          && !sameProtectedTaskRepoDocsSelection(
+            current.repoDocsSelection,
+            options.requireRepoDocsSelection,
+          )) return null;
         const matching = current.namespaceRequirements.filter(requirement =>
           requirement.namespaceId === occurrence.task.contentNamespaceId
         );

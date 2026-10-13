@@ -18,6 +18,7 @@ function setup() {
   type Product = Awaited<ReturnType<NonNullable<Overrides["productContext"]>>>;
   const products: Product[] = [];
   const segments: Parameters<NonNullable<Overrides["segment"]>>[0][] = [];
+  const segmentOptions: Parameters<NonNullable<Overrides["segment"]>>[2][] = [];
   const results: Parameters<NonNullable<Overrides["result"]>>[0][] = [];
   const publications: Publication[] = [];
   const parks: unknown[] = [];
@@ -37,8 +38,9 @@ function setup() {
     },
     executionContext: () => context,
     transcriptPublisher: () => async () => { throw new Error("not executed by preparation"); },
-    segment: segment => {
+    segment: (segment, _overrides, options) => {
       segments.push(segment);
+      segmentOptions.push(options);
       return async () => ({
         executor: async function* () { yield* []; },
         openTransientInput: async () => ({}),
@@ -59,7 +61,7 @@ function setup() {
       return { status: "parked" as const };
     },
   };
-  return { input, identities, products, segments, results, publications, parks, humanParks, context, overrides };
+  return { input, identities, products, segments, segmentOptions, results, publications, parks, humanParks, context, overrides };
 }
 
 function preparation(requestorId: string, agentId: string): Preparation {
@@ -80,6 +82,24 @@ describe("native protected Task execution composition", () => {
     expect(f.segments[0]!.owner).toBe(f.input.owner);
     expect(f.segments[0]!.createDedicatedPool).toBe(f.input.createDedicatedPool!);
     expect(f.publications).toEqual([]);
+  });
+
+  test("binds repo docs to the same native authority while sealing its operational selection", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);
+    const selection = { mode: "auto" as const, publish: "pr" as const };
+    const prepared = preparation("requester-a", "agent-a");
+
+    await execution.prepareRepoDocsExecution(selection, prepared);
+
+    expect(f.identities).toEqual(["requester-a", "requester-a/agent-a"]);
+    expect(f.segments).toHaveLength(1);
+    expect(f.segments[0]!.product).toBe(f.products[0]!);
+    expect(f.segments[0]!.owner).toBe(f.input.owner);
+    expect(f.segments[0]!.resolveExecutionContext).toBe(f.context);
+    expect(f.segmentOptions).toEqual([{ repoDocsSelection: selection }]);
+    expect(f.segmentOptions[0]!.repoDocsSelection).not.toBe(selection);
+    expect(Object.isFrozen(f.segmentOptions[0]!.repoDocsSelection)).toBe(true);
   });
 
   test("binds initial result publication to the granted occurrence and passes custody without retaining it", async () => {

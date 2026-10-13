@@ -4,6 +4,7 @@ import { AIMessage } from "@langchain/core/messages";
 import type {
   ProtectedTaskMemoryAccessHandoff,
   ProtectedTaskMemoryProjectionHandoff,
+  ProtectedRepoDocsOpenedSelection,
 } from "@nautilo/agent";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import { bindEncryptionDataOperationOwner, type TaskPayloadV1 } from "@nautilo/lattice-bridge";
@@ -421,6 +422,13 @@ function overrides(
   outcome: "complete" | "throw" | "interrupt" | "prove_it" | "identity" | "await_reply" | "additional-authority" = "complete",
   protectedMetadata: TaskPayloadV1["protectedMetadata"] = {},
   onDefinitionClose?: () => void,
+  definitionRequirement: Readonly<{
+    requireNativeExecution?: true;
+    requireRepoDocsSelection?: Readonly<{
+      mode: "init" | "update" | "auto";
+      publish: "branch" | "push" | "pr";
+    }>;
+  }> = { requireNativeExecution: true },
 ) {
   const repository = Object.freeze({
     search: async () => ({ status: "success" as const, value: [] }),
@@ -449,9 +457,9 @@ function overrides(
     destroyRequest: () => { calls.push("request-destroy"); },
     createDefinitionLoader: (
       _dependencies: unknown,
-      options: { requireNativeExecution?: true },
+      options: typeof definitionRequirement,
     ) => {
-      expect(options).toEqual({ requireNativeExecution: true });
+      expect(options).toEqual(definitionRequirement);
       return async () => ({
         taskId: TASK,
         taskRunId: RUN,
@@ -1651,6 +1659,22 @@ describe("protected Task native fixed Memory segment", () => {
     })).toThrow("preparation is not exact");
   });
 
+  test("refuses a fabricated transient callback before invoking it", async () => {
+    const value = await fixture();
+    const prepared = await createProtectedTaskNativeFixedMemorySegment(
+      compositionInput(value.crypto, runner()), overrides([]),
+    )({ occurrence: value.occurrence, predispatch: value.predispatch,
+      policy: value.policy, reference: value.reference,
+      stableRoutingDigest: value.stableRoutingDigest });
+    let invoked = false;
+    const fabricated = { protectedTaskNativeFixedMemorySegment: {
+      run: async () => { invoked = true; },
+    } };
+    await Promise.resolve(expect(consume(prepared.executor(executorInput(value.occurrence, fabricated, []),
+      JOB, `task:${TASK}`, new AbortController().signal))).rejects.toThrow("not issued"));
+    expect(invoked).toBe(false);
+  });
+
   test("keeps an immutable dual definition eligible under current Full policy", async () => {
     const value = await fixture();
     const task = Object.freeze({
@@ -1812,6 +1836,98 @@ describe("protected Task native fixed Memory segment", () => {
       },
     });
     expect(contextResolutions).toBe(0);
+  });
+
+  test("rejoins the closed repo docs selector with encrypted target content", async () => {
+    const value = await fixture();
+    const selection = Object.freeze({ mode: "auto" as const, publish: "pr" as const });
+    const protectedMetadata = Object.freeze({
+      target: "https://example.test/repository.git",
+      instructions: "Document the public package boundaries.",
+      preparation: { status: "ready" },
+    });
+    const executionPort = Object.freeze({
+      plan: async () => null,
+      execute: async () => { throw new Error("unused"); },
+      inspect: async () => ({ status: "absent" as const }),
+    });
+    const createProjectFilePort = (workDir: string) => Object.freeze({
+      taskId: TASK,
+      taskRunId: RUN,
+      agentId: AGENT,
+      humanUserId: USER,
+      relayId: "relay",
+      workspaceRoot: workDir,
+      dispatch: async () => ({ ok: false as const, message: "unused" }),
+    });
+    let opened: ProtectedRepoDocsOpenedSelection | undefined;
+    let segment: RunProtectedTaskNativeSegmentInput | undefined;
+    const baseInput = compositionInput(value.crypto, runner());
+    const prepare = createProtectedTaskNativeFixedMemorySegment({
+      ...baseInput,
+      resolveExecutionContext: async input => {
+        opened = input.repoDocs;
+        await input.assertCurrentTaskAuthority();
+        return {
+          ...await baseInput.resolveExecutionContext(input),
+          toolWhitelist: ["file"],
+          protectedRepoDocsExecutionPort: executionPort,
+          createProtectedRepoDocsProjectFilePort: createProjectFilePort,
+        };
+      },
+    }, {
+      ...overrides([], "complete", protectedMetadata, undefined, {
+        requireRepoDocsSelection: selection,
+      }),
+      runSegment: async input => {
+        segment = input;
+        return { formatVersion: 1, resultText: "done", lastError: null };
+      },
+    }, { repoDocsSelection: selection });
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidenceInput,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: async evidence => {
+        const published: unknown[] = [];
+        const prepared = await prepare({
+          occurrence: value.occurrence,
+          predispatch: value.predispatch,
+          policy: value.policy,
+          reference: value.reference,
+          stableRoutingDigest: value.stableRoutingDigest,
+        });
+        const transient = await prepared.openTransientInput({
+          occurrence: value.runningOccurrence,
+          reference: value.reference,
+          record: value.record,
+          domains: value.domains,
+          evidence,
+          signal: new AbortController().signal,
+        });
+        await consume(prepared.executor(
+          executorInput(value.occurrence, transient, published),
+          JOB,
+          `task:${TASK}`,
+          new AbortController().signal,
+        ));
+      },
+    });
+    expect(opened).toEqual({
+      target: protectedMetadata.target,
+      instructions: protectedMetadata.instructions,
+      mode: "auto",
+      publish: "pr",
+    });
+    expect(segment?.mode).toBe("repo_docs");
+    expect(segment?.execution.toolWhitelist).toEqual(["file"]);
+    const expectedOpened = opened;
+    if (expectedOpened === undefined) throw new Error("Missing opened repo docs selection");
+    expect(segment?.execution.protectedRepoDocs).toEqual({
+      selection: expectedOpened,
+      executionPort,
+      createProjectFilePort,
+    });
   });
 });
 

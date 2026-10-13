@@ -498,6 +498,55 @@ describe("protected Task native Message current authority", () => {
     expect(await stale(expected())).toBeNull();
   });
 
+  test("accepts the captured claimed snapshot only with current running product state", async () => {
+    const current = input();
+    const captured = {
+      ...current,
+      record: { ...current.record, snapshot: {
+        ...current.record.snapshot, state: "claimed" as const,
+      } },
+    };
+    const resolve = createProtectedTaskNativeMessageAuthorityResolver(
+      { ...captured, runner: runner(productRows()) },
+      nonProductDependencies(),
+    );
+    expect(await resolve(expected())).toEqual(expected());
+
+    for (const [index, status] of [[1, "cancelled"], [2, "queued"], [2, "completed"]] as const) {
+      const rows = productRows();
+      rows[index] = { ...(rows[index] as Record<string, unknown>), status };
+      const stale = createProtectedTaskNativeMessageAuthorityResolver(
+        { ...captured, runner: runner(rows) },
+        nonProductDependencies(),
+      );
+      expect(await stale(expected())).toBeNull();
+    }
+  });
+
+  test("captured claimed state does not bypass current grant or exact claim identity", async () => {
+    const current = input();
+    const captured = {
+      ...current,
+      record: { ...current.record, snapshot: {
+        ...current.record.snapshot, state: "claimed" as const,
+      } },
+    };
+    for (const grant of ["missing", "changed"] as const) {
+      expect(await createProtectedTaskNativeMessageAuthorityResolver(
+        captured, dependencies({ grant }),
+      )(expected())).toBeNull();
+    }
+    expect(await createProtectedTaskNativeMessageAuthorityResolver(
+      captured, dependencies(),
+    )({ ...expected(), claimId: "other-claim" })).toBeNull();
+    for (const state of ["grant_ready", "completed", "terminal_failure"] as const) {
+      expect(await createProtectedTaskNativeMessageAuthorityResolver({
+        ...captured,
+        record: { ...captured.record, snapshot: { ...captured.record.snapshot, state } },
+      }, dependencies())(expected())).toBeNull();
+    }
+  });
+
   test("accepts canonical Shadow lifecycle policy metadata", async () => {
     const current = input();
     const shadowInput = {

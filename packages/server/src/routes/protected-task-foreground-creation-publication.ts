@@ -1,3 +1,5 @@
+import { parseProtectedTaskCodexSelection } from "./protected-task-codex-selection";
+import { parseProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
 import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from "./protected-task-historical-human-device-signing-key";
 import { withVerifiedForegroundTaskDefinitionPublication, publishVerifiedForegroundTaskDefinition } from "@nautilo/lattice-bridge/server";
 import { isDeepStrictEqual } from "node:util";
@@ -16,6 +18,7 @@ import type { ProtectedTaskCreateCandidate, ProtectedTaskCreationPlanV1, TaskCre
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 import { prepareProtectedTaskScope } from "./protected-task-scope-creation";
+import { parseClaudeTaskExecutionMetadata } from "../claude/task-execution-route";
 
 type Creation = Readonly<{ operationId: string; prepared: ProtectedTaskCreationPlanV1; candidate: ProtectedTaskCreateCandidate }>;
 export type ProtectedTaskForegroundCreationProductContext = Readonly<{
@@ -58,7 +61,12 @@ function snapshotCreation(input: Creation) {
     || candidate.agentId !== input.prepared.canonicalTaskIdentity.agentId
     || candidate.parentTaskId != null || (candidate.depth ?? 0) !== 0
     || candidate.status !== "pending" || candidate.lastError != null
-    || input.prepared.shape.executor !== "native"
+    || (input.prepared.shape.executor === "native"
+      ? classification.operational["execution"] !== undefined
+      : input.prepared.shape.executor !== "external_harness"
+        || (parseClaudeTaskExecutionMetadata({ execution: classification.operational["execution"] }) === null
+          && parseProtectedTaskCodexSelection({ execution: classification.operational["execution"] }) === null
+          && parseProtectedTaskHermesSelection({ execution: classification.operational["execution"] }) === null))
     || !isDeepStrictEqual(classification.operational, input.prepared.operationalMetadata)
     || !isDeepStrictEqual({ formatVersion: 1, prompt: candidate.prompt,
       expectedOutput: candidate.expectedOutput ?? null, protectedMetadata: classification.protectedContent }, input.prepared.payload)

@@ -289,6 +289,10 @@ export interface TaskToolRuntime {
   createHarnessTask?(
     input: TaskToolHarnessCreateInput,
   ): Promise<TaskToolHarnessCreateResult>;
+  /** Protected creation borrows the current foreground Lattice owner. */
+  createProtectedHarnessTask?(
+    input: TaskToolHarnessCreateInput,
+  ): Promise<TaskToolHarnessCreateResult>;
   listHarnessModels?(input: {
     readonly ownerId: string;
     readonly harness: "codex" | "claude-code";

@@ -1,4 +1,5 @@
 import { matchesGitHubWorkstationBinding } from "./protocol";
+import { isRelayTaskProjectFileDispatch } from "./protocol";
 import { parseRelayLocalExecutionDelegationCapture } from "./protocol";
 import { isRelayGitHubDispatch } from "./protocol";
 import { parseRelayGitHubInvocationBinding } from "./protocol";
@@ -1388,6 +1389,15 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         || history.reader.desktopSessionId !== desktopSessionId || desktopTopology === null
         || history.reader.pairingGeneration !== desktopTopology.pairingGeneration || history.reader.instanceId !== options.runShellOwnerInstanceId) {
         send({ type: "relay:result", correlationId: msg.correlationId, status: "error", errorCode: "LOCAL_EXECUTION_HISTORY_BINDING_INVALID", error: "Local execution history authority is unavailable" });
+        return;
+      }
+    } else if (msg.toolName === "local-file" && msg.localExecutionBinding !== undefined) {
+      if (!isRelayTaskProjectFileDispatch({ request: msg, capabilities: registeredCapabilities,
+        protocolVersion: negotiatedProtocolVersion, userId: options.userId, relayId,
+        desktopSessionId, pairingGeneration: desktopTopology?.pairingGeneration,
+        ...(options.runShellOwnerInstanceId === undefined ? {} : { instanceId: options.runShellOwnerInstanceId }) })) {
+        send({ type: "relay:result", correlationId: msg.correlationId, status: "error",
+          errorCode: "TASK_PROJECT_FILE_UNAVAILABLE", error: "The exact Task project file authority is unavailable." });
         return;
       }
     } else if (msg.toolName === "exec_command" || msg.toolName === "write_stdin" || msg.localExecutionBinding !== undefined) {

@@ -1,5 +1,19 @@
 import type { CheckSummary, KeyReport, TransactionDetail } from "@nautilo/config-guard";
 import { z } from "zod";
+import {
+  protectedTaskExternalRequestBindingSchema,
+  protectedTaskExternalRequestListSchema,
+  protectedTaskExternalRequestPlanBodySchema,
+  protectedTaskExternalRequestPlanSchema,
+  protectedTaskExternalRequestReadBodySchema,
+  protectedTaskExternalRequestReadSchema,
+  protectedTaskExternalRequestRespondBodySchema,
+  protectedTaskExternalRequestRespondSchema,
+  type ProtectedTaskExternalRequestBinding,
+  type ProtectedTaskExternalRequestPlanBody,
+  type ProtectedTaskExternalRequestReadBody,
+  type ProtectedTaskExternalRequestRespondBody,
+} from "./schemas/protected-task-external-requests";
 import type {
   ModerationCommand,
   PersonalCostsRangeKey,
@@ -6386,6 +6400,42 @@ export class NautiloApiClient {
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
       defaultErrorPrefix: "POST /api/tasks/pending-attention/read",
     });
+  }
+
+  async listProtectedTaskExternalRequests(input: ProtectedTaskExternalRequestBinding,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests",
+      body: protectedTaskExternalRequestBindingSchema.parse(input),
+      schema: protectedTaskExternalRequestListSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests" });
+  }
+
+  async planProtectedTaskExternalRequest(input: ProtectedTaskExternalRequestPlanBody,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests/plan",
+      body: protectedTaskExternalRequestPlanBodySchema.parse(input),
+      schema: protectedTaskExternalRequestPlanSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests/plan" });
+  }
+
+  async readProtectedTaskExternalRequest(input: ProtectedTaskExternalRequestReadBody,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests/read",
+      body: protectedTaskExternalRequestReadBodySchema.parse(input),
+      schema: protectedTaskExternalRequestReadSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests/read" });
+  }
+
+  async respondProtectedTaskExternalRequest(input: ProtectedTaskExternalRequestRespondBody,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests/respond",
+      body: protectedTaskExternalRequestRespondBodySchema.parse(input),
+      schema: protectedTaskExternalRequestRespondSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests/respond" });
   }
 
   /** Exhaust ordinary pending-attention pages; protected pages require custody. */

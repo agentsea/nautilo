@@ -71,6 +71,7 @@ function held(overrides: Readonly<{
   policyRevision?: number;
   accessRevision?: number;
   nativeExecutionSupported?: boolean;
+  repoDocsSelection?: { mode: "init" | "update" | "auto"; publish: "branch" | "push" | "pr" };
 }> = {}): HeldProtectedTaskRuntimeAuthority {
   const policyRevision = overrides.policyRevision ?? 7;
   return {
@@ -104,6 +105,9 @@ function held(overrides: Readonly<{
     ...(overrides.nativeExecutionSupported === undefined
       ? {}
       : { nativeExecutionSupported: overrides.nativeExecutionSupported }),
+    ...(overrides.repoDocsSelection === undefined
+      ? {}
+      : { repoDocsSelection: overrides.repoDocsSelection }),
   };
 }
 
@@ -290,6 +294,17 @@ describe("native protected Task definition occurrence loader", () => {
       withCurrentAuthority: port(held()),
     });
     expect(await compatible(input())).not.toBeNull();
+
+    const repoDocs = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
+      { withCurrentAuthority: port(held({ repoDocsSelection: { mode: "update", publish: "pr" } })) },
+      { requireRepoDocsSelection: { mode: "update", publish: "pr" } },
+    );
+    expect(await repoDocs(input())).not.toBeNull();
+    const substituted = createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
+      { withCurrentAuthority: port(held({ repoDocsSelection: { mode: "init", publish: "pr" } })) },
+      { requireRepoDocsSelection: { mode: "update", publish: "pr" } },
+    );
+    expect(await substituted(input())).toBeNull();
   });
 });
 

@@ -17,7 +17,7 @@ import {
 
 describe("Relay MCP hosting", () => {
   test("current Relay protocol is v29", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(29);
+    expect(RELAY_PROTOCOL_VERSION).toBe(31);
     expect(RELAY_MCP_TRUTH_PROTOCOL_VERSION).toBe(12);
     expect(RELAY_MCP_DISPATCH_PROVENANCE_PROTOCOL_VERSION).toBe(19);
     expect(RELAY_MCP_TRUTH_MAX_FRAME_BYTES).toBe(32 * 1024);

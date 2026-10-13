@@ -38,10 +38,25 @@ describe("foreground Shadow main-process contract", () => {
       .toBeLessThan(pendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
     const taskPendingAttention = handler(
       "foregroundShadow:recoverTaskPendingAttention",
-      "foregroundShadow:edit",
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
     );
     expect(taskPendingAttention.indexOf("parseForegroundShadowTaskPendingAttention(raw)"))
       .toBeLessThan(taskPendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
+    const externalRecovery = handler(
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
+      "foregroundShadow:respondProtectedTaskExternalRequest",
+    );
+    expect(externalRecovery.indexOf("boundedForegroundShadowValue("))
+      .toBeLessThan(externalRecovery.indexOf("foregroundShadowControllerForSender(e)"));
+    expect(externalRecovery).toContain('foregroundShadowString(value.requestId, "Request id", 512)');
+    const externalResponse = handler(
+      "foregroundShadow:respondProtectedTaskExternalRequest",
+      "foregroundShadow:edit",
+    );
+    expect(externalResponse.indexOf("codexRequestResponseSchema.safeParse("))
+      .toBeLessThan(externalResponse.indexOf("foregroundShadowControllerForSender(e)"));
+    expect(externalResponse.indexOf("codexPermissionSelectionResponseSchema.safeParse("))
+      .toBeLessThan(externalResponse.indexOf("foregroundShadowControllerForSender(e)"));
     const receive = handler("foregroundShadow:receive", "foregroundShadow:synchronizeRecipients");
     expect(receive.indexOf("parseLiveShadowMessageRealtimeEventV1(")).toBeLessThan(
       receive.indexOf("foregroundShadowControllerForSender(e)"),

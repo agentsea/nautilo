@@ -12,6 +12,7 @@ import {
   setTaskToolRuntime,
   type TaskToolCreateInput,
   type TaskToolHarnessCreateInput,
+  type TaskToolRuntime,
 } from "../../src/tools/tasks/task-tool-runtime";
 
 const OWNER_ID = "10000000-0000-4000-8000-000000000001";
@@ -36,9 +37,13 @@ describe("task intent shortcuts", () => {
     harnessFailure?: string;
     omitHarness?: boolean;
     createFailure?: string;
+    canUseLegacyTaskContent?: TaskToolRuntime["canUseLegacyTaskContent"];
+    createProtectedTask?: TaskToolRuntime["createProtectedTask"];
   }) {
     setTaskToolRuntime({
       db: {} as never,
+      ...(options?.canUseLegacyTaskContent ? { canUseLegacyTaskContent: options.canUseLegacyTaskContent } : {}),
+      ...(options?.createProtectedTask ? { createProtectedTask: options.createProtectedTask } : {}),
       createTask: async (input) => {
         capturedCreate = input;
         if (options?.createFailure) throw new Error(options.createFailure);
@@ -973,6 +978,63 @@ describe("task intent shortcuts", () => {
       await createGenerateRepoDocsTool(CTX).invoke({ target: "/repo" });
       expect(capturedCreate?.requestedModelId).toBeUndefined();
       expect(capturedCreate?.selectionProfile).toBe("smart_cheap");
+    });
+
+    test("generate_repo_docs selects the current policy on every invocation without changing the candidate", async () => {
+      let ordinary = true;
+      const policy = mock(async () => ordinary);
+      const protectedCreate = mock(async (_input: TaskToolCreateInput) => ({ taskId: "protected-docs", status: "pending" }));
+      stubRuntime({ canUseLegacyTaskContent: policy, createProtectedTask: protectedCreate });
+      withKeys(["ANTHROPIC_API_KEY"]);
+      const logs = spyOn(console, "error").mockImplementation(() => undefined);
+      restores.push(() => logs.mockRestore());
+      const tool = createGenerateRepoDocsTool(CTX);
+      expect(policy).not.toHaveBeenCalled();
+      const args = { target: "/private-repository", instructions: "private doc guidance", mode: "update" as const, publish: "push" as const };
+      const plain = await tool.invoke(args);
+      const original = structuredClone(capturedCreate);
+      expect(JSON.parse(plain)).toMatchObject({ taskId: "t1", status: "pending" });
+      expect(original).toMatchObject({ ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
+        prompt: args.instructions, preset: "repo_docs", scheduleKind: "now", useScope: false,
+        targetChat: "orphan", awaitResponse: false, callingRoomId: ROOM_ID, targetUserIds: [OWNER_ID],
+        depth: 0, selectionProfile: "smart_cheap", toolsMode: "whitelist", toolsWhitelist: ["file"],
+        metadata: args });
+      expect(logs).toHaveBeenCalledWith("[generate_repo_docs] target=/private-repository mode=update publish=push");
+      logs.mockClear();
+      capturedCreate = null;
+      ordinary = false;
+      const protectedResult = await tool.invoke(args);
+      expect(JSON.parse(protectedResult)).toMatchObject({ taskId: "protected-docs", status: "pending" });
+      expect(protectedCreate).toHaveBeenCalledWith(original);
+      expect(capturedCreate).toBeNull();
+      expect(logs).not.toHaveBeenCalled();
+      ordinary = true;
+      await tool.invoke(args);
+      expect(original).toEqual(capturedCreate);
+      expect(protectedCreate).toHaveBeenCalledTimes(1);
+      expect(policy).toHaveBeenCalledTimes(3);
+    });
+
+    test("generate_repo_docs refuses missing protected creation without ordinary insertion or target logs", async () => {
+      stubRuntime({ canUseLegacyTaskContent: async () => false });
+      const logs = spyOn(console, "error").mockImplementation(() => undefined);
+      restores.push(() => logs.mockRestore());
+      const result = await createGenerateRepoDocsTool(CTX).invoke({ target: "/private-repository", instructions: "private guidance" });
+      expect(result).toBe("Cannot start repo_docs task: protected Task creation is unavailable.");
+      expect(capturedCreate).toBeNull();
+      expect(logs).not.toHaveBeenCalled();
+    });
+
+    test("generate_repo_docs never falls back when its protected creator fails", async () => {
+      const protectedCreate = mock(async (_input: TaskToolCreateInput) => { throw new Error("protected_owner_unavailable"); });
+      stubRuntime({ canUseLegacyTaskContent: async () => false, createProtectedTask: protectedCreate });
+      withKeys(["ANTHROPIC_API_KEY"]);
+      const failure: unknown = await createGenerateRepoDocsTool(CTX).invoke({ target: "/repo" })
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toBe("protected_owner_unavailable");
+      expect(protectedCreate).toHaveBeenCalledTimes(1);
+      expect(capturedCreate).toBeNull();
     });
 
     test("generate_repo_docs rejects explicit model_id + model_selection", async () => {

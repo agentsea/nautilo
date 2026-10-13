@@ -2,7 +2,25 @@ import { expect, spyOn, test } from "bun:test";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION,
   type RelayLocalExecutionDelegationCapture, type RelayServerMessage } from "@nautilo/relay";
 import { InMemoryRelayRegistry } from "@nautilo/runtime";
-import { resolveTaskLocalExecutionCaptureTarget } from "../../src/local-execution-task-capture";
+import { resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "../../src/local-execution-task-capture";
+
+test("only protected file-only repo-docs adds project capture; ordinary admission stays identical", () => {
+  for (const preset of ["task", "repo_docs", "schedule", "in_scope"]) {
+    for (const toolsMode of [undefined, "none", "auto", "whitelist"]) {
+      for (const toolsWhitelist of [undefined, [], ["file"], ["exec_command"], ["write_stdin"], ["file", "exec_command"]]) {
+        const candidate = { preset, toolsMode, toolsWhitelist };
+        const legacy = !(toolsMode === "none" || (toolsMode === "whitelist"
+          && !toolsWhitelist?.some(name => name === "exec_command" || name === "write_stdin")));
+        expect(taskNeedsLocalExecutionCapture(candidate, false)).toBe(legacy);
+        if (preset !== "repo_docs") expect(taskNeedsLocalExecutionCapture(candidate, true)).toBe(legacy);
+      }
+    }
+  }
+  expect(taskNeedsLocalExecutionCapture({ preset: "repo_docs", toolsMode: "whitelist", toolsWhitelist: ["file"] }, true)).toBe(true);
+  for (const toolsWhitelist of [[], ["exec_command"], ["file", "exec_command"], ["file", "file"]]) {
+    expect(taskNeedsLocalExecutionCapture({ preset: "repo_docs", toolsMode: "whitelist", toolsWhitelist }, true)).toBe(false);
+  }
+});
 
 async function fixture() {
   const registry = new InMemoryRelayRegistry();

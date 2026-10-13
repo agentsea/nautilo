@@ -5,16 +5,17 @@ import {
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
-import { and, eq, isNull, rooms, namespaces, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
+import { and, eq, isNull, rooms, namespaces, sql, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, getUserCapabilities } from "@nautilo/trust";
 import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission,
   type TaskFundingRunSource, type TaskFundingTaskSource } from "@nautilo/runtime";
-import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
+import { classifyProtectedTaskMetadataV1, parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
 import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
+import { protectedTaskRepoDocsSelectionProjection } from "../routes/protected-task-repo-docs-selection";
 
 type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
 type ProtectedTaskFundingAuthority = () => Promise<void>;
@@ -52,7 +53,10 @@ const protectedTaskProjection = {
   parentTaskId: tasks.parentTaskId,
   depth: tasks.depth,
   fundingMode: tasks.fundingMode,
-  metadata: tasks.metadata,
+  metadataShapeSupported: sql<boolean>`case when jsonb_typeof(${tasks.metadata}) = 'object'
+    then (${tasks.metadata} - 'preparation' - 'deepResearch') = '{}'::jsonb
+      or (${protectedTaskRepoDocsSelectionProjection().sql}) is not null
+    else false end`.mapWith(Boolean),
   contentRepresentation: tasks.contentRepresentation,
   contentNamespaceId: tasks.contentNamespaceId,
   contentRevision: tasks.contentRevision,
@@ -75,10 +79,13 @@ const protectedRunProjection = {
 
 async function readProtectedFundingTask(
   taskId: string,
+  acceptedMetadata: ProtectedTaskWakeFundingTaskSource["metadata"],
 ): Promise<ProtectedTaskWakeFundingTaskSource | undefined> {
   const [task] = await getServerDirectDb().select(protectedTaskProjection)
     .from(tasks).where(eq(tasks.id, taskId)).limit(1);
-  return task;
+  if (!task?.metadataShapeSupported) return undefined;
+  const { metadataShapeSupported: _metadataShapeSupported, ...current } = task;
+  return { ...current, metadata: structuredClone(acceptedMetadata) };
 }
 
 async function readProtectedFundingRun(
@@ -147,6 +154,7 @@ function supportedShape(task: FundingTaskSource): boolean {
 }
 
 function protectedRuntimeShape(task: FundingTaskSource): boolean {
+  const repoDocs = task.preset === "repo_docs" && protectedRepoDocsFundingShape(task);
   return task.ownerId === task.requestorId
     && !task.parentTaskId
     && (task.depth ?? 0) === 0
@@ -169,16 +177,31 @@ function protectedRuntimeShape(task: FundingTaskSource): boolean {
       ? typeof task.scopeId === "string" && SCOPE_UUID.test(task.scopeId)
       : task.useScope === false && task.scopeId == null)
     && !task.targetChatHandle
-    && (task.preset === "task"
+    && (repoDocs || task.preset === "task"
       || task.preset === "in_background"
       || task.preset === "schedule")
     && (task.targetChat === "orphan"
       || task.targetChat === "last_in_namespace")
     && (task.targetUserIds ?? []).every(id => id === task.requestorId)
     && !task.awaitResponse
-    && Object.keys(task.metadata ?? {}).every(
+    && (repoDocs || Object.keys(task.metadata ?? {}).every(
       key => key === "preparation" || key === "deepResearch",
-    );
+    ));
+}
+
+function protectedRepoDocsFundingShape(task: FundingTaskSource): boolean {
+  if (task.toolsMode !== "whitelist" || task.toolsWhitelist?.length !== 1
+    || task.toolsWhitelist[0] !== "file" || task.useScope || task.scopeId != null) return false;
+  const metadata = task.metadata ?? {};
+  if (Reflect.ownKeys(metadata).some(key => typeof key !== "string"
+    || !["target", "instructions", "mode", "publish", "preparation", "lastInterruption"].includes(key))) return false;
+  const classified = classifyProtectedTaskMetadataV1(metadata);
+  return classified.status === "supported"
+    && typeof classified.protectedContent["target"] === "string"
+    && typeof classified.operational["mode"] === "string"
+    && ["init", "update", "auto"].includes(classified.operational["mode"])
+    && typeof classified.operational["publish"] === "string"
+    && ["branch", "push", "pr"].includes(classified.operational["publish"]);
 }
 
 function sameProtectedRuntimeCoordinates(
@@ -415,6 +438,9 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
 ): Promise<ForegroundChatFundingSession> {
   const authority = await assertOwnShape(task);
   const protectedSource = protectedRuntimeShape(task);
+  const acceptedProtectedMetadata = protectedSource
+    ? structuredClone(task.metadata)
+    : undefined;
   if (typeof task.id !== "string" || typeof task.requestorId !== "string"
     || typeof run.id !== "string") throw new TaskFundingError("funding_source_changed");
   const taskId = task.id;
@@ -427,7 +453,7 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
     const db = getServerDirectDb();
     const [currentTask, currentRun] = protectedSource
       ? await Promise.all([
-          readProtectedFundingTask(taskId),
+          readProtectedFundingTask(taskId, acceptedProtectedMetadata!),
           readProtectedFundingRun(taskId, taskRunId),
         ])
       : await Promise.all([

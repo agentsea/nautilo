@@ -10,9 +10,9 @@ import {
   fingerprintTaskOperationalMetadataV1,
 } from "./task-operational-fields-digest-v1.ts";
 import {
-  encodeTaskPayloadV1,
+  encodeTaskDefinitionContent,
   encodeTaskRunResultPayloadV1,
-  type TaskPayloadV1,
+  type TaskDefinitionContent,
   type TaskRunResultPayloadV1,
 } from "./task-payload-v1.ts";
 
@@ -66,7 +66,6 @@ export type TaskHistoricalContentSourceV1 =
 export type TaskHistoricalContentSourceUnsupportedReasonV1 =
   | "invalid_source"
   | "nested_task"
-  | "task_last_error"
   | "metadata"
   | "operational_fields"
   | "payload";
@@ -85,7 +84,7 @@ type SupportedHistoricalSourceV1<
 }>;
 
 export type TaskHistoricalContentSourceClassificationV1 =
-  | SupportedHistoricalSourceV1<"definition", TaskPayloadV1>
+  | SupportedHistoricalSourceV1<"definition", TaskDefinitionContent>
   | SupportedHistoricalSourceV1<"run_result", TaskRunResultPayloadV1>
   | Readonly<{
       status: "unsupported";
@@ -161,7 +160,6 @@ export function classifyTaskHistoricalContentSourceV1(
     if (source.activeRun || source.taskStatus === "running" || source.taskStatus === "awaiting") {
       return Object.freeze({ status: "waiting_parent", reason: "active_definition" });
     }
-    if (source.taskLastError !== null) return unsupported("task_last_error");
   } else if (!UUID.test(source.taskRunId)
     || !validDate(source.runStartedAt) || !validDate(source.runCompletedAt)
     || source.runCompletedAt.getTime() < source.runStartedAt.getTime()
@@ -187,12 +185,20 @@ export function classifyTaskHistoricalContentSourceV1(
   }
 
   const payload = source.kind === "definition"
-    ? Object.freeze({
-        formatVersion: 1 as const,
-        prompt: source.prompt,
-        expectedOutput: source.expectedOutput,
-        protectedMetadata: metadata.protectedContent,
-      })
+    ? source.taskLastError === null
+      ? Object.freeze({
+          formatVersion: 1 as const,
+          prompt: source.prompt,
+          expectedOutput: source.expectedOutput,
+          protectedMetadata: metadata.protectedContent,
+        })
+      : Object.freeze({
+          formatVersion: 2 as const,
+          prompt: source.prompt,
+          expectedOutput: source.expectedOutput,
+          protectedMetadata: metadata.protectedContent,
+          retainedHistoricalError: source.taskLastError,
+        })
     : Object.freeze({
         formatVersion: 1 as const,
         resultText: source.resultText,
@@ -201,7 +207,7 @@ export function classifyTaskHistoricalContentSourceV1(
   let payloadBytes: Uint8Array;
   try {
     payloadBytes = source.kind === "definition"
-      ? encodeTaskPayloadV1(payload as TaskPayloadV1)
+      ? encodeTaskDefinitionContent(payload as TaskDefinitionContent)
       : encodeTaskRunResultPayloadV1(payload as TaskRunResultPayloadV1);
   } catch {
     operationalFieldsDigest.fill(0);

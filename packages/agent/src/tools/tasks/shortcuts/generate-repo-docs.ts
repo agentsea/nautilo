@@ -66,7 +66,13 @@ export function createGenerateRepoDocsTool(context?: unknown) {
     description: GENERATE_REPO_DOCS_DESCRIPTION,
     schema: generateRepoDocsSchema,
     func: async (args: GenerateRepoDocsArgs) => {
-      log(`[generate_repo_docs] target=${args.target} mode=${args.mode} publish=${args.publish}`);
+      const rt = getTaskToolRuntime();
+      const ordinary = rt.canUseLegacyTaskContent ? await rt.canUseLegacyTaskContent() : true;
+      if (ordinary) log(`[generate_repo_docs] target=${args.target} mode=${args.mode} publish=${args.publish}`);
+      const protectedCreator = rt.createProtectedTask;
+      if (!ordinary && protectedCreator === undefined) {
+        return "Cannot start repo_docs task: protected Task creation is unavailable.";
+      }
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start repo_docs task: missing owner or agent context.";
       }
@@ -87,7 +93,6 @@ export function createGenerateRepoDocsTool(context?: unknown) {
         toolsWhitelist: ["file"],
       });
       if (selectionError) return selectionError;
-      const rt = getTaskToolRuntime();
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
         requestorId: ctx.causalHumanUserId,
@@ -114,7 +119,9 @@ export function createGenerateRepoDocsTool(context?: unknown) {
           instructions: args.instructions,
         },
       };
-      const { taskId, status } = await rt.createTask(input);
+      const { taskId, status } = ordinary
+        ? await rt.createTask(input)
+        : await protectedCreator!(input);
       return JSON.stringify({
         taskId,
         status,

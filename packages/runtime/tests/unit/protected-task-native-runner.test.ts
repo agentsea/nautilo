@@ -146,6 +146,73 @@ async function expectRejected(
 }
 
 describe("protected Task native runner", () => {
+  test("admits repo docs only with the fixed file-only graph and process-local semantic port", async () => {
+    const base = fixture();
+    const executionPort = Object.freeze({
+      plan: async () => null,
+      execute: async () => { throw new Error("unused"); },
+      inspect: async () => ({ status: "absent" as const }),
+    });
+    const projectFilePort = Object.freeze({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      agentId: AGENT_ID,
+      humanUserId: OWNER_ID,
+      relayId: "relay",
+      workspaceRoot: "/captured/project/nautilo-repo-docs/task-run-run",
+      dispatch: async () => ({ ok: false as const, message: "unused" }),
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    const result = await runProtectedTaskNativeSegment({
+      ...base.input,
+      mode: "repo_docs",
+      execution: {
+        ...base.input.execution,
+        toolWhitelist: ["file"],
+        protectedRepoDocs: {
+          selection: { target: "https://example.test/repo.git", mode: "auto", publish: "branch" },
+          executionPort,
+          createProjectFilePort: () => projectFilePort,
+        },
+      },
+    }, { runScopeSubagent: async options => {
+      captured = options;
+      return { status: "completed", threadId: GRAPH_THREAD_ID,
+        finalText: "internal", finalResponseText: "docs committed" };
+    } });
+    expect(result).toEqual({ formatVersion: 1, resultText: "docs committed", lastError: null });
+    expect(captured?.toolWhitelist).toEqual(["file"]);
+    expect(captured?.protectedRepoDocs?.executionPort).toBe(executionPort);
+    expect(captured?.protectedRepoDocs?.createProjectFilePort("workdir")).toBe(projectFilePort);
+    expect(base.input.transientInput).not.toHaveProperty("protectedRepoDocs");
+
+    for (const toolWhitelist of [undefined, [], ["file", "exec_command"]]) {
+      await expectRejected(runProtectedTaskNativeSegment({
+        ...base.input, mode: "repo_docs",
+        execution: { ...base.input.execution, ...(toolWhitelist === undefined ? {} : { toolWhitelist }),
+          protectedRepoDocs: { selection: { target: "repo", mode: "auto", publish: "branch" }, executionPort,
+            createProjectFilePort: () => projectFilePort } },
+      }), "exact supported segment");
+    }
+    await expectRejected(runProtectedTaskNativeSegment({
+      ...base.input,
+      mode: "repo_docs",
+      execution: {
+        ...base.input.execution,
+        toolWhitelist: ["file"],
+        protectedRepoDocs: {
+          selection: { target: "repo", mode: "auto", publish: "branch" },
+          executionPort,
+          createProjectFilePort: () => projectFilePort,
+        },
+        taskReportBackContinuation: {
+          status: "available", relayId: "relay", relaySessionId: "socket",
+          desktopSessionId: "desktop", pairingGeneration: "pairing",
+          currentFolder: "/captured/project", workspacePath: "",
+        },
+      },
+    }), "exact supported segment");
+  });
   test("passes the exact delegated local execution port without serializing it", async () => {
     const port = Object.freeze({ taskId: TASK_ID, taskRunId: RUN_ID,
       signal: new AbortController().signal,

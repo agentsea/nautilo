@@ -814,3 +814,5 @@ export {
   type HumanMemoryReadObservationResponseV1,
 } from "./schemas/human-memory-read-observation";
 export * from "./schemas/task-content-backfill";
+
+export * from "./schemas/protected-task-external-requests";

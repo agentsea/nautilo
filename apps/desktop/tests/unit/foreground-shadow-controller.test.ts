@@ -65,6 +65,10 @@ function factories(
     recoverPending: async () => 0,
     recoverRoomPendingAttention: async () => ({ status: "ready", events: [] }),
     recoverTaskPendingAttention: async () => ({ status: "ready", events: [] }),
+    recoverProtectedTaskExternalRequests: async () => ({
+      status: "ready", entries: [],
+    }),
+    respondProtectedTaskExternalRequest: async () => ({ status: "responded" }),
     completePending: async () => true,
     synchronizeHumanPeerRecipients: async () => true,
     serviceDomainKeyBacklog: async () => true,
@@ -218,6 +222,100 @@ function controllerInput(input: Readonly<{
 }
 
 describe("ElectronForegroundShadowController", () => {
+  test("fences protected Task external requests to the current Desktop custody", async () => {
+    const calls: string[] = [];
+    let bindingCurrent = true;
+    let accountCurrent = true;
+    let observedCurrent: (() => boolean | Promise<boolean>) | undefined;
+    let observedSignal: AbortSignal | undefined;
+    const controller = createElectronForegroundShadowController(controllerInput({
+      isBindingCurrent: () => bindingCurrent,
+      isAccountCurrent: () => accountCurrent,
+      factories: factories({ sender: {
+        recoverProtectedTaskExternalRequests: async (input: Readonly<{
+          requestId?: string;
+          signal: AbortSignal;
+          isCurrent: () => boolean | Promise<boolean>;
+        }>) => {
+          calls.push("recover");
+          observedCurrent = input.isCurrent;
+          observedSignal = input.signal;
+          expect(input.requestId).toBe("request-1");
+          return { status: "ready", entries: [] };
+        },
+        respondProtectedTaskExternalRequest: async () => {
+          calls.push("respond");
+          return { status: "responded" };
+        },
+      } }),
+    }));
+
+    expect(await controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "client-session",
+      requestId: "request-1",
+    })).toEqual({ status: "ready", entries: [] });
+    expect(await observedCurrent?.()).toBe(true);
+    accountCurrent = false;
+    expect(await observedCurrent?.()).toBe(false);
+    expect(await rejected(controller.respondProtectedTaskExternalRequest({
+      clientActionSessionId: "client-session",
+      requestId: "request-1",
+      responseCapability: "11111111-1111-4111-8111-111111111111",
+      response: { kind: "command_approval_required", decision: "deny" },
+    }))).toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(calls).toEqual(["recover"]);
+
+    accountCurrent = true;
+    bindingCurrent = false;
+    expect(await rejected(controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "client-session",
+    }))).toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(calls).toEqual(["recover"]);
+    await controller.dispose();
+    expect(observedSignal?.aborted).toBe(true);
+    expect(await observedCurrent?.()).toBe(false);
+  });
+
+  test("drains external request custody before destroying the profile", async () => {
+    const calls: string[] = [];
+    const started = deferred();
+    const controller = createElectronForegroundShadowController(controllerInput({
+      factories: factories({
+        sender: {
+          recoverProtectedTaskExternalRequests: async (input: Readonly<{
+            signal: AbortSignal;
+          }>) => {
+            calls.push("recover:start");
+            started.resolve();
+            await new Promise<void>((resolve) => input.signal.addEventListener(
+              "abort",
+              () => resolve(),
+              { once: true },
+            ));
+            calls.push("recover:abort");
+            return { status: "unavailable", entries: [] };
+          },
+        },
+        custodyDispose: async () => {
+          calls.push("custody:dispose");
+        },
+      }),
+    }));
+
+    const recovery = controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "client-session",
+    });
+    await started.promise;
+    const disposal = controller.dispose();
+    expect(await recovery).toEqual({ status: "unavailable", entries: [] });
+    await disposal;
+    expect(calls).toEqual([
+      "recover:start",
+      "recover:abort",
+      "custody:dispose",
+    ]);
+  });
+
   test("routes protected Task operations through main custody", async () => {
     const calls: string[] = [];
     const summary = { id: "task-1", content: { status: "protected" } };

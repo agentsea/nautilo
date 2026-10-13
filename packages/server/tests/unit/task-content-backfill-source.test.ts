@@ -204,6 +204,31 @@ describe("Task content backfill source", () => {
     expect(f.projections[0]).not.toContain("localExecutionDelegation");
   });
 
+  test("retains an ordinary Task error as authenticated V2 display content", async () => {
+    const error = "Provider failed before historical repair.";
+    const result = await readTaskContentBackfillSource(
+      transaction([[taskRow({ lastError: error, status: "paused" })], []]).tx,
+      definitionClaim({ sourceStatus: "paused" }),
+    );
+    expect(result?.classification).toMatchObject({
+      status: "supported",
+      kind: "definition",
+      payload: {
+        formatVersion: 2,
+        prompt: "Inspect every changed package.",
+        expectedOutput: "A verified report",
+        protectedMetadata: {},
+        retainedHistoricalError: error,
+      },
+    });
+    if (result?.classification.status !== "supported") {
+      throw new Error("Expected supported historical definition");
+    }
+    expect(result.classification.sourceDigest).toHaveLength(32);
+    expect(result.classification.sourcePayloadHash).toHaveLength(32);
+    expect(result.classification.operationalFieldsDigest).toHaveLength(32);
+  });
+
   test("returns waiting_parent for a fire lock or any active Run", async () => {
     for (const rows of [
       [[taskRow({ fireLockId: ids.claim })], []],

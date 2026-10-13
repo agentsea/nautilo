@@ -1040,6 +1040,40 @@ function productConsumerImports(repoRoot: string): string[] {
 }
 
 const reviewedCryptoProductConsumerInventory = [
+  // Shared foreground read custody creates a decrypt-only signed-device challenge,
+  // opens its grant through core verification and borrows the ephemeral recipient
+  // from Bridge. Exact device/session/Namespace snapshots are rechecked before
+  // and after use; private recipient and Domain bytes are wiped, never persisted.
+  "packages/server/src/routes/foreground-domain-read-authority.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/foreground-domain-read-authority.ts -> @nautilo/lattice-crypto/wire",
+  // The external execution owner authenticates callback-live execution evidence
+  // and decodes its exact durable descriptor. Task payload opening and transcript/
+  // result publication remain Bridge operations under current Task authority.
+  "packages/server/src/routes/protected-task-external-execution.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-external-execution.ts -> @nautilo/lattice-crypto/background",
+  // These two request owners import only the LatticeCrypto dependency type.
+  // Current metadata is inspected through Bridge plus selectReadMetadata; the
+  // process-local request registry delegates signed custody to the owner above.
+  "packages/server/src/routes/protected-task-external-request-authority.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-external-requests.ts -> @nautilo/lattice-crypto",
+  // HTTP serializes the public challenge plan and destroys parsed/copied bytes;
+  // it neither opens content nor receives a reusable Domain/private key.
+  "packages/server/src/routes/protected-task-external-request-routes.ts -> @nautilo/lattice-crypto/wire",
+  // Shared Runtime signer composition asserts authentic execution evidence;
+  // exact result-Domain signer custody and retained-history verification stay
+  // in withProtectedTaskResultSigner and verified Bridge storage.
+  "packages/server/src/routes/protected-task-runtime-signer.ts -> @nautilo/lattice-crypto",
+  // Isolated fixtures mint real signed challenges/execution evidence to exercise
+  // identity, expiry, one-use response and cleanup. The internal evidence mint
+  // is test-only, matching the existing native fixed-segment fixture seam.
+  "packages/server/tests/unit/protected-task-claude-execution.test.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1",
+  "packages/server/tests/unit/protected-task-claude-execution.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-claude-execution.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-external-request-authority.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-external-request-routes.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-external-request-routes.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit/protected-task-external-requests.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-external-requests.test.ts -> @nautilo/lattice-crypto/wire",
   // Dormant Task publication authenticates device-signed requests and exact
   // ciphertext envelopes before entering the durable Task repository.
   "packages/server/src/routes/task-protected-publication.ts -> @nautilo/lattice-crypto",
@@ -1052,7 +1086,6 @@ const reviewedCryptoProductConsumerInventory = [
   // exact fixtures exercise real signatures, capsule binding and zeroization.
   "packages/server/src/messaging/decode-prepared-message.ts -> @nautilo/lattice-crypto",
   "packages/server/src/routes/foreground-checkpoint-read-authority.ts -> @nautilo/lattice-crypto",
-  "packages/server/src/routes/foreground-checkpoint-read-authority.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/src/routes/foreground-memory-projection-capsule.ts -> @nautilo/lattice-crypto",
   "packages/server/src/routes/foreground-pending-attention.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit-isolated/foreground-memory-projection-resume.test.ts -> @nautilo/lattice-crypto",
@@ -1609,6 +1642,29 @@ function isLatticeBridgeTarget(value: string): boolean {
 }
 
 const reviewedBridgeProductConsumerInventory = [
+  // Extracted signed foreground read custody uses Bridge's ephemeral recipient
+  // registry/loan/destruction. External requests compose its current Namespace/
+  // Domain inspection and DataOperationOwner; the registry imports only the
+  // foreground TTL and recipient-registry type, with no durable plaintext sink.
+  "packages/server/src/routes/foreground-domain-read-authority.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/foreground-domain-read-authority.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-external-request-authority.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-external-request-authority.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-external-requests.ts -> @nautilo/lattice-bridge/server",
+  // External execution borrows the canonical definition opener and retained
+  // signer verifier; its package-root import names payload types only. Shared
+  // Runtime signer composition uses verified crypto-role storage and the exact
+  // result-Domain signer loan, without exporting or persisting private keys.
+  "packages/server/src/routes/protected-task-external-execution.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-external-execution.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-signer.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-runtime-signer.ts -> @nautilo/lattice-bridge/server",
+  // Focused provider fixtures use Task payload/DataOperationOwner contracts;
+  // request tests use the real ephemeral recipient registry for replay/wipe proof.
+  "packages/server/tests/unit/protected-task-claude-execution.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-hermes-execution.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-external-request-authority.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-external-requests.test.ts -> @nautilo/lattice-bridge/server",
   // Local execution history borrows the existing protected Agent reader and
   // references its public payload type without importing a crypto runtime.
   "packages/runtime/src/conversation/local-execution-history.ts -> @nautilo/lattice-bridge",

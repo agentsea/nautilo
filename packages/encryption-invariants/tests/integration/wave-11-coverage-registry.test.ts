@@ -5,6 +5,9 @@ import {
   REVIEWED_WAVE_11_COVERAGE_ENTRIES,
 } from "../../baseline/reviewed-wave-11";
 import {
+  REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES,
+} from "../../baseline/reviewed-task-protection-coverage";
+import {
   inventoryDrizzleSchema,
 } from "../../src/node/schema-inventory";
 
@@ -30,8 +33,15 @@ describe("Wave 11 reviewed coverage registry", () => {
       .sort();
     const writers = REVIEWED_WAVE_11_COVERAGE_ENTRIES
       .filter((entry) => entry.locator.includes(":raw_sql:"));
+    const laterReviewed = REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES
+      .filter((entry) => entry.locator ===
+        "public.background_crypto_authorization_domain_requirements.expected_authorization_revision")
+      .map((entry) => entry.locator);
 
-    expect(declared).toEqual(observed);
+    expect(laterReviewed).toEqual([
+      "public.background_crypto_authorization_domain_requirements.expected_authorization_revision",
+    ]);
+    expect([...declared, ...laterReviewed].sort()).toEqual(observed);
     expect(declared).toHaveLength(14);
     expect(writers).toHaveLength(4);
     expect(writers.map((entry) => entry.locator)).toEqual([

@@ -1,3 +1,4 @@
+import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
 import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
 import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
 import { bindGitHubInvocation, prepareGitHubInvocation } from "../tools/invocation-service";
@@ -811,6 +812,16 @@ export function createPostModelNode(
       const resolveCandidates = async (candidates: ToolCall[]): Promise<ToolCall[]> => {
         const retained: ToolCall[] = [];
         for (const tc of candidates) {
+          const projectFile = getCurrentProtectedTaskProjectFilePort();
+          if (tc.name === "file" && projectFile !== null) {
+            if (!tc.id || !matchesProtectedTaskProjectFilePort(projectFile, state)) {
+              forbidden.push({ tc, reason: "Task project file authority does not match this invocation" });
+              continue;
+            }
+            requiredHostByToolCall.set(tc.id, projectFile.relayId);
+            retained.push(tc);
+            continue;
+          }
           if (isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task") {
             const registry = getRelayRegistry();
             const operation = localExecutionOperation(tc.name, tc.args);

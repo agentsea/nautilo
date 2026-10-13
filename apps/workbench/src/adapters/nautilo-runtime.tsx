@@ -41,6 +41,8 @@ import type {
   RoomPendingAttentionRecoveryResponse,
   TaskPendingAttentionRecoveryResponse,
 } from "@nautilo/api-client/browser";
+import { respondFreshProtectedTaskExternalRequest, type ProtectedTaskExternalRequestClient } from "./protected-task-external-request-response";
+import { recoverCurrentProtectedTaskExternalRequests } from "./protected-task-external-request-recovery";
 import { resumeRealtimeAfterAdmission } from "./admission-realtime-resume";
 import { PinDialog } from "../components/pin-dialog";
 import { mergeFocusedResourcesForSend } from "./focused-resource-send";
@@ -1906,6 +1908,34 @@ export function NautiloRuntimeProvider({
           signal?: AbortSignal;
           isCurrent?: () => boolean;
         }>) => recoverDesktopTaskPendingAttention(desktopForegroundShadow, input),
+        recoverProtectedTaskExternalRequests: (input: Parameters<
+          ProtectedTaskExternalRequestClient["recoverProtectedTaskExternalRequests"]
+        >[0]) => runWithCryptoAdmission(async () => {
+          if (input.signal?.aborted || !input.isCurrent()
+            || desktopForegroundShadow.recoverProtectedTaskExternalRequests === undefined) {
+            return { status: "unavailable" as const, entries: [] as const };
+          }
+          const result = await desktopForegroundShadow.recoverProtectedTaskExternalRequests({
+            clientActionSessionId: input.clientActionSessionId,
+            ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+          });
+          return input.signal?.aborted || !input.isCurrent()
+            ? { status: "unavailable" as const, entries: [] as const } : result;
+        }),
+        respondProtectedTaskExternalRequest: (input: Parameters<
+          ProtectedTaskExternalRequestClient["respondProtectedTaskExternalRequest"]
+        >[0]) => runWithCryptoAdmission(async () => {
+          if (input.signal?.aborted || !input.isCurrent()
+            || desktopForegroundShadow.respondProtectedTaskExternalRequest === undefined) {
+            return { status: "unavailable" as const };
+          }
+          const result = await desktopForegroundShadow.respondProtectedTaskExternalRequest({
+            clientActionSessionId: input.clientActionSessionId,
+            requestId: input.requestId, responseCapability: input.responseCapability, response: input.response,
+          });
+          return input.signal?.aborted || !input.isCurrent()
+            ? { status: "unavailable" as const } : result;
+        }),
         completePending: () => Promise.resolve(true),
         synchronizeHumanPeerRecipients: (roomId: string, namespaceId: string) =>
           runWithCryptoAdmission(() => desktopForegroundShadow.synchronizeRecipients(roomId, namespaceId)),
@@ -2953,6 +2983,15 @@ export function NautiloRuntimeProvider({
     undefined,
     initialCodexRequestLifecycleState,
   );
+  // Only renderer memory holds opened provider questions. No response capability
+  // is cached; every explicit answer obtains a fresh signed read first.
+  const protectedExternalRequestIdsRef = useRef(new Set<string>());
+  const protectedExternalRequestGenerationRef = useRef(0);
+  const protectedExternalRequestRecoveryGenerationRef = useRef(0);
+  const [protectedExternalRequestRecoveryTrigger, refreshProtectedExternalRequests] = useReducer(
+    (value: number) => value + 1, 0,
+  );
+  const protectedExternalRequestScopeRef = useRef<(() => boolean) | null>(null);
   const codexRequestLifecycleRef = useRef(codexRequestLifecycle);
   useEffect(() => {
     codexRequestLifecycleRef.current = codexRequestLifecycle;
@@ -2993,12 +3032,17 @@ export function NautiloRuntimeProvider({
         hydration.arrivals.push({ sequence, action });
       }
     }
+    codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
     dispatchCodexRequestLifecycle(action);
   }, []);
-  const codexRequestState = useMemo(
-    () => selectCodexRequestsForRoom(codexRequestLifecycle, activeRoomId, auth.viewer.sessionUserId),
-    [activeRoomId, auth.viewer.sessionUserId, codexRequestLifecycle],
-  );
+  const codexRequestState = useMemo(() => {
+    const state = selectCodexRequestsForRoom(codexRequestLifecycle, activeRoomId, auth.viewer.sessionUserId);
+    return protectedExternalRequestScopeRef.current?.() === true ? state : {
+      ...state,
+      requests: state.requests.filter(view => !protectedExternalRequestIdsRef.current.has(view.event.requestId)),
+    };
+  }, [activeRoomId, auth.viewer.sessionUserId, auth.viewerGeneration,
+    clientActionSessionGeneration, codexRequestLifecycle, admissionResumeGeneration, shadowPolicyMode, wsState]);
 
   //  Ephemeral, renderer-session Auto-Approve mode. Keep it
   // across route remounts and maintenance reloads, but bind it to the exact
@@ -5481,6 +5525,18 @@ export function NautiloRuntimeProvider({
           break;
         }
 
+        case "task.external_request.changed": {
+          if (isCodexOwner(event.ownerId, viewerKeyRef.current)) {
+            ++protectedExternalRequestRecoveryGenerationRef.current;
+            if (event.state === "unavailable") {
+              dispatchTrackedCodexRequestLifecycle({ kind: "resolved", requestId: event.requestId });
+              protectedExternalRequestIdsRef.current.delete(event.requestId);
+            }
+            refreshProtectedExternalRequests();
+          }
+          break;
+        }
+
         case "codex.request": {
           // Requests are owner-private at the server boundary. Keep every
           // admitted request in the bounded local map so navigating back to
@@ -5867,7 +5923,8 @@ export function NautiloRuntimeProvider({
       const event = codexRequestLifecycleRef.current.byId[requestId];
       return event?.ownerId === viewerKey &&
         event.roomId === activeRoomId &&
-        event.request.kind === "user_input_required";
+        event.request.kind === "user_input_required"
+        && !protectedExternalRequestIdsRef.current.has(requestId);
     });
     const hydration: NonNullable<typeof codexRequestHydrationRef.current> = {
       generation: ++codexRequestHydrationGenerationRef.current,
@@ -6601,6 +6658,105 @@ export function NautiloRuntimeProvider({
     viewerKey,
     wsState,
   ]);
+
+  useEffect(() => {
+    const forget = () => {
+      ++protectedExternalRequestGenerationRef.current;
+      protectedExternalRequestScopeRef.current = null;
+      const requestIds = [...protectedExternalRequestIdsRef.current];
+      if (requestIds.length !== 0) {
+        const action = { kind: "forget_content" as const, requestIds };
+        codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
+        dispatchCodexRequestLifecycle(action);
+      }
+      protectedExternalRequestIdsRef.current.clear();
+    };
+    return subscribeCryptoAdmissionAccess(() => {
+      if (!isCryptoAdmissionAllowed()) forget();
+    });
+  }, []);
+
+  useEffect(() => {
+    // This scope owns disclosure lifetime. Refresh attempts below may fail
+    // without revoking already admitted content from the same custody scope.
+    const generation = ++protectedExternalRequestGenerationRef.current;
+    const sessionId = currentClientActionSessionIdForResume();
+    const protectedMode = shadowPolicyMode === "shadow_encryption" || shadowPolicyMode === "encrypted_only";
+    const admissionGeneration = getCryptoAdmissionSnapshot().generation;
+    const viewerGeneration = auth.viewerGeneration;
+    const humanActorId = auth.viewer.sessionActorId;
+    const scopeIsCurrent = (): boolean => protectedExternalRequestGenerationRef.current === generation
+      && isCryptoAdmissionGenerationCurrent(admissionGeneration)
+      && viewerKeyRef.current === viewerKey && viewerGenerationRef.current === viewerGeneration
+      && humanActorIdRef.current === humanActorId && serverOriginRef.current === serverOrigin
+      && shadowPolicyModeRef.current === shadowPolicyMode && wsStateRef.current === "open"
+      && currentClientActionSessionIdForResume() === sessionId;
+    const forget = () => {
+      protectedExternalRequestScopeRef.current = null;
+      const requestIds = [...protectedExternalRequestIdsRef.current];
+      if (requestIds.length !== 0) {
+        const action = { kind: "forget_content" as const, requestIds };
+        codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
+        dispatchCodexRequestLifecycle(action);
+      }
+      protectedExternalRequestIdsRef.current.clear();
+    };
+    if (!protectedMode || authState !== "signed-in" || !auth.viewer.isVerified || !viewerKey
+      || !humanActorId || !sessionId || wsState !== "open" || !isCryptoAdmissionAllowed()
+      || liveShadowMessageClient === undefined || pendingAttentionAuthorizationDeviceId === null) {
+      forget(); return;
+    }
+    protectedExternalRequestScopeRef.current = scopeIsCurrent;
+    return () => {
+      forget();
+      if (protectedExternalRequestGenerationRef.current === generation) ++protectedExternalRequestGenerationRef.current;
+    };
+  }, [auth.viewer.isVerified, auth.viewer.sessionActorId, auth.viewerGeneration, authState,
+    admissionResumeGeneration, clientActionSessionGeneration, liveShadowMessageClient,
+    pendingAttentionAuthorizationDeviceId, serverOrigin, shadowPolicyMode, viewerKey, wsState]);
+
+  useEffect(() => {
+    // A changed hint invalidates only the in-flight list attempt. The exact
+    // ready list reconciles content; unavailable is not an empty snapshot.
+    const controller = new AbortController();
+    const generation = ++protectedExternalRequestRecoveryGenerationRef.current;
+    const sessionId = currentClientActionSessionIdForResume();
+    const currentScope = protectedExternalRequestScopeRef.current;
+    const isCurrent = (): boolean => !controller.signal.aborted
+      && protectedExternalRequestRecoveryGenerationRef.current === generation
+      && protectedExternalRequestScopeRef.current === currentScope
+      && currentScope?.() === true;
+    if (currentScope === null || !sessionId || liveShadowMessageClient === undefined) return;
+
+    void recoverCurrentProtectedTaskExternalRequests({
+      client: liveShadowMessageClient,
+      clientActionSessionId: sessionId,
+      signal: controller.signal,
+      isCurrent,
+      previousRequestIds: new Set(protectedExternalRequestIdsRef.current),
+      dispatch: action => {
+        if (action.kind === "arm") {
+          dispatchTrackedCodexRequestLifecycle(action);
+          return;
+        }
+        codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
+        dispatchCodexRequestLifecycle(action);
+      },
+    }).then(currentIds => {
+      if (isCurrent() && currentIds !== null) {
+        protectedExternalRequestIdsRef.current = new Set(currentIds);
+      }
+    }).catch(() => { /* An unavailable read is not an empty provider snapshot. */ });
+    return () => {
+      controller.abort();
+      if (protectedExternalRequestRecoveryGenerationRef.current === generation) {
+        ++protectedExternalRequestRecoveryGenerationRef.current;
+      }
+    };
+  }, [auth.viewer.isVerified, auth.viewer.sessionActorId, auth.viewerGeneration, authState,
+    admissionResumeGeneration, clientActionSessionGeneration, liveShadowMessageClient,
+    pendingAttentionAuthorizationDeviceId, protectedExternalRequestRecoveryTrigger, serverOrigin,
+    shadowPolicyMode, viewerKey, wsState, dispatchTrackedCodexRequestLifecycle]);
 
   useEffect(() => {
     const recipientSync = createDomainKeyRecipientSyncScheduler({
@@ -8355,6 +8511,33 @@ export function NautiloRuntimeProvider({
         pending.ownerId !== viewerKeyRef.current ||
         pending.roomId !== activeRoomIdRef.current
       ) return;
+      if (protectedExternalRequestIdsRef.current.has(requestId)) {
+        const sessionId = currentClientActionSessionIdForResume();
+        const currentScope = protectedExternalRequestScopeRef.current;
+        const isCurrent = () => currentScope !== null && currentScope()
+          && protectedExternalRequestScopeRef.current === currentScope
+          && activeRoomIdRef.current === pending.roomId;
+        if (liveShadowMessageClient === undefined || !sessionId || !isCurrent()) return;
+        dispatchTrackedCodexRequestLifecycle({ kind: "submit_start", requestId });
+        const outcome = await respondFreshProtectedTaskExternalRequest({
+          client: liveShadowMessageClient, clientActionSessionId: sessionId,
+          expectedEvent: pending, response, isCurrent,
+        });
+        if (!isCurrent()) {
+          dispatchTrackedCodexRequestLifecycle({ kind: "submit_cancelled", requestId });
+          return;
+        }
+        if (outcome === "responded") {
+          dispatchTrackedCodexRequestLifecycle({ kind: "submit_accepted", requestId });
+          protectedExternalRequestIdsRef.current.delete(requestId);
+        } else {
+          dispatchTrackedCodexRequestLifecycle({ kind: "submit_failed", requestId,
+            message: outcome === "not_sent" ? "Could not authorize this response. Try again."
+              : "The response was not confirmed. Checking the task connection." });
+          refreshProtectedExternalRequests();
+        }
+        return;
+      }
       dispatchTrackedCodexRequestLifecycle({ kind: "submit_start", requestId });
       try {
         const receipt = await apiClient.codex.respondRequest(requestId, response);
@@ -8386,7 +8569,7 @@ export function NautiloRuntimeProvider({
         }
       }
     },
-    [dispatchTrackedCodexRequestLifecycle],
+    [dispatchTrackedCodexRequestLifecycle, liveShadowMessageClient],
   );
 
   const dismissCodexRequest = useCallback((requestId: string) => {

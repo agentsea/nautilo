@@ -605,3 +605,71 @@ describe("protected Task metadata v1", () => {
     expect(result.protectedContent).toEqual({ target, instructions });
   });
 });
+
+
+describe("protected Deep Research admitted funding metadata", () => {
+  const lanes = ["supervisor", "research", "summarization", "compression", "finalReport"] as const;
+  function admitted() {
+    return {
+      version: 2,
+      reportLanguage: "Portuguese",
+      modelPlan: modelPlan(),
+      invokingModelId: null,
+      preferenceRevisions: Object.fromEntries(lanes.map((lane, index) => [lane, index])),
+      modelFunding: Object.fromEntries(lanes.map((lane, index) => [lane, index % 2 === 0
+        ? { kind: "personal", providerRoute: "openai", credentialId: ACTOR_ID, credentialRevision: 1 }
+        : { kind: "server", providerRoute: "anthropic" }])),
+      tavilyFunding: { kind: "personal", providerRoute: "tavily", credentialId: ACTOR_ID, credentialRevision: 2 },
+    };
+  }
+
+  test("round-trips all five admitted lanes and Tavily without leaking language or sharing mutable inputs", () => {
+    const deepResearch = admitted();
+    const original = structuredClone(deepResearch);
+    const classified = supported({ deepResearch });
+    const { reportLanguage, ...operational } = original;
+    expect(jsonProjection(classified.operational)).toEqual({ deepResearch: operational });
+    expect(classified.protectedContent).toEqual({ deepResearch: { reportLanguage } });
+    expect(reconstructProtectedTaskMetadataV1(classified.operational, classified.protectedContent))
+      .toEqual({ status: "supported", version: 1, metadata: { deepResearch: original } });
+    deepResearch.preferenceRevisions["research"] = 99;
+    deepResearch.tavilyFunding.credentialRevision = 99;
+    expect(jsonProjection(classified.operational)).toEqual({ deepResearch: operational });
+    expect(isProtectedTaskOperationalMetadataProjectionV1(classified.operational)).toBe(true);
+  });
+
+  test.each([...lanes])("requires an exact valid %s funding lane and preference revision", lane => {
+    for (const replacement of [undefined, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+      const input = admitted();
+      expect(classifyProtectedTaskMetadataV1({ deepResearch: {
+        ...input, preferenceRevisions: { ...input.preferenceRevisions, [lane]: replacement },
+      } }).status).toBe("unsupported");
+    }
+    for (const replacement of [undefined, null, { kind: "personal", providerRoute: "openai", credentialId: ACTOR_ID, credentialRevision: 0 },
+      { kind: "server", providerRoute: "openai", apiKey: "must-not-persist" },
+      { kind: "personal", providerRoute: "openai", credentialId: "wrong-id", credentialRevision: 1 }]) {
+      const input = admitted();
+      expect(classifyProtectedTaskMetadataV1({ deepResearch: {
+        ...input, modelFunding: { ...input.modelFunding, [lane]: replacement },
+      } }).status).toBe("unsupported");
+    }
+  });
+
+  test("rejects unknown, mixed-version, secret-bearing and misplaced funding fields", () => {
+    const input = admitted();
+    for (const deepResearch of [
+      { ...input, version: 1 }, { ...input, version: 3 }, { ...input, researchBrief: "private" },
+      { ...input, preferenceRevisions: { ...input.preferenceRevisions, extra: 1 } },
+      { ...input, modelFunding: { ...input.modelFunding, extra: input.tavilyFunding } },
+      { ...input, tavilyFunding: { ...input.tavilyFunding, apiKey: "must-not-persist" } },
+      { ...input, tavilyFunding: null }, { ...input, tavilyFunding: { kind: "server", providerRoute: "bad route" } },
+    ]) expect(classifyProtectedTaskMetadataV1({ deepResearch }).status).toBe("unsupported");
+    const classified = supported({ deepResearch: input });
+    expect(reconstructProtectedTaskMetadataV1(classified.operational, {
+      deepResearch: { reportLanguage: input.reportLanguage, modelFunding: input.modelFunding },
+    }).status).toBe("unsupported");
+    expect(reconstructProtectedTaskMetadataV1({ deepResearch: { ...input } }, classified.protectedContent).status)
+      .toBe("unsupported");
+    expect(reconstructProtectedTaskMetadataV1(classified.operational, {}).status).toBe("unsupported");
+  });
+});

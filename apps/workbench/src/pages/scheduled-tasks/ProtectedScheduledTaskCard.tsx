@@ -101,9 +101,18 @@ export function ProtectedScheduledTaskCard({
         </div>
       </div>
       {row.availability === "opened" ? (
-        <p className="truncate text-[13px] text-foreground" title={row.prompt}>
-          {row.prompt}
-        </p>
+        <>
+          <p className="truncate text-[13px] text-foreground" title={row.prompt}>
+            {row.prompt}
+          </p>
+          {row.retainedHistoricalError !== null ? (
+            <p className="truncate text-[11px] text-foreground-muted"
+              data-testid="task-retained-historical-error"
+              title={row.retainedHistoricalError}>
+              Earlier error: {row.retainedHistoricalError}
+            </p>
+          ) : null}
+        </>
       ) : (
         <p className="text-[13px] text-foreground-muted" role="status">
           {unavailableLabel}

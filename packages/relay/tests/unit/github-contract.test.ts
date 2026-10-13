@@ -15,7 +15,7 @@ test("GitHub dispatch stays unavailable to every older negotiated peer and misma
   const caps = { profile: "desktop-agent" as const, canUseGitHub: true, github: capability };
   const args = { operation: "issue_read", repository: "fixture/project", number: 12 };
   const binding = { version: 1, generation: "generation", toolCallId: "call", owner, stage: "read", localNetworkPolicy: { mode: "host" } };
-  expect(RELAY_PROTOCOL_VERSION).toBe(29);
+  expect(RELAY_PROTOCOL_VERSION).toBe(31);
   expect(isRelayGitHubDispatch("local_github", args, binding, caps, 29)).toBeTrue();
   for (const version of [1, 20, 24, 25, 26, 27, 28]) {
     expect(isRelayGitHubDispatch("local_github", args, binding, caps, version)).toBeFalse();

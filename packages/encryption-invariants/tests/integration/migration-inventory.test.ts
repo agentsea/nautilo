@@ -26,6 +26,35 @@ import {
 
 const temporaryDirectories: string[] = [];
 
+const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
+  "public.conversion_operations",
+  "public.foreground_memory_crypto_publication_receipts",
+  "public.group_moderation_scopes",
+  "public.message_deletion_receipts",
+  "public.moderation_actions",
+  "public.moderation_restrictions",
+  "public.moderation_subjects",
+  "public.personal_capability_preferences",
+  "public.personal_provider_credentials",
+  "public.protected_task_continuation_receipts",
+  "public.protected_task_execution_segment_receipts",
+  "public.protected_task_run_output_bindings",
+  "public.protected_task_wake_continuation_receipts",
+  "public.server_admission",
+  "public.server_moderation_policy",
+  "public.server_provider_policy",
+  "public.server_public_join",
+  "public.soul_generation_attempts",
+  "public.task_cancellation_crypto_staging_receipts",
+  "public.task_content_backfill_failures",
+  "public.task_content_backfill_scans",
+  "public.task_definition_crypto_revisions",
+  "public.task_historical_content_crypto_staging_receipts",
+  "public.task_run_message_associations",
+  "public.task_run_result_crypto_revisions",
+  "public.task_terminal_message_crypto_staging_receipts",
+] as const;
+
 function temporaryMigrationTree(name: string): string {
   const directory = mkdtempSync(resolve(tmpdir(), `m220 ${name} `));
   temporaryDirectories.push(directory);
@@ -156,7 +185,14 @@ describe("migration inventory", () => {
     expect(inventory.missingSnapshotIndices).toContain(6);
     expect(inventory.missingSnapshotIndices).toContain(118);
     expect(inventory.latestSnapshotIndex).toBe(MIGRATION_TREE_BASELINE.tip);
-    expect(inventory.currentTables).toHaveLength(206);
+    expect(inventory.currentTables).toHaveLength(232);
+    const currentTableLocators = new Set(
+      inventory.currentTables.map((table) => table.locator),
+    );
+    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(26);
+    for (const locator of TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION) {
+      expect(currentTableLocators).toContain(locator);
+    }
     expect(inventory.currentTables).toContainEqual({
       id: "db.public.session_messages",
       surface: "db",
@@ -164,8 +200,8 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(2_769);
-    expect(inventory.currentConstraints).toHaveLength(778);
+    expect(inventory.currentColumns).toHaveLength(3_182);
+    expect(inventory.currentConstraints).toHaveLength(890);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
       tableLocator: "public.actors",
@@ -177,7 +213,7 @@ describe("migration inventory", () => {
       onDelete: "cascade",
       onUpdate: "no action",
     });
-    expect(inventory.historicalCreatedTables).toHaveLength(222);
+    expect(inventory.historicalCreatedTables).toHaveLength(248);
     expect(inventory.historicalDroppedTables).toEqual([
       "public.collaboration_sessions",
       "public.grant_domain_envelope_acknowledgements",
@@ -367,10 +403,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 294,
-      tag: "0294_content_access_receipt_fk_permissions",
-      path: "0294_content_access_receipt_fk_permissions.sql",
-      sha256: "15763722647784f7cd83ed99e856fc0d91a8aa814721ef9198c1ac0f5a7f7880",
+      index: 351,
+      tag: "0351_strange_red_shift",
+      path: "0351_strange_red_shift.sql",
+      sha256: "950d05509ccf6affa335753842e8f2f07a47ee5c1877577fadb8df48626b3f2b",
     });
 
     const comparison = compareSchemaAndMigrationInventory(

@@ -19,7 +19,10 @@ import {
   type TaskRuntimeExecutionEvidenceInputV1,
 } from "../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts";
 import { taskContentRevisionObjectIdV1, deriveTaskContentCryptoObjectIdV1, TASK_DEFINITION_OBJECT_TYPE_V1 } from "../../src/task/task-content-repository.ts";
-import { encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import {
+  encodeTaskDefinitionContentV2,
+  encodeTaskPayloadV1,
+} from "../../src/task/task-payload-v1.ts";
 import {
   withNativeProtectedTaskDefinitionV1,
   type NativeProtectedTaskDefinitionOccurrenceV1,
@@ -38,7 +41,10 @@ const SERVER = "https://nautilo.example";
 const bytes = (value: number): Uint8Array => new Uint8Array(32).fill(value);
 type Adjust = (stage: string, rows: readonly PostgresJsBridgeRow[]) => readonly PostgresJsBridgeRow[];
 
-async function fixture(adjust: Adjust = (_stage, rows) => rows, options: { agent?: string; rewrap?: boolean; ephemeral?: boolean; historical?: boolean } = {}) {
+async function fixture(adjust: Adjust = (_stage, rows) => rows, options: {
+  agent?: string; rewrap?: boolean; ephemeral?: boolean; historical?: boolean;
+  retainedHistoricalError?: string;
+} = {}) {
   const crypto = new LatticeCrypto();
   const issuer = crypto.generateSigningKeyPair();
   const signer = crypto.generateSigningKeyPair();
@@ -75,7 +81,10 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows, options: { agent
     contentRevision: options.historical ? 1 : 2, cryptoAccessRevision: options.rewrap ? 1 : 0, namespaceId: NAMESPACE, domainId: DOMAIN,
     expectedAccessRevision: 0, expectedPolicyRevision: 3,
   };
-  const plaintext = encodeTaskPayloadV1({ formatVersion: 1, prompt: "Open native protected Task", expectedOutput: "A result", protectedMetadata: {} });
+  const plaintext = options.retainedHistoricalError === undefined
+    ? encodeTaskPayloadV1({ formatVersion: 1, prompt: "Open native protected Task", expectedOutput: "A result", protectedMetadata: {} })
+    : encodeTaskDefinitionContentV2({ formatVersion: 2, prompt: "Open native protected Task", expectedOutput: "A result",
+        protectedMetadata: {}, retainedHistoricalError: options.retainedHistoricalError });
   const encrypted = encryptObjectPayload(crypto, { objectId: objectId(occurrence.objectId),
     keyClass: "ai", objectType: TASK_DEFINITION_OBJECT_TYPE_V1, createdAt: unixTimestamp(NOW) }, plaintext);
   plaintext.fill(0);
@@ -220,6 +229,21 @@ async function fails(operation: Promise<unknown>): Promise<void> {
 }
 
 describe("native protected Task definition opener", () => {
+  test("normalizes retained V2 display content out of the native execution payload", async () => {
+    const f = await fixture(undefined, {
+      agent: AGENT,
+      retainedHistoricalError: "provider unavailable",
+    });
+    const payload = await f.open(value => value);
+    expect(payload).toEqual({
+      formatVersion: 1,
+      prompt: "Open native protected Task",
+      expectedOutput: "A result",
+      protectedMetadata: {},
+    });
+    expect(payload).not.toHaveProperty("retainedHistoricalError");
+  });
+
   test("opens retained ephemeral Agent genesis after Human rewrap without persistent Runtime inventory", async () => {
     const f = await fixture(undefined, { agent: AGENT, rewrap: true, ephemeral: true });
     expect(await f.open(async payload => payload.prompt)).toBe("Open native protected Task");

@@ -1,6 +1,21 @@
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayCapabilities } from "@nautilo/relay";
 import type { TaskCreationReturnContext } from "@nautilo/agent";
 
+/** Protected repo-docs keeps the model file-only while its trusted wrapper
+ * needs the same captured project authority as an executable Task. */
+export function taskNeedsLocalExecutionCapture(
+  candidate: Readonly<{ preset?: string | undefined; toolsMode?: string | undefined; toolsWhitelist?: readonly string[] | undefined }>,
+  protectedCreation: boolean,
+): boolean {
+  if (protectedCreation && candidate.preset === "repo_docs") {
+    return candidate.toolsMode === "whitelist"
+      && candidate.toolsWhitelist?.length === 1
+      && candidate.toolsWhitelist[0] === "file";
+  }
+  return candidate.toolsMode !== "none" && (candidate.toolsMode !== "whitelist"
+    || candidate.toolsWhitelist?.some(name => name === "exec_command" || name === "write_stdin") === true);
+}
+
 interface CaptureRegistry {
   getCapabilities(relayId: string): RelayCapabilities | null | undefined;
   getProtocolVersion(relayId: string): number | null;

@@ -675,6 +675,11 @@ function HarnessExecutionToolCard({
                   Expected: {protectedOpened.content.payload.expectedOutput}
                 </p>
               ) : null}
+              {typeof protectedOpened.content.retainedHistoricalError === "string" ? (
+                <p className="mt-1 whitespace-pre-wrap break-words" data-testid="task-retained-historical-error">
+                  Earlier error: {protectedOpened.content.retainedHistoricalError}
+                </p>
+              ) : null}
             </div>
           ) : null}
 

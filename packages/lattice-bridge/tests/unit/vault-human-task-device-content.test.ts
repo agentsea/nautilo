@@ -48,7 +48,10 @@ import {
   encodeLiveShadowMessagePlanV4,
 } from
   "@nautilo/lattice-crypto/wire";
-import { encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import {
+  encodeTaskDefinitionContentV2,
+  encodeTaskPayloadV1,
+} from "../../src/task/task-payload-v1.ts";
 import { fingerprintTaskDualPublicationFieldsV1 } from
   "../../src/task/task-operational-fields-digest-v1.ts";
 import {
@@ -715,4 +718,55 @@ test("dual Task preparation encrypts and signs the same canonical ordinary paylo
   });
   expect(signedDigests[0]).not.toEqual(signedDigests[1]);
   for (const digest of signedDigests) digest.fill(0);
+});
+
+test("dual Task update signs and publishes the exact carried V2 definition bytes", async () => {
+  const writer = await setup("device:dual-v2-writer", 0x252);
+  const plan = {
+    planVersion: 1 as const,
+    operation: "update" as const,
+    operationId: "task:dual:update:2",
+    taskId: TASK_ID,
+    expectedContentRevision: 1,
+    nextContentRevision: 2,
+    expectedCryptoAccessRevision: 0,
+    planDigestBase64url: base64url(new Uint8Array(32).fill(0x31)),
+    authority: {
+      requesterHumanId: HUMAN_ID,
+      sourceRoomId: ROOM_ID,
+      namespaceId: NAMESPACE_ID,
+      domainId: "domain:1",
+      expectedAccessRevision: 9,
+      expectedPolicyRevision: 1,
+      bindingHashBase64url: base64url(BINDING_HASH),
+      keyGeneration: 2,
+    },
+  };
+  const task = { scheduleKind: "now" as const };
+  const payload = {
+    formatVersion: 2 as const,
+    prompt: "edited private prompt",
+    expectedOutput: null,
+    protectedMetadata: {},
+    retainedHistoricalError: "provider unavailable",
+  };
+  const prepared = await writer.content.prepareDualUpdate({ plan, payload, task });
+  const canonical = encodeTaskDefinitionContentV2(payload);
+  const ordinary = decodeBase64url(prepared.ordinaryPayloadBytesBase64url);
+  const signedBytes = decodeBase64url(prepared.signedPublicationRequestBytesBase64url);
+  try {
+    expect(ordinary).toEqual(canonical);
+    const signed = decodeHumanTaskPublicationRequestV1(signedBytes);
+    const expected = fingerprintTaskDualPublicationFieldsV1("update", task, canonical);
+    try {
+      expect(signed.operationalFieldsDigest).toEqual(expected);
+    } finally {
+      signed.operationalFieldsDigest.fill(0);
+      expected.fill(0);
+    }
+  } finally {
+    canonical.fill(0);
+    ordinary.fill(0);
+    signedBytes.fill(0);
+  }
 });

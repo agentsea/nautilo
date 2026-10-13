@@ -113,7 +113,7 @@ export {
   type RelayClaudeExecutionResponse,
   type RelayClaudeExecutionSocketScope,
 } from "./claude-execution-protocol";
-export { claudePermissionDetailSchema, type ClaudePermissionDetail, CLAUDE_PERMISSION_DETAIL_PROTOCOL_VERSION } from "./claude-execution-protocol";
+export { CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION, claudePermissionDetailSchema, type ClaudePermissionDetail, CLAUDE_PERMISSION_DETAIL_PROTOCOL_VERSION } from "./claude-execution-protocol";
 export {
   DUCKDUCKGO_HTML_ENDPOINT,
   DUCKDUCKGO_HTML_MAX_QUERY_CHARS,
@@ -674,5 +674,6 @@ export { RELAY_GITHUB_PROTOCOL_VERSION, isRelayGitHubDispatch, parseRelayGitHubI
   type RelayGitHubInvocationBinding } from "./protocol";
 
 export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV4 } from "./protocol";
+export { RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION, isRelayTaskProjectFileDispatch } from "./protocol";
 
 export { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "./protocol";

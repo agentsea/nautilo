@@ -108,7 +108,7 @@ describe("historical Task content source", () => {
     expect(timeEdit.sourceDigest).not.toEqual(base.sourceDigest);
   });
 
-  test("accounts for active, nested, errored, malformed, and unencodable definitions", () => {
+  test("accounts for active, nested, malformed, and unencodable definitions", () => {
     for (const source of [
       definition({ taskStatus: "running" }),
       definition({ taskStatus: "awaiting" }),
@@ -120,14 +120,31 @@ describe("historical Task content source", () => {
     expect(classifyTaskHistoricalContentSourceV1(definition({
       parentTaskId: "40000000-0000-4000-8000-000000000004",
     }))).toEqual({ status: "unsupported", reason: "nested_task" });
-    expect(classifyTaskHistoricalContentSourceV1(definition({
-      taskLastError: "provider unavailable",
-    }))).toEqual({ status: "unsupported", reason: "task_last_error" });
+    const errored = supported(definition({ taskLastError: "provider unavailable" }));
+    expect(errored.kind).toBe("definition");
+    if (errored.kind !== "definition") throw new Error("Expected definition");
+    expect(errored.payload).toEqual({
+      formatVersion: 2,
+      prompt: "Summarize the release evidence.",
+      expectedOutput: "A short report",
+      protectedMetadata: {},
+      retainedHistoricalError: "provider unavailable",
+    });
+    const changedError = supported(definition({ taskLastError: "different failure" }));
+    expect(changedError.sourcePayloadHash).not.toEqual(errored.sourcePayloadHash);
+    expect(changedError.sourceDigest).not.toEqual(errored.sourceDigest);
+    expect(supported(definition({ taskLastError: "" })).payload).toMatchObject({
+      formatVersion: 2, retainedHistoricalError: "",
+    });
     expect(classifyTaskHistoricalContentSourceV1(definition({
       taskUpdatedAt: new Date("invalid"),
     }))).toEqual({ status: "unsupported", reason: "invalid_source" });
     expect(classifyTaskHistoricalContentSourceV1(definition({
       metadata: { futureField: true },
+    }))).toEqual({ status: "unsupported", reason: "metadata" });
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      taskLastError: "authenticated error",
+      metadata: { retainedHistoricalError: "metadata substitution" },
     }))).toEqual({ status: "unsupported", reason: "metadata" });
     expect(classifyTaskHistoricalContentSourceV1(definition({
       metadata: { target: "x".repeat(2_000_000), mode: "update", publish: "branch" },

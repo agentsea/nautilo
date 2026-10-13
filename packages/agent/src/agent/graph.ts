@@ -278,6 +278,8 @@ export interface NautiloGraphDeps extends PostModelDeps {
   /** Protected Task only: retain every admitted node body through saver close. */
   readonly protectedTaskNodeSettlementScope?:
     ProtectedTaskNodeSettlementScope;
+  /** Trusted execution-owner diagnostic policy; never restored from graph state. */
+  readonly confidential?: true;
 }
 
 function withProtectedTaskNodeSettlement<Arguments extends unknown[], Result>(
@@ -344,9 +346,11 @@ export function createNautiloGraph(
       draft,
       deps?.ordinaryContentAccessForState,
       deps?.foregroundChatFundingSession,
+      deps?.confidential,
     ),
   });
   const graphToolsNode = createToolsNode({
+    ...(deps?.confidential === true ? { confidential: true } : {}),
     ...(deps?.delegatedLocalExecutionPortForState === undefined ? {} : { delegatedLocalExecutionPortForState: deps.delegatedLocalExecutionPortForState }),
     ...(deps?.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPortForState: deps.localExecutionHistoryPortForState }),
     ...(deps?.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPortForState: deps.humanTerminalAdmissionPortForState }),

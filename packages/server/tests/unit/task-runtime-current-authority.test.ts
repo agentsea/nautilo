@@ -36,6 +36,10 @@ import {
   type CurrentProtectedTaskRuntimeFacts,
 } from "../../src/routes/task-runtime-current-authority";
 
+const openCodeSelection = { execution: { version: 1, harnessId: "opencode-acp", source: "genie", executionProfile: "autonomous",
+  readiness: { relayId: "relay", relaySessionId: "socket", desktopSessionId: "desktop", pairingGenerationRef: "pairing",
+    selectedProtocolVersion: 15, capabilityRevision: 3 } } } as const;
+
 function factLoaders(facts: CurrentProtectedTaskRuntimeFacts) {
   const { requesterPrivateRoom, ...lifecycle } = facts;
   return {
@@ -413,6 +417,7 @@ describe("current protected Task Runtime authority adapter", () => {
     const currentFacts = {
       ...f.facts,
       task: { ...f.facts.task, callingRoomId: "room:open" },
+      opencodeExecutionSelection: openCodeSelection,
     };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
       loadCurrentLifecycleFacts: async () => {
@@ -457,6 +462,9 @@ describe("current protected Task Runtime authority adapter", () => {
           f.record.authoritySet.namespaceRequirements,
         );
         expect(current.nativeExecutionSupported).toBe(true);
+        expect(current.opencodeExecutionSelection).toEqual(openCodeSelection);
+        expect(current.opencodeExecutionSelection).not.toBe(openCodeSelection);
+        expect(Object.isFrozen(current.opencodeExecutionSelection?.execution.readiness)).toBe(true);
         return "current";
       },
     });
@@ -565,6 +573,7 @@ describe("current protected Task Runtime authority adapter", () => {
             f.facts.task.cryptoRequiredNamespaceFingerprint,
           crypto_mapping_state: f.facts.task.cryptoMappingState,
           native_execution_supported: nativeExecutionSupported,
+          opencode_execution_selection: openCodeSelection,
         }],
         [{
           id: f.facts.run.id,
@@ -614,6 +623,8 @@ describe("current protected Task Runtime authority adapter", () => {
 
     const admitted = await load(true);
     expect(admitted.facts?.nativeExecutionSupported).toBe(true);
+    expect(admitted.facts?.opencodeExecutionSelection).toEqual(openCodeSelection);
+    expect(admitted.statement.sql).toContain('as "opencode_execution_selection"');
     expect(Object.hasOwn(admitted.facts?.task ?? {}, "metadata")).toBe(false);
     expect(Object.hasOwn(admitted.facts?.task ?? {}, "preset")).toBe(false);
     expect(admitted.statement.sql).toContain(

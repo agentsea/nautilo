@@ -428,6 +428,8 @@ import {
   normalizeHumanMessageText,
   normalizeVideoExportSettings,
   normalizeRemoteOrdinaryRequestBody,
+  codexPermissionSelectionResponseSchema,
+  codexRequestResponseSchema,
   parseLiveShadowMessageRealtimeEventV1,
   parseFullEncryptionMessageRealtimeContentEventV2,
 } from "@nautilo/types";
@@ -8855,6 +8857,82 @@ ipcMain.handle("foregroundShadow:recoverTaskPendingAttention", async (e, raw: un
   const { controller } = await foregroundShadowControllerForSender(e);
   return controller.recoverTaskPendingAttention(input);
 });
+
+ipcMain.handle(
+  "foregroundShadow:recoverProtectedTaskExternalRequests",
+  async (e, raw: unknown) => {
+    const value = boundedForegroundShadowValue(
+      raw,
+      "Protected Task external request recovery",
+    ) as { clientActionSessionId?: unknown; requestId?: unknown };
+    const clientActionSessionId = foregroundShadowString(
+      value.clientActionSessionId,
+      "Client action session id",
+      200,
+    );
+    const requestId = value.requestId === undefined ? undefined
+      : foregroundShadowString(value.requestId, "Request id", 512);
+    if (Object.keys(value).some((key) => key !== "clientActionSessionId" && key !== "requestId")) {
+      throw new TypeError("Protected Task external request recovery is invalid");
+    }
+    const { controller } = await foregroundShadowControllerForSender(e);
+    return controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+  },
+);
+
+ipcMain.handle(
+  "foregroundShadow:respondProtectedTaskExternalRequest",
+  async (e, raw: unknown) => {
+    const value = boundedForegroundShadowValue(
+      raw,
+      "Protected Task external request response",
+    ) as {
+      clientActionSessionId?: unknown;
+      requestId?: unknown;
+      responseCapability?: unknown;
+      response?: unknown;
+    };
+    if (Object.keys(value).some((key) => ![
+      "clientActionSessionId",
+      "requestId",
+      "responseCapability",
+      "response",
+    ].includes(key))) {
+      throw new TypeError("Protected Task external request response is invalid");
+    }
+    const clientActionSessionId = foregroundShadowString(
+      value.clientActionSessionId,
+      "Client action session id",
+      200,
+    );
+    const requestId = foregroundShadowString(value.requestId, "Request id", 512);
+    const responseCapability = foregroundShadowString(
+      value.responseCapability,
+      "Response capability",
+      200,
+    );
+    const standardResponse = codexRequestResponseSchema.safeParse(value.response);
+    const selectionResponse = codexPermissionSelectionResponseSchema.safeParse(
+      value.response,
+    );
+    const response = standardResponse.success
+      ? standardResponse.data
+      : selectionResponse.success ? selectionResponse.data : null;
+    if (response === null) {
+      throw new TypeError("Protected Task external request response is invalid");
+    }
+    const { controller } = await foregroundShadowControllerForSender(e);
+    return controller.respondProtectedTaskExternalRequest({
+      clientActionSessionId,
+      requestId,
+      responseCapability,
+      response,
+    });
+  },
+);
 
 ipcMain.handle("foregroundShadow:edit", async (e, raw: unknown) => {
   const { roomId, messageId, body } = parseForegroundShadowEdit(raw);

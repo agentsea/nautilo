@@ -694,7 +694,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     });
   });
 
-  app.get<{ Querystring: ListTasksWithFundingQuery }>("/api/tasks", async (request, reply) => {
+  app.get<{ Querystring: ListTasksWithFundingQuery; Reply: TaskSummary[] | { error: string } }>("/api/tasks", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId =
@@ -730,7 +730,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     });
   });
 
-  app.get<{ Querystring: ListTasksWithFundingQuery }>("/api/tasks/content-v1", async (request, reply) => {
+  app.get<{ Querystring: ListTasksWithFundingQuery; Reply: TaskContentSummaryV1[] | { error: string } }>("/api/tasks/content-v1", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
@@ -953,7 +953,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     return sendAvatar(request, reply, profile?.avatarRef ?? SHELL_AVATAR_REF);
   });
 
-  app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery }>("/api/tasks/:id", async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: ListTasksWithFundingQuery; Reply: TaskDetail | { error: string } }>("/api/tasks/:id", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId =

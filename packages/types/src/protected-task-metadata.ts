@@ -1,5 +1,6 @@
 import { parseLiveDocumentVersion } from "./api";
 import { readTaskPreparation } from "./task-presentation";
+import { parseTaskFundingBinding } from "./task-funding";
 
 export const PROTECTED_TASK_METADATA_VERSION = 1 as const;
 
@@ -386,9 +387,10 @@ function classifyDeepResearch(
 ): { operational: MutableJsonRecord; protectedContent: MutableJsonRecord } | Unsupported {
   const candidate = record(value);
   if (!candidate) return unsupported("malformed_field", "$.deepResearch");
-  const keys = ["version", "reportLanguage", "modelPlan", "invokingModelId"];
+  const keys = ["version", "reportLanguage", "modelPlan", "invokingModelId",
+    ...(candidate["version"] === 2 ? ["preferenceRevisions", "modelFunding", "tavilyFunding"] : [])];
   if (unknownKeys(candidate, new Set(keys))) return unsupported("unknown_field", "$.deepResearch");
-  if (!exactKeys(candidate, keys) || candidate["version"] !== 1 || !nonEmptyString(candidate["reportLanguage"])
+  if (!exactKeys(candidate, keys) || (candidate["version"] !== 1 && candidate["version"] !== 2) || !nonEmptyString(candidate["reportLanguage"])
     || !(candidate["invokingModelId"] === null || boundedUtf8(candidate["invokingModelId"], PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1))) {
     return unsupported("malformed_field", "$.deepResearch");
   }
@@ -410,8 +412,42 @@ function classifyDeepResearch(
   )) {
     return unsupported("malformed_field", "$.deepResearch.modelPlan");
   }
+  const operational: MutableJsonRecord = {
+    version: candidate["version"], modelPlan: cloneRecord(plan), invokingModelId: candidate["invokingModelId"],
+  };
+  if (candidate["version"] === 2) {
+    const lanes = ["supervisor", "research", "summarization", "compression", "finalReport"] as const;
+    const revisions = candidate["preferenceRevisions"];
+    const funding = candidate["modelFunding"];
+    if (!exactKeys(revisions, lanes)) {
+      const fields = record(revisions);
+      return unsupported(fields && unknownKeys(fields, new Set(lanes)) ? "unknown_field" : "malformed_field", "$.deepResearch.preferenceRevisions");
+    }
+    if (!exactKeys(funding, lanes)) {
+      const fields = record(funding);
+      return unsupported(fields && unknownKeys(fields, new Set(lanes)) ? "unknown_field" : "malformed_field", "$.deepResearch.modelFunding");
+    }
+    if (lanes.some(lane => !nonNegativeSafeInteger(revisions[lane]))) {
+      return unsupported("malformed_field", "$.deepResearch.preferenceRevisions");
+    }
+    const modelFunding: MutableJsonRecord = {};
+    for (const lane of lanes) {
+      try {
+        modelFunding[lane] = { ...parseTaskFundingBinding(funding[lane]) };
+      } catch {
+        return unsupported("malformed_field", `$.deepResearch.modelFunding.${lane}`);
+      }
+    }
+    try {
+      operational["tavilyFunding"] = { ...parseTaskFundingBinding(candidate["tavilyFunding"]) };
+    } catch {
+      return unsupported("malformed_field", "$.deepResearch.tavilyFunding");
+    }
+    operational["preferenceRevisions"] = cloneRecord(revisions);
+    operational["modelFunding"] = modelFunding;
+  }
   return {
-    operational: { version: 1, modelPlan: cloneRecord(plan), invokingModelId: candidate["invokingModelId"] },
+    operational,
     protectedContent: { reportLanguage: candidate["reportLanguage"] },
   };
 }

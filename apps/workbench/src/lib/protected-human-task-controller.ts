@@ -60,6 +60,8 @@ export type ProtectedScheduledTaskProjection =
       task: TaskContentSummaryV1;
       prompt: string;
       expectedOutput: string | null;
+      /** Authenticated display snapshot; never Task lifecycle authority. */
+      retainedHistoricalError: string | null;
     }>
   | Readonly<{
       availability: "unavailable";
@@ -90,6 +92,7 @@ export async function listProtectedScheduledTasks(
       task,
       prompt: definition.content.payload.prompt,
       expectedOutput: definition.content.payload.expectedOutput,
+      retainedHistoricalError: definition.content.retainedHistoricalError,
     });
   }));
   return Object.freeze(opened.filter(

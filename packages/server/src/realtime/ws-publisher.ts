@@ -448,6 +448,11 @@ function inferDeliveryScope(event: ServerEvent): DeliveryScope {
   // task lifecycle events are owner-private. Never room-broadcast;
   // the result message the run posts into a shared room emits its own
   // room-scoped `message.new`.
+  if (event.type === "task.external_request.changed") {
+    return typeof event.ownerId === "string" && event.ownerId.length > 0
+      ? { kind: "user", userId: event.ownerId }
+      : { kind: "none" };
+  }
   if (
     (event.type === "task.fired" ||
       event.type === "task.completed" ||

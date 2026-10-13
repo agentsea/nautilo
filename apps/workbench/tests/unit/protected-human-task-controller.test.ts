@@ -29,6 +29,7 @@ test("protected Task open resolves its separate projection before exact read", a
             expectedOutput: null,
             protectedMetadata: {},
           },
+          retainedHistoricalError: null,
         },
       };
     },
@@ -62,7 +63,7 @@ test("protected scheduled rows stay separate and open their protected definition
       return { task, content: { status: "protected" as const, payload: {
         formatVersion: 1 as const, prompt: "private schedule",
         expectedOutput: null, protectedMetadata: {},
-      } } };
+      }, retainedHistoricalError: "Provider unavailable before protection" } };
     },
   } as WorkbenchProtectedHumanTaskController;
 
@@ -71,6 +72,7 @@ test("protected scheduled rows stay separate and open their protected definition
   expect(rows[0]).toMatchObject({
     availability: "opened",
     prompt: "private schedule",
+    retainedHistoricalError: "Provider unavailable before protection",
   });
   expect(calls).toEqual([
     "protected-list",
@@ -142,7 +144,7 @@ test("viewer preserves proven ordinary Tasks while gating protected reads by pol
       return { task, content: { status: "protected" as const, payload: {
         formatVersion: 1 as const, prompt: "private", expectedOutput: null,
         protectedMetadata: {},
-      } } };
+      }, retainedHistoricalError: null } };
     },
   } as WorkbenchProtectedHumanTaskController;
   try {
@@ -240,11 +242,15 @@ test("protected result presentation rejects unknown policy and absent custody", 
     { mode: "unknown" as const, protectedController: undefined },
     { mode: "encrypted_only" as const, protectedController: undefined },
   ]) {
-    await expect(readWorkbenchTaskRunResultForViewer({
-      ...input,
-      taskId: "task-1",
-      taskRunId: "run-1",
-      agentId: "agent-1",
-    })).rejects.toMatchObject({ failureClass: "unsupported" });
+    let failure: unknown;
+    try {
+      await readWorkbenchTaskRunResultForViewer({
+        ...input,
+        taskId: "task-1",
+        taskRunId: "run-1",
+        agentId: "agent-1",
+      });
+    } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ failureClass: "unsupported" });
   }
 });

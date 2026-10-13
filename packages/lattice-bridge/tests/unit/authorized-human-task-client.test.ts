@@ -4,6 +4,7 @@ import type {
   DualTaskPreparedUpdateRequestV1,
   NautiloApiClient,
   ProtectedTaskPreparedCreateRequestV1,
+  ProtectedTaskPreparedUpdateRequestV1,
 } from "@nautilo/api-client/browser";
 import type { TaskContentSummaryV1 } from "@nautilo/types";
 
@@ -16,7 +17,10 @@ import {
   type TaskDefinitionPublicationPlanV1,
   type TaskDefinitionReadEnvelopeV1,
 } from "../../src/client/task/authorized-human-task-client.ts";
-import { encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import {
+  encodeTaskDefinitionContentV2,
+  encodeTaskPayloadV1,
+} from "../../src/task/task-payload-v1.ts";
 import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
   "../../src/task/task-historical-content-identity.ts";
 import {
@@ -206,6 +210,7 @@ describe("authorized Human Task client boundary", () => {
         expectedOutput: null,
         protectedMetadata: {},
       },
+      retainedHistoricalError: null,
     });
     expect(calls).toEqual(["read-envelope", "device-open"]);
     expect(openedBytes.every((value) => value === 0)).toBe(true);
@@ -249,9 +254,9 @@ describe("authorized Human Task client boundary", () => {
         committerDeviceId: historicalRepair.publisherDeviceId,
       }],
     });
-    const opened = encodeTaskPayloadV1({
-      formatVersion: 1, prompt: "historical", expectedOutput: null,
-      protectedMetadata: {},
+    const opened = encodeTaskDefinitionContentV2({
+      formatVersion: 2, prompt: "historical", expectedOutput: null,
+      protectedMetadata: {}, retainedHistoricalError: "provider unavailable",
     });
     expect(await client({
       plans: { readExact: () => Promise.resolve(makeEnvelope()) },
@@ -260,7 +265,11 @@ describe("authorized Human Task client boundary", () => {
         return Promise.resolve(opened);
       } },
     }).open(historicalSummary)).toMatchObject({
-      content: { status: "protected", payload: { prompt: "historical" } },
+      content: {
+        status: "protected",
+        payload: { prompt: "historical" },
+        retainedHistoricalError: "provider unavailable",
+      },
     });
     expect(opens).toBe(1);
 
@@ -308,6 +317,7 @@ describe("authorized Human Task client boundary", () => {
         plans: {
           async create() { events.push("plan:create"); return publicationPlan("create"); },
           async update() { events.push("plan:update"); return publicationPlan("update"); },
+          async readExact() { events.push("read:update"); return readEnvelope(); },
         },
         content: {
           async prepareDualCreate() {
@@ -317,6 +327,13 @@ describe("authorized Human Task client boundary", () => {
           async prepareDualUpdate() {
             events.push("prepare:update");
             return dualUpdateRequest();
+          },
+          async openExact() {
+            events.push("open:update");
+            return encodeTaskPayloadV1({
+              formatVersion: 1, prompt: "old", expectedOutput: null,
+              protectedMetadata: {},
+            });
           },
         },
         journal: {
@@ -365,11 +382,157 @@ describe("authorized Human Task client boundary", () => {
       expect(events).toEqual([
         "plan:create", "prepare:create", "journal:task_create", "unseal",
         "send:dual-create", "outcome:completed",
-        "plan:update", "prepare:update", "journal:task_update", "unseal",
+        "read:update", "open:update", "plan:update", "prepare:update", "journal:task_update", "unseal",
         "send:dual-update", "outcome:completed",
       ]);
     },
   );
+
+  test.each([
+    ["encrypted_only", "protected"],
+    ["shadow_encryption", "dual"],
+  ] as const)(
+    "%s updates carry an authenticated V2 display snapshot through revisions 2 and 3",
+    async (mode, representation) => {
+      const carried: unknown[] = [];
+      let retained: Parameters<HumanTaskPreparedJournalV1["putBeforeSend"]>[0] | undefined;
+      let currentPrompt = "historical";
+      const currentBytes = () => encodeTaskDefinitionContentV2({
+        formatVersion: 2,
+        prompt: currentPrompt,
+        expectedOutput: null,
+        protectedMetadata: {},
+        retainedHistoricalError: "provider unavailable",
+      });
+      const taskClient = client({
+        mode,
+        plans: {
+          async readExact({ reference }) {
+            return {
+              ...readEnvelope(),
+              objectId: reference.objectId,
+              contentRevision: reference.contentRevision,
+              cryptoAccessRevision: reference.cryptoAccessRevision,
+            };
+          },
+          async update({ current }) {
+            const expected = current.content.status === "protected"
+              ? current.content.contentRevision : 0;
+            return {
+              ...publicationPlan("update"),
+              expectedContentRevision: expected,
+              nextContentRevision: expected + 1,
+              expectedCryptoAccessRevision: current.content.status === "protected"
+                ? current.content.cryptoAccessRevision : 0,
+            };
+          },
+        },
+        content: {
+          async openExact() { return currentBytes(); },
+          async prepareUpdate(input) {
+            carried.push(input.payload);
+            const dual = dualUpdateRequest();
+            const { representation: _representation,
+              ordinaryPayloadBytesBase64url: _ordinary, ...request } = dual;
+            return {
+              ...request,
+              expectedContentRevision: input.plan.expectedContentRevision,
+              nextContentRevision: input.plan.nextContentRevision,
+              expectedCryptoAccessRevision: input.plan.expectedCryptoAccessRevision,
+            } as ProtectedTaskPreparedUpdateRequestV1;
+          },
+          async prepareDualUpdate(input) {
+            carried.push(input.payload);
+            return {
+              ...dualUpdateRequest(),
+              expectedContentRevision: input.plan.expectedContentRevision,
+              nextContentRevision: input.plan.nextContentRevision,
+              expectedCryptoAccessRevision: input.plan.expectedCryptoAccessRevision,
+            };
+          },
+        },
+        journal: {
+          async putBeforeSend(mutation) {
+            retained = mutation;
+            return { status: "inserted", index: { operationId: "operation",
+              authenticatedRequestDigestBase64url: "digest" } as never };
+          },
+          async withPrepared(_operationId, use) { return use(retained!); },
+          async recordOutcome() {},
+        },
+        api: {
+          async updatePreparedTaskV1(_taskId, request) {
+            expect(representation).toBe("protected");
+            return { ...summary, content: { ...summary.content,
+              contentRevision: request.nextContentRevision } };
+          },
+          async updateDualPreparedTaskV1(_taskId, request) {
+            expect(representation).toBe("dual");
+            return { ...summary, content: { ...summary.content,
+              contentRevision: request.nextContentRevision } };
+          },
+        },
+      });
+      const edit = (prompt: string) => ({
+        payload: { formatVersion: 1 as const, prompt, expectedOutput: null,
+          protectedMetadata: {} },
+        task: {},
+      });
+      const revision2 = await taskClient.update(summary, edit("revision 2"));
+      currentPrompt = "revision 2";
+      const revision3 = await taskClient.update(revision2, edit("revision 3"));
+      expect(revision3.content).toMatchObject({ contentRevision: 3 });
+      expect(carried).toEqual([
+        { formatVersion: 2, prompt: "revision 2", expectedOutput: null,
+          protectedMetadata: {}, retainedHistoricalError: "provider unavailable" },
+        { formatVersion: 2, prompt: "revision 3", expectedOutput: null,
+          protectedMetadata: {}, retainedHistoricalError: "provider unavailable" },
+      ]);
+    },
+  );
+
+  test("protected update stops before planning or publication when current content cannot open", async () => {
+    const events: string[] = [];
+    const error = await client({
+      mode: "encrypted_only",
+      plans: {
+        async readExact() {
+          events.push("read-current");
+          throw new ClassifiedDataOperationError(
+            "key_waiting",
+            "Current Task definition key is unavailable",
+          );
+        },
+        async update() {
+          events.push("plan-update");
+          return publicationPlan("update");
+        },
+      },
+      content: {
+        async prepareUpdate() {
+          events.push("prepare-update");
+          throw new Error("prepare must remain unreachable");
+        },
+      },
+      api: {
+        async updatePreparedTaskV1() {
+          events.push("publish-update");
+          return summary;
+        },
+      },
+    }).update(summary, {
+      payload: {
+        formatVersion: 1,
+        prompt: "edited",
+        expectedOutput: null,
+        protectedMetadata: {},
+      },
+      task: {},
+    }).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((error as ClassifiedDataOperationError).failureClass).toBe("key_waiting");
+    expect(events).toEqual(["read-current"]);
+  });
 
   test("Fallback Shadow selects ordinary only after recoverable pre-send dual preparation failure", async () => {
     const events: string[] = [];
@@ -464,8 +627,17 @@ describe("authorized Human Task client boundary", () => {
     const error = await client({
       mode: "shadow_encryption",
       shadowBehavior: "fallback",
-      plans: { async update() { return publicationPlan("update"); } },
-      content: { async prepareDualUpdate() { return dualUpdateRequest(); } },
+      plans: {
+        async update() { return publicationPlan("update"); },
+        async readExact() { return readEnvelope(); },
+      },
+      content: {
+        async openExact() {
+          return encodeTaskPayloadV1({ formatVersion: 1, prompt: "old",
+            expectedOutput: null, protectedMetadata: {} });
+        },
+        async prepareDualUpdate() { return dualUpdateRequest(); },
+      },
       journal: {
         async putBeforeSend(mutation) {
           retained = mutation;

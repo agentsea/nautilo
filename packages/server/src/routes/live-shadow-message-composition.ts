@@ -576,6 +576,7 @@ export async function notifyProtectedTaskReplyAfterSharedAgentPublication(
 
 export function createProductionLiveShadowMessageComposition(input: Readonly<{
   taskContentOwner?: () => EncryptionDataOperationOwner;
+  cancelTaskExternalRequestsForHuman?: (humanActorId: string) => void;
   wakeForegroundMemoryEffectRecovery: () => void;
   resolveReadableNamespaces?: ResolveLiveShadowReadableNamespaces;
   loadRuntimePolicy?: () => Promise<StrictShadowEnforcementPolicy>;
@@ -4516,6 +4517,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       );
       pendingAttention?.cancelForHuman(request.authority.humanActorId);
       taskPendingAttention?.cancelForHuman(request.authority.humanActorId);
+      input.cancelTaskExternalRequestsForHuman?.(request.authority.humanActorId);
     },
     reconcileLifecycle: async (request: Readonly<{
       now?: number;

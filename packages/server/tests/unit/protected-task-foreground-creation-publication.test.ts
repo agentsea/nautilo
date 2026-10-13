@@ -316,3 +316,81 @@ describe("foreground protected Task creation publication", () => {
     expect(() => f.publisher.publish(f.request)).toThrow(/closed/);
   });
 });
+
+const claudeCreationExecution = { version: 1, harnessId: "claude-code", source: "genie",
+  profileRef: "profile", catalogModelId: "catalog", selectedModel: "model" };
+function claudeCreationRequest(f: ReturnType<typeof fixture>, execution: unknown = claudeCreationExecution) {
+  const metadata = { execution };
+  const classification = classifyProtectedTaskMetadataV1(metadata);
+  if (classification.status !== "supported") throw new Error("Invalid test metadata");
+  return { ...f.request, candidate: { ...f.request.candidate, metadata }, prepared: { ...f.request.prepared,
+    shape: { ...f.request.prepared.shape, executor: "external_harness" as const },
+    operationalMetadata: classification.operational, payload: { ...f.request.prepared.payload, protectedMetadata: classification.protectedContent } } };
+}
+for (const mode of ["encrypted_only", "shadow_encryption"] as const) test(`closed Claude creation uses protected publication under ${mode}`, async () => {
+  const f = fixture(mode);
+  try {
+    const request = claudeCreationRequest(f);
+    expect((await f.publisher.publish(request)).publicationDisposition).toBe("created");
+    expect(f.row()?.metadata).toEqual({ execution: claudeCreationExecution });
+    expect(f.row()?.prompt).toBe(mode === "encrypted_only" ? "" : request.candidate.prompt);
+    expect(f.counts()).toEqual({ prepares: 1, writes: 1, commits: 1 });
+    expect((await f.publisher.publish(request)).publicationDisposition).toBe("replayed");
+    expect(f.counts().prepares).toBe(1);
+  } finally { f.publisher.dispose(); }
+});
+test("Claude publication refuses unsupported descriptors and mismatched executor shape before custody", async () => {
+  for (const variant of ["provider", "unknown", "native-shape"] as const) {
+    const f = fixture();
+    try {
+      const request = claudeCreationRequest(f);
+      const changed = variant === "native-shape" ? { ...request, prepared: { ...request.prepared,
+        shape: { ...request.prepared.shape, executor: "native" as const } } }
+        : { ...request, candidate: { ...request.candidate, metadata: { execution: variant === "provider"
+          ? { ...claudeCreationExecution, harnessId: "codex" }
+          : { ...claudeCreationExecution, workingDirectory: "/private" } } } };
+      await rejects(async () => f.publisher.publish(changed));
+      expect(f.counts()).toEqual({ prepares: 0, writes: 0, commits: 0 });
+      expect(f.row()).toBeNull();
+    } finally { f.publisher.dispose(); }
+  }
+});
+
+const externalCreationExecutions = [
+  { version: 1, harnessId: "codex", source: "genie", collaborationMode: "work", harnessModelId: "model",
+    readiness: { relayId: "relay", pairingGenerationRef: "pairing", capabilityRevision: 4 }, workingDirectory: "/private/workspace" },
+  { version: 1, harnessId: "hermes-acp", source: "genie", readiness: { relayId: "relay", relaySessionId: "socket",
+    pairingGenerationRef: "pairing", desktopSessionId: "desktop", selectedProtocolVersion: 14, capabilityRevision: 4 } },
+];
+for (const execution of externalCreationExecutions) for (const mode of ["encrypted_only", "shadow_encryption"] as const) {
+  test(`${execution.harnessId} definition creation uses protected bytes and exact replay under ${mode}`, async () => {
+    const f = fixture(mode);
+    try {
+      const request = claudeCreationRequest(f, execution);
+      const classified = classifyProtectedTaskMetadataV1({ execution });
+      if (classified.status !== "supported") throw new Error("Fixture classification failed");
+      expect((await f.publisher.publish(request)).publicationDisposition).toBe("created");
+      expect(f.row()?.metadata).toEqual(mode === "encrypted_only" ? classified.operational : { execution });
+      expect(f.row()?.prompt).toBe(mode === "encrypted_only" ? "" : request.candidate.prompt);
+      if (execution.harnessId === "codex") {
+        expect(JSON.stringify(request.prepared.operationalMetadata)).not.toContain("workingDirectory");
+        expect(request.prepared.payload.protectedMetadata).toEqual({ execution: { workingDirectory: "/private/workspace" } });
+      }
+      expect((await f.publisher.publish(request)).publicationDisposition).toBe("replayed");
+      expect(f.counts()).toEqual({ prepares: 1, writes: 1, commits: 2 });
+    } finally { f.publisher.dispose(); }
+  });
+}
+test("external publication rejects protected directory substitution and unsupported OpenCode before custody", async () => {
+  for (const variant of ["directory", "opencode"] as const) {
+    const f = fixture();
+    try {
+      const request = claudeCreationRequest(f, externalCreationExecutions[0]);
+      const changed = { ...request, candidate: { ...request.candidate, metadata: { execution: {
+        ...externalCreationExecutions[0], ...(variant === "directory" ? { workingDirectory: "/substituted" } : { harnessId: "opencode-acp" }),
+      } } } };
+      await rejects(async () => f.publisher.publish(changed));
+      expect(f.counts()).toEqual({ prepares: 0, writes: 0, commits: 0 }); expect(f.row()).toBeNull();
+    } finally { f.publisher.dispose(); }
+  }
+});

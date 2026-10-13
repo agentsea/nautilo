@@ -42,6 +42,14 @@ const reviewedSourcePaths = [
   "packages/server/src/routes/task-occurrence-policy.ts",
 ] as const;
 
+const protectedProviderDiagnosticPaths = [
+  "packages/agent/src/subagents/deep-research/agent/graph.ts",
+  "packages/agent/src/subagents/deep-research/researcher/graph.ts",
+  "packages/agent/src/subagents/deep-research/supervisor/graph.ts",
+  "packages/agent/src/tools/research/run-deep-research.ts",
+  "packages/runtime/src/executors/deep-research-executor.ts",
+] as const;
+
 describe("Task protection inventory closure", () => {
   test("binds every added Task database writer to a known schema table", async () => {
     const schema = inventoryDrizzleSchema(nautiloSchema);
@@ -72,19 +80,22 @@ describe("Task protection inventory closure", () => {
       (observation) => locators.has(observation.locator),
     );
 
-    expect(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS).toHaveLength(27);
-    expect(observations).toHaveLength(27);
+    expect(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS).toHaveLength(32);
+    expect(observations).toHaveLength(32);
     expect(auditDtoDeclarations({
       observations,
       declarations: REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
     })).toEqual({
       ok: true,
       counts: {
-        observations: 27,
-        declarations: 27,
-        arbitraryPayloads: 7,
+        observations: 32,
+        declarations: 32,
+        arbitraryPayloads: 8,
       },
     });
+    expect([...locators].filter((locator) =>
+      locator.startsWith("http:request_response:POST /api/tasks/external-requests")
+    )).toHaveLength(4);
     expect(SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS).toEqual(new Set([
       "http:request_response:GET /api/tasks",
       "http:request_response:GET /api/tasks/:id",
@@ -122,6 +133,29 @@ describe("Task protection inventory closure", () => {
         "packages/lattice-bridge/src/server/memory/postgres-foreground-memory-publication.ts#",
       )
     )).toBe(false);
+  });
+
+  test("keeps protected provider diagnostics closed without retiring ordinary log debt", async () => {
+    const scan = await scanSourceAlarms({
+      repoRoot: repositoryRoot,
+      scanRoots: protectedProviderDiagnosticPaths,
+    });
+    const reviews = CURRENT_SOURCE_ALARM_REVIEWS.filter((review) =>
+      protectedProviderDiagnosticPaths.some((path) =>
+        review.locator.startsWith(`${path}#`)
+      )
+    );
+    const inspection = inspectSourceAlarmReviews(scan.alarms, reviews);
+
+    expect(scan.errors).toEqual([]);
+    expect(scan.alarms).toHaveLength(11);
+    expect(inspection.errors).toEqual([]);
+    expect(inspection.counts).toEqual({
+      baselineDebt: 4,
+      declaration: 7,
+      reviewedExclusion: 0,
+      unmapped: 0,
+    });
   });
 
   test("retires relocated dispatch diagnostics and the replaced observer diagnostic", () => {

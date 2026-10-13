@@ -34,6 +34,7 @@ function openedRow(): ProtectedScheduledTaskRow {
     } as ProtectedScheduledTaskRow["task"],
     prompt: "Prepare a private weekly digest",
     expectedOutput: null,
+    retainedHistoricalError: null,
   };
 }
 
@@ -108,6 +109,29 @@ describe("ProtectedScheduledTaskCard run history", () => {
     expect(view.getByRole("alert").textContent).toContain("Device access is unavailable");
     fireEvent.click(view.getByRole("button", { name: "Try again" }));
     expect(actions.onOpenHistory).toHaveBeenCalledTimes(2);
+  });
+
+  test("shows an authenticated historical error only while protected custody is open", () => {
+    const opened = { ...openedRow(), retainedHistoricalError: "Provider unavailable before repair" };
+    const view = render(
+      <ProtectedScheduledTaskCard row={opened} {...actions}
+        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        history={null} />,
+    );
+    expect(view.getByTestId("task-retained-historical-error").textContent)
+      .toBe("Earlier error: Provider unavailable before repair");
+
+    view.rerender(
+      <ProtectedScheduledTaskCard row={{
+        availability: "unavailable",
+        task: opened.task,
+        reason: "waiting_for_authorization",
+      }} {...actions} controller={undefined} mode="encrypted_only"
+        scopeKey="scope-a" history={null} />,
+    );
+    expect(view.queryByTestId("task-retained-historical-error")).toBeNull();
+    expect(view.container.textContent).not.toContain("Provider unavailable before repair");
+    expect(view.container.textContent).not.toContain("Earlier error:");
   });
 
   test("requires an exact stored run selection and never displays run ids", () => {

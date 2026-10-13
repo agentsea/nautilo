@@ -22,6 +22,7 @@ let currentRun: TaskRun;
 let providerAttempts = 0;
 let ordinaryTaskReads = 0;
 let ordinaryRunReads = 0;
+let protectedTaskProjectionKeys: readonly string[] = [];
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -108,7 +109,7 @@ mock.module("@nautilo/trust", () => ({
 }));
 
 const directDb = {
-  select: () => {
+  select: (projection: Readonly<Record<string, unknown>>) => {
     let source: unknown;
     const query = {
       from: (table: unknown) => {
@@ -118,11 +119,18 @@ const directDb = {
       innerJoin: () => query,
       where: () => query,
       limit: async () => source === actualDb.tasks
-        ? [currentTask]
+        ? [Object.fromEntries(Object.keys(projection).map(key => [key,
+            key === "metadataShapeSupported"
+              ? true
+              : currentTask[key as keyof Task],
+          ]))]
         : source === actualDb.taskRuns
           ? [currentRun]
           : [{ id: ROOM }],
     };
+    if (Object.hasOwn(projection, "contentRevision")) {
+      protectedTaskProjectionKeys = Object.keys(projection);
+    }
     return query;
   },
 };
@@ -134,7 +142,10 @@ mock.module("../../src/lib/foreground-chat-funding", () => ({
   usageFundingFor: () => ({ kind: "personal", providerRoute: "anthropic" }),
 }));
 mock.module("../../src/lib/capability-funding", () => ({
-  createCapabilityFundingSession: () => ({}),
+  createCapabilityFundingSession: () => ({
+    openModel: async () => ({}),
+    openService: async () => ({}),
+  }),
   prepareCapabilityFundingSession: async () => undefined,
 }));
 class TestModelFundingError extends Error {
@@ -214,6 +225,8 @@ describe("protected native Task funding", () => {
       ordinaryTaskReads: 0,
       ordinaryRunReads: 0,
     });
+    expect(protectedTaskProjectionKeys).toContain("metadataShapeSupported");
+    expect(protectedTaskProjectionKeys).not.toContain("metadata");
     expect(authorityChecks).toBeGreaterThanOrEqual(10);
     expect(JSON.stringify({ currentTask, currentRun, admission }))
       .not.toContain("request-local-secret");
@@ -224,6 +237,76 @@ describe("protected native Task funding", () => {
       (error: unknown) => (error as Error).message,
     )).toBe("protected_authority_revoked");
     expect(providerAttempts).toBe(1);
+  });
+
+  test("rechecks admitted Deep Research funding from the accepted metadata without selecting the DB body", async () => {
+    const lanes = ["supervisor", "research", "summarization", "compression", "finalReport"] as const;
+    const modelPlan = {
+      version: 1 as const,
+      supervisorModel: MODEL,
+      researchModel: MODEL,
+      summarizationModel: MODEL,
+      compressionModel: MODEL,
+      finalReportModel: MODEL,
+    };
+    const metadata = {
+      deepResearch: {
+        version: 2 as const,
+        reportLanguage: "English",
+        modelPlan,
+        invokingModelId: MODEL,
+        preferenceRevisions: Object.fromEntries(lanes.map(lane => [lane, 1])),
+        modelFunding: Object.fromEntries(lanes.map(lane => [lane,
+          { kind: "server", providerRoute: "anthropic" }])),
+        tavilyFunding: { kind: "server" as const, providerRoute: "tavily" },
+      },
+    };
+    const accepted = task({ metadata });
+    currentTask = accepted;
+    currentRun = run();
+    protectedTaskProjectionKeys = [];
+    const session = await withProtectedTaskFundingAuthority(
+      async () => {},
+      () => nativeTaskFundingPort.openSession(accepted, currentRun, MODEL, false),
+    );
+    const currentWithoutBody = { ...accepted };
+    Object.defineProperty(currentWithoutBody, "metadata", {
+      configurable: true,
+      get(): never { throw new Error("protected metadata body was selected"); },
+    });
+    currentTask = currentWithoutBody;
+    expect(await session.runAttempt(MODEL, async () => "accepted")).toBe("accepted");
+    expect(protectedTaskProjectionKeys).toContain("metadataShapeSupported");
+    expect(protectedTaskProjectionKeys).not.toContain("metadata");
+  });
+
+  test("protected repo docs keeps exact file-only funding and never rereads its encrypted definition body", async () => {
+    const accepted = task({ preset: "repo_docs", toolsMode: "whitelist", toolsWhitelist: ["file"],
+      metadata: { target: "/private/project", mode: "auto", publish: "branch", instructions: "Private guidance" } });
+    currentTask = accepted;
+    currentRun = run();
+    const session = await withProtectedTaskFundingAuthority(async () => {},
+      () => nativeTaskFundingPort.openSession(accepted, currentRun, MODEL, false));
+    const withoutBody = { ...accepted };
+    Object.defineProperty(withoutBody, "metadata", {
+      get(): never { throw new Error("protected repo docs metadata body was selected"); },
+    });
+    currentTask = withoutBody;
+    expect(await session.runAttempt(MODEL, async () => "accepted")).toBe("accepted");
+    expect(protectedTaskProjectionKeys).not.toContain("metadata");
+    for (const change of [
+      { toolsWhitelist: ["file", "exec_command"] },
+      { toolsMode: "auto" as const },
+      { useScope: true, scopeId: NAMESPACE },
+      { metadata: { target: "/private/project", mode: "auto", publish: "branch", unknownBody: "unclassified" } },
+      { metadata: { mode: "auto", publish: "branch" } },
+      { contentRepresentation: "ordinary" as const },
+    ]) {
+      const candidate = { ...accepted, ...change };
+      expect(await withProtectedTaskFundingAuthority(async () => {},
+        () => nativeTaskFundingPort.admit(candidate)).then(() => null,
+          (error: unknown) => (error as { code?: string }).code)).toBe("unsupported_workload");
+    }
   });
 
   test("opens fresh caller funding for a synthetic cancelled protected Run", async () => {

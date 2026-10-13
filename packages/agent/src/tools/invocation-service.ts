@@ -1,3 +1,4 @@
+import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { bindDelegatedLocalExecution } from "./local-execution/admission";
@@ -360,7 +361,11 @@ export function resolveExecutionPolicy(
  * a separate channel (server log only), so the two surfaces
  * don't conflict.
  */
-function formatToolLogLabel(tc: { name: string; args: unknown }): string {
+function formatToolLogLabel(
+  tc: { name: string; args: unknown },
+  confidential = false,
+): string {
+  if (confidential) return tc.name;
   if (tc.name !== "file") return tc.name;
   const args = tc.args as { command?: unknown } | null | undefined;
   if (args && typeof args["command"] === "string") {
@@ -1024,6 +1029,8 @@ export interface NautiloToolInvocationServerContext {
   readonly [invocationServerContextBrand]: true;
 }
 export type ServerToolInvocationContextOptions = Readonly<{
+  /** Trusted owner-only privacy policy for provider diagnostics. */
+  readonly confidential?: true;
   /** Process-local trusted admission for bounded personal Task controls. */
   readonly personalTaskControls?: boolean;
   /** Non-secret caller-runnable Task-model union for model discovery. */
@@ -1067,6 +1074,7 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
   readonly #personalTaskControls: boolean;
   readonly #personalTaskRunnableModelIds: readonly string[];
   readonly #personalOnlyTaskModelIds: readonly string[];
+  readonly #confidential: boolean;
 
   constructor(
     readonly state: NautiloState,
@@ -1074,6 +1082,7 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
     options: ServerToolInvocationContextOptions,
   ) {
     this.#ordinaryContentAccess = options.ordinaryContentAccess;
+    this.#confidential = options.confidential === true;
     this.#personalTaskControls = options.personalTaskControls === true;
     this.#personalTaskRunnableModelIds = Object.freeze([
       ...(options.personalTaskRunnableModelIds ?? []),
@@ -1139,6 +1148,10 @@ class ServerToolInvocationContext implements NautiloToolInvocationServerContext 
 
   personalOnlyTaskModelIds(): readonly string[] {
     return this.#personalOnlyTaskModelIds;
+  }
+
+  confidential(): boolean {
+    return this.#confidential;
   }
 }
 
@@ -1218,6 +1231,7 @@ export function createNautiloToolInvocationSession(
   const personalTaskRunnableModelIds =
     trustedContext.personalTaskRunnableModelIds();
   const personalOnlyTaskModelIds = trustedContext.personalOnlyTaskModelIds();
+  const confidential = trustedContext.confidential();
   const ordinaryContentAccessErrors = new Set<string>();
   const ordinaryContentAccessRetryRequired = new Set<string>();
   const recallRecordsContext = recallRecordsToolContextForState(
@@ -1364,6 +1378,7 @@ export function createNautiloToolInvocationSession(
           personalTaskControls,
           personalTaskRunnableModelIds,
           personalOnlyTaskModelIds,
+          ...(confidential ? { confidential: true } : {}),
           ...recallRecordsContext,
           browserResearchExecutionPort: createBrowserResearchExecutionPort({
             ownerId: state.userId,
@@ -1549,7 +1564,7 @@ export function createNautiloToolInvocationSession(
               fullEncryptionOnly,
             });
         if (unavailableReason !== null) {
-          warn(`[nautilo/tools] Tool prerequisite unavailable: ${formatToolLogLabel(tc)}`);
+          warn(`[nautilo/tools] Tool prerequisite unavailable: ${formatToolLogLabel(tc, confidential)}`);
           const tm = new ToolMessage({
             content: `Error: ${unavailableReason}`,
             tool_call_id: toolCallId,
@@ -1559,12 +1574,14 @@ export function createNautiloToolInvocationSession(
           setToolMessageStatus(tm, "error");
           return tm;
         }
-        warn(`[nautilo/tools] Unknown tool: ${formatToolLogLabel(tc)}`);
+        warn(`[nautilo/tools] Unknown tool: ${confidential ? "unknown_tool" : formatToolLogLabel(tc)}`);
         // No tool.start/end for unknown tools — nothing actually
         // ran. The agent will see the error ToolMessage and decide
         // how to recover.
         const tm = new ToolMessage({
-          content: `Error: Unknown tool "${tc.name}"`,
+          content: confidential
+            ? "Error: Unknown tool"
+            : `Error: Unknown tool "${tc.name}"`,
           tool_call_id: toolCallId,
           name: tc.name,
         });
@@ -1659,8 +1676,11 @@ export function createNautiloToolInvocationSession(
           && delegatedSource.taskId === state.currentTaskId && delegatedSource.taskRunId === state.currentTaskRunId
           && delegatedPin.authority.taskId === delegatedSource.taskId && delegatedPin.authority.taskRunId === delegatedSource.taskRunId
           && delegatedPin.owner.relayId === requiredRelayId;
+        const projectFile = tc.name === "file" ? getCurrentProtectedTaskProjectFilePort() : null;
+        const hasProjectFileTarget = projectFile !== null && matchesProtectedTaskProjectFilePort(projectFile, state)
+          && projectFile.relayId === requiredRelayId;
         if (
-          (!state.verifiedOrdinaryOrigin && !hasDelegatedTarget
+          (!state.verifiedOrdinaryOrigin && !hasDelegatedTarget && !hasProjectFileTarget
             && !hasAvailableTaskReportBackContinuation(state.taskReportBackContinuation))
           || !requiredRelayId
         ) {
@@ -1741,6 +1761,7 @@ export function createNautiloToolInvocationSession(
         } else if (policy.executor === "relay") {
           const relayResult = await executeViaRelayRaw(tc, policy, state, {
             toolCallId, fullEncryptionOnly,
+            ...(confidential ? { confidential: true as const } : {}),
             ...(trustedContext.delegatedLocalExecutionPort === undefined ? {} : { delegatedLocalExecutionPort: trustedContext.delegatedLocalExecutionPort }),
             ...(trustedContext.localExecutionHistoryPort === undefined ? {} : { localExecutionHistoryPort: trustedContext.localExecutionHistoryPort }),
             ...(trustedContext.humanTerminalAdmissionPort === undefined ? {} : { humanTerminalAdmissionPort: trustedContext.humanTerminalAdmissionPort }),
@@ -1763,6 +1784,7 @@ export function createNautiloToolInvocationSession(
                 toolCallId,
                 config?.signal,
                 fullEncryptionOnly,
+                confidential,
               );
               if (approvedRetry.ok) {
                 if ("multimodal" in approvedRetry) {
@@ -1774,7 +1796,7 @@ export function createNautiloToolInvocationSession(
                     stripInvisibleUnicode: entry?.scanInvisibleUnicode === "strip",
                   });
                   if (scanned.blocked) {
-                    warn(`[nautilo/tools] Text content from multimodal ${formatToolLogLabel(tc)} BLOCKED: ${scanned.threats.join(", ")}`);
+                    warn(`[nautilo/tools] Text content from multimodal ${formatToolLogLabel(tc, confidential)} BLOCKED: ${scanned.threats.join(", ")}`);
                     const tm = new ToolMessage({
                       content: scanned.content,
                       tool_call_id: toolCallId,
@@ -1892,7 +1914,7 @@ export function createNautiloToolInvocationSession(
               stripInvisibleUnicode: entry?.scanInvisibleUnicode === "strip",
             });
             if (scanned.blocked) {
-              warn(`[nautilo/tools] Text content from multimodal ${formatToolLogLabel(tc)} BLOCKED: ${scanned.threats.join(", ")}`);
+              warn(`[nautilo/tools] Text content from multimodal ${formatToolLogLabel(tc, confidential)} BLOCKED: ${scanned.threats.join(", ")}`);
               const tm = new ToolMessage({
                 content: scanned.content,
                 tool_call_id: toolCallId,
@@ -2006,7 +2028,7 @@ export function createNautiloToolInvocationSession(
             });
           rawContent = JSON.stringify(result);
         } else {
-          log(`[nautilo/tools] Executing (cloud): ${formatToolLogLabel(tc)}`);
+          log(`[nautilo/tools] Executing (cloud): ${formatToolLogLabel(tc, confidential)}`);
           // wrap cloud `file` invocations in the explicit
           // file-result-status capture so an out-of-band `fileToolError`
           // marker inside a `file` command handler carries the error
@@ -2116,7 +2138,7 @@ export function createNautiloToolInvocationSession(
         });
 
         if (scanned.blocked) {
-          warn(`[nautilo/tools] Content from ${formatToolLogLabel(tc)} BLOCKED: ${scanned.threats.join(", ")}`);
+          warn(`[nautilo/tools] Content from ${formatToolLogLabel(tc, confidential)} BLOCKED: ${scanned.threats.join(", ")}`);
           // audit — the client sees a single bounded,
           // human-safe reason and the safe replacement, never raw scanner
           // identifiers. Detailed identifiers remain in the warning above.
@@ -2232,8 +2254,10 @@ export function createNautiloToolInvocationSession(
         // ToolMessage the agent could ignore. Foreground never throws this.
         if (error instanceof RelayUnavailableError) throw error;
 
-        const msg = redactSecrets(error instanceof Error ? error.message : String(error)).text;
-        warn(`[nautilo/tools] Tool ${formatToolLogLabel(tc)} failed: ${msg}`);
+        const msg = confidential
+          ? "Protected tool execution failed."
+          : redactSecrets(error instanceof Error ? error.message : String(error)).text;
+        warn(`[nautilo/tools] Tool ${formatToolLogLabel(tc, confidential)} failed: ${msg}`);
         if (publishToolTelemetry) {
           emitAgentEvent(toolTracker.toolEnd(toolCallId, tc.name, "error", msg));
         }
@@ -2273,7 +2297,15 @@ export function createNautiloToolInvocationSession(
       let requiredHostContext: RequiredOrdinaryHostDispatchContext | null =
         requiredRelayId === null ? null : { relayId: requiredRelayId };
       const taskContinuation = state.taskReportBackContinuation;
-      if (requiredRelayId !== null && hasAvailableTaskReportBackContinuation(taskContinuation)) {
+      const projectFile = call.toolName === "file" ? getCurrentProtectedTaskProjectFilePort() : null;
+      if (projectFile !== null) {
+        if (!matchesProtectedTaskProjectFilePort(projectFile, state) || requiredRelayId !== projectFile.relayId) {
+          return { callId: call.callId, toolName: call.toolName, status: "error",
+            content: "Task project file authority changed; no file operation was dispatched." };
+        }
+        requiredHostContext = { relayId: projectFile.relayId,
+          currentFolderRoot: projectFile.workspaceRoot, workspaceRoot: projectFile.workspaceRoot };
+      } else if (requiredRelayId !== null && hasAvailableTaskReportBackContinuation(taskContinuation)) {
         const capabilities = _relayRegistry === null
           ? null
           : resolveExactTaskContinuationCapabilities({
@@ -2301,7 +2333,7 @@ export function createNautiloToolInvocationSession(
       }
       const ordinaryOrigin = state.verifiedOrdinaryOrigin;
       if (
-        requiredRelayId !== null &&
+        projectFile === null && requiredRelayId !== null &&
         ordinaryOrigin?.kind === "paired_mobile" &&
         (call.toolName === "file" || call.toolName === "apply_patch")
       ) {
@@ -3545,8 +3577,11 @@ async function executeViaRelayRaw(
     readonly fullEncryptionOnly?: boolean;
     /** Already selected catalog model; only used for the private envelope. */
     readonly resolvedModelId?: string;
+    /** Trusted invocation privacy policy; closes argument-derived diagnostics. */
+    readonly confidential?: true;
   } = {},
 ): Promise<RelayDispatchOutcome> {
+  const toolLogLabel = formatToolLogLabel(tc, opts.confidential === true);
   const browserPlan = tc.name === "browser_snapshot" || tc.name === "browser_screenshot"
     ? interpretBrowserDecisionPlanArgs(tc.args)
     : null;
@@ -3566,7 +3601,7 @@ async function executeViaRelayRaw(
       : { ok: true, rawContent: content };
   }
   if (!_relayRegistry) {
-    warn(`[nautilo/tools] Relay tool ${formatToolLogLabel(tc)} called but no relay registry configured`);
+    warn(`[nautilo/tools] Relay tool ${toolLogLabel} called but no relay registry configured`);
     return {
       ok: false,
       errorMessage: `Error: ${tc.name} requires a connected relay (desktop app or nautilo-relay). No relay registry is configured on this server.`,
@@ -4076,7 +4111,7 @@ async function executeViaRelayRaw(
         });
         if (readmitted !== null) {
           log(
-            `[nautilo/tools] Workstation dispatch plan for ${formatToolLogLabel(tc)} ` +
+            `[nautilo/tools] Workstation dispatch plan for ${toolLogLabel} ` +
               `re-admitted under the same authority tuple (relay ${readmitted.relayId}); ` +
               `retrying the dispatch once.`,
           );
@@ -4097,7 +4132,7 @@ async function executeViaRelayRaw(
     const revalidation = planRegistry!.revalidate(plan, fingerprint);
     if (!revalidation.ok) {
       warn(
-        `[nautilo/tools] Workstation dispatch plan for ${formatToolLogLabel(tc)} ` +
+        `[nautilo/tools] Workstation dispatch plan for ${toolLogLabel} ` +
           `bound relay ${plan.relayId} failed re-validation ` +
           `(${revalidation.reason}); refusing to re-route to a different relay.`,
       );
@@ -4147,7 +4182,7 @@ async function executeViaRelayRaw(
       (plan.executionClass === "basic_sandbox" ? Boolean(state.currentFolder) && state.currentFolder !== plan.currentFolder : state.currentFolder !== plan.currentFolder)
     ) {
       warn(
-        `[nautilo/tools] Workstation dispatch plan for ${formatToolLogLabel(tc)} ` +
+        `[nautilo/tools] Workstation dispatch plan for ${toolLogLabel} ` +
           `was admitted for Current Folder ${plan.currentFolder} but the live ` +
           `Current Folder is ${state.currentFolder ?? ""}; refusing to re-bind.`,
       );
@@ -4174,7 +4209,7 @@ async function executeViaRelayRaw(
     // than dispatching to either under a mismatched admission.
     if (policy.hostedBy && policy.hostedBy !== plan.relayId) {
       warn(
-        `[nautilo/tools] Workstation dispatch plan for ${formatToolLogLabel(tc)} ` +
+        `[nautilo/tools] Workstation dispatch plan for ${toolLogLabel} ` +
           `pins relay ${plan.relayId} but the MCP tool is hosted on ${policy.hostedBy}; ` +
           `refusing the mismatched dispatch.`,
       );
@@ -4197,7 +4232,7 @@ async function executeViaRelayRaw(
     // even though C6 visibility already prevents cross-user tool exposure).
     const userRelays = _relayRegistry.findByCapabilityForUser("canReadWorkspace", userId);
     if (!userRelays.includes(policy.hostedBy)) {
-      warn(`[nautilo/tools] MCP tool ${formatToolLogLabel(tc)} hosted on relay ${policy.hostedBy}, not connected for user ${userId}`);
+      warn(`[nautilo/tools] MCP tool ${toolLogLabel} hosted on relay ${policy.hostedBy}, not connected for user ${userId}`);
       return {
         ok: false,
         errorMessage: `Error: ${tc.name} runs on a local MCP server that isn't connected right now. Start the relay hosting it and try again.`,
@@ -4211,7 +4246,7 @@ async function executeViaRelayRaw(
 
     if (eligibleRelays.length === 0) {
       const requiredRelayCapability = capability;
-      warn(`[nautilo/tools] Relay tool ${formatToolLogLabel(tc)} called but no relay with ${requiredRelayCapability} connected for user ${userId}`);
+      warn(`[nautilo/tools] Relay tool ${toolLogLabel} called but no relay with ${requiredRelayCapability} connected for user ${userId}`);
       return {
         ok: false,
         errorMessage: `Error: ${tc.name} requires a connected relay with ${requiredRelayCapability}. Connect a desktop app or run nautilo-relay to enable this tool.`,
@@ -4221,7 +4256,7 @@ async function executeViaRelayRaw(
     }
     relayId = eligibleRelays[0]!;
   }
-  log(`[nautilo/tools] Dispatching via relay (${relayId}): ${formatToolLogLabel(tc)}`);
+  log(`[nautilo/tools] Dispatching via relay (${relayId}): ${toolLogLabel}`);
 
   let structuredSsh: {
     readonly args: Record<string, unknown>;
@@ -4593,7 +4628,7 @@ async function executeViaRelayRaw(
         }
       } catch (err) {
         warn(
-          `[nautilo/tools] Uncontained host command resolution failed for ${formatToolLogLabel(tc)}: ` +
+          `[nautilo/tools] Uncontained host command resolution failed for ${toolLogLabel}: ` +
             `${err instanceof Error ? err.message : String(err)}; retaining contained execution.`,
         );
       }
@@ -5077,7 +5112,7 @@ async function executeViaRelayRaw(
           return { ok: false, errorMessage: formatRelayToolError(tc, result), browserFailure: code };
         }
       }
-      warn(`[nautilo/tools] Relay tool ${formatToolLogLabel(tc)} returned error: ${result.error}`);
+      warn(`[nautilo/tools] Relay tool ${toolLogLabel} returned error: ${result.error}`);
       if (result.networkDeniedDestination !== undefined) {
         return {
           ok: false,
@@ -5161,7 +5196,7 @@ async function executeViaRelayRaw(
     return { ok: true, rawContent };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    warn(`[nautilo/tools] Relay dispatch for ${formatToolLogLabel(tc)} failed: ${msg}`);
+    warn(`[nautilo/tools] Relay dispatch for ${toolLogLabel} failed: ${msg}`);
     const structuredSshOutcomeUnknown = isStructuredSsh && isStructuredSshOutcomeUnknown(error);
     const browserMutationOutcomeUnknown = browserToolMayMutate(tc.name) && isDesktopAutomationOutcomeUnknown(error);
     const desktopMutationOutcomeUnknown =
@@ -5381,6 +5416,7 @@ async function handleNetworkApprovalAndRetry(
   toolCallId?: string,
   signal?: AbortSignal,
   fullEncryptionOnly?: boolean,
+  confidential?: boolean,
 ): Promise<RelayDispatchOutcome> {
   const payload = {
     type: "approval_ask" as const,
@@ -5419,6 +5455,7 @@ async function handleNetworkApprovalAndRetry(
     ...(toolCallId !== undefined ? { toolCallId } : {}),
     ...(signal ? { signal } : {}),
     ...(fullEncryptionOnly === undefined ? {} : { fullEncryptionOnly }),
+    ...(confidential ? { confidential: true as const } : {}),
   });
 }
 

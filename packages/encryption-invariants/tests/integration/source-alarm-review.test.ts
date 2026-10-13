@@ -16,6 +16,14 @@ import {
   REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-17-source-alarms";
+import {
+  REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS,
+  SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-main-2026-10-13-source-alarms";
+import {
+  REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS,
+  SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-protected-task-provider-source-alarms";
 import { REVIEWED_D581_SOURCE_ALARMS } from "../../baseline/reviewed-d581-research-continuity";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -381,7 +389,15 @@ describe("source alarm review closure", () => {
       .filter((review) =>
         !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator)
       )
-      .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS));
+      .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS));
   });
 
   test("maps every exact baseline alarm to owned, release-blocking closure", () => {

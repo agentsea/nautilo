@@ -1,11 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import type { ForegroundChatFundingSession, NautiloProfile } from "@nautilo/agent";
+import {
+  getRelayRegistry,
+  setRelayRegistry,
+  type DelegatedLocalExecutionPort,
+  type ForegroundChatFundingSession,
+  type NautiloProfile,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedTaskProjectFilePort,
+  type ToolRelayRegistry,
+} from "@nautilo/agent";
 import type { DirectDatabase, Task, TaskRun } from "@nautilo/db";
 import type {
   ProtectedTaskPredispatchPlan,
   ProtectedTaskRunningOccurrence,
 } from "@nautilo/runtime";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
+import type { LocalExecutionDelegation } from "@nautilo/types";
 
 import { createProductionProtectedTaskNativeExecutionContext } from
   "../../src/routes/protected-task-native-execution-context";
@@ -26,8 +36,17 @@ const startedAt = new Date("2026-10-01T12:00:00.000Z");
 const fingerprint = new Uint8Array(32).fill(0x42);
 const graphThreadId = `subagent:task:${ids.task}:initial`;
 const cryptoObjectId = `task-definition:v1:${"a".repeat(64)}`;
+const repoDocsSelection = Object.freeze({ mode: "auto" as const, publish: "pr" as const });
+const openedRepoDocs = Object.freeze({
+  target: "https://example.test/repository.git",
+  instructions: "Document the public package boundaries.",
+  ...repoDocsSelection,
+});
+const repoDocsWorkspace = `/projects/root/nautilo-repo-docs/task-run-${ids.run}`;
 
-function task(overrides: Partial<Task> = {}): Task {
+type TestTask = Task & { repoDocsSelection?: unknown };
+
+function task(overrides: Partial<TestTask> = {}): TestTask {
   return {
     id: ids.task,
     ownerId: ids.owner,
@@ -197,7 +216,7 @@ function profile(): NautiloProfile {
 }
 
 function harness(
-  taskOverrides: Partial<Task> = {},
+  taskOverrides: Partial<TestTask> = {},
   executionOverrides: Readonly<{
     run?: Partial<TaskRun>;
     reference?: Record<string, unknown>;
@@ -271,6 +290,60 @@ function harness(
   };
 }
 
+const localExecutionDelegation: LocalExecutionDelegation = Object.freeze({
+  version: 1,
+  humanUserId: ids.owner,
+  agentId: ids.agent,
+  sourceRoomId: ids.room,
+  sourceConversationId: "source-thread",
+  rootTaskId: ids.task,
+  projectGrantId: "project-grant",
+  ceiling: "basic",
+  profile: null,
+  target: Object.freeze({
+    instanceId: "instance-fixture",
+    relayId: "relay-fixture",
+    pairingGeneration: "pairing-fixture",
+    serverOrigin: "https://server.example",
+    serverFingerprint: "server-fingerprint",
+  }),
+});
+
+function relayRegistryFixture(): ToolRelayRegistry {
+  return {
+    findByCapabilityForUser: () => [],
+    getCapabilities: () => undefined,
+    dispatch: async () => ({ status: "error", error: "unused test relay" }),
+  };
+}
+
+async function withRelayRegistry<Value>(
+  registry: ToolRelayRegistry | null,
+  work: () => Promise<Value>,
+): Promise<Value> {
+  const previous = getRelayRegistry();
+  setRelayRegistry(registry);
+  try {
+    return await work();
+  } finally {
+    setRelayRegistry(previous);
+  }
+}
+
+function delegatedPort(): DelegatedLocalExecutionPort {
+  const signal = new AbortController().signal;
+  return Object.freeze({
+    taskId: ids.task,
+    taskRunId: ids.run,
+    signal,
+    retain: () => () => undefined,
+    withAdmission: async <Value>(
+      _operation: "read" | "input",
+      work: (source: never) => Promise<Value>,
+    ) => await work({} as never),
+  });
+}
+
 const input = {
   occurrence: occurrence(),
   predispatch: predispatch(),
@@ -296,6 +369,178 @@ describe("protected Task native execution context", () => {
     })(input);
     expect(context.delegatedLocalExecutionPort).toBe(port);
   });
+
+  test("wires repo docs adapters from the current relay and opens project files only for the prepared workDir", async () => {
+    const priorRegistry = getRelayRegistry();
+    const registry = relayRegistryFixture();
+    const delegated = delegatedPort();
+    const semanticPort: ProtectedRepoDocsExecutionPort = Object.freeze({
+      plan: async () => null,
+      execute: async () => { throw new Error("unused semantic execution"); },
+      inspect: async () => ({ status: "absent" as const }),
+    });
+    const projectPort: ProtectedTaskProjectFilePort = Object.freeze({
+      taskId: ids.task,
+      taskRunId: ids.run,
+      agentId: ids.agent,
+      humanUserId: ids.owner,
+      relayId: localExecutionDelegation.target.relayId,
+      workspaceRoot: repoDocsWorkspace,
+      dispatch: async () => ({ ok: false, message: "unused project file execution" }),
+    });
+    let semanticContext: Parameters<NonNullable<Parameters<
+      typeof createProductionProtectedTaskNativeExecutionContext
+    >[0]["createRepoDocsLocalExecutionPort"]>>[0] | undefined;
+    const projectContexts: Parameters<NonNullable<Parameters<
+      typeof createProductionProtectedTaskNativeExecutionContext
+    >[0]["createRepoDocsProjectFilePort"]>>[0][] = [];
+    let currentChecks = 0;
+    const state = harness({
+      preset: "repo_docs",
+      toolsMode: "whitelist",
+      toolsWhitelist: ["file"],
+      localExecutionDelegation,
+      repoDocsSelection,
+    });
+
+    await withRelayRegistry(registry, async () => {
+      const context = await createProductionProtectedTaskNativeExecutionContext({
+        ...state.dependencies,
+        resolveLocalExecutionPort: async () => delegated,
+        resolveToolWhitelist: () => ["file"],
+        resolveTaskModel: ({ baseModelId }) => ({ modelId: baseModelId, reasons: [] }),
+        createRepoDocsLocalExecutionPort: repoContext => {
+          semanticContext = repoContext;
+          return semanticPort;
+        },
+        createRepoDocsProjectFilePort: repoContext => {
+          projectContexts.push(repoContext);
+          return projectPort;
+        },
+      })({
+        ...input,
+        repoDocs: openedRepoDocs,
+        assertCurrentTaskAuthority: async () => { currentChecks += 1; },
+      });
+
+      expect(context.protectedRepoDocsExecutionPort).toBe(semanticPort);
+      expect(context.delegatedLocalExecutionPort).toBe(delegated);
+      expect(context.toolWhitelist).toEqual(["file"]);
+      expect(projectContexts).toHaveLength(0);
+      expect(semanticContext).toMatchObject({
+        delegated,
+        registry,
+        selection: openedRepoDocs,
+        state: {
+          currentTaskId: ids.task,
+          currentTaskRunId: ids.run,
+          agentId: ids.agent,
+          causalHumanUserId: ids.owner,
+          roomId: ids.room,
+          currentThreadId: graphThreadId,
+          trustedExecutionEntrypoint: "background.task",
+        },
+      });
+
+      const openProjectFiles = context.createProtectedRepoDocsProjectFilePort;
+      if (openProjectFiles === undefined) throw new Error("repo docs project-file factory missing");
+      expect(openProjectFiles(repoDocsWorkspace)).toBe(projectPort);
+      expect(projectContexts).toHaveLength(1);
+      expect(projectContexts[0]).toMatchObject({
+        delegated,
+        registry,
+        selection: openedRepoDocs,
+        workspaceRoot: repoDocsWorkspace,
+        relayId: localExecutionDelegation.target.relayId,
+      });
+      await semanticContext?.assertCurrent();
+      expect(currentChecks).toBe(1);
+    });
+    expect(getRelayRegistry()).toBe(priorRegistry);
+  });
+
+  test("denies changed repo docs shape before constructing either adapter", async () => {
+    const variants: ReadonlyArray<Readonly<{
+      task: Partial<TestTask>;
+      repoDocs: typeof openedRepoDocs;
+    }>> = [
+      { task: { preset: "in_background" }, repoDocs: openedRepoDocs },
+      { task: { toolsMode: "auto", toolsWhitelist: [] }, repoDocs: openedRepoDocs },
+      { task: { repoDocsSelection: { mode: "init", publish: "pr" } }, repoDocs: openedRepoDocs },
+      { task: { repoDocsSelection: { mode: "auto", publish: "push" } }, repoDocs: openedRepoDocs },
+    ];
+    for (const variant of variants) {
+      let adapterCalls = 0;
+      const state = harness({
+        preset: "repo_docs",
+        toolsMode: "whitelist",
+        toolsWhitelist: ["file"],
+        localExecutionDelegation,
+        repoDocsSelection,
+        ...variant.task,
+      });
+      await withRelayRegistry(relayRegistryFixture(), async () => {
+        const load = createProductionProtectedTaskNativeExecutionContext({
+          ...state.dependencies,
+          resolveLocalExecutionPort: async () => delegatedPort(),
+          createRepoDocsLocalExecutionPort: () => {
+            adapterCalls += 1;
+            throw new Error("must not construct semantic adapter");
+          },
+          createRepoDocsProjectFilePort: () => {
+            adapterCalls += 1;
+            throw new Error("must not construct project-file adapter");
+          },
+        });
+        await Promise.resolve(expect(load({
+          ...input,
+          repoDocs: variant.repoDocs,
+        })).rejects.toThrow("repo docs selection changed"));
+      });
+      expect(adapterCalls).toBe(0);
+    }
+  });
+
+  test("requires the captured project port, current delegation, and live relay before adapter construction", async () => {
+    const repoTask = {
+      preset: "repo_docs",
+      toolsMode: "whitelist",
+      toolsWhitelist: ["file"],
+      localExecutionDelegation,
+      repoDocsSelection,
+    } satisfies Partial<TestTask>;
+    for (const variant of ["port", "delegation", "registry"] as const) {
+      let adapterCalls = 0;
+      const state = harness({
+        ...repoTask,
+        ...(variant === "delegation" ? { localExecutionDelegation: null } : {}),
+      });
+      await withRelayRegistry(variant === "registry" ? null : relayRegistryFixture(), async () => {
+        const load = createProductionProtectedTaskNativeExecutionContext({
+          ...state.dependencies,
+          resolveLocalExecutionPort: async () => variant === "port" ? undefined : delegatedPort(),
+          resolveTaskModel: ({ baseModelId }) => ({ modelId: baseModelId, reasons: [] }),
+          createRepoDocsLocalExecutionPort: () => {
+            adapterCalls += 1;
+            throw new Error("must not construct semantic adapter");
+          },
+          createRepoDocsProjectFilePort: () => {
+            adapterCalls += 1;
+            throw new Error("must not construct project-file adapter");
+          },
+        });
+        const error = await load({ ...input, repoDocs: openedRepoDocs }).catch((cause: unknown) => cause);
+        expect(error).toBeInstanceOf(Error);
+        expect(error instanceof Error ? error.message : "").toContain(variant === "port"
+          ? "project authority is unavailable"
+          : variant === "delegation"
+            ? "project source is unavailable"
+            : "relay is unavailable");
+      });
+      expect(adapterCalls).toBe(0);
+    }
+  });
+
   test("binds the selected profile model and ordinary depth policy", async () => {
     const state = harness();
     const context = await createProductionProtectedTaskNativeExecutionContext({

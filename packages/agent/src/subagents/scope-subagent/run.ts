@@ -1,5 +1,18 @@
 import { runWithLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../../runtime/local-execution-delegation";
 import {
+  runWithProtectedTaskProjectFilePort,
+  type ProtectedTaskProjectFilePort,
+} from "../../runtime/protected-task-project-file";
+import path from "node:path";
+import {
+  createProtectedRepoDocsCheckpoint,
+  createProtectedRepoDocsRequest,
+  runProtectedRepoDocsOperation,
+  type ProtectedRepoDocsCheckpointV1,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedRepoDocsOpenedSelection,
+} from "../../runtime/protected-repo-docs";
+import {
   HumanMessage,
   AIMessage,
   SystemMessage,
@@ -729,6 +742,12 @@ export function formatSubagentTranscriptForParent(messages: BaseMessage[]): stri
 
 export type RunScopeSubagentOpts = {
   delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
+  /** Fixed protected repo-docs wrapper; process-local execution authority is never checkpointed. */
+  protectedRepoDocs?: Readonly<{
+    selection: ProtectedRepoDocsOpenedSelection;
+    executionPort: ProtectedRepoDocsExecutionPort;
+    createProjectFilePort(workDir: string): ProtectedTaskProjectFilePort;
+  }>;
   parentThreadId: string;
   parentTurnId: string;
   parentOwnerId: string;
@@ -1131,6 +1150,7 @@ async function runScopeSubagentUntilPauseInternal(
       policyResolver,
       {
         ...defaultPostModelDeps,
+        ...(opts.protectedTaskTranscriptPort === undefined ? {} : { confidential: true as const }),
         ...(opts.delegatedLocalExecutionPort
           ? {
             delegatedLocalExecutionPortForState:
@@ -1262,7 +1282,108 @@ async function runScopeSubagentUntilPauseInternal(
     callbacks: [],
   };
 
-  // Four stream-entry modes:
+  let repoDocsCheckpoint: ProtectedRepoDocsCheckpointV1 | null = null;
+  let repoDocsProjectFilePort: ProtectedTaskProjectFilePort | undefined;
+  if (opts.protectedRepoDocs !== undefined) {
+    if (opts.taskRunCheckpointSaver === undefined
+      || opts.taskRun !== true
+      || opts.currentTaskRunId === undefined) {
+      throw new TypeError("Protected repo docs requires exact Task checkpoint authority");
+    }
+    const snapshot = await graph.getState({ configurable: { thread_id: subThreadId } }) as {
+      values?: { protectedRepoDocsCheckpoint?: ProtectedRepoDocsCheckpointV1 | null };
+    } | undefined;
+    repoDocsCheckpoint = snapshot?.values?.protectedRepoDocsCheckpoint ?? null;
+    const expected = createProtectedRepoDocsCheckpoint({
+      taskRunId: opts.currentTaskRunId,
+      selection: opts.protectedRepoDocs.selection,
+      modelId: opts.modelId,
+    });
+    if (repoDocsCheckpoint === null) {
+      repoDocsCheckpoint = expected;
+      await graph.updateState(
+        { configurable: { thread_id: subThreadId } },
+        {
+          ...graphInput,
+          // The prepared repository brief is not available until the clone
+          // receipt is confirmed. Seed no model input before that effect.
+          messages: [],
+          protectedRepoDocsCheckpoint: repoDocsCheckpoint,
+        },
+        "__start__",
+      );
+    } else if (
+      repoDocsCheckpoint.version !== expected.version
+      || repoDocsCheckpoint.taskRunId !== expected.taskRunId
+      || repoDocsCheckpoint.relativeWorkspacePath !== expected.relativeWorkspacePath
+      || repoDocsCheckpoint.branch !== expected.branch
+      || repoDocsCheckpoint.target !== expected.target
+      || repoDocsCheckpoint.mode !== expected.mode
+      || repoDocsCheckpoint.modelId !== expected.modelId
+      || repoDocsCheckpoint.publish !== expected.publish
+      || repoDocsCheckpoint.instructions !== expected.instructions
+      || typeof repoDocsCheckpoint.preparedGraphInputApplied !== "boolean"
+    ) {
+      throw new TypeError("Protected repo docs checkpoint identity changed");
+    }
+    const store = {
+      read: () => Promise.resolve(repoDocsCheckpoint),
+      write: async (checkpoint: ProtectedRepoDocsCheckpointV1) => {
+        await graph.updateState(
+          { configurable: { thread_id: subThreadId } },
+          { protectedRepoDocsCheckpoint: checkpoint },
+        );
+        repoDocsCheckpoint = checkpoint;
+      },
+    };
+    const prepared = await runProtectedRepoDocsOperation({
+      checkpoint: repoDocsCheckpoint,
+      request: createProtectedRepoDocsRequest(repoDocsCheckpoint, "prepare"),
+      port: opts.protectedRepoDocs.executionPort,
+      store,
+      signal: opts.signal ?? new AbortController().signal,
+    });
+    if (prepared.result.kind !== "prepared"
+      || prepared.result.relativeWorkspacePath !== repoDocsCheckpoint.relativeWorkspacePath
+      || prepared.result.branch !== repoDocsCheckpoint.branch) {
+      throw new TypeError("Protected repo docs prepared workspace changed");
+    }
+    repoDocsCheckpoint = prepared.checkpoint;
+    const workspace = prepared.result.workDir;
+    if (!path.isAbsolute(workspace)) {
+      throw new TypeError("Protected repo docs workspace is not absolute");
+    }
+    const projectFilePort = opts.protectedRepoDocs.createProjectFilePort(workspace);
+    if (projectFilePort.taskId !== opts.currentTaskId
+      || projectFilePort.taskRunId !== opts.currentTaskRunId
+      || projectFilePort.agentId !== opts.subEnvelope.agentId
+      || projectFilePort.humanUserId !== opts.causalHumanUserId
+      || projectFilePort.workspaceRoot !== workspace
+      || projectFilePort.relayId.trim().length === 0
+      || typeof projectFilePort.dispatch !== "function") {
+      throw new TypeError("Protected repo docs project file authority changed");
+    }
+    repoDocsProjectFilePort = projectFilePort;
+    if (!repoDocsCheckpoint.preparedGraphInputApplied) {
+      repoDocsCheckpoint = Object.freeze({
+        ...repoDocsCheckpoint,
+        preparedGraphInputApplied: true,
+      });
+      await graph.updateState(
+        { configurable: { thread_id: subThreadId } },
+        {
+          protectedRepoDocsCheckpoint: repoDocsCheckpoint,
+          currentFolder: workspace,
+          workspacePath: workspace,
+          messages: [new HumanMessage(prepared.result.brief)],
+        },
+      );
+    }
+  }
+
+  // Five stream-entry modes:
+  // • protected repo docs → `null` starts or resumes only after its trusted
+  //   prepared brief and operation receipt are already in the checkpoint.
   // • continueFromCheckpoint → `null` input resumes the parked checkpoint on
   // the reused thread (an unpause after a pause abort; no interrupt reply,
   // no fresh brief). A narrowly-scoped Command may repair the missing
@@ -1283,7 +1404,9 @@ async function runScopeSubagentUntilPauseInternal(
   // checkpoint (spec decision 10.2.3) and has no foreground-style "read history
   // + concat" seam to rebuild. Do not turn any branch into a rebuilt
   // `messages` array — that would be a behavior change ( §7).
-  let streamInput: unknown = opts.continueFromCheckpoint
+  let streamInput: unknown = opts.protectedRepoDocs !== undefined
+    ? null
+    : opts.continueFromCheckpoint
     ? null
     : opts.resume !== undefined
       ? new Command({ resume: opts.resume })
@@ -1389,8 +1512,9 @@ async function runScopeSubagentUntilPauseInternal(
       : null;
 
   try {
-    const eventStream = graph.streamEvents(streamInput, streamConfig);
-    for await (const ev of eventStream) {
+    const consumeEvents = async () => {
+      const eventStream = graph.streamEvents(streamInput, streamConfig);
+      for await (const ev of eventStream) {
       if (opts.signal?.aborted) break;
       metrics.noteStreamEvent(ev);
       // Report only into this subagent's canonical slot. A group turn can run
@@ -1443,8 +1567,14 @@ async function runScopeSubagentUntilPauseInternal(
               : {}),
           },
         );
+        }
       }
-    }
+    };
+    if (repoDocsProjectFilePort === undefined) await consumeEvents();
+    else await runWithProtectedTaskProjectFilePort(
+      repoDocsProjectFilePort,
+      consumeEvents,
+    );
     progressTap?.flush();
     log(`[scope-subagent] stream complete thread=${subThreadId} ${metrics.formatLogToken()}`);
   } catch (err) {
@@ -1556,11 +1686,56 @@ async function runScopeSubagentUntilPauseInternal(
   const finalResponseText =
     lastAssistantPlainText(messages) ||
     "(subagent completed with no text)";
+  let protectedRepoDocsResult: string | null = null;
+  if (opts.protectedRepoDocs !== undefined && repoDocsCheckpoint !== null) {
+    const store = {
+      read: () => Promise.resolve(repoDocsCheckpoint),
+      write: async (checkpoint: ProtectedRepoDocsCheckpointV1) => {
+        await graph.updateState(
+          { configurable: { thread_id: subThreadId } },
+          { protectedRepoDocsCheckpoint: checkpoint },
+        );
+        repoDocsCheckpoint = checkpoint;
+      },
+    };
+    const committed = await runProtectedRepoDocsOperation({
+      checkpoint: repoDocsCheckpoint,
+      request: createProtectedRepoDocsRequest(repoDocsCheckpoint, "commit"),
+      port: opts.protectedRepoDocs.executionPort,
+      store,
+      signal: opts.signal ?? new AbortController().signal,
+    });
+    repoDocsCheckpoint = committed.checkpoint;
+    if (committed.result.kind !== "committed"
+      && committed.result.kind !== "no_changes") {
+      throw new TypeError("Protected repo docs commit result changed");
+    }
+    if (committed.result.kind === "no_changes") {
+      protectedRepoDocsResult = "The repository documentation is already current; no files were committed.";
+    } else if (repoDocsCheckpoint.publish === "branch") {
+      protectedRepoDocsResult = `Documentation committed on branch ${repoDocsCheckpoint.branch} at ${committed.result.commitOid}.`;
+    } else {
+      const published = await runProtectedRepoDocsOperation({
+        checkpoint: repoDocsCheckpoint,
+        request: createProtectedRepoDocsRequest(repoDocsCheckpoint, "publish"),
+        port: opts.protectedRepoDocs.executionPort,
+        store,
+        signal: opts.signal ?? new AbortController().signal,
+      });
+      repoDocsCheckpoint = published.checkpoint;
+      if (published.result.kind !== "published") {
+        throw new TypeError("Protected repo docs publication result changed");
+      }
+      protectedRepoDocsResult = published.result.instruction === null
+        ? `Documentation published from branch ${repoDocsCheckpoint.branch} at ${published.result.commitOid}.`
+        : `Documentation published from branch ${repoDocsCheckpoint.branch} at ${published.result.commitOid}. ${published.result.instruction}`;
+    }
+  }
   return {
     status: "completed",
     threadId: subThreadId,
-    finalText: transcript || finalResponseText,
-    finalResponseText,
+    finalText: protectedRepoDocsResult ?? (transcript || finalResponseText),
+    finalResponseText: protectedRepoDocsResult ?? finalResponseText,
     securityReportState: securityReportReadiness(messages),
     securityResearchAppendix: securityResearchAppendix(messages),
   };

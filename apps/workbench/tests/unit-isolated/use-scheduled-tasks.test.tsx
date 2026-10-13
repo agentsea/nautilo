@@ -138,6 +138,7 @@ function openedRow(id: string): ProtectedScheduledTaskProjection {
     } as ProtectedScheduledTaskProjection["task"],
     prompt: "Private weekly digest",
     expectedOutput: null,
+    retainedHistoricalError: null,
   };
 }
 

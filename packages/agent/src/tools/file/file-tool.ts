@@ -1,3 +1,4 @@
+import { getCurrentProtectedTaskProjectFilePort } from "../../runtime/protected-task-project-file";
 /**
  * D079 Phase 4 / G3 — the unified `file` tool.
  *
@@ -266,15 +267,23 @@ export function createFileTool(context?: unknown) {
      */
     func: async (rawArgs: FileToolRawArgs, _runManager, runConfig) => {
       const requiredHost = getRequiredOrdinaryHostContext();
+      const projectFile = getCurrentProtectedTaskProjectFilePort();
+      if (projectFile !== null && (fileCtx.ownerId !== projectFile.humanUserId || fileCtx.agentId !== projectFile.agentId)) {
+        return fileToolError("Task project file identity changed.");
+      }
       const zoneCtx: ZoneContext = {
-        workspaceRoot: requiredHost?.workspaceRoot ?? fileCtx.workspacePath,
-        currentFolder: requiredHost?.currentFolderRoot ?? (fileCtx.currentFolder || null),
+        workspaceRoot: projectFile?.workspaceRoot ?? requiredHost?.workspaceRoot ?? fileCtx.workspacePath,
+        currentFolder: projectFile?.workspaceRoot ?? requiredHost?.currentFolderRoot ?? (fileCtx.currentFolder || null),
       };
       const args = applySelectedCurrentFolderReadDefaults(
         rawArgs,
         zoneCtx.currentFolder,
       );
-      log(`[file:${args.command}] path=${args.path} zone=${args.zone}`);
+      if (projectFile === null) log(`[file:${args.command}] path=${args.path} zone=${args.zone}`);
+      if (projectFile !== null && (args.zone !== undefined && !isLocalFileZone(args.zone)
+        || args.destinationZone !== undefined && !isLocalFileZone(args.destinationZone))) {
+        return fileToolError("Task project files require the captured local project.");
+      }
       const readInputError = selectedCurrentFolderReadInputError(args, zoneCtx.currentFolder);
       if (readInputError !== null) return fileToolError(readInputError);
 
@@ -331,9 +340,11 @@ export function createFileTool(context?: unknown) {
           ...(mutationRequestId ? { mutationRequestId } : {}),
           ...(fileCtx.activeModelId ? { activeModelId: fileCtx.activeModelId } : {}),
           approvalObtained: true,
+          ...(runConfig?.signal === undefined ? {} : { signal: runConfig.signal }),
         });
       }
 
+      if (projectFile !== null) return fileToolError("Task project file route is unavailable.");
       const dispatchCtx: DispatchContext = {
         zoneCtx,
         ...(mutationRequestId

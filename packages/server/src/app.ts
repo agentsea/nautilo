@@ -1,3 +1,7 @@
+import { createProtectedTaskOpenCodeExecution } from "./routes/protected-task-opencode-execution";
+import { createProtectedTaskDeepResearchExecution } from "./routes/protected-task-deep-research-execution";
+import { createProtectedTaskCodexExecution } from "./routes/protected-task-codex-execution";
+import { createProtectedTaskHermesExecution } from "./routes/protected-task-hermes-execution";
 import { createTaskOccurrencePolicyPorts } from "./routes/task-occurrence-policy";
 import { protectedTaskRoutes } from "./routes/task-protected-routes";
 import { createProductionProtectedTaskComposition } from "./routes/task-protected-composition";
@@ -7,7 +11,7 @@ import { createProtectedTaskActivationParkedIntegrityInspector } from "./routes/
 import { lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
 import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
-import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
+import { resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
 import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
 import { parseLocalExecutionDelegation } from "@nautilo/types";
@@ -25,6 +29,10 @@ import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { bindReflectionSemanticDataOperationPort, resolveReflectionSemanticStageAdmission, createPostgresStenographerAuthorizationWaitPort, createStenographerDataOperationPort, createStenographerCandidateDataOperationPort, readPostgresReflectionAuthorityStatus, readPostgresStenographerProtectionStatus, verifyCryptoPostgresHandle, type StenographerIntentAdapter } from "@nautilo/lattice-bridge/server";
 import { LatticeCrypto, TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import { createProductionProtectedTaskRuntimeInitialComposition } from "./routes/protected-task-runtime-initial-composition";
+import { createProtectedTaskExternalRequests } from "./routes/protected-task-external-requests";
+import { createProtectedTaskExternalRequestAuthority } from "./routes/protected-task-external-request-authority";
+import { protectedTaskExternalRequestRoutes } from "./routes/protected-task-external-request-routes";
+import { createProtectedTaskClaudeExecution } from "./routes/protected-task-claude-execution";
 import { currentProtectedTaskForegroundCreationContext, type ProtectedTaskForegroundCreationContext } from "./routes/protected-task-foreground-creation-context";
 import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity } from "./routes/protected-task-foreground-creation-identity";
 import type { ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
@@ -254,7 +262,7 @@ import {
   createCodexTaskRunLifecycleWriter,
 } from "./codex/task-run-lifecycle";
 import { CodexTurnEventBroker } from "./codex/turn-event-broker";
-import { CodexRequestBroker } from "./codex/request-broker";
+import { CodexRequestBroker, CodexRequestSourcePartition } from "./codex/request-broker";
 import { CodexExecutionPreflight } from "./codex/execution-preflight";
 import { CodexProfileRemovalTurnCoordinator } from "./codex/profile-removal-turn-coordinator";
 import { ClaudeConnectionController } from "./claude/connection-controller";
@@ -1014,9 +1022,11 @@ export async function createApp(options?: CreateAppOptions) {
       warn("[memory] foreground effect recovery pass failed; durable receipts remain pending");
     },
   });
+  let protectedTaskExternalRequestService: ReturnType<typeof createProtectedTaskExternalRequests> | null = null;
   const liveShadowMessageComposition =
     createProductionLiveShadowMessageComposition({
       taskContentOwner: () => taskContentOwner,
+      cancelTaskExternalRequestsForHuman: humanActorId => protectedTaskExternalRequestService?.cancelForHuman(humanActorId),
       wakeForegroundMemoryEffectRecovery: () =>
         foregroundMemoryEffectRecovery.wake(),
     });
@@ -1029,6 +1039,7 @@ export async function createApp(options?: CreateAppOptions) {
     (clientActionSessionId) => {
       liveShadowMessageComposition.pendingAttention?.cancelForClientSession(clientActionSessionId);
       liveShadowMessageComposition.taskPendingAttention?.cancelForClientSession(clientActionSessionId);
+      protectedTaskExternalRequestService?.cancelForClientSession(clientActionSessionId);
       liveShadowMessageComposition.recipients.deleteClientSession(
         clientActionSessionId,
       );
@@ -1923,6 +1934,26 @@ export async function createApp(options?: CreateAppOptions) {
   const taskContentOwner = bindEncryptionDataOperationOwner({
     policy: taskContentPolicy,
   });
+  const currentProtectedTaskExternalRequests = () => {
+    const construct = () => {
+      if (protectedTaskExternalRequestService !== null) return Promise.resolve(protectedTaskExternalRequestService);
+      const crypto = new LatticeCrypto();
+      const db = getServerDirectDb();
+      const restricted = createPostgresJsBridgeConnection(getSharedDirectCryptoDb());
+      const serverScope = process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001";
+      const inspectCurrent = createProtectedTaskExternalRequestAuthority({ db, restricted, crypto,
+        serverScope, owner: taskContentOwner,
+        clientSessions: { inspect: input => clientActionBindingRegistry.inspectLiveSession(input) } });
+      protectedTaskExternalRequestService = createProtectedTaskExternalRequests({
+        crypto, recipients: liveShadowMessageComposition.recipients, inspectCurrent,
+        onChanged: change => eventBus.emit({ type: "task.external_request.changed", ...change }),
+      });
+      return Promise.resolve(protectedTaskExternalRequestService);
+    };
+    return taskContentOwner.selectReadMetadata({ ordinary: () => Promise.resolve(null),
+      fallback: construct, protected: construct });
+  };
+  app.addHook("onClose", () => { protectedTaskExternalRequestService?.close(); });
   let protectedStenographerPromise: ReturnType<typeof createProductionProtectedStenographerComposition> | null = null;
   let stenographerProtectionCryptoHandlePromise: ReturnType<
     typeof verifyCryptoPostgresHandle
@@ -2375,6 +2406,7 @@ export async function createApp(options?: CreateAppOptions) {
       clientSessions: { inspect: value => clientActionBindingRegistry.inspectLiveSession(value) },
     });
   }
+  protectedTaskExternalRequestRoutes(app, { service: currentProtectedTaskExternalRequests });
   messagesReadStateRoutes(app);
   modelControlSelectionRoutes(app);
   notificationPreferenceRoutes(app);
@@ -3164,6 +3196,60 @@ export async function createApp(options?: CreateAppOptions) {
         db: getServerDirectDb(), resolver: policyResolver,
         convergeCreatedRoomCatalog: convergeHumanRoomCatalogs,
         owner: taskContentOwner, recipients: taskRuntimeRecipients, jobManager,
+        prepareExternalExecution: {
+          claude: async (selection, preparation) => {
+            if (!enableClaudeCodeTasks || protectedClaudeHarnessExecution === null) throw new TypeError("Protected Claude execution is unavailable");
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskClaudeExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+              crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
+              owner: taskContentOwner, controller: claudeConnections,
+              execution: protectedClaudeHarnessExecution, requests })(selection)(preparation);
+          },
+          codex: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskCodexExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001", owner: taskContentOwner,
+              preferences: codexPreferences, preflight: codexExecutionPreflight,
+              models: { list: profile => codexAdmin.listModels(profile) }, limits: { resolve: resolveModelExecutionLimits },
+              canonicalReader: codexCanonicalFactsReader, sessions: codexAuthoritySessions,
+              mutations: codexPersistence, admissionFactory: codexAdmissionFactory,
+              execution: protectedCodexHarnessExecution, requestBroker: protectedCodexRequestBroker,
+              requestPartition: codexRequestPartition, requests,
+            })(selection)(preparation);
+          },
+          deepResearch: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected research ownership is unavailable");
+            return createProtectedTaskDeepResearchExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
+              owner: taskContentOwner, requests,
+            })(selection)(preparation);
+          },
+          hermes: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskHermesExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001", owner: taskContentOwner,
+              relay: relayRegistry, requests,
+            })(selection)(preparation);
+          },
+          opencode: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskOpenCodeExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001", owner: taskContentOwner,
+              relay: relayRegistry, requests,
+            })(selection)(preparation);
+          },
+        },
         kick: () => getTaskObserver()?.kick(),
         wakeForeground: { jobManager, executor: langgraphExecutor,
           wakeEffectRecovery: () => foregroundMemoryEffectRecovery.wake() },
@@ -3947,11 +4033,23 @@ export async function createApp(options?: CreateAppOptions) {
     mintId: randomUUID,
   });
   const codexTurnBroker = new CodexTurnEventBroker({ source: relayRegistry });
-  const codexRequestBroker = new CodexRequestBroker({ source: relayRegistry });
+  const codexRequestPartition = new CodexRequestSourcePartition(relayRegistry);
+  const codexRequestBroker = new CodexRequestBroker({ source: codexRequestPartition.ordinary });
   const codexHarnessExecution = new CodexHarnessExecution({
     sessions: codexBindingSessions,
     events: codexTurnBroker,
     requests: codexRequestBroker,
+    requestScopes: { claim: identity => codexRequestPartition.claimOrdinary(identity) },
+  });
+  const protectedCodexRequestBroker = new CodexRequestBroker({ source: codexRequestPartition.protected });
+  const protectedCodexHarnessExecution = new CodexHarnessExecution({
+    sessions: codexBindingSessions, events: codexTurnBroker, requests: protectedCodexRequestBroker,
+    abortStreamOnCancellation: true,
+  });
+  app.addHook("onClose", () => {
+    protectedCodexRequestBroker.dispose();
+    codexRequestBroker.dispose();
+    codexRequestPartition.dispose();
   });
   const codexControlPlane = createCodexHarnessControlPlane({
     execution: codexHarnessExecution,
@@ -3991,6 +4089,10 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("onClose", () => claudeConnections.close());
   const claudeHarnessExecution = enableClaudeCodeTasks
     ? new ClaudeHarnessExecution({ relay: relayRegistry })
+    : null;
+  // Protected requests must never enter the ordinary owner-only responder.
+  const protectedClaudeHarnessExecution = enableClaudeCodeTasks
+    ? new ClaudeHarnessExecution({ relay: relayRegistry, abortStreamOnCancellation: true })
     : null;
   const claudeEphemeralOutputProjector = enableClaudeCodeTasks
     ? new CodexRoomOutputProjector({ requestMode: "ephemeral" })
@@ -4295,8 +4397,7 @@ export async function createApp(options?: CreateAppOptions) {
               },
             }),
             captureLocalExecution: async (candidate) => {
-              if (candidate.toolsMode === "none" || (candidate.toolsMode === "whitelist"
-                && !candidate.toolsWhitelist?.some(name => name === "exec_command" || name === "write_stdin"))) return null;
+              if (!taskNeedsLocalExecutionCapture(candidate, protectedCreation !== undefined)) return null;
               const inherited = getCurrentLocalExecutionDelegation();
               if (candidate.parentTaskId) {
                 if (!inherited || inherited.taskId !== candidate.parentTaskId) return null;
@@ -4466,6 +4567,29 @@ export async function createApp(options?: CreateAppOptions) {
       const source = currentProtectedTaskForegroundCreationContext();
       if (source === null) throw new Error("Protected Task creation requires the current admitted foreground turn");
       return createTaskForAgentTool(input, source);
+    },
+    createProtectedHarnessTask: async input => {
+      if (input.harness === "opencode-acp" || input.callingRoomId === null) {
+        throw new TypeError("Protected harness Task creation is unavailable");
+      }
+      const source = currentProtectedTaskForegroundCreationContext();
+      if (source === null) throw new TypeError("Protected harness Task creation needs the current admitted foreground turn");
+      const createProtected = async (candidate: Parameters<typeof createTaskForAgentTool>[0]) => {
+        const result = await createTaskForAgentTool(candidate, source);
+        return { taskId: result.taskId, status: result.status, nextFireAt: result.nextFireAt };
+      };
+      if (input.harness === "codex") return createCodexHarnessTask({ ...codexHarnessTaskDeps, createTask: createProtected }, input);
+      if (input.harness === "hermes-acp") return createHermesAcpHarnessTask({ ...hermesAcpHarnessTaskDeps, createTask: createProtected }, input);
+      if (!enableClaudeCodeTasks) throw new TypeError("Protected Claude execution is unavailable");
+      const selectedModels = (await claudeConnections.listExecutionModels(input.ownerId))
+        .filter(model => model.selected);
+      const model = input.harnessModelId === undefined
+        ? selectedModels.length === 1 ? selectedModels[0] ?? null : null
+        : selectedModels.find(candidate => candidate.catalogModelId === input.harnessModelId) ?? null;
+      if (model === null) throw new TypeError("Protected Claude model selection is unavailable");
+      return createClaudeHarnessTask({ ...claudeHarnessTaskDeps, createTask: createProtected }, { ownerId: input.ownerId, requestorId: input.requestorId, agentId: input.agentId,
+        prompt: input.prompt, callingRoomId: input.callingRoomId, harness: "claude-code",
+        profileRef: model.profileRef, catalogModelId: model.catalogModelId, selectedModel: model.selectedModel });
     },
     createHarnessTask: (input) => {
       if (input.harness === "codex") {
@@ -4958,7 +5082,6 @@ export async function createApp(options?: CreateAppOptions) {
     setWorkspaceCanonicalUndoTurnExecution(undefined);
     setWorkspaceOfficeCliCommitExecution(undefined);
     codexTurnBroker.dispose();
-    codexRequestBroker.dispose();
     relayRegistry.stop();
     clearTaskReturnBindings();
     //  task 3.2.5 — release the Full Workstation override resolver so a

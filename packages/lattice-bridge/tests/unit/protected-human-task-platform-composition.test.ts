@@ -268,7 +268,12 @@ describe("protected Human Task platform composition", () => {
 
   test("Browser maps a recoverable pre-send Shadow failure to the legacy ordinary API", async () => {
     const calls: unknown[] = [];
+    let protectedDefinitionReads = 0;
     const api = {
+      getProtectedTaskDefinitionEnvelopeV1: async () => {
+        protectedDefinitionReads += 1;
+        throw new ClassifiedDataOperationError("key_waiting", "device key unavailable");
+      },
       planProtectedTaskCreateV1: async () => {
         throw new ClassifiedDataOperationError("key_waiting", "device key unavailable");
       },
@@ -318,6 +323,7 @@ describe("protected Human Task platform composition", () => {
       task: { timezone: "UTC" },
     });
     expect(created.taskId).toBe(summary.id);
+    expect(protectedDefinitionReads).toBe(1);
     expect(updated.content).toEqual({
       dtoVersion: 1,
       status: "ordinary",

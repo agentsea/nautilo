@@ -35,6 +35,28 @@ function declarationFor(observation: DtoInventoryObservation): DtoDeclaration {
 }
 
 describe("HTTP DTO structural signatures", () => {
+  test("keeps awaited framework replies out of serialized payload contracts", async () => {
+    const root = await fixtureRoot("awaited framework reply");
+    const serverRoot = join(root, "packages/server/src");
+    await mkdir(serverRoot, { recursive: true });
+    await writeFile(join(serverRoot, "routes.ts"), `
+      interface FastifyReply { send(body: unknown): FastifyReply }
+      type TaskList = { id: string; prompt: string }[];
+      async function readProjection(reply: FastifyReply): Promise<FastifyReply> {
+        return reply.send([{ id: "task", prompt: "private prompt" }]);
+      }
+      app.get<{ Reply: TaskList | { error: string } }>("/api/tasks", async (_request, reply: FastifyReply) => {
+        return readProjection(reply);
+      });
+    `);
+    const observations = await discoverHttpDtoInventory(root);
+    expect(observations).toHaveLength(1);
+    expect(observations[0]?.structuralSignatures).toEqual([
+      "response.body:{error:string}|{id:string;prompt:string}[]",
+    ]);
+    expect(observations[0]?.arbitraryPayloads).toEqual([]);
+  });
+
   test("discovers HEAD and OPTIONS routes, route method arrays, and referenced handlers", async () => {
     const root = await fixtureRoot("http supported route forms");
     const serverRoot = join(root, "packages/server/src");

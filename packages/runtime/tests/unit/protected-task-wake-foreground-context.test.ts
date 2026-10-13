@@ -27,6 +27,7 @@ import { openTaskWakeFundingSessionForInvocation } from
 import {
   freshProtectedTaskWakeForegroundActivationState,
   protectedTaskWakeForegroundMessages,
+  resolveForegroundProtectedMemoryGraphDeps,
 } from "../../src/executors/langgraph-executor";
 import {
   assertProtectedTaskWakeForegroundJobInput,
@@ -177,6 +178,10 @@ test("binds a genuine wake to one protected foreground scope and reuses its fund
         expect(getCurrentLiveShadowTurnContext()?.capability).toBeNull();
         expect(getCurrentProtectedTaskWakeForegroundContext()?.result.resultText)
           .toBe("private result");
+        const graphDeps = await resolveForegroundProtectedMemoryGraphDeps({
+          envelope: null, session: null, policy: undefined, normalForeground: true,
+        });
+        expect(graphDeps.confidential).toBe(true);
         assertProtectedTaskWakeForegroundJobInput({ source: current,
           jobInput: jobInput(), jobId: current.scheduling.jobId,
           laneKey: current.scheduling.laneKey });
@@ -217,6 +222,10 @@ test("binds a genuine wake to one protected foreground scope and reuses its fund
       },
     });
     expect(getCurrentProtectedTaskWakeForegroundContext()).toBeUndefined();
+    const ordinaryGraphDeps = await resolveForegroundProtectedMemoryGraphDeps({
+      envelope: null, session: null, policy: undefined, normalForeground: true,
+    });
+    expect(ordinaryGraphDeps.confidential).toBeUndefined();
   });
   expect(() => snapshotProtectedTaskWakeForegroundSource(source(retained!))).toThrow();
 });
