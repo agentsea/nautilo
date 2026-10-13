@@ -24,7 +24,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   through the selected server container, preserving the existing localhost
   authorization boundary when Docker publishes the server port.
 - Mobile Web preserves a safe Task destination while connecting to its current
-  server, instead of losing the requested Task during initial setup.
+  server or checking encryption policy after sign-in. It returns to that
+  destination after admission without carrying it to another account or server.
 
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace

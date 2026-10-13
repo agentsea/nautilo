@@ -17,6 +17,7 @@ import { mobileUserAgreementDestination } from "@/features/user-agreement/admiss
 import { roomIdFromLaneKey } from "@/lib/messages";
 import { observeMobileTouchStart } from "@/lib/human-activity";
 import { authGateNavigationTarget } from "@/lib/auth-gate-navigation";
+import { CryptoAdmissionNavigationResume } from "@/lib/crypto-admission-navigation-resume";
 import { authGateDestination } from "@/lib/session-expiry";
 import { AttentionProvider, useAttention } from "@/providers/attention";
 import { ArtifactEventsProvider } from "@/providers/artifact-events";
@@ -154,6 +155,9 @@ function RootShell() {
   const productAvailable = authStatus === "signed-in" && agreement.status === "accepted";
   return (
     <View style={{ flex: 1 }}>
+      <CryptoAdmissionNavigationResume
+        ready={!authGate.loading && !navigatingToAuth && productAvailable}
+      />
       {!authGate.loading && !navigatingToAuth && productAvailable ? <DisconnectBanner /> : null}
       {!authGate.loading && !navigatingToAuth && productAvailable ? <InboundIntentNotice /> : null}
       {!authGate.loading && !navigatingToAuth && productAvailable ? <AttentionOverlay /> : null}
