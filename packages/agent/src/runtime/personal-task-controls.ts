@@ -120,9 +120,12 @@ function isTaskControlArgs(args: Readonly<Record<string, unknown>>): boolean {
 function isDiscoverModelsArgs(args: Readonly<Record<string, unknown>>): boolean {
   if (!hasOnlyKeys(args, [
     "command", "model_id", "query", "provider", "runnable_only",
-    "requires_reasoning", "workload", "output", "limit", "offset",
+    "decision_operation", "requires_reasoning", "workload", "output", "limit", "offset",
   ])) return false;
-  if (args["workload"] !== undefined && args["workload"] !== "chat") return false;
+  if (args["workload"] !== undefined
+    && args["workload"] !== "chat"
+    && args["workload"] !== "decision") return false;
+  if (args["decision_operation"] !== undefined && args["workload"] !== "decision") return false;
   if (args["output"] !== undefined && args["output"] !== "text") return false;
   return args["command"] === "list"
     || args["command"] === "search"

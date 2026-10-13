@@ -16,7 +16,10 @@ import { createInPrivateNamespaceTool } from "../../src/tools/tasks/shortcuts/in
 import { createAskPeerTool } from "../../src/tools/tasks/shortcuts/ask-peer";
 import { createScheduleTool } from "../../src/tools/tasks/shortcuts/schedule";
 import { createDiscoverModelsTool } from "../../src/tools/meta/discover-models";
-import { runWithCapabilityFundingSession } from "../../src/runtime/capability-funding";
+import {
+  runWithCapabilityFundingSession,
+  type CapabilityFundingSession,
+} from "../../src/runtime/capability-funding";
 import * as shareArtifact from "../../src/tools/file/share-artifact";
 import {
   setTaskToolRuntime,
@@ -166,6 +169,17 @@ describe("personal-funded Task controls", () => {
     expect(isPersonalTaskControlCall({
       name: "discover_models",
       args: { command: "list", output: "video" },
+    })).toBeFalse();
+    expect(isPersonalTaskControlCall({
+      name: "discover_models",
+      args: {
+        command: "list", workload: "decision",
+        decision_operation: "noul", runnable_only: true,
+      },
+    })).toBeTrue();
+    expect(isPersonalTaskControlCall({
+      name: "discover_models",
+      args: { command: "list", decision_operation: "noul" },
     })).toBeFalse();
     expect(isPersonalTaskControlCall({ name: "generate_image", args: {} })).toBeFalse();
   });
@@ -555,6 +569,20 @@ describe("personal-funded Task controls", () => {
 
   test("personal model discovery exposes only the trusted runnable text set", async () => {
     const runnableModelIds = ["anthropic:claude-sonnet-4-6"];
+    const decisionModelId = "openrouter:typesafe/jev-1.13";
+    const capability = {
+      humanUserId: OWNER_ID,
+      parentFundingKind: "personal",
+      decisionModelId,
+      async resolveModel(role, configuredId) {
+        if (role !== "decision" || configuredId !== decisionModelId) {
+          throw new Error("unavailable");
+        }
+        return { modelId: decisionModelId, preferenceRevision: 1 };
+      },
+      async openModel() { throw new Error("unused"); },
+      async openService() { throw new Error("unused"); },
+    } satisfies CapabilityFundingSession;
     const tool = createDiscoverModelsTool({
       personalTaskControls: true,
       personalTaskRunnableModelIds: runnableModelIds,
@@ -562,17 +590,34 @@ describe("personal-funded Task controls", () => {
     });
     const schema = tool.schema as { shape?: Record<string, unknown> };
     expect(Object.keys(schema.shape ?? {}).sort()).toEqual([
-      "command", "limit", "model_id", "offset", "output", "provider", "query",
-      "requires_reasoning", "runnable_only", "workload",
+      "command", "decision_operation", "limit", "model_id", "offset", "output",
+      "provider", "query", "requires_reasoning", "runnable_only", "workload",
     ]);
-    const result = JSON.parse(String(await tool.invoke({ command: "list" }))) as {
-      items: Array<{ id: string; availability: string; workload: string; output: string[] }>;
-    };
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.id).toBe(runnableModelIds[0]);
-    expect(result.items[0]?.availability).toBe("selectable");
-    expect(result.items[0]?.workload).toBe("chat");
-    expect(result.items[0]?.output).toContain("text");
+    await runWithCapabilityFundingSession(capability, async () => {
+      const result = JSON.parse(String(await tool.invoke({ command: "list" }))) as {
+        items: Array<{ id: string; availability: string; workload: string; output: string[] }>;
+      };
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]?.id).toBe(runnableModelIds[0]);
+      expect(result.items[0]?.availability).toBe("selectable");
+      expect(result.items[0]?.workload).toBe("chat");
+      expect(result.items[0]?.output).toContain("text");
+
+      const decisions = JSON.parse(String(await tool.invoke({
+        command: "list",
+        workload: "decision",
+        decision_operation: "noul",
+        runnable_only: true,
+      }))) as {
+        items: Array<{ id: string; availability: string; workload: string }>;
+      };
+      expect(decisions.items).toHaveLength(1);
+      expect(decisions.items[0]).toMatchObject({
+        id: decisionModelId,
+        availability: "selectable",
+        workload: "decision",
+      });
+    });
   });
 
   test("ordinary server parent discovery marks the trusted caller union selectable", async () => {
