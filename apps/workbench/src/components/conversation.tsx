@@ -62,7 +62,7 @@ import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
 import { MessageAttachmentImages } from "./message-attachment-images";
-import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
+import { externalMessageAuthorLabel, MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
   SHELL_AGENT_NAME,
@@ -3616,7 +3616,10 @@ function Message({
   );
   // Resolve message authorship from the persisted source id. A missing id is
   // unknown, not evidence that the current viewer authored the message.
+  const externalAuthorLabel = useMessage((state) => state.role === "user"
+    ? externalMessageAuthorLabel(state.metadata?.custom ?? {}) : null);
   const sourceUserId = useMessage((state) => {
+    if (externalAuthorLabel !== null) return undefined;
     const c = (state.metadata as { custom?: { sourceUserId?: unknown } })?.custom;
     return typeof c?.sourceUserId === "string" ? c.sourceUserId : undefined;
   });
@@ -3765,7 +3768,7 @@ function Message({
     }
   }, [canDelete, confirmDeleteScope, currentDeleteScope, messageId, roomId, toast]);
   const authorUserId = sourceUserId ?? "";
-  const userAuthorLabel = isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender");
+  const userAuthorLabel = externalAuthorLabel ?? (isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender"));
   const { toggleReaction } = useRoomReactions();
   const editRoomMessage = useRoomMessageEdit();
   const {

@@ -31,7 +31,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Bolter connections use a Desktop-managed receiver and explicitly linked rooms.
   External senders retain their own attribution and restricted room context.
   Genie replies return to their source conversation; Human messages require
-  Review & send. Sign-in updates automatically, and interrupted or uncertain
+  Review & send. Incoming messages and receiver status update live; unrelated
+  archived rooms no longer block external replies. Sign-in updates automatically, and interrupted or uncertain
   delivery remains visible. Initial support is text on macOS Desktop with
   plaintext server content mode; protected-content modes remain unavailable.
 

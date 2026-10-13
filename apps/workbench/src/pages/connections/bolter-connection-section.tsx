@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import type { BolterConnectionSummary, BolterConnectionsResponse, BolterConversationChoice, BolterOperationResponse, BolterRoomLinkSummary } from "@nautilo/types";
+import { useBolterStateReload } from "../../components/use-bolter-state-reload";
 import { apiClient } from "../../lib/api";
 import { Button } from "../settings/ui";
 import type { ConnectedAppCatalogueSummary } from "./connected-app-presentation";
@@ -19,7 +20,9 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
   const [pollingStopped, setPollingStopped] = useState(false);
   const operationRevision = useRef(0);
   const operationRead = useRef<{ id: string; work: Promise<boolean> } | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const busy = loading || actionBusy;
   const [relayId, setRelayId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [selectedConnection, setSelectedConnection] = useState<BolterConnectionSummary | null>(null);
@@ -41,9 +44,8 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
     return () => generation === epoch.current && credentials === apiClient.getCredentialGeneration() && scope === currentScope.current;
   }, []);
 
-  const reload = useCallback(async () => {
-    const current = capture();
-    setBusy(true); setError(null); setSelectedConnection(null);
+  const reload = useBolterStateReload(async current => {
+    setLoading(true); setError(null);
     try {
       const result = await apiClient.getBolterConnections();
       if (!current()) return;
@@ -60,11 +62,11 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
       }
     } catch {
       if (current()) { setData(null); setError("Could not check Bolter. Reload to try again."); }
-    } finally { if (current()) setBusy(false); }
-  }, [capture, onCatalogueSummary]);
+    } finally { if (current()) setLoading(false); }
+  }, capture);
 
   useEffect(() => {
-    epoch.current += 1;
+    epoch.current += 1; setActionBusy(false);
     setData(null); setOperation(null); setPollingStopped(false); setSelectedConnection(null); setDisconnect(null); setError(null);
     setChoices([]); setAgents([]); setChoiceId(""); setAgentId(""); setName(""); setConsent(false);
     setLinks({}); setRelayId("");
@@ -75,10 +77,10 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
   async function run(action: () => Promise<void>) {
     if (busy) return;
     const current = capture();
-    setBusy(true); setError(null);
+    setActionBusy(true); setError(null);
     try { await action(); }
     catch { if (current()) setError("Bolter could not complete this request. Reload to check its current state."); }
-    finally { if (current()) setBusy(false); }
+    finally { if (current()) setActionBusy(false); }
   }
   const observeOperation = useCallback(async (result: BolterOperationResponse, current: () => boolean) => {
     if (!current()) return;

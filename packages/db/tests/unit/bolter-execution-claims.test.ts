@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { getTableName } from "drizzle-orm";
+import { createOfflineDirectDb } from "../../src/config/direct-database";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { acquireExternalRoomExecutionClaimWith, releaseExternalRoomExecutionClaimWith, type ExternalRoomExecutionProductDatabase } from "../../src/queries/external-room-execution-claims";
@@ -73,4 +74,44 @@ test("namespace correction matches canonical inherited boundary without changing
   expect(sql).toContain("ancestor.kind <> 'subthread'");
   expect(sql).toContain("subject.disabled_at IS NULL");
   expect(sql).not.toContain("GRANT");
+});
+
+test("compiled namespace predicates correlate to the target Room, not unrelated archived Rooms", async () => {
+  const compiler = createOfflineDirectDb();
+  const statements: string[] = [];
+  const rows: unknown[][] = [
+    [{ roomId, type: "foreground" }],
+    [{ id: roomId, externalContext: true, archivedAt: null, archivedBoundary: false }],
+    [], [], [{ id: id(5) }],
+    [{ id: jobId, status: "failed", startedAt: null, completedAt: new Date(0) }],
+  ];
+  // Compile the real query chain while substituting only its returned rows.
+  // This catches Drizzle's SELECT-field qualifier rewriting; hand-written SQL
+  // counterparts and row-only mocks cannot exercise that behavior.
+  const wrap = (query: object): object => new Proxy(query, {
+    get(target, property) {
+      if (property === "then") return (resolve: (value: unknown) => unknown) => {
+        const compilable = target as { toSQL(): { sql: string } };
+        statements.push(compilable.toSQL().sql);
+        return Promise.resolve(rows.shift() ?? []).then(resolve);
+      };
+      const value: unknown = Reflect.get(target, property);
+      return typeof value === "function"
+        ? (...args: unknown[]) => wrap(Reflect.apply(value, target, args) as object)
+        : value;
+    },
+  });
+  const db = {
+    transaction: async (run: (tx: unknown) => unknown) => run({
+      execute: async () => [],
+      select: (selection: Parameters<typeof compiler.select>[0]) => wrap(compiler.select(selection)),
+      insert: () => { throw new Error("Terminal work must not insert a claim"); },
+    }),
+  } as unknown as ExternalRoomExecutionProductDatabase;
+  expect(await acquireExternalRoomExecutionClaimWith(db, { userId: owner }, jobId)).toEqual({ kind: "unavailable" });
+  expect(statements).toHaveLength(6);
+  const roomSelection = statements[1]!;
+  expect(roomSelection).toContain("boundary.namespace_id = public.rooms.namespace_id");
+  expect(roomSelection).toContain("ancestor.namespace_id = public.rooms.namespace_id");
+  expect(roomSelection).not.toContain('namespace_id = "namespace_id"');
 });

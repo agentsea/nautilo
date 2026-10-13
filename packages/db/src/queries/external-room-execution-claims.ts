@@ -23,7 +23,10 @@ export async function acquireExternalRoomExecutionClaimWith(db: ExternalRoomExec
       const [candidate] = await tx.select({ roomId: jobs.roomId, type: jobs.type }).from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.ownerId, ctx.userId))).limit(1);
       if (!candidate) return { kind: "unavailable" };
       if (candidate.roomId === null || candidate.type !== "foreground") return { kind: "ordinary" };
-      const [room] = await tx.select({ id: rooms.id, externalContext: sql<boolean>`EXISTS (SELECT 1 FROM public.rooms boundary WHERE boundary.namespace_id = ${rooms.namespaceId} AND boundary.external_context)`, archivedAt: rooms.archivedAt, archivedBoundary: sql<boolean>`EXISTS (SELECT 1 FROM public.rooms ancestor WHERE ancestor.namespace_id = ${rooms.namespaceId} AND ancestor.kind <> 'subthread' AND ancestor.archived_at IS NOT NULL)` })
+      // Keep the outer relation explicit: single-table Drizzle selections strip
+      // Column qualifiers inside SQL expressions, which would correlate each
+      // nested namespace predicate to its own inner relation instead.
+      const [room] = await tx.select({ id: rooms.id, externalContext: sql<boolean>`EXISTS (SELECT 1 FROM public.rooms boundary WHERE boundary.namespace_id = public.rooms.namespace_id AND boundary.external_context)`, archivedAt: rooms.archivedAt, archivedBoundary: sql<boolean>`EXISTS (SELECT 1 FROM public.rooms ancestor WHERE ancestor.namespace_id = public.rooms.namespace_id AND ancestor.kind <> 'subthread' AND ancestor.archived_at IS NOT NULL)` })
         .from(rooms).where(eq(rooms.id, candidate.roomId)).for("update");
       if (!room) return { kind: "unavailable" };
       if (!room.externalContext) return { kind: "ordinary" };

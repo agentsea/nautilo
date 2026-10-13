@@ -1,3 +1,4 @@
+import { publishBolterStateChanged } from "../realtime/ws-publisher";
 import { warn } from "@nautilo/logger";
 import { createReceiptRecoveryPump } from "../lib/receipt-recovery";
 import { randomUUID } from "node:crypto";
@@ -39,6 +40,22 @@ export function createBolterController(options: { relay: Registry; execution: Ex
   const productDb = getSharedDirectDb();
   const lifetime = new AbortController();
   const observations = new Map<string, { scope: Scope; generation: number; value: BolterConnectionObservation }>();
+  function remember(id: string, entry: { scope: Scope; generation: number; value: BolterConnectionObservation }) {
+    const previous = observations.get(id);
+    observations.set(id, entry);
+    if (!previous || !sameScope(previous.scope, entry.scope) || previous.generation !== entry.generation
+      || previous.value.receiver !== entry.value.receiver || previous.value.reason !== entry.value.reason
+      || previous.value.authentication !== entry.value.authentication
+      || previous.value.identity?.label !== entry.value.identity?.label
+      || previous.value.identity?.providerAgentId !== entry.value.identity?.providerAgentId
+      || previous.value.identity?.identityFingerprint !== entry.value.identity?.identityFingerprint) {
+      publishBolterStateChanged(entry.scope.userId);
+    }
+  }
+  function forget(id: string) {
+    const previous = observations.get(id);
+    if (observations.delete(id) && previous) publishBolterStateChanged(previous.scope.userId);
+  }
   const operations = new Map<string, Operation>();
   const choices = new Map<string, { userId: string; connectionId: string; revision: number; scope: Scope; chatId: string; threadRootId: string | null; label: string }>();
   const publishing = new Map<string, Promise<void>>();
@@ -109,7 +126,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         await setBolterConnectionStateWith(db, { userId }, { connectionId: row.id, expectedRevision: row.revision, enabled: false });
         return;
       }
-      observations.set(row.id, { scope, generation: row.generation, value: parsed.data });
+      remember(row.id, { scope, generation: row.generation, value: parsed.data });
       pending.response = { operationId: pending.response.operationId, status: "completed", connection: await summary(row) };
       return;
     }
@@ -117,8 +134,8 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     if (!row || !active(scope) || row.generation !== generation) return;
     try { receiver(row, scope); } catch { return; }
     if (parsed.data.authentication !== "confirmed" || parsed.data.identity?.providerAgentId !== row.providerAgentId
-      || parsed.data.identity.identityFingerprint !== row.identityFingerprint) { observations.delete(connectionId); return; }
-    observations.set(connectionId, { scope, generation, value: parsed.data });
+      || parsed.data.identity.identityFingerprint !== row.identityFingerprint) { forget(connectionId); return; }
+    remember(connectionId, { scope, generation, value: parsed.data });
   }
   const publisher = createDatabaseBolterPublicationService(db, {
     isCurrent(ctx) {
@@ -187,7 +204,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       const scope = options.relay.getBolterSession(row.relayId, userId);
       if (!scope) return summary(row);
       const result = await command(scope, { action: "check", connectionId: id, generation: row.generation });
-      if (result.kind !== "observation") { observations.delete(id); return summary(row); }
+      if (result.kind !== "observation") { forget(id); return summary(row); }
       if (result.observation.authentication === "confirmed" && result.observation.identity?.providerAgentId === row.providerAgentId
         && result.observation.identity.identityFingerprint === row.identityFingerprint && active(scope)) {
         if (row.desktopSessionId !== scope.desktopSessionId || row.pairingGenerationRef !== scope.pairingGenerationRef) {
@@ -201,7 +218,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         for (const binding of bindings) {
           await publishPending({ ...receiver(row, scope), bindingId: binding.id, bindingRevision: binding.revision });
         }
-      } else observations.delete(id);
+      } else forget(id);
       return summary(row);
     }
   async function startReceiver(row: BolterConnection, scope: Scope) {
@@ -210,18 +227,19 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       if (result.kind === "observation") await observe(row.userId, row.id, row.generation, scope, result.observation);
       else {
         const entry = observations.get(row.id);
-        if (entry && sameScope(entry.scope, scope)) observations.set(row.id, { ...entry, value: { ...entry.value, receiver: "stopped", reason: "receiver_unavailable" } });
+        if (entry && sameScope(entry.scope, scope)) remember(row.id, { ...entry, value: { ...entry.value, receiver: "stopped", reason: "receiver_unavailable" } });
       }
     } catch {
       const entry = observations.get(row.id);
-      if (entry && sameScope(entry.scope, scope)) observations.set(row.id, { ...entry, value: { ...entry.value, receiver: "stopped", reason: "receiver_unavailable" } });
+      if (entry && sameScope(entry.scope, scope)) remember(row.id, { ...entry, value: { ...entry.value, receiver: "stopped", reason: "receiver_unavailable" } });
     }
   }
   const dispose = [
     options.relay.onBolterObservation(({ userId, message }) => { const scope = options.relay.getBolterSession(message.scope.relayId, userId);
-      if (scope && sameScope(scope, { ...message.scope, userId })) void track(observe(userId, message.connectionId, message.generation, scope, message.observation)).catch(() => { observations.delete(message.connectionId); }); }),
+      if (scope && sameScope(scope, { ...message.scope, userId })) void track(observe(userId, message.connectionId, message.generation, scope, message.observation)).catch(() => { forget(message.connectionId); }); }),
     options.relay.onBolterContext((relayId, userId, session) => {
-      for (const [id, value] of observations) if (value.scope.relayId === relayId && value.scope.userId === userId) observations.delete(id);
+      publishBolterStateChanged(userId);
+      for (const [id, value] of observations) if (value.scope.relayId === relayId && value.scope.userId === userId) forget(id);
       for (const [id, value] of choices) if (value.scope.relayId === relayId && value.userId === userId) choices.delete(id);
       for (const op of operations.values()) if (op.scope.relayId === relayId && op.userId === userId && !active(op.scope)) {
         op.abort.abort(); op.response = { operationId: op.response.operationId, status: "unavailable", reason: "desktop_offline" };
@@ -244,7 +262,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
           if (!active(entry.scope)) return "blocked";
           if (item.senderType === "system" || item.senderId === row.providerAgentId || (item.senderType === "anima" && !item.addressed)) continue;
           if (item.truncated || !item.content.trim()) {
-            observations.set(row.id, { ...entry, value: { ...entry.value, reason: "unsupported_content" } });
+            remember(row.id, { ...entry, value: { ...entry.value, reason: "unsupported_content" } });
             return "blocked";
           }
           const binding = await resolveBolterBindingWith(db, ctx, { origin: row.origin, providerAgentId: row.providerAgentId,
@@ -323,8 +341,9 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       const row = await setBolterConnectionStateWith(db, { userId }, { connectionId: id, expectedRevision, enabled, ...(revoke ? { revoke: true } : {}) });
       if (!row) throw new BolterControlError("authority_changed");
       const scope = options.relay.getBolterSession(row.relayId, userId);
-      observations.delete(id);
+      forget(id);
       if (scope && (!enabled || revoke)) await command(scope, { action: revoke ? "revoke" : "pause", connectionId: id, generation: row.generation }).catch(() => undefined);
+      publishBolterStateChanged(userId);
       if (enabled && !revoke) return checkConnection(userId, id);
       return summary(row);
     },
@@ -354,6 +373,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         return { roomId, namespaceId: bundle.namespaceId, agentId: input.agentId, chatId: choice.chatId, threadId: choice.threadRootId ?? "", modelSponsorshipAccepted: true };
       });
       choices.delete(input.choiceId);
+      publishBolterStateChanged(userId);
       await startReceiver(row, entry.scope);
       return { roomId: binding.roomId, link: await linkSummary(binding) };
     },
@@ -368,6 +388,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     async updateBinding(userId: string, id: string, expectedRevision: number, state: "active" | "paused" | "revoked") {
       const row = await updateBolterBindingStateWith(db, { userId }, { bindingId: id, expectedRevision, state });
       if (!row) throw new BolterControlError("authority_changed");
+      publishBolterStateChanged(userId);
       if (state === "active") await checkConnection(userId, row.connectionId);
       return linkSummary(row);
     },

@@ -1858,6 +1858,11 @@ export interface RoomMembersChangedEvent {
   recipientSyncNamespaceId?: string;
 }
 
+/** Owner-private, identifier-free hint to refetch authorized Bolter state. */
+export interface BolterStateChangedEvent {
+  type: "bolter.state.changed";
+}
+
 /**
  * A viewer-private hint that the authoritative Room list changed.
  *
@@ -2451,6 +2456,7 @@ export type ServerEvent =
   | JobForkedEvent
   | ForkSplicedEvent
   | RoomCatalogChangedEvent
+  | BolterStateChangedEvent
   | RoomMembersChangedEvent
   | RoomConductorModeChangedEvent
   | TypingPingEvent

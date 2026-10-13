@@ -328,3 +328,76 @@ describe("intentional Human text sharing", () => {
     expect(view.container.textContent).toBe("");
   });
 });
+
+
+describe("Bolter owner state invalidation", () => {
+  function invalidate() {
+    act(() => { window.dispatchEvent(new CustomEvent("nautilo:bolter-state-changed")); });
+  }
+  test("receiver changes reach both independent Room views without manual reload", async () => {
+    let listening = false;
+    responder = (path, method, body) => path === `/api/bolter/rooms/${ROOM}`
+      ? { link: { ...link, receiver: listening ? "listening" : "running", canSend: listening } }
+      : defaults(path, method, body);
+    const view = render(<><BolterRoomSection roomId={ROOM} scopeKey="fixture" /><BolterMessageComposer roomId={ROOM} scopeKey="fixture" /></>);
+    await waitFor(() => expect((view.getByRole("button", { name: "Write a message to Bolter" }) as HTMLButtonElement).disabled).toBe(true));
+    listening = true; invalidate();
+    await waitFor(() => expect((view.getByRole("button", { name: "Write a message to Bolter" }) as HTMLButtonElement).disabled).toBe(false));
+    expect(view.getAllByText(/Listening/).length).toBeGreaterThan(0);
+  });
+  test("invalidation coalesces behind an outstanding Room read and rejects its stale response", async () => {
+    const late = deferred<unknown>(); let reads = 0;
+    responder = (path, method, body) => path === `/api/bolter/rooms/${ROOM}`
+      ? ++reads === 1 ? late.promise : { link: { ...link, canSend: false, receiver: "stopped" } }
+      : defaults(path, method, body);
+    const view = render(<BolterMessageComposer roomId={ROOM} scopeKey="fixture" />);
+    await waitFor(() => expect(reads).toBe(1));
+    invalidate(); invalidate();
+    expect(reads).toBe(1);
+    await act(async () => { late.resolve({ link }); await late.promise; });
+    await waitFor(() => expect((view.getByRole("button", { name: "Write a message to Bolter" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(reads).toBe(2);
+  });
+  test("an automatic state refresh cannot unlock controls while a mutation is pending", async () => {
+    const mutation = deferred<unknown>();
+    let paused = false;
+    responder = (path, method, body) => {
+      if (path === `/api/bolter/connections/${CONNECTION}` && method === "PATCH") return mutation.promise;
+      if (path === "/api/bolter/connections") return {
+        connections: [{ ...connection, status: paused ? "paused" : "connected", revision: paused ? 3 : 2 }],
+        availability: { state: "available" }, desktops: [],
+      };
+      return defaults(path, method, body);
+    };
+    const view = render(<BolterConnectionSection scopeKey="fixture" onRoomCreated={async () => {}} />);
+    const check = await view.findByRole("button", { name: "Check connection" });
+    await waitFor(() => expect((check as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(view.getByRole("button", { name: "Pause connection" }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    paused = true; invalidate();
+    const resume = await view.findByRole("button", { name: "Resume connection" });
+    // The refreshed catalogue has finished, but the original mutation has not.
+    await act(async () => {});
+    expect((check as HTMLButtonElement).disabled).toBe(true);
+    expect((resume as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(resume);
+    expect(writes).toHaveLength(1);
+    await act(async () => { mutation.resolve({ ...connection, status: "paused", revision: 3 }); await mutation.promise; });
+    await waitFor(() => expect((check as HTMLButtonElement).disabled).toBe(false));
+    expect(writes).toHaveLength(1);
+  });
+  test("Connections refreshes receiver status and coalesces stale catalogue reads", async () => {
+    const late = deferred<unknown>(); let reads = 0;
+    responder = (path, method, body) => path === "/api/bolter/connections"
+      ? ++reads === 1 ? late.promise : { connections: [{ ...connection, receiver: "running" }], availability: { state: "available" }, desktops: [] }
+      : defaults(path, method, body);
+    const view = render(<BolterConnectionSection scopeKey="fixture" onRoomCreated={async () => {}} />);
+    await waitFor(() => expect(reads).toBe(1));
+    invalidate(); invalidate();
+    expect(reads).toBe(1);
+    await act(async () => { late.resolve({ connections: [connection], availability: { state: "available" }, desktops: [] }); await late.promise; });
+    await waitFor(() => expect(view.getByText(/Receiver running/)).toBeDefined());
+    expect(reads).toBe(2);
+    expect(view.queryByText(/^Listening/)).toBeNull();
+  });
+});
