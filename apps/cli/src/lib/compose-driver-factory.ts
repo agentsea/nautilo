@@ -327,7 +327,7 @@ function createDriverForCliImpl(
   const operatorSeams = buildComposeOperatorTransport(profile);
   const readinessGate = buildReleaseActiveWorkReadiness(operatorSeams);
   const maintenanceDrain = buildMaintenanceDrain(operatorSeams);
-  return createProductionComposeDriver({
+  const driver = createProductionComposeDriver({
     profile,
     templateDir: opts.templateDirOverride ?? templateDir(),
     log: cliLog,
@@ -351,6 +351,17 @@ function createDriverForCliImpl(
         }
       : {}),
   });
+  if (profile.transport === "local") {
+    if (operatorSeams.fetchFn === undefined) {
+      throw new Error("Local Compose operator transport is unavailable");
+    }
+    const localProbe = operatorSeams.fetchFn;
+    driver.setLocalRestoreCustodyProbe((url) => localProbe(url, {
+      method: "GET",
+      redirect: "manual",
+    }));
+  }
+  return driver;
 }
 
 export function buildUpgradeDoctor(): ComposeDriverDeps["doctor"] {

@@ -26,7 +26,7 @@ const env: NamespaceMemoryEnvelope = {
 describe("M084 — subagent tool whitelist validation", () => {
   beforeAll(() => {
     const c = new ToolCatalog();
-    registerAllTools(c);
+    registerAllTools(c, { decisionModelsAvailable: () => false });
     initToolCatalog(c);
   });
 
@@ -95,6 +95,32 @@ describe("M084 — subagent tool whitelist validation", () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.message).toContain("unavailable in this context");
+  });
+
+  test("caller admission may defer decision runtime prerequisites without bypassing policy", () => {
+    const deferred = validateSubagentToolWhitelist({
+      requestedTools: ["evaluate_decisions"],
+      parentEnvelope: env,
+      actorRole: "owner",
+      toolPolicy: env.toolPolicy,
+      skipRelayLiveCheck: true,
+      deferRuntimePrerequisiteChecks: true,
+      subagentDepth: 1,
+      subagentMaxDepth: 3,
+    });
+    expect(deferred).toEqual({ ok: true, whitelist: ["evaluate_decisions"] });
+
+    const forbidden = validateSubagentToolWhitelist({
+      requestedTools: ["evaluate_decisions"],
+      parentEnvelope: env,
+      actorRole: "owner",
+      toolPolicy: { evaluate_decisions: "forbidden" },
+      skipRelayLiveCheck: true,
+      deferRuntimePrerequisiteChecks: true,
+      subagentDepth: 1,
+      subagentMaxDepth: 3,
+    });
+    expect(forbidden.ok).toBe(false);
   });
 
   test("allows empty whitelist (chat-only subagent)", () => {

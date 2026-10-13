@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { rejects } from "node:assert/strict";
 import type { DirectDatabase, Task } from "@nautilo/db";
 import { resolveTargetRoom } from "../../src/tasks/resolve-target-room";
 
@@ -31,14 +32,34 @@ const explodingDb = {
 } as unknown as DirectDatabase;
 
 describe("M142 — resolveTargetRoom", () => {
-  test("caller-funded namespace work stays in the originating private chat without searching shared Rooms", async () => {
+  test("caller-funded namespace work keeps the generic shared-Room resolver", async () => {
     const task = baseTask({ fundingMode: "caller", targetChat: "last_in_namespace",
       callingRoomId: "55555555-5555-5555-5555-555555555555" });
-    const result = await resolveTargetRoom(task, { db: explodingDb });
-    expect(result.roomId).toBe(task.callingRoomId!);
-    expect(result.graphThreadId).toBe(`room:${task.callingRoomId}:bot:${task.agentId}`);
-    return expect(resolveTargetRoom({ ...task, targetRoomId: "44444444-4444-4444-4444-444444444444" },
-      { db: explodingDb })).rejects.toThrow("does not match its private chat");
+    await rejects(resolveTargetRoom(task, { db: explodingDb }), /db should not be touched/);
+    await rejects(resolveTargetRoom({ ...task,
+      targetRoomId: "44444444-4444-4444-4444-444444444444" }, { db: explodingDb }),
+    /db should not be touched/);
+  });
+
+  test("caller-funded schedule stays on its exact admitted source Room", async () => {
+    const roomId = "44444444-4444-4444-4444-444444444444";
+    const task = baseTask({
+      preset: "schedule",
+      fundingMode: "caller",
+      targetChat: "last_in_namespace",
+      callingRoomId: roomId,
+      targetRoomId: roomId,
+      targetUserIds: ["11111111-1111-1111-1111-111111111111"],
+    });
+    expect(await resolveTargetRoom(task, { db: explodingDb })).toEqual({
+      roomId,
+      graphThreadId: `room:${roomId}:bot:22222222-2222-2222-2222-222222222222`,
+    });
+    expect(await resolveTargetRoom({ ...task, targetRoomId: null }, { db: explodingDb }))
+      .toEqual({
+        roomId,
+        graphThreadId: `room:${roomId}:bot:22222222-2222-2222-2222-222222222222`,
+      });
   });
 
   test("orphan memoizes targetRoomId — reuses existing room, no new room", async () => {

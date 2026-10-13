@@ -212,11 +212,7 @@ const PERSONAL_TASK_COMMAND_NAMES = [
   "create", "read", "list", "update", "pause", "unpause", "stop",
 ] as const;
 
-/**
- * Foreground personal-funded parents receive only native root, tool-free Task
- * fields. Command-specific requirements remain handler validated so the wire
- * schema keeps the required top-level object shape.
- */
+/** Native Task controls available from an admitted caller-funded turn. */
 export function createPersonalTaskToolSchema() {
   return createTaskToolSchema({ claudeCode: false }).pick({
     command: true,
@@ -227,7 +223,12 @@ export function createPersonalTaskToolSchema() {
     cron: true,
     timezone: true,
     target_chat: true,
+    target_users: true,
+    use_scope: true,
+    scope_id: true,
+    tools: true,
     result_delivery: true,
+    parent_task_id: true,
     time_limit_seconds: true,
     model_selection_profile: true,
     model_selection_spec: true,
@@ -242,7 +243,6 @@ export function createPersonalTaskToolSchema() {
     includeTerminal: true,
   }).extend({
     command: z.enum(PERSONAL_TASK_COMMAND_NAMES),
-    target_chat: z.enum(["orphan", "last_in_namespace"]).optional(),
   });
 }
 

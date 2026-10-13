@@ -6,6 +6,7 @@ import {
   resolveToolWhitelist,
   selectTaskEnvelopeMode,
 } from "../../src/tasks/dispatch-task-run";
+import type { TaskFundingAdmission } from "../../src/task-funding-port";
 
 /**
  * M144 (R3) — the run's tool whitelist is resolved + VALIDATED at the dispatch
@@ -43,7 +44,7 @@ function makeTask(overrides: Partial<Task>): Task {
 describe("M144 dispatch — resolveToolWhitelist (R3 single source of truth)", () => {
   beforeAll(() => {
     const catalog = new ToolCatalog();
-    registerAllTools(catalog);
+    registerAllTools(catalog, { decisionModelsAvailable: () => false });
     initToolCatalog(catalog);
   });
 
@@ -101,6 +102,30 @@ describe("M144 dispatch — resolveToolWhitelist (R3 single source of truth)", (
         forbiddenEnvelope,
       ),
     ).toThrow(/whitelist rejected/i);
+  });
+
+  test("successful caller admission defers decision runtime prerequisites", () => {
+    const task = makeTask({ toolsMode: "whitelist", toolsWhitelist: ["evaluate_decisions"] });
+    const admitted: TaskFundingAdmission = {
+      modelId: "openrouter:anthropic/claude-sonnet-4.6",
+      binding: { kind: "server", providerRoute: "openrouter" },
+    };
+
+    expect(() => resolveToolWhitelist(task, baseEnvelope)).toThrow(/whitelist rejected/i);
+    expect(() => resolveToolWhitelist(task, baseEnvelope, undefined)).toThrow(/whitelist rejected/i);
+    expect(() => resolveToolWhitelist(task, baseEnvelope, null)).toThrow(/whitelist rejected/i);
+
+    expect(resolveToolWhitelist(
+      task,
+      baseEnvelope,
+      admitted,
+    )).toEqual(["evaluate_decisions"]);
+
+    expect(() => resolveToolWhitelist(
+      task,
+      { ...baseEnvelope, toolPolicy: { evaluate_decisions: "forbidden" } },
+      admitted,
+    )).toThrow(/whitelist rejected/i);
   });
 });
 

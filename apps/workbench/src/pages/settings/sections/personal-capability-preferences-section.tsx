@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import type {
   PersonalCapabilityModelReadiness,
@@ -7,6 +7,7 @@ import type {
   PersonalCapabilityRole,
 } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
+import { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT } from "../../../lib/caller-model-availability";
 import { useAuth } from "../../../hooks/use-auth";
 import { GuestPlaceholder, SectionCard, StatusPill } from "../ui";
 
@@ -47,24 +48,95 @@ export function PersonalCapabilityPreferencesSection() {
   const [loading, setLoading] = useState(false);
   const [savingRole, setSavingRole] = useState<PersonalCapabilityRole | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const activeAccountGenerationRef = useRef(0);
+  const mutationGenerationRef = useRef(0);
+  const credentialEventGenerationRef = useRef(0);
+  const refreshRequestedRef = useRef(false);
+  const refreshRunnerRef = useRef<Promise<void> | null>(null);
 
-  const load = useCallback(async () => {
-    if (!enabled) return;
-    setLoading(true);
+  const loadOnce = useCallback(async (accountGeneration: number) => {
+    if (!enabled || accountGeneration !== activeAccountGenerationRef.current) return;
+    const mutationGeneration = mutationGenerationRef.current;
     try {
-      setState(await apiClient.getPersonalCapabilityPreferences());
+      const next = await apiClient.getPersonalCapabilityPreferences();
+      if (accountGeneration !== activeAccountGenerationRef.current
+        || mutationGeneration !== mutationGenerationRef.current) return;
+      setState(next);
       setError(null);
     } catch (cause) {
+      if (accountGeneration !== activeAccountGenerationRef.current
+        || mutationGeneration !== mutationGenerationRef.current) return;
       setError(cause instanceof Error ? cause.message : "Capability model preferences could not be loaded.");
-    } finally {
-      setLoading(false);
     }
   }, [enabled]);
 
-  useEffect(() => { void load(); }, [load, auth.viewerGeneration]);
+  const requestRefresh = useCallback((): Promise<void> => {
+    refreshRequestedRef.current = true;
+    const existing = refreshRunnerRef.current;
+    if (existing) return existing;
+
+    const accountGeneration = activeAccountGenerationRef.current;
+    setLoading(true);
+    const runner = (async () => {
+      while (refreshRequestedRef.current
+        && accountGeneration === activeAccountGenerationRef.current) {
+        refreshRequestedRef.current = false;
+        await loadOnce(accountGeneration);
+      }
+    })().finally(() => {
+      if (refreshRunnerRef.current !== runner) return;
+      refreshRunnerRef.current = null;
+      if (accountGeneration !== activeAccountGenerationRef.current) return;
+      if (refreshRequestedRef.current) {
+        void requestRefresh();
+      } else {
+        setLoading(false);
+      }
+    });
+    refreshRunnerRef.current = runner;
+    return runner;
+  }, [loadOnce]);
+
+  useEffect(() => {
+    const accountGeneration = activeAccountGenerationRef.current + 1;
+    activeAccountGenerationRef.current = accountGeneration;
+    mutationGenerationRef.current = 0;
+    credentialEventGenerationRef.current = 0;
+    refreshRequestedRef.current = false;
+    refreshRunnerRef.current = null;
+    setState(null);
+    setError(null);
+    setSavingRole(null);
+
+    if (!enabled) {
+      setLoading(false);
+      return () => {
+        if (activeAccountGenerationRef.current === accountGeneration) {
+          activeAccountGenerationRef.current += 1;
+        }
+      };
+    }
+
+    const refresh = () => {
+      credentialEventGenerationRef.current += 1;
+      void requestRefresh();
+    };
+    window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+    void requestRefresh();
+    return () => {
+      window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+      if (activeAccountGenerationRef.current === accountGeneration) {
+        activeAccountGenerationRef.current += 1;
+      }
+      refreshRequestedRef.current = false;
+      refreshRunnerRef.current = null;
+    };
+  }, [auth.viewerGeneration, enabled, requestRefresh]);
 
   const save = async (role: PersonalCapabilityRole, value: string) => {
     if (!state || savingRole) return;
+    const accountGeneration = activeAccountGenerationRef.current;
+    const credentialEventGeneration = credentialEventGenerationRef.current;
     const modelId = value === "" ? null : value;
     setSavingRole(role);
     setError(null);
@@ -73,16 +145,23 @@ export function PersonalCapabilityPreferencesSection() {
         expectedRevision: state.revision,
         overrides: nextPersonalCapabilityOverrides(state.overrides, role, modelId),
       });
+      if (accountGeneration !== activeAccountGenerationRef.current) return;
+      mutationGenerationRef.current += 1;
       setState(next);
+      if (credentialEventGeneration !== credentialEventGenerationRef.current) {
+        await requestRefresh();
+      }
     } catch (cause) {
+      if (accountGeneration !== activeAccountGenerationRef.current) return;
       if (cause instanceof ApiError && cause.status === 409) {
-        await load();
+        await requestRefresh();
+        if (accountGeneration !== activeAccountGenerationRef.current) return;
         setError("These preferences changed elsewhere. The current choices were reloaded; choose again if needed.");
       } else {
         setError(cause instanceof Error ? cause.message : "The preference was not saved.");
       }
     } finally {
-      setSavingRole(null);
+      if (accountGeneration === activeAccountGenerationRef.current) setSavingRole(null);
     }
   };
 
@@ -146,7 +225,7 @@ export function PersonalCapabilityPreferencesSection() {
       ) : null}
       {enabled && error ? <p className="mt-3 text-sm text-[var(--error)]" role="alert">{error}</p> : null}
       {enabled && error && !state ? (
-        <button type="button" onClick={() => { void load(); }} className="mt-3 text-sm font-medium text-primary">Try again</button>
+        <button type="button" onClick={() => { void requestRefresh(); }} className="mt-3 text-sm font-medium text-primary">Try again</button>
       ) : null}
     </SectionCard>
   );

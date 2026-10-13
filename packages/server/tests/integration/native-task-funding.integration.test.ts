@@ -5,6 +5,9 @@ import { ChatOpenAICompletions } from "@langchain/openai";
 import {
   and,
   actors,
+  agents,
+  channelIdentities,
+  credentials,
   eq,
   getServerProviderPolicy,
   getTaskById,
@@ -13,6 +16,8 @@ import {
   insertTaskRun,
   llmUsageEvents,
   markTaskRunStatus,
+  groupMembers,
+  profiles,
   tasks,
   users,
   rooms,
@@ -21,12 +26,22 @@ import {
   updateTask,
   upsertServerProviderPolicy,
 } from "@nautilo/db";
-import { invokeChatModelWithFallback, runWithUsageContext, registerAllTools } from "@nautilo/agent";
-import { taskFundingFailureCode, createHumanApiTaskCreationProvenance, resolveTargetRoom } from "@nautilo/runtime";
+import {
+  installPersonalLlmAttemptOwner,
+  invokeChatModelWithFallback,
+  registerAllTools,
+  runWithUsageContext,
+} from "@nautilo/agent";
+import {
+  createAgentTurnTaskCreationProvenance,
+  createHumanApiTaskCreationProvenance,
+  resolveTargetRoom,
+  taskFundingFailureCode,
+} from "@nautilo/runtime";
 import { ToolCatalog, clearToolCatalog, getToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import { initPolicyResolver, getPolicyResolver, PersonalPolicyResolver, createRoomFromMembers } from "@nautilo/trust";
 import { nativeTaskFundingPort } from "../../src/lib/native-task-funding";
-import { setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
+import { seatPeerUser, setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
 
 const MODEL_ID = "openrouter:moonshotai/kimi-k3";
@@ -79,8 +94,15 @@ describe.serial("native Task funding", () => {
     let legacyTaskId: string | undefined;
     let executionTaskId: string | undefined;
     let peerUserId: string | undefined;
+    let peerAgentId: string | undefined;
+    let peerBearer = "";
+    let peerCredentialRevision: number | undefined;
+    const peerTaskIds: string[] = [];
     let sharedRoomId: string | undefined;
     let sharedNamespaceId: string | undefined;
+    const uninstallPersonalAttemptOwner = installPersonalLlmAttemptOwner({
+      ownerToken: randomUUID(),
+    });
 
     delete process.env["OPENROUTER_API_KEY"];
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -189,31 +211,170 @@ describe.serial("native Task funding", () => {
         fundingMode: "caller",
         toolsMode: "none",
         toolsWhitelist: [],
+        targetUserIds: [],
       });
 
       expect(await nativeTaskFundingPort.prepareCreation({ ...task, targetRoomId: fx.defaultRoomId },
-        createHumanApiTaskCreationProvenance({ ownerId: fx.ownerId }))).toBe(false);
+        createHumanApiTaskCreationProvenance({ ownerId: fx.ownerId }))).toBe(true);
       expect(await nativeTaskFundingPort.admit({ ...task, targetChat: "orphan",
-        targetRoomId: fx.defaultRoomId }).then(() => null,
-          (error: unknown) => (error as { code?: unknown }).code)).toBe("unsupported_workload");
+        targetRoomId: fx.defaultRoomId })).toMatchObject({
+        modelId: MODEL_ID,
+        binding: { kind: "personal", providerRoute: "openrouter", credentialRevision },
+      });
+      expect(await nativeTaskFundingPort.prepareCreation({
+        ...task,
+        toolsMode: "whitelist",
+        toolsWhitelist: ["task"],
+      }, createHumanApiTaskCreationProvenance({ ownerId: fx.ownerId }))).toBe(true);
+      expect(await nativeTaskFundingPort.admit({
+        ...task,
+        toolsMode: "whitelist",
+        toolsWhitelist: ["security_scan"],
+      }).then(() => null, taskFundingFailureCode)).toBe("unsupported_workload");
 
-      const [peer] = await fx.db.insert(users).values({ name: "Task audience peer",
-        handle: `taskaudience${randomUUID().replaceAll("-", "")}`, server: null }).returning();
-      if (!peer) throw new Error("Task audience peer missing");
-      peerUserId = peer.id;
-      await fx.db.insert(actors).values({ ownerId: peer.id, kind: "user",
-        displayName: "Task audience peer", trustState: "verified" });
+      const peer = await seatPeerUser(fx.db, {
+        suiteName: "nativetaskfunding",
+        groupType: "contributors",
+      });
+      peerUserId = peer.userId;
+      peerAgentId = peer.agentId;
+      peerBearer = peer.bearer;
       const sharedRoom = await createRoomFromMembers({ ownerUserId: fx.ownerId,
         ownerActorId: fx.ownerActorId, label: "Newer shared Task destination",
-        members: [{ kind: "user", id: fx.ownerId }, { kind: "user", id: peer.id },
+        members: [{ kind: "user", id: fx.ownerId }, { kind: "user", id: peer.userId },
           { kind: "agent", id: defaultAgentId }] });
       sharedRoomId = sharedRoom.id;
       if (!sharedRoom.namespaceId) throw new Error("Shared Room Namespace missing");
       sharedNamespaceId = sharedRoom.namespaceId;
       expect(sharedRoom.members.filter((member) => member.kind === "user")).toHaveLength(2);
-      expect((await resolveTargetRoom(task, { db: fx.db })).roomId).toBe(fx.defaultRoomId);
-      expect(await nativeTaskFundingPort.admit({ ...task, targetRoomId: sharedRoom.id })
-        .then(() => null, taskFundingFailureCode)).toBe("unsupported_workload");
+      const ownerAudienceTask = { ...task, targetUserIds: [fx.ownerId] };
+      expect((await resolveTargetRoom(ownerAudienceTask, { db: fx.db })).roomId)
+        .toBe(sharedRoom.id);
+      expect(await nativeTaskFundingPort.admit({
+        ...ownerAudienceTask,
+        targetRoomId: sharedRoom.id,
+      }))
+        .toMatchObject({
+          modelId: MODEL_ID,
+          binding: { kind: "personal", providerRoute: "openrouter", credentialRevision },
+        });
+
+      const peerCredential = await authedInject(fx.app, {
+        method: "PUT",
+        url: "/api/account/provider-credentials/openrouter",
+        bearer: peer.bearer,
+        payload: { apiKey: `synthetic-peer-task-${randomUUID()}` },
+      });
+      expect(peerCredential.statusCode, peerCredential.body).toBe(200);
+      peerCredentialRevision = peerCredential.json<{ credential: { revision: number } }>()
+        .credential.revision;
+      const [foreignTask] = await fx.db.insert(tasks).values({
+        ownerId: fx.ownerId,
+        requestorId: peer.userId,
+        agentId: defaultAgentId,
+        prompt: "Contributor funds an authorized foreign Genie in a shared Room.",
+        callingRoomId: sharedRoom.id,
+        targetChat: "last_in_namespace",
+        targetRoomId: sharedRoom.id,
+        fundingMode: "caller",
+        toolsMode: "whitelist",
+        toolsWhitelist: ["task"],
+        requestedModelId: MODEL_ID,
+        status: "running",
+      }).returning();
+      if (!foreignTask) throw new Error("foreign Genie Task fixture missing");
+      peerTaskIds.push(foreignTask.id);
+      expect(await nativeTaskFundingPort.prepareCreation(
+        foreignTask,
+        createHumanApiTaskCreationProvenance({ ownerId: fx.ownerId }),
+      )).toBe(true);
+      const foreignAdmission = await nativeTaskFundingPort.admit(foreignTask);
+      expect(foreignAdmission).toMatchObject({
+        modelId: MODEL_ID,
+        binding: {
+          kind: "personal",
+          providerRoute: "openrouter",
+          credentialRevision: peerCredentialRevision,
+        },
+      });
+      const foreignRun = await insertTaskRun(fx.db, {
+        taskId: foreignTask.id,
+        graphThreadId: `native-task-foreign:${randomUUID()}`,
+        status: "running",
+        modelId: foreignAdmission.modelId,
+        fundingBinding: foreignAdmission.binding,
+      });
+      const foreignSession = await nativeTaskFundingPort.openSession(
+        foreignTask,
+        foreignRun,
+        foreignAdmission.modelId,
+        false,
+      );
+      let capturedPeerFunding: unknown;
+      await foreignSession.runAttempt(MODEL_ID, async (attempt) => {
+        capturedPeerFunding = attempt.usageFunding;
+        expect(attempt.personalCredential?.apiKey).toStartWith("synthetic-peer-task-");
+      });
+      expect(capturedPeerFunding).toMatchObject({
+        kind: "personal",
+        humanUserId: peer.userId,
+        payerHumanId: peer.userId,
+        providerRoute: "openrouter",
+        credentialRevision: peerCredentialRevision,
+      });
+
+      const [childTask] = await fx.db.insert(tasks).values({
+        ownerId: fx.ownerId,
+        requestorId: peer.userId,
+        agentId: defaultAgentId,
+        prompt: "Nested child retains the causal Human payer.",
+        callingRoomId: sharedRoom.id,
+        targetChat: "last_in_namespace",
+        targetRoomId: sharedRoom.id,
+        fundingMode: "caller",
+        toolsMode: "none",
+        toolsWhitelist: [],
+        requestedModelId: MODEL_ID,
+        parentTaskId: foreignTask.id,
+        depth: 1,
+        status: "running",
+      }).returning();
+      if (!childTask) throw new Error("nested Task fixture missing");
+      peerTaskIds.push(childTask.id);
+      expect(await nativeTaskFundingPort.prepareCreation(
+        childTask,
+        createAgentTurnTaskCreationProvenance({
+          ownerId: fx.ownerId,
+          invocation: {
+            ownerId: fx.ownerId,
+            roomId: sharedRoom.id,
+            entrypoint: "background.task",
+            taskId: foreignTask.id,
+            taskRunId: foreignRun.id,
+          },
+        }),
+      )).toBe(true);
+      expect(await nativeTaskFundingPort.admit(childTask)).toMatchObject({
+        binding: { kind: "personal", credentialRevision: peerCredentialRevision },
+      });
+
+      await fx.db.delete(roomMembers).where(and(
+        eq(roomMembers.roomId, sharedRoom.id),
+        eq(roomMembers.actorId, peer.actorId),
+      ));
+      let revokedAttempts = 0;
+      try {
+        expect(await foreignSession.runAttempt(MODEL_ID, async () => {
+          revokedAttempts += 1;
+        }).then(() => null, taskFundingFailureCode)).toBe("unsupported_workload");
+      } finally {
+        await fx.db.insert(roomMembers).values({
+          roomId: sharedRoom.id,
+          actorId: peer.actorId,
+          roomRole: "member",
+        });
+      }
+      expect(revokedAttempts).toBe(0);
 
       const admitted = await nativeTaskFundingPort.admit(task);
       expect(admitted).toMatchObject({
@@ -277,27 +438,26 @@ describe.serial("native Task funding", () => {
       });
       expect(JSON.stringify({ task, run, usage })).not.toContain(personalKey);
 
-      // Both worker admission and every retry must reject a changed execution
-      // audience; an archived or membership-revoked private destination cannot spend.
+      // The admitted session freezes its execution inputs. A persisted target
+      // change cannot spend through that session, and an archived or
+      // membership-revoked causal Room cannot spend through any retry.
       let forbiddenAttempts = 0;
       const forbiddenAttempt = () => session.runAttempt(MODEL_ID, async () => { forbiddenAttempts += 1; })
         .then(() => null, taskFundingFailureCode);
       await updateTask(fx.db, taskId, { targetRoomId: sharedRoom.id });
-      expect(await forbiddenAttempt()).toBe("unsupported_workload");
-      expect(await nativeTaskFundingPort.openSession({ ...task, targetRoomId: sharedRoom.id }, run,
-        MODEL_ID, false).then(() => null, taskFundingFailureCode)).toBe("unsupported_workload");
-      await updateTask(fx.db, taskId, { targetRoomId: fx.defaultRoomId });
+      expect(await forbiddenAttempt()).toBe("funding_source_changed");
+      await updateTask(fx.db, taskId, { targetRoomId: task.targetRoomId });
       await fx.db.update(rooms).set({ archivedAt: new Date() }).where(eq(rooms.id, fx.defaultRoomId));
       try { expect(await forbiddenAttempt()).toBe("unsupported_workload"); }
       finally { await fx.db.update(rooms).set({ archivedAt: null }).where(eq(rooms.id, fx.defaultRoomId)); }
-      const [agentMembership] = await fx.db.select().from(roomMembers).innerJoin(actors,
-        eq(roomMembers.actorId, actors.id)).where(and(eq(roomMembers.roomId, fx.defaultRoomId),
-        eq(actors.agentId, defaultAgentId)));
-      if (!agentMembership) throw new Error("Task Genie membership missing");
+      const [sourceMembership] = await fx.db.select().from(roomMembers).where(and(
+        eq(roomMembers.roomId, fx.defaultRoomId), eq(roomMembers.actorId, fx.ownerActorId),
+      ));
+      if (!sourceMembership) throw new Error("Task causal Human membership missing");
       await fx.db.delete(roomMembers).where(and(eq(roomMembers.roomId, fx.defaultRoomId),
-        eq(roomMembers.actorId, agentMembership.room_members.actorId)));
+        eq(roomMembers.actorId, sourceMembership.actorId)));
       try { expect(await forbiddenAttempt()).toBe("unsupported_workload"); }
-      finally { await fx.db.insert(roomMembers).values(agentMembership.room_members); }
+      finally { await fx.db.insert(roomMembers).values(sourceMembership); }
       expect(forbiddenAttempts).toBe(0);
       expect(providerRequests).toHaveLength(1);
 
@@ -646,6 +806,7 @@ describe.serial("native Task funding", () => {
         (error: unknown) => (error as { code?: unknown }).code,
       )).toBe("funding_source_changed");
     } finally {
+      uninstallPersonalAttemptOwner();
       if (fx) {
         for (const usageId of usageIds) {
           await fx.db.delete(llmUsageEvents).where(eq(llmUsageEvents.id, usageId));
@@ -653,6 +814,9 @@ describe.serial("native Task funding", () => {
         if (executionTaskId) await fx.db.delete(tasks).where(eq(tasks.id, executionTaskId));
         await fx.db.delete(llmUsageEvents).where(eq(llmUsageEvents.userId, fx.ownerId));
         if (legacyTaskId) await fx.db.delete(tasks).where(eq(tasks.id, legacyTaskId));
+        for (const peerTaskId of peerTaskIds.reverse()) {
+          await fx.db.delete(tasks).where(eq(tasks.id, peerTaskId));
+        }
         if (taskId) await fx.db.delete(tasks).where(eq(tasks.id, taskId));
         if (sharedRoomId) {
           await fx.db.delete(roomMembers).where(eq(roomMembers.roomId, sharedRoomId));
@@ -660,7 +824,20 @@ describe.serial("native Task funding", () => {
         }
         if (sharedNamespaceId) await fx.db.delete(namespaces).where(eq(namespaces.id, sharedNamespaceId));
         if (peerUserId) {
+          if (peerBearer && peerCredentialRevision !== undefined) {
+            await authedInject(fx.app, {
+              method: "DELETE",
+              url: "/api/account/provider-credentials/openrouter",
+              bearer: peerBearer,
+              payload: { expectedRevision: peerCredentialRevision },
+            });
+          }
+          await fx.db.delete(profiles).where(eq(profiles.userId, peerUserId));
+          await fx.db.delete(groupMembers).where(eq(groupMembers.userId, peerUserId));
+          await fx.db.delete(channelIdentities).where(eq(channelIdentities.userId, peerUserId));
+          await fx.db.delete(credentials).where(eq(credentials.userId, peerUserId));
           await fx.db.delete(actors).where(eq(actors.ownerId, peerUserId));
+          if (peerAgentId) await fx.db.delete(agents).where(eq(agents.id, peerAgentId));
           await fx.db.delete(users).where(eq(users.id, peerUserId));
         }
         if (bearer && credentialRevision !== undefined) {

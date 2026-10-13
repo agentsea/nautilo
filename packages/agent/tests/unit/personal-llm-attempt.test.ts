@@ -7,25 +7,43 @@ import {
 } from "../../src/usage/personal-llm-attempt";
 import { getUsageContext, runWithUsageContext } from "../../src/usage/usage-context";
 import type { BeginPersonalLlmAttemptInput, SettlePersonalLlmAttemptInput } from "@nautilo/db";
+import {
+  getPersonalLlmAttemptOwner,
+  installPersonalLlmAttemptOwner,
+} from "../../src/usage/personal-llm-attempt-owner";
 
 const funding = { kind: "personal" as const, humanUserId: "10000000-0000-4000-8000-000000000001",
   payerHumanId: "10000000-0000-4000-8000-000000000001", providerRoute: "openai",
   credentialId: "20000000-0000-4000-8000-000000000002", credentialRevision: 4 };
+const owner = { ownerToken: "99999999-9999-4999-8999-999999999999" };
 function harness() {
   const begun: BeginPersonalLlmAttemptInput[] = [];
   const settled: SettlePersonalLlmAttemptInput[] = [];
-  return { begun, settled, deps: { begin: async (row: BeginPersonalLlmAttemptInput) => { begun.push(row); },
+  return { begun, settled, deps: { owner: () => owner,
+    begin: async (row: BeginPersonalLlmAttemptInput) => { begun.push(row); },
     settle: async (row: SettlePersonalLlmAttemptInput) => { settled.push(row); } } };
 }
 const scope = <T>(fn: () => T) => runWithUsageContext({ callType: "chat", funding, metadata: { turnId: "synthetic-turn" } }, fn);
 const modelId = "openai:gpt-5.6-luna";
 
 describe("durable personal direct attempts", () => {
+  test("an old uninstall cannot clear a later process owner", () => {
+    const uninstallFirst = installPersonalLlmAttemptOwner(owner);
+    expect(getPersonalLlmAttemptOwner()).toEqual(owner);
+    uninstallFirst();
+    const replacement = { ownerToken: "88888888-8888-4888-8888-888888888888" };
+    const uninstallReplacement = installPersonalLlmAttemptOwner(replacement);
+    uninstallFirst();
+    expect(getPersonalLlmAttemptOwner()).toEqual(replacement);
+    uninstallReplacement();
+    expect(getPersonalLlmAttemptOwner()).toBeNull();
+  });
   test("begins before the wire and settles one frozen estimate from callback evidence", async () => {
     const h = harness();
     const answer = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => {
       expect(h.begun).toHaveLength(1);
       expect(h.begun[0]).toMatchObject({ userId: funding.humanUserId, credentialRevision: 4, providerRoute: "openai" });
+      expect(h.begun[0]).toMatchObject({ ownerToken: owner.ownerToken });
       const context = getUsageContext()!;
       expect(context.trackedAttemptId).toBe(h.begun[0]!.id);
       context.onAttemptUsage!({ inputTokens: 100, outputTokens: 20, reasoningTokens: 0, cachedInputTokens: 0,
@@ -139,12 +157,23 @@ describe("durable personal direct attempts", () => {
   test("ledger admission failure prevents paid work; post-answer settlement failure never repeats it", async () => {
     let calls = 0;
     expect(scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => { calls++; } },
-      { begin: async () => { throw new Error("database unavailable"); }, settle: async () => {} }))).rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
+      { owner: () => owner, begin: async () => { throw new Error("database unavailable"); }, settle: async () => {} }))).rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
     expect(calls).toBe(0);
     const h = harness();
     const answer = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => { calls++; return "answer"; } },
       { ...h.deps, settle: async () => { throw new Error("settlement unavailable"); } }));
     expect(answer).toBe("answer"); expect(calls).toBe(1); expect(h.begun).toHaveLength(1);
+  });
+  test("missing durable process ownership prevents the wire", async () => {
+    let calls = 0;
+    const h = harness();
+    expect(scope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { calls += 1; },
+    }, { ...h.deps, owner: () => null }))).rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
+    expect(calls).toBe(0);
+    expect(h.begun).toHaveLength(0);
   });
   test("retries one exact immutable settlement after acknowledgement loss without replaying inference", async () => {
     const h = harness();
@@ -155,6 +184,7 @@ describe("durable personal direct attempts", () => {
       endpoint: "/v1/chat/completions",
       invoke: async () => { invokes += 1; return "answer"; },
     }, {
+      owner: () => owner,
       begin: h.deps.begin,
       settle: async (input) => {
         settlements.push(input);

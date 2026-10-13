@@ -151,28 +151,17 @@ function toolsFieldsFromArgs(
 }
 
 /**
- * Personal foreground controls may resume or reshape only the native,
- * caller-funded root Tasks created for this exact Human, Genie, and Room.
+ * Personal foreground controls may resume or reshape only native,
+ * caller-funded Tasks belonging to this exact causal invocation identity.
  * Lifecycle reads, pause, and stop remain available for every owned Task.
  */
 function isPersonalTaskMutationTarget(task: Task, ctx: TaskDispatchContext): boolean {
   return task.fundingMode === "caller"
+    && task.ownerId === ctx.ownerId
     && task.requestorId === ctx.causalHumanUserId
     && task.agentId === ctx.agentId
-    && task.callingRoomId === ctx.roomId
-    && task.parentTaskId === null
-    && task.depth === 0
+    && (task.callingRoomId === ctx.roomId || task.id === ctx.currentTaskId)
     && task.contentRepresentation === "ordinary"
-    && task.useScope === false
-    && task.scopeId === null
-    && task.toolsMode === "none"
-    && task.toolsWhitelist.length === 0
-    && task.awaitResponse === false
-    && task.targetUserIds.length === 1
-    && task.targetUserIds[0] === ctx.causalHumanUserId
-    && (task.targetChat === "orphan" || task.targetChat === "last_in_namespace")
-    && task.targetChatHandle === null
-    && (task.targetChat === "orphan" || task.targetRoomId === null || task.targetRoomId === task.callingRoomId)
     && taskExternalHarnessId(task.metadata) === null;
 }
 
@@ -183,7 +172,7 @@ function personalTaskMutationRejection(
 ): string | null {
   if (!ctx.personalTaskControls) return null;
   if (!isPersonalTaskMutationTarget(task, ctx)) {
-    return `Cannot ${operation} task: personal Task controls only support caller-funded native root tool-free Tasks from this chat.`;
+    return `Cannot ${operation} task: caller-funded Task identity or native authority changed.`;
   }
   return null;
 }

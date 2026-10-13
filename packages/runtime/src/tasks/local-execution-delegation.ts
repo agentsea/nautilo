@@ -81,7 +81,7 @@ async function readLineage(source: TaskLocalExecutionSource, mode: AdmissionMode
     const next = await source.readTask(parent.parentTaskId);
     const authority = parseLocalExecutionDelegation(next?.localExecutionDelegation);
     if (!next || !authority || authority.agentId !== next.agentId || authority.humanUserId !== next.requestorId
-      || next.ownerId !== task.ownerId || next.requestorId !== task.requestorId
+      || next.requestorId !== task.requestorId
       || (parent.callingRoomId !== next.callingRoomId && parent.callingRoomId !== next.targetRoomId)
       || !sameTarget(delegation, authority)) throw unavailable();
     await assertAncestorLifecycle(source, next, mode);

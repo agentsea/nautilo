@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, test } from "bun:test";
 import {
   and,
@@ -11,7 +12,7 @@ import {
   upsertServerProviderPolicy,
 } from "@nautilo/db";
 import { ToolCatalog, clearToolCatalog, getToolCatalog, initToolCatalog } from "@nautilo/catalog";
-import { registerAllTools } from "@nautilo/agent";
+import { installPersonalLlmAttemptOwner, registerAllTools } from "@nautilo/agent";
 import { setupOwnerAppFixture } from "./helpers/app-fixture";
 import { authedInject } from "./helpers/request-helpers";
 
@@ -40,6 +41,9 @@ test.each([
   const priorPolicy = await getServerProviderPolicy(fx.db);
   const priorFetch = globalThis.fetch;
   const priorDirect = process.env["OPENROUTER_API_KEY"];
+  const uninstallPersonalAttemptOwner = installPersonalLlmAttemptOwner({
+    ownerToken: randomUUID(),
+  });
   const requests: Array<{ authorization: string | null; url: string; body: string }> = [];
   let credentialRevision: number | null = null;
 
@@ -189,6 +193,7 @@ test.each([
     }
 
   } finally {
+    uninstallPersonalAttemptOwner();
     globalThis.fetch = priorFetch;
     if (priorDirect === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = priorDirect;

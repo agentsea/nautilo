@@ -174,6 +174,7 @@ export {
   PROBE_NAUTILO_ESSENTIAL_SELECT_SQL,
   PROBE_PUBLIC_OBJECTS_NOT_OWNED_SQL,
 } from "./utils/legacy-role-repair";
+export { buildEventFeedReaderRoleSql } from "./utils/event-feed-role";
 export {
   createHostedDatabaseSecret,
   withHostedDatabaseSecret,
@@ -842,6 +843,14 @@ export {
   insertLlmUsageEvent,
   beginSurplusLlmAttempt,
   beginPersonalLlmAttempt,
+  renewPersonalLlmAttemptLeases,
+  interruptExpiredPersonalLlmAttempts,
+  interruptPersonalLlmAttemptsByOwner,
+  PERSONAL_LLM_ATTEMPT_LEASE_MS,
+  PERSONAL_LLM_ATTEMPT_TICK_MS,
+  PERSONAL_LLM_ATTEMPT_BATCH_LIMIT,
+  type PersonalLlmAttemptLeasePageInput,
+  type ExpiredPersonalLlmAttemptPageInput,
   attachSurplusRequestReceipt,
   settleSurplusLlmAttempt,
   settlePersonalLlmAttempt,
