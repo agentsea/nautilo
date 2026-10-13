@@ -13,10 +13,12 @@ import {
 } from "@nautilo/lattice-bridge";
 import {
   parseImageAssistanceSummary,
+  parseExternalMessageOrigin,
   type AdvancedVideoWorkcardContinuation,
   type MessageArtifactOpenRef,
   type MessageAttachmentRef,
   type ImageAssistanceSummary,
+  type ExternalMessageAttributionFields,
   type RoomHistoryTerminalExecutionSummary,
 } from "@nautilo/types";
 import {
@@ -33,6 +35,51 @@ import { isShareRejection } from "./live-shadow-message-projection";
  */
 export const MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY = "artifactOpenRefs";
 export const MESSAGE_ATTACHMENTS_METADATA_KEY = "messageAttachments";
+
+/** Display-only provenance from an admitted history/event projection; never a local actor. */
+export function externalMessageDisplayAttribution(fields: {
+  externalOrigin?: unknown;
+  externalAttributionInvalid?: unknown;
+}): ExternalMessageAttributionFields {
+  if (fields.externalAttributionInvalid === true) return { externalAttributionInvalid: true };
+  if (fields.externalOrigin === undefined) return {};
+  const origin = parseExternalMessageOrigin(fields.externalOrigin);
+  return origin ? { externalOrigin: origin } : { externalAttributionInvalid: true };
+}
+
+export function externalMessageAuthorLabel(fields: {
+  externalOrigin?: unknown;
+  externalAttributionInvalid?: unknown;
+}): string | null {
+  const attribution = externalMessageDisplayAttribution(fields);
+  return attribution.externalOrigin ? `Bolter · ${attribution.externalOrigin.senderLabel}`
+    : attribution.externalAttributionInvalid ? "Unverified external sender" : null;
+}
+
+/** External receipts reconcile by canonical id only, never local optimistic text or actor. */
+export function reconcileCanonicalExternalMessage(
+  messages: readonly ThreadMessageLike[],
+  message: { messageId: string; content: string; createdAt?: string | undefined } & ExternalMessageAttributionFields,
+): readonly ThreadMessageLike[] {
+  const attribution = externalMessageDisplayAttribution(message);
+  if (!attribution.externalOrigin && !attribution.externalAttributionInvalid) return messages;
+  const index = messages.findIndex(candidate => String(candidate.id) === message.messageId);
+  const previous = index >= 0 ? messages[index] : undefined;
+  const custom = { ...(previous?.metadata?.custom ?? {}) };
+  const textPart: unknown = Array.isArray(previous?.content) && previous.content.length === 1 ? previous.content[0] : undefined;
+  if (previous?.role === "user" && textPart !== null && typeof textPart === "object"
+    && "type" in textPart && textPart.type === "text" && "text" in textPart && textPart.text === message.content
+    && custom.sourceUserId === undefined && custom.authorAgentId === undefined && custom.authorHarnessId === undefined
+    && JSON.stringify(custom.externalOrigin) === JSON.stringify(attribution.externalOrigin)
+    && custom.externalAttributionInvalid === attribution.externalAttributionInvalid
+    && (!message.createdAt || custom.sentAt === message.createdAt)) return messages;
+  // Even contradictory local-author fields must not turn provider attribution into local authority.
+  for (const key of ["sourceUserId", "authorAgentId", "authorHarnessId", "externalOrigin", "externalAttributionInvalid"]) delete custom[key];
+  Object.assign(custom, attribution, message.createdAt ? { sentAt: message.createdAt } : {});
+  const projected: ThreadMessageLike = { ...previous, id: message.messageId, role: "user",
+    content: [{ type: "text", text: message.content }], metadata: { ...previous?.metadata, custom } };
+  return index < 0 ? [...messages, projected] : messages.map((candidate, i) => i === index ? projected : candidate);
+}
 const MESSAGE_TERMINAL_EXECUTIONS_METADATA_KEY = "terminalExecutions";
 /**
  * The server relation is unique, but history/event/cache races must never
@@ -258,7 +305,7 @@ function storedToolCallEntries(parsed: unknown): unknown[] {
     : [];
 }
 
-export interface StoredSessionMessageDto {
+export interface StoredSessionMessageDto extends ExternalMessageAttributionFields {
   id: string;
   logicalMessageKey?: string;
   role: string;
@@ -285,7 +332,7 @@ export interface StoredSessionMessageDto {
    * tool payload. Never accepted as authority from the ordinary sibling. */
   authenticatedToolCallId?: string;
   replyToMessageId?: number | null;
-  /** Persisted human author (`sessions.owner_id`) for room fan-in. */
+  /** Local Human author for Room fan-in; absent for external authorship. */
   sourceUserId?: string;
   /** Authoring agent (`sessions.agent_id`) for assistant/tool rows. */
   authorAgentId?: string;
@@ -679,7 +726,9 @@ export function restoreSessionMessages(
         }
       }
       if (replyTo !== null) custom.replyToMessageId = replyTo;
-      if (typeof m.sourceUserId === "string" && m.sourceUserId.length > 0) {
+      const external = externalMessageDisplayAttribution(m);
+      Object.assign(custom, external);
+      if (!external.externalOrigin && !external.externalAttributionInvalid && typeof m.sourceUserId === "string" && m.sourceUserId.length > 0) {
         custom.sourceUserId = m.sourceUserId;
       }
       if (m.reactions && m.reactions.length > 0) custom.reactions = m.reactions;

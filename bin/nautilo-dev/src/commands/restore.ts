@@ -1,3 +1,4 @@
+import { assertBolterRestoreDumpAllowed } from "../lib/bolter-restore-authority";
 import { existsSync } from "node:fs";
 import { copyFile, lstat, readFile, rm, mkdir, readdir, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
@@ -42,14 +43,14 @@ interface RestoreOptions {
    * This prevents partial rollback during auth cutover rehearsals.
    */
   requireLogto?: boolean;
-  /** D202: explicit opt-in to restore the protected (default) instance. */
+  /** explicit opt-in to restore the protected (default) instance. */
   iKnowWhatIAmDoing?: boolean;
 }
 
 export interface RestoreRuntimeAcceptanceDeps {
   /** Ensure the local Nautilo server is running before acceptance. */
   startServer: () => Promise<number>;
-  /** Run the authoritative D427 runtime-acceptance gate. */
+  /** Run the authoritative runtime-acceptance gate. */
   accept: () => Promise<number>;
   log?: (message: string) => void;
 }
@@ -151,6 +152,8 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
   const dotEnvSrc = join(dir, "dot-env");
   const tarPath = join(dir, "nautilo-home.tar.gz");
   const metaPath = join(dir, "meta.json");
+
+  if (existsSync(dbPath)) await assertBolterRestoreDumpAllowed(dbPath);
 
   const fullBackup = await prepareFullDevRestore(dir);
   if (fullBackup) options = { ...options, requireLogto: true };
@@ -329,7 +332,7 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
   }
 
   // -------------------------------------------------------------------------
-  // 3b. D427 (Wave 4 task 4.1.1) — credential reconciliation.
+  // 3b. credential reconciliation.
   //     Runs AFTER the restored `instance.env` is on disk so the app-role
   //     passwords are readable. Re-pins the `nautilo` / `nautilo_agent`
   //     cluster role passwords to the restored env and resyncs the Logto
@@ -371,7 +374,7 @@ export async function restore(name: string, options: RestoreOptions = {}): Promi
   }
 
   // -------------------------------------------------------------------------
-  // 3c. D427 (Wave 4 task 4.1.1 / 4.1.2) — authoritative runtime acceptance.
+  // 3c. authoritative runtime acceptance.
   //     The local restore now shares the Compose path's fail-closed contract:
   //     it does NOT report success until the runtime-role, parameterized Neon
   //     HTTP, OIDC, instance identity, and SPA checks pass (plus /health).

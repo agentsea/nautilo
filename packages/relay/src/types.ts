@@ -533,6 +533,8 @@ export type RelayCapabilities = {
   claude?: RelayClaudeCapability | undefined;
   /** v18 — Electron has a locally injected Claude execution host. */
   claudeExecution?: RelayClaudeExecutionCapability | undefined;
+  /** v30 — an injected Electron Bolter adapter, not evidence of provider readiness. */
+  bolter?: Readonly<{ version: 1; hostKind: "electron" }> | undefined;
   /**
    * secret-free local structured SSH readiness. This is discovery only:
    * it contains no managed-capability subject, grant, identity, host, user,

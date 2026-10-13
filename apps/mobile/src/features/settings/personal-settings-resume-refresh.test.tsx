@@ -2,6 +2,14 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, createElement, type ComponentType, useEffect } from "react";
 import { createRoot } from "react-dom/client";
+import type { PersonalCapabilityPreferencesResponse } from "@nautilo/api-client/browser";
+import type {
+  PersonalCapabilityPreferencesApi,
+  PersonalCapabilityPreferencesController,
+} from "./personal-capability-preferences-controller";
+
+const { createPersonalCapabilityPreferencesController: createRealCapabilityController } =
+  await import("./personal-capability-preferences-controller");
 
 const browser = new Window();
 Object.assign(globalThis, {
@@ -31,6 +39,10 @@ type ObservedController = {
 
 const capabilityControllers: ObservedController[] = [];
 const costControllers: ObservedController[] = [];
+let capabilityControllerFactory: ((
+  apiForScope: (scope: Scope) => PersonalCapabilityPreferencesApi,
+) => PersonalCapabilityPreferencesController) | null = null;
+let capabilityApi: PersonalCapabilityPreferencesApi | null = null;
 
 function observedController(): ObservedController {
   const snapshot = {
@@ -82,7 +94,7 @@ mock.module("expo-router", () => ({
   useFocusEffect: (effect: () => void | (() => void)) => {
     useEffect(() => focused ? effect() : undefined, [effect, focused]);
   },
-  useLocalSearchParams: () => ({ role: "researcher" }),
+  useLocalSearchParams: () => ({ role: "webSearchSynthesis" }),
 }));
 mock.module("@/components/app-bar", () => ({
   AppBar: element("header"),
@@ -96,7 +108,10 @@ mock.module("@/components/settings/settings-status", () => ({
   SettingsStatus: element("div"),
 }));
 mock.module("@/features/settings/personal-capability-preferences-controller", () => ({
-  createPersonalCapabilityPreferencesController: () => {
+  createPersonalCapabilityPreferencesController: (
+    apiForScope: (scope: Scope) => PersonalCapabilityPreferencesApi,
+  ) => {
+    if (capabilityControllerFactory) return capabilityControllerFactory(apiForScope);
     const controller = observedController();
     capabilityControllers.push(controller);
     return controller;
@@ -135,7 +150,10 @@ mock.module("@/providers/theme", () => ({
   }),
 }));
 mock.module("@/lib/api", () => ({
-  getApiClient: () => { throw new Error("the route must use its injected controller"); },
+  getApiClient: () => {
+    if (capabilityApi) return capabilityApi;
+    throw new Error("the route must use its injected controller");
+  },
 }));
 
 const { default: CapabilityModelsScreen } = await import(
@@ -175,7 +193,45 @@ async function emitAppState(next: AppStateValue): Promise<void> {
   await act(async () => {
     for (const listener of [...appStateListeners]) listener(next);
     await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
   });
+}
+
+function capabilitySnapshot(
+  revision = 0,
+  selected = false,
+): PersonalCapabilityPreferencesResponse {
+  const modelId = "openrouter:model-a";
+  const readiness = {
+    status: "ready" as const,
+    reason: null,
+    fundingSource: "personal" as const,
+    providerRoute: "openrouter",
+  };
+  return {
+    revision,
+    overrides: selected ? { webSearchSynthesis: modelId } : {},
+    fundingPreference: "personal_first",
+    capabilities: [{
+      role: "webSearchSynthesis",
+      label: "Web search synthesis",
+      description: "Summarizes search results.",
+      selection: {
+        source: selected ? "personal" : "inherited",
+        modelId,
+        displayName: "Model A",
+      },
+      readiness,
+      options: [{ modelId, displayName: "Model A", provider: "openrouter", readiness }],
+    }],
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 beforeEach(() => {
@@ -183,6 +239,8 @@ beforeEach(() => {
   appStateListeners.clear();
   capabilityControllers.length = 0;
   costControllers.length = 0;
+  capabilityControllerFactory = null;
+  capabilityApi = null;
 });
 
 describe("personal settings resume refresh", () => {
@@ -230,4 +288,69 @@ describe("personal settings resume refresh", () => {
       expect(appStateListeners.size).toBe(0);
     });
   }
+
+  test("capability model resume does not supersede the mutation's canonical reload", async () => {
+    const put = deferred<void>();
+    const canonicalReload = deferred<PersonalCapabilityPreferencesResponse>();
+    let reads = 0;
+    let writes = 0;
+    const controllerRef: { current: PersonalCapabilityPreferencesController | null } = {
+      current: null,
+    };
+    capabilityApi = {
+      getPersonalCapabilityPreferences: () => {
+        reads += 1;
+        if (reads === 1) return Promise.resolve(capabilitySnapshot());
+        if (reads === 2) return canonicalReload.promise;
+        return Promise.resolve(capabilitySnapshot(1, true));
+      },
+      replacePersonalCapabilityPreferences: async () => {
+        writes += 1;
+        await put.promise;
+        return capabilitySnapshot(1, true);
+      },
+    };
+    capabilityControllerFactory = (apiForScope) => {
+      const controller = createRealCapabilityController(apiForScope);
+      controllerRef.current = controller;
+      return controller;
+    };
+
+    const route = await renderRoute(CapabilityModelPickerScreen);
+    try {
+      await act(async () => { await Promise.resolve(); });
+      const controller = controllerRef.current;
+      if (!controller) throw new Error("capability controller was not created");
+      expect(reads).toBe(1);
+      expect(controller.data.getState().data).toEqual(capabilitySnapshot());
+
+      let apply!: ReturnType<PersonalCapabilityPreferencesController["apply"]>;
+      await act(async () => {
+        apply = controller.apply("webSearchSynthesis", "openrouter:model-a");
+        await Promise.resolve();
+      });
+      expect(writes).toBe(1);
+      expect(controller.data.getState().mutating).toBeTrue();
+
+      await act(async () => { put.resolve(); await put.promise; });
+      await act(async () => { await Promise.resolve(); });
+      expect(reads).toBe(2);
+      expect(controller.data.getState().mutating).toBeTrue();
+
+      await emitAppState("active");
+      expect(reads).toBe(2);
+
+      await act(async () => {
+        canonicalReload.resolve(capabilitySnapshot(1, true));
+        await apply;
+      });
+      expect(controller.data.getState().mutating).toBeFalse();
+      expect(controller.data.getState().data).toEqual(capabilitySnapshot(1, true));
+
+      await emitAppState("active");
+      expect(reads).toBe(3);
+    } finally {
+      await route.close();
+    }
+  });
 });

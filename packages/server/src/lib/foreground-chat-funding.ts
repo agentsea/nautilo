@@ -24,7 +24,8 @@ type FundingPortInput = Readonly<{
   modelId: string;
   roomId: string;
   agentId: string;
-  entrypoint: "foreground.main" | "foreground.fork";
+  entrypoint: "foreground.main" | "foreground.fork" | "foreground.external_room";
+  assertExternalRoomSponsorship?: () => Promise<void>;
   prior?: ForegroundFundingSnapshot;
 }>;
 
@@ -119,7 +120,16 @@ async function assertForegroundRoomAuthority(input: Readonly<{
 export async function openForegroundChatFundingSession(
   input: FundingPortInput,
 ): Promise<ForegroundChatFundingSession | null> {
-  const recheckAuthority = () => assertForegroundRoomAuthority(input);
+  const external = input.entrypoint === "foreground.external_room";
+  const recheckAuthority = async () => {
+    if (external) {
+      if (!input.assertExternalRoomSponsorship) {
+        throw new ModelFundingError("unsupported_workload");
+      }
+      await input.assertExternalRoomSponsorship();
+    }
+    await assertForegroundRoomAuthority(input);
+  };
   await recheckAuthority();
   const db = getServerDirectDb();
   const policy = await getServerProviderPolicy(db);
@@ -161,6 +171,7 @@ export async function openForegroundChatFundingSession(
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(external ? { contentPrivateDiagnostics: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
     capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind),
     personalTaskControls: admitted.kind === "personal"

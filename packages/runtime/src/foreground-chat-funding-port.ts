@@ -1,3 +1,4 @@
+import { getCurrentExternalRoomExecution } from "./external-room-execution";
 import type { ForegroundChatFundingSession } from "@nautilo/agent";
 import {
   getAcceptedInvocationAuthoritySubject,
@@ -8,7 +9,8 @@ import { getTaskRunDb } from "./tasks/task-runtime-context";
 
 export type ForegroundChatFundingEntrypoint =
   | "foreground.main"
-  | "foreground.fork";
+  | "foreground.fork"
+  | "foreground.external_room";
 
 export interface ForegroundChatFundingOpenInput {
   readonly humanUserId: string;
@@ -17,6 +19,7 @@ export interface ForegroundChatFundingOpenInput {
   readonly agentId: string;
   readonly entrypoint: ForegroundChatFundingEntrypoint;
   readonly hasImages?: boolean;
+  readonly assertExternalRoomSponsorship?: () => Promise<void>;
 }
 
 export interface ImageAssistanceSession {
@@ -238,4 +241,20 @@ export async function openImageAssistanceForInvocation(
     agentId: input.agentId, entrypoint: input.entrypoint,
     ...(input.fundingKind ? { fundingKind: input.fundingKind } : {}),
   });
+}
+
+/** External authorship never supplies a causal Human or an implicit server payer. */
+export async function openExternalRoomFundingSession(input: {
+  modelId: string; roomId: string; agentId: string;
+}): Promise<ForegroundChatFundingSession> {
+  const context = getCurrentExternalRoomExecution();
+  if (!context || !installedPort || context.reference.roomId !== input.roomId
+    || context.reference.agentId !== input.agentId) throw new ForegroundChatFundingAuthorityError();
+  await context.assertSponsorship();
+  const session = await installedPort.openSession({
+    ...input, humanUserId: context.sponsorUserId, entrypoint: "foreground.external_room",
+    hasImages: false, assertExternalRoomSponsorship: () => context.assertSponsorship(),
+  });
+  if (!session) throw new ForegroundChatFundingAuthorityError();
+  return session;
 }

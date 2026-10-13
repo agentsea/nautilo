@@ -95,3 +95,6 @@ export * from "./conversion-operations";
 export * from "./task-run-message-associations";
 export * from "./protected-task-execution-segment-receipts";
 export * from "./protected-task-continuation-receipts";
+export * from "./bolter-bridge";
+
+export * from "./external-room-execution-claims";

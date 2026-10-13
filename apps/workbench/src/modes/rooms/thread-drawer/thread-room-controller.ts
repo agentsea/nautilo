@@ -3,6 +3,7 @@ import {
   type ApprovalAskEvent,
   type ApprovalResolvedEvent,
   type MessageAttachmentRef,
+  type ExternalMessageAttributionFields,
   type ProveItChallengeEvent,
   type ServerEvent,
   type ThreadDetailResponse,
@@ -15,7 +16,7 @@ import {
 } from "../../../components/tool-argument-preview";
 import { projectToolResultForCard } from "../../../adapters/local-execution-result-projection";
 import { mergeHydratedRoomMessages } from "../../../adapters/room-hydration-reconciliation";
-import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../../../adapters/session-rehydrate";
+import { externalMessageDisplayAttribution, MESSAGE_ATTACHMENTS_METADATA_KEY } from "../../../adapters/session-rehydrate";
 import {
   applyActorReaction,
 } from "../shape/reactions/reaction-aggregate";
@@ -29,7 +30,7 @@ import type { ReactionAggregate } from "../shape/reactions/ReactionStrip";
  * `runtimeMessages` is the ordered external-store projection consumed by the
  * child-scoped production Assistant UI runtime mounted by the drawer.
  */
-export interface ThreadRoomMessage {
+export interface ThreadRoomMessage extends ExternalMessageAttributionFields {
   id: string;
   assistantMessageKey?: string;
   logicalMessageKey?: string;
@@ -290,7 +291,18 @@ function addOrReplaceMessage(
 ): readonly ThreadRoomMessage[] {
   const existingIndex = messages.findIndex((candidate) => candidate.id === message.id);
   if (existingIndex >= 0) {
-    return messages.map((candidate, index) => (index === existingIndex ? { ...candidate, ...message } : candidate));
+    return messages.map((candidate, index) => {
+      if (index !== existingIndex) return candidate;
+      const merged = { ...candidate, ...message };
+      if (message.externalOrigin || message.externalAttributionInvalid) {
+        delete merged.sourceUserId;
+        delete merged.authorAgentId;
+        delete merged.externalOrigin;
+        delete merged.externalAttributionInvalid;
+        Object.assign(merged, externalMessageDisplayAttribution(message));
+      }
+      return merged;
+    });
   }
   return [...messages, message];
 }
@@ -311,10 +323,12 @@ function optimisticRequestId(message: ThreadMessageLike): string | undefined {
 }
 
 function runtimeTextMessage(message: ThreadRoomMessage): ThreadMessageLike {
-  const custom: Record<string, unknown> = { sentAt: message.createdAt };
+  const external = message.role === "user" ? externalMessageDisplayAttribution(message) : {};
+  const isExternal = !!external.externalOrigin || external.externalAttributionInvalid === true;
+  const custom: Record<string, unknown> = { sentAt: message.createdAt, ...external };
   if (message.assistantMessageKey) custom.assistantMessageKey = message.assistantMessageKey;
-  if (message.sourceUserId) custom.sourceUserId = message.sourceUserId;
-  if (message.authorAgentId) custom.authorAgentId = message.authorAgentId;
+  if (!isExternal && message.sourceUserId) custom.sourceUserId = message.sourceUserId;
+  if (!isExternal && message.authorAgentId) custom.authorAgentId = message.authorAgentId;
   if (message.logicalMessageKey) {
     custom.logicalMessageKey = message.logicalMessageKey;
   }
@@ -343,6 +357,7 @@ function reconcileRuntimeMessage(
   const projected = runtimeTextMessage(message);
   const exact = messages.findIndex((candidate) => String(candidate.id) === message.id);
   if (exact >= 0) return messages.map((candidate, index) => index === exact ? projected : candidate);
+  if (message.externalOrigin || message.externalAttributionInvalid) return [...messages, projected];
   const optimistic = messages.findIndex((candidate) =>
     optimisticRequestId(candidate) !== undefined &&
     candidate.role === projected.role &&
@@ -363,6 +378,7 @@ function reconcilePersistedMessage(
   if (messages.some((candidate) => candidate.id === message.id)) {
     return addOrReplaceMessage(messages, message);
   }
+  if (message.externalOrigin || message.externalAttributionInvalid) return [...messages, message];
   // A WS echo can arrive before the POST response. Pick the earliest matching
   // optimistic row, making duplicate same-text sends deterministic.
   const optimisticIndex = messages.findIndex(
@@ -445,6 +461,8 @@ function applyThreadEvent(
       // payload; never manufacture an empty sibling or compare null streams.
       if (typeof event.content !== "string") return state;
       const role = event.role === "ai" ? "assistant" : event.role === "human" ? "user" : event.role;
+      const external = role === "user" ? externalMessageDisplayAttribution(event) : {};
+      const isExternal = !!external.externalOrigin || external.externalAttributionInvalid === true;
       const persistedMessage: ThreadRoomMessage = {
         id: event.messageId,
         ...(event.assistantMessageKey ? { assistantMessageKey: event.assistantMessageKey } : {}),
@@ -452,13 +470,14 @@ function applyThreadEvent(
           ? { logicalMessageKey: event.logicalMessageKey }
           : {}),
         role,
+        ...external,
         content: event.content,
         createdAt: event.createdAt ?? "",
         ...(typeof event.editRevision === "number"
           ? { editRevision: event.editRevision }
           : {}),
-        ...(event.sourceUserId ? { sourceUserId: event.sourceUserId } : {}),
-        ...(event.authorAgentId ? { authorAgentId: event.authorAgentId } : {}),
+        ...(!isExternal && event.sourceUserId ? { sourceUserId: event.sourceUserId } : {}),
+        ...(!isExternal && event.authorAgentId ? { authorAgentId: event.authorAgentId } : {}),
         ...(event.replyToMessageId !== undefined ? { replyToMessageId: event.replyToMessageId } : {}),
         ...(event.attachments !== undefined ? { attachments: event.attachments } : {}),
       };

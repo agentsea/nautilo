@@ -497,3 +497,51 @@ describe("Desktop Relay sidecar client", () => {
     await client.disconnect();
   }, 20_000);
 });
+
+test("Bolter uses the existing private Host lane for correlated one-shot send authorization", async () => {
+  const { createBolterNativeRelayPort } = await import("../../electron/bolter-bridge/relay-port");
+  const live = await server();
+  let registered!: (scope: import("@nautilo/relay").RelayBolterScope) => void;
+  const registration = new Promise<import("@nautilo/relay").RelayBolterScope>(resolve => { registered = resolve; });
+  let nativeSends = 0;
+  const port = createBolterNativeRelayPort({ isCurrent: () => true, createConnection: () => Promise.resolve({
+    connect: () => Promise.resolve({ runtime: "qualification_required", authentication: "required", identity: null, receiver: "stopped" }),
+    check: () => Promise.resolve({ runtime: "qualification_required", authentication: "required", identity: null, receiver: "stopped" }),
+    conversations: () => Promise.resolve({ kind: "conversations", conversations: [] }),
+    start: () => Promise.resolve({ runtime: "qualification_required", authentication: "required", identity: null, receiver: "stopped" }),
+    pause: () => Promise.resolve({ runtime: "qualification_required", authentication: "required", identity: null, receiver: "stopped" }),
+    prepareSend: () => Promise.resolve(content => { nativeSends++; return Promise.resolve({ kind: "sent", receipt: {
+      messageId: "synthetic-reply", chatId: content.chatId, threadRootId: content.threadRootId,
+    } }); }), retire: () => Promise.resolve(),
+  }) });
+  const client = createDesktopRelaySidecarClient({ executablePath: process.execPath,
+    executableArguments: [resolve(import.meta.dir, "../../../../bin/nautilo-relay/src/desktop-host-main.ts")],
+    serverUrl: live.url, userId: "user-1", relayId: "relay-1", desktopSessionId: "desktop-1",
+    capabilities: { profile: "desktop-agent", bolter: { version: 1, hostKind: "electron" } },
+    bolterHostPort: { ...port, onRegistered(scope, transport) { port.onRegistered(scope, transport); registered(scope); } },
+    onDispatch: () => { throw new Error("Bolter must not use generic dispatch"); },
+  });
+  try {
+    const connecting = client.connect();
+    const socket = await live.socket;
+    await nextJson(socket);
+    socket.send(JSON.stringify({ type: "relay:registered", relayId: "relay-1", protocolVersion: RELAY_PROTOCOL_VERSION,
+      selectedProtocolVersion: RELAY_PROTOCOL_VERSION, relaySessionId: "relay-session-1", pairingGenerationRef: "pairing-1" }));
+    await connecting;
+    const scope = await registration;
+    const correlationId = "10000000-0000-4000-8000-000000000001";
+    const outboxId = "10000000-0000-4000-8000-000000000002";
+    const authorize = nextJson(socket);
+    socket.send(JSON.stringify({ type: "relay:bolter-command", version: 30, scope, correlationId, command: {
+      action: "send", connectionId: "10000000-0000-4000-8000-000000000003", generation: 1, outboxId,
+      bindingId: "10000000-0000-4000-8000-000000000004", bindingRevision: 0,
+    } }));
+    expect((await authorize)["type"]).toBe("relay:bolter-authorize");
+    expect(nativeSends).toBe(0);
+    const result = nextJson(socket);
+    socket.send(JSON.stringify({ type: "relay:bolter-authorized", version: 30, scope, correlationId, outboxId,
+      content: { chatId: "synthetic-chat", threadRootId: null, content: "Synthetic text" } }));
+    expect(await result).toMatchObject({ type: "relay:bolter-result", correlationId, result: { kind: "sent" } });
+    expect(nativeSends).toBe(1);
+  } finally { await client.disconnect(); await port.retire(); }
+});

@@ -28,6 +28,7 @@ import {
   type LiveShadowMessageRealtimeEventV1,
   type FullEncryptionMessageRealtimeContentEventV2,
   type ServerEvent,
+  type MessageNewEvent,
   type RealtimeControlEvent,
   type ProveItToolInfo,
 } from "@nautilo/types";
@@ -138,6 +139,7 @@ import {
   dedupeMessageArtifactOpenRefs,
   MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY,
   restoreSessionMessages,
+  reconcileCanonicalExternalMessage,
   type RoomHistoryShadowReadAdapter,
 } from "./session-rehydrate";
 import { reconcileAdvancedVideoWorkcardMessage } from "./message-new-reconciliation";
@@ -348,6 +350,24 @@ function isPendingAttentionPreviewEvent(
   return event.type === "approval.ask"
     || event.type === "identity.challenge"
     || event.type === "prove_it.challenge";
+}
+
+/** Called only after the runtime's data-admission and active-Room event gates. */
+export function applyCanonicalExternalMessageEvent(input: {
+  event: MessageNewEvent;
+  messages: readonly ThreadMessageLike[];
+  commit: (messages: readonly ThreadMessageLike[]) => void;
+  recordLive: (laneKey: string, messageId: string) => void;
+  scheduleCache: () => void;
+}): boolean {
+  const { event } = input;
+  if ((event.role !== "user" && event.role !== "human")
+    || (event.externalOrigin === undefined && event.externalAttributionInvalid !== true)) return false;
+  const reconciled = reconcileCanonicalExternalMessage(input.messages, event);
+  if (reconciled !== input.messages) input.commit(reconciled);
+  input.recordLive(event.laneKey, event.messageId);
+  input.scheduleCache();
+  return true;
 }
 
 /** Task/subagent prompts are owner-scoped live UI, not Room checkpoint recovery. */
@@ -4584,6 +4604,17 @@ export function NautiloRuntimeProvider({
             // non-streamed assistant message.new; job may still be live.
             break;
           }
+          if (applyCanonicalExternalMessageEvent({ event, messages: messagesRef.current,
+            commit: messages => {
+              messagesRef.current = [...messages];
+              flush();
+            },
+            recordLive: (laneKey, messageId) => {
+              const roomId = roomIdFromLaneKey(laneKey, laneKeyToRoomIdRef.current);
+              if (roomId) recordLiveRoomMessage(roomId, messageId);
+            },
+            scheduleCache: () => scheduleCacheWrite(activeRoomIdRef.current),
+          })) break;
           if (
             (event.role === "user" || event.role === "human") &&
             (event.content || (event.attachments?.length ?? 0) > 0) &&
@@ -5407,6 +5438,11 @@ export function NautiloRuntimeProvider({
               },
             }),
           );
+          break;
+        }
+
+        case "bolter.state.changed": {
+          window.dispatchEvent(new CustomEvent("nautilo:bolter-state-changed"));
           break;
         }
 

@@ -15,6 +15,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
+import { buildBolterHandover } from "./build-bolter-handover";
 import {
   formatOnboardingPaletteCssBlock,
   formatSemanticSetupPaletteCssBlock,
@@ -26,6 +27,7 @@ const FIRST_RUN_PALETTE_MARKER = "/* __NAUTILO_SEMANTIC_SETUP_PALETTE__ */";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(scriptDir, "..");
+await buildBolterHandover();
 
 /**
  * Short git SHA for the current HEAD. Falls back to "unknown" when we

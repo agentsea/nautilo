@@ -1,5 +1,5 @@
 /**
- * D420 — payload-free work-acceptance ledger store (Wave 2 task 2.1.2).
+ * Payload-free work-acceptance ledger store.
  *
  * One row per accepted unit of executable intent, persisted BEFORE the
  * runtime enqueues it in the coalescer. The row stores identity and
@@ -12,9 +12,8 @@
  *
  * This module is BEHAVIOR-FREE substrate: it owns insert / link /
  * terminalize / reads, not the ingress gate, polling loop, or timeout
- * policy (later Wave 2 tasks own those). It uses the process-wide shared pool;
- * pattern of `queries/jobs.ts`; the `*With` variants accept an explicit
- * `DirectDatabase` for integration tests.
+ * policy. It follows the process-wide shared pool pattern of `queries/jobs.ts`;
+ * the `*With` variants accept an explicit `DirectDatabase` for integration tests.
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
@@ -35,9 +34,8 @@ export const WORK_ACCEPTANCE_REASONS = {
   plannedShutdown: "Cancelled because the server is shutting down for planned maintenance",
   maintenanceDrain: "Cancelled by maintenance drain",
   /**
-   * D420 (Wave 2 task 2.2.3 correction) — a D349 user Stop dropped this
-   * queued/buffered acceptance before dispatch. Distinct from
-   * `maintenanceDrain`: a user stop is not a maintenance cancellation (R8).
+   * A user Stop dropped this queued/buffered acceptance before dispatch. Distinct from
+   * `maintenanceDrain`: a user stop is not a maintenance cancellation.
    */
   userStop: "Cancelled by the user (Stop)",
   accessWithdrawn: "Cancelled because the initiating person no longer has access",
@@ -62,9 +60,18 @@ export async function insertAcceptanceWith(
   handle: DirectDatabase,
   kind: WorkAcceptanceKind,
 ): Promise<string> {
-  const [row] = await handle
+  return insertAcceptanceInTransaction(handle, kind);
+}
+
+/** Atomic intake seam: the caller's canonical/Job transaction owns commit. */
+export async function insertAcceptanceInTransaction(
+  tx: Pick<DirectDatabase, "insert">,
+  kind: WorkAcceptanceKind,
+  id?: string,
+): Promise<string> {
+  const [row] = await tx
     .insert(workAcceptances)
-    .values({ kind, status: "accepted" })
+    .values({ ...(id === undefined ? {} : { id }), kind, status: "accepted" })
     .returning({ id: workAcceptances.id });
   if (!row) throw new Error("insertAcceptance: insert returned no row");
   return row.id;
@@ -146,9 +153,9 @@ export async function terminalizeAcceptancesWith(
  * Terminalize ALL currently-accepted (un-dispatched) rows. The sweep
  * later task 2.2.3 calls at drain deadline; exposed now so the ledger is
  * sufficient for that policy without re-implementing the store layer.
- * Filters on `status='accepted'`, so `user_cancelled` (D349 user-Stop) and
+ * Filters on `status='accepted'`, so `user_cancelled` (user-Stop) and
  * `dispatched` rows are never touched — the maintenance sweep must leave a
- * user-Stop outcome distinct from a maintenance cancellation (R8).
+ * user-Stop outcome distinct from a maintenance cancellation.
  */
 export async function terminalizeAllAcceptedWith(
   handle: DirectDatabase,
@@ -164,7 +171,7 @@ export async function terminalizeAllAcceptedWith(
 }
 
 /**
- * D420 (Wave 2 task 2.2.3 correction) — terminalize an EXACT, ID-scoped set of
+ * terminalize an EXACT, ID-scoped set of
  * still-`accepted` acceptance rows as `user_cancelled` with a bounded user-stop
  * reason. Idempotent: only rows still in `accepted` are touched — already-
  * `dispatched` rows (linked to a real Job) and already-terminal rows
@@ -173,7 +180,7 @@ export async function terminalizeAllAcceptedWith(
  * transitioned than expected ⇒ a concurrent dispatch or Stop claimed some).
  *
  * `maintenance_cancelled` continues to mean maintenance drain only; this op
- * records the distinct D349 user-Stop outcome (R8). The maintenance sweep
+ * records the distinct user-Stop outcome. The maintenance sweep
  * (`terminalizeAllAcceptedWith`) filters on `status='accepted'`, so
  * `user_cancelled` rows are never touched by it.
  */

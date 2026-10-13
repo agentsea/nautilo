@@ -1,5 +1,6 @@
 import type { AvatarRef } from "./profile";
 import type { ProtectedMessageDtoV2 } from "./protected-message";
+import type { ExternalMessageAttributionFields } from "./external-message-origin";
 
 export * from "./push-notifications";
 
@@ -1068,7 +1069,7 @@ export interface RoomHistoryTerminalExecutionSummary {
 }
 
 /** Row shape for `GET /api/rooms/:id/messages`. */
-export interface RoomMessageDto {
+export interface RoomMessageDto extends ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary;
   id: string;
   /** opaque client identity for one logical persisted message/turn. */
@@ -1092,7 +1093,7 @@ export interface RoomMessageDto {
   lastReplyAt?: string | null;
   /** monotonic revision used to reject stale live summary updates. */
   summaryRevision?: number;
-  /** `sessions.owner_id` for human-authored rows. */
+  /** Local Human author only; omitted for externally authored or unverified rows. */
   sourceUserId?: string;
   /** authoring agent for assistant/tool rows (`sessions.agent_id`). */
   authorAgentId?: string;
@@ -1142,7 +1143,7 @@ export interface RoomMessageSearchCursor {
 }
 
 /** one bounded, human-visible Room transcript search result. */
-export interface RoomMessageSearchHit {
+export interface RoomMessageSearchHit extends ExternalMessageAttributionFields {
   messageId: string;
   createdAt: string;
   role: string;
@@ -1287,7 +1288,7 @@ export interface RoomMessageSearchValidationError {
 }
 
 /** extended SessionMessageDto (transcript / latest-messages payloads). */
-export interface SessionMessageDto {
+export interface SessionMessageDto extends ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary;
   id: number;
   logicalMessageKey?: string;

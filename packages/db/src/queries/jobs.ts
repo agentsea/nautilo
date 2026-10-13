@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, isNotNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { jobs } from "../schema/jobs";
 import type { JobStatus } from "@nautilo/types";
 import { getSharedDirectDb } from "../config/direct-database";
@@ -8,6 +8,7 @@ import {
   acquireOrdinaryEncryptionPublicationFence,
 } from
   "../utils/encryption-transition-queries";
+import { installExternalRoomExecutionClaimContext, type ExternalRoomExecutionClaim } from "./external-room-execution-claims";
 import type { ProtectedTaskDurableJobReference } from "./tasks";
 
 export type JobPublicationPolicy = Readonly<{
@@ -44,11 +45,13 @@ type ProtectedTaskJobTerminalDb = Pick<
 >;
 
 export interface PersistJobPayload {
+  /** Trusted preallocated identity for a same-transaction durable reference. */
+  id?: string;
   ownerId: string;
   requestorId: string;
   laneKey: string | null;
   /**
-   * M042B: optional room context. Derived by the JobManager from the
+   * Optional room context. Derived by the JobManager from the
    * input's roomId when present; NULL for guest / background / legacy
    * jobs. Carried to the DB so downstream observability can filter
    * by room when the feature lands.
@@ -105,10 +108,11 @@ export async function persistJobInTransaction(
   const [row] = await tx
     .insert(jobs)
     .values({
+      ...(payload.id === undefined ? {} : { id: payload.id }),
       ownerId: payload.ownerId,
       requestorId: payload.requestorId,
       laneKey: payload.laneKey,
-      // M042B: room_id nullable; empty / undefined → NULL.
+      // room_id nullable; empty / undefined → NULL.
       ...(payload.roomId ? { roomId: payload.roomId } : {}),
       type: payload.type,
       status: "queued",
@@ -124,9 +128,10 @@ export async function updateJobStatus(
   status: JobStatus,
   fields?: { message?: string; result?: Record<string, unknown> },
   publicationPolicy?: JobPublicationPolicy,
+  executionClaim?: ExternalRoomExecutionClaim,
 ) {
   return updateJobStatusWithDatabase(
-    db(), jobId, status, fields, publicationPolicy,
+    db(), jobId, status, fields, publicationPolicy, executionClaim,
   );
 }
 
@@ -326,6 +331,7 @@ export async function updateJobStatusWithDatabase(
   status: JobStatus,
   fields?: { message?: string; result?: Record<string, unknown> },
   publicationPolicy?: JobPublicationPolicy,
+  executionClaim?: ExternalRoomExecutionClaim,
 ) {
   const now = new Date();
   const isTerminal =
@@ -346,6 +352,24 @@ export async function updateJobStatusWithDatabase(
     })
     .where(eq(jobs.id, jobId));
   };
+  if (publicationPolicy !== undefined && (fields?.message !== undefined || fields?.result !== undefined)) {
+    throw new TypeError("Full encryption Job status forbids ordinary fields");
+  }
+  if (status === "running" && executionClaim !== undefined) {
+    if (executionClaim.jobId !== jobId) throw new Error("external_room_execution_start_unavailable");
+    try {
+      return await database.transaction(async tx => {
+        if (publicationPolicy !== undefined) await acquireEncryptionPublicationFence(tx, publicationPolicy);
+        else if (fields?.message !== undefined || fields?.result !== undefined) await acquireOrdinaryEncryptionPublicationFence(tx);
+        const [job] = await tx.select({ ownerId: jobs.ownerId }).from(jobs).where(and(eq(jobs.id, jobId), eq(jobs.roomId, executionClaim.roomId),
+          eq(jobs.type, "foreground"), eq(jobs.status, "queued"), isNull(jobs.startedAt), isNull(jobs.completedAt))).limit(1).for("update");
+        if (!job) throw new Error("external_room_execution_start_unavailable");
+        await tx.execute(sql`SELECT set_config('app.current_user_id', ${job.ownerId}, true)`);
+        await installExternalRoomExecutionClaimContext(tx, executionClaim);
+        await update(tx);
+      });
+    } catch { throw new Error("external_room_execution_start_unavailable"); }
+  }
   if (publicationPolicy === undefined) {
     if (fields?.message === undefined && fields?.result === undefined) {
       return update(database);

@@ -1,3 +1,4 @@
+import { assertBolterRestoreDumpAllowed, BOLTER_RESTORE_AUTHORITY_TABLES } from "./bolter-restore-authority";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
 import { execSync, spawnSync } from "node:child_process";
 import { createGunzip } from "node:zlib";
@@ -274,6 +275,9 @@ export const DATA_TABLES = [
   "public.work_acceptances",
   "public.sessions",
   "public.session_messages",
+  // Preserve complete backup coverage in FK order. Restore admission rejects
+  // populated bridge authority until an explicit reconciliation path exists.
+  ...BOLTER_RESTORE_AUTHORITY_TABLES,
   // Content-free deletion receipts have no foreign-key parents and survive the
   // message they record; keep them in every full backup and restore.
   "public.message_deletion_receipts",
@@ -618,6 +622,7 @@ export async function restoreFromGzip(
 ): Promise<void> {
   // Resolve selected-instance credentials before any destructive work. Restore
   // runs outside server startup and cannot rely on its dotenv loading.
+  await assertBolterRestoreDumpAllowed(gzipPath);
   const migrationEnv = buildRestoreMigrationEnv();
   dropAndCreateDb();
   if (options.fullArchive) {

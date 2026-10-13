@@ -438,6 +438,25 @@ describe("Room history Shadow-read HTTP contract", () => {
     }).success).toBeFalse();
   });
 
+  test("protected structural source preserves restrictive external authorship without a local principal", () => {
+    const value = readySidecar();
+    const { ordinaryPayloadBytesBase64url: _ordinary, ...record } = value.records[0];
+    const selectedSource = { role: "user" as const, logicalMessageKey: "logical:27", externalAttributionInvalid: true as const };
+    const parsed = roomHistoryShadowReadResponseV1Schema.parse({ ...value,
+      records: [{ ...record, representationMode: "protected-only", selectedSource }] });
+    if (parsed.status !== "ready") throw new Error("Expected protected history");
+    expect(parsed.records[0]).toMatchObject({ selectedSource });
+    for (const forged of [
+      { ...selectedSource, sourceUserId: "sponsor" },
+      { ...selectedSource, authorAgentId: ROOM },
+      { ...selectedSource, role: "assistant" },
+      { ...selectedSource, externalAttributionInvalid: false },
+    ]) {
+      expect(roomHistoryShadowReadResponseV1Schema.safeParse({ ...value,
+        records: [{ ...record, representationMode: "protected-only", selectedSource: forged }] }).success).toBeFalse();
+    }
+  });
+
   test("admits Human-only history through Domain Key V2 and rejects old authority bytes", () => {
     const value = readySidecar();
     const human = {

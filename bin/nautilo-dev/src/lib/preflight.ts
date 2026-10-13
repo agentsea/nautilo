@@ -1,3 +1,4 @@
+import { assertBolterRestoreTablesAllowed } from "./bolter-restore-authority";
 import { execSync } from "node:child_process";
 import { resolveInstance } from "@nautilo/config";
 import { inspectSnapshotTables } from "./snapshots";
@@ -132,6 +133,7 @@ export async function preflight(name: string, options?: {
     );
   }
   const dumpTables = await inspectSnapshotTables(name);
+  assertBolterRestoreTablesAllowed(dumpTables);
 
   const current = getCurrentSchema(container, db);
 
@@ -144,7 +146,7 @@ export async function preflight(name: string, options?: {
 
     // 1. Table dropped entirely. Intentional registered skips must win
     // before the generic dropped-table failure, otherwise a removed
-    // non-portable table (e.g. D425 server_maintenance) is incorrectly
+    // non-portable table (e.g. server_maintenance) is incorrectly
     // reported as unhandled data loss.
     if (dockerRunning && currentCols === null) {
       return classifyDroppedTable(t, registryEntry);

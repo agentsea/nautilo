@@ -381,6 +381,13 @@ function verifyRepositoryEvidence(
         errors.push(`${entry.id}: missing test evidence path ${path}`);
       }
     }
+    if (entry.classification === "authorized_plaintext") {
+      for (const path of entry.noRetentionTestEvidence) {
+        if (!isExistingRepositoryPath(inventory.repositoryRoot, path)) {
+          errors.push(`${entry.id}: missing no-retention test evidence path ${path}`);
+        }
+      }
+    }
     if (entry.classification === "protected") {
       if (!isExistingRepositoryPath(
         inventory.repositoryRoot,

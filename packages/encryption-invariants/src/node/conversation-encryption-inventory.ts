@@ -38,7 +38,7 @@ const BACKGROUND = ["deny_foreground_grant_handoff"] as const;
 /**
  * Executable Wave 9 ownership inventory. Source anchors deliberately identify
  * every independently reachable plaintext conversation chokepoint found in
- * the M237 Phase-0 audit. A protected composition may reach these paths only
+ * the initial conversation audit. A protected composition may reach these paths only
  * through the canonical repository/projection seam required by each entry.
  */
 export const CONVERSATION_ENCRYPTION_SURFACES = Object.freeze([
@@ -166,7 +166,7 @@ export const CONVERSATION_ENCRYPTION_SURFACES = Object.freeze([
   },
   {
     id: "read.foreground_history",
-    sourcePath: "packages/runtime/src/executors/langgraph-executor.ts",
+    sourcePath: "packages/runtime/src/context/foreground-history.ts",
     anchor: "export async function resolveForegroundHistoryMessages",
     ownership: "wave9_active",
     requiredDuties: READ,

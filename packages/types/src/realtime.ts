@@ -1,3 +1,4 @@
+import type { ExternalMessageAttributionFields } from "./external-message-origin";
 /**
  * @nautilo/types - Realtime Event Types
  *
@@ -64,7 +65,7 @@ export interface MessageTokensEvent {
   assistantMessageKey?: string;
 }
 
-export interface MessageNewEvent {
+export interface MessageNewEvent extends ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary;
   /** Persisted sent time; never a socket receipt or edit time. */
   createdAt?: string;
@@ -78,7 +79,7 @@ export interface MessageNewEvent {
   /** `user` = persisted human row; `human` kept for back-compat. */
   role: "ai" | "human" | "system" | "user";
   content: string;
-  /** `sessions.owner_id` for `role === "user"` / `human` rows. */
+  /** Local Human author only; omitted for external rows regardless of sponsor. */
   sourceUserId?: string;
   /**
    *  B3 — human author id; WS layer skips `markDelivered` for sockets
@@ -1857,6 +1858,11 @@ export interface RoomMembersChangedEvent {
   recipientSyncNamespaceId?: string;
 }
 
+/** Owner-private, identifier-free hint to refetch authorized Bolter state. */
+export interface BolterStateChangedEvent {
+  type: "bolter.state.changed";
+}
+
 /**
  * A viewer-private hint that the authoritative Room list changed.
  *
@@ -2450,6 +2456,7 @@ export type ServerEvent =
   | JobForkedEvent
   | ForkSplicedEvent
   | RoomCatalogChangedEvent
+  | BolterStateChangedEvent
   | RoomMembersChangedEvent
   | RoomConductorModeChangedEvent
   | TypingPingEvent

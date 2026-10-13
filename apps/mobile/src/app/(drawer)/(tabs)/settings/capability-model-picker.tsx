@@ -62,7 +62,12 @@ export default function CapabilityModelPickerScreen() {
   }, [controller, scope]));
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (next) => {
-      if (next === "active" && focusedRef.current && scope) {
+      if (
+        next === "active"
+        && focusedRef.current
+        && scope
+        && !controller.data.getState().mutating
+      ) {
         controller.setScope(scope);
         void controller.load();
       }

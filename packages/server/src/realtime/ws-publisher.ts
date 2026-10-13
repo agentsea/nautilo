@@ -497,6 +497,9 @@ function resolveDeliveryScope(
   event: ServerEvent,
   audience: WsBroadcastAudience,
 ): DeliveryScope {
+  // This identifier-free hint has no authority on the wire. Only its producer
+  // can select an owner; generic bus bridging and broader audiences fail closed.
+  if (event.type === "bolter.state.changed" && audience.kind !== "user") return { kind: "none" };
   if (audience.kind === "all") {
     if (audience.acknowledgedGlobalLeak === true) {
       return { kind: "all" };
@@ -833,6 +836,12 @@ export function publishDomainKeyCatchUpDelivered(input: Readonly<{
 export function publishRoomCatalogChanged(recipientUserId: string): void {
   if (recipientUserId.length === 0) return;
   broadcast({ type: "room.catalog.changed" }, { kind: "user", userId: recipientUserId });
+}
+
+/** Notify only the authenticated owner; the wire carries no routing identities. */
+export function publishBolterStateChanged(recipientUserId: string): void {
+  if (recipientUserId.length === 0) return;
+  broadcast({ type: "bolter.state.changed" }, { kind: "user", userId: recipientUserId });
 }
 
 /** prompt every live session for one Human to refresh durable feed state. */

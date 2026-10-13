@@ -557,7 +557,7 @@ export {
   type RunTaskApprovalResumeArgs,
   type RunTaskApprovalResumeResult,
 } from "./tasks/resume-task-approval";
-export { routeRoomMessage } from "./conductor/conductor";
+export { routeRoomMessage, routeBoundExternalRoomMessage } from "./conductor/conductor";
 export {
   findDirectAddressMatches,
   normDirectAddressName,
@@ -757,3 +757,5 @@ export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-termi
 export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type TaskLocalExecutionSource, type DelegatedTaskIdentity } from "./tasks/local-execution-delegation";
 
 export { setTaskLocalExecutionSourceComposition, resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable, isTaskLocalExecutionOfflineSourceReady } from "./tasks/local-execution-delegation";
+
+export { getCurrentExternalRoomExecution, type ExternalRoomExecutionContext, type ExternalRoomExecutionCandidate, type ExternalRoomJobReference } from "./external-room-execution";

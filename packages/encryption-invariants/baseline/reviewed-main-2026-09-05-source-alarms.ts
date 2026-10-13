@@ -1,7 +1,7 @@
 import type { SourceAlarmReview } from "../src/node/source-alarm-review";
 
-/** D565 retired these coordinates; later main work introduced new calls there. */
-export const REINTRODUCED_D565_SOURCE_ALARM_LOCATORS = new Set<string>([
+/** Relay dispatch refactor retired these coordinates; later main work introduced new calls there. */
+export const REINTRODUCED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS = new Set<string>([
   "apps/desktop/electron/relay.ts#log_emitter:02d6d32a757bab9d:3",
   "apps/desktop/electron/relay.ts#log_emitter:02d6d32a757bab9d:4",
 ]);

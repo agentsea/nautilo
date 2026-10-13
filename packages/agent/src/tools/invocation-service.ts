@@ -1,4 +1,5 @@
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { isExternalRoomState, EXTERNAL_ROOM_TOOL_DENIAL } from "./external-room-policy";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { bindDelegatedLocalExecution } from "./local-execution/admission";
 import type { DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
@@ -1138,6 +1139,7 @@ export function createNautiloToolInvocationSession(
   }
   const trustedContext = serverContext as ServerToolInvocationContext;
   const state = trustedContext.state;
+  if (isExternalRoomState(state)) throw new Error(EXTERNAL_ROOM_TOOL_DENIAL);
   const protectedMemoryRepository =
     trustedContext.protectedMemoryRepository();
   const protectedMemorySearch = trustedContext.protectedMemorySearch();

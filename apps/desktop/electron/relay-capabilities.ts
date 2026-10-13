@@ -36,6 +36,7 @@ export type DesktopNonComputerUseCapabilityFragment = Partial<
     | "acp"
     | "claude"
     | "claudeExecution"
+    | "bolter"
   >
 > & Pick<RelayCapabilities, "mcpTools">;
 
@@ -89,6 +90,7 @@ export function composeDesktopNonComputerUseCapabilities(input: {
       ? {}
       : { canControlHue: input.hueRuntime.canControlHue }),
     mcpTools: input.hosted.mcpTools,
+    ...(input.hosted.bolter === undefined ? {} : { bolter: input.hosted.bolter }),
     ...(input.hosted.codex === undefined ? {} : { codex: input.hosted.codex }),
     ...(input.hosted.acp === undefined ? {} : { acp: input.hosted.acp }),
     ...(input.hosted.claude === undefined

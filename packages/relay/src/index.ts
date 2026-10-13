@@ -411,6 +411,8 @@ export {
   type RelayAcpHostPort,
   type RelayAcpHostTransport,
   type RelayAcpSession,
+  type RelayBolterHostPort,
+  type RelayBolterHostTransport,
   type RelayClaudeConnectionHostPort,
   type RelayClaudeConnectionHostTransport,
   type RelayClaudeConnectionSession,
@@ -669,3 +671,5 @@ export { RELAY_LOCAL_EXECUTION_SEARCH_PROTOCOL_VERSION, isRelayLocalExecutionSea
 export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecutionBindingV4 } from "./protocol";
 
 export { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "./protocol";
+
+export * from "./bolter-protocol";

@@ -57,6 +57,11 @@ export const RELAY_HOST_PORT_EVENTS = [
   "acp-start",
   "acp-contain",
   "acp-disconnected",
+  "bolter-registered",
+  "bolter-command",
+  "bolter-batch-ack",
+  "bolter-authorized",
+  "bolter-disconnected",
   "claude-connection-registered",
   "claude-connection-discover",
   "claude-connection-disconnected",
@@ -69,6 +74,7 @@ export type RelayHostPortEvent = (typeof RELAY_HOST_PORT_EVENTS)[number];
 export const RELAY_HOST_TRANSPORTS = [
   "codex",
   "acp",
+  "bolter",
   "claude-connection",
   "claude-execution",
 ] as const;

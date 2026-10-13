@@ -1,3 +1,4 @@
+import { restrictExternalRoomEnvelope } from "./external-room-policy";
 import { parseHumanTerminalOperation } from "../../types/src/human-terminal";
 import { isLocalExecutionReadArgs } from "@nautilo/types";
 import type { ToolCall } from "@langchain/core/messages/tool";
@@ -522,6 +523,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
 
     let readableNamespaces: string[] = [];
     let writableNamespaces: string[] = [];
+    let externalContext = false;
 
     if (roomId) {
       // Rebuilds also cross this boundary: an old Room id or retained Server
@@ -529,7 +531,8 @@ export class PersonalPolicyResolver implements PolicyResolver {
       const room = await getRoomWithAccess(roomId, actorId);
       if (room) {
         writableNamespaces = [room.namespaceId];
-        const supersetNamespaces = await findReadableNamespacesForSubset(
+        externalContext = room.externalContext === true;
+        const supersetNamespaces = externalContext ? [] : await findReadableNamespacesForSubset(
           room.humanActorIds,
           {
             isPublicNamespaceBoundary: room.isPublicNamespaceBoundary,
@@ -543,7 +546,7 @@ export class PersonalPolicyResolver implements PolicyResolver {
 
     const mutableNamespaces = [...readableNamespaces];
 
-    return {
+    const envelope: NamespaceMemoryEnvelope = {
       ownerId: subjectUserId ?? this.ownerId,
       actorId,
       agentId: effectiveAgentId,
@@ -553,6 +556,9 @@ export class PersonalPolicyResolver implements PolicyResolver {
       writableNamespaces,
       toolPolicy,
     };
+    return externalContext
+      ? restrictExternalRoomEnvelope(envelope, writableNamespaces[0]!)
+      : envelope;
   }
 
   // -----------------------------------------------------------------------
@@ -564,6 +570,9 @@ export class PersonalPolicyResolver implements PolicyResolver {
     tool: ToolCall,
     envelope?: MemoryAccessEnvelope | null,
   ): Promise<ToolAccessDecision> {
+    if (envelope?.externalContext === true) {
+      return { type: "forbidden", reason: "External rooms currently support text conversation only." };
+    }
     // The unified `file` tool dispatches on a `command`
     // arg with per-command severity that can't be captured by a
     // single tool-level ToolImpact. The tool-level policy registers

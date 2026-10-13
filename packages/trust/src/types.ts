@@ -114,6 +114,8 @@ export type ToolAccess = "allow" | "read_only" | "require_prove_it" | "forbidden
  * omitted means namespace mode for back-compat with pre-M084 fixtures.
  */
 export type NamespaceMemoryEnvelope = {
+  /** Server-derived permanent external audience restriction; never a client grant. */
+  externalContext?: boolean;
   memoryMode?: "namespace";
   ownerId: string;
   actorId: string;
@@ -164,6 +166,8 @@ export type NamespaceMemoryEnvelope = {
  * and write only through `scopeId` + `memory_scopes`.
  */
 export type ScopeMemoryEnvelope = {
+  /** Retained defensively; external rooms currently do not admit scope delegation. */
+  externalContext?: boolean;
   memoryMode: "scope";
   ownerId: string;
   actorId: string;

@@ -303,6 +303,50 @@ describe("foreground chat funding admission", () => {
     expect(assertInvoke).toHaveBeenCalledTimes(1);
   });
 
+  test("external Room funding requires and rechecks the exact sponsorship authority", async () => {
+    let sponsorshipLive = true;
+    const assertExternalRoomSponsorship = mock(async () => {
+      if (!sponsorshipLive) throw new Error("external_room_sponsorship_withdrawn");
+    });
+    const externalInput = {
+      ...input,
+      entrypoint: "foreground.external_room" as const,
+      assertExternalRoomSponsorship,
+    };
+
+    const session = await openForegroundChatFundingSession(externalInput);
+    expect(session?.kind).toBe("personal");
+    expect(session?.contentPrivateDiagnostics).toBe(true);
+    expect(assertExternalRoomSponsorship).toHaveBeenCalledTimes(1);
+
+    roomMemberHuman = "foreign-human";
+    const authorityDispatch = mock(async () => "unexpected");
+    expect(session!.runAttempt(MODEL, authorityDispatch)).rejects.toMatchObject({
+      code: "unsupported_workload",
+    });
+    expect(authorityDispatch).not.toHaveBeenCalled();
+
+    roomMemberHuman = HUMAN;
+    sponsorshipLive = false;
+    const dispatch = mock(async () => "unexpected");
+    expect(session!.runAttempt(MODEL, dispatch)).rejects.toThrow(
+      "external_room_sponsorship_withdrawn",
+    );
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(withKey).not.toHaveBeenCalled();
+    expect(resolveFunding).toHaveBeenCalledTimes(1);
+    expect(assertExternalRoomSponsorship).toHaveBeenCalledTimes(3);
+  });
+
+  test("external Room funding rejects a missing sponsorship authority before model funding", async () => {
+    expect(openForegroundChatFundingSession({
+      ...input,
+      entrypoint: "foreground.external_room",
+    })).rejects.toMatchObject({ code: "unsupported_workload" });
+    expect(resolveFunding).not.toHaveBeenCalled();
+    expect(assertInvoke).not.toHaveBeenCalled();
+  });
+
   test("a foreign Room member cannot borrow a payer identity", async () => {
     roomMemberHuman = "foreign-human";
     expect(openForegroundChatFundingSession(input)).rejects.toMatchObject({

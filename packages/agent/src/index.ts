@@ -205,6 +205,8 @@ export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
 export {
   PersonalDirectFundingUnavailableError,
   PersonalModelFundingUnavailableError,
+  runWithContentPrivateModelDiagnostics,
+  hasContentPrivateModelDiagnostics,
   type ForegroundChatFundingAttempt,
   type ForegroundChatFundingSession,
 } from "./runtime/foreground-chat-funding";

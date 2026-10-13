@@ -5,10 +5,11 @@ import type {
   RelayClaudeConnectionHostPort,
   RelayClaudeExecutionHostPort,
   RelayCodexHostPort,
+  RelayBolterHostPort,
 } from "@nautilo/relay";
 
 export type HostedCapabilityFragment = Pick<RelayCapabilities, "mcpTools"> &
-  Partial<Pick<RelayCapabilities, "codex" | "acp" | "claude" | "claudeExecution">>;
+  Partial<Pick<RelayCapabilities, "codex" | "acp" | "claude" | "claudeExecution" | "bolter">>;
 
 /** Closed projection of Electron-owned hosted ports into relay capabilities and client options. */
 export function createDesktopHostedRelayAdapter(options: {
@@ -16,6 +17,7 @@ export function createDesktopHostedRelayAdapter(options: {
   readonly acpHostPort?: RelayAcpHostPort | undefined;
   readonly claudeConnectionHostPort?: RelayClaudeConnectionHostPort | undefined;
   readonly claudeExecutionHostPort?: RelayClaudeExecutionHostPort | undefined;
+  readonly bolterHostPort?: RelayBolterHostPort | undefined;
 }): {
   readonly capabilities: () => HostedCapabilityFragment;
   readonly clientPorts: (mcpHost: RelayMcpHostHandle) => {
@@ -24,6 +26,7 @@ export function createDesktopHostedRelayAdapter(options: {
     readonly acpHostPort?: RelayAcpHostPort;
     readonly claudeConnectionHostPort?: RelayClaudeConnectionHostPort;
     readonly claudeExecutionHostPort?: RelayClaudeExecutionHostPort;
+    readonly bolterHostPort?: RelayBolterHostPort;
   };
 } {
   return {
@@ -81,9 +84,12 @@ export function createDesktopHostedRelayAdapter(options: {
       } catch {
         claudeExecutionReady = false;
       }
+      let bolterReady = false;
+      try { bolterReady = options.bolterHostPort?.isReady() === true; } catch { /* Absent capability. */ }
 
       return {
         mcpTools: [],
+        ...(bolterReady ? { bolter: { version: 1 as const, hostKind: "electron" as const } } : {}),
         ...(codexReady
           ? {
               codex: {
@@ -119,6 +125,7 @@ export function createDesktopHostedRelayAdapter(options: {
     },
     clientPorts: (mcpHost) => ({
       mcpHost,
+      ...(options.bolterHostPort ? { bolterHostPort: options.bolterHostPort } : {}),
       ...(options.codexHostPort
         ? { codexHostPort: options.codexHostPort }
         : {}),

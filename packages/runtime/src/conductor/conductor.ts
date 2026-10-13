@@ -71,7 +71,7 @@ function directAddressMatchesToMembers(
 }
 
 /**
- * M134 Phase 2 — Room Conductor deterministic router.
+ * Room Conductor deterministic router.
  *
  * Invariant: one user message wakes ZERO or ONE bot by default; multiple bots
  * wake only on explicit multi-mention/selection.
@@ -80,18 +80,18 @@ function directAddressMatchesToMembers(
  * user clearly addresses someone else):
  *   1. Hard filters — `observe` (permanent mute) and transient mute/deaf
  *      windows drop bots from candidates, even on explicit @mention/reply/UI
- *      selection (R6 / D-B / D279).
+ *      selection.
  *   2. Explicit targets over `candidates` (mention(s) / reply / ui).
- *   3. Explicit human @mention suppression (D454, every mode) — when no
+ *   3. Explicit human @mention suppression (every mode) — when no
  *      eligible agent is explicitly targeted, a strict @handle that names a
  *      different human means the message is addressed to that person; the
  *      Conductor stays silent before focus/history/FM inference.
- *   4. Human-vocative suppression (D302 R13, advanced only) — a leading
+ *   4. Human-vocative suppression (advanced only) — a leading
  *      vocative that uniquely names a human (not the sender) means the message
  *      is addressed to a person; the Conductor stays silent without an FM
  *      call. A focused agent does NOT wake here. Collision (the same leading
  *      name also matches a bot) falls through to step 5.
- *   5. Direct-address evidence (D299 P1) — roster-derived leading vocative;
+ *   5. Direct-address evidence — roster-derived leading vocative;
  *      exactly one wakeable candidate routes with `reason: "vocative"`; two or
  *      more matches → `ask_user` when ≥2 valid handles, else silence. This
  *      OVERRIDES an active focus: "Alepo, are you around?" wakes Alepo even
@@ -99,14 +99,14 @@ function directAddressMatchesToMembers(
  *   6. Single active focus over `candidates` (the "don't re-@" behavior) —
  *      the fallback for ordinary unaddressed continuation in every Room,
  *      including Subthreads.
- *   6.5 First-natural-reply root affinity (D426, Subthreads only) — only
+ *   6.5 First-natural-reply root affinity (Subthreads only) — only
  *      when there is no active child-room focus and the persisted message is
  *      the first visible child reply. An eligible Genie author of the anchor
  *      gets one inferred wake; an unavailable root stays controlled-silent.
- *   7. History evidence (M135 P7 / D-B) — when a structural signal asks for
+ *   7. History evidence — when a structural signal asks for
  *      past context AND the search returns a single clear bot owner, wake it
  *      deterministically (no LLM). A single active focus (step 6) ALWAYS wins
- *      over this route. The Floor Manager LLM (M135 P5) handles the remaining
+ *      over this route. The Floor Manager LLM handles the remaining
  *      ambiguous cases; when absent the Conductor stays silent.
  */
 export async function routeRoomMessage(
@@ -116,7 +116,7 @@ export async function routeRoomMessage(
   const mode = deps.mode ?? "standard";
 
   // 1. HARD FILTERS — drop `observe` (permanent mute) and transient
-  // mute/deaf-window bots from ALL waking. D421 Phase 4.3: the canonical
+  // mute/deaf-window bots from ALL waking. The canonical
   // `filterWakeableAgents` helper is the single source of truth reused by
   // the redirect-target revalidation, so the two paths cannot drift.
   const windows = deps.loadActiveSilenceForRoom
@@ -177,7 +177,7 @@ export async function routeRoomMessage(
     return { kind: "silent", reason: "human-addressed" };
   }
 
-  // 3. EXPLICIT HUMAN @MENTION SUPPRESSION (D454, every mode). This runs after
+  // 3. EXPLICIT HUMAN @MENTION SUPPRESSION (every mode). This runs after
   //    eligible explicit agent targets, so mixed @human + @agent messages wake
   //    the agent. It runs before all inferred routes, so human-to-human traffic
   //    cannot wake an active focus or reach the Floor Manager. The strict parser
@@ -194,7 +194,7 @@ export async function routeRoomMessage(
     return { kind: "silent", reason: "human-addressed" };
   }
 
-  // 4. HUMAN-VOCATIVE SUPPRESSION (D302 R13, advanced only). A leading vocative
+  // 4. HUMAN-VOCATIVE SUPPRESSION (advanced only). A leading vocative
   //    that UNIQUELY names a human member (and not the sender) means the message
   //    is addressed to a person — humans answer humans, so the conductor stays
   //    silent without an FM call. This runs BEFORE direct-address and active
@@ -223,7 +223,7 @@ export async function routeRoomMessage(
     }
   }
 
-  // 5. DIRECT-ADDRESS EVIDENCE (D299 P1). Leading roster vocative only; never
+  // 5. DIRECT-ADDRESS EVIDENCE. Leading roster vocative only; never
   //    arbitrary-picks among multiple matches. Runs BEFORE active focus so a
   //    clear name address overrides the focused bot ("Alepo, are you around?"
   //    wakes Alepo even when Jeannie holds the active focus).
@@ -290,7 +290,7 @@ export async function routeRoomMessage(
   // active.length > 1 => ambiguous: do NOT fan out; defer (history / Floor
   // Manager). active.length === 0 => no focus. Either way fall through.
 
-  // 6.5 FIRST-NATURAL-REPLY ROOT AFFINITY (D426). A Subthread remains a
+  // 6.5 FIRST-NATURAL-REPLY ROOT AFFINITY. A Subthread remains a
   // normal Room: active requester-private focus always wins. Only the first
   // visible, otherwise-unaddressed child reply may inherit the agent author
   // of its root as a one-shot inferred route. The resolver uses the persisted
@@ -327,7 +327,7 @@ export async function routeRoomMessage(
     deps.onTrace?.("thread-affinity", { fallthrough: true });
   }
 
-  // 7. HISTORY EVIDENCE (M135 P7 / D-B / D299 P2). Consulted when a structural
+  // 7. HISTORY EVIDENCE. Consulted when a structural
   //    signal or bounded history-intent asks for past context; a clear single
   //    owner routes without any LLM. Reached only when step 6 did NOT resolve
   //    (0 or >1 active foci), so a single active focus always wins over this
@@ -357,7 +357,7 @@ export async function routeRoomMessage(
           : rawHits;
       const owner = deterministicHistoryOwner(hits, active, candidates);
       const owners = historyBotOwners(hits, active, candidates);
-      // D421 Phase 3 (3.1.1/3.1.3) — the always-on trace carries counts +
+      // the always-on trace carries counts +
       // controlled enums only. The raw search query (which may be the user's
       // message content) stays in opt-in `onDebug` below; never in `onTrace`.
       deps.onTrace?.("history", {
@@ -384,12 +384,12 @@ export async function routeRoomMessage(
         },
       });
       if (owner) {
-        // D421 Phase 6.2.2 — a referenced roster name that conflicts with the
+        // a referenced roster name that conflicts with the
         // history owner suppresses the deterministic owner shortcut so the
         // Floor Manager can arbitrate with name+owner context. The unique
         // addressee case already returned at step 5; this guards the
         // reference-only case (name present but not as an addressee). Trace
-        // carries counts/enum only — no handles or names (D421 6.2.4).
+        // carries counts/enum only — no handles or names.
         const nameEvidence = classifyRosterNameEvidence(ctx.message.content, candidates);
         const ownerConflictsWithNamedAgent =
           nameEvidence.referencedActorIds.length > 0 &&
@@ -448,8 +448,8 @@ export async function routeRoomMessage(
     deps.onTrace?.("history", { gated: "no searchRoomHistory dep" });
   }
 
-  // FLOOR MANAGER LLM (M135 P5) — final leg of step 7. When absent → silent.
-  // D421 Phase 6.2.4 — the `floor-manager` trace is emitted ONLY when we
+  // FLOOR MANAGER LLM — final leg of step 7. When absent → silent.
+  // the `floor-manager` trace is emitted ONLY when we
   // actually reach the Floor Manager stage (after the advanced baseline
   // history block), so a history early-return cannot claim the model ran.
   // `configured` = a Floor Manager dep is supplied; `called` = it is actually
@@ -474,7 +474,7 @@ export async function routeRoomMessage(
         ctx.now,
         ctx.members,
       );
-      // D421 Phase 3 (3.1.1) — surface the recent-counterpart count so a
+      // surface the recent-counterpart count so a
       // continuation/redirect outcome is diagnosable from the trace alone.
       // Counts/booleans only; no raw ids, no message content.
       deps.onTrace?.("routing-packet", {
@@ -484,7 +484,7 @@ export async function routeRoomMessage(
         recentCounterparts: routingPacket.recentCounterparts.length,
       });
     } catch (err) {
-      // D421 Phase 3 (3.1.3) — the always-on trace records only the boolean
+      // the always-on trace records only the boolean
       // `failed` flag (no raw provider/db error text). The controlled detail
       // stays in opt-in `onDebug` so an operator can still diagnose it.
       deps.onTrace?.("routing-packet", { failed: true });
@@ -513,7 +513,7 @@ export async function routeRoomMessage(
     };
 
   if (mode === "advanced") {
-    // D302 R13 — let the FM reason about humans vs assistants (addressee×intent).
+    // Let the FM reason about humans vs assistants (addressee×intent).
     floorExtra.humanAware = true;
 
     const mentionOnlyRoster = candidates.filter(
@@ -561,7 +561,7 @@ export async function routeRoomMessage(
           : rawHits;
       const owner = deterministicHistoryOwner(hits, active, candidates);
       const owners = historyBotOwners(hits, active, candidates);
-      // D421 Phase 3 (3.1.1/3.1.3) — counts/booleans only in the always-on
+      // counts/booleans only in the always-on
       // trace; the raw baseline query (= the user's message content) lives
       // only in opt-in `onDebug` below.
       deps.onTrace?.("history-baseline", {
@@ -584,10 +584,10 @@ export async function routeRoomMessage(
         },
       });
       if (owner) {
-        // D421 Phase 6.2.2 — same named-agent conflict guard as the structural
+        // same named-agent conflict guard as the structural
         // history route. The unique addressee case already returned at step 5;
         // this guards the advanced baseline owner shortcut against a referenced
-        // roster name. Trace carries counts/enum only (D421 6.2.4).
+        // roster name. Trace carries counts/enum only.
         const nameEvidence = classifyRosterNameEvidence(ctx.message.content, candidates);
         const ownerConflictsWithNamedAgent =
           nameEvidence.referencedActorIds.length > 0 &&
@@ -619,7 +619,7 @@ export async function routeRoomMessage(
     }
   }
 
-  // D421 Phase 6.2.4 — `called: true` is emitted only at the actual invocation
+  // `called: true` is emitted only at the actual invocation
   // site, so a baseline-history early-return cannot leave a misleading
   // `invoked: true` on the trace.
   deps.onTrace?.("floor-manager", {
@@ -628,4 +628,16 @@ export async function routeRoomMessage(
     coldVolunteer: coldVolunteer.length,
   });
   return deps.floorManager(ctx, floorExtra);
+}
+
+/** A linked external conversation addresses only its bound Genie, without a fake Human actor. */
+export async function routeBoundExternalRoomMessage(
+  deps: Pick<RouteRoomMessageDeps, "loadActiveSilenceForRoom">,
+  input: { roomId: string; boundAgentId: string; members: RoomMemberView[]; now: Date },
+): Promise<{ kind: "wake"; botActorIds: string[]; source: "binding"; writeFocus: false; reason: string } | Extract<ConductorDecision, { kind: "silent" }>> {
+  const windows = await deps.loadActiveSilenceForRoom?.(input.roomId, input.now) ?? [];
+  const target = filterWakeableAgents(input.members, windows).find(member => member.agentId === input.boundAgentId);
+  return target
+    ? { kind: "wake", botActorIds: [target.actorId], source: "binding", writeFocus: false, reason: "Linked external conversation" }
+    : { kind: "silent", reason: "The linked Genie is unavailable or muted" };
 }
