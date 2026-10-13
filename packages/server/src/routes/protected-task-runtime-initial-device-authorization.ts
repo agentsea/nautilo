@@ -26,6 +26,8 @@ import type { createProductionBackgroundAuthorizationComposition } from
 import type {
   ProtectedTaskRuntimeRecipientAuthorityPort,
 } from "./protected-task-runtime-recipient-authority";
+import { ProtectedTaskRuntimeGrantPlanUnavailableError } from
+  "./protected-task-runtime-grant-plan";
 
 type DeviceHooks = Required<Pick<NonNullable<Parameters<
   typeof createProductionBackgroundAuthorizationComposition
@@ -46,7 +48,9 @@ type InitialClaim = Readonly<{
 export type ProtectedTaskRuntimeInitialDeviceAuthorizationInput = Readonly<{
   recipients: TaskRuntimeRecipientRegistry;
   claim: InitialClaim;
-  plan(occurrence: ProtectedTaskOccurrence): Promise<TaskRuntimeGrantClaimPlan>;
+  plan(
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<TaskRuntimeGrantClaimPlan | null>;
   resolveOccurrence(input: Readonly<{
     taskRunId: string;
     authorizationRequestId: string;
@@ -104,6 +108,19 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
   const now = input.now ?? Date.now;
   const recipients = input.recipients;
 
+  const resolvePlan = async (
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<TaskRuntimeGrantClaimPlan | null> => {
+    try {
+      return await input.plan(occurrence);
+    } catch (error) {
+      if (error instanceof ProtectedTaskRuntimeGrantPlanUnavailableError) {
+        return null;
+      }
+      throw error;
+    }
+  };
+
   const isTaskRecipientActive: DeviceHooks["isTaskRecipientActive"] = record => {
     const recipient = record.snapshot.recipient;
     return recipient !== null && recipients.hasAttempt({
@@ -126,7 +143,8 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
       authorizationRequestId: record.snapshot.requestId,
     });
     if (occurrence === null || occurrence.run.jobId !== null) return null;
-    const plan = await input.plan(occurrence);
+    const plan = await resolvePlan(occurrence);
+    if (plan === null) return null;
     return exactInitialPlan(occurrence, record, plan)
       ? Object.freeze({ occurrence, plan })
       : null;
@@ -142,7 +160,8 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
       restricted: operation.restricted, resolvePlan: async () => {
         const current = await input.resolveOccurrence(coordinates);
         if (current === null || current.run.jobId !== null) return null;
-        const plan = await input.plan(current);
+        const plan = await resolvePlan(current);
+        if (plan === null) return null;
         return { occurrence: current, initialRecord: plan.initialRecord, stableIdentity: plan.stableIdentity };
       } }) === "unchanged";
   };

@@ -29,6 +29,7 @@ import {
 import {
   createProtectedTaskRuntimeGrantPlanBuilder,
   createParkedTaskRuntimeRoutingValidator,
+  ProtectedTaskRuntimeGrantPlanUnavailableError,
   type ProtectedTaskRuntimeNamespaceAuthorityFact,
 } from "../../src/routes/protected-task-runtime-grant-plan";
 import {
@@ -1151,6 +1152,75 @@ test("requires concrete execution and publication sinks", () => {
     startProtectedTaskRun: async () => ({ status: "started" as const }),
     publishResult: async () => {},
   } as never)).toThrow("execution sink is unavailable");
+});
+
+test("classifies a rejected output binding as known plan unavailability", async () => {
+  const build = createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async value => predispatch(value),
+    ...outputPorts(),
+    acceptOutputBinding: async () => ({
+      status: "rejected" as const,
+      reason: "conflict" as const,
+    }),
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
+      facts: facts(),
+    }),
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" as const }),
+    publishResult: async () => {},
+  });
+
+  await Promise.resolve(expect(build(occurrence())).rejects.toEqual(
+    expect.objectContaining({
+      name: "ProtectedTaskRuntimeGrantPlanUnavailableError",
+      reason: "conflict",
+    }),
+  ));
+});
+
+test("keeps an accepted output binding coordinate mismatch as an integrity error", async () => {
+  const ports = outputPorts();
+  const build = createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async value => predispatch(value),
+    ...ports,
+    acceptOutputBinding: async input => {
+      const output = await ports.acceptOutputBinding(input);
+      return {
+        ...output,
+        binding: { ...output.binding, resultObjectId: "substituted-result" },
+      };
+    },
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
+      facts: facts(),
+    }),
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" as const }),
+    publishResult: async () => {},
+  });
+
+  const result = build(occurrence());
+  await Promise.resolve(expect(result).rejects.toBeInstanceOf(TypeError));
+  await Promise.resolve(expect(result).rejects.not.toBeInstanceOf(
+    ProtectedTaskRuntimeGrantPlanUnavailableError,
+  ));
 });
 
 test("validates parked routing from immutable evidence without a retained grant row", async () => {

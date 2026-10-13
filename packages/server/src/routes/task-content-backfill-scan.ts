@@ -5,6 +5,7 @@ import {
   claimTaskContentBackfill,
   discoverTaskContentBackfill,
   eq,
+  isProtectedTaskPreset,
   readCurrentTaskContentBackfillClaim,
   readTaskContentBackfillProgress,
   releaseTaskContentBackfillLease,
@@ -87,7 +88,7 @@ async function readCandidateRouting(
   if (task === undefined
     || task.ownerId !== requesterUserId
     || task.requestorId !== requesterUserId
-    || task.preset !== "task"
+    || !isProtectedTaskPreset(task.preset)
     || task.parentTaskId !== null
     || task.depth !== 0) return null;
 

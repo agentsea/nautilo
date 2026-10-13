@@ -134,6 +134,18 @@ export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
 export type ProtectedTaskRuntimeMemoryPolicy =
   CurrentProtectedTaskMemoryPolicy;
 
+export class ProtectedTaskRuntimeGrantPlanUnavailableError extends Error {
+  constructor(
+    readonly reason: Extract<
+      AcceptProtectedTaskRunOutputBindingResult,
+      { status: "rejected" }
+    >["reason"],
+  ) {
+    super("Protected Task grant plan is unavailable");
+    this.name = "ProtectedTaskRuntimeGrantPlanUnavailableError";
+  }
+}
+
 export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
   crypto: Pick<LatticeCrypto, "hash">;
   recipientTtlMs: number;
@@ -504,8 +516,10 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       acceptedAt: new Date(createdAt),
       destination: outputDestination,
     });
-    if (output.status === "rejected"
-      || output.binding.taskRunId !== occurrence.run.id
+    if (output.status === "rejected") {
+      throw new ProtectedTaskRuntimeGrantPlanUnavailableError(output.reason);
+    }
+    if (output.binding.taskRunId !== occurrence.run.id
       || output.binding.bindingId !== `task-run-output:${occurrence.run.id}`
       || (outputDestination === null
         ? output.binding.deliveryMode !== "none"

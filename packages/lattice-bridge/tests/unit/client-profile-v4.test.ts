@@ -397,6 +397,7 @@ describe("client profile v4 signer evidence", () => {
       ),
       createStageId: () => `profile-v4-transport:${++stage}`,
     });
+    await vault.lock();
     await ingest();
     expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
     await vault.withOpenProfile(COORDINATES, async (profileBytes) => {
@@ -410,6 +411,52 @@ describe("client profile v4 signer evidence", () => {
     });
     await ingest();
     expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+
+    state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
+  test("leaves locked custody untouched when no signer evidence is supplied", async () => {
+    const state = await fixture();
+    const vault = new MemoryClientProfileVault();
+
+    await ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [],
+      createStageId: () => "profile-v4-empty-ingest",
+    });
+
+    expect(await vault.availability()).toEqual({ status: "locked" });
+    state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
+  test("does not retry terminal custody while ingesting signer evidence", async () => {
+    const state = await fixture();
+    const vault = new MemoryClientProfileVault();
+    let unlockCalls = 0;
+    vault.availability = () => Promise.resolve({ status: "storage_lost" });
+    vault.unlock = () => {
+      unlockCalls += 1;
+      return Promise.resolve({ status: "available" });
+    };
+
+    const error = await ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url: Buffer.from(state.publicationBytes)
+          .toString("base64url"),
+      }],
+      createStageId: () => "profile-v4-terminal-ingest",
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Client profile vault is unavailable");
+    expect(unlockCalls).toBe(0);
 
     state.publicationBytes.fill(0);
     state.v2Bytes.fill(0);

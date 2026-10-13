@@ -423,6 +423,12 @@ async function fixture(
   const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
   const publishedOccurrences: ProtectedTaskRunningOccurrence[] = [];
   const authorityOccurrences: ProtectedTaskAuthorityOccurrence[] = [];
+  const authorizationRequests: Array<Readonly<{
+    requestorId: string;
+    requestId: string;
+    recipientGeneration: number;
+  }>> = [];
+  let authorizationRequestFailure = false;
   let startResult: "started" | "stale" = "started";
   const trackedRepository: BackgroundAuthorizationTaskRuntimeReplacementRepository = {
     create: (record) => repository.create(record),
@@ -641,6 +647,16 @@ async function fixture(
           authorityLocksHeld = false;
         }
       },
+      authorizationRequested: async (currentOccurrence, record) => {
+        authorizationRequests.push(Object.freeze({
+          requestorId: currentOccurrence.task.requestorId,
+          requestId: record.snapshot.requestId,
+          recipientGeneration: record.snapshot.recipientGeneration,
+        }));
+        if (authorizationRequestFailure) {
+          throw new Error("synthetic authorization wake failure");
+        }
+      },
     });
   const coordinator = createCoordinator(recipients);
   const recipientAuthority = (
@@ -703,6 +719,7 @@ async function fixture(
     openedOccurrences,
     publishedOccurrences,
     authorityOccurrences,
+    authorizationRequests,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
     setBeforeClaimAuthorityUse: (value: (() => void) | null) => {
@@ -722,6 +739,9 @@ async function fixture(
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
     setCompletionCas: (value: CompletionCas | null) => { completionCas = value; },
     setFailureCas: (value: CompletionCas | null) => { failureCas = value; },
+    setAuthorizationRequestFailure: (value: boolean) => {
+      authorizationRequestFailure = value;
+    },
   };
 }
 
@@ -1575,6 +1595,53 @@ describe("exact Task Runtime recipient kernels", () => {
 });
 
 describe("Task Runtime grant claim", () => {
+  test("wakes the requestor once after fresh durable preparation and binds the exact recipient", async () => {
+    const value = await fixture();
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.authorizationRequests).toEqual([{
+      requestorId: REQUESTOR,
+      requestId: REQUEST,
+      recipientGeneration: 0,
+    }]);
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.authorizationRequests).toHaveLength(1);
+
+    const bound = await value.bindRecipient();
+    expect(bound?.record.snapshot).toMatchObject({
+      requestId: REQUEST,
+      state: "awaiting_device",
+      recipientGeneration: 0,
+    });
+    expect(value.authorizationRequests).toHaveLength(1);
+    value.recipients.close();
+  });
+
+  test("retains a fresh durable grant when its authorization wake fails", async () => {
+    const value = await fixture();
+    value.setAuthorizationRequestFailure(true);
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.authorizationRequests).toHaveLength(1);
+    expect(await value.repository.get(REQUEST)).toMatchObject({
+      snapshot: {
+        requestId: REQUEST,
+        state: "awaiting_recipient",
+        recipientGeneration: 0,
+      },
+      descriptorBytes: null,
+    });
+
+    expect(await value.bindRecipient()).not.toBeNull();
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("awaiting_device");
+    value.recipients.close();
+  });
+
   test("forwards a checkpoint pause only while the exact execution is live", async () => {
     const pauses: Array<readonly [string, string | undefined]> = [];
     const value = await fixture();
@@ -1834,6 +1901,8 @@ describe("Task Runtime grant claim", () => {
       .toEqual(namespaceRequirements);
     expect(value.recipients.size).toBe(0);
     expect(value.replacementCasCount()).toBe(1);
+    expect(value.authorizationRequests.map(request =>
+      request.recipientGeneration)).toEqual([0, 1]);
 
     const rebound = await value.bindRecipient();
     expect(rebound?.record.snapshot.recipientGeneration).toBe(1);
@@ -2083,11 +2152,14 @@ describe("Task Runtime grant claim", () => {
     expect(durable?.snapshot.lastRetryReason).toBe("attempt_expired");
     expect(value.recipients.size).toBe(0);
     expect(value.recipientRotationCasCount()).toBe(1);
+    expect(value.authorizationRequests.map(request =>
+      request.recipientGeneration)).toEqual([0, 1]);
     expect(await value.coordinator.prepareOrClaimExact(occurrence()))
       .toEqual({ status: "awaiting_authorization" });
     expect((await value.repository.get(REQUEST))?.snapshot.recipientGeneration)
       .toBe(1);
     expect(value.recipientRotationCasCount()).toBe(1);
+    expect(value.authorizationRequests).toHaveLength(2);
   });
 
   test("claims one accepted grant and opens transient input only inside a one-use candidate", async () => {

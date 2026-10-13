@@ -13,6 +13,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
   actors,
+  PROTECTED_TASK_PRESETS,
   rooms,
   roomMembers,
   taskRuns,
@@ -111,14 +112,6 @@ export type HeldProtectedTaskRuntimeAuthority = Readonly<{
   deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null;
   repoDocsSelection?: ProtectedTaskRepoDocsSelection | null;
 }>;
-
-const NATIVE_TASK_PRESETS: readonly Task["preset"][] = [
-  "task",
-  "in_scope",
-  "in_private_namespace",
-  "in_background",
-  "schedule",
-];
 
 export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
@@ -299,7 +292,7 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
     crypto_mapping_state: tasks.cryptoMappingState,
     native_execution_supported: sql<boolean>`case
       when jsonb_typeof(${tasks.metadata}) = 'object' then coalesce(
-        ${inArray(tasks.preset, NATIVE_TASK_PRESETS)}
+        ${inArray(tasks.preset, PROTECTED_TASK_PRESETS)}
         and (${tasks.metadata} - 'preparation' - 'lastInterruption') = '{}'::jsonb,
         false
       )

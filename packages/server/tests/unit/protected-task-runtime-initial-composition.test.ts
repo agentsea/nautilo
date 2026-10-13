@@ -8,6 +8,7 @@ import {
   LatticeCrypto,
   TaskRuntimeRecipientRegistry,
 } from "@nautilo/lattice-crypto";
+import { createTaskRuntimeGrantClaim } from "@nautilo/runtime";
 
 import {
   createProductionProtectedTaskRuntimeInitialComposition,
@@ -183,6 +184,10 @@ test("routes repo docs through the initial native owner for fresh and parked pre
 
 test("constructs inert coordinator and initial device hooks over shared custody", async () => {
   let kicks = 0;
+  const requestedUsers: string[] = [];
+  let authorizationRequested: Parameters<
+    typeof createTaskRuntimeGrantClaim
+  >[0]["authorizationRequested"];
   const crypto = new LatticeCrypto();
   const restricted = {
     query: async () => [{
@@ -208,9 +213,17 @@ test("constructs inert coordinator and initial device hooks over shared custody"
     kick: () => {
       kicks += 1;
     },
+    authorizationRequested: requestorUserId => {
+      requestedUsers.push(requestorUserId);
+    },
     restricted,
     crypto,
     serverScope: "https://server.example.test",
+  }, {
+    grantClaim: dependencies => {
+      authorizationRequested = dependencies.authorizationRequested;
+      return createTaskRuntimeGrantClaim(dependencies);
+    },
   });
 
   expect(typeof composition.coordinator.observeProtectedTaskOccurrence)
@@ -220,4 +233,8 @@ test("constructs inert coordinator and initial device hooks over shared custody"
   expect(typeof composition.isTaskRecipientActive).toBe("function");
   composition.wakeProtectedTask();
   expect(kicks).toBe(1);
+  await authorizationRequested?.({
+    task: { requestorId: USER },
+  } as never, {} as never);
+  expect(requestedUsers).toEqual([USER]);
 });

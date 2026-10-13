@@ -28,7 +28,7 @@ import {
   destroyOpenedClientDeviceProfileV4,
   encodeClientDeviceProfileV4,
 } from "../../src/client-vault/profile-v4.ts";
-import type { ClientProfileCoordinates } from
+import type { ClientProfileCoordinates, ClientProfileVault } from
   "../../src/client-vault/types.ts";
 import { MemoryClientProfileVault } from
   "../../src/testing/client-profile-vault.ts";
@@ -335,37 +335,43 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
   await vault.activateProfile(coordinates, "stage:1");
   profileBytes.fill(0);
   const anchors = new Map<string, TrustedMinimumObjectAccessHead>();
+  const contentDependencies = {
+    crypto,
+    vault,
+    coordinates,
+    subjectHumanId: HUMAN_ID,
+    now: () => NOW,
+    resolveDeviceAdmissionStatus: () => Promise.resolve({
+      responseVersion: 1 as const,
+      required: true as const,
+      status: "admitted" as const,
+      deviceId,
+      deviceGeneration: 1,
+      expiresAt: NOW + 60_000,
+    }),
+    accessAnchors: {
+      load: (cryptoObjectId: string) => Promise.resolve(anchors.get(cryptoObjectId) ?? null),
+      advance: ({ expected, next }: Readonly<{
+        expected: TrustedMinimumObjectAccessHead | null;
+        next: TrustedMinimumObjectAccessHead;
+      }>) => {
+        const current = anchors.get(next.objectId) ?? null;
+        if (current !== expected) return Promise.resolve(false);
+        anchors.set(next.objectId, {
+          ...next,
+          payloadHash: next.payloadHash.slice(),
+          manifestHash: next.manifestHash.slice(),
+        });
+        return Promise.resolve(true);
+      },
+    },
+  };
   return {
     crypto,
     signing,
-    content: createVaultHumanTaskDeviceContentPortV1({
-      crypto,
-      vault,
-      coordinates,
-      subjectHumanId: HUMAN_ID,
-      now: () => NOW,
-      resolveDeviceAdmissionStatus: () => Promise.resolve({
-        responseVersion: 1,
-        required: true,
-        status: "admitted" as const,
-        deviceId,
-        deviceGeneration: 1,
-        expiresAt: NOW + 60_000,
-      }),
-      accessAnchors: {
-        load: (cryptoObjectId) => Promise.resolve(anchors.get(cryptoObjectId) ?? null),
-        advance: ({ expected, next }) => {
-          const current = anchors.get(next.objectId) ?? null;
-          if (current !== expected) return Promise.resolve(false);
-          anchors.set(next.objectId, {
-            ...next,
-            payloadHash: next.payloadHash.slice(),
-            manifestHash: next.manifestHash.slice(),
-          });
-          return Promise.resolve(true);
-        },
-      },
-    }),
+    content: createVaultHumanTaskDeviceContentPortV1(contentDependencies),
+    contentDependencies,
+    vault,
     anchors,
   };
 }
@@ -435,6 +441,7 @@ test("vault-backed Task prepare/open authenticates local custody and rejects for
     }],
   };
 
+  await writer.vault.lock();
   const opened = await writer.content.openExact({ reference, envelope });
   try {
     expect(decodeTaskPayloadV1(opened)).toMatchObject({
@@ -444,6 +451,7 @@ test("vault-backed Task prepare/open authenticates local custody and rejects for
   } finally {
     opened.fill(0);
   }
+  expect(await writer.vault.availability()).toEqual({ status: "available" });
   expect(writer.anchors.has(prepared.cryptoObjectId)).toBe(true);
 
   const genesis = decodeObjectAccessManifestV5(envelope.accessManifestBytes);
@@ -545,6 +553,7 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
     "device:agent-manager",
   );
 
+  await reader.vault.lock();
   const opened = await reader.content.openExact({
     reference: prepared.reference,
     envelope: prepared.envelope,
@@ -558,6 +567,8 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
   } finally {
     opened.fill(0);
   }
+  expect(await reader.vault.availability()).toEqual({ status: "available" });
+  expect(reader.anchors.has(prepared.reference.objectId)).toBe(true);
 
   for (const attempt of [
     {
@@ -598,6 +609,7 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
     ...prepared.envelope,
     signerEvidence: [prepared.foregroundEvidence],
   };
+  await foregroundReader.vault.lock();
   const foregroundOpened = await foregroundReader.content.openExact({
     reference: prepared.reference,
     envelope: foregroundEnvelope,
@@ -609,6 +621,9 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
   } finally {
     foregroundOpened.fill(0);
   }
+  expect(await foregroundReader.vault.availability())
+    .toEqual({ status: "available" });
+  expect(foregroundReader.anchors.has(prepared.reference.objectId)).toBe(true);
 
   const badDigest = decodeBase64url(
     prepared.foregroundEvidence.planDigestBase64url,
@@ -656,6 +671,93 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
   if (decodedPlan.authorization.disposition === "authorization_reusable") {
     decodedPlan.authorization.authorizationDigest.fill(0);
   }
+});
+
+test("vault-backed Task open keeps terminal custody loss classified as key waiting", async () => {
+  const writer = await setup("device:terminal-custody-writer", 0x256);
+  const prepared = await writer.content.prepareCreate({
+    plan: {
+      planVersion: 1,
+      operation: "create",
+      operationId: "task:terminal-custody:create",
+      taskId: TASK_ID,
+      expectedContentRevision: 0,
+      nextContentRevision: 1,
+      expectedCryptoAccessRevision: 0,
+      planDigestBase64url: base64url(new Uint8Array(32).fill(0x31)),
+      authority: {
+        requesterHumanId: HUMAN_ID,
+        sourceRoomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        domainId: "domain:1",
+        expectedAccessRevision: 9,
+        expectedPolicyRevision: 1,
+        bindingHashBase64url: base64url(BINDING_HASH),
+        keyGeneration: 2,
+      },
+    },
+    payload: {
+      formatVersion: 1,
+      prompt: "terminal custody prompt",
+      expectedOutput: null,
+      protectedMetadata: {},
+    },
+    task: {},
+  });
+  const terminalVault: ClientProfileVault = {
+    availability: () => Promise.resolve({ status: "storage_lost" }),
+    unlock: () => Promise.resolve({ status: "storage_lost" }),
+    lock: () => writer.vault.lock(),
+    stageProfile: input => writer.vault.stageProfile(input),
+    activateProfile: (coordinates, stageId) =>
+      writer.vault.activateProfile(coordinates, stageId),
+    abortStagedProfile: (coordinates, stageId) =>
+      writer.vault.abortStagedProfile(coordinates, stageId),
+    recoverInterruptedActivation: (coordinates, resolution) =>
+      writer.vault.recoverInterruptedActivation(coordinates, resolution),
+    withOpenProfile: (coordinates, operation) =>
+      writer.vault.withOpenProfile(coordinates, operation),
+    listPublicProfiles: () => writer.vault.listPublicProfiles(),
+    rotateWrappingMaterial: () => writer.vault.rotateWrappingMaterial(),
+    forgetProfile: coordinates => writer.vault.forgetProfile(coordinates),
+  };
+  const terminalContent = createVaultHumanTaskDeviceContentPortV1({
+    ...writer.contentDependencies,
+    vault: terminalVault,
+  });
+  const error = await terminalContent.openExact({
+    reference: {
+      dtoVersion: 1,
+      status: "protected",
+      objectId: prepared.cryptoObjectId,
+      contentRevision: 1,
+      cryptoAccessRevision: 0,
+    },
+    envelope: {
+      readVersion: 1,
+      taskId: TASK_ID,
+      objectId: prepared.cryptoObjectId,
+      contentRevision: 1,
+      cryptoAccessRevision: 0,
+      namespaceId: NAMESPACE_ID,
+      encryptedPayloadBytes: decodeBase64url(prepared.encryptedPayloadBytesBase64url),
+      accessManifestBytes: decodeBase64url(prepared.accessManifestBytesBase64url),
+      accessManifestProofBytes: [],
+      namespaceEnvelopeBytes: decodeBase64url(
+        prepared.namespaceEnvelopes[0].envelopeBytesBase64url,
+      ),
+      signerEvidence: [{
+        kind: "human_device",
+        subjectHumanId: HUMAN_ID,
+        committerDeviceId: "device:terminal-custody-writer",
+        hostAuthorizationRevision: 11,
+        signingPublicKeyBase64url: base64url(writer.signing.publicKey),
+      }],
+    },
+  }).catch((cause: unknown) => cause);
+  expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+  expect((error as ClassifiedDataOperationError).failureClass).toBe("key_waiting");
+  expect(writer.anchors.size).toBe(0);
 });
 
 test("dual Task preparation encrypts and signs the same canonical ordinary payload bytes", async () => {

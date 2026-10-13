@@ -2,6 +2,7 @@ import {
   and,
   eq,
   inArray,
+  isProtectedTaskPreset,
   taskRuns,
   tasks,
   type Task,
@@ -188,7 +189,7 @@ function exactCommonTask(
     && task.requestorId === claim.requesterUserId
     && task.parentTaskId === null
     && task.depth === 0
-    && task.preset === "task"
+    && isProtectedTaskPreset(task.preset)
     && sameDate(task.updatedAt, claim.candidate.sourceUpdatedAt);
 }
 

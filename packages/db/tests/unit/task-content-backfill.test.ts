@@ -213,7 +213,13 @@ describe("Task content backfill persistence", () => {
     }
   });
 
-  test.each([{ preset: "repo-docs" }, { depth: 1 }, { ownerId: "other-owner" }])("unsupported definition routing %j advances before a later eligible definition", async unsupported => {
+  test.each([
+    { preset: "ask_peer" },
+    { preset: "ping" },
+    { preset: "repo_docs" },
+    { depth: 1 },
+    { ownerId: "other-owner" },
+  ])("unsupported definition routing %j advances before a later eligible definition", async unsupported => {
     const row = { taskId: ids.task1, ownerId: ids.user, preset: "task", depth: 0,
       createdAt: created, updatedAt: updated, status: "paused", contentRevision: 0,
       parentTaskId: null, failureReason: null, failureSourceRevision: null,
@@ -229,6 +235,59 @@ describe("Task content backfill persistence", () => {
     expect(found).toMatchObject({ status: "candidate", candidate: { taskId: ids.task2 } });
     expect(fixture.inserts).toContainEqual(expect.objectContaining({ entityId: ids.task1, reason: "unsupported" }));
     expect(fixture.updates).toContainEqual(expect.objectContaining({ cursorTaskId: ids.task1 }));
+  });
+
+  test.each(["in_background", "schedule"])("%s definition is eligible for repair", async preset => {
+    const fixture = harness({ selects: [
+      [{ mode: "shadow_encryption", shadowBehavior: "retain", revision: 9 }],
+      [{ ownerId: ids.user }],
+      [scan({ throughAt: created, throughTaskId: ids.task1 })],
+      [{
+        taskId: ids.task1, ownerId: ids.user, preset, depth: 0,
+        createdAt: created, updatedAt: updated, status: "pending", contentRevision: 0,
+        parentTaskId: null, failureReason: null, failureSourceRevision: null,
+        failureSourceUpdatedAt: null, failureSourceStatus: null, failurePolicyRevision: null,
+      }],
+    ] });
+    expect(await discoverTaskContentBackfill(fixture.database, {
+      humanActorId: ids.human, deviceId: "device-a", now, pageLimit: 4, resumeAt: later,
+    })).toMatchObject({
+      status: "candidate",
+      candidate: { kind: "definition", taskId: ids.task1 },
+    });
+    expect(fixture.inserts).toHaveLength(1); // scan row only; no failure row
+  });
+
+  test("an exact cached failure survives within one policy revision and retries after revision change", async () => {
+    const row = {
+      taskId: ids.task1, ownerId: ids.user, preset: "in_background", depth: 0,
+      createdAt: created, updatedAt: updated, status: "paused", contentRevision: 0,
+      parentTaskId: null, failureReason: "unsupported", failureSourceRevision: 0,
+      failureSourceUpdatedAt: updated, failureSourceStatus: "paused",
+      failurePolicyRevision: 9,
+    };
+    const retained = harness({ selects: [
+      [{ mode: "shadow_encryption", shadowBehavior: "retain", revision: 9 }],
+      [{ ownerId: ids.user }],
+      [scan({ throughAt: created, throughTaskId: ids.task2 })],
+      [row, { ...row, taskId: ids.task2, failureReason: null,
+        failureSourceRevision: null, failureSourceUpdatedAt: null,
+        failureSourceStatus: null, failurePolicyRevision: null }],
+    ] });
+    expect(await discoverTaskContentBackfill(retained.database, {
+      humanActorId: ids.human, deviceId: "device-a", now, pageLimit: 4, resumeAt: later,
+    })).toMatchObject({ status: "candidate", candidate: { taskId: ids.task2 } });
+
+    const changed = harness({ selects: [
+      [{ mode: "shadow_encryption", shadowBehavior: "retain", revision: 10 }],
+      [{ ownerId: ids.user }],
+      [scan({ throughAt: created, throughTaskId: ids.task1 })],
+      [row],
+    ] });
+    expect(await discoverTaskContentBackfill(changed.database, {
+      humanActorId: ids.human, deviceId: "device-a", now, pageLimit: 4, resumeAt: later,
+    })).toMatchObject({ status: "candidate", policyRevision: 10,
+      candidate: { taskId: ids.task1 } });
   });
 
   test("definition discovery returns only structural coordinates and fences ordinary source drift with updatedAt", async () => {

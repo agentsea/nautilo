@@ -21,6 +21,8 @@ import {
 import {
   createProtectedTaskRuntimeInitialDeviceAuthorization,
 } from "../../src/routes/protected-task-runtime-initial-device-authorization";
+import { ProtectedTaskRuntimeGrantPlanUnavailableError } from
+  "../../src/routes/protected-task-runtime-grant-plan";
 import { createProtectedTaskRuntimeRecipientRequestPlan } from
   "../../src/routes/protected-task-runtime-recipient-request-plan";
 
@@ -154,6 +156,7 @@ function initialRecord(
 
 async function fixture(
   resolve: () => ProtectedTaskOccurrence | null = occurrence,
+  planFailure?: Error,
 ) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
@@ -263,7 +266,10 @@ async function fixture(
   const hooks = createProtectedTaskRuntimeInitialDeviceAuthorization({
     recipients,
     claim,
-    plan: async value => plan(value),
+    plan: async value => {
+      if (planFailure !== undefined) throw planFailure;
+      return plan(value);
+    },
     resolveOccurrence: async () => resolve(),
     withRecipientAuthority,
     now: () => clock,
@@ -374,6 +380,33 @@ test("rejects wrong or stale initial occurrence identity", async () => {
     } finally {
       f.close();
     }
+  }
+});
+
+test("withholds a record whose output binding is known unavailable", async () => {
+  const f = await fixture(
+    occurrence,
+    new ProtectedTaskRuntimeGrantPlanUnavailableError("conflict"),
+  );
+  try {
+    expect(await f.hooks.bindTaskRecipient(f.operation(f.initial))).toBeNull();
+    expect(f.recipients.size).toBe(0);
+  } finally {
+    f.close();
+  }
+});
+
+test("propagates unexpected planning failures", async () => {
+  const failure = new TypeError("unexpected plan integrity failure");
+  const f = await fixture(occurrence, failure);
+  try {
+    await Promise.resolve(
+      expect(f.hooks.bindTaskRecipient(f.operation(f.initial)))
+        .rejects.toBe(failure),
+    );
+    expect(f.recipients.size).toBe(0);
+  } finally {
+    f.close();
   }
 });
 

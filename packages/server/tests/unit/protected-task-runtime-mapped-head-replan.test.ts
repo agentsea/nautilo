@@ -7,19 +7,26 @@ import { refreshHumanMappedTaskContentAccessHead } from "@nautilo/lattice-bridge
 import { setup, replanFixture } from "../../../lattice-bridge/tests/fixtures/human-task-mapped-content";
 import { createProtectedTaskRuntimeMappedHeadReplan } from "../../src/routes/protected-task-runtime-mapped-head-replan";
 
-async function fixture() {
+async function fixture(options: Readonly<{
+  authorityRefresh?: boolean;
+  invalidPredecessor?: boolean;
+}> = {}) {
   const f = await setup();
   const plans: ReturnType<typeof replanFixture>[] = [];
   await rejects(refreshHumanMappedTaskContentAccessHead({ ...f.input, withMappedHead: async held => {
     plans.push(replanFixture(held)); throw new Error("blueprint rollback");
   } }), /blueprint rollback/);
   const plan = plans[0]!;
+  if (options.authorityRefresh) {
+    expect(await refreshHumanMappedTaskContentAccessHead(f.input)).toBe("applied");
+  }
+  f.events.length = 0;
   const stable = plan.stableIdentity;
   const occurrence: ProtectedTaskOccurrence = { task: { id: stable.taskId, ownerId: stable.ownerId,
     requestorId: stable.requestorId, agentId: stable.agentId, callingRoomId: stable.callingRoomId,
     scheduleKind: stable.scheduleKind, contentRepresentation: stable.contentRepresentation,
     contentNamespaceId: stable.contentNamespaceId, contentRevision: stable.contentRevision,
-    cryptoObjectId: stable.contentObjectId, cryptoAccessRevision: 0,
+    cryptoObjectId: stable.contentObjectId, cryptoAccessRevision: f.access(),
     cryptoRequiredNamespaceFingerprint: Uint8Array.from(plan.lifecycle.requiredNamespaceFingerprint) },
   run: { id: stable.taskRunId, taskId: stable.taskId, jobId: null, graphThreadId: stable.graphThreadId,
     status: "awaiting", startedAt: new Date(stable.startedAt) } };
@@ -29,7 +36,25 @@ async function fixture() {
   });
   if (snapshot.formatVersion !== 3 || snapshot.credentialSubject.kind !== "runtime"
     || snapshot.credentialSubject.runtimeKind !== "task") throw new Error("Task runtime snapshot required");
-  const record: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...plan.expected, snapshot: { ...snapshot, credentialSubject: snapshot.credentialSubject }, descriptorBytes: new Uint8Array([7]) };
+  const authorityRefreshRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...plan.replacement,
+    expectedPolicyRevision: 3,
+    authoritySet: {
+      ...plan.replacement.authoritySet,
+      namespaceRequirements: plan.replacement.authoritySet.namespaceRequirements.map(requirement => ({
+        ...requirement,
+        expectedPolicyRevision: 3,
+      })),
+    },
+  };
+  const initial = options.authorityRefresh ? authorityRefreshRecord : options.invalidPredecessor
+    ? { ...plan.expected, idempotencyKey: taskRuntimeStableIdempotencyKey({
+      ...stable,
+      contentAccessRevision: 0,
+      targetRoomId: "10000000-0000-4000-8000-000000000099",
+    }) }
+    : plan.expected;
+  const record: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...initial, snapshot: { ...snapshot, credentialSubject: snapshot.credentialSubject }, descriptorBytes: new Uint8Array([7]) };
   const repository = new InMemoryBackgroundAuthorizationRepository();
   await repository.create(record);
   const events: string[] = [];
@@ -71,6 +96,27 @@ test("repair commits before planning, fresh live CAS commits before old custody 
     const record = await f.repository.get(f.operation.record.snapshot.requestId);
     expect(record?.idempotencyKey).toBe(f.plan.replacement.idempotencyKey);
     expect(record?.snapshot.recipientGeneration).toBe(1);
+  } finally { f.f.cleanup(); }
+});
+
+test("same-head policy refresh uses ordinary authority replacement", async () => {
+  const f = await fixture({ authorityRefresh: true });
+  try {
+    expect(f.plan.stableIdentity.contentAccessRevision).toBe(1);
+    expect(await f.run(f.operation)).toBe("retry");
+    const record = await f.repository.get(f.operation.record.snapshot.requestId);
+    expect(record?.idempotencyKey).toBe(f.plan.replacement.idempotencyKey);
+    expect(record?.expectedPolicyRevision).toBe(4);
+    expect(record?.snapshot.requestRevision).toBe(
+      f.operation.record.snapshot.requestRevision + 1,
+    );
+  } finally { f.f.cleanup(); }
+});
+
+test("changed stable key without a unique access-head predecessor remains rejected", async () => {
+  const f = await fixture({ invalidPredecessor: true });
+  try {
+    await rejects(f.run(f.operation), /no unique immutable predecessor/);
   } finally { f.f.cleanup(); }
 });
 

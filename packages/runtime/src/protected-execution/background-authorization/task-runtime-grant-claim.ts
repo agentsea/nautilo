@@ -187,7 +187,13 @@ export type RotateExpiredTaskRuntimeRecipientInput = Readonly<{
     "get" | "compareAndSwap">;
   recipients: TaskRuntimeRecipientRegistry;
   now: () => number;
+  authorizationRequested?: TaskRuntimeAuthorizationRequested;
 }>;
+
+export type TaskRuntimeAuthorizationRequested = (
+  occurrence: ProtectedTaskOccurrence,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+) => void | Promise<void>;
 
 type TaskRuntimeResultBinding = Readonly<{
   taskId: string;
@@ -433,8 +439,28 @@ export interface TaskRuntimeGrantClaimDependencies {
   ): Promise<TaskRuntimeGrantClaimPlan> | TaskRuntimeGrantClaimPlan;
   withCurrentClaimAuthority: CurrentTaskRuntimeClaimAuthorityPort;
   withCurrentAuthority: CurrentTaskRuntimeAuthorityPort;
+  authorizationRequested?: TaskRuntimeAuthorizationRequested;
   now?: () => number;
   claimId?: () => string;
+}
+
+async function notifyTaskRuntimeAuthorizationRequested(
+  callback: TaskRuntimeAuthorizationRequested | undefined,
+  occurrence: ProtectedTaskOccurrence,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): Promise<void> {
+  if (callback === undefined) return;
+  try {
+    await callback(
+      copyOccurrence(occurrence),
+      copyTaskRuntimeRecord(
+        record,
+        "Task Runtime authorization wake record is invalid",
+      ),
+    );
+  } catch {
+    // The durable request remains discoverable without the latency hint.
+  }
 }
 
 export interface ParkedTaskRuntimeGrantClaimDependencies {
@@ -1428,6 +1454,11 @@ export async function rotateExpiredTaskRuntimeRecipient(
     loaded.snapshot.requestId,
     loaded.snapshot.recipientGeneration,
   );
+  await notifyTaskRuntimeAuthorizationRequested(
+    input.authorizationRequested,
+    occurrence,
+    rotated.record,
+  );
   return Object.freeze({ status: "rotated" as const });
 }
 
@@ -2162,6 +2193,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
   }
 
   async #replaceChangedPreclaimPlan(
+    occurrence: ProtectedTaskOccurrence,
     current: BackgroundAuthorizationTaskRuntimeRecordV3,
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3,
   ): Promise<ClaimProtectedTaskOccurrenceResult> {
@@ -2191,6 +2223,17 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       current.snapshot.requestId,
       current.snapshot.recipientGeneration,
     );
+    if (!isTaskRuntimeRecord(replaced.record)
+      || !exactOccurrenceRecord(occurrence, replaced.record)
+      || !sameTaskRuntimeAuthorityPlan(replaced.record, replacement)
+      || replaced.record.snapshot.state !== "awaiting_recipient") {
+      throw new TypeError("Task Runtime authority replacement was substituted");
+    }
+    await notifyTaskRuntimeAuthorizationRequested(
+      this.dependencies.authorizationRequested,
+      occurrence,
+      replaced.record,
+    );
     return Object.freeze({ status: "awaiting_authorization" as const });
   }
 
@@ -2217,7 +2260,11 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       || !exactOccurrenceRecord(input.occurrence, durable)
     ) throw new TypeError("Task Runtime durable record was substituted");
     if (!sameTaskRuntimeAuthorityPlan(durable, plan.initialRecord)) {
-      await this.#replaceChangedPreclaimPlan(durable, plan.initialRecord);
+      await this.#replaceChangedPreclaimPlan(
+        input.occurrence,
+        durable,
+        plan.initialRecord,
+      );
       return null;
     }
     if (
@@ -2285,19 +2332,31 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
     const existing = await this.dependencies.repository.get(
       plan.initialRecord.snapshot.requestId,
     );
-    const durable = existing ?? (await this.dependencies.repository.create(
-      plan.initialRecord,
-    )).record;
+    const created = existing === null
+      ? await this.dependencies.repository.create(plan.initialRecord)
+      : null;
+    const durable = existing ?? created!.record;
     if (!isTaskRuntimeRecord(durable)
       || !exactOccurrenceRecord(occurrence, durable)) {
       throw new TypeError("Task Runtime durable record was substituted");
     }
     if (!sameTaskRuntimeAuthorityPlan(durable, plan.initialRecord)) {
-      return this.#replaceChangedPreclaimPlan(durable, plan.initialRecord);
+      return this.#replaceChangedPreclaimPlan(
+        occurrence,
+        durable,
+        plan.initialRecord,
+      );
     }
     const current = durable;
 
     if (current.snapshot.state === "awaiting_recipient") {
+      if (created?.status === "created") {
+        await notifyTaskRuntimeAuthorizationRequested(
+          this.dependencies.authorizationRequested,
+          occurrence,
+          current,
+        );
+      }
       return Object.freeze({ status: "awaiting_authorization" as const });
     }
 
@@ -2310,6 +2369,9 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         repository: this.dependencies.repository,
         recipients: this.dependencies.recipients,
         now: this.#now,
+        ...(this.dependencies.authorizationRequested === undefined ? {} : {
+          authorizationRequested: this.dependencies.authorizationRequested,
+        }),
       });
       if (rotation.status === "rotated" || rotation.status === "stale") {
         return Object.freeze({ status: "awaiting_authorization" as const });
@@ -2356,6 +2418,24 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             current.snapshot.requestId,
             current.snapshot.recipientGeneration,
           );
+          if (!wasRunning) {
+            if (!isTaskRuntimeRecord(expired.record)
+              || !exactOccurrenceRecord(occurrence, expired.record)
+              || !sameTaskRuntimeAuthorityPlan(
+                expired.record,
+                plan.initialRecord,
+              )
+              || expired.record.snapshot.state !== "awaiting_recipient") {
+              throw new TypeError(
+                "Task Runtime expired claim rotation was substituted",
+              );
+            }
+            await notifyTaskRuntimeAuthorizationRequested(
+              this.dependencies.authorizationRequested,
+              occurrence,
+              expired.record,
+            );
+          }
           return Object.freeze({
             status: wasRunning ? "inactive" as const : "awaiting_authorization" as const,
           });

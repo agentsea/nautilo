@@ -82,7 +82,6 @@ import {
   AgentInvocationDeniedError,
   ServerProviderCredentialsDeniedError,
   createAcceptedInvocationAuthority,
-  isUuidString,
   toActionCapabilityHttpDenial,
 } from "@nautilo/trust";
 import { SHELL_AVATAR_REF } from "@nautilo/types";
@@ -184,6 +183,13 @@ async function runOrdinaryTaskMutation<Result>(
 function toIso(value: Date | string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+const CANONICAL_TASK_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function isCanonicalTaskUuid(value: string): boolean {
+  return CANONICAL_TASK_UUID_RE.test(value);
 }
 
 function parseRunAt(runAt: string | undefined): Date | undefined {
@@ -782,7 +788,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     const includeFunding = includesTaskFunding(request.query);
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
-    if (!isUuidString(request.params.id)) {
+    if (!isCanonicalTaskUuid(request.params.id)) {
       return reply.status(404).send({ error: "Task not found" });
     }
     const read = async (allowOrdinary: boolean) => {
@@ -951,7 +957,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     if (!ownerId) {
       return reply.status(401).send({ error: "Authentication required" });
     }
-    if (!isUuidString(request.params.id)) {
+    if (!isCanonicalTaskUuid(request.params.id)) {
       return reply.code(404).send({ error: "Task not found" });
     }
 
@@ -984,7 +990,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
       return reply.status(401).send({ error: "Authentication required" });
     }
 
-    if (!isUuidString(request.params.id)) {
+    if (!isCanonicalTaskUuid(request.params.id)) {
       return reply.code(404).send({ error: "Task not found" });
     }
     return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {

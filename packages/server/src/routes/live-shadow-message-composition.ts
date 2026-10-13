@@ -169,6 +169,50 @@ function errorCauseSummary(error: unknown): string {
   return parts.length > 0 ? parts.join(" <- ") : typeof error;
 }
 
+export function createProtectedTaskForegroundReadableNamespaceResolver(input: Readonly<{
+  source: "turn" | "shared_execution" | "shared_resume";
+  plan: Readonly<{
+    subjectHumanId: string;
+    roomId: string;
+    recipientAgentId: string;
+    namespaceId: string;
+  }>;
+  grant: Readonly<{
+    subjectHumanId: string;
+    roomId: string;
+    recipientAgentId?: string;
+    namespaceIds: readonly string[];
+  }>;
+}>): ResolveLiveShadowReadableNamespaces {
+  if (
+    input.grant.subjectHumanId !== input.plan.subjectHumanId
+    || (input.grant.recipientAgentId !== undefined
+      && input.grant.recipientAgentId !== input.plan.recipientAgentId)
+    || input.grant.namespaceIds.length < 1
+    || !input.grant.namespaceIds.includes(input.plan.namespaceId)
+    || (input.source === "turn"
+      && input.grant.roomId !== input.plan.roomId)
+  ) {
+    throw new TypeError("Foreground Task readable Namespace grant is inconsistent");
+  }
+  const expectedRoomId = input.source === "turn"
+    ? input.plan.roomId
+    : input.grant.roomId;
+  const namespaceIds = Object.freeze([...input.grant.namespaceIds]);
+  return coordinates => {
+    if (
+      coordinates.humanActorId !== input.plan.subjectHumanId
+      || coordinates.roomId !== expectedRoomId
+      || coordinates.agentId !== input.plan.recipientAgentId
+    ) {
+      return Promise.reject(
+        new TypeError("Foreground Task readable Namespace coordinates changed"),
+      );
+    }
+    return Promise.resolve(namespaceIds);
+  };
+}
+
 type RuntimeInvocationContentSelection =
   | Readonly<{ representationMode?: "shadow_encryption"; expectedMergedHumanContent: string }>
   | Readonly<{ representationMode: "full_encryption"; expectedMergedHumanContent?: never }>;
@@ -4412,6 +4456,22 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                 entities.signal,
                               );
                             const createProtected = async () => {
+                              const resolveProtectedTaskReadableNamespaces =
+                                createProtectedTaskForegroundReadableNamespaceResolver({
+                                  source: retained.source,
+                                  plan: foregroundPlan,
+                                  grant: {
+                                    subjectHumanId: description.subjectHumanId,
+                                    roomId: "recipientKind" in description
+                                      ? description.topLevelRoomId
+                                      : description.roomId,
+                                    ...("recipientAgentId" in description
+                                      ? { recipientAgentId:
+                                          description.recipientAgentId }
+                                      : {}),
+                                    namespaceIds: description.namespaceIds,
+                                  },
+                                });
                               const creation = createProtectedTaskForegroundCreationOwner({
                                 owner: taskContentOwner!(), crypto, entities, restricted: restrictedConnection,
                                 serverScope: serverId, representation: policy.mode === "encrypted_only" ? "protected" : "dual",
@@ -4433,14 +4493,8 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                   product, restricted: restrictedConnection, crypto, serverId, plan: foregroundPlan,
                                   representationMode: policy.mode === "encrypted_only" ? "full_encryption" : "shadow_encryption",
                                   source: retained.source,
-                                  resolveReadableNamespaces: async coordinates => {
-                                    const readable = [...new Set(await resolveReadableNamespaces(coordinates))].sort();
-                                    const admitted = [...description.namespaceIds].sort();
-                                    if (readable.length !== admitted.length || readable.some((id, index) => id !== admitted[index])) {
-                                      throw new Error("Foreground Task creation namespace authority changed");
-                                    }
-                                    return readable;
-                                  },
+                                  resolveReadableNamespaces:
+                                    resolveProtectedTaskReadableNamespaces,
                                 }),
                               });
                               try { return await withProtectedTaskForegroundCreationContext(creation.context, work); }

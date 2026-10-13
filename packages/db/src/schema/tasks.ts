@@ -13,6 +13,21 @@ const bytea = customType<{ data: Uint8Array; driverData: Uint8Array }>({
   dataType: () => "bytea",
 });
 
+/** Root Task presets whose content can use the protected Task lifecycle. */
+export const PROTECTED_TASK_PRESETS = [
+  "task",
+  "in_scope",
+  "in_private_namespace",
+  "in_background",
+  "schedule",
+] as const;
+
+export type ProtectedTaskPreset = typeof PROTECTED_TASK_PRESETS[number];
+
+export function isProtectedTaskPreset(value: string): value is ProtectedTaskPreset {
+  return (PROTECTED_TASK_PRESETS as readonly string[]).includes(value);
+}
+
 export const tasks = pgTable(
   "tasks",
   {

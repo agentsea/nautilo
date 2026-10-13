@@ -288,7 +288,11 @@ export function createDeviceTaskContentBackfillClient(input: Readonly<{
     ) => Promise<Value>,
   ): Promise<Value> => {
     active(claim, signal);
-    if ((await input.vault.availability()).status !== "available") {
+    let availability = await input.vault.availability();
+    if (availability.status === "locked") {
+      availability = await input.vault.unlock();
+    }
+    if (availability.status !== "available") {
       fail("key_waiting", "Task repair device custody is unavailable");
     }
     const admission = await input.resolveDeviceAdmissionStatus();

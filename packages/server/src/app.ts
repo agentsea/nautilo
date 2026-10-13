@@ -3245,6 +3245,12 @@ export async function createApp(options?: CreateAppOptions) {
           },
         },
         kick: () => getTaskObserver()?.kick(),
+        authorizationRequested: requestorUserId => {
+          broadcast(
+            { type: "crypto.background_authorization_requested" },
+            { kind: "user", userId: requestorUserId },
+          );
+        },
         wakeForeground: { jobManager, executor: langgraphExecutor,
           wakeEffectRecovery: () => foregroundMemoryEffectRecovery.wake() },
       });

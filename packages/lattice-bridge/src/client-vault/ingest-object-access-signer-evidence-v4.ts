@@ -104,6 +104,13 @@ export async function ingestObjectAccessSignerEvidenceV4(input: Readonly<{
   createStageId: () => string;
 }>): Promise<void> {
   if (input.evidence.length === 0) return;
+  let availability = await input.vault.availability();
+  if (availability.status === "locked") {
+    availability = await input.vault.unlock();
+  }
+  if (availability.status !== "available") {
+    throw new Error("Client profile vault is unavailable");
+  }
   const publicProfile = activeProfile(
     await input.vault.listPublicProfiles(),
     input.coordinates,

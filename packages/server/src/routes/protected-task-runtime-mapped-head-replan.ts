@@ -5,6 +5,7 @@ import { readVerifiedTaskDefinitionAccessLineage, readVerifiedForegroundTaskDefi
   type HumanTaskMappedContentAuthorityInput } from "@nautilo/lattice-bridge/server";
 import { PostgresBackgroundAuthorizationRepository, sameTaskRuntimeAuthorityPlan, taskRuntimeStableIdempotencyKey,
   type BackgroundAuthorizationTaskRuntimeRecordV3, type TaskRuntimeGrantStableIdentity,
+  type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskMappedHeadReplacementRepository,
   type ProtectedTaskOccurrence } from "@nautilo/runtime";
 import { createHumanProductTransactionContext } from "./human-message-product-store";
@@ -31,7 +32,8 @@ type Dependencies = Readonly<{
   readPolicy: (db: DirectDatabase) => Promise<Pick<Awaited<ReturnType<typeof getEncryptionTransitionPolicy>>, "mode" | "revision">>;
   privateRoom: ReturnType<typeof createProtectedTaskRequesterPrivateRoomResolver>;
   productContext: typeof createHumanProductTransactionContext;
-  repository: (input: Parameters<NonNullable<Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["withMappedHead"]>>[0]) => BackgroundAuthorizationTaskMappedHeadReplacementRepository;
+  repository: (input: Parameters<NonNullable<Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["withMappedHead"]>>[0]) =>
+    BackgroundAuthorizationTaskMappedHeadReplacementRepository & BackgroundAuthorizationTaskRuntimeReplacementRepository;
 }>;
 
 /** Each phase commits before the next owner starts; no nested product planner under crypto locks. */
@@ -99,10 +101,13 @@ export function createProtectedTaskRuntimeMappedHeadReplan(input: Readonly<{
           || current.snapshot.credentialSubject.runtimeKind !== "task" || current.authoritySet === undefined) return;
         const record = current as BackgroundAuthorizationTaskRuntimeRecordV3;
         if (!sameTaskRuntimeAuthorityPlan(record, fresh.initialRecord)) {
-          const replaced = await repository.replaceUnclaimedTaskMappedHeadAuthority({ expected: record,
-            replacement: fresh.initialRecord, now: now(), stableIdentity: fresh.stableIdentity,
-            proof: held.proof, lineage: held.lineage, lifecycle: held.lifecycle, currentAuthority: held.context.currentAuthority });
-          if (replaced.status !== "replaced") throw new Error("Task mapped-head request changed before replacement");
+          const replaced = record.idempotencyKey === fresh.initialRecord.idempotencyKey
+            ? await repository.replaceUnclaimedTaskRuntimeAuthority({ expected: record,
+              replacement: fresh.initialRecord, now: now() })
+            : await repository.replaceUnclaimedTaskMappedHeadAuthority({ expected: record,
+              replacement: fresh.initialRecord, now: now(), stableIdentity: fresh.stableIdentity,
+              proof: held.proof, lineage: held.lineage, lifecycle: held.lifecycle, currentAuthority: held.context.currentAuthority });
+          if (replaced.status !== "replaced") throw new Error("Task Runtime request changed before replacement");
           if (record.snapshot.recipient !== null) retired.add(record.snapshot.recipientGeneration);
           outcome = "retry";
         } else {

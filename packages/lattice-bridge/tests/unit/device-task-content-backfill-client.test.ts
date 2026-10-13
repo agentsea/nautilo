@@ -419,6 +419,13 @@ describe("device Task content backfill client", () => {
 
   test("encrypts and signs canonical source only inside current device custody", async () => {
     const fixture = await setup();
+    await fixture.vault.lock();
+    const unlock = fixture.vault.unlock.bind(fixture.vault);
+    let unlocks = 0;
+    fixture.vault.unlock = () => {
+      unlocks += 1;
+      return unlock();
+    };
     const calls: string[] = [];
     let upload: TaskContentBackfillPublishRequest | undefined;
     let recoveries = 0;
@@ -450,6 +457,7 @@ describe("device Task content backfill client", () => {
     expect(calls).toEqual([
       "recover:1", "source", "publish", "recover:2", "ack:mapped",
     ]);
+    expect(unlocks).toBe(1);
     expect(result).toEqual({ state: "more", resumeAt: NOW });
     expect(upload).toBeDefined();
     const requestBytes = decodeBase64url(upload!.requestBytesBase64url);
@@ -540,6 +548,33 @@ describe("device Task content backfill client", () => {
     }))).runBatch({ signal: new AbortController().signal });
 
     expect(result).toEqual({ state: "waiting", resumeAt: fixture.claim.expiresAt });
+    expect(outcomes).toEqual(["release:false"]);
+  });
+
+  test("defers when populated profile storage is lost without attempting unlock", async () => {
+    const fixture = await setup();
+    let unlocks = 0;
+    fixture.vault.availability = () => Promise.resolve({ status: "storage_lost" });
+    fixture.vault.unlock = () => {
+      unlocks += 1;
+      return Promise.resolve({ status: "available" });
+    };
+    const outcomes: string[] = [];
+    const result = await createClient(fixture, api({
+      discoverTaskContentBackfill: () => Promise.resolve({
+        status: "ready",
+        value: { status: "claimed", claim: fixture.claim },
+      }),
+      recoverTaskContentBackfill: () => Promise.resolve({ status: "pending" }),
+      readTaskContentBackfillSource: () => Promise.resolve(fixture.source),
+      releaseTaskContentBackfill: ({ advance }) => {
+        outcomes.push(`release:${advance}`);
+        return Promise.resolve({ status: "ready", value: true });
+      },
+    })).runBatch({ signal: new AbortController().signal });
+
+    expect(result).toEqual({ state: "waiting", resumeAt: fixture.claim.expiresAt });
+    expect(unlocks).toBe(0);
     expect(outcomes).toEqual(["release:false"]);
   });
 

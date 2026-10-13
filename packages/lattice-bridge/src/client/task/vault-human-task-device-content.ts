@@ -136,14 +136,7 @@ async function withProfile<Value>(
     admission: Extract<DeviceAdmissionStatus, { status: "admitted" }>,
   ) => Promise<Value>,
 ): Promise<Value> {
-  let availability = await input.vault.availability();
-  if (availability.status === "locked") availability = await input.vault.unlock();
-  if (availability.status !== "available") {
-    throw new ClassifiedDataOperationError(
-      "key_waiting",
-      `Protected Task device custody is unavailable (${availability.status})`,
-    );
-  }
+  await ensureVaultAvailable(input);
   const admission = await input.resolveDeviceAdmissionStatus();
   if (
     admission.status !== "admitted"
@@ -167,6 +160,19 @@ async function withProfile<Value>(
       destroyOpenedClientDeviceProfileV4(profile);
     }
   });
+}
+
+async function ensureVaultAvailable(
+  input: VaultHumanTaskDeviceContentInputV1,
+): Promise<void> {
+  let availability = await input.vault.availability();
+  if (availability.status === "locked") availability = await input.vault.unlock();
+  if (availability.status !== "available") {
+    throw new ClassifiedDataOperationError(
+      "key_waiting",
+      `Protected Task device custody is unavailable (${availability.status})`,
+    );
+  }
 }
 
 /** Vault-backed Task content preparation/opening shared by Browser and Electron. */
@@ -412,6 +418,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
           "integrity", "Protected Task access history is incomplete",
         );
       }
+      await ensureVaultAvailable(dependencies);
       let foregroundKeys: Map<string, Uint8Array> | undefined;
       const publications = envelope.signerEvidence.filter(
         (entry): entry is ObjectAccessSignerEvidenceTransportV1 =>

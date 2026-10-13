@@ -204,6 +204,37 @@ describe("Task content backfill source", () => {
     expect(f.projections[0]).not.toContain("localExecutionDelegation");
   });
 
+  test.each(["in_background", "schedule"])(
+    "preserves a supported %s definition and result source",
+    async preset => {
+      const definition = await readTaskContentBackfillSource(
+        transaction([[taskRow({ preset })], []]).tx,
+        definitionClaim(),
+      );
+      expect(definition?.classification.status).toBe("supported");
+
+      const result = await readTaskContentBackfillSource(
+        transaction([[protectedTaskRow({ preset })], [runRow()]]).tx,
+        resultClaim(),
+      );
+      expect(result?.classification.status).toBe("supported");
+    },
+  );
+
+  test.each(["ask_peer", "ping", "repo_docs"])(
+    "rejects unsupported %s definition and result routing",
+    async preset => {
+      expect(await readTaskContentBackfillSource(
+        transaction([[taskRow({ preset })]]).tx,
+        definitionClaim(),
+      )).toBeNull();
+      expect(await readTaskContentBackfillSource(
+        transaction([[protectedTaskRow({ preset })]]).tx,
+        resultClaim(),
+      )).toBeNull();
+    },
+  );
+
   test("retains an ordinary Task error as authenticated V2 display content", async () => {
     const error = "Provider failed before historical repair.";
     const result = await readTaskContentBackfillSource(

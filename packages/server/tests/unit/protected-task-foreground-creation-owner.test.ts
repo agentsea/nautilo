@@ -7,6 +7,77 @@ import { createAcceptedInvocationAuthority, type CanonicalTranscriptTx } from "@
 import { createAgentTurnTaskCreationProvenance } from "@nautilo/runtime";
 import { tasks, type PostgresJsBridgeConnection, type PostgresJsBridgeExecutor } from "@nautilo/db";
 import { createProtectedTaskForegroundCreationOwner } from "../../src/routes/protected-task-foreground-creation-owner";
+import { createProtectedTaskForegroundReadableNamespaceResolver } from
+  "../../src/routes/live-shadow-message-composition";
+
+test("shared-execution Task creation nominates the exact foreground grant Namespace set without a second resolver", async () => {
+  const namespaceIds = Object.freeze([
+    "30000000-0000-4000-8000-000000000001",
+    "30000000-0000-4000-8000-000000000002",
+  ]);
+  const resolve = createProtectedTaskForegroundReadableNamespaceResolver({
+    source: "shared_execution",
+    plan: {
+      subjectHumanId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000002",
+      recipientAgentId: "40000000-0000-4000-8000-000000000001",
+      namespaceId: namespaceIds[0]!,
+    },
+    grant: {
+      subjectHumanId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000001",
+      namespaceIds,
+    },
+  });
+
+  const resolved = await resolve({
+    humanActorId: "10000000-0000-4000-8000-000000000001",
+    roomId: "20000000-0000-4000-8000-000000000001",
+    agentId: "40000000-0000-4000-8000-000000000001",
+  });
+  expect(resolved).toEqual(namespaceIds);
+  expect(resolved).not.toBe(namespaceIds);
+  expect(Object.isFrozen(resolved)).toBe(true);
+
+  for (const coordinates of [
+    {
+      humanActorId: "10000000-0000-4000-8000-000000000009",
+      roomId: "20000000-0000-4000-8000-000000000001",
+      agentId: "40000000-0000-4000-8000-000000000001",
+    },
+    {
+      humanActorId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000002",
+      agentId: "40000000-0000-4000-8000-000000000001",
+    },
+    {
+      humanActorId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000001",
+      agentId: "40000000-0000-4000-8000-000000000009",
+    },
+  ]) {
+    await Promise.resolve(expect(resolve(coordinates)).rejects.toThrow(
+      "Foreground Task readable Namespace coordinates changed",
+    ));
+  }
+});
+
+test("Task creation rejects a foreground grant that omits its planned Namespace", () => {
+  expect(() => createProtectedTaskForegroundReadableNamespaceResolver({
+    source: "shared_execution",
+    plan: {
+      subjectHumanId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000002",
+      recipientAgentId: "40000000-0000-4000-8000-000000000001",
+      namespaceId: "30000000-0000-4000-8000-000000000001",
+    },
+    grant: {
+      subjectHumanId: "10000000-0000-4000-8000-000000000001",
+      roomId: "20000000-0000-4000-8000-000000000001",
+      namespaceIds: ["30000000-0000-4000-8000-000000000002"],
+    },
+  })).toThrow("Foreground Task readable Namespace grant is inconsistent");
+});
 
 function fixture() {
   const events: string[] = [];

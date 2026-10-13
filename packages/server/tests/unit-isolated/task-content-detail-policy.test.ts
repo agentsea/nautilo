@@ -9,6 +9,7 @@ const actualDb = await import("@nautilo/db");
 const actualAgent = await import("@nautilo/agent");
 const actualRuntime = await import("@nautilo/runtime");
 const taskId = "71000000-0000-4000-8000-000000000001";
+const protectedTaskV8Id = "836a18fb-2373-8420-a6c3-69213687b35e";
 const runId = "71000000-0000-4000-8000-000000000002";
 const ownerId = "71000000-0000-4000-8000-000000000003";
 const agentId = "71000000-0000-4000-8000-000000000004";
@@ -35,7 +36,11 @@ mock.module("@nautilo/db", () => ({ ...actualDb, getTaskById: findTask, getTaskR
   getOwnerAgentDisplayNamesByAgentId: async () => new Map([[agentId, "Genie"]]) }));
 mock.module("@nautilo/agent", () => ({ ...actualAgent, getRunAgentTranscript: transcript }));
 mock.module("@nautilo/runtime", () => ({ ...actualRuntime, canResumeSecurityResearchContextFailure: resume }));
-mock.module("../../src/lib/server-direct-db", () => ({ getServerDirectDb: () => ({ select: () => {
+mock.module("../../src/lib/server-direct-db", () => ({ getServerDirectDb: () => ({ select: (selection?: Record<string, unknown>) => {
+  if (selection && Object.hasOwn(selection, "avatarRef")) {
+    const chain = { from: () => chain, where: () => chain, limit: async () => [] };
+    return chain;
+  }
   const chain = { from: () => chain, innerJoin: () => chain, where: async () => historicalRows };
   return chain;
 } }) }));
@@ -64,15 +69,34 @@ beforeEach(() => {
   invalidate = false; validations = 0; historicalRows = [];
   transcript.mockClear(); findTask.mockClear(); findRuns.mockClear(); resume.mockClear(); listTasks.mockClear();
 });
-async function read(policy: LiveShadowEncryptionTransitionPolicy, user = ownerId, list = false, funding = false) {
+async function request(
+  policy: LiveShadowEncryptionTransitionPolicy,
+  url: string,
+  user = ownerId,
+) {
   const app = Fastify();
   app.addHook("preHandler", async request => { request.sessionUserId = user; });
   tasksRoutes(app, { observer: { kick() {} }, contentOwner: bindEncryptionDataOperationOwner({ policy: {
     resolve: async () => ({ policy, revalidationToken: 1 }),
     revalidate: async () => { if (invalidate && ++validations > 1) throw new Error("policy changed"); },
   } }) });
-  try { return await app.inject({ method: "GET", url: list ? "/api/tasks/content-v1" : `/api/tasks/${taskId}/content-v1${funding ? "?includeFunding=true" : ""}` }); }
+  try { return await app.inject({ method: "GET", url }); }
   finally { await app.close(); }
+}
+async function read(
+  policy: LiveShadowEncryptionTransitionPolicy,
+  user = ownerId,
+  list = false,
+  funding = false,
+  requestedTaskId = taskId,
+) {
+  return request(
+    policy,
+    list
+      ? "/api/tasks/content-v1"
+      : `/api/tasks/${requestedTaskId}/content-v1${funding ? "?includeFunding=true" : ""}`,
+    user,
+  );
 }
 const policies: LiveShadowEncryptionTransitionPolicy[] = [
   { mode: "plaintext_only", shadowBehavior: "fallback" },
@@ -150,6 +174,102 @@ test("foreign owner cannot discover run coordinates", async () => {
   expect((await read(policies[3]!, "other")).statusCode).toBe(404);
   expect(findRuns).not.toHaveBeenCalled();
 });
+test("protected content detail accepts generated UUIDv8 Task IDs without weakening owner isolation", async () => {
+  task.id = protectedTaskV8Id;
+  task.contentRepresentation = "dual";
+  task.contentRevision = 1;
+  task.contentNamespaceId = namespaceId;
+  task.cryptoMappingState = "verified";
+  task.cryptoObjectId = deriveTaskContentCryptoObjectIdV1({
+    kind: "definition",
+    taskId: protectedTaskV8Id,
+    contentRevision: 1,
+  });
+  run.taskId = protectedTaskV8Id;
+  run.resultRepresentation = "dual";
+
+  const ownerResponse = await read(policies[3]!, ownerId, false, false, protectedTaskV8Id);
+  expect(ownerResponse.statusCode).toBe(200);
+  expect(taskContentDetailV1Schema.parse(ownerResponse.json()).task.id).toBe(protectedTaskV8Id);
+
+  findRuns.mockClear();
+  const foreignResponse = await read(policies[3]!, "other", false, false, protectedTaskV8Id);
+  expect(foreignResponse.statusCode).toBe(404);
+  expect(findRuns).not.toHaveBeenCalled();
+});
+test("protected content detail rejects malformed Task IDs before reading storage", async () => {
+  const response = await request(policies[3]!, "/api/tasks/not-a-task-id/content-v1");
+  expect(response.statusCode).toBe(404);
+  expect(findTask).not.toHaveBeenCalled();
+});
+test("content detail retains uppercase UUID acceptance", async () => {
+  const uppercaseTaskId = "71ABCDEF-ABCD-4DEF-8ABC-ABCDEFABCDEF";
+  const response = await read(policies[0]!, ownerId, false, false, uppercaseTaskId);
+  expect(response.statusCode).toBe(200);
+  expect(findTask.mock.calls[0]?.[1]).toBe(uppercaseTaskId);
+});
+test("Task avatar accepts generated UUIDv8 Task IDs", async () => {
+  task.id = protectedTaskV8Id;
+  const response = await request(
+    policies[3]!,
+    `/api/tasks/${protectedTaskV8Id}/agent/avatar`,
+  );
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["content-type"]).toContain("image/svg+xml");
+  expect(findTask.mock.calls[0]?.[1]).toBe(protectedTaskV8Id);
+});
+test("ordinary Task detail retains valid v4 and uppercase UUID behavior", async () => {
+  const ordinaryResponse = await request(policies[0]!, `/api/tasks/${taskId}`);
+  expect(ordinaryResponse.statusCode).toBe(200);
+  expect(ordinaryResponse.json()).toMatchObject({ task: { id: taskId } });
+
+  findTask.mockClear();
+  const uppercaseTaskId = "71ABCDEF-ABCD-4DEF-8ABC-ABCDEFABCDEF";
+  const uppercaseResponse = await request(policies[0]!, `/api/tasks/${uppercaseTaskId}`);
+  expect(uppercaseResponse.statusCode).toBe(200);
+  expect(findTask.mock.calls[0]?.[1]).toBe(uppercaseTaskId);
+});
+test("ordinary Task detail reads a retained-dual UUIDv8 Task after Plain restoration", async () => {
+  task.id = protectedTaskV8Id;
+  task.contentRepresentation = "dual";
+  task.contentRevision = 1;
+  task.contentNamespaceId = namespaceId;
+  task.cryptoMappingState = "verified";
+  task.cryptoObjectId = deriveTaskContentCryptoObjectIdV1({
+    kind: "definition",
+    taskId: protectedTaskV8Id,
+    contentRevision: 1,
+  });
+  run.taskId = protectedTaskV8Id;
+  run.resultRepresentation = "dual";
+
+  const ownerResponse = await request(policies[0]!, `/api/tasks/${protectedTaskV8Id}`);
+  expect(ownerResponse.statusCode).toBe(200);
+  expect(ownerResponse.json()).toMatchObject({ task: { id: protectedTaskV8Id } });
+
+  findRuns.mockClear();
+  const foreignResponse = await request(
+    policies[0]!,
+    `/api/tasks/${protectedTaskV8Id}`,
+    "other",
+  );
+  expect(foreignResponse.statusCode).toBe(404);
+  expect(findRuns).not.toHaveBeenCalled();
+});
+test("ordinary Task detail rejects malformed IDs before reading storage", async () => {
+  const response = await request(policies[0]!, "/api/tasks/not-a-task-id");
+  expect(response.statusCode).toBe(404);
+  expect(findTask).not.toHaveBeenCalled();
+});
+for (const policy of [policies[2]!, policies[3]!]) {
+  test(`${policy.mode} keeps ordinary Task detail closed for UUIDv8 Tasks`, async () => {
+    const response = await request(policy, `/api/tasks/${protectedTaskV8Id}`);
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string }>())
+      .toEqual({ error: "task_content_unavailable" });
+    expect(findTask).not.toHaveBeenCalled();
+  });
+}
 test("policy changes during projection discard the response", async () => {
   invalidate = true;
   const response = await read(policies[0]!);

@@ -114,6 +114,7 @@ export type ProductionProtectedTaskRuntimeInitialCompositionInput = Readonly<{
   recipients: TaskRuntimeRecipientRegistry;
   jobManager: ProtectedTaskOccurrenceJobManager;
   kick(): void;
+  authorizationRequested?(requestorUserId: string): void | Promise<void>;
   restricted?: PostgresJsBridgeConnection;
   crypto?: LatticeCrypto;
   serverScope?: string;
@@ -139,6 +140,7 @@ type Dependencies = Readonly<{
   unmappedResultRecovery: typeof createProtectedTaskUnmappedResultRecovery;
   terminalMessageComposition: typeof createProtectedTaskTerminalMessageComposition;
   localExecutionReadiness: typeof inspectProtectedTaskLocalExecutionReadiness;
+  grantClaim: typeof createTaskRuntimeGrantClaim;
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
@@ -147,6 +149,7 @@ const productionDependencies: Dependencies = Object.freeze({
   unmappedResultRecovery: createProtectedTaskUnmappedResultRecovery,
   terminalMessageComposition: createProtectedTaskTerminalMessageComposition,
   localExecutionReadiness: inspectProtectedTaskLocalExecutionReadiness,
+  grantClaim: createTaskRuntimeGrantClaim,
 });
 
 export function createProtectedTaskRuntimeInitialExecutionPreparation(
@@ -537,12 +540,14 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       destroyDomainForegroundAuthorizationPlanV2(parsed);
     }
   };
-  const claim = createTaskRuntimeGrantClaim({
+  const claim = dependencies.grantClaim({
     repository,
     recipients: input.recipients,
     plan,
     withCurrentAuthority,
     withCurrentClaimAuthority,
+    authorizationRequested: occurrence =>
+      input.authorizationRequested?.(occurrence.task.requestorId),
     now,
   });
   const parked = createProtectedTaskRuntimeParkedContinuation({

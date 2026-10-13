@@ -22,7 +22,7 @@ import {
   type TaskContentBackfillScan,
 } from "../schema/task-content-backfill";
 import { taskRuns } from "../schema/task-runs";
-import { tasks } from "../schema/tasks";
+import { isProtectedTaskPreset, tasks } from "../schema/tasks";
 import { actors } from "../schema/trust";
 import { acquireEncryptionConsumptionFence } from
   "../utils/encryption-transition-queries";
@@ -603,7 +603,7 @@ export async function discoverTaskContentBackfill(
             continue;
           }
           if (row.parentTaskId !== null || row.depth !== 0
-            || row.preset !== "task" || row.ownerId !== userId) {
+            || !isProtectedTaskPreset(row.preset) || row.ownerId !== userId) {
             await upsertFailure(tx, candidate, policy.revision, "unsupported", input.now);
             await tx.update(taskContentBackfillScans).set(cursorUpdate(candidate))
               .where(eq(taskContentBackfillScans.humanActorId, input.humanActorId));
