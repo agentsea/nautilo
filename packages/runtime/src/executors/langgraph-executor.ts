@@ -388,6 +388,45 @@ function markAssistantVisibleOutputForTurnByKey(key: string | undefined): void {
   getOrCreateAgentTurnContextByKey(k).assistantVisibleOutput = true;
 }
 
+/** Canonical visible text for external replies; unsupported content never becomes a partial publication. */
+export function externalRoomFinalReplyText(message: unknown): string | null {
+  if (!message || !AIMessage.isInstance(message) || message.tool_calls?.length) return null;
+  let text: string;
+  if (typeof message.content === "string") text = message.content;
+  else if (Array.isArray(message.content)) {
+    const parts: string[] = [];
+    for (const block of message.content) {
+      if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+      if (block.type === "reasoning" || block.type === "thinking" || block.type === "redacted_thinking") continue;
+      if (block.type !== "text" || typeof block["text"] !== "string") return null;
+      parts.push(block["text"]);
+    }
+    text = parts.join("");
+  } else return null;
+  return text.trim() ? text : null;
+}
+
+/** Match the completed checkpoint to this invocation's harvested assistant reply before publication. */
+export function confirmedExternalRoomFinalReply(input: {
+  checkpoint: unknown;
+  reference: { turnId: string; agentId: string };
+  candidate: BaseMessage | null;
+  signal: AbortSignal;
+}): string {
+  const checkpoint = input.checkpoint as { values?: Record<string, unknown> } | undefined;
+  const values = checkpoint?.values;
+  const messages = values?.["messages"];
+  const finalText = externalRoomFinalReplyText(Array.isArray(messages) ? messages.at(-1) : undefined);
+  const candidateText = externalRoomFinalReplyText(input.candidate);
+  if (memoryReviewCompletionState(checkpoint) !== "completed"
+    || values?.["turnId"] !== input.reference.turnId || values?.["agentId"] !== input.reference.agentId
+    || candidateText === null || finalText === null || finalText !== candidateText) {
+    throw new Error("external_room_final_reply_unavailable");
+  }
+  input.signal.throwIfAborted();
+  return finalText;
+}
+
 /**
  * consume the recorded redirect request exactly once on the
  * executor SUCCESS path and notify the runtime-internal completion hook. The
@@ -1413,8 +1452,7 @@ export async function* langgraphExecutor(
       if (messagesToPersist.length > 0) {
         if (externalTurn) {
           for (const candidate of messagesToPersist) {
-            if (AIMessage.isInstance(candidate) && !candidate.tool_calls?.length
-              && typeof candidate.content === "string" && candidate.content.trim()) externalFinalMessage = candidate;
+            if (AIMessage.isInstance(candidate) && externalRoomFinalReplyText(candidate) !== null) externalFinalMessage = candidate;
           }
           continue;
         }
@@ -1486,17 +1524,9 @@ export async function* langgraphExecutor(
       ) ?? false;
       if (hasAnyPendingInterrupt) memoryReviewState = "awaiting";
       if (externalTurn) {
-        const values = postState?.values;
-        const messages = values?.["messages"] as BaseMessage[] | undefined;
-        const final = messages?.at(-1);
-        if (memoryReviewState !== "completed" || values?.["turnId"] !== externalTurn.reference.turnId
-          || values?.["agentId"] !== externalTurn.reference.agentId || !externalFinalMessage
-          || !final || !AIMessage.isInstance(final) || final.tool_calls?.length
-          || typeof final.content !== "string" || final.content !== externalFinalMessage.content) {
-          throw new Error("external_room_final_reply_unavailable");
-        }
-        signal.throwIfAborted();
-        await externalTurn.complete(final.content);
+        const finalText = confirmedExternalRoomFinalReply({ checkpoint: postState,
+          reference: externalTurn.reference, candidate: externalFinalMessage, signal });
+        await externalTurn.complete(finalText);
       }
       const events = collectPendingInterruptEvents(
         postState as { tasks?: Array<Record<string, unknown>>; values?: unknown } | undefined,
