@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { allowOtherReadersSync } from "../../src/private-filesystem-fixtures";
 import {
   existsSync,
@@ -37,6 +37,10 @@ import {
   MAX_PORT_BUNDLE_STRIDE,
   pickFirstNonCollidingPortBundle,
 } from "../../src/sibling-instance-ports";
+
+// On Windows every synchronous private-filesystem call starts a PowerShell ACL
+// helper, and a cold hosted runner can exceed the package's 15 s test budget.
+if (process.platform === "win32") setDefaultTimeout(60_000);
 
 function minimalSchemaInstanceJson(instanceId: string, strideIndex: number) {
   const o = strideIndex * INSTANCE_PORT_BUNDLE_STRIDE;
