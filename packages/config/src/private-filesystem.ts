@@ -14,7 +14,11 @@ $ErrorActionPreference = 'Stop'
 while ($null -ne ($requestLine = [Console]::ReadLine())) {
 try {
   $request = $requestLine | ConvertFrom-Json
-  $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  $sid = $identity.User
+  # An elevated administrator's token assigns new objects to the Administrators
+  # group, so the token's default owner also counts as this process's owner.
+  $ownerSids = @($sid.Value, $identity.Owner.Value)
   $path = [string]$request.path
   $operation = [string]$request.operation
   $directory = [bool]$request.directory
@@ -40,7 +44,7 @@ try {
       $attributes = [System.IO.File]::GetAttributes($path)
       if ($attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'Reparse point' }
       $existing = [System.IO.FileSystemAclExtensions]::GetAccessControl($item)
-      if ($existing.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -ne $sid.Value) { throw 'Foreign owner' }
+      if ($existing.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -notin $ownerSids) { throw 'Foreign owner' }
       [System.IO.FileSystemAclExtensions]::SetAccessControl($item, $security)
     } elseif ($directory) {
       # DirectoryInfo.Create accepts an existing directory. A lock requires
@@ -99,7 +103,7 @@ public static class NautiloPrivateDirectory {
     throw 'Path must be an existing non-reparse file or directory'
   }
   $acl = [System.IO.FileSystemAclExtensions]::GetAccessControl($item)
-  $owned = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -eq $sid.Value
+  $owned = $acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value -in $ownerSids
   $private = $owned
   $controlled = $owned
   $mutationRights = [System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'

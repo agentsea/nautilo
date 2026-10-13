@@ -60,10 +60,10 @@ describe("createStorageZones", () => {
     });
     const zones = createStorageZones(paths);
 
-    expect(zones.home.rootPath).toBe(realpathSync(paths.homeRootDir));
-    expect(zones.scratch.rootPath).toBe(realpathSync(paths.scratchDir));
-    expect(zones.data.rootPath).toBe(realpathSync(paths.dataDir));
-    expect(zones.vault.rootPath).toBe(realpathSync(paths.vaultDir));
+    expect(zones.home.rootPath).toBe(realpathSync.native(paths.homeRootDir));
+    expect(zones.scratch.rootPath).toBe(realpathSync.native(paths.scratchDir));
+    expect(zones.data.rootPath).toBe(realpathSync.native(paths.dataDir));
+    expect(zones.vault.rootPath).toBe(realpathSync.native(paths.vaultDir));
   });
 
   test("zones are isolated: home provider cannot reach scratch files", async () => {

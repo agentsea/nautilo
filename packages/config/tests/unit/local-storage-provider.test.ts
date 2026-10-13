@@ -52,7 +52,7 @@ describe("LocalStorageProvider — construction", () => {
     expect(p.zone).toBe("scratch");
     // macOS /var/folders → /private/var/folders. Compare against the
     // canonical form.
-    expect(p.rootPath).toBe(realpathSync(root));
+    expect(p.rootPath).toBe(realpathSync.native(root));
     expect(p.namespace).toBe("user-42");
   });
 
