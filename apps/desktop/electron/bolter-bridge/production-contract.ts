@@ -78,10 +78,13 @@ export function getBolterProductionDecoders(version: string): BolterQualifiedDec
       || (message["replyToId"] !== null && !alias(message["replyToId"]))
       || typeof message["addressed"] !== "boolean" || !nonempty(message["chatName"]) || !timestamp(message["createdAt"])
       || !nonempty(message["cursor"]) || !text(message["text"]) || !conversation || typeof conversation !== "object" || Array.isArray(conversation)
-      || !alias(sender["id"]) || !nonempty(sender["name"]) || typeof sender["outside"] !== "boolean"
-      || (sender["type"] !== "anima" && sender["type"] !== "user")
+      || (sender["type"] === "system" ? sender["id"] !== "system" : !alias(sender["id"]))
+      || !nonempty(sender["name"]) || typeof sender["outside"] !== "boolean"
+      || (sender["type"] !== "anima" && sender["type"] !== "user" && sender["type"] !== "system")
       || (Object.hasOwn(message, "redelivered") && typeof message["redelivered"] !== "boolean")
       || (Object.hasOwn(message, "truncated") && typeof message["truncated"] !== "boolean")) throw unqualified();
+    // Provider system notices are inert: no invented Actor or notice text crosses the message boundary.
+    if (sender["type"] === "system") return { type: "control", kind: "system_message" };
     // Conversation counters/cursor/provider prose never become routing, identity, or execution authority.
     // This version omits flags on observed complete text and repeated handovers; canonical IDs still deduplicate.
     return { type: "message", messageId: message["messageId"], chatId: message["chat"], threadRootId: message["threadRootId"],

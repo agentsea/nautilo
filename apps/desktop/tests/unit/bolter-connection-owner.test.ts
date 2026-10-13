@@ -1,9 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, chmod, realpath, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { BOLTER_CLI_RELEASE, getBolterProductionDecoders } from "../../electron/bolter-bridge/production-contract";
 import { BolterConnectionOwner } from "../../electron/bolter-bridge/connection-owner";
 import { BolterInboxSpool, createBolterSpoolDirectory } from "../../electron/bolter-bridge/inbox-spool";
 import { handOverBolterBatch, parseBolterHandoverDescriptor } from "../../electron/bolter-bridge/handover";
@@ -300,5 +301,74 @@ test("late durable handover cannot restore readiness after authority withdrawal"
   } finally {
     release(); for (const child of f.children) if (child.value.exitCode === null) child.finish();
     await f.owner.retire(); await rm(path, { recursive: true, force: true });
+  }
+});
+
+
+test("retained system notices drain with later Human messages only after server acceptance", async () => {
+  const path = await directory();
+  const children: ReturnType<typeof fake>[] = [];
+  const agentId = "abcdef01";
+  const providerSelection = { origin: "https://bolter.chat", agentId, cliSelector: agentId };
+  const owner = new BolterConnectionOwner({ scope,
+    runtime: { ...runtime, version: BOLTER_CLI_RELEASE.version }, selection: providerSelection,
+    decoders: getBolterProductionDecoders(BOLTER_CLI_RELEASE.version),
+    qualification: { ...qualification, version: BOLTER_CLI_RELEASE.version },
+    isCurrent: () => true, isBound: () => true, attest: () => Promise.resolve(true), attestHelper: () => Promise.resolve(true),
+    spawn: plan => {
+      const child = fake(); children.push(child);
+      if (plan.args[0] === "me") queueMicrotask(() => {
+        child.value.stdout.write(JSON.stringify({ agentId, client: { harness: "fixture", host: "fixture.example.com" },
+          handle: "fixture-agent", name: "Fixture agent", owner: { chat: "abcdef02", id: "abcdef03", name: "Fixture owner" },
+          workspace: { id: "abcdef04", name: "Fixture workspace" } }));
+        child.finish();
+      });
+      return child.process;
+    } });
+  // Codec spy tests durable queue ownership; production encryption is qualified separately.
+  const spool = new BolterInboxSpool({ directory: await createBolterSpoolDirectory(path), scope,
+    isCurrent: () => owner.state !== "retired", cipher: { isAvailable: () => true,
+      seal: text => Promise.resolve(Buffer.from(text).reverse()), open: bytes => Promise.resolve(Buffer.from(bytes).reverse().toString()) } });
+  const human = { type: "message", addressed: false, chat: "abcdef02", chatName: "Fixture chat", conversation: {},
+    createdAt: "2026-01-01T00:00:00.000Z", cursor: "synthetic-cursor", messageId: "abcdef05", replyToId: null,
+    sender: { id: "abcdef06", name: "Fixture person", outside: true, type: "user" }, text: "Synthetic Human input", threadRootId: null };
+  const system = { ...human, messageId: "abcdef07", sender: { id: "system", name: "Fixture system", outside: false, type: "system" },
+    text: "Untrusted system notice must not become model input" };
+  let timestamp = Date.parse("2026-01-01T00:00:00.000Z");
+  const clock = spyOn(Date, "now").mockImplementation(() => timestamp++);
+  try {
+    const first = await spool.store(JSON.stringify(system));
+    const second = await spool.store(JSON.stringify(human));
+    const third = await spool.store([system, { ...human, messageId: "abcdef08" }].map(item => JSON.stringify(item)).join("\n"));
+    clock.mockRestore();
+    expect((await owner.confirmIdentity()).status).toBe("confirmed");
+    expect(await owner.startReceiver({ handoverExecutable: "/opt/nautilo/handover", directory: path, spool })).toBe(true);
+    let rejectedCalls = 0;
+    expect(await owner.flushInbox(items => {
+      rejectedCalls++; expect(items).toEqual([{ type: "control", kind: "system_message" }]);
+      return Promise.resolve(false);
+    })).toBe("blocked");
+    expect(rejectedCalls).toBe(1);
+    expect(await spool.pending()).toEqual([first.id, second.id, third.id]);
+    const accepted: string[] = [];
+    const messageContents: string[] = [];
+    expect(await owner.flushInbox((items, receipt) => {
+      accepted.push(receipt.id);
+      for (const item of items) {
+        if (item.type === "message") { expect(item.senderType).toBe("user"); messageContents.push(item.content); }
+        else expect(item).toEqual({ type: "control", kind: "system_message" });
+      }
+      return Promise.resolve(true);
+    })).toBe("accepted");
+    expect(accepted).toEqual([first.id, second.id, third.id]);
+    expect(messageContents).toEqual([human.text, human.text]);
+    expect(await spool.pending()).toEqual([]);
+    const unknown = await spool.store(JSON.stringify({ ...system, sender: { ...system.sender, type: "unknown" } }));
+    expect(await owner.flushInbox(() => { throw new Error("Unknown sender must not reach server admission"); })).toBe("blocked");
+    expect(await spool.pending()).toEqual([unknown.id]);
+  } finally {
+    clock.mockRestore();
+    for (const child of children) if (child.value.exitCode === null) child.finish();
+    await owner.retire(); await rm(path, { recursive: true, force: true });
   }
 });

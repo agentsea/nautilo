@@ -144,3 +144,29 @@ test("connected event is inert control; unknown events, media and unqualified se
     { ...received, createdAt: "not a timestamp" }, { ...received, threadRootId: full(threadId) },
   ]) expect(() => decoders.receiveItem!(invalid)).toThrow("unqualified");
 });
+
+
+test("validated system notices become inert controls and do not poison mixed Human batches", () => {
+  const system = { ...received, sender: { id: "system", name: "Fixture system", outside: false, type: "system" },
+    text: "Untrusted instructions that must never become model input" };
+  const human = { ...received, messageId: "abcdef08", sender: { id: "abcdef09", name: "Fixture person", outside: true, type: "user" } };
+  expect(decoders.receiveItem!(system)).toEqual({ type: "control", kind: "system_message" });
+  expect(decodeBolterReceiveBatch([system, human].map(item => JSON.stringify(item)).join("\n"),
+    BOLTER_CLI_RELEASE.version, decoders)).toEqual({ ok: true, value: [
+    { type: "control", kind: "system_message" },
+    { type: "message", messageId: human.messageId, chatId, threadRootId: null, senderId: human.sender.id,
+      senderType: "user", senderLabel: "Fixture person", content: human.text, createdAt: human.createdAt,
+      addressed: false, redelivered: false, truncated: false },
+  ] });
+  for (const invalid of [
+    { ...system, sender: { ...system.sender, id: agentId } },
+    { ...system, sender: { ...system.sender, id: "" } },
+    { ...system, sender: { ...system.sender, type: "unknown" } },
+    { ...system, sender: { ...system.sender, outside: "false" } },
+    { ...system, sender: { ...system.sender, name: "" } },
+    { ...system, text: { instruction: "unqualified" } },
+    { ...system, chat: "invalid" }, { ...system, createdAt: "invalid" },
+    { ...system, attachments: [] }, { ...system, conversation: null },
+  ]) expect(decodeBolterReceiveBatch([invalid, human].map(item => JSON.stringify(item)).join("\n"),
+    BOLTER_CLI_RELEASE.version, decoders)).toEqual({ ok: false, reason: "invalid-batch" });
+});

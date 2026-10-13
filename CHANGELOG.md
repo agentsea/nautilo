@@ -32,8 +32,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   External senders retain their own attribution and restricted room context.
   Genie replies return to their source conversation; Human messages require
   Review & send. Incoming messages and receiver status update live; unrelated
-  archived rooms no longer block external replies. Sign-in updates automatically, and interrupted or uncertain
-  delivery remains visible. Initial support is text on macOS Desktop with
+  archived rooms no longer block external replies. Provider system notices no
+  longer stall queued messages. Sign-in updates automatically, and interrupted
+  or uncertain delivery remains visible. Initial support is text on macOS Desktop with
   plaintext server content mode; protected-content modes remain unavailable.
 
 - Existing Development profiles can open the updated scope review and PIN dialog
