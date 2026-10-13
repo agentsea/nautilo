@@ -622,6 +622,12 @@ export const NautiloStateAnnotation = Annotation.Root({
    * when `undefined`, the full tier-filtered catalog is bound.
    * When set (including `[]`), only listed tool names are bound.
    */
+  /** A canonical external audience ceiling survives every checkpoint continuation. */
+  externalContext: Annotation<boolean>({
+    reducer: (previous, update) => previous || update,
+    default: () => false,
+  }),
+
   toolWhitelist: Annotation<string[] | undefined>({
     reducer: (_, update) => update,
     default: () => undefined,
@@ -961,6 +967,7 @@ export const NautiloStateAnnotation = Annotation.Root({
  */
 export type NautiloState = Omit<
   typeof NautiloStateAnnotation.State,
+  | "externalContext"
   | "foregroundModelControlSnapshot"
   | "liveMiniAppSession"
   | "focusedResources"
@@ -1005,6 +1012,7 @@ export type NautiloState = Omit<
   | "promptTimeReference"
   | "connectedAppProviderIds"
 > & {
+  externalContext?: boolean;
   foregroundFundingSnapshot?: import("../runtime/foreground-chat-funding").ForegroundFundingSnapshot | null;
   /** Legacy checkpoints resolve preferences when next invoked. */
   foregroundModelControlSnapshot?: ForegroundModelControlSnapshot | null;

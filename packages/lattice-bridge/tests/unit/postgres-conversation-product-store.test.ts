@@ -1577,6 +1577,8 @@ describe("Postgres conversation product store", () => {
           roomId: ROOM_ID,
         }],
       },
+      // Ordinary assistant reply has no Bolter outbox provenance.
+      { operation: "select", result: [] },
       { operation: "update", result: [{ messageId: 11 }] },
       { operation: "insert", result: [] },
       { operation: "select", result: [previous] },
@@ -1599,6 +1601,7 @@ describe("Postgres conversation product store", () => {
       "select",
       "select",
       "execute",
+      "select",
       "select",
       "update",
       "insert",
@@ -1698,6 +1701,8 @@ describe("Postgres conversation product store", () => {
         role: "user",
         editRevision: 0,
       }] },
+      // Ordinary Human message has no Bolter receipt provenance.
+      { operation: "select", result: [] },
       { operation: "select", result: [{
         namespace_id: NAMESPACE_ID,
         namespace_access_revision: 1,
@@ -1838,6 +1843,8 @@ describe("Postgres conversation product store", () => {
           },
         ],
       },
+      // Neither ordinary physical Human-turn copy has a Bolter receipt.
+      { operation: "select", result: [] },
       {
         operation: "update",
         result: [{ messageId: 11 }, { messageId: 12 }],
@@ -2082,6 +2089,8 @@ describe("Postgres conversation product store", () => {
           editRevision: 0,
         }],
       },
+      // No external receipt: the separate Agent/Human authority denial must run.
+      { operation: "select", result: [] },
       { operation: "update", result: [{ messageId: 11 }] },
       { operation: "insert", result: [] },
       { operation: "select", result: [humanLifecycle] },

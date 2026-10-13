@@ -28,6 +28,20 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   recalled Records remain available, concurrent Room activity is labelled as
   surrounding history, and admitted replies keep their chronological position.
 
+- Bolter connections use a Desktop-managed receiver and explicitly linked rooms.
+  External senders retain their own attribution and restricted room context.
+  Genie replies return to their source conversation; Human messages require
+  Review & send. Incoming messages and receiver status update live; unrelated
+  archived rooms no longer block external replies. Provider system notices no
+  longer stall queued messages. Replies support provider text blocks while
+  excluding reasoning content. Ordinary Genie text replies need no additional
+  local approval; tools and private resources remain unavailable. Sign-in updates automatically, and interrupted
+  or uncertain delivery remains visible. Initial support is text on macOS Desktop with
+  plaintext server content mode; protected-content modes remain unavailable.
+  Backups retain bridge history, but development restore rejects populated
+  Bolter records before changing the target until safe authority reconciliation
+  is supported.
+
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed
   revision and rejects stale or changed profiles. The Agent access popup links

@@ -1,3 +1,6 @@
+import { reviewedExternalMessageAttributionDtoReplacements } from "../../baseline/reviewed-external-message-attribution-dto";
+import { reviewedImageAssistanceDtoReplacements } from "../../baseline/reviewed-image-assistance-dto";
+
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 
@@ -36,9 +39,11 @@ describe("M321 inventory review", () => {
       "http:request_response:GET /api/rooms/:id/messages/:messageId/around",
     ]);
     const reviewedReplacements = [...september12Replacements, ...protectedHistoryReplacements];
-    const currentDeclarations = REVIEWED_M321_DTO_DECLARATIONS.map((entry) =>
-      reviewedReplacements.find((replacement) => replacement.locator === entry.locator) ?? entry
-    );
+    const currentDeclarations = [...reviewedExternalMessageAttributionDtoReplacements(
+      reviewedImageAssistanceDtoReplacements(REVIEWED_M321_DTO_DECLARATIONS.map((entry) =>
+        reviewedReplacements.find((replacement) => replacement.locator === entry.locator) ?? entry
+      )),
+    )];
     expect(observations).toHaveLength(SUPERSEDED_M321_DTO_LOCATORS.size);
     expect(auditDtoDeclarations({
       observations,

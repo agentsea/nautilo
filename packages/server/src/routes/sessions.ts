@@ -227,13 +227,17 @@ type AroundDisplayMessage = {
   authorHarnessId?: string;
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
   imageAssistance?: import("@nautilo/types").ImageAssistanceSummary | undefined;
+  externalOrigin?: import("@nautilo/types").ExternalMessageOrigin | undefined;
+  externalAttributionInvalid?: true | undefined;
 };
 
-function serializeRoomMessageForAround(message: AroundDisplayMessage) {
+export function serializeRoomMessageForAround(message: AroundDisplayMessage) {
   return {
     id: message.id,
     ...(message.logicalMessageKey ? { logicalMessageKey: message.logicalMessageKey } : {}),
     role: message.role,
+    ...(message.role === "user" && message.externalOrigin ? { externalOrigin: message.externalOrigin } : {}),
+    ...(message.role === "user" && message.externalAttributionInvalid ? { externalAttributionInvalid: true as const } : {}),
     content: message.content,
     toolCalls: message.toolCalls,
     createdAt: isoFromMessageTimestamp(message.createdAt ?? null),
@@ -253,7 +257,7 @@ function serializeRoomMessageForAround(message: AroundDisplayMessage) {
     ...(typeof message.replyCount === "number" ? { replyCount: message.replyCount } : {}),
     ...(message.lastReplyAt !== undefined ? { lastReplyAt: isoFromMessageTimestamp(message.lastReplyAt) } : {}),
     ...(typeof message.summaryRevision === "number" ? { summaryRevision: message.summaryRevision } : {}),
-    ...(typeof message.sourceUserId === "string" && message.sourceUserId.length > 0
+    ...(typeof message.sourceUserId === "string" && message.sourceUserId.length > 0 && !message.externalOrigin && !message.externalAttributionInvalid
       ? { sourceUserId: message.sourceUserId }
       : {}),
     ...(typeof message.authorAgentId === "string" && message.authorAgentId.length > 0
@@ -375,6 +379,8 @@ export function sessionRoutes(
         id: m.id,
         ...(m.logicalMessageKey ? { logicalMessageKey: m.logicalMessageKey } : {}),
         role: m.role,
+        ...(m.role === "user" && m.externalOrigin ? { externalOrigin: m.externalOrigin } : {}),
+        ...(m.role === "user" && m.externalAttributionInvalid ? { externalAttributionInvalid: true as const } : {}),
         content: m.content,
         toolCalls: m.toolCalls,
         createdAt: m.createdAt,
@@ -393,7 +399,7 @@ export function sessionRoutes(
         ...(m.replyToMessageId != null && m.replyToMessageId !== undefined
           ? { replyToMessageId: m.replyToMessageId }
           : {}),
-        ...(typeof m.sourceUserId === "string" && m.sourceUserId.length > 0
+        ...(typeof m.sourceUserId === "string" && m.sourceUserId.length > 0 && !m.externalOrigin && !m.externalAttributionInvalid
           ? { sourceUserId: m.sourceUserId }
           : {}),
         ...(typeof m.authorAgentId === "string" && m.authorAgentId.length > 0
@@ -564,6 +570,8 @@ export function sessionRoutes(
         id: m.id,
         ...(m.logicalMessageKey ? { logicalMessageKey: m.logicalMessageKey } : {}),
         role: m.role,
+        ...(m.role === "user" && m.externalOrigin ? { externalOrigin: m.externalOrigin } : {}),
+        ...(m.role === "user" && m.externalAttributionInvalid ? { externalAttributionInvalid: true as const } : {}),
         content: m.content,
         toolCalls: m.toolCalls,
         createdAt: m.createdAt,
@@ -589,7 +597,7 @@ export function sessionRoutes(
         ...(typeof m.summaryRevision === "number"
           ? { summaryRevision: m.summaryRevision }
           : {}),
-        ...(typeof m.sourceUserId === "string" && m.sourceUserId.length > 0
+        ...(typeof m.sourceUserId === "string" && m.sourceUserId.length > 0 && !m.externalOrigin && !m.externalAttributionInvalid
           ? { sourceUserId: m.sourceUserId }
           : {}),
         ...(typeof m.authorAgentId === "string" && m.authorAgentId.length > 0
@@ -737,9 +745,11 @@ export function sessionRoutes(
         messageId: String(hit.messageId),
         createdAt: hit.createdAt.toISOString(),
         role: hit.role,
+        ...(hit.role === "user" && hit.externalOrigin ? { externalOrigin: hit.externalOrigin } : {}),
+        ...(hit.role === "user" && hit.externalAttributionInvalid ? { externalAttributionInvalid: true as const } : {}),
         snippet: hit.snippet,
         ...(hit.toolName ? { toolName: hit.toolName } : {}),
-        ...(hit.sourceUserId ? { sourceUserId: hit.sourceUserId } : {}),
+        ...(hit.sourceUserId && !hit.externalOrigin && !hit.externalAttributionInvalid ? { sourceUserId: hit.sourceUserId } : {}),
         ...(hit.authorAgentId ? { authorAgentId: hit.authorAgentId } : {}),
         ...(hit.authorActorId ? { authorActorId: hit.authorActorId } : {}),
         ...(hit.authorDisplayName ? { authorDisplayName: hit.authorDisplayName } : {}),
@@ -839,9 +849,11 @@ export function sessionRoutes(
         messageId: String(hit.messageId),
         createdAt: hit.createdAt.toISOString(),
         role: hit.role,
+        ...(hit.role === "user" && hit.externalOrigin ? { externalOrigin: hit.externalOrigin } : {}),
+        ...(hit.role === "user" && hit.externalAttributionInvalid ? { externalAttributionInvalid: true as const } : {}),
         snippet: hit.snippet,
         ...(hit.toolName ? { toolName: hit.toolName } : {}),
-        ...(hit.sourceUserId ? { sourceUserId: hit.sourceUserId } : {}),
+        ...(hit.sourceUserId && !hit.externalOrigin && !hit.externalAttributionInvalid ? { sourceUserId: hit.sourceUserId } : {}),
         ...(hit.authorAgentId ? { authorAgentId: hit.authorAgentId } : {}),
         ...(hit.authorActorId ? { authorActorId: hit.authorActorId } : {}),
         ...(hit.authorDisplayName ? { authorDisplayName: hit.authorDisplayName } : {}),

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { WAVE_0_FROZEN_BASELINE_DEBT } from "../../baseline/existing-debt";
 
 import { CRYPTO_STORAGE_BYTE_LIMITS } from "@nautilo/db";
 import {
@@ -10,8 +11,51 @@ import {
 import { describe, expect, it } from "bun:test";
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
+// These exact slice reads remain on the canonical plaintext Message boundary.
+// Neither whole metadata nor authored reply text becomes bounded metadata.
+const EXTERNAL_MESSAGE_READS = [
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "metadata",
+    signature: "role: sessionMessages.role, humanTurnId: sessionMessages.humanTurnId, metadata: sessionMessages.metadata,",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "content",
+    signature: "const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "toolCalls",
+    signature: "isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "metadata",
+    signature: "sql`${sessionMessages.metadata}->'externalFinalReply' = ${JSON.stringify({",
+  },
+  {
+    path: "packages/trust/src/notification-classification.ts", field: "metadata",
+    signature: "return sql`NOT (COALESCE(${sessionMessages.metadata}, '{}'::jsonb)",
+  },
+] as const;
+
+function isExternalMessageRead(reference: { path: string; field: string; signature: string }): boolean {
+  return EXTERNAL_MESSAGE_READS.some((reviewed) => reviewed.path === reference.path
+    && reviewed.field === reference.field && reviewed.signature === reference.signature);
+}
 
 describe("Wave 9 confidential message direct-access closure", () => {
+  it("pins exact external Message reads without expanding the original confidential budget", async () => {
+    const references = await findConfidentialMessageColumnReferences(repositoryRoot);
+    expect(references.filter(isExternalMessageRead).map(({ path, field, signature }) => ({ path, field, signature })))
+      .toEqual([...EXTERNAL_MESSAGE_READS]);
+    expect(references.filter((reference) => reference.path === "packages/db/src/queries/bolter-bridge.ts"))
+      .toHaveLength(4);
+    for (const column of ["content", "metadata", "tool_calls"]) {
+      expect(WAVE_0_FROZEN_BASELINE_DEBT.some((debt) =>
+        debt.id === `debt.db.public.session_messages.${column}`
+        && debt.locator === `public.session_messages.${column}`
+        && debt.releaseImpact === "blocks_whole_product_claim",
+      )).toBe(true);
+    }
+  });
   it("keeps the browser namespace-envelope limit equal to durable storage", () => {
     expect(PROTECTED_MESSAGE_MAX_NAMESPACE_ENVELOPE_BYTES_V2).toBe(
       CRYPTO_STORAGE_BYTE_LIMITS.objectAccessEnvelope,
@@ -24,6 +68,7 @@ describe("Wave 9 confidential message direct-access closure", () => {
     );
     const counts = new Map<string, number>();
     for (const reference of references) {
+      if (isExternalMessageRead(reference)) continue;
       const key = `${reference.path}#${reference.field}`;
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }

@@ -1,6 +1,7 @@
 import {
   actors,
   and,
+  bolterInboxReceipts,
   eq,
   roomMembers,
   rooms,
@@ -14,6 +15,7 @@ import {
   type DirectedRecipientReason,
   type SubthreadParticipationReason,
 } from "@nautilo/db";
+import { hasExternalMessageAssertion } from "@nautilo/types";
 
 export const MAX_STRUCTURED_HUMAN_MENTIONS = 32;
 
@@ -81,6 +83,20 @@ function uniqueIds(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
 
+/** Sponsorship is not Human authorship, including after import revocation. */
+function withoutExternalReceipt(): ReturnType<typeof sql> {
+  return sql`${sessionMessages.externalAuthorship} = false AND NOT EXISTS (
+    SELECT 1 FROM ${bolterInboxReceipts}
+    WHERE ${bolterInboxReceipts.sessionMessageId} = ${sessionMessages.id}
+      AND ${bolterInboxReceipts.userId} = ${sessions.ownerId}
+  )`;
+}
+
+function withoutExternalAssertion(): ReturnType<typeof sql> {
+  return sql`NOT (COALESCE(${sessionMessages.metadata}, '{}'::jsonb)
+    ?| ARRAY['externalOrigin', 'externalReceiptId'])`;
+}
+
 function protectedOrLegacyEligibleHumanTarget(): ReturnType<typeof sql> {
   return sql`(
     exists (
@@ -109,7 +125,7 @@ function protectedOrLegacyEligibleHumanTarget(): ReturnType<typeof sql> {
 }
 
 /**
- * M233 — classify one newly inserted transcript row inside its owning append
+ * Classify one newly inserted transcript row inside its owning append
  * transaction. The caller must invoke this only for an actual RETURNING row.
  */
 export async function persistNotificationClassification(
@@ -131,6 +147,7 @@ export async function persistNotificationClassification(
     replyToMessageId: number | null;
     transcriptOrigin: "main" | "subagent";
     metadata: Record<string, unknown> | null;
+    externalAuthorship: boolean;
     roomId: string | null;
     sessionOwnerId: string;
     roomKind: string | null;
@@ -143,6 +160,7 @@ export async function persistNotificationClassification(
         replyToMessageId: sessionMessages.replyToMessageId,
         transcriptOrigin: sessionMessages.transcriptOrigin,
         metadata: sessionMessages.metadata,
+        externalAuthorship: sessionMessages.externalAuthorship,
         roomId: sessions.roomId,
         sessionOwnerId: sessions.ownerId,
         roomKind: rooms.kind,
@@ -170,6 +188,7 @@ export async function persistNotificationClassification(
   } else {
     const [protectedMessage] = await tx
       .select({
+        externalAuthorship: sessionMessages.externalAuthorship,
         roomId: sessions.roomId,
         sessionOwnerId: sessions.ownerId,
         roomKind: rooms.kind,
@@ -234,7 +253,8 @@ export async function persistNotificationClassification(
   const directedFacts: DirectedFact[] = [];
   const participationFacts: ParticipationFact[] = [];
   const currentHumanAuthorId =
-    role === "user" ? message.sessionOwnerId : null;
+    role === "user" && message.externalAuthorship !== true && !hasExternalMessageAssertion(message.metadata)
+      ? message.sessionOwnerId : null;
   const addDirected = (
     recipientId: string,
     reason: DirectedRecipientReason,
@@ -273,8 +293,10 @@ export async function persistNotificationClassification(
           eq(sessionMessages.role, "user"),
           eq(sessionMessages.transcriptOrigin, "main"),
           eq(sessions.roomId, message.roomId),
+          withoutExternalReceipt(),
           ...(input.protectedProjection === undefined
             ? [
+              withoutExternalAssertion(),
               sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'`,
             ]
             : [protectedOrLegacyEligibleHumanTarget()]),
@@ -322,8 +344,10 @@ export async function persistNotificationClassification(
           ),
           eq(sessions.ownerId, input.context.causalHumanUserId),
           eq(sessions.roomId, message.roomId),
+          withoutExternalReceipt(),
           ...(input.protectedProjection === undefined
             ? [
+              withoutExternalAssertion(),
               sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'`,
             ]
             : [protectedOrLegacyEligibleHumanTarget()]),

@@ -1,3 +1,6 @@
+import { BolterRelayTransport, type BolterContextListener, type BolterObservationListener, type BolterBatchListener } from "./bolter-relay";
+import { BOLTER_RELAY_PROTOCOL_VERSION, isRelayBolterCapability, sameRelayBolterScope, type BolterAuthorizedContent, type RelayBolterDesktopMessage } from "@nautilo/relay";
+import type { BolterNativeCommand, BolterNativeResult } from "@nautilo/types";
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
 import { resolveServerPosture } from "@nautilo/config";
 import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "@nautilo/relay";
@@ -488,6 +491,11 @@ function sanitizeAdvisorySnapshots(
   // execution is a separate current-socket capability. Invalid
   // optional registration declarations are denial-only; an explicit update
   // below rejects them so it cannot silently retain an older execution host.
+  if (capabilities.bolter !== undefined && (!isRelayBolterCapability(capabilities.bolter)
+    || capabilities.profile !== "desktop-agent" || protocolVersion < BOLTER_RELAY_PROTOCOL_VERSION)) {
+    const { bolter: _droppedBolter, ...rest } = working;
+    working = rest;
+  }
   if (capabilities.claudeExecution !== undefined) {
     const parsed = parseRelayClaudeExecutionCapability(capabilities.claudeExecution);
     if (!parsed.ok || capabilities.profile !== "desktop-agent" || protocolVersion < CLAUDE_EXECUTION_PROTOCOL_VERSION) {
@@ -780,6 +788,12 @@ function parseKnownCapabilityFields(
     const parsed = parseRelayClaudeCapability(raw["claude"]);
     if (!parsed.ok) return { ok: false, error: "capabilities.claude is invalid" };
     fields["claude"] = parsed.value;
+  }
+  if (raw["bolter"] !== undefined) {
+    if (raw["profile"] !== "desktop-agent" || protocolVersion < BOLTER_RELAY_PROTOCOL_VERSION || !isRelayBolterCapability(raw["bolter"])) {
+      return { ok: false, error: "capabilities.bolter requires a valid desktop relay v30 adapter" };
+    }
+    fields["bolter"] = { ...raw["bolter"] };
   }
   if (raw["claudeExecution"] !== undefined) {
     if (raw["profile"] !== "desktop-agent") {
@@ -2090,6 +2104,29 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
   private codexContextInvalidationListeners = new Set<
     (relayId: string, errorCode: string) => void
   >();
+  private readonly bolterTransport = new BolterRelayTransport(
+    (relayId, userId) => {
+      const session = this.getAuthenticatedDesktopSession(relayId, userId);
+      const entry = this.relays.get(relayId);
+      return session && entry && session.selectedProtocolVersion >= BOLTER_RELAY_PROTOCOL_VERSION
+        && isRelayBolterCapability(entry.capabilities.bolter) ? session : null;
+    },
+    (session, message) => {
+      const current = this.getAuthenticatedDesktopSession(session.relayId, session.userId);
+      const entry = this.relays.get(session.relayId);
+      if (!current || !entry || !sameRelayBolterScope(current, session) || !isRelayBolterCapability(entry.capabilities.bolter)) return false;
+      entry.send(message); return true;
+    },
+  );
+  getBolterSession(relayId: string, userId: string) { return this.bolterTransport.session(relayId, userId); }
+  listBolterSessions(userId: string) { return this.bolterTransport.sessions(userId); }
+  onBolterContext(listener: BolterContextListener) { return this.bolterTransport.onContext(listener); }
+  onBolterObservation(listener: BolterObservationListener) { return this.bolterTransport.onObservation(listener); }
+  onBolterBatch(listener: BolterBatchListener) { return this.bolterTransport.onBatch(listener); }
+  publishBolterContext(relayId: string, userId: string) { return this.bolterTransport.publish(relayId, userId); }
+  requestBolterCommand(input: { relayId: string; userId: string; command: BolterNativeCommand; signal: AbortSignal; authorize?: (() => Promise<BolterAuthorizedContent | null>) | undefined }): Promise<BolterNativeResult> { return this.bolterTransport.request(input); }
+  acceptBolterMessage(input: { relayId: string; userId: string; message: RelayBolterDesktopMessage }) { return this.bolterTransport.accept(input); }
+
   private claudeConnectionContextListeners = new Set<
     (relayId: string, userId: string, context: RelayClaudeConnectionContextSnapshot | null) => void
   >();
@@ -2309,6 +2346,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     this.codexEventSequences.clear();
     this.codexCommandOutcomes.clear();
     this.codexTurnOutcomes.clear();
+    this.bolterTransport.close();
     this.publishedClaudeConnectionContexts.clear();
     this.relays.clear();
   }
@@ -2349,6 +2387,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     // invalidation in production, to preserve transient reconnect semantics).
     const existing = this.relays.get(relayId);
     if (existing !== undefined) {
+      this.bolterTransport.invalidate(relayId);
       this.invalidatePublishedClaudeConnectionContext(relayId, existing.userId);
       this.clearCodexState(relayId, "CODEX_CONTEXT_STALE");
       this.clearClaudeConnectionState(relayId, "CLAUDE_CONNECTION_CONTEXT_STALE");
@@ -2552,6 +2591,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     // This is the first state mutation after every rejectable validation. A
     // successfully applied revision replaces the Claude socket scope, while a
     // rejected update must leave the published, still-current context intact.
+    this.bolterTransport.invalidate(entry.relayId);
     this.invalidatePublishedClaudeConnectionContext(entry.relayId, entry.userId);
     const previousRemotePresence = snapshotRemotePresence(entry);
     // Atomically replace capabilities + both advisory snapshots; a malformed
@@ -2959,6 +2999,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         try { entry.send({ type: "relay:cancel", correlationId }); } catch { /* disconnected */ }
       }
     }
+    this.bolterTransport.invalidate(relayId);
     if (entry) this.invalidatePublishedClaudeConnectionContext(relayId, entry.userId);
     this.relays.delete(relayId);
     this.rejectPendingMcpForRelay(relayId, "relay_disconnected");

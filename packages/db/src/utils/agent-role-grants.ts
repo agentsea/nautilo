@@ -5,6 +5,7 @@ const TARGET_ROLE = "nautilo_agent";
 const TARGET_DB = "nautilo";
 
 export const SENSITIVE_TABLES = [
+  "external_room_execution_claims",
   "feed_events",
   "feed_recipients",
   // Server-wide provider admission is owned by the product control plane.
@@ -110,7 +111,7 @@ export const AGENT_APPEND_NOTIFICATION_TABLES = [
   "subthread_notification_participants",
 ] as const;
 
-// D219 — `server_role` dropped (capability-derived authority is now the
+// `server_role` dropped (capability-derived authority is now the
 // only RBAC axis); the agent-facing view no longer exposes it.
 export const USERS_PUBLIC_VIEW_COLUMNS = [
   "id",
@@ -195,7 +196,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_namespace WHERE nspname = 'langchain'
   ) THEN
-    RAISE NOTICE 'D129 P3: skipping langchain schema grants (schema does not exist — PostgresSaver.setup() has not run yet)';
+    RAISE NOTICE 'skipping langchain schema grants (schema does not exist — PostgresSaver.setup() has not run yet)';
     RETURN;
   END IF;
 
@@ -210,9 +211,9 @@ BEGIN
       EXECUTE format(
         'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE langchain.%I TO ${TARGET_ROLE}', tbl
       );
-      RAISE NOTICE 'D129 P3: granted ${TARGET_ROLE} DML on langchain.%', tbl;
+      RAISE NOTICE 'granted ${TARGET_ROLE} DML on langchain.%', tbl;
     ELSE
-      RAISE NOTICE 'D129 P3: skipping langchain.% (table does not exist — PostgresSaver.setup() has not created it yet)', tbl;
+      RAISE NOTICE 'skipping langchain.% (table does not exist — PostgresSaver.setup() has not created it yet)', tbl;
     END IF;
   END LOOP;
 
@@ -341,6 +342,60 @@ END $$;
 `.trim();
 }
 
+/** Reconcile bounded bridge privileges after the legacy broad grant pass. */
+export function buildBolterBridgeRoleGrantsSql(): string {
+  return `
+-- Restore the Bolter owner-RLS contract after broad legacy/default grants.
+DO $bolter_privileges$
+DECLARE tbl text; target_role text;
+BEGIN
+  FOREACH tbl IN ARRAY ARRAY['bolter_connections','bolter_room_bindings','bolter_inbox_receipts','bolter_outbox'] LOOP
+    IF to_regclass(format('public.%I', tbl)) IS NOT NULL THEN
+      EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.%I FROM PUBLIC', tbl);
+      FOREACH target_role IN ARRAY ARRAY['nautilo','nautilo_agent','nautilo_crypto'] LOOP
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = target_role) THEN
+          EXECUTE format('REVOKE ALL PRIVILEGES ON TABLE public.%I FROM %I', tbl, target_role);
+        END IF;
+      END LOOP;
+      EXECUTE format('GRANT SELECT, INSERT, UPDATE ON TABLE public.%I TO nautilo_agent', tbl);
+    END IF;
+  END LOOP;
+  -- Product factory privileges become available only after both fail-closed
+  -- owner-GUC mutation guards have been installed by the corrective migration.
+  IF to_regprocedure('public.guard_bolter_connection()') IS NOT NULL
+    AND to_regprocedure('public.guard_bolter_binding()') IS NOT NULL
+    AND position('Bolter owner context unavailable' in pg_get_functiondef(to_regprocedure('public.guard_bolter_connection()'))) > 0
+    AND position('Bolter owner context unavailable' in pg_get_functiondef(to_regprocedure('public.guard_bolter_binding()'))) > 0 THEN
+    GRANT SELECT, UPDATE ON TABLE public.bolter_connections TO nautilo;
+    GRANT SELECT, INSERT ON TABLE public.bolter_room_bindings TO nautilo;
+    IF obj_description(to_regclass('public.bolter_connections'), 'pg_class')
+      = 'Bolter owner deletion and FK maintenance' THEN
+      GRANT SELECT(id,user_id,binding_id,session_message_id,job_id), UPDATE(id)
+        ON TABLE public.bolter_inbox_receipts TO nautilo;
+      GRANT SELECT(user_id,binding_id,source_inbox_id,session_message_id), UPDATE(id)
+        ON TABLE public.bolter_outbox TO nautilo;
+      GRANT UPDATE(id) ON TABLE public.bolter_room_bindings TO nautilo;
+      GRANT DELETE ON TABLE public.bolter_outbox, public.bolter_inbox_receipts,
+        public.bolter_room_bindings, public.bolter_connections TO nautilo;
+    END IF;
+  END IF;
+  IF to_regclass('public.bolter_explicit_shares') IS NOT NULL THEN
+    REVOKE ALL ON TABLE public.bolter_explicit_shares FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;
+    GRANT SELECT, INSERT ON TABLE public.bolter_explicit_shares TO nautilo_agent;
+    GRANT SELECT(id,user_id,binding_id,session_message_id), UPDATE(id), DELETE ON TABLE public.bolter_explicit_shares TO nautilo;
+    GRANT SELECT(explicit_share_id) ON TABLE public.bolter_outbox TO nautilo;
+  END IF;
+END $bolter_privileges$;
+DO $external_execution_privileges$
+BEGIN
+  IF to_regclass('public.external_room_execution_claims') IS NOT NULL THEN
+    REVOKE ALL PRIVILEGES ON TABLE public.external_room_execution_claims FROM PUBLIC, nautilo_agent, nautilo_crypto, nautilo;
+    GRANT SELECT, INSERT, DELETE ON TABLE public.external_room_execution_claims TO nautilo;
+  END IF;
+END $external_execution_privileges$;
+`.trim();
+}
+
 /**
  * Idempotent SQL block that mirrors `infra/postgres-init.sh`'s
  * agent-role provisioning (block 2 + 3). Does NOT create the role
@@ -383,9 +438,9 @@ BEGIN
       EXECUTE format(
         'REVOKE ALL ON TABLE public.%I FROM ${TARGET_ROLE}', tbl
       );
-      RAISE NOTICE 'D129 P3: revoked ${TARGET_ROLE} grants on %', tbl;
+      RAISE NOTICE 'revoked ${TARGET_ROLE} grants on %', tbl;
     ELSE
-      RAISE NOTICE 'D129 P3: skipping % (table does not exist)', tbl;
+      RAISE NOTICE 'skipping % (table does not exist)', tbl;
     END IF;
   END LOOP;
 END $$;
@@ -416,9 +471,9 @@ BEGIN
     EXECUTE 'CREATE OR REPLACE VIEW public.users_public AS SELECT ${userPublicColumns} FROM public.users';
     EXECUTE 'GRANT SELECT ON public.users_public TO ${TARGET_ROLE}';
     EXECUTE 'REVOKE ALL ON TABLE public.users FROM ${TARGET_ROLE}';
-    RAISE NOTICE 'D129 P3: created users_public view + grants';
+    RAISE NOTICE 'created users_public view + grants';
   ELSE
-    RAISE NOTICE 'D129 P3: skipping users_public view (users table does not exist)';
+    RAISE NOTICE 'skipping users_public view (users table does not exist)';
   END IF;
 END $$;
 
@@ -442,6 +497,8 @@ END $$;
 -- langchain checkpoint grants — shared with the boot-time setup path.
 -- See buildLangchainCheckpointRoleGrantsSql() for the narrow contract.
 ${buildLangchainCheckpointRoleGrantsSql()}
+
+${buildBolterBridgeRoleGrantsSql()}
 `;
 }
 

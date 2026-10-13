@@ -85,12 +85,26 @@ export type DeviceLocalCoverageEntry = CoverageCommon & {
   readonly cleanupContract: string;
 };
 
+/** Reviewed transient disclosure; this is never an encryption classification. */
+export type AuthorizedPlaintextCoverageEntry = CoverageCommon & {
+  readonly classification: "authorized_plaintext";
+  readonly surface: "processor" | "wire";
+  readonly mode: "plaintext_only";
+  readonly transientOnly: true;
+  readonly modeGate: string;
+  readonly recipientAuthority: string;
+  readonly cleanupContract: string;
+  readonly noRetentionTestEvidence: readonly string[];
+  readonly releaseImpact: "blocks_whole_product_claim";
+};
+
 export type EncryptionCoverageEntry =
   | ProtectedCoverageEntry
   | BoundedMetadataCoverageEntry
   | PublicCoverageEntry
   | OperatorSecretCoverageEntry
-  | DeviceLocalCoverageEntry;
+  | DeviceLocalCoverageEntry
+  | AuthorizedPlaintextCoverageEntry;
 
 export type EncryptionClassification = EncryptionCoverageEntry["classification"];
 
@@ -141,6 +155,11 @@ type CandidateObject = Record<string, unknown> & {
   excludedFromAgentGrants?: unknown;
   deviceStorage?: unknown;
   cleanupContract?: unknown;
+  mode?: unknown;
+  transientOnly?: unknown;
+  modeGate?: unknown;
+  recipientAuthority?: unknown;
+  noRetentionTestEvidence?: unknown;
   reason?: unknown;
   remediationState?: unknown;
   releaseImpact?: unknown;
@@ -289,6 +308,36 @@ export function validateCoverageEntry(input: unknown): ValidationResult {
       }
       if (!isDescriptive(input.cleanupContract)) {
         errors.push("cleanupContract must be descriptive");
+      }
+      break;
+    case "authorized_plaintext":
+      if (input.surface !== "processor" && input.surface !== "wire") {
+        errors.push("authorized plaintext is limited to transient processor or wire boundaries");
+      }
+      {
+        const exactSource = typeof input.locator === "string" && !input.locator.includes("*")
+          && /^[^#]+#[^#]+$/u.test(input.locator) && isRepositoryRelativePath(input.locator.split("#")[0]!);
+        const exactHttp = input.surface === "wire" && typeof input.locator === "string"
+          && /^http:request_response:(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS) \/(?:[A-Za-z0-9_-]+|:[A-Za-z][A-Za-z0-9_]*)(?:\/(?:[A-Za-z0-9_-]+|:[A-Za-z][A-Za-z0-9_]*))*$/u.test(input.locator);
+        if (!exactSource && !exactHttp) errors.push("authorized plaintext requires an exact repository source or HTTP route locator");
+        if (exactHttp && (!isStringArray(input.writers) || input.writers.length === 0
+          || !input.writers.every(path => !path.includes("*") && isRepositoryRelativePath(path) && /\.[cm]?[jt]sx?$/u.test(path)))) {
+          errors.push("authorized plaintext HTTP routes require exact repository writer files");
+        }
+      }
+      if (input.mode !== "plaintext_only") errors.push("authorized plaintext requires plaintext_only eligibility");
+      if (input.transientOnly !== true) errors.push("authorized plaintext cannot cover durable body retention");
+      if (!isDescriptive(input.modeGate)) errors.push("modeGate must describe the plaintext-only admission fence");
+      if (!isDescriptive(input.recipientAuthority)) errors.push("recipientAuthority must describe the exact authorized recipient");
+      if (!isDescriptive(input.cleanupContract)) errors.push("cleanupContract must describe transient body disposal");
+      if (!isTestPathArray(input.noRetentionTestEvidence)) {
+        errors.push("noRetentionTestEvidence must contain at least one executable test path");
+      }
+      if (input.releaseImpact !== "blocks_whole_product_claim") {
+        errors.push("authorized plaintext must block the whole-product encryption claim");
+      }
+      if (input.migrationState !== "not_applicable") {
+        errors.push("authorized plaintext is not an encryption migration state");
       }
       break;
     default:

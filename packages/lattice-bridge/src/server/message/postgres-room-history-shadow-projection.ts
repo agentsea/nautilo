@@ -213,20 +213,36 @@ type RoomHistoryProjectionSource = Readonly<{
   logicalMessageKey: string;
   sourceUserId?: string;
   authorAgentId?: string;
+  externalAttributionInvalid?: true;
 }>;
 
 function selectedProjectionSource(
   row: ConversationProductDatabaseRow,
   coordinate: RoomHistorySelectedCoordinate,
 ): RoomHistoryProjectionSource {
+  const external = coordinate.role === "user" && row["external_authorship"] === true;
   return {
     role: coordinate.role,
     logicalMessageKey: coordinate.logicalMessageKey,
-    ...(coordinate.role === "user" && typeof row["source_user_id"] === "string"
+    ...(external ? { externalAttributionInvalid: true as const } : {}),
+    ...(coordinate.role === "user" && !external && typeof row["source_user_id"] === "string"
       ? { sourceUserId: row["source_user_id"] } : {}),
     ...((coordinate.role === "assistant" || coordinate.role === "tool") && typeof row["author_agent_id"] === "string"
       ? { authorAgentId: row["author_agent_id"] } : {}),
   };
+}
+
+async function projectRoomHistoryProtectedMessageDto(
+  row: ConversationProductDatabaseRow,
+  authority: Parameters<typeof projectConversationProtectedMessageDtoV2>[1],
+  crypto: Parameters<typeof projectConversationProtectedMessageDtoV2>[2],
+): Promise<ConversationProtectedMessageDtoV2> {
+  const dto = await projectConversationProtectedMessageDtoV2(row, authority, crypto);
+  if (dto.projection.role !== "user" || row["external_authorship"] !== true) return dto;
+  // Custody and signed payload verification retain their original coordinates.
+  // A restrictive authorship marker cannot identify a local Human as author.
+  const { sourceUserId: _sourceUserId, authorAgentId: _authorAgentId, ...projection } = dto.projection;
+  return Object.freeze({ ...dto, projection: Object.freeze(projection) });
 }
 
 export type RoomHistoryExistingRepresentationProjectionRecord = Readonly<{
@@ -561,6 +577,7 @@ function selectRoomRows(
       room_id: sql`${rooms.id}::text`.as("room_id"),
       namespace_id: sql`${rooms.namespaceId}::text`.as("namespace_id"),
       role: sql`${sessionMessages.role}`.as("role"),
+      external_authorship: sessionMessages.externalAuthorship,
       ...(representationMode === "protected-only" ? {} : {
         content: sessionMessages.content,
         tool_calls: sessionMessages.toolCalls,
@@ -1145,7 +1162,7 @@ async function projectExistingRepresentation(
     || row["crypto_object_id"] !== expectedId || row["lifecycle_object_id"] !== expectedId) {
     throw new TypeError("Existing Message repair receipt disagrees");
   }
-  const dto = await projectConversationProtectedMessageDtoV2(
+  const dto = await projectRoomHistoryProtectedMessageDto(
     row, { sessionId: coordinate.sessionId, roomId, namespaceId }, options.crypto,
   );
   if (dto.projection.logicalMessageKey !== coordinate.logicalMessageKey
@@ -1817,7 +1834,7 @@ export function createPostgresRoomHistoryShadowProjection(
     try {
       for (const { coordinate, row } of eligible) {
         if (isHumanEditedRepresentation(row)) {
-          const dto = await projectConversationProtectedMessageDtoV2(
+          const dto = await projectRoomHistoryProtectedMessageDto(
             row, { sessionId: coordinate.sessionId, roomId: input.roomId, namespaceId }, options.crypto,
           );
           const payload = dto.protectedPayload;
@@ -1936,7 +1953,7 @@ export function createPostgresRoomHistoryShadowProjection(
             ?? callIds.get(shadowTranscriptOrdinal - firstTranscriptOrdinal + 1)
             ?? null,
         ) : null;
-        const dto = await projectConversationProtectedMessageDtoV2(
+        const dto = await projectRoomHistoryProtectedMessageDto(
           row,
           {
             sessionId: coordinate.sessionId,

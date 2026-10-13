@@ -1,3 +1,6 @@
+import { BOLTER_NATIVE_STORAGE_COVERAGE } from "./reviewed-bolter-native-storage";
+import { BOLTER_HTTP_COVERAGE } from "./reviewed-bolter-http";
+import { BOLTER_PLAINTEXT_COVERAGE } from "./reviewed-bolter-plaintext-carriers";
 import { REVIEWED_REFLECTION_REPLAY_COVERAGE } from "./reviewed-main-2026-09-12-reflection";
 import {
   REVIEWED_MAIN_2026_09_17_COVERAGE,
@@ -16,6 +19,7 @@ import {
 import type {
   CoverageSurface,
   EncryptionBaselineDebt,
+  EncryptionCoverageEntry,
 } from "../src/model";
 import {
   REVIEWED_M240_COVERAGE_ENTRIES,
@@ -34,9 +38,9 @@ import {
   SUPERSEDED_MAIN_2026_08_31_COVERAGE_LOCATORS,
 } from "./reviewed-main-2026-08-31-coverage";
 import {
-  RETIRED_D565_RELAY_SOURCE_FROZEN_DEBT,
-  REVIEWED_D565_RELAY_SOURCE_DEBT_LINKS,
-} from "./reviewed-d565-relay-source-migration";
+  RETIRED_RELAY_DISPATCH_SOURCE_FROZEN_DEBT,
+  REVIEWED_RELAY_DISPATCH_SOURCE_DEBT_LINKS,
+} from "./reviewed-relay-dispatch-source-migration";
 import {
   WAVE_0_RAW_DATABASE_WRITER_DEBT,
 } from "./raw-database-writer-debt";
@@ -135,7 +139,7 @@ import { RETIRED_M247_FROZEN_DEBT } from "./retired-m247";
 import {
   RETIRED_MAIN_2026_08_20_FROZEN_DEBT,
 } from "./retired-main-2026-08-20-query-writers";
-import { REVIEWED_D487_COVERAGE_ENTRIES } from "./reviewed-d487";
+import { REVIEWED_OWNED_PHOTO_LIBRARY_COVERAGE_ENTRIES } from "./reviewed-owned-photo-library";
 import {
   REVIEWED_MAIN_RELAY_CAPABILITY_COVERAGE_ENTRIES,
 } from "./reviewed-main-relay-capabilities";
@@ -1763,8 +1767,107 @@ export const CURRENT_FROZEN_BASELINE_DEBT: readonly EncryptionBaselineDebt[] = [
   ...WAVE_0_FROZEN_BASELINE_DEBT,
 ];
 
+/** Current Bolter routing coordinates; no new frozen plaintext debt is accepted. */
+const BOLTER_METADATA_COVERAGE: readonly EncryptionCoverageEntry[] = [
+  { table: "bolter_connections", fields: ["id", "user_id", "relay_id", "desktop_session_id", "pairing_generation_ref", "home_handle", "origin", "provider_agent_id", "identity_fingerprint", "generation", "revision", "enabled", "revoked_at", "created_at", "updated_at"] },
+  { table: "bolter_room_bindings", fields: ["id", "user_id", "connection_id", "room_id", "namespace_id", "agent_id", "origin", "provider_agent_id", "chat_id", "thread_id", "revision", "state", "model_sponsorship_accepted_at", "created_at", "updated_at"] },
+  { table: "bolter_inbox_receipts", fields: ["id", "user_id", "binding_id", "binding_revision", "connection_generation", "provider_message_id", "fingerprint", "external_sender_id", "session_message_id", "turn_id", "job_id", "state", "created_at", "updated_at"] },
+  { table: "bolter_explicit_shares", fields: ["id", "user_id", "binding_id", "binding_revision", "connection_generation", "request_id", "session_message_id", "fingerprint", "created_at"] },
+  { table: "bolter_outbox", fields: ["id", "user_id", "binding_id", "binding_revision", "connection_generation", "session_message_id", "source_inbox_id", "explicit_share_id", "fingerprint", "state", "claim_token", "provider_message_id", "created_at", "updated_at"] },
+].flatMap(({ table, fields }): EncryptionCoverageEntry[] => [table, ...fields.map(field => `${table}.${field}`)].map(name => ({
+  id: `db.bolter.${name}`,
+  surface: "db",
+  locator: `public.${name}`,
+  owner: "packages/db",
+  readers: ["packages/db/src/queries/bolter-bridge.ts"],
+  writers: ["packages/db/src/queries/bolter-bridge.ts", "packages/server/src/lib/user-account-deletion.ts"],
+  migrationState: "not_applicable",
+  retention: "Retained connection, routing and publication lifecycle metadata; revoked bindings and uncertain publications remain retained rather than silently replayed.",
+  testEvidence: ["packages/db/tests/unit/bolter-bridge-queries.test.ts", "packages/db/tests/unit/bolter-bridge-migration.test.ts", "packages/db/tests/integration/bolter-bridge.integration.test.ts", "packages/server/tests/unit-isolated/user-account-deletion-commit-fence.test.ts"],
+  classification: "bounded_metadata",
+  metadataAllowlist: fields,
+  plaintextReason: "These exact fields are owner and destination identifiers, pairing-generation references, an opaque local-home selector, identity/content fingerprints, canonical message/job references, timestamps, revisions and lifecycle states. The publication claim UUID is an operation coordinate that also requires the current authenticated owner and binding. Message bodies, authored display labels, credentials and OS key material are excluded; canonical content is stored and reviewed separately.",
+})));
+
+const BOLTER_AUDIENCE_COVERAGE: EncryptionCoverageEntry = {
+  id: "db.rooms.external-context",
+  surface: "db",
+  locator: "public.rooms.external_context",
+  owner: "packages/db",
+  readers: ["packages/db/src/queries/namespace-access.ts", "packages/trust/src/external-room-policy.ts"],
+  writers: ["packages/db/src/queries/bolter-bridge.ts", "packages/trust/src/queries.ts"],
+  migrationState: "not_applicable",
+  retention: "Permanent audience boundary on the Room, including after unlink or revocation; the database rejects updates to the creation-time marker.",
+  testEvidence: ["packages/db/tests/unit/bolter-bridge-migration.test.ts", "packages/db/tests/integration/bolter-bridge.integration.test.ts", "packages/runtime/tests/unit/external-room-context.test.ts"],
+  classification: "bounded_metadata",
+  metadataAllowlist: ["external_context"],
+  plaintextReason: "The boolean marks an external audience so private Namespace containment, authored-context loading and protected-mode admission cannot inherit private authority. It contains no message, participant label, credential or encryption key and does not claim that external provider content is encrypted.",
+};
+
+const BOLTER_EXECUTION_METADATA_COVERAGE: readonly EncryptionCoverageEntry[] = [
+  ...["external_room_execution_claims", ...["room_id", "job_id", "owner_user_id", "token", "created_at"].map(field => `external_room_execution_claims.${field}`)].map((name): EncryptionCoverageEntry => ({
+    id: `db.external-room-execution.${name}`,
+    surface: "db", locator: `public.${name}`, owner: "packages/db",
+    readers: ["packages/db/src/queries/external-room-execution-claims.ts"],
+    writers: ["packages/db/src/queries/external-room-execution-claims.ts"],
+    migrationState: "not_applicable",
+    retention: "Held until the exact executor quiesces or its Room is deleted; terminal Job status, owner deletion and elapsed time do not release the claim.",
+    testEvidence: ["packages/db/tests/unit/bolter-execution-claims.test.ts", "packages/db/tests/integration/bolter-bridge.integration.test.ts", "packages/runtime/tests/unit/external-room-execution.test.ts"],
+    classification: "bounded_metadata", metadataAllowlist: ["room_id", "job_id", "owner_user_id", "token", "created_at"],
+    plaintextReason: "These internal product-only fields serialize Room execution through owner, Room and Job coordinates, a creation timestamp and an opaque claim UUID. The UUID requires the matching authenticated owner and canonical queued Job and never appears in Room DTOs, Job payloads or agent-role reads. No message, sender label, provider credential or encryption key is stored here.",
+  })),
+  {
+    id: "db.session-messages.external-authorship",
+    surface: "db", locator: "public.session_messages.external_authorship", owner: "packages/db",
+    readers: ["packages/agent/src/store/session-store.ts", "packages/trust/src/canonical-transcript-mutations.ts", "packages/trust/src/notification-classification.ts"],
+    writers: ["packages/trust/src/canonical-transcript-mutations.ts"],
+    migrationState: "not_applicable",
+    retention: "Retained with the canonical Message after bridge receipt cleanup; true cannot become false, including across representation changes.",
+    testEvidence: ["packages/db/tests/integration/bolter-bridge.integration.test.ts", "packages/trust/tests/unit/canonical-transcript-mutations.test.ts", "packages/agent/tests/unit-isolated/external-message-attribution.test.ts"],
+    classification: "bounded_metadata", metadataAllowlist: ["external_authorship"],
+    plaintextReason: "This restrictive boolean prevents an imported user-role row from acquiring its sponsor's Human authorship. It contains no sender label, provider identity, Message bytes, credential or key, and cannot establish verified provider provenance or execution authority.",
+  },
+  ...([
+    { table: "jobs", fields: ["status", "completed_at", "message"] },
+    { table: "work_acceptances", fields: ["status", "cancelled_at", "cancellation_reason"] },
+  ] as const).flatMap(({ table, fields }) => [
+    { writer: "settleFencedJobs", id: "settle-fenced-jobs" },
+    { writer: "cancelBolterExecutionsForDeletedAgentsInTransaction", id: "cancel-deleted-agent-executions" },
+  ].map(({ writer, id }): EncryptionCoverageEntry => ({
+    id: `db.bolter.fenced-${table}-${id}`,
+    surface: "db", locator: `packages/db/src/queries/bolter-bridge.ts#${writer}:raw_sql:update:public.${table}:1`, owner: "packages/db",
+    readers: ["packages/db/src/queries/bolter-bridge.ts"], writers: ["packages/db/src/queries/bolter-bridge.ts"],
+    migrationState: "not_applicable", retention: "Retained terminal lifecycle evidence follows the owning Job or work acceptance.",
+    testEvidence: ["packages/db/tests/unit/bolter-execution.test.ts", "packages/db/tests/integration/bolter-bridge.integration.test.ts"],
+    classification: "bounded_metadata", metadataAllowlist: fields,
+    plaintextReason: "These exact updates settle only receipt-linked work through closed lifecycle states, a timestamp and the fixed authority_withdrawn reason. They do not write Job input, model output, sender text, credentials or keys; the pre-existing authored-content boundaries remain separately classified.",
+  }))),
+];
+
+const BOLTER_INBOX_DEVICE_COVERAGE: EncryptionCoverageEntry = {
+  id: "file.desktop-bolter-inbox",
+  surface: "file",
+  locator: "apps/desktop/electron/bolter-bridge/inbox-spool.ts#BolterInboxSpool",
+  owner: "apps/desktop",
+  readers: ["apps/desktop/electron/bolter-bridge/inbox-spool.ts"],
+  writers: ["apps/desktop/electron/bolter-bridge/inbox-spool.ts"],
+  migrationState: "not_applicable",
+  classification: "device_local",
+  deviceStorage: "Connection-scoped device directory beneath an owned protected parent, with exclusive mode-0600 temporary files and atomic ciphertext publication. The trusted cipher port has an Electron safeStorage codec that rejects unavailable protection and Linux basic_text or unknown backends. Production receiver wiring and live OS storage qualification are not established by synthetic codec tests; no Namespace-key or server-backup protection is claimed.",
+  retention: "Committed encrypted batches survive reconstruction until canonical server acceptance permits deletion. Interrupted writes and uncertain delivery may remain retained for review or redelivery.",
+  cleanupContract: "Acknowledgment removes only the validated retained receipt after server acceptance. Authority retirement rejects access and does not claim durable deletion. No automatic expiry, logout erasure or provider acknowledgment protocol is implemented by this primitive.",
+  testEvidence: ["apps/desktop/tests/unit/bolter-inbox-spool.test.ts", "apps/desktop/tests/unit/bolter-spool-cipher.test.ts"],
+};
+
 export const BASELINE_REGISTRY: CoverageRegistry = {
   entries: [
+    ...BOLTER_PLAINTEXT_COVERAGE,
+    ...BOLTER_NATIVE_STORAGE_COVERAGE,
+    ...BOLTER_HTTP_COVERAGE,
+    ...BOLTER_METADATA_COVERAGE,
+    ...BOLTER_EXECUTION_METADATA_COVERAGE,
+    BOLTER_AUDIENCE_COVERAGE,
+    BOLTER_INBOX_DEVICE_COVERAGE,
     ...REVIEWED_WAVE_4_COVERAGE_ENTRIES,
     ...REVIEWED_WAVE_6_COVERAGE_ENTRIES,
     ...REVIEWED_WAVE_6_DATABASE_WRITER_ENTRIES,
@@ -1801,7 +1904,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...REVIEWED_MAIN_2026_08_14_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_2026_08_14_LANDING_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_2026_08_14_M267_COVERAGE_ENTRIES,
-    ...REVIEWED_D487_COVERAGE_ENTRIES,
+    ...REVIEWED_OWNED_PHOTO_LIBRARY_COVERAGE_ENTRIES,
     ...REVIEWED_M240_COVERAGE_ENTRIES,
     ...REVIEWED_MAIN_RELAY_CAPABILITY_COVERAGE_ENTRIES,
     ...REVIEWED_PR_945_COVERAGE_ENTRIES,
@@ -1874,7 +1977,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ),
     ...REVIEWED_MAIN_2026_08_31_DEBT_LINKS,
     ...REVIEWED_MAIN_2026_09_03_DEBT_LINKS,
-    ...REVIEWED_D565_RELAY_SOURCE_DEBT_LINKS,
+    ...REVIEWED_RELAY_DISPATCH_SOURCE_DEBT_LINKS,
     ...REVIEWED_LANDING_DEBT_LINKS,
     ...REVIEWED_M318_DEBT_LINKS,
     ...REVIEWED_MAIN_2026_09_09_DOCUMENTMEDIA_DEBT_LINKS,
@@ -1893,7 +1996,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...RETIRED_MAIN_2026_08_21_FROZEN_DEBT,
     ...RETIRED_MAIN_2026_08_31_FROZEN_DEBT,
     ...RETIRED_MAIN_2026_09_03_FROZEN_DEBT,
-    ...RETIRED_D565_RELAY_SOURCE_FROZEN_DEBT,
+    ...RETIRED_RELAY_DISPATCH_SOURCE_FROZEN_DEBT,
     ...RETIRED_LANDING_FROZEN_DEBT,
     ...RETIRED_MAIN_2026_09_09_DOCUMENTMEDIA_FROZEN_DEBT,
     ...RETIRED_MAIN_2026_09_09_MESSAGEBACKFILL_FROZEN_DEBT,

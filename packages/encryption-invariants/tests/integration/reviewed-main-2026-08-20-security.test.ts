@@ -27,7 +27,7 @@ import { SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS } from "../../baseline
 import { SUPERSEDED_M300_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-m300-source-alarms";
 import { SUPERSEDED_M300_DTO_LOCATORS } from "../../baseline/reviewed-m300-dto";
 import { SUPERSEDED_M301_DTO_LOCATORS } from "../../baseline/reviewed-m301-dto";
-import { SUPERSEDED_D565_RELAY_DTO_LOCATORS } from "../../baseline/reviewed-d565-relay-dto";
+import { SUPERSEDED_RELAY_BINDING_DTO_LOCATORS } from "../../baseline/reviewed-relay-binding-dto";
 import { REVIEWED_M318_DTO_DECLARATIONS, SUPERSEDED_M318_DTO_LOCATORS } from "../../baseline/reviewed-m318-dto";
 import {
   REVIEWED_MAIN_2026_08_20_SOURCE_ALARMS,
@@ -97,12 +97,12 @@ describe("reviewed main 2026-08-20 encryption inventory", () => {
         || SUPERSEDED_MAIN_2026_08_29_DTO_LOCATORS.has(declaration.locator)
         || SUPERSEDED_M300_DTO_LOCATORS.has(declaration.locator)
         || SUPERSEDED_M301_DTO_LOCATORS.has(declaration.locator)
-        || SUPERSEDED_D565_RELAY_DTO_LOCATORS.has(declaration.locator)
+        || SUPERSEDED_RELAY_BINDING_DTO_LOCATORS.has(declaration.locator)
         || SUPERSEDED_M318_DTO_LOCATORS.has(declaration.locator)
       ) {
         if (
           SUPERSEDED_M301_DTO_LOCATORS.has(declaration.locator)
-          || SUPERSEDED_D565_RELAY_DTO_LOCATORS.has(declaration.locator)
+          || SUPERSEDED_RELAY_BINDING_DTO_LOCATORS.has(declaration.locator)
         ) {
           expect(DTO_BASELINE_DECLARATIONS.filter((candidate) =>
             candidate.locator === declaration.locator

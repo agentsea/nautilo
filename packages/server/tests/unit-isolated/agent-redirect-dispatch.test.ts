@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import type { FastifyRequest } from "fastify";
 import { setLogOutput } from "@nautilo/logger";
 import { getAgentTurnContextByKey } from "@nautilo/agent";
@@ -14,7 +14,15 @@ import {
   type FocusDb,
 } from "@nautilo/trust";
 import type { ChatRoutesDeps } from "../../src/routes/chat";
-import { executeAgentMediatedRoomMessage } from "../../src/messaging/agent-mediated";
+import * as trust from "@nautilo/trust";
+
+// Redirect fixtures exercise ordinary-room authority without database access.
+const trustExports = { ...trust };
+mock.module("@nautilo/trust", () => ({
+  ...trustExports,
+  getExternalRoomPolicy: async (_roomId: string) => null,
+}));
+const { executeAgentMediatedRoomMessage } = await import("../../src/messaging/agent-mediated");
 import {
   AGENT_REDIRECT_PENDING_TIMEOUT_MS,
   _resetAgentRedirectHandlerForTests,
@@ -222,7 +230,7 @@ afterEach(() => {
   _resetAgentRedirectHandlerForTests();
 });
 
-describe("D421 redirect completion — accepted path", () => {
+describe("redirect completion — accepted path", () => {
   test("enqueues exactly one target with original payload/authority/depth and transfers source focus only", async () => {
     const fx = setup();
     await fulfill();
@@ -270,8 +278,8 @@ describe("D421 redirect completion — accepted path", () => {
   });
 });
 
-describe("D421 redirect target — canonical foreground job", () => {
-  test("uses same human turn/message, depth 1, redirect disabled, and original D420 authority", async () => {
+describe("redirect target — canonical foreground job", () => {
+  test("uses same human turn/message, depth 1, redirect disabled, and original authority", async () => {
     const authority = createMaintenanceAcceptanceAuthority();
     const invocationAuthority = createAcceptedInvocationAuthority("user-1");
     const calls: unknown[][] = [];
@@ -359,7 +367,7 @@ describe("D421 redirect target — canonical foreground job", () => {
   });
 });
 
-describe("D421 redirect authority — source wake gating", () => {
+describe("redirect authority — source wake gating", () => {
   const authority = createMaintenanceAcceptanceAuthority();
   const wake = (sourceKind: "mention" | "reply" | "ui" | "inferred") => ({
     kind: "wake" as const,
@@ -379,7 +387,7 @@ describe("D421 redirect authority — source wake gating", () => {
   });
 });
 
-describe("D421 redirect hook lifecycle", () => {
+describe("redirect hook lifecycle", () => {
   test("production pending timeout is one-hour leak defense", () => {
     expect(AGENT_REDIRECT_PENDING_TIMEOUT_MS).toBe(3_600_000);
   });
@@ -403,7 +411,7 @@ describe("D421 redirect hook lifecycle", () => {
   });
 });
 
-describe("D421 redirect completion — canonical revalidation", () => {
+describe("redirect completion — canonical revalidation", () => {
   test.each([
     ["unknown", [source], "missing", "redirect_rejected_no_target"],
     [
@@ -486,7 +494,7 @@ describe("D421 redirect completion — canonical revalidation", () => {
   });
 });
 
-describe("D421 redirect completion — cleanup/failure", () => {
+describe("redirect completion — cleanup/failure", () => {
   test.each(["completed_no_request", "error", "aborted"] as const)(
     "%s cleans without a receipt",
     async (kind) => {

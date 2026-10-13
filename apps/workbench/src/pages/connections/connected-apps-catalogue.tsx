@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -9,6 +10,9 @@ import { createWorkbenchPortal as createPortal } from "../../components/workbenc
 import { ArrowLeft, Search, X } from "lucide-react";
 import { Button, StatusPill } from "../settings/ui";
 import { apiClient } from "../../lib/api";
+import { useAuth } from "../../hooks/use-auth";
+import { useRoomNavigation } from "../../contexts/room-navigation-context";
+import { BolterConnectionSection } from "./bolter-connection-section";
 import type { ConnectedAppDescriptor } from "@nautilo/types";
 import { IntegrationsSection } from "../settings/sections/integrations-section";
 import {
@@ -43,6 +47,13 @@ const GOOGLE_APP: ConnectedAppDefinition =
     experimental: false,
     iconUrl: null,
   };
+
+const BOLTER_APP: ConnectedAppDefinition = {
+  id: "bolter", displayName: "Bolter", shortMark: "B",
+  description: "Exchange text with external agents in explicitly linked rooms.",
+  searchText: "bolter external agents messaging conversations linked rooms",
+  experimental: true, iconUrl: null,
+};
 
 function definition(provider: ConnectedAppDescriptor): ConnectedAppDefinition {
   return {
@@ -123,11 +134,16 @@ export function ConnectedAppsCatalogue({
     scopeRoomId: string,
   ) => Promise<void>;
 }) {
+  const auth = useAuth();
+  const roomNavigation = useRoomNavigation();
+  const scopeKey = `${auth.viewer.sessionUserId ?? ""}:${auth.viewerGeneration}:${auth.credentialGeneration}`;
+  const currentScope = useRef(scopeKey);
+  currentScope.current = scopeKey;
   const [providers, setProviders] = useState<readonly ConnectedAppDescriptor[]>([]);
   const [scopeRoomId, setScopeRoomId] = useState<string | null>(null);
   const [summaries, setSummaries] = useState<
     Record<ConnectedAppId, ConnectedAppCatalogueSummary>
-  >({ google: CHECKING_SUMMARY });
+  >({ google: CHECKING_SUMMARY, bolter: CHECKING_SUMMARY });
   useEffect(() => {
     let active = true;
     void apiClient.listConnectedApps().then((result) => {
@@ -138,7 +154,8 @@ export function ConnectedAppsCatalogue({
       setScopeRoomId(result.scopeRoomId);
       setSummaries((current) => Object.fromEntries([
         ["google", current["google"] ?? CHECKING_SUMMARY],
-        ...ordered.map((provider) => [provider.id, current[provider.id] ?? CHECKING_SUMMARY] as const),
+        ["bolter", current["bolter"] ?? CHECKING_SUMMARY],
+        ...ordered.filter(provider => provider.id !== "bolter").map((provider) => [provider.id, current[provider.id] ?? CHECKING_SUMMARY] as const),
       ]));
     }).catch(() => {
       // Google remains usable when the remote connected-app catalogue is unavailable.
@@ -162,17 +179,27 @@ export function ConnectedAppsCatalogue({
     [],
   );
   const apps = useMemo(
-    () => [GOOGLE_APP, ...providers.map(definition)],
+    () => [GOOGLE_APP, BOLTER_APP, ...providers.filter(provider => provider.id !== "bolter").map(definition)],
     [providers],
   );
+  const updateBolterSummary = useCallback((summary: ConnectedAppCatalogueSummary) => {
+    setSummaries(current => ({ ...current, bolter: summary }));
+  }, []);
+  const openBolterRoom = useCallback(async (roomId: string) => {
+    const expectedScope = currentScope.current;
+    await roomNavigation.refreshRooms();
+    if (expectedScope === currentScope.current) roomNavigation.setActiveRoom(roomId);
+  }, [roomNavigation]);
   const details: Readonly<Record<string, ReactNode>> = Object.fromEntries([
+    ["bolter", <BolterConnectionSection key={scopeKey} scopeKey={scopeKey}
+      onCatalogueSummary={updateBolterSummary} onRoomCreated={openBolterRoom} />],
     ["google", (
       <IntegrationsSection
         presentation="detail"
         onCatalogueSummary={updateGoogleSummary}
       />
     )],
-    ...providers.map((provider) => [provider.id, (
+    ...providers.filter(provider => provider.id !== "bolter").map((provider) => [provider.id, (
       <ConnectedAppConnectionSection
         provider={provider}
         presentation="detail"

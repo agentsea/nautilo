@@ -156,7 +156,6 @@ test("Relay disconnect revokes only its current candidate consent before asynchr
   revoke(); expect(revoked).toEqual(["grant"]);
   active = {}; consent = { ...consent, generation: "new-grant" }; revoke(); expect(revoked).toEqual(["grant"]);
   active = candidate; consent = { ...consent, owner: { ...consent.owner, desktopSessionId: "other" } }; revoke(); expect(revoked).toEqual(["grant"]);
-  expect(relaySource.slice(relaySource.indexOf("  } catch (error) {\n    revokeCandidateHumanConsent();"))).toContain("await retired.client?.disconnect()");
 });
 
 
@@ -192,4 +191,170 @@ test("a newer handoff survives the stale successful publication response", async
   f.setPublication(async () => true); expect(await f.grant()).toBeTrue();
   const current = f.pending()!.generation;
   finish.resolve(); expect(await old).toBeFalse(); expect(f.pending()?.generation).toBe(current);
+});
+
+// Execute the actual startup-failure branch so callback ordering, rejection and
+// pending cleanup are checked without launching Electron or a Relay process.
+function startupFailureFixture(cleanup: {
+  disconnected?: () => Promise<void> | void;
+  retire?: () => Promise<void>;
+  finish?: () => Promise<void>;
+} = {}, superseded = false) {
+  const relaySource = readFileSync(new URL("../../electron/relay.ts", import.meta.url), "utf8");
+  const end = relaySource.indexOf("\nexport async function stopRelay()");
+  const begin = relaySource.lastIndexOf("  } catch (error) {", end);
+  if (begin < 0 || end < begin) throw new Error("Relay startup-failure composition missing");
+  const body = relaySource.slice(begin + "  } catch (error) {".length, end)
+    .replace(/\s*\}\s*\}\s*$/u, "");
+  const events: string[] = [];
+  let consent = true;
+  let closed = false;
+  const publisher = {};
+  const candidate = {
+    retire() { closed = true; events.push("session-retired"); return {
+      client: { async disconnect() { events.push("transport-disconnected"); } },
+      mcpHost: { async stop() { events.push("mcp-stopped"); } },
+    }; },
+    async finishRetirement() { events.push("finished"); await cleanup.finish?.(); },
+    localExecution: { retainedContainedRoots: () => [] },
+  };
+  const replacement = {};
+  const replacementPublisher = {};
+  const runtime = {};
+  const deps = { candidate, publisher, runtime, superseded, replacement, replacementPublisher,
+    revoke() { if (!superseded) consent = false; events.push("consent-revoked"); },
+    notify() { events.push("notified"); },
+    options: { bolterHostPort: {
+      onDisconnected() { events.push("bolter-disconnected"); return cleanup.disconnected?.(); },
+      async retire() { events.push("bolter-retired"); await cleanup.retire?.(); },
+    } },
+  };
+  const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(`
+    const candidateSession = deps.candidate;
+    const candidatePublisher = deps.publisher;
+    const revokeCandidateHumanConsent = deps.revoke;
+    const notifyLocalExecutionChanges = deps.notify;
+    const options = deps.options;
+    let sessionClient = {};
+    let pendingRelayCandidate = deps.superseded ? null : { session: candidateSession };
+    let relayLifecycleGeneration = 1;
+    let activeRelaySession = deps.superseded ? deps.replacement : candidateSession;
+    let capabilityPublisher = deps.superseded ? deps.replacementPublisher : candidatePublisher;
+    let activeComputerUseRuntime = deps.runtime;
+    let custodyRetirements = 0;
+    let relayRetirementBarrier = Promise.resolve();
+    return {
+      awaitRetirement: () => relayRetirementBarrier,
+      fail: async (error: unknown) => { ${body} },
+      state: () => ({ sessionClient, pendingRelayCandidate, relayLifecycleGeneration,
+        activeRelaySession, capabilityPublisher, activeComputerUseRuntime, custodyRetirements }),
+    };
+  `);
+  const factory = runInNewContext(`(function(deps) { ${javascript} })`) as (deps: object) => {
+    fail(error: unknown): Promise<void>;
+    awaitRetirement(): Promise<void>;
+    state(): { sessionClient: object | null; pendingRelayCandidate: object | null;
+      relayLifecycleGeneration: number; activeRelaySession: object | null;
+      capabilityPublisher: object | null; activeComputerUseRuntime: object | null; custodyRetirements: number };
+  };
+  return { ...factory(deps), events, replacement, replacementPublisher, runtime,
+    consent: () => consent, closed: () => closed };
+}
+
+test.each(["disconnected", "retire"] as const)("startup fences authority and drains transport while Bolter %s is pending", async stage => {
+  const barrier = deferred();
+  const drained = deferred();
+  let snapshot: unknown;
+  const f = startupFailureFixture({ [stage]: () => {
+    snapshot = { ...f.state(), consent: f.consent(), closed: f.closed() };
+    return barrier.promise;
+  }, finish: async () => { drained.resolve(); } });
+  const original = new Error("Synthetic startup failure");
+  let settled = false;
+  const result = f.fail(original).catch((error: unknown) => { settled = true; return error; });
+  let replacementMayStart = false;
+  const replacement = f.awaitRetirement().then(() => { replacementMayStart = true; });
+  expect(snapshot).toEqual({ sessionClient: null, pendingRelayCandidate: null, relayLifecycleGeneration: 2,
+    activeRelaySession: null, capabilityPublisher: null, activeComputerUseRuntime: null,
+    custodyRetirements: 1, consent: false, closed: true });
+  // The other cleanup chain must progress before the Bolter barrier resolves.
+  await drained.promise;
+  expect(f.events).toContain("bolter-retired");
+  expect(f.events).toContain("transport-disconnected");
+  expect(f.events).toContain("mcp-stopped");
+  expect(f.events).toContain("finished");
+  expect(settled).toBeFalse();
+  expect(replacementMayStart).toBeFalse();
+  barrier.resolve();
+  expect(await result).toBe(original);
+  await replacement;
+  expect(replacementMayStart).toBeTrue();
+  expect(f.state().custodyRetirements).toBe(0);
+});
+
+test.each(["throw", "reject"] as const)("startup preserves its original failure after Bolter cleanup %s", async mode => {
+  const cleanupError = new Error("Synthetic cleanup failure");
+  const f = startupFailureFixture({ disconnected: () => {
+    if (mode === "throw") throw cleanupError;
+    return Promise.reject(cleanupError);
+  }, retire: async () => { throw cleanupError; } });
+  const original = new Error("Synthetic startup failure");
+  expect(await f.fail(original).catch((error: unknown) => error)).toBe(original);
+  expect(f.consent()).toBeFalse(); expect(f.closed()).toBeTrue();
+  expect(f.events).toEqual(["consent-revoked", "notified", "session-retired", "bolter-disconnected",
+    "bolter-retired", "transport-disconnected", "mcp-stopped", "finished"]);
+  expect(f.state().custodyRetirements).toBe(0);
+});
+
+test("failed final retirement retains custody uncertainty without masking startup failure", async () => {
+  const f = startupFailureFixture({ finish: async () => { throw new Error("Synthetic drain failure"); } });
+  const original = new Error("Synthetic startup failure");
+  expect(await f.fail(original).catch((error: unknown) => error)).toBe(original);
+  expect(f.state().custodyRetirements).toBe(1);
+  expect(f.closed()).toBeTrue();
+});
+
+test("late failure of a superseded candidate preserves the replacement's runtime authority", async () => {
+  const f = startupFailureFixture({}, true);
+  const original = new Error("Synthetic superseded start");
+  expect(await f.fail(original).catch((error: unknown) => error)).toBe(original);
+  expect(f.state().activeRelaySession).toBe(f.replacement);
+  expect(f.state().capabilityPublisher).toBe(f.replacementPublisher);
+  expect(f.state().activeComputerUseRuntime).toBe(f.runtime);
+  expect(f.state().relayLifecycleGeneration).toBe(1);
+  expect(f.consent()).toBeTrue();
+  expect(f.events).not.toContain("notified");
+  expect(f.closed()).toBeTrue();
+});
+
+test.each(["throw", "reject"] as const)("hosted disconnect still tracks Bolter retirement after callback %s", async mode => {
+  const relaySource = readFileSync(new URL("../../electron/relay.ts", import.meta.url), "utf8");
+  const begin = relaySource.indexOf("      onDisconnected() {", relaySource.indexOf("bolterHostPort: options.bolterHostPort"));
+  const end = relaySource.indexOf("\n      },", begin);
+  if (begin < 0 || end < begin) throw new Error("Hosted Bolter disconnect composition missing");
+  const body = relaySource.slice(begin + "      onDisconnected() {".length, end);
+  const barrier = deferred();
+  const tracked: Promise<void>[] = [];
+  let retireCalls = 0;
+  const options = { bolterHostPort: {
+    onDisconnected() {
+      const error = new Error("Synthetic disconnect failure");
+      if (mode === "throw") throw error;
+      return Promise.reject(error);
+    },
+    retire() { retireCalls++; return barrier.promise; },
+  } };
+  const candidateSession = { settleBoundWork(work: Promise<void>) { tracked.push(work); return work; } };
+  const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(`return () => { ${body} };`);
+  const factory = runInNewContext(`(function(options, candidateSession) { ${javascript} })`) as
+    (options: object, session: object) => () => void;
+  factory(options, candidateSession)();
+  expect(retireCalls).toBe(1);
+  expect(tracked).toHaveLength(1);
+  let settled = false;
+  const completion = tracked[0]!.then(() => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBeFalse();
+  barrier.resolve(); await completion;
+  expect(settled).toBeTrue();
 });

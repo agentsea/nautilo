@@ -1,5 +1,5 @@
 import type { DirectDatabase } from "@nautilo/db";
-import { and, eq, inArray, rooms } from "@nautilo/db";
+import { and, eq, inArray, rooms, privateNamespaceBoundarySql } from "@nautilo/db";
 import type { DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import type {
   CanonicalSourceAuthorityPort,
@@ -24,6 +24,7 @@ type CurrentRoomAccess = Readonly<{
   namespaceId: string;
   humanActorIds: readonly string[];
   isPublicNamespaceBoundary: boolean;
+  externalContext?: boolean;
 }>;
 
 export interface CanonicalRoomAuthorityQueries {
@@ -127,7 +128,7 @@ class CanonicalRoomBindingResolver {
     const room = await this.ports.rooms.findRoomByNamespaceId(parsed.namespaceId);
     if (room === null) return null;
     const access = await this.ports.rooms.getRoomWithAccess(room.roomId);
-    if (access === null || access.namespaceId.toLowerCase() !== parsed.namespaceId) return null;
+    if (access === null || access.externalContext === true || access.namespaceId.toLowerCase() !== parsed.namespaceId) return null;
     return {
       bindingRef,
       roomId: room.roomId,
@@ -141,6 +142,9 @@ class CanonicalRoomBindingResolver {
     if (binding === null || binding.currentAccessBindingRefs.length !== 1) return null;
     const origin = parsePublicationBinding(binding.originPublicationBindingRef);
     if (origin === null) return null;
+    const originRoom = await this.ports.rooms.findRoomByNamespaceId(origin.namespaceId);
+    const originAccess = originRoom && await this.ports.rooms.getRoomWithAccess(originRoom.roomId);
+    if (originAccess?.externalContext === true) return null;
     const access = await this.resolveBinding(binding.currentAccessBindingRefs[0]!);
     return access === null
       ? null
@@ -193,7 +197,7 @@ export function createCanonicalSameRoomBindingPorts(input: Readonly<{
       }>> = [];
       for (const anchor of roomAnchors) {
         const access = await roomQueries.getRoomWithAccess(anchor.anchorRef);
-        if (access?.namespaceId.toLowerCase() === resolved.originNamespaceId) {
+        if (access?.externalContext !== true && access?.namespaceId.toLowerCase() === resolved.originNamespaceId) {
           matchingOrigins.push({ roomId: anchor.anchorRef });
         }
       }
@@ -254,7 +258,7 @@ export function createCanonicalSameRoomBindingPorts(input: Readonly<{
     },
     async resolveRoom(roomId) {
       const access = await roomQueries.getRoomWithAccess(roomId);
-      return access === null ? null : { roomId, namespaceId: access.namespaceId };
+      return access === null || access.externalContext === true ? null : { roomId, namespaceId: access.namespaceId };
     },
   };
   const invocation: CanonicalRoomInvocationBindingPort = {
@@ -268,7 +272,9 @@ export function createCanonicalSameRoomBindingPorts(input: Readonly<{
       const originRoom = await roomQueries.findRoomByNamespaceId(
         origin.namespaceId,
       );
-      return originRoom === null ? null : { roomId: originRoom.roomId };
+      if (originRoom === null) return null;
+      const access = await roomQueries.getRoomWithAccess(originRoom.roomId);
+      return access?.externalContext === true ? null : { roomId: originRoom.roomId };
     },
   };
   return Object.freeze({ semantic, search, evidence, invocation });
@@ -344,6 +350,7 @@ export function createCanonicalRecordAccessAudience(input: Readonly<{
         .from(rooms)
         .where(and(
           eq(rooms.kind, "access"),
+          privateNamespaceBoundarySql(rooms.namespaceId),
           inArray(rooms.namespaceId, [...namespaceIds]),
         ))
         .orderBy(rooms.namespaceId);
@@ -372,7 +379,7 @@ implements CanonicalSourceAuthorityPort {
     const room = await this.rooms.findRoomByNamespaceId(handle);
     if (room === null) return { status: "unavailable" as const };
     const access = await this.rooms.getRoomWithAccess(room.roomId);
-    if (access === null || access.namespaceId !== handle) {
+    if (access === null || access.externalContext === true || access.namespaceId !== handle) {
       return { status: "unavailable" as const };
     }
     return {

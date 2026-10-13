@@ -144,6 +144,7 @@ export type RoomHistoryShadowAuthorityTransportV1 =
   RoomHistoryShadowDomainKeyAuthorityTransportV2;
 
 interface RoomHistorySelectedSource {
+  readonly externalAttributionInvalid?: true;
   readonly logicalMessageKey?: string;
   readonly sourceUserId?: string;
   readonly authorAgentId?: string;
@@ -286,6 +287,7 @@ export type VaultRoomHistoryShadowRecordResultV1 =
     messageId: string;
     editRevision: number;
     status: "verified";
+    externalAttributionInvalid?: true;
     verification:
       | "independent_parity"
       | "signed_representation_authenticated";
@@ -296,6 +298,7 @@ export type VaultRoomHistoryShadowRecordResultV1 =
     messageId: string;
     editRevision: number;
     status: "fallback";
+    externalAttributionInvalid?: true;
     reason: RoomHistoryShadowFallbackReasonV1;
   }>;
 
@@ -526,6 +529,10 @@ function protectedSelectionMatches(
   if ("ordinarySibling" in record || "ordinaryPayloadBytesBase64url" in record) return false;
   const selected = record.selectedSource;
   const projection = record.protectedMessage.projection;
+  if (selected?.externalAttributionInvalid !== undefined
+    && (selected.externalAttributionInvalid !== true || selected.role !== "user"
+      || selected.sourceUserId !== undefined || selected.authorAgentId !== undefined
+      || projection.sourceUserId !== undefined || projection.authorAgentId !== undefined)) return false;
   return selected !== undefined && selected.role === projection.role
     && selected.logicalMessageKey === projection.logicalMessageKey
     && (projection.role === "system"
@@ -2138,5 +2145,19 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
     }
   };
 
-  return Object.freeze({ reconcile });
+  return Object.freeze({
+    async reconcile(request: VaultRoomHistoryShadowReadInputV1): Promise<VaultRoomHistoryShadowReadResultV1> {
+      const externalCoordinates = new Set(request.records.filter((source) =>
+        source.representationMode === "protected-only" && source.selectedSource?.role === "user"
+        && source.selectedSource.externalAttributionInvalid === true)
+        .map((source) => `${source.sessionId}:${source.messageId}:${source.editRevision}`));
+      const result = await reconcile(request);
+      // Ciphertext authenticity does not turn a restrictive external marker into
+      // verified sender identity. Keep suppression on successful and failed reads.
+      return Object.freeze({ ...result, records: Object.freeze(result.records.map((record) => {
+        const external = externalCoordinates.has(`${record.sessionId}:${record.messageId}:${record.editRevision}`);
+        return external ? Object.freeze({ ...record, externalAttributionInvalid: true as const }) : record;
+      })) });
+    },
+  });
 }

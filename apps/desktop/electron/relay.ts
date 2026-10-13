@@ -48,6 +48,7 @@ import {
   type RelayNetworkPolicy,
   type RelayNetworkAllowRule,
   type RelayCodexHostPort,
+  type RelayBolterHostPort,
   type RelaySshPrepareRequestV1,
   RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION,
   type RelayAcpHostPort,
@@ -3286,6 +3287,8 @@ export interface StartRelayOptions {
    * is manufactured here; absent or not-ready ports leave the capability off.
    */
   codexHostPort?: RelayCodexHostPort | undefined;
+  /** Fixed Electron-owned integration port; its retirement drains real native children. */
+  bolterHostPort?: (RelayBolterHostPort & { retire(): Promise<void> }) | undefined;
   /** readiness-only Hermes ACP host; no execution route exists yet. */
   acpHostPort?: RelayAcpHostPort | undefined;
   /** Electron-owned parked Claude account/catalog discovery host. */
@@ -3338,6 +3341,16 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // callable while the replacement relay is still authenticating.
   activeComputerUseRuntime = null;
   const hostedRelay = createDesktopHostedRelayAdapter({
+    bolterHostPort: options.bolterHostPort ? {
+      ...options.bolterHostPort,
+      isReady: () => !candidateSession.closed && options.bolterHostPort!.isReady(),
+      onDisconnected() {
+        void (async () => { await options.bolterHostPort!.onDisconnected?.(); })().catch(() => undefined);
+        void candidateSession.settleBoundWork((async () => {
+          await options.bolterHostPort!.retire();
+        })()).catch(() => undefined);
+      },
+    } : undefined,
     codexHostPort: options.codexHostPort,
     acpHostPort: options.acpHostPort,
     claudeConnectionHostPort: options.claudeConnectionHostPort,
@@ -4109,6 +4122,9 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
   }
   } catch (error) {
+    // A superseded candidate must not clear the replacement's runtime authority.
+    const ownsRuntime = activeRelaySession === candidateSession || pendingRelayCandidate?.session === candidateSession;
+    // Fence candidate authority before any adapter cleanup can suspend or fail.
     revokeCandidateHumanConsent();
     sessionClient = null;
     if (pendingRelayCandidate?.session === candidateSession) {
@@ -4117,21 +4133,33 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
     if (activeRelaySession === candidateSession) { activeRelaySession = null; notifyLocalExecutionChanges(); }
     if (capabilityPublisher === candidatePublisher) capabilityPublisher = null;
-    activeComputerUseRuntime = null;
+    if (ownsRuntime) activeComputerUseRuntime = null;
     custodyRetirements += 1;
     const retired = candidateSession.retire();
-    try {
-      await retired.client?.disconnect();
-    } catch {
-      // A failed relay start must preserve the original start error.
-    }
-    try {
-      await retired.mcpHost?.stop();
-    } catch {
-      // A failed relay start must preserve the original start error.
-    }
-    await candidateSession.finishRetirement();
-    if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
+    // Start independent cleanup even when another adapter is still draining.
+    // Cleanup failures must not replace the original startup failure.
+    const retirement = Promise.allSettled([
+      (async () => { await options.bolterHostPort?.onDisconnected?.(); })(),
+      (async () => { await options.bolterHostPort?.retire(); })(),
+      (async () => {
+        try {
+          await retired.client?.disconnect();
+        } catch {
+          // Continue retiring the remaining candidate-owned resources.
+        }
+        try {
+          await retired.mcpHost?.stop();
+        } catch {
+          // Bound work still needs its final retirement sweep.
+        }
+        await candidateSession.finishRetirement();
+        if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
+      })(),
+    ]);
+    // A replacement may be selected now, but cannot use native resources until
+    // this exact failed candidate and any prior retirement have drained.
+    relayRetirementBarrier = Promise.allSettled([relayRetirementBarrier, retirement]).then(() => {});
+    await retirement;
     throw error;
   }
 }

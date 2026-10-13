@@ -1,3 +1,4 @@
+import { BOLTER_RELAY_PROTOCOL_VERSION, BOLTER_RELAY_MAX_FRAME_BYTES, parseRelayBolterDesktopMessage, type RelayBolterDesktopMessage } from "@nautilo/relay";
 import { isSecurityScanProgress } from "@nautilo/relay";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket, RawData } from "ws";
@@ -85,14 +86,14 @@ export function isExpectedRelayDesktopSession(
 }
 
 /**
- * D480 — server-owned socket lifecycle port. The HTTP lifecycle routes never
+ * server-owned socket lifecycle port. The HTTP lifecycle routes never
  * own websocket maps and must close a revoked relay through this endpoint so
  * the normal close/unregister path remains responsible for MCP, mini-app,
  * and pending-dispatch cleanup.
  */
 export interface RelaySocketLifecycleController {
   closeRelays(relayIds: readonly string[]): number;
-  /** D503 non-revocation safety close after an unconfirmed MCP rollback. */
+  /** non-revocation safety close after an unconfirmed MCP rollback. */
   forceCloseRelays?(
     relayIds: readonly string[],
     expectedDesktopSessionId: string,
@@ -114,7 +115,7 @@ export interface RelayPairingGenerationInvalidationResult {
 }
 
 /**
- * D480 — dependency seam injected into grouped revoke / historical cleanup
+ * dependency seam injected into grouped revoke / historical cleanup
  * HTTP handlers after their DB transaction commits. It has no DB knowledge:
  * the caller supplies only the exact revoked row IDs returned by that
  * transaction. This function snapshots exact live ownership first, clears
@@ -220,7 +221,7 @@ export function isFrameBoundToRegisteredRelay(
 }
 
 /**
- * D458 server-only composition helper for a relay-token re-pair/revoke.
+ * server-only composition helper for a relay-token re-pair/revoke.
  * `relayHttpRoutes` supplies the user-scoped generation list; this helper
  * first runs the durable controller-binding/presence invalidation callback and
  * then disconnects every exact live relay generation.  The relay ids are read
@@ -293,7 +294,7 @@ export interface RelayRegistryLike {
     desktopSessionId?: string,
     capabilityRevision?: number,
     /**
-     * D418 Commit 2 — server-derived `pairingGeneration` stamped from the
+     * server-derived `pairingGeneration` stamped from the
      * validated relay-token row id. Never read from the relay/client payload.
      */
     pairingGeneration?: string,
@@ -492,7 +493,7 @@ export async function handleRelayRegister(
   }
 
   const effectiveUserId = validated ? validated.userId : msg.userId;
-  // D418 Commit 2 — the server-derived `pairingGeneration` is the validated
+  // the server-derived `pairingGeneration` is the validated
   // relay-token row id. It is NEVER accepted from the relay/client payload;
   // it is stamped onto the relay registry entry straight from the validated
   // token so the binding provider + plan re-validation can pin a Full
@@ -615,6 +616,13 @@ export function parseRelayEndpointClientMessage(raw: string):
   if (type === "relay:ssh-prepared" && frameBytes > RELAY_SSH_PREPARE_MAX_FRAME_BYTES) {
     return { ok: false, codex: false, error: "SSH_PREPARE_FRAME_TOO_LARGE" };
   }
+  if (typeof type === "string" && type.startsWith("relay:bolter-")) {
+    if (frameBytes > BOLTER_RELAY_MAX_FRAME_BYTES) return { ok: false, codex: false, error: "BOLTER_FRAME_TOO_LARGE" };
+    try {
+      const parsed = parseRelayBolterDesktopMessage(JSON.parse(raw) as unknown);
+      return parsed ? { ok: true, message: parsed } : { ok: false, codex: false, error: "BOLTER_FRAME_INVALID" };
+    } catch { return { ok: false, codex: false, error: "BOLTER_FRAME_INVALID" }; }
+  }
   if (type === "relay:claude-connection-discovery-result") {
     if (frameBytes > CLAUDE_CONNECTION_MAX_FRAME_BYTES) {
       return { ok: false, codex: false, error: "CLAUDE_CONNECTION_FRAME_TOO_LARGE" };
@@ -688,6 +696,18 @@ export function parseRelayEndpointClientMessage(raw: string):
   } catch {
     return { ok: false, codex: false, error: "Invalid JSON" };
   }
+}
+
+export async function handleRelayBolterMessage(input: {
+  registeredRelayId: string | null; registeredUserId: string | null; registeredProtocolVersion: number | null;
+  currentSocket: boolean; message: RelayBolterDesktopMessage;
+  registry: Pick<InMemoryRelayRegistry, "acceptBolterMessage">;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!input.registeredRelayId || !input.registeredUserId || !input.currentSocket
+    || input.registeredProtocolVersion === null || input.registeredProtocolVersion < BOLTER_RELAY_PROTOCOL_VERSION
+    || input.message.scope.relayId !== input.registeredRelayId
+    || input.message.scope.selectedProtocolVersion !== input.registeredProtocolVersion) return { ok: false, error: "BOLTER_UNAVAILABLE" };
+  return input.registry.acceptBolterMessage({ relayId: input.registeredRelayId, userId: input.registeredUserId, message: input.message });
 }
 
 /** Pure ownership fence for one already strict-parsed Claude discovery result. */
@@ -765,7 +785,7 @@ export function handleRelayResult(
   });
 }
 
-/** D502: relay progress is provisional and only routes to its pending call. */
+/** relay progress is provisional and only routes to its pending call. */
 function handleRelayRunShellProgress(
   msg: RelayRunShellProgressMessage,
   registry: Pick<InMemoryRelayRegistry, "acceptRunShellProgress">,
@@ -773,7 +793,7 @@ function handleRelayRunShellProgress(
   registry.acceptRunShellProgress(msg);
 }
 
-/** D500: provisional observations route only to an exact pending SSH call. */
+/** provisional observations route only to an exact pending SSH call. */
 function handleRelayStructuredSshProgress(
   msg: RelayStructuredSshProgressMessage,
   registry: Pick<InMemoryRelayRegistry, "acceptStructuredSshProgress">,
@@ -781,7 +801,7 @@ function handleRelayStructuredSshProgress(
   registry.acceptStructuredSshProgress(msg);
 }
 
-/** Strict ingress gate for the v11 D502 observation frame. */
+/** Strict ingress gate for the v11 observation frame. */
 export function isValidRelayRunShellProgress(msg: RelayRunShellProgressMessage): boolean {
   const textBytes = typeof msg.text === "string" ? Buffer.byteLength(msg.text, "utf8") : -1;
   const droppedBytes = msg.droppedBytes ?? 0;
@@ -804,7 +824,7 @@ function hasOnlyProgressKeys(value: object, allowed: readonly string[]): boolean
   return Object.keys(value).every((key) => allowed.includes(key));
 }
 
-/** Strict ingress gate for D500 v15's non-authoritative SSH observations. */
+/** Strict ingress gate for v15's non-authoritative SSH observations. */
 export function isValidRelayStructuredSshProgress(msg: RelayStructuredSshProgressMessage): boolean {
   const raw = msg as unknown;
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
@@ -847,7 +867,7 @@ export function isValidRelayStructuredSshProgress(msg: RelayStructuredSshProgres
 }
 
 /**
- * D418 protocol v7 — the wire shape of a `relay:update-capabilities` frame.
+ * protocol v7 — the wire shape of a `relay:update-capabilities` frame.
  * `RelayUpdateCapabilitiesMessage` is not re-exported from the relay package
  * root, so derive it from the exported `RelayClientMessage` union.
  */
@@ -874,7 +894,7 @@ function sendCapabilityUpdateAck(
 }
 
 /**
- * D418 protocol v7 — exported for unit testing. Runs the
+ * protocol v7 — exported for unit testing. Runs the
  * `relay:update-capabilities` arm: the update is accepted ONLY for the
  * registered authenticated socket/relay/user, then delegated to the
  * registry which requires an exact `desktopSessionId`, strictly parses the
@@ -962,7 +982,7 @@ export function relayRoutes(
 
   app.get("/relay", { websocket: true }, (socket: WebSocket) => {
     let registeredRelayId: string | null = null;
-    // D418 protocol v7 — the validated user id for this socket, stamped at
+    // protocol v7 — the validated user id for this socket, stamped at
     // register. Capability updates are accepted only for this user.
     let registeredUserId: string | null = null;
     let registeredProtocolVersion: number | null = null;
@@ -970,7 +990,7 @@ export function relayRoutes(
     // Relay ids can be reused, so the id alone is not a connection identity.
     let registeredSend: RegisteredRelaySend | null = null;
     let registrationStarted = false;
-    // D384 Phase 5 — serverNames this relay has advertised MCP tools for, so
+    // serverNames this relay has advertised MCP tools for, so
     // we can unregister them from the catalog on disconnect/close.
     const advertisedMcpServers = new Set<string>();
 
@@ -978,7 +998,7 @@ export function relayRoutes(
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(serverMsg));
     };
 
-    // D384 Phase 5 — after a v3 relay that opted into MCP hosting registers,
+    // after a v3 relay that opted into MCP hosting registers,
     // ship it the configs it should host (secret-free). The relay reconciles
     // and advertises tools back via relay:advertise-mcp-tools.
     const configureRelayMcp = (relayId: string, caps: RelayCapabilities) => {
@@ -1047,6 +1067,7 @@ export function relayRoutes(
             .then((result) => {
               if (result.outcome === "registered" && socket.readyState === socket.OPEN) {
                 if (registeredUserId !== null) {
+                  if (socketMap.get(relayId) === socket) registry.publishBolterContext?.(relayId, registeredUserId);
                   publishClaudeConnectionContextAfterAck({
                     acknowledged: true,
                     socketOpen: socket.readyState === socket.OPEN,
@@ -1069,7 +1090,7 @@ export function relayRoutes(
         }
 
         case "relay:update-capabilities": {
-          // D418 protocol v7 — atomic capability replacement from a connected
+          // protocol v7 — atomic capability replacement from a connected
           // desktop relay. Accepted only for the registered authenticated
           // socket/relay/user; the registry enforces the exact desktop
           // session, strict capability parse, stale-revision reject, and
@@ -1083,6 +1104,7 @@ export function relayRoutes(
           void handleRelayUpdateCapabilities(socket, msg, registry, { relayId, userId })
             .then((result) => {
               if (result.outcome !== "applied" || socket.readyState !== socket.OPEN || socketMap.get(relayId) !== socket) return;
+              registry.publishBolterContext?.(relayId, userId);
               publishClaudeConnectionContextAfterAck({
                 acknowledged: true,
                 socketOpen: socket.readyState === socket.OPEN,
@@ -1174,7 +1196,7 @@ export function relayRoutes(
         case "relay:codex-command-response":
         case "relay:codex-request":
         case "relay:codex-event": {
-          // D453: user identity comes exclusively from the registered,
+          // user identity comes exclusively from the registered,
           // token-validated socket context. Codex frames do not carry userId.
           const relayId = registeredRelayId;
           const userId = registeredUserId;
@@ -1212,6 +1234,20 @@ export function relayRoutes(
           break;
         }
 
+        case "relay:bolter-authorize":
+        case "relay:bolter-result":
+        case "relay:bolter-observation":
+        case "relay:bolter-batch": {
+          void handleRelayBolterMessage({ registeredRelayId, registeredUserId, registeredProtocolVersion,
+            currentSocket: registeredRelayId !== null && socketMap.get(registeredRelayId) === socket,
+            message: msg, registry }).then(result => {
+              if (!result.ok && socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: "relay:error", message: result.error }));
+            }).catch(() => {
+              if (socket.readyState === socket.OPEN) socket.send(JSON.stringify({ type: "relay:error", message: "BOLTER_UNAVAILABLE" }));
+            });
+          break;
+        }
+
         case "relay:claude-connection-discovery-result": {
           const result = handleRelayClaudeConnectionDiscoveryResult({
             registeredRelayId,
@@ -1243,7 +1279,7 @@ export function relayRoutes(
         }
 
         case "relay:advertise-mcp-tools": {
-          // D384 Phase 5 — a relay advertised the tools it discovered on a
+          // a relay advertised the tools it discovered on a
           // hosted MCP server. Register them (executor:relay, hostedBy) so a
           // Genie can call them; empty tools = server gone → unregister.
           const relayId = registeredRelayId;

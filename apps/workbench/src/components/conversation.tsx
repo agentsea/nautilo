@@ -62,7 +62,7 @@ import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
 import { MessageAttachmentImages } from "./message-attachment-images";
-import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
+import { externalMessageAuthorLabel, MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
   SHELL_AGENT_NAME,
@@ -236,6 +236,7 @@ import { CompanionTarget } from "../companion/companion-provider";
 import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
 import { useCan } from "../hooks/use-can";
 import { apiClient } from "../lib/api";
+import { BolterMessageComposer } from "./bolter-message-composer";
 import { shouldMarkRoomReadAtBottom } from "../modes/rooms/shape/read-tracking/mark-room-read-at-bottom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { createRoomMessageRouteIntentConsumer } from "../routes/room-route";
@@ -1994,6 +1995,10 @@ function ConversationBody({
           NOT bounce when the "…is thinking" strip appears/disappears. */}
       {canInvokeAgents && !directHumanRoom.isDirectHumanRoom ? <AutoApproveBar /> : null}
 
+      {verified && activeRoomId ? <BolterMessageComposer
+        key={`${activeRoomId}:${auth.viewerGeneration}:${auth.credentialGeneration}`}
+        roomId={activeRoomId} scopeKey={`${auth.viewerGeneration}:${auth.credentialGeneration}`} /> : null}
+
       <div className={`border-t border-border bg-background ${railPadX} ${railNarrow ? "py-2" : "py-3"}`}>
         <Composer
           assistantName={canInvokeAgents ? conversationPeerLabel : activeRoom?.label ?? "room"}
@@ -3611,7 +3616,10 @@ function Message({
   );
   // Resolve message authorship from the persisted source id. A missing id is
   // unknown, not evidence that the current viewer authored the message.
+  const externalAuthorLabel = useMessage((state) => state.role === "user"
+    ? externalMessageAuthorLabel(state.metadata?.custom ?? {}) : null);
   const sourceUserId = useMessage((state) => {
+    if (externalAuthorLabel !== null) return undefined;
     const c = (state.metadata as { custom?: { sourceUserId?: unknown } })?.custom;
     return typeof c?.sourceUserId === "string" ? c.sourceUserId : undefined;
   });
@@ -3760,7 +3768,7 @@ function Message({
     }
   }, [canDelete, confirmDeleteScope, currentDeleteScope, messageId, roomId, toast]);
   const authorUserId = sourceUserId ?? "";
-  const userAuthorLabel = isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender");
+  const userAuthorLabel = externalAuthorLabel ?? (isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender"));
   const { toggleReaction } = useRoomReactions();
   const editRoomMessage = useRoomMessageEdit();
   const {
