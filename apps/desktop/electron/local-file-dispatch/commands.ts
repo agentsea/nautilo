@@ -26,6 +26,7 @@ import {
   staleSha256Result,
 } from "./guarded-write.ts";
 import { findFragmentRange } from "./matching.ts";
+import { isCrlfText, toCrlf, toLf } from "./line-endings.ts";
 import {
   resolveZonePath,
   resolveLocalMutationTransactionId,
@@ -707,13 +708,17 @@ async function writeCommand(
       return JSON.stringify({ error: "EXISTS", message: "A file already exists at the destination." });
     }
     const preBytes = preSnap.kind === "bytes" ? preSnap.bytes : new Uint8Array();
+    // Text written into an existing CRLF file keeps that file's line endings.
+    const writtenBytes = !isBase64 && isCrlfText(Buffer.from(preBytes).toString("utf-8"))
+      ? Buffer.from(toCrlf(content), "utf-8")
+      : contentBytes;
     let post: Uint8Array;
     if (mode === "append") {
-      post = Buffer.concat([Buffer.from(preBytes), contentBytes]);
+      post = Buffer.concat([Buffer.from(preBytes), writtenBytes]);
     } else if (mode === "prepend") {
-      post = Buffer.concat([contentBytes, Buffer.from(preBytes)]);
+      post = Buffer.concat([writtenBytes, Buffer.from(preBytes)]);
     } else {
-      post = contentBytes;
+      post = writtenBytes;
     }
     if (expectedSha256) {
       try {
@@ -764,10 +769,13 @@ async function insertCommand(
   }
     const preSnap = await readState(ctx.adapter, resolved.canonical);
     const preBytes = preSnap.kind === "bytes" ? preSnap.bytes : new Uint8Array();
-    const lines = Buffer.from(preBytes).toString("utf-8").split("\n");
+    const decoded = Buffer.from(preBytes).toString("utf-8");
+    const crlf = isCrlfText(decoded);
+    const lines = (crlf ? toLf(decoded) : decoded).split("\n");
     const idx = Math.max(0, Math.min(lines.length, lineNumber - 1));
-    lines.splice(idx, 0, content);
-    const post = Buffer.from(lines.join("\n"), "utf-8");
+    lines.splice(idx, 0, crlf ? toLf(content) : content);
+    const joined = lines.join("\n");
+    const post = Buffer.from(crlf ? toCrlf(joined) : joined, "utf-8");
     const postSnap = snapshotFromBytes(post);
 
   return executeCoordinatedContentMutation(ctx, {
@@ -865,7 +873,11 @@ async function strReplaceCommand(
   }
   const preSnap = await readState(ctx.adapter, resolved.canonical);
   const preBytes = preSnap.kind === "bytes" ? preSnap.bytes : new Uint8Array();
-  const original = Buffer.from(preBytes).toString("utf-8");
+  const decoded = Buffer.from(preBytes).toString("utf-8");
+  // A CRLF file is matched and edited in LF form, then written back as CRLF.
+  const crlf = isCrlfText(decoded);
+  const original = crlf ? toLf(decoded) : decoded;
+  const replacement = crlf ? toLf(newString) : newString;
 
   let windowStart = 0;
   let windowEnd = original.length;
@@ -881,19 +893,20 @@ async function strReplaceCommand(
 
   let text: string;
   if (hasOldString) {
-    const count = original.split(oldString).length - 1;
+    const search = crlf ? toLf(oldString) : oldString;
+    const count = original.split(search).length - 1;
     if (count === 0) return `Error: oldString not found in ${resolved.displayPath}`;
     if (count > 1 && !replaceAll) {
       return `Error: oldString is ambiguous (${count} matches)`;
     }
     text = replaceAll
-      ? original.split(oldString).join(newString)
-      : original.replace(oldString, newString);
+      ? original.split(search).join(replacement)
+      : original.replace(search, replacement);
   } else if (hasBookend) {
     const result = findFragmentRange({
       haystack: original,
-      startFragment,
-      endFragment,
+      startFragment: crlf ? toLf(startFragment) : startFragment,
+      endFragment: crlf ? toLf(endFragment) : endFragment,
       startFrom: windowStart,
       normalize: "safe",
       requireUnique: true,
@@ -903,18 +916,18 @@ async function strReplaceCommand(
       return "Error: bookend match extends past the specified lineRange. Widen the lineRange or narrow the fragments.";
     }
     text =
-      original.slice(0, result.startIndex) + newString + original.slice(result.endIndex);
+      original.slice(0, result.startIndex) + replacement + original.slice(result.endIndex);
   } else if (lineRange && typeof lineRange.from === "number" && typeof lineRange.to === "number") {
     const lines = original.split("\n");
     const from = Math.max(1, lineRange.from) - 1;
     const to = Math.min(lines.length, lineRange.to);
-    lines.splice(from, to - from, newString);
+    lines.splice(from, to - from, replacement);
     text = lines.join("\n");
   } else {
     return "Error: No disambiguator provided. Specify oldString, lineRange alone, or startFragment+endFragment.";
   }
 
-  const post = Buffer.from(text, "utf-8");
+  const post = Buffer.from(crlf ? toCrlf(text) : text, "utf-8");
   const postSnap = snapshotFromBytes(post);
 
   return executeCoordinatedContentMutation(ctx, {
