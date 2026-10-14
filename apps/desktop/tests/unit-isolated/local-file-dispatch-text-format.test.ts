@@ -122,12 +122,15 @@ async function edit(
       journalRootDir: journalRoot,
     });
     expect(response.status).toBe("ok");
-    return await fs.readFile(file, "utf-8");
+    // Buffer decoding keeps a leading byte order mark as U+FEFF.
+    return (await fs.readFile(file)).toString("utf-8");
   } finally {
     await removeDirectory(root);
     await removeDirectory(journalRoot);
   }
 }
+
+const BOM = String.fromCharCode(0xfeff);
 
 describe("local file edits keep the file's line endings", () => {
   test("str_replace matches LF text in a CRLF file and writes CRLF", async () => {
@@ -163,5 +166,31 @@ describe("local file edits keep the file's line endings", () => {
     expect(await edit("a\nb\n", "str_replace", { oldString: "b", newString: "x\ny" })).toBe("a\nx\ny\n");
     expect(await edit("a\r\nb\nc", "str_replace", { oldString: "b", newString: "x\ny" })).toBe("a\r\nx\ny\nc");
     expect(await edit(undefined, "write", { content: "new\nfile\n" })).toBe("new\nfile\n");
+  });
+});
+
+describe("local file edits keep a UTF-8 byte order mark", () => {
+  const source = `${BOM}using A;\r\nclass B {}\r\n`;
+
+  test("str_replace keeps the mark at the start", async () => {
+    expect(await edit(source, "str_replace", { oldString: "using A;\nclass B", newString: "using A;\nusing C;\nclass B" }))
+      .toBe(`${BOM}using A;\r\nusing C;\r\nclass B {}\r\n`);
+  });
+
+  test("insert at the first line goes after the mark", async () => {
+    expect(await edit(source, "insert", { lineNumber: 1, content: "// header" }))
+      .toBe(`${BOM}// header\r\nusing A;\r\nclass B {}\r\n`);
+  });
+
+  test("write keeps one mark when overwriting, appending, and prepending", async () => {
+    expect(await edit(source, "write", { content: "using X;\n" })).toBe(`${BOM}using X;\r\n`);
+    expect(await edit(source, "write", { content: `${BOM}using X;\n` })).toBe(`${BOM}using X;\r\n`);
+    expect(await edit(source, "write", { content: "// end\n", mode: "append" })).toBe(`${source}// end\r\n`);
+    expect(await edit(source, "write", { content: "// top\n", mode: "prepend" }))
+      .toBe(`${BOM}// top\r\nusing A;\r\nclass B {}\r\n`);
+  });
+
+  test("files without a mark do not gain one", async () => {
+    expect(await edit("using A;\n", "write", { content: "using X;\n" })).toBe("using X;\n");
   });
 });

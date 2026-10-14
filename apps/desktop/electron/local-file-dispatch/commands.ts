@@ -26,7 +26,7 @@ import {
   staleSha256Result,
 } from "./guarded-write.ts";
 import { findFragmentRange } from "./matching.ts";
-import { isCrlfText, toCrlf, toLf } from "./line-endings.ts";
+import { formatText, parseTextFormat, toEditText } from "./text-format.ts";
 import {
   resolveZonePath,
   resolveLocalMutationTransactionId,
@@ -708,17 +708,20 @@ async function writeCommand(
       return JSON.stringify({ error: "EXISTS", message: "A file already exists at the destination." });
     }
     const preBytes = preSnap.kind === "bytes" ? preSnap.bytes : new Uint8Array();
-    // Text written into an existing CRLF file keeps that file's line endings.
-    const writtenBytes = !isBase64 && isCrlfText(Buffer.from(preBytes).toString("utf-8"))
-      ? Buffer.from(toCrlf(content), "utf-8")
+    // Text written into an existing file keeps its byte order mark and CRLF line breaks.
+    const format = !isBase64 && preSnap.kind === "bytes"
+      ? parseTextFormat(Buffer.from(preBytes).toString("utf-8")).format
+      : undefined;
+    const written = (includeBom: boolean): Buffer => format
+      ? Buffer.from(formatText(toEditText(content, format), format, includeBom), "utf-8")
       : contentBytes;
     let post: Uint8Array;
     if (mode === "append") {
-      post = Buffer.concat([Buffer.from(preBytes), writtenBytes]);
+      post = Buffer.concat([Buffer.from(preBytes), written(false)]);
     } else if (mode === "prepend") {
-      post = Buffer.concat([writtenBytes, Buffer.from(preBytes)]);
+      post = Buffer.concat([written(true), Buffer.from(preBytes).subarray(format?.bom ? 3 : 0)]);
     } else {
-      post = writtenBytes;
+      post = written(true);
     }
     if (expectedSha256) {
       try {
@@ -769,13 +772,11 @@ async function insertCommand(
   }
     const preSnap = await readState(ctx.adapter, resolved.canonical);
     const preBytes = preSnap.kind === "bytes" ? preSnap.bytes : new Uint8Array();
-    const decoded = Buffer.from(preBytes).toString("utf-8");
-    const crlf = isCrlfText(decoded);
-    const lines = (crlf ? toLf(decoded) : decoded).split("\n");
+    const { format, body } = parseTextFormat(Buffer.from(preBytes).toString("utf-8"));
+    const lines = body.split("\n");
     const idx = Math.max(0, Math.min(lines.length, lineNumber - 1));
-    lines.splice(idx, 0, crlf ? toLf(content) : content);
-    const joined = lines.join("\n");
-    const post = Buffer.from(crlf ? toCrlf(joined) : joined, "utf-8");
+    lines.splice(idx, 0, toEditText(content, format));
+    const post = Buffer.from(formatText(lines.join("\n"), format), "utf-8");
     const postSnap = snapshotFromBytes(post);
 
   return executeCoordinatedContentMutation(ctx, {
@@ -873,11 +874,10 @@ async function strReplaceCommand(
   }
   const preSnap = await readState(ctx.adapter, resolved.canonical);
   const preBytes = preSnap.kind === "bytes" ? preSnap.bytes : new Uint8Array();
-  const decoded = Buffer.from(preBytes).toString("utf-8");
-  // A CRLF file is matched and edited in LF form, then written back as CRLF.
-  const crlf = isCrlfText(decoded);
-  const original = crlf ? toLf(decoded) : decoded;
-  const replacement = crlf ? toLf(newString) : newString;
+  // Edits match the body without byte order mark and with LF line breaks;
+  // the file's own format is restored when writing.
+  const { format, body: original } = parseTextFormat(Buffer.from(preBytes).toString("utf-8"));
+  const replacement = toEditText(newString, format);
 
   let windowStart = 0;
   let windowEnd = original.length;
@@ -893,7 +893,7 @@ async function strReplaceCommand(
 
   let text: string;
   if (hasOldString) {
-    const search = crlf ? toLf(oldString) : oldString;
+    const search = toEditText(oldString, format);
     const count = original.split(search).length - 1;
     if (count === 0) return `Error: oldString not found in ${resolved.displayPath}`;
     if (count > 1 && !replaceAll) {
@@ -905,8 +905,8 @@ async function strReplaceCommand(
   } else if (hasBookend) {
     const result = findFragmentRange({
       haystack: original,
-      startFragment: crlf ? toLf(startFragment) : startFragment,
-      endFragment: crlf ? toLf(endFragment) : endFragment,
+      startFragment: toEditText(startFragment, format),
+      endFragment: toEditText(endFragment, format),
       startFrom: windowStart,
       normalize: "safe",
       requireUnique: true,
@@ -927,7 +927,7 @@ async function strReplaceCommand(
     return "Error: No disambiguator provided. Specify oldString, lineRange alone, or startFragment+endFragment.";
   }
 
-  const post = Buffer.from(crlf ? toCrlf(text) : text, "utf-8");
+  const post = Buffer.from(formatText(text, format), "utf-8");
   const postSnap = snapshotFromBytes(post);
 
   return executeCoordinatedContentMutation(ctx, {
