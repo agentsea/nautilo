@@ -1,12 +1,16 @@
 import {
   invokeChatModelWithFallback,
+  MemoryReviewError,
   runWithUsageContext,
   type CapabilityFundingSession,
   type MemoryReviewOptions,
 } from "@nautilo/agent";
 import type { OrganizerEvidenceBudget } from "@nautilo/reflection";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
-import type { PersonalMemoryEvidencePort } from "@nautilo/reflection-bridge/server";
+import {
+  PersonalMemoryEvidenceChangedError,
+  type PersonalMemoryEvidencePort,
+} from "@nautilo/reflection-bridge/server";
 import type {
   AdmittedMemoryReviewModel,
   MemoryReviewClaim,
@@ -21,6 +25,17 @@ import {
 
 type InvokeModel = NonNullable<MemoryReviewOptions["invokeModel"]>;
 type MemoryReviewSnapshot = Parameters<NonNullable<MemoryReviewOptions["onModelExposure"]>>[0][number];
+
+async function translatePersonalEvidenceLoss<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof PersonalMemoryEvidenceChangedError) {
+      throw new MemoryReviewError("memory_unavailable");
+    }
+    throw error;
+  }
+}
 
 export interface PersonalMemoryReviewFundingOptions {
   readonly repository: MemoryReviewRepository;
@@ -46,7 +61,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
     assertCurrent: () => Promise<void>,
   ): Promise<AdmittedMemoryReviewModel> => {
     if (!options.repository.bindModelOperation) throw new Error("memory_review_binding_unavailable");
-    const operation = await (options.openOperation ?? openMemoryOperation)({
+    const operation = await translatePersonalEvidenceLoss(() => (options.openOperation ?? openMemoryOperation)({
       role: "memoryReview",
       operationKey: claim.workId,
       dependencies: () => Promise.resolve(input.modelExposureDependencies),
@@ -57,8 +72,8 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
       assertCurrent,
       resolveServiceModel: options.resolveServiceModel,
       ...(options.openHumanSession === undefined ? {} : { openHumanSession: options.openHumanSession }),
-    });
-    const invokeModel: InvokeModel = async (invocation) => runWithUsageContext({
+    }));
+    const invokeModel: InvokeModel = async (invocation) => translatePersonalEvidenceLoss(() => runWithUsageContext({
       callType: "memory_review",
       userId: operation.humanUserId,
       roomId: claim.roomId,
@@ -85,21 +100,21 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
         fundingOptions,
       );
       return response;
-    });
+    }));
     return {
       modelId: operation.modelId,
       invokeModel,
-      assertCurrent: () => operation.assertCurrent(),
-      resolveMemoryExposureDependencies: async (snapshots) => {
+      assertCurrent: () => translatePersonalEvidenceLoss(() => operation.assertCurrent()),
+      resolveMemoryExposureDependencies: (snapshots) => translatePersonalEvidenceLoss(async () => {
         await operation.assertCurrent();
         const dependencies = await options.resolveExposureDependencies(claim, snapshots);
         if (snapshots.length > 0) await operation.assertExposure(dependencies);
         return dependencies;
-      },
-      onModelExposure: async (snapshots) => {
+      }),
+      onModelExposure: (snapshots) => translatePersonalEvidenceLoss(async () => {
         if (snapshots.length === 0) { await operation.assertCurrent(); return; }
         await operation.assertExposure(await options.resolveExposureDependencies(claim, snapshots));
-      },
+      }),
     };
   };
 }
