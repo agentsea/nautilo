@@ -1,3 +1,4 @@
+import { CHATGPT_PLAN_DTO_DECLARATIONS } from "./reviewed-chatgpt-plan-coverage";
 import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
 import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
 import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
@@ -6210,4 +6211,5 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = reviewedBolt
   ),
   ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
   ...BOLTER_HTTP_DECLARATIONS,
+  ...CHATGPT_PLAN_DTO_DECLARATIONS,
 ]));

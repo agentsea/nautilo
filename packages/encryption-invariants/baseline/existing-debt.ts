@@ -1,3 +1,4 @@
+import { REVIEWED_CHATGPT_PLAN_COVERAGE } from "./reviewed-chatgpt-plan-coverage";
 import { BOLTER_NATIVE_STORAGE_COVERAGE } from "./reviewed-bolter-native-storage";
 import { BOLTER_HTTP_COVERAGE } from "./reviewed-bolter-http";
 import { BOLTER_PLAINTEXT_COVERAGE } from "./reviewed-bolter-plaintext-carriers";
@@ -1945,6 +1946,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...REVIEWED_MAIN_2026_09_17_COVERAGE,
     ...REVIEWED_PAID_SERVICE_FUNDING_COVERAGE,
     ...REVIEWED_PERSONAL_ATTEMPT_LEASE_COVERAGE,
+    ...REVIEWED_CHATGPT_PLAN_COVERAGE,
     ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_COVERAGE,
     ...REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
   ].filter((entry) =>

@@ -97,7 +97,7 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
     showProviderKeyStatus &&
     canManageServerProviderCredentials &&
     !canUsePersonalProviderCredentials;
-  // M129 — the agent's default model is PERSONAL, per-agent config (it
+  // the agent's default model is PERSONAL, per-agent config (it
   // lives on the viewer's own profile, same as fallback), NOT a server
   // setting. Gate on owning this Agent (per-agent `viewerRole === "owner"`,
   // i.e. self-edit AR-5), so any verified user configures their own
@@ -369,7 +369,7 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
                   <StatusPill tone="muted">{formatProviderGroupLabel(currentProvider)}</StatusPill>
                   {effectiveModel?.fundingSource ? (
                     <StatusPill tone={effectiveModel.fundingSource === "personal" ? "ok" : "muted"}>
-                      {effectiveModel.fundingSource === "personal" ? "Your key" : "Server key"}
+                      {effectiveModel.fundingProviderRoute === "openai-chatgpt" ? "Your ChatGPT plan" : effectiveModel.fundingSource === "personal" ? "Your key" : "Server key"}
                     </StatusPill>
                   ) : null}
                 </div>

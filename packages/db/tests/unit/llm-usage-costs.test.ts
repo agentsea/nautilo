@@ -1,5 +1,5 @@
 /**
- * ISSUE-M217 — costs aggregation fallback disclosure from stored metadata.
+ * costs aggregation fallback disclosure from stored metadata.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -8,6 +8,7 @@ import {
   __setLlmUsageDbForTests,
   buildCostsRecoveryAttemptsQuery,
   buildCostsSummaryQueries,
+  buildPersonalSubscriptionUsageQuery,
   buildPersonalCostsByRouteQuery,
   buildPersonalCostsByTaskQuery,
   getCostsSummary,
@@ -61,7 +62,7 @@ function mockDb(responses: unknown[][]) {
   } as unknown as DirectDatabase;
 }
 
-describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
+describe("getCostsSummary fallback disclosure ", () => {
   afterEach(() => {
     __setLlmUsageDbForTests(null);
   });
@@ -392,4 +393,29 @@ describe("getCostsSummary fallback disclosure (ISSUE-M217)", () => {
     expect(compiled[1]).toContain("filter (where \"cost_state\" = 'pending')");
     expect(compiled[1]).toContain("filter (where \"cost_state\" = 'unknown')");
   });
+});
+
+
+test("every monetary aggregation excludes subscription usage while preserving legacy NULL routes", () => {
+  const handle = drizzle.mock() as unknown as DirectDatabase;
+  for (const payer of [undefined, "11111111-1111-4111-8111-111111111111"]) {
+    const queries = buildCostsSummaryQueries(RANGE, handle, payer);
+    const all = [...Object.values(queries), buildCostsRecoveryAttemptsQuery(RANGE, handle, payer)];
+    if (payer) all.push(buildPersonalCostsByRouteQuery(RANGE, handle, payer), buildPersonalCostsByTaskQuery(RANGE, handle, payer));
+    for (const query of all) {
+      const built = query.toSQL();
+      expect(built.params).toContain("openai-chatgpt");
+      expect(built.sql).toMatch(/"provider_route" is null or "llm_usage_events"\."provider_route" <>/);
+    }
+  }
+});
+
+test("subscription reporting scopes payer and time window, groups account/model, and never sums charges", () => {
+  const payer = "11111111-1111-4111-8111-111111111111";
+  const built = buildPersonalSubscriptionUsageQuery(RANGE, drizzle.mock() as unknown as DirectDatabase, payer).toSQL();
+  expect(built.params).toContain(payer);
+  expect(built.params).toContain("personal");
+  expect(built.params).toContain("openai-chatgpt");
+  expect(built.sql).toContain('group by "llm_usage_events"."credential_id", "llm_usage_events"."model"');
+  expect(built.sql).not.toContain('"actual_cost_usd"');
 });

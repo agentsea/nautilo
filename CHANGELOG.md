@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Add initial local ChatGPT plan connection settings, encrypted account custody,
+  account-specific model discovery and a separate subscription Responses adapter.
+  Selecting a subscription prevents automatic API-key/server fallback. Plan usage
+  appears separately from API spending, with comparison estimates clearly labeled.
+  Limit and connection failures retain actionable recovery messages. Remote
+  enrollment and real-provider qualification remain in progress.
+
 - Desktop acquires the latest Bolter CLI without waiting for a Desktop release.
   Failed CLI operations can upgrade and retry once when a newer build is
   available, preserving credentials and queued messages. Uncertain sends are

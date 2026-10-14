@@ -102,7 +102,7 @@ mock.module("../../src/lib/model-funding", () => ({
       : { kind: "server" as const, providerRoute: "openrouter", humanUserId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const };
   },
-  withAdmittedPersonalProviderKey: async () => { throw new Error("not used"); },
+  withAdmittedPersonalCredential: async () => { throw new Error("not used"); },
 }));
 
 const { nativeTaskFundingPort, isPersonalOnlyNativeTaskSelection } = await import("../../src/lib/native-task-funding");

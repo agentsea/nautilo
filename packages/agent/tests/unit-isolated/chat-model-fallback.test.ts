@@ -32,6 +32,7 @@ import { SurplusOutcomeUnknownError } from "../../src/providers/surplus-transpor
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
 import { getCurrentTurnId, runWithTurn } from "@nautilo/logger";
 import { classifyModelStreamProgress, resolveModelAttemptPolicy } from "../../src/utils/model-attempt-policy";
+import { ChatGPTSubscriptionError } from "../../src/providers/chatgpt-plan-errors";
 import { classifyError } from "../../src/utils/errors";
 import { runWithTaskCausalHuman } from "../../src/runtime/causal-human-context";
 import { getUsageContext, type UsageFundingProvenance } from "../../src/usage/usage-context";
@@ -2567,6 +2568,32 @@ describe("invokeChatModelWithFallback — foreground funding session", () => {
     expect(fundingAdmission).not.toHaveBeenCalled();
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
   });
+
+  test.each(["subscription_limit", "subscription_unavailable", "reconnect_required", "stream_interrupted"] as const)(
+    "preserves safe ChatGPT %s recovery without retrying or changing funding", async code => {
+      policyState = { enabled: true, chain: [B, A] };
+      const failure = new ChatGPTSubscriptionError(code);
+      let invokes = 0;
+      const session: ForegroundChatFundingSession = {
+        kind: "personal",
+        async recheckAttempt() { throw new Error("must not admit fallback"); },
+        async runAttempt(_modelId, callback) {
+          return callback({ personalCredential: { kind: "chatgpt_plan", accessToken: "synthetic-subscription-token" },
+            usageFunding: { kind: "personal", humanUserId: "human-1", payerHumanId: "human-1", providerRoute: "openai-chatgpt",
+              credentialId: "synthetic-registration", credentialRevision: 1 } });
+        },
+      };
+      createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+        bindTools: () => ({ invoke: async () => { invokes++; throw failure; } }),
+      }) as unknown as AuraModel);
+      const thrown = await invokeChatModelWithFallback(messages, [], B, "owner-1", "agent-1", null, undefined,
+        { fundingSession: session }).catch((error: unknown) => error);
+      expect(thrown).toBe(failure);
+      expect(invokes).toBe(1);
+      expect(modelIdsFromCalls()).toEqual([B]);
+      expect(fundingAdmission).not.toHaveBeenCalled();
+    },
+  );
 
   test("does not widen an uncertain personal 503 after partial output into chain fallback", async () => {
     policyState = { enabled: true, chain: [A, B] };

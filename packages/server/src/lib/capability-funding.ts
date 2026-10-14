@@ -15,7 +15,7 @@ import {
   isMediaCapabilityRole,
   type TaskFundingBinding,
 } from "@nautilo/types";
-import { ModelFundingError, createModelFundingSnapshot, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
+import { ModelFundingError, createModelFundingSnapshot, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
 import { usageFundingFor } from "./foreground-chat-funding";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
@@ -47,6 +47,7 @@ function assertModel(
 }
 
 interface CapabilityFundingOverrides {
+  readonly parentBinding?: TaskFundingBinding;
   readonly readPreferences?: (humanUserId: string) => Promise<PersonalCapabilityPreferences>;
   readonly readProjectionCustody?: typeof readPersonalProviderCustody;
   readonly resolveCatalog?: typeof resolveCatalogModel;
@@ -68,9 +69,27 @@ export function createCapabilityFundingSession(
   const readPreferences = overrides.readPreferences
     ?? ((humanId: string) => getPersonalCapabilityPreferences(getServerDirectDb(), humanId));
   const resolveCatalog = overrides.resolveCatalog ?? resolveCatalogModel;
+  const subscription = overrides.parentBinding?.kind === "personal" && overrides.parentBinding.providerRoute === "openai-chatgpt"
+    ? overrides.parentBinding : undefined;
+  const denySeparateFunding = () => { if (subscription) throw new ModelFundingError("unsupported_workload"); };
+  const resolveFunding = (modelId: string, workload: "research" | "decision", priorDecision?: ModelFundingDecision) => {
+    if (subscription && workload !== "research") throw new ModelFundingError("unsupported_workload");
+    const pinned: ModelFundingDecision | undefined = subscription
+      ? { ...subscription, humanUserId, payerHumanId: humanUserId, modelId, workload } : undefined;
+    if (pinned && priorDecision && (priorDecision.kind !== "personal"
+      || priorDecision.providerRoute !== pinned.providerRoute || priorDecision.credentialId !== subscription?.credentialId
+      || priorDecision.credentialRevision !== subscription?.credentialRevision)) throw new ModelFundingError("funding_source_changed");
+    const prior = priorDecision ?? pinned;
+    return resolveModelFunding({ humanUserId, modelId, workload, ...(prior ? { priorDecision: prior } : {}) }, projectionDeps);
+  };
   let projectionCustody: ReturnType<typeof readPersonalProviderCustody> | undefined;
   const validateProjectionCredential = async (decision: TaskFundingBinding): Promise<void> => {
     if (!projectionDeps || decision.kind !== "personal") return;
+    if (decision.providerRoute === "openai-chatgpt") {
+      const registration = await projectionDeps.getSubscription?.(humanUserId, decision.credentialId);
+      if (!registration?.available || registration.revision !== decision.credentialRevision) throw new ModelFundingError("personal_credential_unavailable");
+      return;
+    }
     const provider = (PERSONAL_PROVIDER_IDS as readonly string[]).includes(decision.providerRoute)
       ? decision.providerRoute as PersonalProviderId
       : null;
@@ -99,6 +118,7 @@ export function createCapabilityFundingSession(
       await recheckAuthority();
       const preferences = await readPreferences(humanUserId);
       if (isMediaCapabilityRole(role)) {
+        denySeparateFunding();
         return resolvePersonalMediaModel(humanUserId, role, configuredId, preferences, projectionDeps, validateProjectionCredential);
       }
       const explicit = configuredId?.trim() || preferences.overrides[role];
@@ -109,7 +129,7 @@ export function createCapabilityFundingSession(
         assertModel(configured, workload, research?.tools, resolveCatalog);
         // Missing credentials are reported for this choice, never replaced by
         // another model just because a different account has a usable key.
-        const decision = await resolveModelFunding({ humanUserId, modelId: configured, workload }, projectionDeps);
+        const decision = await resolveFunding(configured, workload);
         await validateProjectionCredential(decision);
         return { modelId: configured, preferenceRevision: preferences.revision };
       }
@@ -119,7 +139,7 @@ export function createCapabilityFundingSession(
       for (const modelId of new Set(candidates)) {
         try {
           assertModel(modelId, workload, research?.tools, resolveCatalog);
-          const decision = await resolveModelFunding({ humanUserId, modelId, workload }, projectionDeps);
+          const decision = await resolveFunding(modelId, workload);
           await validateProjectionCredential(decision);
           return { modelId, preferenceRevision: preferences.revision };
         } catch (error) {
@@ -135,7 +155,7 @@ export function createCapabilityFundingSession(
       const priorDecision: ModelFundingDecision | undefined = binding
         ? binding.kind === "personal" ? { ...binding, humanUserId, modelId, workload, payerHumanId: humanUserId } : { ...binding, humanUserId, modelId, workload }
         : undefined;
-      const admitted = await resolveModelFunding({ humanUserId, modelId, workload, ...(priorDecision ? { priorDecision } : {}) }, projectionDeps);
+      const admitted = await resolveFunding(modelId, workload, priorDecision);
       await validateProjectionCredential(admitted);
       const resolve = async (candidate: string, transport?: "direct" | "surplus") => {
         await recheckAuthority();
@@ -160,13 +180,14 @@ export function createCapabilityFundingSession(
             lastAttempt = decision;
             const usageFunding = usageFundingFor(decision);
             if (decision.kind === "server") return run({ usageFunding });
-            return withAdmittedPersonalProviderKey(decision,
-              (apiKey) => run({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+            return withAdmittedPersonalCredential(decision,
+              (personalCredential) => run({ usageFunding, personalCredential }), undefined, admitted);
           },
         },
       };
     },
     async projectMediaFunding(modelId, role) {
+      denySeparateFunding();
       await recheckAuthority();
       const funding = await mediaPreferenceFunding(humanUserId, modelId, role, projectionDeps);
       await validateProjectionCredential(funding);
@@ -175,10 +196,12 @@ export function createCapabilityFundingSession(
         : { kind: "server", providerRoute: funding.providerRoute };
     },
     async openMedia(modelId, family, options) {
+      denySeparateFunding();
       await recheckAuthority();
       return openMediaFunding(humanUserId, modelId, family, options, recheckAuthority);
     },
     async openService(provider, prior) {
+      denySeparateFunding();
       await recheckAuthority();
       const admitted = await openServiceFunding(humanUserId, provider, prior);
       return { binding: admitted.binding, runAttempt: async (run) => {
@@ -191,7 +214,7 @@ export function createCapabilityFundingSession(
 
 
 /** Readiness is a projection; the selected operation still admits and rechecks live. */
-export async function prepareCapabilityFundingSession(humanUserId: string, recheckAuthority: () => Promise<void>, parentFundingKind: "personal" | "server"): Promise<CapabilityFundingSession> {
+export async function prepareCapabilityFundingSession(humanUserId: string, recheckAuthority: () => Promise<void>, parentFundingKind: "personal" | "server", parentBinding?: TaskFundingBinding): Promise<CapabilityFundingSession> {
   await recheckAuthority();
   const [snapshot, preferences] = await Promise.all([
     createModelFundingSnapshot(humanUserId),
@@ -201,8 +224,9 @@ export async function prepareCapabilityFundingSession(humanUserId: string, reche
   // keeps fresh policy, permission and credential checks for every attempt.
   const projection = createCapabilityFundingSession(humanUserId, undefined, snapshot.deps, {
     readPreferences: () => Promise.resolve(preferences),
+    ...(parentBinding ? { parentBinding } : {}),
   });
-  const session = createCapabilityFundingSession(humanUserId, recheckAuthority);
+  const session = createCapabilityFundingSession(humanUserId, recheckAuthority, undefined, { ...(parentBinding ? { parentBinding } : {}) });
   const [decisionModelId, image, video, music] = await Promise.all([
     projection.resolveModel("decision").then((choice) => choice.modelId).catch(() => null),
     projection.resolveModel("imageGeneration").then(() => true).catch(() => false),

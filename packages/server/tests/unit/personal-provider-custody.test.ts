@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -76,6 +76,10 @@ function restoreEnv(
   if (value === undefined) delete process.env[key];
   else process.env[key] = value;
 }
+
+beforeEach(() => {
+  trackSpy(spyOn(credentialDb, "listChatGPTRegistrationsForCustody").mockResolvedValue([]));
+});
 
 afterEach(async () => {
   for (const restore of restoreSpies.splice(0).reverse()) restore();

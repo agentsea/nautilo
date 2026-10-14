@@ -1085,6 +1085,7 @@ export async function* langgraphExecutor(
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
     causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.main" ? "foreground.main" : null,
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+    ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
     humanUserId: causalHumanUserId ?? "", mainModelId: modelId,

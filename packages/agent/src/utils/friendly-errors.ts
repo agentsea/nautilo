@@ -31,6 +31,7 @@
  * the `job.status: failed` ServerEvent.
  */
 
+import { findChatGPTSubscriptionError, type ChatGPTSubscriptionFailure } from "../providers/chatgpt-plan-errors";
 import { classifyError, type ErrorCategory } from "./errors";
 import { ModelOutputLimitError } from "../graph/model-output-limit";
 import { formatProviderError } from "../providers/errors";
@@ -214,7 +215,7 @@ const CATEGORY_CODES: Record<FriendlyErrorCategory, MdlCode> = {
 };
 
 /**
- * Stack 208 P0 — user-safe sentence for a graph that exhausted its recursion
+ * user-safe sentence for a graph that exhausted its recursion
  * ceiling. Distinct from the seven category sentences above: the WS
  * `JobStatusEvent.errorCategory` union is a closed set in `@nautilo/types`
  * (not owned by this stack), so the graph-budget failure rides the existing
@@ -228,7 +229,7 @@ const GRAPH_BUDGET_MESSAGE =
   "This task ran longer than the allowed number of steps. Try simplifying the request or breaking it into smaller steps.";
 
 /**
- * Stack 208 P2 — user-safe sentence for a no-progress stop. The agent
+ * user-safe sentence for a no-progress stop. The agent
  * repeated the same failing tool operation past the corrective turn, so the
  * breaker stopped it. The sentence is generic on purpose: it names no tool,
  * no arguments, and no raw error (R9 / spec — never expose raw tool output or
@@ -306,7 +307,47 @@ function isProviderToolSchemaRejectionMessage(message: string): boolean {
  * needs idempotency, add a brand check (`if (looksLikeFriendlyError)
  * return it`) here — do NOT silently re-classify.
  */
+const SUBSCRIPTION_MESSAGES: Record<ChatGPTSubscriptionFailure, { category: FriendlyErrorCategory; message: string }> = {
+  subscription_limit: {
+    category: "rate_limit",
+    message: "Your ChatGPT plan has reached its usage limit. Check usage in ChatGPT before retrying. To use another funding source, choose it explicitly in Settings → Personal API keys and subscriptions.",
+  },
+  subscription_unavailable: {
+    category: "provider_unavailable",
+    message: "ChatGPT plan usage is unavailable for this account. Check your plan in ChatGPT, then reconnect or choose another funding source in Settings → Personal API keys and subscriptions.",
+  },
+  reconnect_required: {
+    category: "auth",
+    message: "Your ChatGPT connection needs to be renewed. Reconnect in Settings → Personal API keys and subscriptions, then try again.",
+  },
+  response_incomplete: {
+    category: "unknown",
+    message: "ChatGPT stopped before completing this response. Any partial output is incomplete. Review it before asking to continue; the attempt may have used plan allowance.",
+  },
+  stream_interrupted: {
+    category: "unknown",
+    message: "The ChatGPT connection ended before completion was confirmed. Review any partial output before retrying; the attempt may have used plan allowance.",
+  },
+  unsupported_input: {
+    category: "bad_request",
+    message: "This request uses a feature that Nautilo cannot send through your ChatGPT plan. Simplify the request or choose another funding source in Settings → Personal API keys and subscriptions.",
+  },
+  provider_unavailable: {
+    category: "provider_unavailable",
+    message: "Nautilo could not confirm a complete response from ChatGPT. Check any partial output before retrying. Your selected funding source has not changed.",
+  },
+};
+
 export function toFriendlyError(error: unknown): FriendlyError {
+  const subscriptionError = findChatGPTSubscriptionError(error);
+  if (subscriptionError) {
+    const presentation = SUBSCRIPTION_MESSAGES[subscriptionError.code];
+    return {
+      ...presentation,
+      code: CATEGORY_CODES[presentation.category],
+      detailsForLog: `chatgpt_${subscriptionError.code}`,
+    };
+  }
   if (error instanceof PersonalDirectFundingUnavailableError) {
     return {
       message: "Surplus could not serve this request, and you do not have a matching personal provider key for the selected model. Add that key in your personal provider settings or choose another model available with your keys.",
@@ -405,7 +446,7 @@ export function toFriendlyError(error: unknown): FriendlyError {
       detailsForLog: "empty_terminal_response",
     };
   }
-  // Stack 208 P2 — map the no-progress breaker's typed error BEFORE the
+  // map the no-progress breaker's typed error BEFORE the
   // generic classifier so the user sees the no-progress sentence (not the
   // generic "something went wrong reaching the model"). Category stays
   // `unknown` / `MDL007` on the wire (closed WS union untouched); the raw
@@ -415,7 +456,7 @@ export function toFriendlyError(error: unknown): FriendlyError {
     const outcome = toNoProgressOutcomeFromError(error);
     return toFriendlyNoProgressError(outcome ?? undefined);
   }
-  // Stack 208 P0 — map LangGraph's raw GraphRecursionError BEFORE the generic
+  // map LangGraph's raw GraphRecursionError BEFORE the generic
   // classifier so the user sees a graph-budget sentence (not the generic
   // "something went wrong reaching the model"). Category stays `unknown` /
   // `MDL007` on the wire (closed WS union untouched); the raw framework
@@ -435,7 +476,7 @@ export function toFriendlyError(error: unknown): FriendlyError {
 }
 
 /**
- * Stack 208 P0 — build the user-safe {@link FriendlyError} for a graph-budget
+ * build the user-safe {@link FriendlyError} for a graph-budget
  * (recursion-limit) failure. Category is `unknown` / `MDL007` (the WS
  * `errorCategory` union is closed in `@nautilo/types` and not owned by this
  * stack); the dedicated {@link GRAPH_BUDGET_MESSAGE} sentence is the
@@ -456,7 +497,7 @@ export function toFriendlyGraphBudgetError(
 }
 
 /**
- * Stack 208 P2 — build the user-safe {@link FriendlyError} for a no-progress
+ * build the user-safe {@link FriendlyError} for a no-progress
  * stop. Category is `unknown` / `MDL007` (the WS `errorCategory` union is
  * closed in `@nautilo/types` and not owned by this stack); the dedicated
  * {@link NO_PROGRESS_MESSAGE} sentence is the user-visible deliverable.

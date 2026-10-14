@@ -682,3 +682,38 @@ describe("personal marketplace transport funding", () => {
     expect(h.reads).toEqual([]);
   });
 });
+
+describe("ChatGPT subscription admission", () => {
+  const subscription = { id: "50000000-0000-4000-8000-000000000005", revision: 1, available: true, modelIds: ["openai:gpt-6.1-sol"] };
+  test("explicit selection stays personal even with a configured paid fallback", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);
+    h.setFundingPreference("server_first"); h.setServerRoute("openai");
+    h.deps.getSubscription = async human => human === ALICE ? subscription : null;
+    const admitted = await resolveModelFunding(request(ALICE, "openai:gpt-6.1-sol"), h.deps);
+    expect(admitted).toMatchObject({ kind: "personal", providerRoute: "openai-chatgpt", credentialId: subscription.id });
+    expect(h.reads).toEqual([]);
+    h.deps.getSubscription = async () => ({ ...subscription, available: false });
+    expect(await code(resolveModelFunding(request(ALICE, "openai:gpt-6.1-sol"), h.deps))).toBe("personal_credential_unavailable");
+    expect(await code(resolveModelFunding({ ...request(ALICE, "openai:gpt-6.1-sol"), priorDecision: admitted }, h.deps))).toBe("personal_credential_unavailable");
+  });
+  test("pins account across retries and rejects another provider, revoked authority and disabled policy", async () => {
+    const h = harness(); h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);
+    h.deps.getSubscription = async () => subscription;
+    const admitted = await resolveModelFunding(request(ALICE, "openai:gpt-6.1-sol"), h.deps);
+    expect(await code(resolveModelFunding({ ...request(ALICE, "anthropic:claude-opus-4-6"), priorDecision: admitted }, h.deps))).toBe("funding_source_changed");
+    h.deps.getSubscription = async () => ({ ...subscription, revision: 2 });
+    expect(await code(resolveModelFunding({ ...request(ALICE, "openai:gpt-6.1-sol"), priorDecision: admitted }, h.deps))).toBe("personal_credential_stale");
+    h.setEnabled(false);
+    expect(await code(resolveModelFunding(request(ALICE, "openai:gpt-6.1-sol"), h.deps))).toBe("personal_credentials_disabled");
+  });
+  test("never injects a subscription bearer through the legacy key-only boundary", async () => {
+    const h = harness(); h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    h.deps.getSubscription = async () => subscription;
+    const admitted = await resolveModelFunding(request(ALICE, "openai:gpt-6.1-sol"), h.deps);
+    if (admitted.kind !== "personal") throw new Error("Expected personal source");
+    let invoked = false;
+    await code(withAdmittedPersonalProviderKey(admitted, () => { invoked = true; }, h.deps));
+    expect(invoked).toBe(false);
+  });
+});

@@ -124,7 +124,7 @@ mock.module("../../src/lib/model-funding", () => ({
     workload: "native_text_task" as const,
     providerRoute: "openrouter",
   }),
-  withAdmittedPersonalProviderKey: async () => {
+  withAdmittedPersonalCredential: async () => {
     throw new Error("personal funding must not be used");
   },
 }));

@@ -9,7 +9,7 @@ import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@
 import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission } from "@nautilo/runtime";
 import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
 import { usageFundingFor } from "./foreground-chat-funding";
-import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
+import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
@@ -366,6 +366,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       task.requestorId,
       async () => { await resolveCandidate(modelId); },
       admitted.kind,
+      bindingFor(admitted),
     ),
     async recheckAttempt(candidate, transport) {
       const current = await resolveCandidate(candidate, transport);
@@ -382,8 +383,8 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
         lastAttempt = decision;
         const usageFunding = usageFundingFor(decision);
         if (decision.kind === "server") return await runAttempt({ usageFunding });
-        return await withAdmittedPersonalProviderKey(decision,
-          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+        return await withAdmittedPersonalCredential(decision,
+          (personalCredential) => runAttempt({ usageFunding, personalCredential }), undefined, admitted);
       } catch (error) {
         const reason = taskFundingFailureCode(error);
         if (wake && run.status === "completed" && reason) {

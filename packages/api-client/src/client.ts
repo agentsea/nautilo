@@ -2446,6 +2446,17 @@ const personalServiceRecoverySchema = z.object({
   }).strict()),
 }).strict();
 const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
+  subscriptions: z.array(z.object({
+    registrationId: z.uuid().nullable(),
+    model: z.string().min(1),
+    attempts: personalCostsCountSchema,
+    unresolvedAttempts: personalCostsCountSchema,
+    inputTokens: personalCostsCountSchema,
+    cachedInputTokens: personalCostsCountSchema,
+    outputTokens: personalCostsCountSchema,
+    totalTokens: personalCostsCountSchema,
+    apiEquivalentCostUsd: personalCostsMoneySchema,
+  }).strict()).optional(),
   serviceOperations: personalServiceOperationsSchema.optional(),
   serviceRecovery: personalServiceRecoverySchema.optional(),
   currency: z.literal("USD"),
@@ -5989,6 +6000,43 @@ export class NautiloApiClient {
       defaultErrorPrefix: "GET /api/health/keys",
     });
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
+  }
+
+  async listChatGPTAccounts() {
+    return this.request({ path: "/api/account/chatgpt", schema: z.object({
+      canEnroll: z.boolean(), enabled: z.boolean(), accounts: z.array(z.object({
+        id: z.string().uuid(), label: z.string(), registrationLabel: z.string(), revision: z.number().int().positive(),
+        selected: z.boolean(), state: z.enum(["connected", "reconnect_required", "disconnected"]),
+      })),
+    }) });
+  }
+
+  async startChatGPTSignIn(accountId?: string) {
+    return this.request({ method: "POST", path: "/api/account/chatgpt/sign-in", body: accountId ? { accountId } : {},
+      schema: z.object({ attemptId: z.string().uuid(), authorizationUrl: z.string().url() }) });
+  }
+
+  async chatGPTSignInStatus(attemptId: string) {
+    return this.request({ path: `/api/account/chatgpt/sign-in/${encodeURIComponent(attemptId)}`,
+      schema: z.object({ status: z.enum(["pending", "connected", "failed", "cancelled"]), code: z.string().optional() }) });
+  }
+
+  async cancelChatGPTSignIn(attemptId: string) {
+    return this.request({ method: "DELETE", path: `/api/account/chatgpt/sign-in/${encodeURIComponent(attemptId)}`,
+      schema: z.object({ ok: z.boolean() }) });
+  }
+
+  async selectChatGPTAccount(accountId: string | null) {
+    return this.request({ method: "PUT", path: "/api/account/chatgpt/selection", body: { accountId }, schema: z.object({ ok: z.boolean() }) });
+  }
+
+  async listChatGPTModels(accountId: string) {
+    return this.request({ path: `/api/account/chatgpt/${encodeURIComponent(accountId)}/models`, schema: z.object({ models: z.array(z.object({ id: z.string(), name: z.string() })) }) });
+  }
+
+  async disconnectChatGPTAccount(accountId: string, revision: number) {
+    return this.request({ method: "POST", path: `/api/account/chatgpt/${encodeURIComponent(accountId)}/disconnect`, body: { revision },
+      schema: z.object({ remoteRevocationConfirmed: z.boolean() }) });
   }
 
   async listProviderCredentials(): Promise<{
