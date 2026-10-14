@@ -1,15 +1,13 @@
 import { createHash, randomBytes as nodeRandomBytes } from "node:crypto";
 import {
-  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   unlinkSync,
-  writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
+import { publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 import { bootstrapDirForInstance, writeBootstrapClaimInvite } from "@nautilo/operator-secrets";
 import {
   createDirectDb,
@@ -60,11 +58,11 @@ export function resolveDefaultPublicInviteBaseUrl(): string {
 }
 
 function defaultAtomicWriter(path: string, contents: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${nodeRandomBytes(6).toString("hex")}.tmp`;
-  writeFileSync(tmp, contents, { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmp, path);
-  chmodSync(path, 0o600);
+  // The invite is a one-time owner-claim token. It is created private (an
+  // owner-only ACL on Windows, mode 0600 elsewhere) before any byte is written.
+  const target = resolve(path);
+  mkdirSync(dirname(target), { recursive: true });
+  publishPrivateFileAtomicallySync(target, Buffer.from(contents, "utf-8"));
 }
 
 export type ClaimInviteFileInput = {

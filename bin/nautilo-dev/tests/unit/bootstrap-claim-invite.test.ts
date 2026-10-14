@@ -6,6 +6,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { __resetResolvedInstanceForTests } from "@nautilo/config";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
 import { credentials, invites, users } from "@nautilo/db";
 import {
   bootstrapClaimInvite,
@@ -282,6 +284,8 @@ describe("bootstrapClaimInvite", () => {
     // skipping the mint and leaving no recovery path.
     const logs: string[] = [];
     const tmpDir = mkdtempSync(join(tmpdir(), "nautilo-claim-seed-user-"));
+    // Readable by other accounts: an inherited ACL would expose the token.
+    allowOtherReadersSync(tmpDir);
     const target = join(tmpDir, "claim-invite.txt");
     try {
       const db = createMockDb({
@@ -298,6 +302,7 @@ describe("bootstrapClaimInvite", () => {
       });
       expect(r.outcome.kind).toBe("minted");
       expect(logs.some((l) => l.includes("already claimed"))).toBe(false);
+      expect(isPrivateFilesystemPath(target)).toBe(true);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
