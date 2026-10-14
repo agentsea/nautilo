@@ -6,7 +6,7 @@ import {
   statSync,
   utimesSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { ensurePrivateDirectorySync, publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 
@@ -43,8 +43,10 @@ function readSingleLine(path: string): string | null {
 }
 
 function atomicWriteFile(path: string, body: string): void {
-  ensurePrivateDirectorySync(dirname(path));
-  publishPrivateFileAtomicallySync(path, Buffer.from(body));
+  // The private-filesystem primitives require absolute paths.
+  const target = resolve(path);
+  ensurePrivateDirectorySync(dirname(target));
+  publishPrivateFileAtomicallySync(target, Buffer.from(body));
 }
 
 /** Read every file in `.bootstrap/`. Missing dir → all-null snapshot. */

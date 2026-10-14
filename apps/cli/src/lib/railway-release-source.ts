@@ -1,5 +1,6 @@
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
+import { resolve } from "node:path";
 import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import {
@@ -93,7 +94,9 @@ function parseTrustRoot(value: unknown): QualificationTrustRoot | null {
   };
 }
 
-async function readOwnerOnlyJson(path: string): Promise<unknown> {
+async function readOwnerOnlyJson(location: string): Promise<unknown> {
+  // Operators may configure a relative path; the privacy check requires an absolute one.
+  const path = resolve(location);
   const status = await lstat(path, { bigint: true });
   if (status.isSymbolicLink() || !status.isFile() ||
     !await isPrivateFilesystemPathAsync(path) ||

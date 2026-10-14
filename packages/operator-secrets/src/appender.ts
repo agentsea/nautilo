@@ -2,7 +2,7 @@ import {
   existsSync,
   readFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { ensurePrivateDirectorySync, publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 import {
   assertFileMode600,
@@ -136,7 +136,7 @@ export async function appendOperatorSecrets(args: {
   // with the atomic-rotation contract D115 plans. Yielding here satisfies
   // require-await without changing the Promise<void> return shape.
   await Promise.resolve();
-  const resolved = args.path;
+  const resolved = resolve(args.path);
   const createIfMissing = args.createIfMissing ?? true;
   const parent = dirname(resolved);
 
@@ -154,8 +154,9 @@ export async function appendOperatorSecrets(args: {
     if (!createIfMissing) {
       throw new Error(`operator secrets file does not exist: ${resolved}`);
     }
-    ensurePrivateDirectorySync(parent);
+    // Validate before the first mutation: a refused path must stay untouched.
     assertPathOutsideGitWorkTree(resolved);
+    ensurePrivateDirectorySync(parent);
   }
 
   const merged = mergeSecretsContent(existing, args.entries);

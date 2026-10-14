@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appendOperatorSecrets } from "../../src/appender.ts";
@@ -118,5 +118,30 @@ describe("appendOperatorSecrets (§13.3)", () => {
         createIfMissing: true,
       }),
     ).rejects.toThrow(/mode 0600|owner-only Windows ACL/);
+  });
+
+  test("anchors a relative secrets path before writing", async () => {
+    const dir = temporaryDirectory(join(tmpdir(), "nautilo-append-relative-"));
+    const previous = process.cwd();
+    process.chdir(dir);
+    try {
+      await appendOperatorSecrets({ path: join("nested", "secrets.env"), entries: [{ key: "OPENAI_API_KEY", value: "x" }] });
+    } finally {
+      process.chdir(previous);
+    }
+    const written = join(dir, "nested", "secrets.env");
+    expect(parseOperatorSecretsBody(readFileSync(written, "utf8"))["OPENAI_API_KEY"]).toBe("x");
+    expect(isPrivateFilesystemPath(written)).toBe(true);
+  });
+
+  test("refuses a path inside a git work tree before changing any directory", async () => {
+    const repo = temporaryDirectory(join(tmpdir(), "nautilo-append-repo-"));
+    mkdirSync(join(repo, ".git"));
+    allowOtherReadersSync(repo);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's expect().rejects is thenable; the rule's type inference doesn't see through it.
+    await expect(
+      appendOperatorSecrets({ path: join(repo, "secrets.env"), entries: [{ key: "OPENAI_API_KEY", value: "x" }] }),
+    ).rejects.toThrow(/git repository/);
+    expect(isPrivateFilesystemPath(repo)).toBe(false);
   });
 });
