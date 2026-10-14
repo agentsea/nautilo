@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import {
   copyFile,
   readFile,
-  rename,
   rm,
 } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
@@ -22,6 +21,7 @@ import {
 import { pgBaseBackupTarGzip } from "../lib/docker-db";
 import { logtoDatabaseExists } from "../lib/logto-db";
 import { formatBytes } from "../lib/format-bytes";
+import { renameStagedDirectory } from "../lib/rename-staged-directory";
 import {
   describeBackupArtifact,
   writeManifestFile,
@@ -362,7 +362,7 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
       },
     );
 
-    await rename(stagingDir, finalDir);
+    await renameStagedDirectory(stagingDir, finalDir);
     await secureFilesystemPath(finalDir);
     const manifest = JSON.parse(
       await readFile(join(finalDir, "manifest.json"), "utf8"),

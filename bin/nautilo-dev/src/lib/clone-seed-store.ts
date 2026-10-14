@@ -1,7 +1,8 @@
 import { copyFile } from "node:fs/promises";
-import { lstat, open, readFile, readdir, rename, rm, statfs } from "node:fs/promises";
+import { lstat, open, readFile, readdir, rm, statfs } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { renameStagedDirectory } from "./rename-staged-directory";
 import {
   sha256File,
   verifyFullBackupDirectory,
@@ -482,7 +483,7 @@ export async function refreshCloneSeed(input: RefreshCloneSeedInput): Promise<Cl
       stage = "publication";
       await input.beforePublish?.();
       const finalDirectory = seedGenerationDirectory(paths, generation);
-      await rename(staging, finalDirectory);
+      await renameStagedDirectory(staging, finalDirectory);
       staging = null;
       publishedGeneration = generation;
       // The final path is verified before it can become authoritative. Do not
