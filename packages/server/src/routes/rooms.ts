@@ -380,6 +380,7 @@ function toListResponse(rows: RoomSummaryRow[]): ListRoomsResponse {
       unreadCount: r.unreadCount,
       kind: r.kind,
       discoverable: r.discoverable !== false,
+      ...(r.externalContext === true ? { externalContext: true } : {}),
       parentRoomId: r.parentRoomId,
       threadRootMessageId: r.threadRootMessageId,
       // Fold the compact roster projection through only when the
@@ -1422,6 +1423,12 @@ export function roomsRoutes(
         if (e instanceof MembershipOpError) {
           if (e.opCode === "not_found") {
             return reply.code(404).send({ error: "Not found" });
+          }
+          if (e.opCode === "external_room_visibility_immutable") {
+            return reply.code(409).send({
+              error: "External Room context is permanent",
+              code: "external_room_visibility_immutable",
+            });
           }
           if (e.opCode === "invalid_kind_for_visibility") {
             return reply.code(409).send({

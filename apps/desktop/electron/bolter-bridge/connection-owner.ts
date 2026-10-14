@@ -43,6 +43,7 @@ export class BolterConnectionOwner {
   private retirement: Promise<void> | null = null;
   private readonly currentCallback: () => boolean;
   private readonly boundCallback: (binding: BolterCliBinding) => boolean;
+  private readonly onIgnoredEvent: (kind: string | null) => void;
 
   constructor(options: {
     scope: BolterSpoolScope;
@@ -55,6 +56,7 @@ export class BolterConnectionOwner {
     isCurrent: () => boolean;
     /** Checks the current server-owned exact destination; never supplied by renderer content. */
     isBound: (binding: BolterCliBinding) => boolean;
+    onIgnoredEvent?: ((kind: string | null) => void) | undefined;
     spawn?: BolterNativeSpawn | undefined;
   }) {
     if (!options.scope || [options.scope.serverId, options.scope.userId, options.scope.connectionId]
@@ -66,6 +68,9 @@ export class BolterConnectionOwner {
     this.qualification = options.qualification ? Object.freeze({ ...options.qualification }) : undefined;
     this.currentCallback = options.isCurrent;
     this.boundCallback = options.isBound;
+    this.onIgnoredEvent = options.onIgnoredEvent ?? (kind => {
+      console.warn("[bolter] Ignoring unsupported provider event:", JSON.stringify({ kind }));
+    });
     this.native = new BolterNativeProcessOwner({ runtime: this.runtime, qualification: this.qualification,
       attest: options.attest, attestHelper: options.attestHelper, isCurrent: () => this.current(), spawn: options.spawn });
     this.client = new BolterCliClient({ runtime: this.runtime, decoders: this.decoders,
@@ -171,11 +176,11 @@ export class BolterConnectionOwner {
       handover = await createBolterHandoverServer({ directory: options.directory, generation: this.generation,
         scope: this.scope, maxBatchBytes: this.qualification!.maxBatchBytes,
         isCurrent: receiverCurrent, store: async jsonl => {
-          // Preserve every batch before interpreting it. Unknown packets remain durable and blocked.
+          // Preserve every batch before interpreting it. Unqualified messages remain durable and blocked.
           const receipt = await spool.store(jsonl);
           if (receiverCurrent()) {
             const decoded = decodeBolterReceiveBatch(jsonl, this.runtime.version, this.decoders);
-            if (decoded.ok && decoded.value.length > 0 && decoded.value.every(item => item.type === "message" || item.kind === "connected" || item.kind === "system_message")) {
+            if (decoded.ok && decoded.value.some(item => item.type === "message" || item.kind === "connected" || item.kind === "system_message")) {
               const changed = !this.receiverReady;
               this.receiverReady = true;
               if (changed) this.notifyReceiver();
@@ -265,7 +270,15 @@ export class BolterConnectionOwner {
         const decoded = decodeBolterReceiveBatch(batch.jsonl, this.runtime.version, this.decoders);
         if (!decoded.ok) return "blocked";
         if (!this.current() || !this.confirmed) return "unavailable";
-        if (!await accept(decoded.value, { id: batch.id, fingerprint: batch.fingerprint })) return "blocked";
+        const retained = decoded.value.filter(item => {
+          if (item.type !== "control" || item.kind !== "ignored_event") return true;
+          try { this.onIgnoredEvent(item.eventKind ?? null); } catch { /* Diagnostics cannot block delivery. */ }
+          return false;
+        });
+        if (!this.current() || !this.confirmed) return "unavailable";
+        // An event-only batch has no server admission to await. Mixed batches retain
+        // their durable acknowledgement fence until every remaining item is accepted.
+        if (retained.length > 0 && !await accept(retained, { id: batch.id, fingerprint: batch.fingerprint })) return "blocked";
         if (!this.current() || !this.confirmed) return "unavailable";
         await spool.acknowledge(batch);
       }

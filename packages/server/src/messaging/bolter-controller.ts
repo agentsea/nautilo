@@ -1,4 +1,4 @@
-import { publishBolterStateChanged } from "../realtime/ws-publisher";
+import { convergeHumanRoomCatalogs, publishBolterStateChanged } from "../realtime/ws-publisher";
 import { warn } from "@nautilo/logger";
 import { createReceiptRecoveryPump } from "../lib/receipt-recovery";
 import { randomUUID } from "node:crypto";
@@ -373,6 +373,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         return { roomId, namespaceId: bundle.namespaceId, agentId: input.agentId, chatId: choice.chatId, threadId: choice.threadRootId ?? "", modelSponsorshipAccepted: true };
       });
       choices.delete(input.choiceId);
+      await convergeHumanRoomCatalogs([{ userId, actorId: human.id }]);
       publishBolterStateChanged(userId);
       await startReceiver(row, entry.scope);
       return { roomId: binding.roomId, link: await linkSummary(binding) };

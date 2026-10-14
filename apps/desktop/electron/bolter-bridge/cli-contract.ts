@@ -58,6 +58,8 @@ export interface BolterCliMessage extends BolterCliBinding {
 export interface BolterCliControl {
   type: "control";
   kind: string;
+  /** Local diagnostic metadata for ignored provider events; never model input. */
+  eventKind?: string | null;
 }
 export type BolterCliReceiveItem = BolterCliMessage | BolterCliControl;
 
@@ -242,7 +244,13 @@ export function validateBolterReceipt(raw: unknown): BolterContractResult<Bolter
 
 function validateReceiveItem(raw: unknown): BolterContractResult<BolterCliReceiveItem> {
   if (!record(raw)) return failure("invalid-batch");
-  if (raw["type"] === "control" && id(raw["kind"])) return success({ type: "control", kind: raw["kind"] });
+  if (raw["type"] === "control" && id(raw["kind"])) {
+    if (raw["kind"] === "ignored_event") {
+      if (raw["eventKind"] !== null && typeof raw["eventKind"] !== "string") return failure("invalid-batch");
+      return success({ type: "control", kind: "ignored_event", eventKind: raw["eventKind"] });
+    }
+    return success({ type: "control", kind: raw["kind"] });
+  }
   if (raw["type"] !== "message" || !id(raw["messageId"]) || !id(raw["chatId"]) || !id(raw["senderId"]) ||
       (raw["threadRootId"] !== null && !id(raw["threadRootId"])) ||
       (raw["senderType"] !== "user" && raw["senderType"] !== "anima" && raw["senderType"] !== "system") ||

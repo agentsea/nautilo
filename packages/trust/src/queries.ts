@@ -1485,6 +1485,8 @@ export type RoomSummaryRow = {
   kind: "private" | "group" | "multi_agent" | "subthread" | "open" | "task" | "access";
   /** Whether an open room appears in server-wide discovery and automatic landing. */
   discoverable?: boolean;
+  /** Permanent external context boundary, independent of directory visibility. */
+  externalContext?: boolean;
   parentRoomId: string | null;
   threadRootMessageId: number | null;
   /**
@@ -1604,6 +1606,7 @@ export async function listRoomsForActor(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
@@ -1697,6 +1700,7 @@ export async function listRoomsForActor(
     unreadCount: unreadMap.get(r.id) ?? 0,
     kind: r.kind,
     discoverable: r.discoverable !== false,
+    ...(r.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
     ...(includeRoster ? { roster: rosterMap?.get(r.id) ?? [] } : {}),
@@ -1788,6 +1792,7 @@ export async function listManageableRoomsForUser(
     createdAt: rooms.createdAt,
     kind: rooms.kind,
     discoverable: rooms.discoverable,
+    externalContext: rooms.externalContext,
     parentRoomId: rooms.parentRoomId,
     threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
   };
@@ -1849,6 +1854,7 @@ export async function listManageableRoomsForUser(
     unreadCount: 0,
     kind: r.kind,
     discoverable: r.discoverable !== false,
+    ...(r.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
     roster: rosterMap.get(r.id) ?? [],
@@ -1918,6 +1924,8 @@ export type RoomDetailPayload = {
   kind: "private" | "group" | "multi_agent" | "subthread" | "open" | "task" | "access";
   /** Whether an open room appears in server-wide discovery and automatic landing. */
   discoverable?: boolean;
+  /** Permanent external context boundary, independent of directory visibility. */
+  externalContext?: boolean;
   parentRoomId: string | null;
   threadRootMessageId: number | null;
   /** `advanced` (FM default-arbiter inference) | `standard` (today's conductor). */
@@ -1970,6 +1978,7 @@ export async function getRoomDetailForMember(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
@@ -1989,6 +1998,7 @@ export async function getRoomDetailForMember(
     createdAt: (room.createdAt ?? new Date()).toISOString(),
     kind: room.kind,
     discoverable: room.discoverable !== false,
+    ...(room.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: room.parentRoomId ?? null,
     threadRootMessageId: room.threadRootMessageId ?? null,
     conductorMode: room.conductorMode === "standard" ? "standard" : "advanced",
@@ -2017,6 +2027,7 @@ export async function getRoomDetailForManager(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
@@ -2051,6 +2062,7 @@ export async function getRoomDetailForManager(
     createdAt: (room.createdAt ?? new Date()).toISOString(),
     kind: room.kind,
     discoverable: room.discoverable !== false,
+    ...(room.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: room.parentRoomId ?? null,
     threadRootMessageId: room.threadRootMessageId ?? null,
     conductorMode: room.conductorMode === "standard" ? "standard" : "advanced",
@@ -2558,6 +2570,7 @@ export async function listDiscoverableRoomsForUser(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
@@ -2643,6 +2656,7 @@ export async function listDiscoverableRoomsForUser(
     unreadCount: 0,
     kind: r.kind,
     discoverable: r.discoverable !== false,
+    ...(r.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
   }));
@@ -4218,7 +4232,8 @@ export class MembershipOpError extends Error {
       // M258 — hidden access Rooms are immutable authority containers.
       | "access_room_immutable"
       // Visibility changes apply only to ordinary conversation Rooms.
-      | "invalid_kind_for_visibility",
+      | "invalid_kind_for_visibility"
+      | "external_room_visibility_immutable",
     message?: string,
   ) {
     super(message ?? opCode);
@@ -4402,12 +4417,16 @@ export async function updateRoomVisibility(
         type: rooms.type,
         kind: rooms.kind,
         discoverable: rooms.discoverable,
+        externalContext: rooms.externalContext,
       })
       .from(rooms)
       .where(eq(rooms.id, roomId))
       .limit(1);
     if (!row) {
       throw new MembershipOpError("not_found");
+    }
+    if (row.externalContext === true) {
+      throw new MembershipOpError("external_room_visibility_immutable");
     }
     if (row.kind !== "private" && row.kind !== "open" && row.kind !== "group") {
       throw new MembershipOpError("invalid_kind_for_visibility");
