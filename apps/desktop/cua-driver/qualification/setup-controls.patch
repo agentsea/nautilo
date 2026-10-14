@@ -1,11 +1,11 @@
 diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
-index f50f24090..85242692a 100644
+index f50f24090..3725c4dd3 100644
 --- a/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
 +++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/bindings.rs
 @@ -230,6 +230,47 @@ pub unsafe fn copy_bool_attr(element: AXUIElementRef, attr_name: &str) -> Option
      None
  }
-
+ 
 +/// Convert a borrowed AX attribute value only when it is an exact binary state.
 +unsafe fn coerce_binary_value(value: CFTypeRef) -> Option<bool> {
 +    use core_foundation::boolean::CFBoolean;
@@ -50,6 +50,15 @@ index f50f24090..85242692a 100644
  /// A copied AX attribute represented for both existing string-only consumers
  /// and the wider structured control-state response.
  #[derive(Debug, PartialEq, Eq)]
+@@ -241,7 +282,7 @@ pub struct StringishAttrValue {
+ }
+ 
+ /// Convert a borrowed CF value without taking ownership of it.
+-unsafe fn coerce_stringish_value(value: CFTypeRef) -> Option<StringishAttrValue> {
++pub(crate) unsafe fn coerce_stringish_value(value: CFTypeRef) -> Option<StringishAttrValue> {
+     use core_foundation::boolean::CFBoolean;
+     use core_foundation::number::CFNumber;
+     let type_id = core_foundation::base::CFGetTypeID(value);
 @@ -492,31 +533,53 @@ pub fn focused_window_id_of_pid(pid: i32) -> Option<u32> {
  ///
  /// `element` must be valid, and the caller must release every returned element.
@@ -117,12 +126,12 @@ index f50f24090..85242692a 100644
 +            .collect(),
 +    )
  }
-
+ 
  /// Copy an AX element-valued attribute. The returned element is retained and
 @@ -724,6 +787,49 @@ mod tests {
      use super::*;
      use core_foundation::{boolean::CFBoolean, number::CFNumber};
-
+ 
 +    #[test]
 +    fn binary_value_accepts_booleans_and_exact_zero_or_one() {
 +        let true_value = CFBoolean::true_value();
@@ -170,13 +179,36 @@ index f50f24090..85242692a 100644
      fn stringish_value_coerces_cfstring_cfnumber_and_cfboolean() {
          let string = CFStr::new("Search");
 diff --git a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
-index ee1f5d3a1..9776d7fcc 100644
+index ee1f5d3a1..8fe64f944 100644
 --- a/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
 +++ b/libs/cua-driver/rust/crates/platform-macos/src/ax/tree.rs
-@@ -337,6 +337,114 @@ pub fn walk_tree_bounded(
+@@ -104,6 +104,22 @@ struct ControlState {
+     selected: Option<bool>,
+ }
+ 
++/// Keep display fallback separate from the observed AX attribute.
++pub(crate) fn project_ax_value(
++    copied: Option<StringishAttrValue>,
++    placeholder: impl FnOnce() -> Option<String>,
++) -> (Option<String>, Option<String>) {
++    let display = copied
++        .as_ref()
++        .and_then(|value| value.string_value.clone())
++        .filter(|value| !value.trim().is_empty())
++        .or_else(placeholder);
++    // Empty and whitespace are observed content, not a failed attribute read.
++    // A placeholder may describe the UI but cannot establish its contents.
++    let state = copied.map(|value| value.state_value);
++    (display, state)
++}
++
+ fn read_control_state_if_actionable<F>(is_actionable: bool, read: F) -> ControlState
+ where
+     F: FnOnce() -> ControlState,
+@@ -337,6 +353,114 @@ pub fn walk_tree_bounded(
      }
  }
-
+ 
 +/// Read only sheets directly attached to an exact native window. In particular,
 +/// do not traverse its web document to discover a sheet: Chromium places native
 +/// sheets after that document in AXChildren, regardless of the page's size.
@@ -288,7 +320,38 @@ index ee1f5d3a1..9776d7fcc 100644
  #[allow(clippy::too_many_arguments)]
  unsafe fn walk_element(
      element: AXUIElementRef,
-@@ -607,6 +715,27 @@ mod web_content_role_tests {
+@@ -404,13 +528,9 @@ unsafe fn walk_element(
+     // Read AXValue once with enough type information to preserve the existing
+     // string-only markdown while also exposing numeric/boolean control state.
+     let copied_value = copy_stringish_attr(element, "AXValue");
+-    let value = copied_value
+-        .as_ref()
+-        .and_then(|copied| copied.string_value.clone());
+-    // AXPlaceholderValue as fallback for empty text fields.
+-    let value = value
+-        .filter(|v| !v.trim().is_empty())
+-        .or_else(|| copy_string_attr(element, "AXPlaceholderValue"));
++    let (value, value_state) = project_ax_value(copied_value, || {
++        copy_string_attr(element, "AXPlaceholderValue")
++    });
+     let description = copy_string_attr(element, "AXDescription");
+     let identifier = copy_string_attr(element, "AXIdentifier");
+     let help = copy_string_attr(element, "AXHelp").filter(|h| !h.trim().is_empty());
+@@ -468,12 +588,7 @@ unsafe fn walk_element(
+     // Structured `elements` only contains actionable nodes. Keep all new AX
+     // round-trips behind that same gate so display-only rows pay no cost.
+     let control_state = read_control_state_if_actionable(is_actionable, || ControlState {
+-        value_state: copied_value
+-            .map(|copied| copied.state_value)
+-            .filter(|v| !v.trim().is_empty())
+-            .or_else(|| value.clone())
+-            .map(|v| v.trim().to_owned())
+-            .filter(|v| !v.is_empty()),
++        value_state,
+         value_description: copy_string_attr(element, "AXValueDescription")
+             .map(|v| v.trim().to_owned())
+             .filter(|v| !v.is_empty()),
+@@ -607,6 +722,27 @@ mod web_content_role_tests {
              assert!(!is_web_content_role(role), "{role} stays native");
          }
      }
@@ -314,7 +377,7 @@ index ee1f5d3a1..9776d7fcc 100644
 +        assert_eq!(sheets, vec![(2, "AXSheet")]);
 +    }
  }
-
+ 
  fn format_node_line(node: &AXNode) -> String {
 diff --git a/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs b/libs/cua-driver/rust/crates/platform-macos/src/browser/consent_ui.rs
 index ff05feaf1..f6b8ae846 100644
@@ -323,17 +386,17 @@ index ff05feaf1..f6b8ae846 100644
 @@ -3,19 +3,17 @@
  use std::time::{Duration, Instant};
  use std::{collections::HashSet, iter};
-
+ 
 -use core_foundation::base::{CFRelease, CFTypeRef};
 +use core_foundation::base::{CFEqual, CFRelease, CFTypeRef};
  use cua_driver_core::browser::{
      BrowserConsentOutcome, BrowserConsentRequest, BrowserRefusal, BrowserRefusalCode,
  };
-
+ 
  use crate::ax::bindings::{kAXErrorSuccess, perform_action, AXUIElementRef};
 -use crate::ax::tree::{walk_tree_bounded, AXNode, DEFAULT_MAX_DEPTH};
 +use crate::ax::tree::{walk_window_sheets, AXNode};
-
+ 
 -// Large Chromium pages can put the browser-owned consent sheet after the
 -// ordinary 2,000-node snapshot cap. Keep this privileged scan bounded while
 -// allowing enough headroom to inspect Chrome's top-level sheet on pages such
@@ -343,12 +406,12 @@ index ff05feaf1..f6b8ae846 100644
 +// them. An incomplete sheet scan is an error, not evidence of absence or of a
 +// unique Allow action.
  const CONSENT_MAX_ELEMENTS: usize = 5_000;
-
+ 
  fn refusal(code: BrowserRefusalCode, message: impl Into<String>) -> BrowserRefusal {
 @@ -43,6 +41,49 @@ fn release_actionable_nodes(nodes: &[AXNode]) {
      }
  }
-
+ 
 +fn read_consent_trees(pid: i32, window_id: u32) -> Result<Vec<Vec<AXNode>>, BrowserRefusal> {
 +    let mut trees = Vec::new();
 +    let mut resolved = false;
@@ -396,7 +459,7 @@ index ff05feaf1..f6b8ae846 100644
      windows: impl IntoIterator<Item = crate::windows::WindowInfo>,
      pid: i32,
 @@ -68,7 +109,7 @@ fn consent_surface_ids(
-
+ 
  fn remote_debugging_sheet_present(nodes: &[AXNode]) -> bool {
      nodes.iter().enumerate().any(|(sheet_index, sheet)| {
 -        if sheet.role != "AXSheet" {
@@ -570,7 +633,7 @@ index ff05feaf1..f6b8ae846 100644
 @@ -452,6 +485,40 @@ mod tests {
          assert_eq!(exact_cancel_button(&unrelated).unwrap(), None);
      }
-
+ 
 +    #[test]
 +    fn consent_matchers_reject_web_lookalikes_and_disabled_actions() {
 +        let mut nodes = vec![
@@ -614,7 +677,7 @@ index dcdc4ec0f..12009d1d9 100644
 +++ b/libs/cua-driver/rust/crates/platform-macos/src/browser/setup_ui.rs
 @@ -13,7 +13,7 @@ use cua_driver_core::browser::{
  };
-
+ 
  use crate::ax::bindings::{
 -    copy_number_attr, copy_string_attr, element_screen_center, focused_element_of_pid,
 +    copy_binary_attr, copy_string_attr, element_screen_center, focused_element_of_pid,
@@ -673,7 +736,7 @@ index dcdc4ec0f..12009d1d9 100644
              format!("multiple exact {role} controls matched {label:?}"),
 @@ -88,28 +117,40 @@ fn setup_page_proven(nodes: &[AXNode], descriptor: &BrowserSetupDescriptor) -> b
  }
-
+ 
  fn native_setup_page_proven(nodes: &[AXNode], descriptor: &BrowserSetupDescriptor) -> bool {
 -    let exact_urls = nodes
 -        .iter()
@@ -911,12 +974,12 @@ index dcdc4ec0f..12009d1d9 100644
 +        )),
 +    }
  }
-
+ 
  fn is_same_element(left: usize, right: usize) -> bool {
 -    unsafe { CFEqual(left as CFTypeRef, right as CFTypeRef) != 0 }
 +    left == right || unsafe { CFEqual(left as CFTypeRef, right as CFTypeRef) != 0 }
  }
-
+ 
  fn select_new_tab_close_button(
 @@ -301,7 +407,9 @@ fn select_new_tab_close_button(
  ) -> Result<Option<usize>, BrowserRefusal> {
@@ -1043,7 +1106,7 @@ index dcdc4ec0f..12009d1d9 100644
 @@ -680,6 +806,27 @@ fn detect_checkbox_pixels(
      candidates
  }
-
+ 
 +fn unique_native_frame<'a>(
 +    nodes: impl Iterator<Item = &'a AXNode>,
 +    same_element: impl Fn(usize, usize) -> bool,
@@ -1153,7 +1216,7 @@ index dcdc4ec0f..12009d1d9 100644
 @@ -875,11 +1018,11 @@ fn press_pixel_checkbox(
      })
  }
-
+ 
 -fn checkbox_state(value: Option<f64>) -> Result<CheckboxState, BrowserRefusal> {
 +fn checkbox_state(value: Option<bool>) -> Result<CheckboxState, BrowserRefusal> {
      match value {
@@ -1203,7 +1266,7 @@ index dcdc4ec0f..12009d1d9 100644
 @@ -1710,6 +1854,87 @@ mod tests {
          existing_profile_setup_descriptor(BrowserProduct::GoogleChrome).unwrap()
      }
-
+ 
 +    #[test]
 +    #[ignore = "read-only diagnostic requiring an explicitly selected live Chrome window and existing AX access"]
 +    fn live_new_tab_control_identity() {
@@ -1291,7 +1354,7 @@ index dcdc4ec0f..12009d1d9 100644
 @@ -1750,6 +1975,236 @@ mod tests {
          }
      }
-
+ 
 +    fn native_tab_strip() -> Vec<AXNode> {
 +        let mut window = tree_node("AXWindow", None, 1, 0);
 +        window.element_index = Some(0);
@@ -1526,7 +1589,7 @@ index dcdc4ec0f..12009d1d9 100644
      fn checkbox_requires_exact_internal_page_proof() {
          let nodes = vec![
 @@ -1783,7 +2238,12 @@ mod tests {
-
+ 
      #[test]
      fn checkbox_matcher_refuses_ambiguity() {
 -        let nodes = vec![
@@ -1551,7 +1614,7 @@ index dcdc4ec0f..12009d1d9 100644
 @@ -2150,6 +2612,20 @@ mod tests {
          assert!(setup_geometry(frame, [-90.0, 290.0, 380.0, 30.0], (800, 500)).is_err());
      }
-
+ 
 +    #[test]
 +    fn setup_geometry_handles_a_native_fullscreen_toolbar_above_the_content_window() {
 +        let frame = [0.0, 121.0, 1512.0, 861.0];
@@ -1572,7 +1635,7 @@ index dcdc4ec0f..12009d1d9 100644
 @@ -2269,6 +2745,47 @@ mod tests {
          );
      }
-
+ 
 +    #[test]
 +    fn new_tab_cleanup_deduplicates_identities_and_checks_every_occurrence() {
 +        let before = vec![tree_node("AXRadioButton", Some("Original"), 10, 1)];
@@ -1619,7 +1682,7 @@ index dcdc4ec0f..12009d1d9 100644
          let omnibox = node(
 @@ -2339,24 +2856,24 @@ mod tests {
          second.element_ptr = 8;
-
+ 
          assert_eq!(
 -            exact_omnibox_suggestion(&[omnibox, popup, first, second], chrome())
 -                .unwrap_err()
@@ -1634,7 +1697,7 @@ index dcdc4ec0f..12009d1d9 100644
              BrowserRefusalCode::BrowserWrongTargetRefused
          );
      }
-
+ 
      #[test]
      fn unknown_checkbox_values_refuse() {
 -        assert_eq!(checkbox_state(Some(0.0)).unwrap(), CheckboxState::Off);
@@ -1658,7 +1721,7 @@ index 88ea72f1a..34cc33b07 100644
 @@ -268,12 +268,6 @@ fn screenshot_window_bytes_shell(window_id: u32) -> anyhow::Result<Vec<u8>> {
  /// Hard ceiling on capture dimensions to avoid unbounded allocations.
  const MAX_CAPTURE_DIM: u32 = 16384;
-
+ 
 -fn content_rect_usable(rect: screencapturekit::cg::CGRect) -> bool {
 -    let w = rect.size.width;
 -    let h = rect.size.height;
@@ -1674,13 +1737,13 @@ index 88ea72f1a..34cc33b07 100644
  ) -> anyhow::Result<std::sync::Arc<WindowCapturePlan>> {
 -    use screencapturekit::prelude::{SCContentFilter, SCShareableContent, SCStreamConfiguration};
 +    use screencapturekit::prelude::{SCContentFilter, SCShareableContent};
-
+ 
      let content = SCShareableContent::get()
          .map_err(|e| anyhow::anyhow!("SCShareableContent::get failed: {e}"))?;
 @@ -491,24 +485,13 @@ fn build_window_capture_plan(
      // https://developer.apple.com/documentation/screencapturekit/sccontentfilter/init(desktopindependentwindow:)
      let filter = SCContentFilter::create().with_window(&window).build();
-
+ 
 -    // Pixel output size = content_rect * point_pixel_scale (macOS 14+ filter info).
 -    // https://docs.rs/screencapturekit/6.0.1/screencapturekit/
 +    // The published coordinate frame is this exact native window, not a
@@ -1696,7 +1759,7 @@ index 88ea72f1a..34cc33b07 100644
 -    };
 +    let out_w = rounded_pixel_dim(frame.size.width * scale, "width")?;
 +    let out_h = rounded_pixel_dim(frame.size.height * scale, "height")?;
-
+ 
 -    let out_w = rounded_pixel_dim(width_pts * scale, "width")?;
 -    let out_h = rounded_pixel_dim(height_pts * scale, "height")?;
 -
@@ -1704,13 +1767,13 @@ index 88ea72f1a..34cc33b07 100644
 -        .with_width(out_w)
 -        .with_height(out_h);
 +    let config = exact_window_configuration(out_w, out_h);
-
+ 
      Ok(std::sync::Arc::new(WindowCapturePlan {
          filter,
 @@ -517,6 +500,21 @@ fn build_window_capture_plan(
      }))
  }
-
+ 
 +fn exact_window_configuration(
 +    width: u32,
 +    height: u32,
@@ -1730,7 +1793,7 @@ index 88ea72f1a..34cc33b07 100644
  ///
  /// https://developer.apple.com/documentation/screencapturekit/scscreenshotmanager
 @@ -822,6 +820,14 @@ pub fn png_dimensions(data: &[u8]) -> anyhow::Result<(u32, u32)> {
-
+ 
  #[cfg(test)]
  mod tests {
 +    #[test]
@@ -1749,13 +1812,13 @@ index 21f036745..eb045208b 100644
 --- a/libs/cua-driver/rust/crates/platform-macos/src/cursor/overlay.rs
 +++ b/libs/cua-driver/rust/crates/platform-macos/src/cursor/overlay.rs
 @@ -31,6 +31,7 @@
-
+ 
  use std::collections::HashMap;
  use std::ffi::c_void;
 +use std::sync::atomic::{AtomicU32, Ordering};
  use std::sync::{Mutex, OnceLock};
  use std::time::{Duration, Instant};
-
+ 
 @@ -74,6 +75,15 @@ static CMD_TX: OnceLock<std::sync::mpsc::SyncSender<OverlayMsg>> = OnceLock::new
  // Single-consumer slot; receiver is moved into run_on_main_thread().
  static CMD_RX_CELL: Mutex<Option<std::sync::mpsc::Receiver<OverlayMsg>>> = Mutex::new(None);
@@ -1769,27 +1832,27 @@ index 21f036745..eb045208b 100644
 +    let window_id = OWNED_WINDOW_ID.load(Ordering::Acquire);
 +    (window_id != 0).then_some((std::process::id() as i32, window_id))
 +}
-
+ 
  /// The keyed, insertion-ordered collection of owned cursors that the render
  /// loop composites every frame. Insertion order = stable z-order (later keys
 @@ -678,6 +688,10 @@ unsafe fn run_appkit(_cfg: CursorConfig, rx: std::sync::mpsc::Receiver<OverlayMs
-
+ 
      // ---- Show the window ----
      let _: () = msg_send![win, orderFrontRegardless];
 +    let window_number: isize = msg_send![win, windowNumber];
 +    if let Ok(window_id) = u32::try_from(window_number) {
 +        OWNED_WINDOW_ID.store(window_id, Ordering::Release);
 +    }
-
+ 
      // ---- Render thread (60 fps) ----
      let layer_ptr = layer as usize;
 @@ -688,6 +702,7 @@ unsafe fn run_appkit(_cfg: CursorConfig, rx: std::sync::mpsc::Receiver<OverlayMs
-
+ 
      // ---- NSApplication run loop (blocks until process exits) ----
      let _: () = msg_send![app, run];
 +    OWNED_WINDOW_ID.store(0, Ordering::Release);
  }
-
+ 
  fn render_loop(
 diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/bring_to_front.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/bring_to_front.rs
 index 3c5b4167c..2bd8bf0cb 100644
@@ -1798,7 +1861,7 @@ index 3c5b4167c..2bd8bf0cb 100644
 @@ -119,15 +119,25 @@ fn classify_exact_outcome(
      }
  }
-
+ 
 +fn frontmost_ordinary_window(
 +    windows: &[crate::windows::WindowInfo],
 +    cursor_overlay: Option<(i32, u32)>,
@@ -1828,7 +1891,7 @@ index 3c5b4167c..2bd8bf0cb 100644
 @@ -424,6 +434,41 @@ impl Tool for BringToFrontTool {
  mod tests {
      use super::*;
-
+ 
 +    fn window(pid: i32, window_id: u32, z_index: usize) -> crate::windows::WindowInfo {
 +        crate::windows::WindowInfo {
 +            pid,
@@ -1867,26 +1930,92 @@ index 3c5b4167c..2bd8bf0cb 100644
      fn observation(
          workspace_frontmost_pid: Option<i32>,
          front_process_matches_target: Option<bool>,
+diff --git a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
+index 378023c16..ed5e80af7 100644
 --- a/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
 +++ b/libs/cua-driver/rust/crates/platform-macos/src/tools/get_window_state.rs
-@@ -812,12 +812,7 @@
+@@ -810,14 +810,9 @@ pub(crate) fn build_elements_array_with_token(
+             // `value_state` widens the string-only AXValue read to all CF
+             // types (CFNumber sliders → "8", CFBoolean checkboxes/radios →
              // "1"/"0") — controls whose state was previously invisible here.
-             // Falls back to `value` so the field never regresses for
-             // string-valued elements.
+-            // Falls back to `value` so the field never regresses for
+-            // string-valued elements.
 -            if let Some(value) = node
 -                .value_state
 -                .clone()
 -                .or_else(|| node.value.clone())
 -                .filter(|v| !v.is_empty())
 -            {
-+            if let Some(value) = node.value_state.clone().or_else(|| node.value.clone()) {
++            // `value` is display text and may contain a placeholder. Only the
++            // separately acquired attribute is evidence of actual content.
++            if let Some(value) = node.value_state.clone() {
                  entry["value"] = serde_json::Value::String(value);
              }
              if let Some(desc) = node.value_description.clone() {
-@@ -1194,6 +1189,28 @@
+@@ -1014,6 +1009,49 @@ mod tests {
+     use crate::ax::tree::AXNode;
+     use cua_driver_core::element_query::project_elements_for_query;
+ 
++    #[test]
++    fn acquired_text_survives_tree_projection_and_json() {
++        use core_foundation::base::TCFType;
++        use core_foundation::string::CFString;
++        for expected in ["", " \t\n", "  first line\nsecond line\n", "café 🦀"] {
++            for placeholder in [None, Some("Write here")] {
++                let attribute = CFString::new(expected);
++                let copied = unsafe {
++                    crate::ax::bindings::coerce_stringish_value(attribute.as_CFTypeRef())
++                };
++                let (display, state) =
++                    crate::ax::tree::project_ax_value(copied, || placeholder.map(str::to_owned));
++                let mut control = node(Some(0), "AXTextArea", Some("Document"), 0, None, None);
++                control.value = display;
++                control.value_state = state;
++                let serialized =
++                    serde_json::to_string(&build_elements_array_with_token(&[control], 1)).unwrap();
++                let output: serde_json::Value = serde_json::from_str(&serialized).unwrap();
++                assert_eq!(output[0]["value"].as_str(), Some(expected));
++                println!(
++                    "AX_VALUE_FIXTURE:{}",
++                    serde_json::json!({"expected": expected, "element": output[0]})
++                );
++            }
++        }
++    }
++
++    #[test]
++    fn unavailable_attribute_never_becomes_placeholder_content() {
++        let (display, state) =
++            crate::ax::tree::project_ax_value(None, || Some("Write here".into()));
++        let mut control = node(Some(0), "AXTextArea", None, 0, None, None);
++        control.value = display;
++        control.value_state = state;
++        let output = build_elements_array_with_token(&[control], 1);
++        assert_eq!(output[0]["label"], "Write here");
++        assert!(output[0].get("value").is_none());
++        println!(
++            "AX_VALUE_FIXTURE:{}",
++            serde_json::json!({"expected": null, "element": output[0]})
++        );
++    }
++
+     fn node(
+         idx: Option<usize>,
+         role: &str,
+@@ -1184,7 +1222,7 @@ mod tests {
+             None,
+             None,
+         )];
+-        nodes[0].value = Some("i love u".into());
++        nodes[0].value_state = Some("i love u".into());
+         let entry = &build_elements_array(&nodes)[0];
+         assert_eq!(entry["label"], "Compose message", "label stays the title");
+         assert_eq!(
+@@ -1193,6 +1231,30 @@ mod tests {
+         );
      }
-
-     #[test]
+ 
++    #[test]
 +    fn elements_preserve_empty_ax_value_without_inventing_missing_value() {
 +        let mut nodes = vec![node(Some(0), "AXTextArea", Some("Document"), 1, None, None)];
 +        // Absence remains absence, not an invented blank document.
@@ -1900,7 +2029,9 @@ index 3c5b4167c..2bd8bf0cb 100644
 +        assert_eq!(build_elements_array_with_token(&nodes, 1)[0]["value"], "");
 +        nodes[0].value_state = None;
 +        nodes[0].value = Some(String::new());
-+        assert_eq!(build_elements_array_with_token(&nodes, 1)[0]["value"], "");
++        assert!(build_elements_array_with_token(&nodes, 1)[0]
++            .get("value")
++            .is_none());
 +        nodes[0].value_state = Some(" \n".into());
 +        assert_eq!(
 +            build_elements_array_with_token(&nodes, 1)[0]["value"],
@@ -1908,13 +2039,24 @@ index 3c5b4167c..2bd8bf0cb 100644
 +        );
 +    }
 +
-+    #[test]
+     #[test]
      fn elements_surface_control_state_fields() {
          // A slider whose AXValue is a CFNumber: `value` comes from the
-         // coerced value_state, alongside value_description, min/max,
-@@ -1279,13 +1296,13 @@
+@@ -1270,22 +1332,23 @@ mod tests {
      }
-
+ 
+     #[test]
+-    fn elements_value_state_falls_back_to_string_value() {
+-        // String-valued elements keep their `value` even with no value_state.
++    fn elements_value_state_preserves_observed_string_value() {
++        // An acquired string remains distinct from its display representation.
+         let mut nodes = vec![node(Some(0), "AXComboBox", None, 0, None, None)];
+         nodes[0].value = Some("Search".into());
++        nodes[0].value_state = Some("Search".into());
+         let entry = &build_elements_array(&nodes)[0];
+         assert_eq!(entry["value"], "Search");
+     }
+ 
      #[test]
 -    fn elements_omit_empty_value() {
 -        // An empty AXValue must not emit a `value` field (matches the other
@@ -1923,10 +2065,11 @@ index 3c5b4167c..2bd8bf0cb 100644
 +        // Empty and absent are different states: a successful blank AXValue
 +        // read must remain distinguishable from an unavailable attribute.
          let mut nodes = vec![node(Some(0), "AXButton", Some("OK"), 0, None, None)];
-         nodes[0].value = Some(String::new());
+-        nodes[0].value = Some(String::new());
++        nodes[0].value_state = Some(String::new());
          let entry = &build_elements_array(&nodes)[0];
 -        assert!(entry.get("value").is_none(), "empty value must be omitted");
 +        assert_eq!(entry["value"], "", "explicit empty value must be preserved");
      }
-
+ 
      #[test]

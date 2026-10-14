@@ -25,8 +25,8 @@ test("tester patch preserves every source check", () => {
   const result = validateQualificationSource(source, patch, version);
   expect(result.kind).toBe("qualification-source-patch");
   expect(result.productionPackaging).toBe(false);
-  expect(result.effectiveTree).toBe("8baadfc06903fd0be9af4fac637a04f519ed4a45");
-  expect(result.patchSha256).toBe("eb4e353ea14cc1d16a38e3c80eba4389468a6b09e9f4648b32bce231a49b225e");
+  expect(result.effectiveTree).toBe("ef2658a9d53a8e332961c31f9291fcefb2617dd4");
+  expect(result.patchSha256).toBe("0d691c95be354c3c3caf6a3cfd1a7e3bcb67998e3e141a81b356281ed7ab2471");
   expect(result.upstreamContribution).toEqual({
     url: "https://github.com/trycua/cua/pull/3404",
     commit: "ad79aa13eb06a52c13cc21a0a87c8cc80d389dd1",
@@ -37,7 +37,7 @@ test("tester patch preserves every source check", () => {
   expect(() => validateQualificationSource({ ...result, baseRevision: "main" }, patch, version)).toThrow("identity");
   expect(() => validateQualificationSource({ ...result, rustToolchain: "stable" }, patch, version)).toThrow("identity");
   expect(() => validateQualificationSource({ ...result, upstreamContribution: null }, patch, version)).toThrow("provenance");
-  expect(() => assertQualificationTree(result.effectiveTree, "8baadfc06903fd0be9af4fac637a04f519ed4a45")).not.toThrow();
+  expect(() => assertQualificationTree(result.effectiveTree, "ef2658a9d53a8e332961c31f9291fcefb2617dd4")).not.toThrow();
   expect(() => assertQualificationTree("different", result.effectiveTree)).toThrow("reviewed source");
 });
 

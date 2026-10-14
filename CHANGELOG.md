@@ -11,8 +11,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Signed-package verification reports timed probe stages and fails at its
   bootstrap deadline even when an asynchronous check does not settle.
 
-- Desktop's qualification-only Computer Use driver preserves explicitly empty
-  accessibility values, distinguishing blank controls from unavailable readback.
+- Desktop's qualification-only Computer Use driver preserves observed empty
+  text, whitespace and newlines from accessibility acquisition through readback.
+  Display placeholders remain separate from actual control content; unavailable
+  values are never reported as blank or replaced with placeholder text.
 
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed

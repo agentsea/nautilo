@@ -3,8 +3,8 @@
   "productionPackaging": false,
   "baseVersion": "0.23.2",
   "baseRevision": "e88e9d899ac5effaeae38619527ebaa46b26ce72",
-  "effectiveTree": "8baadfc06903fd0be9af4fac637a04f519ed4a45",
-  "patchSha256": "eb4e353ea14cc1d16a38e3c80eba4389468a6b09e9f4648b32bce231a49b225e",
+  "effectiveTree": "ef2658a9d53a8e332961c31f9291fcefb2617dd4",
+  "patchSha256": "0d691c95be354c3c3caf6a3cfd1a7e3bcb67998e3e141a81b356281ed7ab2471",
   "upstreamLicense": {
     "path": "LICENSE.md",
     "sha256": "c0779290c1d4783169aa3dbfb55feb505e563ef8a004bbf55298ceffcfbda8d9",
