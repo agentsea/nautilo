@@ -260,7 +260,10 @@ describe("PostgreSQL semantic work commitments and admission", () => {
 });
 
 describe("PostgreSQL semantic work leases", () => {
-  test("atomically binds a fresh family, reopens a bound subset, and rejects partial binding", async () => {
+  test.each([
+    ["timestamp string", (value: Date) => value.toISOString()],
+    ["Date", (value: Date) => value],
+  ] as const)("atomically binds a fresh family, reopens a bound subset, and rejects partial binding with a %s lease", async (_label, transportLease) => {
     const now = new Date("2026-09-05T10:00:00.000Z");
     const accepted = {
       version: 1 as const,
@@ -283,7 +286,7 @@ describe("PostgreSQL semantic work leases", () => {
       generation: claim.generation,
       claim_generation: claim.generation,
       lease_token: claim.leaseToken,
-      lease_expires_at: new Date(now.getTime() + 30_000),
+      lease_expires_at: transportLease(new Date(now.getTime() + 30_000)),
       state: "claimed",
       stage: claim.stage,
       change_reason: claim.changeReason,
@@ -347,6 +350,62 @@ describe("PostgreSQL semantic work leases", () => {
     mode = "mixed";
     expect(store.bindAcceptedModelOperation(claims, async () => accepted))
       .rejects.toThrow("partially bound");
+  });
+
+  test.each([
+    ["null", null],
+    ["malformed", "not-a-timestamp"],
+    ["expired string", "2026-09-05T09:59:59.999Z"],
+    ["expired Date", new Date("2026-09-05T09:59:59.999Z")],
+  ] as const)("rejects a %s lease before resolving a model binding", async (_label, leaseExpiresAt) => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: "record:one",
+      recordRef: "record:one",
+      generation: 3,
+      changeReason: "revised",
+      stage: "organization",
+      leaseToken: "lease:one",
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      if (!normalizedSql(statement).startsWith("select")) {
+        throw new Error(`unexpected SQL: ${statement}`);
+      }
+      return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: leaseExpiresAt,
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        accepted_model_binding: null,
+        accepted_model_binding_generation: null,
+        disposition: "available",
+      }] as unknown as Row[];
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+      clock: () => now,
+    });
+    let resolves = 0;
+    const error = await store.bindAcceptedModelOperation([claim], async () => {
+      resolves += 1;
+      return {
+        version: 1,
+        kind: "service",
+        role: "memoryReflection",
+        modelId: "model:fixed",
+        inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+      };
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(resolves).toBe(0);
+    expect(value.queries).toHaveLength(1);
   });
 
   test("checks exact live claim metadata without reading payloads or changing work", async () => {

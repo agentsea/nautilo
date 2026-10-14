@@ -162,6 +162,29 @@ function planCoordinateIdentity(coordinate: CrossRoomInputCoordinate): string {
     : `source\0${coordinate.sourceKind}\0${coordinate.logicalSourceRef}`;
 }
 
+function candidatePlanCoordinate(
+  coordinate: CrossRoomInputCoordinate,
+): CrossRoomInputCoordinate {
+  return coordinate.role === "candidate"
+    ? coordinate
+    : { ...coordinate, role: "candidate" };
+}
+
+function samePlanCoordinateIgnoringRole(
+  left: CrossRoomInputCoordinate,
+  right: CrossRoomInputCoordinate,
+): boolean {
+  return JSON.stringify(candidatePlanCoordinate(left))
+    === JSON.stringify(candidatePlanCoordinate(right));
+}
+
+function ownsChangedCoordinate(plan: CrossRoomCandidatePlan): boolean {
+  const changed = plan.inputs.filter((coordinate) => coordinate.role === "changed");
+  return changed.length === 1
+    && changed[0]!.kind === "record"
+    && changed[0]!.recordRef === plan.workRef;
+}
+
 function changedCoordinate(
   candidate: Awaited<ReturnType<PostgresCrossRoomOrganizerStore["discover"]>> extends infer R
     ? R extends { status: "available"; changed: infer C } ? C : never
@@ -530,27 +553,38 @@ implements CrossRoomOrganizerPartitionPort {
         plan.policyVersion !== candidatePlan.policyVersion
         || plan.commitments.representation
           !== candidatePlan.commitments.representation
+        || !ownsChangedCoordinate(plan)
       )) {
         return Promise.resolve({
           status: "unavailable",
           failureDetail: "publication_plan_invalid",
         });
       }
-      const inputs = new Map<string, CrossRoomInputCoordinate>();
-      for (const plan of plans) {
+      const inputs = new Map<string, CrossRoomInputCoordinate>(
+        candidatePlan.inputs.map((coordinate) => [
+          planCoordinateIdentity(coordinate),
+          coordinate,
+        ]),
+      );
+      for (const plan of plans.slice(1)) {
         for (const coordinate of plan.inputs) {
           const identity = planCoordinateIdentity(coordinate);
           const current = inputs.get(identity);
           if (
             current !== undefined
-            && JSON.stringify(current) !== JSON.stringify(coordinate)
+            && !samePlanCoordinateIgnoringRole(current, coordinate)
           ) {
             return Promise.resolve({
               status: "stale",
               failureDetail: "publication_plan_stale",
             });
           }
-          inputs.set(identity, coordinate);
+          if (current === undefined) {
+            // A sibling's changed Record is only a candidate in this primary
+            // question. Keep every primary role and normalize sibling-only
+            // coordinates so the merged plan still has exactly one owner.
+            inputs.set(identity, candidatePlanCoordinate(coordinate));
+          }
         }
       }
       const mergedInputs = [...inputs.values()].sort((left, right) => {

@@ -1404,7 +1404,10 @@ export class PostgresSemanticWorkStore
       const bindings: MemoryOperationBinding[] = [];
       for (const [index, claim] of sorted.entries()) {
         const row = rows[index]!;
-        const expiresAt = row["lease_expires_at"];
+        const expiresAt = rowDate(
+          { lease_expires_at: row["lease_expires_at"] },
+          "lease_expires_at",
+        );
         if (
           row["record_id"] !== claim.recordRef
           || row["generation"] !== claim.generation
