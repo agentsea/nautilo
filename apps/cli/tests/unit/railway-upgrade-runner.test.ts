@@ -313,7 +313,9 @@ describe("Railway upgrade coordinator", () => {
       expect(events).toEqual(["export", "source-cleanup"]);
       expect((await readRailwayMaintenanceState(root, path))?.portableExport?.cleanup?.state).toBe("complete");
     } finally { await rm(root, { recursive: true, force: true }); }
-  }, 15_000);
+    // Private state writes go through the PowerShell ACL helper on Windows,
+    // which slows sharply when other suites run concurrently.
+  }, process.platform === "win32" ? 60_000 : 15_000);
   test("repairs a legacy terminalized descriptor observation only through exact export proof", async () => {
     const root = await privateRoot("nautilo-upgrade-runner-export-observation-repair-"); const path = join(root, "maintenance");
     try {
