@@ -380,13 +380,20 @@ export function createPersonalMemoryEvidencePort(
           }),
         )
       ) return null;
+      const ancestry = normalizeStoredExposure(
+        row.modelExposureDependencies,
+      );
+      if (ancestry === INVALID_EXPOSURE) return null;
       const currentNamespaceIds = await findReflectionMemoryNamespaceIdsWith(
         options.db,
         row.id,
+        audience.namespaceId,
       );
+      if (currentNamespaceIds === null) {
+        return sourceResult(audience, { kind: "unknown" });
+      }
       if (
-        currentNamespaceIds === null
-        || currentNamespaceIds.length === 0
+        currentNamespaceIds.length === 0
         || !currentNamespaceIds.includes(audience.namespaceId)
       ) return null;
       const audiences = [audience];
@@ -405,10 +412,6 @@ export function createPersonalMemoryEvidencePort(
           value.includesPublicBoundary
         ),
       };
-      const ancestry = normalizeStoredExposure(
-        row.modelExposureDependencies,
-      );
-      if (ancestry === INVALID_EXPOSURE) return null;
       return ancestry === undefined
         ? sourceResult(currentAudience, { kind: "unknown" })
         : sourceResult(currentAudience, {

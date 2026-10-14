@@ -7,6 +7,9 @@ import {
 import type { DirectDatabase } from "@nautilo/db";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
+  assertSamePersonalMemoryEvidence,
+  classifyPersonalMemoryEvidence,
+  PersonalMemoryEvidenceChangedError,
   stenographerJournalEventObservationFingerprint,
   stenographerJournalRollupObservationFingerprint,
   type MemorySourceDerivation,
@@ -407,7 +410,10 @@ describe("personal Memory evidence source port", () => {
     });
 
     expect(await port({
-      db: database([ACTOR_ROW], [memory], [{ namespaceId: NAMESPACE_ID }]),
+      db: database([ACTOR_ROW], [memory], [{
+        namespaceId: NAMESPACE_ID,
+        selectedNamespacePresent: true,
+      }]),
       fingerprints,
     }).readSource(dependency)).toEqual({
       status: "current",
@@ -425,7 +431,7 @@ describe("personal Memory evidence source port", () => {
       db: database(
         [ACTOR_ROW],
         [{ ...memory, modelExposureDependencies: ancestry }],
-        [{ namespaceId: NAMESPACE_ID }],
+        [{ namespaceId: NAMESPACE_ID, selectedNamespacePresent: true }],
       ),
       fingerprints,
     }).readSource(dependency)).toEqual({
@@ -439,7 +445,7 @@ describe("personal Memory evidence source port", () => {
       db: database(
         [ACTOR_ROW],
         [{ ...memory, modelExposureDependencies: [] }],
-        [{ namespaceId: NAMESPACE_ID }],
+        [{ namespaceId: NAMESPACE_ID, selectedNamespacePresent: true }],
       ),
       fingerprints,
     }).readSource(dependency)).toEqual({
@@ -453,7 +459,7 @@ describe("personal Memory evidence source port", () => {
       db: database(
         [ACTOR_ROW],
         [{ ...memory, modelExposureDependencies: { forged: true } }],
-        [{ namespaceId: NAMESPACE_ID }],
+        [{ namespaceId: NAMESPACE_ID, selectedNamespacePresent: true }],
       ),
       fingerprints,
     }).readSource(dependency)).toBeNull();
@@ -470,8 +476,11 @@ describe("personal Memory evidence source port", () => {
         [ACTOR_ROW],
         [memory],
         [
-          { namespaceId: NAMESPACE_ID },
-          { namespaceId: SHARED_NAMESPACE_ID },
+          { namespaceId: NAMESPACE_ID, selectedNamespacePresent: true },
+          {
+            namespaceId: SHARED_NAMESPACE_ID,
+            selectedNamespacePresent: true,
+          },
         ],
         [{ actorId: "actor-2", userId: OTHER_HUMAN_ID }],
       ),
@@ -507,6 +516,153 @@ describe("personal Memory evidence source port", () => {
       includesPublicBoundary: true,
       kind: "unknown",
     });
+  });
+
+  test("classifies namespace proof overflow as incomplete without reading partial audiences", async () => {
+    const fingerprints = createHmacOrdinarySourceFingerprintPort(
+      new Uint8Array(32).fill(7),
+    );
+    const memory = {
+      id: MEMORY_ID,
+      type: "fact",
+      content: "A retained Memory",
+      tier: 1,
+      contentRevision: 5,
+      updatedAt: new Date(0),
+      updatedAtCoordinate: "1970-01-01T00:00:00.000000Z",
+    } as const;
+    const dependency = sourceDependency({
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY_ID}`,
+      revision: "5",
+      fingerprint: fingerprints.memory(memory),
+    });
+    let roomFinds = 0;
+    let accessReads = 0;
+    const value = port({
+      db: database(
+        [ACTOR_ROW],
+        [memory],
+        Array.from({ length: 257 }, (_, index) => ({
+          namespaceId: index === 0 ? NAMESPACE_ID : `namespace-${index}`,
+          selectedNamespacePresent: true,
+        })),
+      ),
+      fingerprints,
+      rooms: {
+        async findRoomByNamespaceId(namespaceId) {
+          roomFinds += 1;
+          return namespaceId === NAMESPACE_ID ? { roomId: ROOM_ID } : null;
+        },
+        async getRoomWithAccess(roomId) {
+          accessReads += 1;
+          return roomId === ROOM_ID
+            ? {
+                namespaceId: NAMESPACE_ID,
+                humanActorIds: ["actor-1"],
+                isPublicNamespaceBoundary: false,
+                externalContext: false,
+              }
+            : null;
+        },
+      },
+    });
+
+    const current = await classifyPersonalMemoryEvidence({
+      dependencies: [dependency],
+      ports: value,
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+    });
+    expect(current).toEqual({ kind: "service", reason: "incomplete" });
+    expect(roomFinds).toBe(1);
+    expect(accessReads).toBe(1);
+    expect(() => assertSamePersonalMemoryEvidence(
+      { kind: "human", humanUserId: HUMAN_ID },
+      current,
+    )).toThrow(PersonalMemoryEvidenceChangedError);
+
+    const lostSelectedEdge = await classifyPersonalMemoryEvidence({
+      dependencies: [dependency],
+      ports: port({
+        db: database(
+          [ACTOR_ROW],
+          [memory],
+          Array.from({ length: 257 }, (_, index) => ({
+            namespaceId: `other-namespace-${index}`,
+            selectedNamespacePresent: false,
+          })),
+        ),
+        fingerprints,
+      }),
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+    }).catch((error: unknown) => error);
+    expect(lostSelectedEdge).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+  });
+
+  test("keeps changed, missing, corrupted, unauthorized, and failed Memory reads fatal", async () => {
+    const fingerprints = createHmacOrdinarySourceFingerprintPort(
+      new Uint8Array(32).fill(7),
+    );
+    const memory = {
+      id: MEMORY_ID,
+      type: "fact",
+      content: "A retained Memory",
+      tier: 1,
+      contentRevision: 5,
+      updatedAt: new Date(0),
+      updatedAtCoordinate: "1970-01-01T00:00:00.000000Z",
+    } as const;
+    const dependency = sourceDependency({
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY_ID}`,
+      revision: "5",
+      fingerprint: fingerprints.memory(memory),
+    });
+    const classify = (value: ReturnType<typeof port>) =>
+      classifyPersonalMemoryEvidence({
+        dependencies: [dependency],
+        ports: value,
+        budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      }).catch((error: unknown) => error);
+
+    expect(await classify(port({
+      db: database([ACTOR_ROW], [{ ...memory, content: "changed" }]),
+      fingerprints,
+    }))).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    expect(await classify(port({
+      db: database([ACTOR_ROW], []),
+      fingerprints,
+    }))).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    expect(await classify(port({
+      db: database(
+        [ACTOR_ROW],
+        [{ ...memory, modelExposureDependencies: { forged: true } }],
+      ),
+      fingerprints,
+    }))).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    expect(await classify(port({
+      db: database(),
+      fingerprints,
+      rooms: {
+        async findRoomByNamespaceId() { return { roomId: ROOM_ID }; },
+        async getRoomWithAccess() { return null; },
+      },
+    }))).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+
+    const storageFailure = new Error("namespace edge read failed");
+    let reads = 0;
+    const failedDb = {
+      select() {
+        reads += 1;
+        if (reads === 1) return queryResult([ACTOR_ROW]);
+        if (reads === 2) return queryResult([memory]);
+        throw storageFailure;
+      },
+    } as unknown as DirectDatabase;
+    expect(await classify(port({
+      db: failedDb,
+      fingerprints,
+    }))).toBe(storageFailure);
   });
 
   test("switches dynamically to the selected protected opener without ordinary fallback", async () => {

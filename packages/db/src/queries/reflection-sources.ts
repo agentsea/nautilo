@@ -1,4 +1,5 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, exists, inArray, isNull, sql } from "drizzle-orm";
+import { alias, QueryBuilder } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../config/direct-database";
 import { profiles } from "../schema/profiles";
 import { actors } from "../schema/trust";
@@ -49,18 +50,44 @@ export async function findReflectionMemorySourceWith(
   return rows.length === 1 ? rows[0]! : null;
 }
 
-/** Read every current Namespace edge for an exact Memory. */
+/** Maximum current Namespace edges retained as a complete Memory proof. */
+export const REFLECTION_MEMORY_NAMESPACE_PROOF_LIMIT = 256;
+
+/**
+ * Read every current Namespace edge for an exact Memory. A null result means
+ * the current edge set exceeds the bounded proof limit. An empty result means
+ * the selected edge is absent (or the Memory has no edges); query failures
+ * throw.
+ */
 export async function findReflectionMemoryNamespaceIdsWith(
   db: DirectDatabase,
   memoryId: string,
+  selectedNamespaceId: string,
 ): Promise<readonly string[] | null> {
+  const selectedMemoryNamespaces = alias(
+    memoryNamespaces,
+    "selected_memory_namespaces",
+  );
+  const selectedNamespaceEdge = new QueryBuilder()
+    .select({ value: selectedMemoryNamespaces.memoryId })
+    .from(selectedMemoryNamespaces)
+    .where(and(
+      eq(selectedMemoryNamespaces.memoryId, memoryNamespaces.memoryId),
+      eq(selectedMemoryNamespaces.namespaceId, selectedNamespaceId),
+    ));
   const rows = await db
-    .select({ namespaceId: memoryNamespaces.namespaceId })
+    .select({
+      namespaceId: memoryNamespaces.namespaceId,
+      selectedNamespacePresent: exists(selectedNamespaceEdge),
+    })
     .from(memoryNamespaces)
     .where(eq(memoryNamespaces.memoryId, memoryId))
     .orderBy(memoryNamespaces.namespaceId)
-    .limit(257);
-  return rows.length > 256 ? null : rows.map((row) => row.namespaceId);
+    .limit(REFLECTION_MEMORY_NAMESPACE_PROOF_LIMIT + 1);
+  if (rows.some((row) => !row.selectedNamespacePresent)) return [];
+  return rows.length > REFLECTION_MEMORY_NAMESPACE_PROOF_LIMIT
+    ? null
+    : rows.map((row) => row.namespaceId);
 }
 
 /** Read one exact ordinary Message through its Room and Namespace anchors. */

@@ -6,13 +6,6 @@ import {
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 
 export const MEMORY_PAYLOAD_FORMAT_VERSION_V1 = 1 as const;
-export const MEMORY_PAYLOAD_MAX_CONTENT_BYTES_V1 = 64 * 1024;
-export const MEMORY_PAYLOAD_MAX_TYPE_BYTES_V1 = 256;
-export const MEMORY_PAYLOAD_MAX_WIRE_BYTES_V1 =
-  MEMORY_PAYLOAD_MAX_CONTENT_BYTES_V1
-  + MEMORY_PAYLOAD_MAX_TYPE_BYTES_V1
-  + RECORD_PAYLOAD_V1_LIMITS.payloadBytes
-  + 256;
 
 export type MemoryPayloadV1 = Readonly<{
   readonly formatVersion: typeof MEMORY_PAYLOAD_FORMAT_VERSION_V1;
@@ -23,9 +16,50 @@ export type MemoryPayloadV1 = Readonly<{
     readonly RecordPayloadModelExposureDependencyV1[];
 }>;
 
+function encodeCanonicalMemoryPayloadV1(payload: MemoryPayloadV1): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({
+    formatVersion: payload.formatVersion,
+    content: payload.content,
+    type: payload.type,
+    ...(payload.modelExposureDependencies === undefined
+      ? {}
+      : {
+          modelExposureDependencies:
+            payload.modelExposureDependencies,
+        }),
+  }));
+}
+
 function utf8Length(value: string): number {
   return new TextEncoder().encode(value).length;
 }
+
+export const MEMORY_PAYLOAD_MAX_CONTENT_BYTES_V1 = 64 * 1024;
+export const MEMORY_PAYLOAD_MAX_TYPE_BYTES_V1 = 256;
+
+// JSON may encode each one-byte ASCII control character as six bytes (\u00XX).
+// Lineage's own ceiling already measures its complete serialized JSON bytes, so
+// only the two free-text fields need this expansion factor. Derive the fixed
+// envelope cost through the canonical encoder to keep the bound coupled to the
+// exact field names, order, punctuation, and version representation.
+const MAX_JSON_STRING_UTF8_EXPANSION_V1 = 6;
+const EMPTY_MODEL_EXPOSURE_DEPENDENCIES_JSON_BYTES_V1 = utf8Length(
+  JSON.stringify([]),
+);
+const MEMORY_PAYLOAD_CANONICAL_ENVELOPE_BYTES_V1 =
+  encodeCanonicalMemoryPayloadV1({
+    formatVersion: MEMORY_PAYLOAD_FORMAT_VERSION_V1,
+    content: "",
+    type: "",
+    modelExposureDependencies: [],
+  }).byteLength
+  - EMPTY_MODEL_EXPOSURE_DEPENDENCIES_JSON_BYTES_V1;
+export const MEMORY_PAYLOAD_MAX_WIRE_BYTES_V1 =
+  MAX_JSON_STRING_UTF8_EXPANSION_V1
+    * (MEMORY_PAYLOAD_MAX_CONTENT_BYTES_V1
+      + MEMORY_PAYLOAD_MAX_TYPE_BYTES_V1)
+  + RECORD_PAYLOAD_V1_LIMITS.payloadBytes
+  + MEMORY_PAYLOAD_CANONICAL_ENVELOPE_BYTES_V1;
 
 function assertBoundedText(
   label: string,
@@ -177,17 +211,7 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
 
 export function encodeMemoryPayloadV1(payload: MemoryPayloadV1): Uint8Array {
   const normalized = normalizeMemoryPayloadV1(payload);
-  const bytes = new TextEncoder().encode(JSON.stringify({
-    formatVersion: normalized.formatVersion,
-    content: normalized.content,
-    type: normalized.type,
-    ...(normalized.modelExposureDependencies === undefined
-      ? {}
-      : {
-          modelExposureDependencies:
-            normalized.modelExposureDependencies,
-        }),
-  }));
+  const bytes = encodeCanonicalMemoryPayloadV1(normalized);
   if (bytes.length > MEMORY_PAYLOAD_MAX_WIRE_BYTES_V1) {
     bytes.fill(0);
     throw new RangeError("Memory payload exceeds its wire limit");
