@@ -1,4 +1,3 @@
-import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 import type { TaskReadPendingPage } from "./read-projection";
 import type { BaseMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -60,7 +59,7 @@ const CLAUDE_CODE_TASK_GUIDANCE =
   " CLAUDE CODE: when the user explicitly asks for Claude Code, first call `list_harness_models` with `harness: 'claude-code'`, then create with that exact picker id. It either uses Claude Code or returns an actionable Desktop/Connections failure; it never falls back.";
 
 const PERSONAL_TASK_TOOL_DESCRIPTION =
-  "Create and manage your own native text Tasks. New work is always a root, tool-free Task for this Genie and Human, either immediately, once later, or on a recurring schedule. Use discover_models before setting model_id. read/list/pause/stop remain available even when funding needs repair; update and unpause are revalidated by the server.";
+  "Create and manage native text Tasks for the initiating Human. Native nested, scoped, multi-user, tool-using, and scheduled shapes remain subject to their normal Task, content, tool, and invocation authority checks. Use discover_models before setting model_id. read/list/pause/stop remain available even when funding needs repair; update and unpause are revalidated by the server.";
 
 export function createTaskTool(context?: unknown) {
   const taskCtx = contextFromUnknown(context);
@@ -113,11 +112,7 @@ export function createTaskTool(context?: unknown) {
             : { selectionSpec: args.model_selection_spec }),
         });
       const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
-      const callerFundedToolFree = !getCapabilityFundingSession() && (personalTaskControls || personalOnlyCreate);
-
-      if (personalTaskControls && taskCtx.currentTaskId) {
-        return "Personal Task controls are available only from the foreground parent chat.";
-      }
+      const callerFundedNative = personalTaskControls || personalOnlyCreate;
 
       const dispatchCtx: TaskDispatchContext = {
         ownerId: taskCtx.ownerId,
@@ -125,17 +120,13 @@ export function createTaskTool(context?: unknown) {
         agentId: taskCtx.agentId,
         roomId: taskCtx.roomId || taskCtx.callingRoomId,
         currentTaskId: taskCtx.currentTaskId,
-        ...(callerFundedToolFree ? { personalTaskControls: true } : {}),
+        ...(callerFundedNative ? { personalTaskControls: true } : {}),
         taskReadMaxResponseBytes: taskCtx.taskReadMaxResponseBytes,
         taskReadMessages: taskCtx.taskReadMessages,
         taskReadPendingPages: taskCtx.taskReadPendingPages,
       };
 
-      const dispatchedArgs = callerFundedToolFree
-        && (args.command === "create" || args.command === "update")
-        ? { ...args, tools: [] }
-        : args;
-      return dispatchTaskCommand(dispatchedArgs, dispatchCtx);
+      return dispatchTaskCommand(args, dispatchCtx);
     },
   });
 }

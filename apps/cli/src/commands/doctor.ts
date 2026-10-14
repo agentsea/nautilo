@@ -7,6 +7,14 @@ import { hasAdminUser, type DirectDatabase } from "@nautilo/db";
 import * as dbSchema from "@nautilo/db/schema";
 import { runDoctorMigrateConfig } from "../lib/doctor-migrate-config.ts";
 import { runDoctorPurgeConsumedBootstrap } from "../lib/doctor-purge-consumed-bootstrap.ts";
+import {
+  formatPersonalProviderCustodyDoctorResult,
+  inspectPersonalProviderCustody,
+  PersonalProviderCustodyTargetMismatchError,
+  resolvePersonalProviderCustodyBearer,
+  resolvePersonalProviderCustodyDoctorTarget,
+  type PersonalProviderCustodyDoctorResult,
+} from "../lib/doctor-personal-provider-custody.ts";
 import { loadProfile } from "../lib/profile-schema.ts";
 import { runRemoteDoctorChecks } from "../lib/remote-doctor.ts";
 
@@ -171,14 +179,41 @@ const purgeConsumedBootstrapCmd: CommandModule = {
   },
 };
 
+const personalProviderCustodyCmd: CommandModule = {
+  command: "personal-provider-custody",
+  describe: "Verify personal provider credential custody without reading credential content",
+  handler: async (argv) => {
+    let result: PersonalProviderCustodyDoctorResult;
+    try {
+      const serverFlag = typeof argv["server"] === "string" ? argv["server"] : undefined;
+      const target = await resolvePersonalProviderCustodyDoctorTarget(serverFlag);
+      const sessionBearer = await resolvePersonalProviderCustodyBearer(target.transport);
+      result = await inspectPersonalProviderCustody(
+        target.transport,
+        sessionBearer,
+        target.fetch === undefined ? {} : { fetch: target.fetch },
+      );
+    } catch (error) {
+      result = error instanceof PersonalProviderCustodyTargetMismatchError
+        ? { status: "target_mismatch" }
+        : { status: "denied" };
+    }
+    for (const line of formatPersonalProviderCustodyDoctorResult(result)) {
+      process.stdout.write(`${line}\n`);
+    }
+    process.exitCode = result.status === "ready" ? 0 : 1;
+  },
+};
+
 export const doctorModule: CommandModule = {
   command: "doctor",
-  describe: "doctor — operator-config migration + cleanup utilities",
+  describe: "doctor — operator diagnostics, config migration, and cleanup utilities",
   builder: (y) =>
     y
       .command(migrateConfigCmd)
       .command(remoteCmd)
       .command(purgeConsumedBootstrapCmd)
+      .command(personalProviderCustodyCmd)
       .demandCommand(1, "Specify a doctor subcommand."),
   handler: () => {
     process.stderr.write("Specify a doctor subcommand.\n");

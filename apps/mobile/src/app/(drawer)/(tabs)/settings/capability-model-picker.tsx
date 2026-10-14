@@ -1,6 +1,6 @@
-import { Stack, router, useLocalSearchParams } from "expo-router";
+import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { isPersonalCapabilityRole } from "@nautilo/types";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
@@ -28,6 +28,7 @@ export default function CapabilityModelPickerScreen() {
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const [query, setQuery] = useState("");
+  const focusedRef = useRef(false);
   const serverRef = useRef(activeServer);
   serverRef.current = activeServer;
   const controllerRef = useRef<PersonalCapabilityPreferencesController | null>(null);
@@ -50,10 +51,28 @@ export default function CapabilityModelPickerScreen() {
     viewer: viewer && viewerState === "verified" ? viewer : null,
   }), [activeServer, status, viewer, viewerState]);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
     controller.setScope(scope);
     if (scope) void controller.load();
-    return () => controller.setScope(null);
+    return () => {
+      focusedRef.current = false;
+      controller.setScope(null);
+    };
+  }, [controller, scope]));
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (
+        next === "active"
+        && focusedRef.current
+        && scope
+        && !controller.data.getState().mutating
+      ) {
+        controller.setScope(scope);
+        void controller.load();
+      }
+    });
+    return () => subscription.remove();
   }, [controller, scope]);
 
   const capability = role ? state.data?.capabilities.find((entry) => entry.role === role) : undefined;

@@ -13,6 +13,7 @@ import {
   type ShortcutContext,
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 
 /**
  * `in_private_namespace` intent shortcut. A thin `TaskCreateInput` builder for a wide-envelope
@@ -43,6 +44,7 @@ const IN_PRIVATE_NAMESPACE_DESCRIPTION =
 
 export function createInPrivateNamespaceTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
+  const personalTaskControls = (context as Record<string, unknown> | undefined)?.["personalTaskControls"] === true;
 
   return new DynamicStructuredTool({
     name: "in_private_namespace",
@@ -54,7 +56,7 @@ export function createInPrivateNamespaceTool(context?: unknown) {
         return "Cannot start private-namespace task: missing owner or agent context.";
       }
       if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
-      const selectionError = validateTaskModelSelectionForCreate({
+      const selectionError = personalTaskControls || getCapabilityFundingSession() ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         // in_private_namespace runs with the full tool set (auto).

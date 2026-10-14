@@ -38,6 +38,7 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
   resolveArtifactFeedActorNames } from "./event-feed/artifact-identities";
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
+import { createPersonalLlmAttemptOwnerRuntime } from "./lib/personal-llm-attempt-owner";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { createCloudConversionRuntime } from "./conversions";
 import { installConversionRuntime, uninstallConversionRuntime } from "@nautilo/agent";
@@ -1055,7 +1056,9 @@ export async function createApp(options?: CreateAppOptions) {
   // Room send or even the first interval tick.
   reconcileLiveShadowLifecycle();
   const surplusCostRecovery = createSurplusCostRecovery();
+  const personalAttemptOwner = createPersonalLlmAttemptOwnerRuntime();
   app.addHook("onClose", async () => {
+    await personalAttemptOwner.stop();
     await surplusCostRecovery.stop();
     clearInterval(liveShadowLifecycleTimer);
     await liveShadowLifecycleReconciliation;
@@ -2924,6 +2927,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   app.addHook("onListen", () => {
+    personalAttemptOwner.start();
     surplusCostRecovery.start();
     void loadConnectionProviderCatalog().then((resolved) => {
       const nextServices = createConnectedAppServices(resolved);

@@ -80,6 +80,7 @@ export function createManagedBolterConnectionFactory(options: {
     const platform = productionBolterPlatform(process.platform, process.arch);
     let installed: BolterInstalledRuntime | null = null;
     let owner: BolterConnectionOwner | null = null;
+    let ownerController: AbortController | null = null;
     let revision = 0;
     let qualified = !config.decoders || !!config.decoders.identity && !!config.decoders.discovery && !!config.decoders.authLink
       && !!config.decoders.receiveItem && !!config.decoders.receipt && !!config.decoders.conversations;
@@ -88,6 +89,7 @@ export function createManagedBolterConnectionFactory(options: {
     let ingressBlocked = false;
     let flush: Promise<unknown> | null = null;
     let ensuring: Promise<void> | null = null;
+    let acquisitionController: AbortController | null = null;
     let recovering: Promise<boolean> | null = null;
     let receiverIntent = 0;
     let receiverWanted = false;
@@ -104,9 +106,11 @@ export function createManagedBolterConnectionFactory(options: {
     };
     const performEnsure = async (refresh: boolean) => {
       if ((!refresh && owner) || !qualified || !platform || !live()) return;
+      const controller = new AbortController();
+      acquisitionController = controller;
       const runtimeRoot = await createBolterPrivateRoot(root, "runtime");
-      const next = await provisionLatestBolterRuntime({ directory: runtimeRoot, platform, isCurrent: live });
-      if (!live()) throw unavailable();
+      const next = await provisionLatestBolterRuntime({ directory: runtimeRoot, platform, isCurrent: live, signal: controller.signal });
+      if (!live() || controller.signal.aborted) throw unavailable();
       if (owner && installed?.version === next.version) return;
       const decoders = config.decoders ?? getBolterProductionDecoders(next.version);
       const qualification = config.qualification ?? bolterNativeAdmissionPolicy(next.version);
@@ -116,21 +120,28 @@ export function createManagedBolterConnectionFactory(options: {
       if (!nextQualified) { if (!owner) qualified = false; return; }
       // Retire the old authority before another process can access the same credential HOME.
       const previous = owner;
+      const previousController = ownerController;
       const epoch = ++revision;
-      owner = null;
+      owner = null; ownerController = null;
+      previousController?.abort();
       await previous?.retire();
       await flush;
-      if (!live() || epoch !== revision) throw unavailable();
+      if (!live() || controller.signal.aborted || epoch !== revision) throw unavailable();
       installed = next;
+      const lifetime = new AbortController();
+      ownerController = lifetime;
       owner = new BolterConnectionOwner({ scope, runtime: { executable: next.executable, home: directories.home,
         version: next.version, platform: "darwin" }, decoders, qualification, selection: descriptor.identity ?? undefined,
         isCurrent: () => live() && epoch === revision, isBound: () => false,
         // Attestation is local; downloading never occurs at the send authorization fence.
-        attest: () => attestBolterRuntime({ directory: runtimeRoot, runtime: next, isCurrent: () => live() && epoch === revision }),
+        attest: () => attestBolterRuntime({ directory: runtimeRoot, runtime: next, isCurrent: () => live() && epoch === revision, signal: lifetime.signal }),
         attestHelper: config.helper?.attest });
     };
-    const ensure = (refresh = false) => {
-      if (ensuring) return ensuring;
+    const ensure = (refresh = false): Promise<void> => {
+      if (ensuring) {
+        if (acquisitionController?.signal.aborted && live()) return ensuring.catch(() => undefined).then(() => ensure(refresh));
+        return ensuring;
+      }
       if (!refresh && owner) return Promise.resolve();
       const work = performEnsure(refresh); ensuring = work;
       void work.finally(() => { if (ensuring === work) ensuring = null; }).catch(() => undefined);
@@ -144,7 +155,8 @@ export function createManagedBolterConnectionFactory(options: {
       if (result.status === "confirmed" && live() && owner === target) {
         const selected = target.confirmedIdentity;
         if (!selected || expected && identityFingerprint(selected) !== identityFingerprint(expected)) {
-          ++revision; owner = null; await target.retire(); return observation();
+          ++revision; owner = null; ownerController?.abort(); ownerController = null;
+          await target.retire(); return observation();
         }
         descriptor = { ...descriptor, identity: { origin: selected.origin, agentId: selected.agentId, cliSelector: selected.cliSelector } };
         await persist();
@@ -286,6 +298,7 @@ export function createManagedBolterConnectionFactory(options: {
       },
       async pause() {
         receiverWanted = false; ++receiverIntent; resumeReceiver = null;
+        acquisitionController?.abort();
         await owner?.pauseReceiver();
         return observation();
       },
@@ -309,6 +322,7 @@ export function createManagedBolterConnectionFactory(options: {
       },
       async retire() {
         retired = true; pending = false; receiverWanted = false; ++receiverIntent; ++revision;
+        acquisitionController?.abort(); ownerController?.abort();
         await owner?.retire();
         await Promise.allSettled([flush, ensuring, recovering]);
       },

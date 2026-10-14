@@ -1,6 +1,6 @@
 import { Stack, router, type Href, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
 import { Screen } from "@/components/screen";
@@ -22,6 +22,7 @@ export default function CapabilityModelsScreen() {
   const { status, viewer, viewerState } = useAuth();
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const focusedRef = useRef(false);
   const serverRef = useRef(activeServer);
   serverRef.current = activeServer;
   const controllerRef = useRef<PersonalCapabilityPreferencesController | null>(null);
@@ -45,10 +46,23 @@ export default function CapabilityModelsScreen() {
   }), [activeServer, status, viewer, viewerState]);
 
   useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
     controller.setScope(scope);
     if (scope) void controller.load();
-    return () => controller.setScope(null);
+    return () => {
+      focusedRef.current = false;
+      controller.setScope(null);
+    };
   }, [controller, scope]));
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active" && focusedRef.current && scope) {
+        controller.setScope(scope);
+        void controller.load();
+      }
+    });
+    return () => subscription.remove();
+  }, [controller, scope]);
 
   const goBack = () => router.canGoBack() ? router.back() : router.replace("/(drawer)/(tabs)/settings");
   return (

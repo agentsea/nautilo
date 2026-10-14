@@ -11,8 +11,16 @@ import {
 import { createPersonalTaskToolSchema } from "../../src/tools/tasks/schema";
 import { createTaskTool } from "../../src/tools/tasks/task-tool";
 import { createInBackgroundTool } from "../../src/tools/tasks/shortcuts/in-background";
+import { createInScopeTool } from "../../src/tools/tasks/shortcuts/in-scope";
+import { createInPrivateNamespaceTool } from "../../src/tools/tasks/shortcuts/in-private-namespace";
+import { createAskPeerTool } from "../../src/tools/tasks/shortcuts/ask-peer";
 import { createScheduleTool } from "../../src/tools/tasks/shortcuts/schedule";
 import { createDiscoverModelsTool } from "../../src/tools/meta/discover-models";
+import {
+  runWithCapabilityFundingSession,
+  type CapabilityFundingSession,
+} from "../../src/runtime/capability-funding";
+import * as shareArtifact from "../../src/tools/file/share-artifact";
 import {
   setTaskToolRuntime,
   type TaskToolCreateInput,
@@ -23,6 +31,7 @@ import { dispatchTaskCommand } from "../../src/tools/tasks/dispatch";
 const OWNER_ID = "10000000-0000-4000-8000-000000000001";
 const AGENT_ID = "20000000-0000-4000-8000-000000000002";
 const ROOM_ID = "30000000-0000-4000-8000-000000000003";
+const PEER_ID = "40000000-0000-4000-8000-000000000004";
 const CONTEXT = {
   ownerId: OWNER_ID,
   causalHumanUserId: OWNER_ID,
@@ -130,7 +139,8 @@ describe("personal-funded Task controls", () => {
 
   test("raw-call predicate admits only the bounded names and arguments", () => {
     expect(PERSONAL_TASK_CONTROL_TOOL_NAMES).toEqual([
-      "task", "in_background", "schedule", "discover_models",
+      "task", "in_background", "in_scope", "in_private_namespace", "ask_peer",
+      "schedule", "discover_models",
     ]);
     expect(isPersonalTaskControlCall({
       name: "task",
@@ -143,35 +153,180 @@ describe("personal-funded Task controls", () => {
     expect(isPersonalTaskControlCall({
       name: "task",
       args: { command: "create", prompt: "summarize", parent_task_id: "parent" },
-    })).toBeFalse();
+    })).toBeTrue();
     expect(isPersonalTaskControlCall({
       name: "in_background",
       args: { brief: "summarize", tools: ["run_shell"] },
+    })).toBeTrue();
+    expect(isPersonalTaskControlCall({
+      name: "ask_peer",
+      args: { peer_handle: "peer", message_to_peer: "Are you free?" },
+    })).toBeTrue();
+    expect(isPersonalTaskControlCall({
+      name: "ask_peer",
+      args: { peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"] },
     })).toBeFalse();
     expect(isPersonalTaskControlCall({
       name: "discover_models",
       args: { command: "list", output: "video" },
     })).toBeFalse();
+    expect(isPersonalTaskControlCall({
+      name: "discover_models",
+      args: {
+        command: "list", workload: "decision",
+        decision_operation: "noul", runnable_only: true,
+      },
+    })).toBeTrue();
+    expect(isPersonalTaskControlCall({
+      name: "discover_models",
+      args: { command: "list", decision_operation: "noul" },
+    })).toBeFalse();
     expect(isPersonalTaskControlCall({ name: "generate_image", args: {} })).toBeFalse();
   });
 
-  test("personal task schema omits peer, scope, harness, nested, resource, and worker-tool controls", () => {
+  test("personal task schema exposes native shapes but omits external harness controls", () => {
     const shape = createPersonalTaskToolSchema().shape;
-    for (const key of [
-      "target_users", "use_scope", "scope_id", "tools", "parent_task_id",
-      "harness", "collaboration_mode", "harness_model_id", "working_directory",
-    ]) {
+    for (const key of ["harness", "collaboration_mode", "harness_model_id", "working_directory"]) {
       expect(key in shape).toBeFalse();
+    }
+    for (const key of ["target_users", "use_scope", "scope_id", "tools", "parent_task_id"]) {
+      expect(key in shape).toBeTrue();
     }
     expect(shape.command.options).toEqual([
       "create", "read", "list", "update", "pause", "unpause", "stop",
     ]);
     expect(createPersonalTaskToolSchema().safeParse({
       command: "create", prompt: "x", target_chat: "new_in_namespace",
-    }).success).toBeFalse();
+    }).success).toBeTrue();
   });
 
-  test("direct personal factories author native root tool-free immediate and scheduled Tasks", async () => {
+  test("a foreign Genie can create a multi-user tool Task for the causal Human", async () => {
+    const query = {
+      from() { return this; },
+      where() { return this; },
+      limit: async () => [{ id: PEER_ID }],
+    };
+    installRuntime({ db: { select: () => query } as never });
+    await createTaskTool({
+      ...CONTEXT,
+      ownerId: "50000000-0000-4000-8000-000000000005",
+      causalHumanUserId: OWNER_ID,
+    }).invoke({
+      command: "create",
+      prompt: "Compare our notes",
+      target_users: ["@peer"],
+      tools: ["search_memory"],
+      model_id: PERSONAL_ONLY_MODEL_ID,
+    });
+
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      ownerId: "50000000-0000-4000-8000-000000000005",
+      requestorId: OWNER_ID,
+      targetUserIds: [OWNER_ID, PEER_ID],
+      toolsMode: "whitelist",
+      toolsWhitelist: ["search_memory"],
+      requestedModelId: PERSONAL_ONLY_MODEL_ID,
+    });
+  });
+
+  test("personal capability controls reach scoped, private, and peer Task journeys", async () => {
+    installRuntime();
+    await createInScopeTool(CONTEXT).invoke({
+      brief: "Check one fact", tools: ["search_memory"], model_id: PERSONAL_ONLY_MODEL_ID,
+    });
+    await createInPrivateNamespaceTool(CONTEXT).invoke({
+      brief: "Review my notes", bring_back: false, model_id: PERSONAL_ONLY_MODEL_ID,
+    });
+    await createAskPeerTool(CONTEXT).invoke({
+      peer_handle: "peer", message_to_peer: "Are you free?", model_id: PERSONAL_ONLY_MODEL_ID,
+    });
+
+    expect(created).toHaveLength(3);
+    expect(created[0]).toMatchObject({ preset: "in_scope", useScope: true,
+      toolsMode: "whitelist", toolsWhitelist: ["search_memory"] });
+    expect(created[1]).toMatchObject({ preset: "in_private_namespace",
+      metadata: { bringBack: false }, toolsMode: "auto" });
+    expect(created[2]).toMatchObject({ preset: "ask_peer", targetChat: "last_dm",
+      targetChatHandle: "@peer", awaitResponse: true, toolsMode: "none" });
+    expect(created.every((input) => input.requestedModelId === PERSONAL_ONLY_MODEL_ID)).toBeTrue();
+  });
+
+  test("personal peer controls advertise and execute only plain peer Tasks", async () => {
+    installRuntime();
+    const tool = createAskPeerTool(CONTEXT);
+    const schema = tool.schema as { shape?: Record<string, unknown> };
+    expect(Object.keys(schema.shape ?? {}).sort()).toEqual([
+      "message_to_peer", "model_id", "model_selection", "peer_handle",
+      "return_instructions", "tools",
+    ]);
+    expect(tool.description).toContain("plain DM subagent");
+    expect(tool.description).not.toContain("include_focused_artifacts");
+    const share = spyOn(shareArtifact, "grantArtifactExactUserAccess");
+    restores.push(() => share.mockRestore());
+    let rejected = false;
+    try {
+      await tool.invoke({
+        peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"],
+      });
+    } catch {
+      rejected = true;
+    }
+    expect(rejected).toBeTrue();
+    expect(share).not.toHaveBeenCalled();
+    expect(created).toHaveLength(0);
+  });
+
+  test("capability ALS keeps personal and exact personal-only peer children plain before sharing", async () => {
+    installRuntime();
+    const share = spyOn(shareArtifact, "grantArtifactExactUserAccess");
+    restores.push(() => share.mockRestore());
+
+    await runWithCapabilityFundingSession({
+      humanUserId: OWNER_ID,
+      parentFundingKind: "personal",
+    } as never, async () => {
+      const tool = createAskPeerTool({ ...SERVER_PARENT_CONTEXT,
+        ownerId: "50000000-0000-4000-8000-000000000005" });
+      const schema = tool.schema as { shape?: Record<string, unknown> };
+      expect(Object.keys(schema.shape ?? {})).not.toContain("artifact_ids");
+      let rejected = false;
+      try {
+        await tool.invoke({
+          peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"],
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBeTrue();
+    });
+
+    const serverParentContext = { ...SERVER_PARENT_CONTEXT,
+      ownerId: "50000000-0000-4000-8000-000000000005" };
+    const denied = await runWithCapabilityFundingSession({
+      humanUserId: OWNER_ID,
+      parentFundingKind: "server",
+    } as never, () => createAskPeerTool(serverParentContext).invoke({
+      peer_handle: "peer", message_to_peer: "Review this", artifact_ids: ["doc"],
+      model_id: PERSONAL_ONLY_MODEL_ID,
+    }));
+    expect(denied).toContain("Cannot start caller-funded ask_peer with Artifacts");
+    expect(share).not.toHaveBeenCalled();
+    expect(created).toHaveLength(0);
+
+    await runWithCapabilityFundingSession({
+      humanUserId: OWNER_ID,
+      parentFundingKind: "server",
+    } as never, () => createAskPeerTool(serverParentContext).invoke({
+      peer_handle: "peer", message_to_peer: "Are you free?",
+      model_id: PERSONAL_ONLY_MODEL_ID,
+    }));
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ ownerId: serverParentContext.ownerId,
+      requestorId: OWNER_ID, requestedModelId: PERSONAL_ONLY_MODEL_ID });
+  });
+
+  test("direct personal factories preserve ordinary native immediate and scheduled semantics", async () => {
     installRuntime();
     await createInBackgroundTool(CONTEXT).invoke({
       brief: "summarize this text",
@@ -196,18 +351,18 @@ describe("personal-funded Task controls", () => {
         requestorId: OWNER_ID,
         agentId: AGENT_ID,
         useScope: false,
-        toolsMode: "none",
+        toolsMode: "auto",
         targetUserIds: [OWNER_ID],
         depth: 0,
       });
-      expect(input.toolsWhitelist ?? []).toEqual([]);
       expect(input.parentTaskId).toBeUndefined();
     }
     expect(created[0]?.targetChat).toBe("orphan");
-    expect(created[1]?.targetChat).toBe("orphan");
+    expect(created[1]?.targetChat).toBe("last_in_namespace");
+    expect(created[1]?.targetRoomId).toBe(ROOM_ID);
   });
 
-  test("server-funded parent creates exact personal-only models as native root tool-free Tasks", async () => {
+  test("server-funded parent preserves native semantics for an exact personal-only model", async () => {
     installRuntime();
     await createTaskTool(SERVER_PARENT_CONTEXT).invoke({
       command: "create",
@@ -232,16 +387,67 @@ describe("personal-funded Task controls", () => {
         agentId: AGENT_ID,
         requestedModelId: PERSONAL_ONLY_MODEL_ID,
         useScope: false,
-        toolsMode: "none",
+        toolsMode: "auto",
         targetUserIds: [OWNER_ID],
         depth: 0,
       });
-      expect(input.toolsWhitelist ?? []).toEqual([]);
       expect(input.parentTaskId).toBeUndefined();
     }
     expect(created[0]?.targetChat).toBe("orphan");
     expect(created[1]?.targetChat).toBe("orphan");
-    expect(created[2]?.targetChat).toBe("orphan");
+    expect(created[2]?.targetChat).toBe("last_in_namespace");
+    expect(created[2]?.targetRoomId).toBe(ROOM_ID);
+  });
+
+  test("real capability ALS still defers exact personal-only children to live Task admission", async () => {
+    installRuntime();
+    await runWithCapabilityFundingSession({
+      humanUserId: OWNER_ID,
+      parentFundingKind: "server",
+    } as never, async () => {
+      await createTaskTool(SERVER_PARENT_CONTEXT).invoke({
+        command: "create", prompt: "exact child", model_id: PERSONAL_ONLY_MODEL_ID,
+      });
+      await createInBackgroundTool(SERVER_PARENT_CONTEXT).invoke({
+        brief: "exact background child", model_id: PERSONAL_ONLY_MODEL_ID,
+      });
+      await createScheduleTool(SERVER_PARENT_CONTEXT).invoke({
+        message: "exact scheduled child",
+        when: { kind: "recurring", cron: "0 9 * * *" },
+        model_id: PERSONAL_ONLY_MODEL_ID,
+      });
+    });
+
+    expect(created).toHaveLength(3);
+    expect(created.map((input) => input.requestedModelId)).toEqual([
+      PERSONAL_ONLY_MODEL_ID, PERSONAL_ONLY_MODEL_ID, PERSONAL_ONLY_MODEL_ID,
+    ]);
+    expect(created[2]).toMatchObject({
+      preset: "schedule", targetChat: "last_in_namespace", targetRoomId: ROOM_ID,
+    });
+  });
+
+  test("live capability ALS defers shortcut model validation to Task admission", async () => {
+    installRuntime({ isPersonalOnlyTaskSelection: async () => false });
+    const context = { ...SERVER_PARENT_CONTEXT, personalOnlyTaskModelIds: [] };
+    await runWithCapabilityFundingSession({
+      humanUserId: OWNER_ID,
+      parentFundingKind: "server",
+    } as never, async () => {
+      await createInBackgroundTool(context).invoke({
+        brief: "defer exact selection", model_id: "openrouter:admission-owned-model",
+      });
+      await createScheduleTool(context).invoke({
+        message: "defer exact schedule selection",
+        when: { kind: "recurring", cron: "0 9 * * *" },
+        model_id: "openrouter:admission-owned-model",
+      });
+    });
+
+    expect(created).toHaveLength(2);
+    expect(created.map((input) => input.requestedModelId)).toEqual([
+      "openrouter:admission-owned-model", "openrouter:admission-owned-model",
+    ]);
   });
 
   test("server-funded parent resolves default and profile personal-only selections before shaping Tasks", async () => {
@@ -277,10 +483,9 @@ describe("personal-funded Task controls", () => {
         ownerId: OWNER_ID,
         requestorId: OWNER_ID,
         agentId: AGENT_ID,
-        toolsMode: "none",
+        toolsMode: "auto",
         depth: 0,
       });
-      expect(input.toolsWhitelist ?? []).toEqual([]);
     }
     expect(selections).toEqual([
       { requestorId: OWNER_ID, agentId: AGENT_ID, callingRoomId: ROOM_ID },
@@ -300,7 +505,7 @@ describe("personal-funded Task controls", () => {
     ]);
   });
 
-  test("personal-only conversion rejects paid, scoped, peer, nested, and biased shapes", () => {
+  test("personal-only conversion admits native shapes and rejects external harness selection", () => {
     const trusted = [PERSONAL_ONLY_MODEL_ID];
     const base = {
       command: "create",
@@ -313,16 +518,16 @@ describe("personal-funded Task controls", () => {
       { use_scope: true },
       { target_users: ["@peer"] },
       { parent_task_id: "parent" },
-      { harness: "codex" },
       { target_chat: "new_in_namespace" },
-      { model_selection_profile: "cheapest" },
     ]) {
-      expect(isPersonalOnlyNativeTaskCreate({ ...base, ...extra }, "", trusted)).toBeFalse();
+      expect(isPersonalOnlyNativeTaskCreate({ ...base, ...extra }, "parent", trusted)).toBeTrue();
     }
-    expect(isPersonalOnlyNativeTaskCreate(base, "parent", trusted)).toBeFalse();
+    expect(isPersonalOnlyNativeTaskCreate({ ...base, harness: "codex" }, "", trusted)).toBeFalse();
+    expect(isPersonalOnlyNativeTaskCreate({ ...base, model_selection_profile: "cheapest" }, "", trusted)).toBeFalse();
+    expect(isPersonalOnlyNativeTaskCreate(base, "parent", trusted)).toBeTrue();
     expect(isPersonalOnlyNativeShortcutCreate({
       brief: "x", model_id: PERSONAL_ONLY_MODEL_ID, tools: ["file"],
-    }, "", trusted, { allowTools: true })).toBeFalse();
+    }, "parent", trusted, { allowTools: true })).toBeTrue();
 
     expect(isBoundedPersonalNativeTaskCreate({
       command: "create", prompt: "x", model_selection_profile: "most_private",
@@ -330,30 +535,54 @@ describe("personal-funded Task controls", () => {
     expect(isBoundedPersonalNativeShortcutCreate({
       brief: "x", model_selection: "most_private",
     }, "", { allowTools: true })).toBeTrue();
-    for (const unsafe of [
+    for (const supported of [
       { command: "create", prompt: "x", tools: ["file"] },
       { command: "create", prompt: "x", target_users: ["@peer"] },
       { command: "create", prompt: "x", target_chat: "new_in_namespace" },
-      { command: "create", prompt: "x", harness: "codex" },
     ]) {
-      expect(isBoundedPersonalNativeTaskCreate(unsafe, "")).toBeFalse();
+      expect(isBoundedPersonalNativeTaskCreate(supported, "parent")).toBeTrue();
     }
+    expect(isBoundedPersonalNativeTaskCreate(
+      { command: "create", prompt: "x", harness: "codex" }, "",
+    )).toBeFalse();
   });
 
-  test("personal factories reject nested construction and omit unsafe schema fields", async () => {
+  test("personal factories preserve canonical nested lineage and native schema fields", async () => {
     installRuntime();
+    const parent = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "parent", ownerId: OWNER_ID, depth: 2,
+    } as never);
+    restores.push(() => parent.mockRestore());
     const nested = createInBackgroundTool({ ...CONTEXT, currentTaskId: "parent" });
-    expect(await nested.invoke({ brief: "nested" })).toContain("foreground parent chat");
-    expect(created).toHaveLength(0);
+    expect(await nested.invoke({ brief: "nested", tools: ["search_memory"] })).toContain("taskId");
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({
+      parentTaskId: "parent", depth: 3,
+      toolsMode: "whitelist", toolsWhitelist: ["search_memory"],
+    });
 
     const schema = createInBackgroundTool(CONTEXT).schema as { shape?: Record<string, unknown> };
     expect(Object.keys(schema.shape ?? {}).sort()).toEqual([
-      "brief", "model_id", "model_selection", "result_delivery",
+      "brief", "harness", "model_id", "model_selection", "result_delivery", "tools", "working_directory",
     ]);
   });
 
   test("personal model discovery exposes only the trusted runnable text set", async () => {
     const runnableModelIds = ["anthropic:claude-sonnet-4-6"];
+    const decisionModelId = "openrouter:typesafe/jev-1.13";
+    const capability = {
+      humanUserId: OWNER_ID,
+      parentFundingKind: "personal",
+      decisionModelId,
+      async resolveModel(role, configuredId) {
+        if (role !== "decision" || configuredId !== decisionModelId) {
+          throw new Error("unavailable");
+        }
+        return { modelId: decisionModelId, preferenceRevision: 1 };
+      },
+      async openModel() { throw new Error("unused"); },
+      async openService() { throw new Error("unused"); },
+    } satisfies CapabilityFundingSession;
     const tool = createDiscoverModelsTool({
       personalTaskControls: true,
       personalTaskRunnableModelIds: runnableModelIds,
@@ -361,17 +590,34 @@ describe("personal-funded Task controls", () => {
     });
     const schema = tool.schema as { shape?: Record<string, unknown> };
     expect(Object.keys(schema.shape ?? {}).sort()).toEqual([
-      "command", "limit", "model_id", "offset", "output", "provider", "query",
-      "requires_reasoning", "runnable_only", "workload",
+      "command", "decision_operation", "limit", "model_id", "offset", "output",
+      "provider", "query", "requires_reasoning", "runnable_only", "workload",
     ]);
-    const result = JSON.parse(String(await tool.invoke({ command: "list" }))) as {
-      items: Array<{ id: string; availability: string; workload: string; output: string[] }>;
-    };
-    expect(result.items).toHaveLength(1);
-    expect(result.items[0]?.id).toBe(runnableModelIds[0]);
-    expect(result.items[0]?.availability).toBe("selectable");
-    expect(result.items[0]?.workload).toBe("chat");
-    expect(result.items[0]?.output).toContain("text");
+    await runWithCapabilityFundingSession(capability, async () => {
+      const result = JSON.parse(String(await tool.invoke({ command: "list" }))) as {
+        items: Array<{ id: string; availability: string; workload: string; output: string[] }>;
+      };
+      expect(result.items).toHaveLength(1);
+      expect(result.items[0]?.id).toBe(runnableModelIds[0]);
+      expect(result.items[0]?.availability).toBe("selectable");
+      expect(result.items[0]?.workload).toBe("chat");
+      expect(result.items[0]?.output).toContain("text");
+
+      const decisions = JSON.parse(String(await tool.invoke({
+        command: "list",
+        workload: "decision",
+        decision_operation: "noul",
+        runnable_only: true,
+      }))) as {
+        items: Array<{ id: string; availability: string; workload: string }>;
+      };
+      expect(decisions.items).toHaveLength(1);
+      expect(decisions.items[0]).toMatchObject({
+        id: decisionModelId,
+        availability: "selectable",
+        workload: "decision",
+      });
+    });
   });
 
   test("ordinary server parent discovery marks the trusted caller union selectable", async () => {
@@ -493,7 +739,7 @@ describe("personal-funded Task controls", () => {
 
     expect(await dispatchTaskCommand({
       command: "unpause", taskId: "task-1",
-    }, CONTEXT)).toContain("only support caller-funded native root tool-free Tasks");
+    }, CONTEXT)).toContain("caller-funded Task identity or native authority changed");
     expect(unpauseCalls).toBe(0);
 
     getTask.mockResolvedValue(personalTask() as never);

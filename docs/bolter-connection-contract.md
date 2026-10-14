@@ -76,6 +76,8 @@ when the version changed. A failed recovery stops rather than looping. A release
 send with an uncertain outcome is never replayed; an update repairs future work.
 Updates retain the same credential home, sealed identity and pending inbox batches,
 and retire the old receiver before another process can use that home.
+Pause and disconnection cancel their pending acquisition without interrupting a
+shared download still needed by another current connection.
 Response parsers accept additive metadata while validating the fields used for
 identity, routing, text and receipts. Unsupported media remains unavailable. The conversation picker lists main timelines; it does not
 enumerate threads. The transport preserves exact thread bindings and receipts

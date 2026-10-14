@@ -14,6 +14,7 @@ import {
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 
 /**
  * `in_scope` intent shortcut for asynchronous scoped work.
@@ -47,6 +48,7 @@ const IN_SCOPE_DESCRIPTION =
 
 export function createInScopeTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
+  const personalTaskControls = (context as Record<string, unknown> | undefined)?.["personalTaskControls"] === true;
 
   return new DynamicStructuredTool({
     name: "in_scope",
@@ -58,7 +60,7 @@ export function createInScopeTool(context?: unknown) {
         return "Cannot start scoped task: missing owner or agent context.";
       }
       if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
-      const selectionError = validateTaskModelSelectionForCreate({
+      const selectionError = personalTaskControls || getCapabilityFundingSession() ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         // in_scope is always tool-using with a (possibly empty) whitelist.

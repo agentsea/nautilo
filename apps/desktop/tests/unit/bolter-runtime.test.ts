@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   attestBolterRuntime,
@@ -48,6 +48,18 @@ async function fixture() {
   await chmod(parent, 0o700);
   const directory = join(parent, "runtime"); await mkdir(directory, { mode: 0o700 });
   return { parent, directory, remove: () => rm(parent, { recursive: true, force: true }) };
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>(resolvePromise => { resolve = resolvePromise; });
+  return { promise, resolve };
+}
+async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  for (let attempt = 0; attempt < 2_000; attempt++) {
+    if (await predicate()) return;
+    await new Promise<void>(resolveResult => setTimeout(resolveResult, 1));
+  }
+  throw new Error("Timed out waiting for Bolter acquisition state.");
 }
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 
@@ -203,6 +215,40 @@ test("an existing unsafe release is never overwritten", async () => {
   } finally { await f.remove(); }
 });
 
+test("a concurrent exact publication is adopted while an invalid winner is preserved and rejected", async () => {
+  for (const kind of ["exact", "invalid"] as const) {
+    const f = await fixture();
+    const bytes = macho();
+    const release = join(f.directory, "releases", platform, currentVersion);
+    let raced = false;
+    try {
+      const request = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+        fetch: provider(currentVersion, bytes), inspectVersion: async executable => {
+          if (!raced && executable.includes(".staging-")) {
+            raced = true;
+            await mkdir(release, { mode: 0o700 });
+            if (kind === "exact") {
+              await copyFile(executable, join(release, "bolter-agent"));
+              await chmod(join(release, "bolter-agent"), 0o700);
+              const receipt = { version: currentVersion, platform, artifact: { url: immutable(currentVersion),
+                sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length } };
+              await writeFile(join(release, "receipt.json"), JSON.stringify(receipt) + "\n", { mode: 0o600 });
+            }
+          }
+          return true;
+        } });
+      if (kind === "exact") {
+        expect((await request).executable).toBe(join(release, "bolter-agent"));
+        expect(await readdir(join(f.directory, "releases", platform))).toEqual([currentVersion]);
+      } else {
+        await Promise.resolve(expect(request).rejects.toThrow("unavailable"));
+        expect(await readdir(release)).toEqual([]);
+        expect(await readdir(join(f.directory, "releases", platform))).toEqual([currentVersion]);
+      }
+    } finally { await f.remove(); }
+  }
+});
+
 test("stale authority stops acquisition and concurrent callers share one download", async () => {
   const staleFixture = await fixture();
   let current = true;
@@ -226,6 +272,158 @@ test("stale authority stops acquisition and concurrent callers share one downloa
     expect(first).toEqual(second);
     expect(calls).toEqual([`HEAD ${latest}`, `GET ${immutable(currentVersion)}`]);
   } finally { await concurrentFixture.remove(); }
+});
+
+test("an aborted caller promptly cancels a hanging latest request when it is the final waiter", async () => {
+  const f = await fixture();
+  const caller = new AbortController();
+  const started = deferred<AbortSignal>();
+  try {
+    const fetcher = ((_url, init) => {
+      started.resolve(init!.signal!);
+      return new Promise<Response>(() => undefined);
+    }) as typeof fetch;
+    const request = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      signal: caller.signal, fetch: fetcher, inspectVersion: async () => true });
+    const sharedSignal = await started.promise;
+    caller.abort();
+    await Promise.resolve(expect(request).rejects.toThrow("unavailable"));
+    expect(sharedSignal.aborted).toBeTrue();
+    expect(await readdir(f.directory)).toEqual([]);
+  } finally { await f.remove(); }
+});
+
+test("an immediate retry starts a fresh acquisition after the last waiter cancels", async () => {
+  const f = await fixture();
+  const caller = new AbortController();
+  const started = deferred<void>();
+  const bytes = macho();
+  const nextFetch = provider(currentVersion, bytes);
+  let requests = 0;
+  try {
+    const fetcher = ((url, init) => {
+      if (++requests === 1) { started.resolve(); return new Promise<Response>(() => undefined); }
+      return nextFetch(url, init);
+    }) as typeof fetch;
+    const first = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      signal: caller.signal, fetch: fetcher, inspectVersion: async () => true });
+    const firstResult = first.then(() => "resolved", () => "rejected");
+    await started.promise;
+    caller.abort();
+    const retry = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      fetch: fetcher, inspectVersion: async () => true });
+    expect(await firstResult).toBe("rejected");
+    expect((await retry).version).toBe(currentVersion);
+    expect(requests).toBe(3);
+  } finally { caller.abort(); await f.remove(); }
+});
+
+test("one concurrent caller can abort while the remaining waiter publishes a valid cache", async () => {
+  const f = await fixture();
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const bytes = macho();
+  const calls: string[] = [];
+  let sharedSignal: AbortSignal | undefined;
+  try {
+    const providerFetch = provider(currentVersion, bytes, calls);
+    const fetcher = ((url, init) => { sharedSignal = init?.signal ?? undefined; return providerFetch(url, init); }) as typeof fetch;
+    const first = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      signal: firstController.signal, fetch: fetcher, inspectVersion: async () => true });
+    const firstResult = first.then(() => "resolved", () => "rejected");
+    const second = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      signal: secondController.signal, fetch: fetcher, inspectVersion: async () => true });
+    firstController.abort();
+    expect(await firstResult).toBe("rejected");
+    const installed = await second;
+    expect(sharedSignal?.aborted).toBeFalse();
+    expect(calls).toEqual([`HEAD ${latest}`, `GET ${immutable(currentVersion)}`]);
+    expect(await attestBolterRuntime({ directory: f.directory, runtime: installed, isCurrent: () => true,
+      inspectVersion: async () => true })).toBeTrue();
+  } finally { firstController.abort(); secondController.abort(); await f.remove(); }
+});
+
+test("canceling every waiter aborts a stalled body read and removes staging", async () => {
+  const f = await fixture();
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  const bytes = macho();
+  const getStarted = deferred<void>();
+  let bodyCanceled = false;
+  let sharedSignal: AbortSignal | undefined;
+  try {
+    const fetcher = ((url, init) => {
+      sharedSignal = init?.signal ?? undefined;
+      if (init?.method === "HEAD") return Promise.resolve(head(currentVersion));
+      getStarted.resolve();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) { controller.enqueue(bytes); },
+        cancel() { bodyCanceled = true; },
+      });
+      const artifactResponse = new Response(body, { status: 200, headers: { "content-length": String(bytes.length + 1) } });
+      Object.defineProperties(artifactResponse, {
+        url: { value: typeof url === "string" ? url : url instanceof URL ? url.href : url.url },
+        redirected: { value: false },
+      });
+      return Promise.resolve(artifactResponse);
+    }) as typeof fetch;
+    const options = { directory: f.directory, platform, isCurrent: () => true, fetch: fetcher, inspectVersion: async () => true };
+    const first = provisionLatestBolterRuntime({ ...options, signal: firstController.signal });
+    const second = provisionLatestBolterRuntime({ ...options, signal: secondController.signal });
+    const firstResult = first.then(() => "resolved", () => "rejected");
+    const secondResult = second.then(() => "resolved", () => "rejected");
+    await getStarted.promise;
+    await waitFor(async () => (await readdir(join(f.directory, "releases", platform))).some(name => name.startsWith(".staging-")));
+    firstController.abort(); secondController.abort();
+    expect(await Promise.all([firstResult, secondResult])).toEqual(["rejected", "rejected"]);
+    expect(sharedSignal?.aborted).toBeTrue();
+    await waitFor(async () => bodyCanceled && (await readdir(join(f.directory, "releases", platform))).length === 0);
+  } finally { firstController.abort(); secondController.abort(); await f.remove(); }
+});
+
+test("cancellation interrupts silent version inspection and removes unpublished staging", async () => {
+  const f = await fixture();
+  const caller = new AbortController();
+  const inspectionStarted = deferred<AbortSignal>();
+  try {
+    const request = provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      signal: caller.signal, fetch: provider(currentVersion, macho()),
+      inspectVersion: async (_path, _version, _current, signal) => {
+        if (!signal) return false;
+        inspectionStarted.resolve(signal);
+        return new Promise<boolean>(resolveResult => {
+          if (signal.aborted) resolveResult(false);
+          else signal.addEventListener("abort", () => resolveResult(false), { once: true });
+        });
+      } });
+    const sharedSignal = await inspectionStarted.promise;
+    caller.abort();
+    await Promise.resolve(expect(request).rejects.toThrow("unavailable"));
+    expect(sharedSignal.aborted).toBeTrue();
+    await waitFor(async () => (await readdir(join(f.directory, "releases", platform))).length === 0);
+  } finally { caller.abort(); await f.remove(); }
+});
+
+test("local attestation passes its caller signal through version inspection", async () => {
+  const f = await fixture();
+  const caller = new AbortController();
+  const inspectionStarted = deferred<AbortSignal>();
+  try {
+    const installed = await provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      fetch: provider(currentVersion, macho()), inspectVersion: async () => true });
+    const attestation = attestBolterRuntime({ directory: f.directory, runtime: installed, isCurrent: () => true,
+      signal: caller.signal, inspectVersion: async (_path, _version, _current, signal) => {
+        if (!signal) return false;
+        inspectionStarted.resolve(signal);
+        return new Promise<boolean>(resolveResult => {
+          if (signal.aborted) resolveResult(false);
+          else signal.addEventListener("abort", () => resolveResult(false), { once: true });
+        });
+      } });
+    expect(await inspectionStarted.promise).toBe(caller.signal);
+    caller.abort();
+    expect(await attestation).toBeFalse();
+  } finally { caller.abort(); await f.remove(); }
 });
 
 test("credential directories remain private and scoped to opaque coordinates", async () => {

@@ -675,6 +675,11 @@ export {
   type UsageFundingProvenance,
 } from "./usage/usage-context";
 export { recordLlmUsage, type RecordUsageInput } from "./usage/record-usage";
+export {
+  installPersonalLlmAttemptOwner,
+  getPersonalLlmAttemptOwner,
+  type PersonalLlmAttemptOwnerBinding,
+} from "./usage/personal-llm-attempt-owner";
 export { extractUsageFromLLMResult, createUsageCallbackHandler, countNautiloUsageCallbacks } from "./usage/usage-callback";
 // multi-axis task model selection
 export {

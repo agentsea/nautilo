@@ -11,8 +11,7 @@ function hasPersonalCapabilityFunding(): boolean {
 
 /** These execution families do not yet have personal funding admission. */
 const DEFERRED_PERSONAL_TOOLS = new Set([
-  "in_scope", "in_private_namespace", "ask_peer", "generate_repo_docs",
-  "regenerate_soul", "security_scan",
+  "generate_repo_docs", "regenerate_soul", "security_scan",
 ]);
 
 /** Ordinary tools retain their existing permission/content/device gates. */
@@ -32,6 +31,7 @@ export function personalToolReady(name: string): boolean {
 export function personalToolCallSupported(call: Pick<ToolCall, "name" | "args">, legacyTaskControls: boolean): boolean {
   return hasPersonalCapabilityFunding()
     ? personalToolReady(call.name)
+      && (call.name !== "ask_peer" || isPersonalTaskControlCall(call))
     : legacyTaskControls && isPersonalTaskControlCall(call);
 }
 

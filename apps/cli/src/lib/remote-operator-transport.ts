@@ -65,10 +65,18 @@ export function buildLocalContainerFetch(
     signal.throwIfAborted();
     const url = extractUrl(input);
     const target = new URL(url);
+    const method = (init?.method ?? "GET").toUpperCase();
+    const isAllowedPath = target.pathname.startsWith("/api/operator/") || (
+      target.pathname === "/api/health/personal-provider-custody" &&
+      method === "GET" &&
+      (init?.body === undefined || init.body === null)
+    );
     if (target.origin !== "http://127.0.0.1:3001" ||
-      !target.pathname.startsWith("/api/operator/") ||
+      !isAllowedPath ||
       target.username || target.password || target.search || target.hash) {
-      throw new TypeError("local-container fetch requires a container-loopback operator URL");
+      throw new TypeError(
+        "local-container fetch requires a container-loopback operator URL or exact GET custody probe",
+      );
     }
     const body = bodyToString(init?.body);
     const discovery = spawnFn("docker", [
@@ -85,7 +93,6 @@ export function buildLocalContainerFetch(
     new Headers(init?.headers).forEach((value, key) => {
       if (key !== "authorization") headers[key] = value;
     });
-    const method = (init?.method ?? "GET").toUpperCase();
     const probeArgs = buildContainerBunFetchArgs({ url, method, headers, hasBody: body !== undefined });
     opts.log?.(`local-container: ${method} ${target.pathname}`);
     signal.throwIfAborted();

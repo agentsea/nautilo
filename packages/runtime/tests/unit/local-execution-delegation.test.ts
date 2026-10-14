@@ -18,6 +18,17 @@ function fixture() {
 test("canonical lineage permits later runs after normal parent completion", async () => {
   const f = fixture(); expect(await f.port.withAdmission(async source => source.projectGrantId)).toBe("grant");
 });
+test("canonical lineage keeps the causal Human across different Genie owners", async () => {
+  const f = fixture();
+  f.rows.set("child", { ...f.rows.get("child")!, ownerId: "foreign-genie-owner" });
+  expect(await f.port.withAdmission(async source => source.humanUserId)).toBe("human");
+});
+test("canonical lineage never borrows a different Human from an ancestor", async () => {
+  const f = fixture();
+  f.rows.set("root", { ...root, requestorId: "other-human",
+    localExecutionDelegation: { ...delegation, humanUserId: "other-human" } });
+  await rejects(f.port.withAdmission(async () => "unexpected"), /UNAVAILABLE/);
+});
 test("definition changes and parent cancellation deny before execution", async () => {
   for (const patch of [{ localExecutionDelegation: null }, { status: "cancelled" as const }, { parentTaskId: "child" }]) {
     const f = fixture(); f.rows.set("root", { ...root, ...patch }); let calls = 0;

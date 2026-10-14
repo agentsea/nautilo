@@ -153,7 +153,7 @@ describe("foreground chat funding port", () => {
   });
 
   test.each(["foreground.main", "foreground.fork"] as const)(
-    "rechecks unsupported payloads after a policy change at %s execution", async (entrypoint) => {
+    "resource-bearing %s turns retain caller funding and the protected boundary", async (entrypoint) => {
       let source: "server" | "personal" = "server";
       installForegroundChatFundingPort({
         openSession: async () => ({ ...personalSession, kind: source }),
@@ -172,25 +172,18 @@ describe("foreground chat funding port", () => {
       ];
       for (const shape of shapes) expect((await invoke(shape))?.kind).toBe("server");
       expect((await invoke({}, true))?.kind).toBe("server");
-      // A dispatch projection never authorizes a later personal-paid shape.
+      // Resource content is admitted by its own readers, independently of the payer.
       source = "personal";
-      for (const shape of shapes) {
-        expect(invoke(shape)).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
-      }
+      for (const shape of shapes) expect((await invoke(shape))?.kind).toBe("personal");
       expect(invoke({}, true)).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
       expect((await invoke({ attachmentTextBlocks: [], artifactRefs: [], activeMiniApp: null }))?.kind).toBe("personal");
     },
   );
 
-  test("personal chat permits independently admitted voice without widening protected or resource access", () => {
-    expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, { hasImages: true, voiceRequested: true })).not.toThrow();
-    for (const workload of [
-      { hasImages: false, voiceRequested: true, hasResources: true },
-      { hasImages: false, voiceRequested: true, protectedTurn: true },
-    ]) {
-      expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, workload))
-        .toThrow(ForegroundChatFundingUnsupportedWorkloadError);
-    }
+  test("resource and voice funding preserve the protected-turn boundary", () => {
+    expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, { hasImages: true, voiceRequested: true, hasResources: true })).not.toThrow();
+    expect(() => assertForegroundChatFundingWorkloadSupported(personalSession, { hasImages: false, voiceRequested: true, protectedTurn: true }))
+      .toThrow(ForegroundChatFundingUnsupportedWorkloadError);
   });
 
   test.each(["foreground.main", "foreground.fork"] as const)("image assistance uses accepted %s authority and pinned funding", async (entrypoint) => {
@@ -206,15 +199,17 @@ describe("foreground chat funding port", () => {
     expect(await openImageAssistanceForInvocation({ ...input, authority: undefined })).toBeNull();
   });
 
-  test("image-linked retained resources are supported without admitting other files", async () => {
+  test("resource payloads do not nominate a caller or bypass accepted authority", async () => {
     installForegroundChatFundingPort({ openSession: async () => personalSession });
     const input = { authority: createAcceptedInvocationAuthority("human-1"),
       jobInput: { ...baseJobInput, multimodalImages: [{ attachmentId: "image-a" }], retainedAttachmentIds: ["image-a"],
         focusedResources: [{ kind: "message-attachment", displayName: "chart.png", location: "server", lifetime: "message", capabilities: ["read"], locator: { attachmentId: "image-a" } }] },
       causalHumanUserId: "human-1", entrypoint: "foreground.main" as const, modelId: "text-a", roomId: "room-1", agentId: "agent-1" };
     expect((await openForegroundChatFundingSessionForInvocation(input))?.kind).toBe("personal");
-    expect(openForegroundChatFundingSessionForInvocation({ ...input, jobInput: { ...input.jobInput, focusedResources: [{ kind: "local-file", locator: { attachmentId: "image-a" } }] } })).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
-    expect(openForegroundChatFundingSessionForInvocation({ ...input, jobInput: { ...input.jobInput, retainedAttachmentIds: ["other-file"] } })).rejects.toBeInstanceOf(ForegroundChatFundingUnsupportedWorkloadError);
+    expect((await openForegroundChatFundingSessionForInvocation({ ...input, jobInput: { ...input.jobInput, focusedResources: [{ kind: "local-file", locator: { attachmentId: "image-a" } }] } }))?.kind).toBe("personal");
+    expect((await openForegroundChatFundingSessionForInvocation({ ...input, jobInput: { ...input.jobInput, retainedAttachmentIds: ["other-file"] } }))?.kind).toBe("personal");
+    expect(await openForegroundChatFundingSessionForInvocation({ ...input, authority: undefined })).toBeNull();
+    expect(openForegroundChatFundingSessionForInvocation({ ...input, causalHumanUserId: "other-human" })).rejects.toBeInstanceOf(ForegroundChatFundingAuthorityError);
   });
 
   test("funding sessions are injected only as transient graph dependencies", () => {

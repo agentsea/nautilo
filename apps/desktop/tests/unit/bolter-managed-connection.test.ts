@@ -21,6 +21,7 @@ function installed(version: string): BolterInstalledRuntime {
 type OwnerInternals = { readonly runtime: { readonly version: string; readonly home: string }; readonly currentCallback: () => boolean };
 type ReceiverOptions = Parameters<BolterConnectionOwner["startReceiver"]>[0];
 type PreparedSend = NonNullable<Awaited<ReturnType<BolterConnectionOwner["prepareSend"]>>>;
+type ProvisionInput = Parameters<typeof runtime.provisionLatestBolterRuntime>[0];
 type OwnerInfo = { readonly owner: BolterConnectionOwner; readonly version: string; readonly home: string;
   confirmed: boolean; state: BolterNativeConnectionState; retirements: number; receiverStarts: number; receiverOptions?: ReceiverOptions };
 
@@ -39,7 +40,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 function installOwnerHarness(options: {
-  provision: () => Promise<BolterInstalledRuntime>;
+  provision: (input: ProvisionInput) => Promise<BolterInstalledRuntime>;
   conversations?: (info: OwnerInfo) => Promise<Awaited<ReturnType<BolterConnectionOwner["listConversations"]>>>;
   prepareSend?: (info: OwnerInfo) => Promise<PreparedSend | null>;
   flushInbox?: (info: OwnerInfo) => Promise<"accepted" | "blocked" | "unavailable">;
@@ -81,7 +82,7 @@ function installOwnerHarness(options: {
   };
   const spies = [
     spyOn(runtime, "productionBolterPlatform").mockReturnValue("darwin-arm64"),
-    spyOn(runtime, "provisionLatestBolterRuntime").mockImplementation(async () => { provisions++; return options.provision(); }),
+    spyOn(runtime, "provisionLatestBolterRuntime").mockImplementation(async input => { provisions++; return options.provision(input); }),
     spyOn(runtime, "attestBolterRuntime").mockResolvedValue(true),
     spyOn(BolterConnectionOwner.prototype, "confirmDiscoveredIdentity").mockImplementation(confirm),
     spyOn(BolterConnectionOwner.prototype, "confirmIdentity").mockImplementation(confirm),
@@ -353,6 +354,42 @@ test("a blocked inbox drain checks latest and resumes intake once on a newer run
     expect(reasons.at(-1)).toBeUndefined();
   } finally { await driver?.retire(); harness.restore(); await rm(appDataDirectory, { recursive: true, force: true }); }
 });
+
+for (const fence of ["pause", "retire"] as const) {
+  test(`${fence} aborts a hanging receiver runtime acquisition without installing a successor`, async () => {
+    const appDataDirectory = await managedDirectory();
+    let acquisitionSignal: AbortSignal | undefined;
+    let acquisitionSettled = false;
+    const harness = installOwnerHarness({ provision: async input => {
+      if (harness.provisions < 3) return installed(VERSION_A);
+      acquisitionSignal = input.signal;
+      try {
+        return await new Promise<BolterInstalledRuntime>((_resolve, reject) => {
+          const aborted = () => reject(new Error("synthetic acquisition aborted"));
+          if (input.signal?.aborted) aborted();
+          else input.signal?.addEventListener("abort", aborted, { once: true });
+        });
+      } finally { acquisitionSettled = true; }
+    } });
+    let driver: Awaited<ReturnType<ReturnType<typeof factory>>> | undefined;
+    try {
+      driver = await factory(appDataDirectory)({ connectionId: "synthetic-connection", generation: 1,
+        homeHandle: "synthetic-home", isCurrent: () => true });
+      await driver.connect(() => undefined);
+      await driver.start(() => Promise.resolve(true));
+      const old = harness.owners[0]!;
+      old.state = "unavailable";
+      old.receiverOptions?.onStateChange?.();
+      await waitFor(() => acquisitionSignal !== undefined);
+      if (fence === "pause") await driver.pause();
+      else await driver.retire();
+      await waitFor(() => acquisitionSignal?.aborted === true && acquisitionSettled);
+      expect(acquisitionSignal?.aborted).toBeTrue();
+      expect(harness.owners).toEqual([old]);
+      expect(harness.owners.some(owner => owner.version === VERSION_B || owner.receiverStarts > 1)).toBeFalse();
+    } finally { await driver?.retire(); harness.restore(); await rm(appDataDirectory, { recursive: true, force: true }); }
+  });
+}
 
 for (const fence of ["pause", "retire", "stale"] as const) {
   test(`${fence} while a receiver upgrade is downloading prevents restart`, async () => {

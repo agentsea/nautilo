@@ -17,6 +17,7 @@ import {
 // path share credential reconciliation + runtime acceptance semantics through
 // this module.
 import {
+  buildEventFeedReaderRoleSql,
   parseDotenv,
   planCredentialReconciliation,
   runRuntimeAcceptance,
@@ -1573,6 +1574,21 @@ export class ComposeDriver {
   }
 
   private remoteRuntimeAcceptanceTransport?: RemoteRuntimeAcceptanceTransport;
+
+  /**
+   * Local populated restores must prove custody through the exact Compose
+   * server container. A published host port reaches the server from Docker's
+   * bridge and therefore cannot satisfy the owner-or-loopback health guard.
+   * CLI composition wires a container-loopback probe; direct callers fail
+   * closed rather than silently falling back to the published port.
+   */
+  setLocalRestoreCustodyProbe(
+    probe: RemoteRuntimeAcceptanceTransport["fetch"],
+  ): void {
+    this.localRestoreCustodyProbe = probe;
+  }
+
+  private localRestoreCustodyProbe?: RemoteRuntimeAcceptanceTransport["fetch"];
 
   // -------------------------------------------------------------------------
   // Public verbs
@@ -6342,6 +6358,10 @@ export class ComposeDriver {
         }
 
         if (shouldLoadData && manifest.contents.nautiloDb) {
+          await this.prepareEventFeedReaderRoleForRestore(
+            appPgExec,
+            stagedMode ? this.deps.exec : this.sqlPipelineExec(profile),
+          );
           // Atomic reset+restore: schema wipe and dump load share one psql
           // `--single-transaction` so a failed import rolls back the reset.
           // See {@link NAUTILO_SCHEMA_RESET_SQL} for the full wipe rationale.
@@ -6590,6 +6610,14 @@ export class ComposeDriver {
         `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
         `--project-name ${projectName} -f ${baseYml} ${volumesFlag}${caddyFlag}${envFileFlag}` +
         `exec -T app-postgres psql -U postgres nautilo`;
+      const legacyRepairPrefix =
+        `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
+        `--project-name ${projectName} -f ${baseYml} ${volumesFlag}${caddyFlag}${envFileFlag}` +
+        `exec -T app-postgres `;
+      await this.prepareEventFeedReaderRoleForRestore(
+        legacyRepairPrefix,
+        this.sqlPipelineExec(profile),
+      );
       const restoreCmd = failClosedRestoreScript(opts.fromPath, psqlPrefix);
       this.deps.log(`restore:   $ ${restoreCmd}`);
       const restoreRes = await this.deps.localExec("sh", ["-c", restoreCmd], {
@@ -6601,10 +6629,6 @@ export class ComposeDriver {
           `restore: legacy SQL restore failed (exit ${restoreRes.code}): ${restoreRes.stderr.trim()}`,
         );
       }
-      const legacyRepairPrefix =
-        `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
-        `--project-name ${projectName} -f ${baseYml} ${volumesFlag}${caddyFlag}${envFileFlag}` +
-        `exec -T app-postgres `;
       await this.repairAppDbOwnership(
         { transport: "staged_compose", execPrefix: legacyRepairPrefix },
         this.deps.localExec,
@@ -7322,6 +7346,7 @@ export class ComposeDriver {
     }
 
     if (shouldLoadData && bundle.contents.nautiloDb) {
+      await this.prepareEventFeedReaderRoleForRestore(appPgExec, this.deps.exec);
       await runPipeline(
         "nautilo DB restore",
         atomicDbRestoreScript(
@@ -9239,6 +9264,36 @@ export class ComposeDriver {
   }
 
   /**
+   * Provision the canonical restricted role referenced by event-feed grants in
+   * a complete database archive. Cluster roles are outside a database dump, so
+   * a fresh target must create and validate this role before psql reads the
+   * first ACL or policy that names it. The canonical builder is idempotent and
+   * rejects privilege drift instead of normalizing an unsafe existing role.
+   */
+  private async prepareEventFeedReaderRoleForRestore(
+    appPgExec: string,
+    exec: ExecFn,
+  ): Promise<void> {
+    this.deps.log("restore: → event-feed reader role preparation");
+    const result = await exec(
+      "sh",
+      [
+        "-c",
+        `${appPgExec}psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -f -`,
+      ],
+      {
+        stdio: "pipe",
+        stdin: buildEventFeedReaderRoleSql(),
+      },
+    );
+    if (result.code !== 0) {
+      throw new Error(
+        `restore: event-feed reader role preparation failed (exit ${result.code}): ${result.stderr.trim()}`,
+      );
+    }
+  }
+
+  /**
    * D420 (Wave 3 task 3.3.2) — re-pin the `nautilo` / `nautilo_agent`
    * app-cluster role passwords to the restored `instance.env` and resync
    * the Logto per-tenant role passwords to the restored `tenants` table,
@@ -9406,7 +9461,6 @@ export class ComposeDriver {
     if (expectedCustodyKeyId === undefined) {
       throw new Error("restore failed: personal provider custody verification failed");
     }
-    const url = `${baseUrl}/api/health/personal-provider-custody`;
     try {
       if (
         profile.transport === "remote" &&
@@ -9414,10 +9468,19 @@ export class ComposeDriver {
       ) {
         throw new Error("remote custody transport unavailable");
       }
+      if (
+        profile.transport === "local" &&
+        this.localRestoreCustodyProbe === undefined
+      ) {
+        throw new Error("local custody transport unavailable");
+      }
+      const url = profile.transport === "local"
+        ? "http://127.0.0.1:3001/api/health/personal-provider-custody"
+        : `${baseUrl}/api/health/personal-provider-custody`;
       const response =
         profile.transport === "remote"
           ? await this.remoteRuntimeAcceptanceTransport!.fetch(url)
-          : await this.deps.fetch(url);
+          : await this.localRestoreCustodyProbe!(url);
       if (!response.ok) {
         throw new Error("custody endpoint unavailable");
       }

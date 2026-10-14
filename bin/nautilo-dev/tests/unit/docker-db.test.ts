@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { buildEventFeedReaderRoleSql } from "@nautilo/db";
 import {
   DROP_NAUTILO_DATABASE_SQL,
   NAUTILO_DB_POST_CREATE_GRANTS_SQL,
@@ -37,10 +38,13 @@ describe("DROP_NAUTILO_DATABASE_SQL (restore race regression)", () => {
 describe("buildDropAndRecreateNautiloDbSql (restore race regression)", () => {
   test("orders FORCE drop before CREATE DATABASE", () => {
     const sql = buildDropAndRecreateNautiloDbSql();
+    const roleIdx = sql.indexOf(buildEventFeedReaderRoleSql());
     const dropIdx = sql.indexOf(DROP_NAUTILO_DATABASE_SQL);
     const createIdx = sql.indexOf("CREATE DATABASE nautilo OWNER nautilo;");
+    expect(roleIdx).toBeGreaterThan(-1);
     expect(dropIdx).toBeGreaterThan(-1);
     expect(createIdx).toBeGreaterThan(-1);
+    expect(roleIdx).toBeLessThan(dropIdx);
     expect(dropIdx).toBeLessThan(createIdx);
   });
 
@@ -57,6 +61,26 @@ describe("buildDropAndRecreateNautiloDbSql (restore race regression)", () => {
     expect(sql).toContain("REVOKE ALL ON DATABASE nautilo FROM PUBLIC");
     expect(sql).toContain("GRANT ALL ON DATABASE nautilo TO nautilo");
     expect(sql).toContain("GRANT CONNECT ON DATABASE nautilo TO nautilo_agent");
+  });
+
+  test("provisions the canonical restricted event-feed role before archive import", () => {
+    const sql = buildDropAndRecreateNautiloDbSql();
+    expect(sql).toContain(buildEventFeedReaderRoleSql());
+    expect(sql).toContain(
+      "CREATE ROLE nautilo_feed_reader NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS",
+    );
+    expect(sql).toContain(
+      "GRANT nautilo_feed_reader TO nautilo WITH INHERIT FALSE",
+    );
+    expect(sql).toContain(
+      "IF NOT pg_has_role('nautilo', 'nautilo_feed_reader', 'MEMBER')",
+    );
+    expect(sql).toContain(
+      "Only the product role may assume nautilo_feed_reader",
+    );
+    expect(sql).toContain(
+      "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'nautilo_feed_reader')",
+    );
   });
 });
 

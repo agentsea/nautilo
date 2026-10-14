@@ -156,7 +156,10 @@ function matchesCapabilityFilters(
   return true;
 }
 
-async function resolveCatalogRows(context?: DiscoverModelsContext): Promise<ResolvedCatalogModel[]> {
+async function resolveCatalogRows(
+  context?: DiscoverModelsContext,
+  requestedWorkload?: (typeof WORKLOADS)[number],
+): Promise<ResolvedCatalogModel[]> {
   // includeUnavailable: true so Genie can see the full curated catalog and
   // learn which rows are selectable vs missing credentials / routing-filtered.
   // listResolvedCatalogModels iterates only signed catalog rows across all
@@ -189,6 +192,10 @@ async function resolveCatalogRows(context?: DiscoverModelsContext): Promise<Reso
     })
     : row);
   if (context?.personalTaskControls !== true) return callerRunnableRows;
+  if (requestedWorkload === "decision") {
+    return callerRunnableRows.filter((row) =>
+      row.workload === "decision" && personalDecisionIds.has(row.id));
+  }
   return callerRunnableRows.filter((row) =>
     runnable.has(row.id)
     && row.workload === "chat"
@@ -296,13 +303,14 @@ const personalDiscoverModelsSchema = discoverModelsSchema.pick({
   query: true,
   provider: true,
   runnable_only: true,
+  decision_operation: true,
   requires_reasoning: true,
   workload: true,
   output: true,
   limit: true,
   offset: true,
 }).extend({
-  workload: z.literal("chat").optional(),
+  workload: z.enum(["chat", "decision"]).optional(),
   output: z.literal("text").optional(),
 });
 
@@ -310,7 +318,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
   return new DynamicStructuredTool({
     name: "discover_models",
     description: context?.personalTaskControls === true
-      ? "List, search, or get the non-secret catalog rows currently runnable for your native tool-free text Tasks."
+      ? "List, search, or get the non-secret catalog rows currently runnable for your native text Tasks, or explicitly discover admitted decision models with workload decision."
       : "Search the resolved model catalog to find available models by name, provider, workload, or capability. Use `list` to browse with optional workload/capability/output/generation filters, `search` to add a text query to those filters (AND semantics), and `get` to fetch one curated model by its exact stable id. Results are non-secret and bounded with explicit truncation/next offset. Dynamic openrouter:/gateway: ids are not accepted by `get`.",
     schema: context?.personalTaskControls === true
       ? personalDiscoverModelsSchema
@@ -339,7 +347,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         // selectable/missing_credentials, so membership is checked against
         // the curated list (which iterates only ASSISTANT_MODELS) rather than
         // relying on the availability state.
-        const curated = await resolveCatalogRows(context);
+        const curated = await resolveCatalogRows(context, fullInput.workload);
         const row = curated.find((candidate) => candidate.id === modelId);
         if (!row) {
           const notFound: GetNotFoundResponse = {
@@ -372,7 +380,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         requiresReferenceRole: fullInput.requires_reference_role,
       };
 
-      const rows = (await resolveCatalogRows(context)).filter((row) => {
+      const rows = (await resolveCatalogRows(context, fullInput.workload)).filter((row) => {
         if (query && !matchesQuery(row, query)) return false;
         if (provider && !matchesProvider(row, provider)) return false;
         if (!matchesCapabilityFilters(row, filters)) return false;

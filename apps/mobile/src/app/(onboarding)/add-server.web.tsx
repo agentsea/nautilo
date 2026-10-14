@@ -1,8 +1,9 @@
-import { Stack, router, useLocalSearchParams } from "expo-router";
+import { Stack, router, useLocalSearchParams, type Href } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { Screen } from "@/components/screen";
+import { currentSignInReturnPath, mobileWebRouterDestination } from "@/lib/auth-gate-navigation";
 import { currentServingOrigin, fullWorkbenchUrl, independentMobileWebUrl } from "@/lib/browser-entry.web";
 import { useServers } from "@/providers/server-registry";
 import { useAppTheme } from "@/providers/theme";
@@ -12,8 +13,9 @@ export default function AddCurrentOriginServerScreen() {
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const { addServer } = useServers();
-  const params = useLocalSearchParams<{ external?: string }>();
+  const params = useLocalSearchParams<{ external?: string; returnTo?: string | string[] }>();
   const external = params.external === "1";
+  const returnPath = currentSignInReturnPath(params.returnTo);
   const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<"connecting" | "failed">("connecting");
   const [externalUrl, setExternalUrl] = useState("");
@@ -34,10 +36,10 @@ export default function AddCurrentOriginServerScreen() {
         setState("failed");
         return;
       }
-      router.replace("/");
+      router.replace((returnPath ? mobileWebRouterDestination(returnPath) : "/") as Href);
     });
     return () => { current = false; };
-  }, [addServer, attempt, external]);
+  }, [addServer, attempt, external, returnPath]);
 
   const openFullWorkbench = useCallback(() => {
     const origin = currentServingOrigin(typeof location === "undefined" ? null : location);

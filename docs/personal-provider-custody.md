@@ -1,13 +1,15 @@
 # Personal provider credential custody
 
-This is an internal storage and recovery foundation. It does not enable personal
-provider APIs or change the credentials used by chat. The server policy remains
-off by default. User enrollment and personal-funded execution are separate work.
+This is the storage and recovery contract used by personal provider enrollment
+and supported personal-funded execution. The server's personal-key policy is
+off by default; an administrator must enable it and the Human must have
+`use_personal_provider_credentials`. Source priority is governed by the
+[provider funding policy](./server-provider-policy.md).
 
 ## Authority and storage
 
 `personal_provider_credentials` stores one current encrypted record per local
-Human and direct provider. AES-256-GCM binds the envelope to the Human, provider,
+Human and supported provider or paid service, including Surplus. AES-256-GCM binds the envelope to the Human, provider,
 credential UUID, revision and instance key UUID. Replacement uses an expected
 revision; deleting a Human cascades current credentials. Agent and crypto database
 roles have no access to the table. Backups retain their usual retention semantics.
@@ -39,6 +41,18 @@ means an explicitly reset lost key still has retained, unusable records; current
 key records authenticate and restore remains possible. Configuration
 diagnostics report presence only, without even a secret prefix. No diagnostic
 makes a provider request.
+
+The administrator CLI exposes the same read-only report:
+
+```sh
+nautilo doctor personal-provider-custody --profile <profile-name>
+```
+
+For a source server on the same host, `--server http://localhost:<server-port>`
+uses the endpoint's loopback authority. A remote profile requires an owner
+session bound to that exact target. The command never follows authenticated
+redirects, prints provider secrets, resets custody or makes a paid request.
+A degraded or unavailable report exits unsuccessfully with recovery guidance.
 
 ## Backup, restore and moving a server
 
@@ -88,8 +102,8 @@ For file-owned source custody:
    only the new key UUID. The durable custody record carries the lost key UUID as
    reset provenance; retrying with that same UUID reuses the committed
    replacement. Restart and check the persisted key UUID before enrollment.
-5. Each affected Human must replace or delete their own credentials through the
-   eventual credential API. Replacement does not require the lost key. Until
+5. Each affected Human must replace or delete their own credentials through
+   Settings → Personal API keys or the account credential API. Replacement does not require the lost key. Until
    then, the old records remain configured but unavailable; they must never be
    treated as absent to permit server-funded fallback. The global diagnostic
    reports `degraded` until those rows are replaced or deleted. A backup made

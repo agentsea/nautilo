@@ -63,6 +63,7 @@ interface BolterRuntimeProvisioning {
   readonly directory: string;
   readonly platform: BolterProductionPlatform;
   readonly isCurrent: () => boolean;
+  readonly signal?: AbortSignal;
   readonly fetch?: typeof fetch;
   readonly inspectVersion?: typeof inspectBolterVersion;
 }
@@ -70,6 +71,7 @@ interface BolterRuntimeAttestation {
   readonly directory: string;
   readonly runtime: BolterInstalledRuntime;
   readonly isCurrent: () => boolean;
+  readonly signal?: AbortSignal;
   readonly inspectVersion?: typeof inspectBolterVersion;
 }
 interface BolterReceipt {
@@ -78,7 +80,15 @@ interface BolterReceipt {
   readonly artifact: BolterInstalledRuntime["artifact"];
 }
 
-const acquisitions = new Map<string, Promise<BolterInstalledRuntime>>();
+interface AcquisitionWaiter { readonly isCurrent: () => boolean; readonly signal?: AbortSignal }
+interface AcquisitionFlight {
+  readonly controller: AbortController;
+  readonly waiters: Set<AcquisitionWaiter>;
+  promise: Promise<BolterInstalledRuntime>;
+  completed: boolean;
+}
+
+const acquisitions = new Map<string, AcquisitionFlight>();
 const versionPattern = /^[a-f0-9]{40}$/u;
 const digestPattern = /^[a-f0-9]{64}$/u;
 
@@ -104,6 +114,54 @@ function platformFromRuntime(runtime: BolterInstalledRuntime): BolterProductionP
   return undefined;
 }
 
+function waiterIsCurrent(waiter: AcquisitionWaiter): boolean {
+  if (waiter.signal?.aborted) return false;
+  try { return waiter.isCurrent(); } catch { return false; }
+}
+function flightIsCurrent(flight: AcquisitionFlight): boolean {
+  let current = false;
+  for (const waiter of flight.waiters) {
+    if (waiterIsCurrent(waiter)) current = true;
+    else flight.waiters.delete(waiter);
+  }
+  if (!current && !flight.completed) flight.controller.abort();
+  return current;
+}
+function releaseWaiter(flight: AcquisitionFlight, waiter: AcquisitionWaiter): void {
+  flight.waiters.delete(waiter);
+  if (!flight.completed) flightIsCurrent(flight);
+}
+function abortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) { void operation.catch(() => undefined); return Promise.reject(unavailable()); }
+  return new Promise<T>((resolveResult, rejectResult) => {
+    const aborted = () => { signal.removeEventListener("abort", aborted); rejectResult(unavailable()); };
+    signal.addEventListener("abort", aborted, { once: true });
+    void operation.then(resolveResult, rejectResult).finally(() => signal.removeEventListener("abort", aborted));
+  });
+}
+function awaitFlight(flight: AcquisitionFlight, waiter: AcquisitionWaiter): Promise<BolterInstalledRuntime> {
+  if (!waiterIsCurrent(waiter)) { releaseWaiter(flight, waiter); return Promise.reject(unavailable()); }
+  const signal = waiter.signal;
+  if (!signal) return flight.promise.finally(() => releaseWaiter(flight, waiter));
+  return new Promise<BolterInstalledRuntime>((resolveResult, rejectResult) => {
+    let settled = false;
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", aborted);
+      releaseWaiter(flight, waiter);
+      action();
+    };
+    const aborted = () => finish(() => rejectResult(unavailable()));
+    signal.addEventListener("abort", aborted, { once: true });
+    void flight.promise.then(
+      runtime => finish(() => resolveResult(runtime)),
+      error => finish(() => rejectResult(error instanceof Error ? error : unavailable())),
+    );
+    if (signal.aborted) aborted();
+  });
+}
+
 async function digestFile(path: string, artifact: BolterInstalledRuntime["artifact"]): Promise<boolean> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -127,10 +185,12 @@ async function matchesMachO(path: string, platform: BolterProductionPlatform): P
 }
 
 /** Version stdout is matched incrementally to the exact resolved version; diagnostics are discarded. */
-function inspectBolterVersion(executable: string, version: string, isCurrent: () => boolean): Promise<boolean> {
+function inspectBolterVersion(executable: string, version: string, isCurrent: () => boolean,
+  signal?: AbortSignal): Promise<boolean> {
   try {
-    if (!isCurrent()) return Promise.resolve(false);
-    const child = spawn(executable, ["version"], { shell: false, env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "pipe"] });
+    if (signal?.aborted || !isCurrent()) return Promise.resolve(false);
+    const child = spawn(executable, ["version"], { shell: false, env: { PATH: "/usr/bin:/bin" },
+      stdio: ["ignore", "pipe", "pipe"], ...(signal ? { signal } : {}) });
     const expected = Buffer.from(version + "\n");
     let offset = 0;
     let valid = true;
@@ -169,7 +229,7 @@ async function readReceipt(path: string, expected: BolterReceipt): Promise<boole
 /** Local-only verification of the immutable receipt, executable bytes, version and private paths. */
 export async function attestBolterRuntime(input: BolterRuntimeAttestation): Promise<boolean> {
   try {
-    if (!input.isCurrent() || !versionPattern.test(input.runtime.version)
+    if (input.signal?.aborted || !input.isCurrent() || !versionPattern.test(input.runtime.version)
       || !digestPattern.test(input.runtime.artifact.sha256)
       || !Number.isSafeInteger(input.runtime.artifact.bytes) || input.runtime.artifact.bytes <= 0) return false;
     const platform = platformFromRuntime(input.runtime);
@@ -186,8 +246,8 @@ export async function attestBolterRuntime(input: BolterRuntimeAttestation): Prom
       || !await readReceipt(join(release, "receipt.json"), receiptFor(input.runtime, platform))
       || !await digestFile(executable, input.runtime.artifact)
       || !await matchesMachO(executable, platform)
-      || !await (input.inspectVersion ?? inspectBolterVersion)(executable, input.runtime.version, input.isCurrent)
-      || !input.isCurrent() || !same(root, await directory(input.directory))
+      || !await (input.inspectVersion ?? inspectBolterVersion)(executable, input.runtime.version, input.isCurrent, input.signal)
+      || input.signal?.aborted || !input.isCurrent() || !same(root, await directory(input.directory))
       || !same(releasesStat, await directory(releases))
       || !same(platformStat, await directory(platformRoot))
       || !same(releaseStat, await directory(release))) return false;
@@ -207,7 +267,10 @@ async function acquireLatestBolterRuntime(options: BolterRuntimeProvisioning): P
         || !same(parent, await lstat(dirname(options.directory)))) throw unavailable();
     };
     const mutableUrl = latestUrl(options.platform);
-    const head = await (options.fetch ?? fetch)(mutableUrl, { method: "HEAD", credentials: "omit", redirect: "manual" });
+    const signal = options.signal;
+    if (!signal) throw unavailable();
+    const head = await abortable((options.fetch ?? fetch)(mutableUrl,
+      { method: "HEAD", credentials: "omit", redirect: "manual", signal }), signal);
     const location = head.headers.get("location");
     const match = location?.match(/^https:\/\/cdn\.bolter\.chat\/bolter-agent\/([a-f0-9]{40})\/(darwin-(?:arm64|amd64))$/u);
     if (head.status !== 302 || head.redirected || head.url !== mutableUrl || !match || match[2] !== options.platform) throw unavailable();
@@ -239,12 +302,12 @@ async function acquireLatestBolterRuntime(options: BolterRuntimeProvisioning): P
           || !Number.isSafeInteger(artifact.bytes) || (artifact.bytes ?? 0) <= 0) throw unavailable();
         const runtime = freezeRuntime({ version, platform: options.platform, artifact }, executable);
         if (!await attestBolterRuntime({ directory: options.directory, runtime, isCurrent: options.isCurrent,
-          inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
+          signal, inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
         return runtime;
       } catch { throw unavailable(); }
     }
 
-    const response = await (options.fetch ?? fetch)(url, { credentials: "omit", redirect: "error" });
+    const response = await abortable((options.fetch ?? fetch)(url, { credentials: "omit", redirect: "error", signal }), signal);
     const contentLength = response.headers.get("content-length");
     const expectedBytes = contentLength && /^[1-9][0-9]*$/u.test(contentLength) ? Number(contentLength) : Number.NaN;
     if (!response.ok || !response.body || response.redirected || response.url !== url
@@ -259,7 +322,7 @@ async function acquireLatestBolterRuntime(options: BolterRuntimeProvisioning): P
     const hash = createHash("sha256");
     try {
       while (true) {
-        const chunk = await reader.read();
+        const chunk = await abortable(reader.read(), signal);
         if (chunk.done) break;
         bytes += chunk.value.byteLength;
         if (!options.isCurrent() || bytes > expectedBytes) throw unavailable();
@@ -271,7 +334,7 @@ async function acquireLatestBolterRuntime(options: BolterRuntimeProvisioning): P
     } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); await file.close(); }
     if (!await matchesMachO(stagedExecutable, options.platform)) throw unavailable();
     const artifact = Object.freeze({ url, sha256: hash.digest("hex"), bytes });
-    if (!await (options.inspectVersion ?? inspectBolterVersion)(stagedExecutable, version, options.isCurrent)) throw unavailable();
+    if (!await (options.inspectVersion ?? inspectBolterVersion)(stagedExecutable, version, options.isCurrent, signal)) throw unavailable();
     await check();
     const receipt: BolterReceipt = Object.freeze({ version, platform: options.platform, artifact });
     const receiptFile = await open(join(staging, "receipt.json"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
@@ -282,35 +345,64 @@ async function acquireLatestBolterRuntime(options: BolterRuntimeProvisioning): P
     await check();
     if (!same(releasesStat, await directory(releases))) throw unavailable();
     if (!same(platformStat, await directory(platformRoot))) throw unavailable();
-    try { await lstat(release); throw unavailable(); }
+    let destinationExists = false;
+    try { await lstat(release); destinationExists = true; }
     catch (error) { if (!error || typeof error !== "object" || !("code" in error) || error.code !== "ENOENT") throw unavailable(); }
-    await rename(staging, release); staging = null;
+    await check();
+    const runtime = freezeRuntime(receipt, executable);
+    if (destinationExists) {
+      if (!await attestBolterRuntime({ directory: options.directory, runtime, isCurrent: options.isCurrent,
+        signal, inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
+    } else {
+      try { await rename(staging, release); staging = null; }
+      catch (error) {
+        if (!error || typeof error !== "object" || !("code" in error)
+          || (error.code !== "EEXIST" && error.code !== "ENOTEMPTY")) throw unavailable();
+        if (!await attestBolterRuntime({ directory: options.directory, runtime, isCurrent: options.isCurrent,
+          signal, inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
+      }
+    }
+    if (staging) { await rm(staging, { recursive: true, force: true }); staging = null; }
     const platformHandle = await open(platformRoot, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { if (!same(platformStat, await platformHandle.stat())) throw unavailable(); await platformHandle.sync(); }
     finally { await platformHandle.close(); }
     await check();
     if (!same(releasesStat, await directory(releases))) throw unavailable();
     if (!same(platformStat, await directory(platformRoot))) throw unavailable();
-    return freezeRuntime(receipt, executable);
+    return runtime;
   } catch { throw unavailable(); }
   finally { if (staging) await rm(staging, { recursive: true, force: true }).catch(() => undefined); }
 }
 
 /** Resolves the provider's current build and acquires its immutable artifact without account access. */
 export async function provisionLatestBolterRuntime(input: BolterRuntimeProvisioning): Promise<BolterInstalledRuntime> {
-  const options = Object.freeze({ ...input });
+  const callerCurrent = () => !input.signal?.aborted && input.isCurrent();
+  const options = Object.freeze({ ...input, isCurrent: callerCurrent });
   try {
     if (!options.isCurrent()) throw unavailable();
     const key = `${resolve(options.directory)}\0${options.platform}`;
-    let acquisition = acquisitions.get(key);
-    if (!acquisition) {
-      acquisition = acquireLatestBolterRuntime(options);
-      acquisitions.set(key, acquisition);
-      void acquisition.finally(() => { if (acquisitions.get(key) === acquisition) acquisitions.delete(key); }).catch(() => undefined);
+    const waiter: AcquisitionWaiter = { isCurrent: input.isCurrent, ...(input.signal ? { signal: input.signal } : {}) };
+    let flight = acquisitions.get(key);
+    // A fresh caller must not inherit a canceled flight while its staging cleanup completes.
+    if (flight?.controller.signal.aborted) flight = undefined;
+    if (!flight) {
+      const controller = new AbortController();
+      const created: AcquisitionFlight = { controller, waiters: new Set([waiter]), completed: false,
+        promise: Promise.resolve().then(() => acquireLatestBolterRuntime(Object.freeze({ ...options,
+          signal: controller.signal, isCurrent: () => flightIsCurrent(created) }))) };
+      flight = created;
+      acquisitions.set(key, flight);
+      const tracked = flight;
+      void flight.promise.finally(() => {
+        tracked.completed = true;
+        if (acquisitions.get(key) === tracked) acquisitions.delete(key);
+      }).catch(() => undefined);
+    } else {
+      flight.waiters.add(waiter);
     }
-    const runtime = await acquisition;
+    const runtime = await awaitFlight(flight, waiter);
     if (!await attestBolterRuntime({ directory: options.directory, runtime, isCurrent: options.isCurrent,
-      inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
+      ...(input.signal ? { signal: input.signal } : {}), inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
     return runtime;
   } catch { throw unavailable(); }
 }

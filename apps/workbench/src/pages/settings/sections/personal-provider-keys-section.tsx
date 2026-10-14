@@ -143,6 +143,11 @@ export function PersonalProviderKeysSection({
   const [savedProvider, setSavedProvider] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const loadGenerationRef = useRef(0);
+  const metadataVersionRef = useRef(0);
+  const secretRef = useRef(secret);
+  const editingProviderRef = useRef(editingProvider);
+  secretRef.current = secret;
+  editingProviderRef.current = editingProvider;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -153,12 +158,18 @@ export function PersonalProviderKeysSection({
 
   const load = useCallback(async (preserveMessage = false) => {
     const generation = ++loadGenerationRef.current;
-    if (!preserveMessage) setState((previous) => previous.kind === "ready" && !previous.allowPersonalProviderKeys
+    const metadataVersion = metadataVersionRef.current;
+    if (!preserveMessage) setState((previous) => previous.kind === "ready"
       ? { ...previous, refreshing: true }
       : previous.kind === "disabled" ? previous : { kind: "loading" });
     try {
       const result = await credentialApi.listProviderCredentials();
-      if (!mountedRef.current || generation !== loadGenerationRef.current) return null;
+      if (
+        !mountedRef.current
+        || generation !== loadGenerationRef.current
+        || metadataVersion !== metadataVersionRef.current
+      ) return null;
+      metadataVersionRef.current++;
       if (result.allowPersonalProviderKeys === false) {
         setSecret("");
         setEditingProvider(null);
@@ -180,7 +191,12 @@ export function PersonalProviderKeysSection({
       });
       return "ready" as const;
     } catch (error) {
-      if (!mountedRef.current || generation !== loadGenerationRef.current) return null;
+      if (
+        !mountedRef.current
+        || generation !== loadGenerationRef.current
+        || metadataVersion !== metadataVersionRef.current
+      ) return null;
+      metadataVersionRef.current++;
       if (error instanceof ProviderCredentialApiError && error.error === "personal_credentials_disabled") {
         setSecret("");
         setEditingProvider(null);
@@ -325,6 +341,14 @@ export function PersonalProviderKeysSection({
     setRowActions((current) => ({ ...current, [provider]: action }));
   };
 
+  const clearSubmittedDraft = (provider: string, submittedSecret: string) => {
+    if (editingProviderRef.current !== provider || secretRef.current !== submittedSecret) return;
+    secretRef.current = "";
+    editingProviderRef.current = null;
+    setSecret("");
+    setEditingProvider(null);
+  };
+
   const rereadAfterConflict = async (provider: string, error: unknown, action: "save" | "validate" | "delete") => {
     if (error instanceof ProviderCredentialApiError && (
       error.repair === "reread_metadata"
@@ -344,35 +368,41 @@ export function PersonalProviderKeysSection({
   };
 
   const save = async (provider: string, current: CredentialMetadata | undefined) => {
-    const apiKey = secret.trim();
+    const submittedSecret = secret;
+    const apiKey = submittedSecret.trim();
     if (!apiKey) {
       setRowAction(provider, { kind: "error", message: "Enter a provider API key." });
       return;
     }
     setRowAction(provider, { kind: "busy", action: "save" });
+    const metadataVersion = metadataVersionRef.current;
     try {
       const result = await credentialApi.putProviderCredential(provider, {
         apiKey,
         ...(current ? { expectedRevision: current.revision } : {}),
       });
       if (!mountedRef.current) return;
+      clearSubmittedDraft(provider, submittedSecret);
+      setSavedProvider(provider);
+      setRowAction(provider, { kind: "idle" });
+      credentialChanged();
+      if (metadataVersion !== metadataVersionRef.current) {
+        await load(true);
+        return;
+      }
+      metadataVersionRef.current++;
       setState((previous) => previous.kind === "ready"
         ? {
           ...previous,
+          refreshing: false,
           credentials: [
             ...previous.credentials.filter((item) => item.provider !== provider),
             result.credential,
           ],
         }
         : previous);
-      setSecret("");
-      setEditingProvider(null);
-      setSavedProvider(provider);
-      setRowAction(provider, { kind: "idle" });
-      credentialChanged();
     } catch (error) {
-      setSecret("");
-      setEditingProvider(null);
+      clearSubmittedDraft(provider, submittedSecret);
       const reloadResult = await load(true);
       if (
         !mountedRef.current
@@ -399,20 +429,27 @@ export function PersonalProviderKeysSection({
 
   const validate = async (provider: string, current: CredentialMetadata) => {
     setRowAction(provider, { kind: "busy", action: "validate" });
+    const metadataVersion = metadataVersionRef.current;
     try {
       const result = await credentialApi.validateProviderCredential(provider, {
         expectedRevision: current.revision,
       });
       if (!mountedRef.current) return;
+      setRowAction(provider, { kind: "idle" });
+      credentialChanged();
+      if (metadataVersion !== metadataVersionRef.current) {
+        await load(true);
+        return;
+      }
+      metadataVersionRef.current++;
       setState((previous) => previous.kind === "ready"
         ? {
           ...previous,
+          refreshing: false,
           credentials: previous.credentials.map((item) =>
             item.provider === provider ? result.credential : item),
         }
         : previous);
-      setRowAction(provider, { kind: "idle" });
-      credentialChanged();
     } catch (error) {
       await rereadAfterConflict(provider, error, "validate");
     }
@@ -421,19 +458,26 @@ export function PersonalProviderKeysSection({
   const remove = async (confirmation: DeleteConfirmation) => {
     const { provider, credential } = confirmation;
     setRowAction(provider, { kind: "busy", action: "delete" });
+    const metadataVersion = metadataVersionRef.current;
     try {
       await credentialApi.deleteProviderCredential(provider, { expectedRevision: credential.revision });
       if (!mountedRef.current) return;
-      setState((previous) => previous.kind === "ready"
-        ? {
-          ...previous,
-          credentials: previous.credentials.filter((item) => item.provider !== provider),
-        }
-        : previous);
       setConfirmDelete(null);
       setSavedProvider(null);
       setRowAction(provider, { kind: "idle" });
       credentialChanged();
+      if (metadataVersion !== metadataVersionRef.current) {
+        await load(true);
+        return;
+      }
+      metadataVersionRef.current++;
+      setState((previous) => previous.kind === "ready"
+        ? {
+          ...previous,
+          refreshing: false,
+          credentials: previous.credentials.filter((item) => item.provider !== provider),
+        }
+        : previous);
     } catch (error) {
       setConfirmDelete(null);
       await rereadAfterConflict(provider, error, "delete");

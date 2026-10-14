@@ -7,7 +7,7 @@ export type MobileAuthGateDestination =
 export type MobileAuthGateNavigationTarget =
   | MobileAuthGateDestination
   | Readonly<{
-      pathname: "/(onboarding)/sign-in";
+      pathname: MobileAuthGateDestination;
       params: Readonly<{ returnTo: string }>;
     }>;
 
@@ -52,11 +52,10 @@ export function webAuthGateNavigationTarget(
   currentHref: string,
   currentOrigin: string,
 ): MobileAuthGateNavigationTarget {
-  if (destination !== "/(onboarding)/sign-in") return destination;
   const returnTo = safeProtectedMobileRoute(currentHref, currentOrigin);
   if (!returnTo) return destination;
   return {
-    pathname: "/(onboarding)/sign-in",
+    pathname: destination,
     params: { returnTo },
   };
 }
