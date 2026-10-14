@@ -171,6 +171,9 @@ jobs:
         run: bun run --cwd apps/desktop typecheck
 
       - name: Typecheck development tools
+        env:
+          # A cold check of the development-tools graph uses about 4.4 GiB.
+          NODE_OPTIONS: --max-old-space-size=6144
         run: bun run --cwd bin/nautilo-dev typecheck
 
       - name: Typecheck database
@@ -178,7 +181,8 @@ jobs:
 
       - name: Typecheck server
         env:
-          NODE_OPTIONS: --max-old-space-size=5120
+          # A cold check of the server graph uses about 5.6 GiB on Windows.
+          NODE_OPTIONS: --max-old-space-size=8192
         run: bun run --cwd packages/server typecheck
 
       - name: Build Windows Desktop installer
