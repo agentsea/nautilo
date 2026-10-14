@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Desktop acquires the latest Bolter CLI without waiting for a Desktop release.
+  Failed CLI operations can upgrade and retry once when a newer build is
+  available, preserving credentials and queued messages. Uncertain sends are
+  never automatically replayed. Additional provider metadata no longer blocks
+  otherwise valid messages.
+
 - Bolter-linked rooms update their creator's live room subscriptions before
   receiving messages. They appear as External rooms under Groups, with permanent
   room-only Genie context and read-only visibility controls.

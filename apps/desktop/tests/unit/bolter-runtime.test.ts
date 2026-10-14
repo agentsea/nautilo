@@ -2,76 +2,233 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createBolterConnectionDirectories, productionBolterArtifact, provisionBolterRuntime } from "../../electron/bolter-bridge/runtime";
-import { BOLTER_CLI_RELEASE, getBolterProductionDecoders } from "../../electron/bolter-bridge/production-contract";
-import { decodeBolterIdentities } from "../../electron/bolter-bridge/cli-contract";
+import {
+  attestBolterRuntime,
+  createBolterConnectionDirectories,
+  productionBolterPlatform,
+  provisionLatestBolterRuntime,
+  type BolterInstalledRuntime,
+} from "../../electron/bolter-bridge/runtime";
 
-const version = "0".repeat(40);
-const bytes = Buffer.from("Synthetic executable bytes");
-const artifact = { url: `https://cdn.bolter.chat/bolter-agent/${version}/darwin-arm64`, bytes: bytes.length,
-  sha256: createHash("sha256").update(bytes).digest("hex") };
+const currentVersion = "0c6d0991397a532bfb5ab97096a00c6cc9710f1d";
+const newerVersion = "1".repeat(40);
+const platform = "darwin-arm64" as const;
+const latestFor = (target: "darwin-arm64" | "darwin-amd64") => `https://bolter.chat/bolter-agent/${target}`;
+const immutableFor = (version: string, target: "darwin-arm64" | "darwin-amd64") =>
+  `https://cdn.bolter.chat/bolter-agent/${version}/${target}`;
+const latest = latestFor(platform);
+const immutable = (version: string) => immutableFor(version, platform);
+
+function macho(payload = "synthetic build", cpu = 0x0100000c): Buffer {
+  const header = Buffer.alloc(8);
+  header.writeUInt32LE(0xfeedfacf, 0);
+  header.writeUInt32LE(cpu, 4);
+  return Buffer.concat([header, Buffer.from(payload)]);
+}
+function response(url: string, init?: ResponseInit, body: Buffer | null = null): Response {
+  const value = new Response(body, init);
+  Object.defineProperties(value, { url: { value: url }, redirected: { value: false } });
+  return value;
+}
+function head(version: string, location = immutable(version), target: "darwin-arm64" | "darwin-amd64" = platform): Response {
+  return response(latestFor(target), { status: 302, headers: { location } });
+}
+function artifact(version: string, bytes: Buffer, target: "darwin-arm64" | "darwin-amd64" = platform): Response {
+  return response(immutableFor(version, target), { status: 200, headers: { "content-length": String(bytes.length) } }, bytes);
+}
+function provider(version: string, bytes: Buffer, calls?: string[], target: "darwin-arm64" | "darwin-amd64" = platform): typeof fetch {
+  return ((url, init) => {
+    const requested = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    calls?.push(`${init?.method ?? "GET"} ${requested}`);
+    return Promise.resolve(init?.method === "HEAD" ? head(version, immutableFor(version, target), target) : artifact(version, bytes, target));
+  }) as typeof fetch;
+}
 async function fixture() {
   const parent = await mkdtemp(join(await realpath("/tmp"), "nb-runtime-"));
   await chmod(parent, 0o700);
   const directory = join(parent, "runtime"); await mkdir(directory, { mode: 0o700 });
   return { parent, directory, remove: () => rm(parent, { recursive: true, force: true }) };
 }
-function artifactResponse(content: Buffer): Response {
-  const response = new Response(content);
-  Object.defineProperty(response, "url", { value: artifact.url });
-  return response;
-}
-const providerFetch = (() => Promise.resolve(artifactResponse(bytes))) as typeof fetch;
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 
-test("production contract exposes version-qualified decoders without runtime admission", () => {
-  const decoders = getBolterProductionDecoders(BOLTER_CLI_RELEASE.version);
-  expect(decodeBolterIdentities({ agents: [], harness: "codex" }, BOLTER_CLI_RELEASE.version, decoders)).toEqual({ ok: true, value: [] });
-  expect(decodeBolterIdentities({ agents: [{ id: "synthetic" }], harness: "codex" }, BOLTER_CLI_RELEASE.version, decoders).ok).toBe(false);
-  for (const decoder of [decoders?.identity, decoders?.receiveItem, decoders?.receipt]) expect(decoder).toBeFunction();
-  expect(getBolterProductionDecoders("other-version")).toBeUndefined();
-  expect(productionBolterArtifact("win32", "x64")).toBeUndefined();
-  expect(productionBolterArtifact("darwin", "arm64")?.sha256).toHaveLength(64);
+test("production platform names match the provider contract", () => {
+  expect(productionBolterPlatform("darwin", "arm64")).toBe("darwin-arm64");
+  expect(productionBolterPlatform("darwin", "x64")).toBe("darwin-amd64");
+  expect(productionBolterPlatform("darwin", "ia32")).toBeUndefined();
+  expect(productionBolterPlatform("win32", "x64")).toBeUndefined();
 });
 
-test("provisioning pins exact bytes and version, reuses valid artifacts, and never reads account config", async () => {
+test("latest acquisition records immutable bytes and reuses the same version after a fresh HEAD", async () => {
   const f = await fixture();
+  const bytes = macho();
+  const calls: string[] = [];
+  let inspections = 0;
+  const providerFetch = provider(currentVersion, bytes, calls);
+  const checkedFetch = ((url, init) => {
+    expect(init?.credentials).toBe("omit");
+    expect(init?.redirect).toBe(init?.method === "HEAD" ? "manual" : "error");
+    return providerFetch(url, init);
+  }) as typeof fetch;
+  const options = { directory: f.directory, platform, isCurrent: () => true, fetch: checkedFetch,
+    inspectVersion: async (_path: string, version: string) => { inspections++; return version === currentVersion; } };
   try {
-    let fetches = 0; let inspections = 0;
-    const options = { directory: f.directory, artifact, version, isCurrent: () => true,
-      fetch: ((url, init) => { expect(url).toBe(artifact.url); expect(init?.credentials).toBe("omit"); expect(init?.redirect).toBe("error"); fetches++; return providerFetch(url, init); }) as typeof fetch,
-      inspectVersion: () => { inspections++; return Promise.resolve(true); } };
-    const executable = await provisionBolterRuntime(options);
-    expect(await readFile(executable)).toEqual(bytes);
-    expect((await lstat(executable)).mode & 0o777).toBe(0o700);
-    expect(await provisionBolterRuntime(options)).toBe(executable);
-    expect(fetches).toBe(1); expect(inspections).toBe(2);
+    const first = await provisionLatestBolterRuntime(options);
+    expect(first.version).toBe(currentVersion);
+    expect(first.artifact).toEqual({ url: immutable(currentVersion), bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex") });
+    expect(await readFile(first.executable)).toEqual(bytes);
+    expect((await lstat(first.executable)).mode & 0o777).toBe(0o700);
+    expect((await lstat(join(f.directory, "releases", platform, currentVersion, "receipt.json"))).mode & 0o777).toBe(0o600);
+    expect((await provisionLatestBolterRuntime(options)).executable).toBe(first.executable);
+    expect(calls).toEqual([`HEAD ${latest}`, `GET ${immutable(currentVersion)}`, `HEAD ${latest}`]);
+    expect(inspections).toBe(4);
   } finally { await f.remove(); }
 });
 
-test("bad bytes, stale acquisition, unsafe directories and artifact symlinks fail closed", async () => {
-  for (const kind of ["digest", "size", "stale", "permissions", "symlink"] as const) {
+test("a newer provider build is installed beside the attested cached build", async () => {
+  const f = await fixture();
+  let version = currentVersion;
+  const fetcher = ((url, init) => Promise.resolve(init?.method === "HEAD" ? head(version) : artifact(version, macho(version)))) as typeof fetch;
+  try {
+    const first = await provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true, fetch: fetcher,
+      inspectVersion: async (_path, inspected) => inspected === version });
+    version = newerVersion;
+    const second = await provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true, fetch: fetcher,
+      inspectVersion: async (_path, inspected) => inspected === version });
+    expect(first.version).toBe(currentVersion);
+    expect(second.version).toBe(newerVersion);
+    expect(first.executable).not.toBe(second.executable);
+    expect((await readdir(join(f.directory, "releases", platform))).sort()).toEqual([currentVersion, newerVersion].sort());
+  } finally { await f.remove(); }
+});
+
+test("native and Rosetta artifacts of the same version use separate attested caches", async () => {
+  const f = await fixture();
+  const amd64 = "darwin-amd64" as const;
+  try {
+    const arm = await provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true,
+      fetch: provider(currentVersion, macho()), inspectVersion: async () => true });
+    const intel = await provisionLatestBolterRuntime({ directory: f.directory, platform: amd64, isCurrent: () => true,
+      fetch: provider(currentVersion, macho("synthetic Rosetta build", 0x01000007), undefined, amd64), inspectVersion: async () => true });
+    expect(arm.executable).toBe(join(f.directory, "releases", platform, currentVersion, "bolter-agent"));
+    expect(intel.executable).toBe(join(f.directory, "releases", amd64, currentVersion, "bolter-agent"));
+    expect(arm.artifact.url).toBe(immutableFor(currentVersion, platform));
+    expect(intel.artifact.url).toBe(immutableFor(currentVersion, amd64));
+    expect(await attestBolterRuntime({ directory: f.directory, runtime: arm, isCurrent: () => true,
+      inspectVersion: async () => true })).toBeTrue();
+    expect(await attestBolterRuntime({ directory: f.directory, runtime: intel, isCurrent: () => true,
+      inspectVersion: async () => true })).toBeTrue();
+  } finally { await f.remove(); }
+});
+
+test("attestation is local and rejects byte, receipt, path, permission and authority drift", async () => {
+  for (const kind of ["bytes", "receipt", "path", "permissions", "stale"] as const) {
     const f = await fixture();
-    let current = true; let inspected = false;
+    let current = true;
     try {
-      if (kind === "permissions") await chmod(f.directory, 0o755);
-      if (kind === "symlink") {
-        const release = join(f.directory, version); await mkdir(release, { mode: 0o700 });
-        const target = join(f.parent, "synthetic-target"); await writeFile(target, bytes, { mode: 0o700 });
-        await symlink(target, join(release, "bolter-agent"));
-      }
-      const request = provisionBolterRuntime({ directory: f.directory, artifact, version, isCurrent: () => current,
-        fetch: (() => { if (kind === "stale") current = false;
-          return Promise.resolve(artifactResponse(kind === "digest" ? Buffer.alloc(bytes.length) : kind === "size" ? Buffer.concat([bytes, bytes]) : bytes)); }) as typeof fetch,
-        inspectVersion: () => { inspected = true; return Promise.resolve(true); } });
-      await Promise.resolve(expect(request).rejects.toThrow("unavailable"));
-      expect(inspected).toBe(false);
-      if (kind !== "permissions") expect((await readdir(join(f.directory, version))).some(name => name.startsWith(".download-"))).toBe(false);
+      const installed = await provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => current,
+        fetch: provider(currentVersion, macho()), inspectVersion: async () => true });
+      let runtime: BolterInstalledRuntime = installed;
+      if (kind === "bytes") await writeFile(runtime.executable, macho("tampered"), { mode: 0o700 });
+      if (kind === "receipt") await writeFile(join(f.directory, "releases", platform, currentVersion, "receipt.json"), "{}\n", { mode: 0o600 });
+      if (kind === "path") runtime = { ...runtime, executable: join(f.directory, "elsewhere") };
+      if (kind === "permissions") await chmod(runtime.executable, 0o755);
+      if (kind === "stale") current = false;
+      expect(await attestBolterRuntime({ directory: f.directory, runtime, isCurrent: () => current,
+        inspectVersion: async () => true })).toBeFalse();
     } finally { await f.remove(); }
   }
 });
 
-test("credential directories are stable only for exact owned scope and opaque home handle", async () => {
+test("foreign, malformed and cross-platform latest redirects fail before artifact download", async () => {
+  const redirects = [
+    `http://cdn.bolter.chat/bolter-agent/${currentVersion}/${platform}`,
+    `https://cdn.bolter.chat.example.com/bolter-agent/${currentVersion}/${platform}`,
+    `https://cdn.bolter.chat/bolter-agent/${currentVersion}/darwin-amd64`,
+    `https://cdn.bolter.chat/bolter-agent/${currentVersion}/${platform}?download=1`,
+    `https://cdn.bolter.chat/bolter-agent/${"A".repeat(40)}/${platform}`,
+  ];
+  for (const location of redirects) {
+    const f = await fixture();
+    let gets = 0;
+    try {
+      const fetcher = ((_url, init) => {
+        if (init?.method === "HEAD") return Promise.resolve(head(currentVersion, location));
+        gets++; return Promise.resolve(artifact(currentVersion, macho()));
+      }) as typeof fetch;
+      await Promise.resolve(expect(provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true, fetch: fetcher,
+        inspectVersion: async () => true })).rejects.toThrow("unavailable"));
+      expect(gets).toBe(0);
+      expect(await readdir(f.directory)).toEqual([]);
+    } finally { await f.remove(); }
+  }
+});
+
+test("partial downloads, wrong architecture and failed version inspection leave no published build", async () => {
+  for (const kind of ["partial", "architecture", "version"] as const) {
+    const f = await fixture();
+    const bytes = kind === "architecture" ? Buffer.from("not a Mach-O") : macho();
+    try {
+      const fetcher = ((url, init) => {
+        if (init?.method === "HEAD") return Promise.resolve(head(currentVersion));
+        const length = kind === "partial" ? bytes.length + 1 : bytes.length;
+        const requested = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+        return Promise.resolve(response(requested, { status: 200, headers: { "content-length": String(length) } }, bytes));
+      }) as typeof fetch;
+      await Promise.resolve(expect(provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true, fetch: fetcher,
+        inspectVersion: async () => kind !== "version" })).rejects.toThrow("unavailable"));
+      expect(await readdir(join(f.directory, "releases", platform))).toEqual([]);
+    } finally { await f.remove(); }
+  }
+});
+
+test("an existing unsafe release is never overwritten", async () => {
+  const f = await fixture();
+  const releases = join(f.directory, "releases");
+  const platformRoot = join(releases, platform);
+  const release = join(platformRoot, currentVersion);
+  const original = Buffer.from("preserve me");
+  try {
+    await mkdir(releases, { mode: 0o700 }); await mkdir(platformRoot, { mode: 0o700 }); await mkdir(release, { mode: 0o700 });
+    await writeFile(join(release, "bolter-agent"), original, { mode: 0o700 });
+    let gets = 0;
+    const fetcher = ((_url, init) => {
+      if (init?.method === "HEAD") return Promise.resolve(head(currentVersion));
+      gets++; return Promise.resolve(artifact(currentVersion, macho()));
+    }) as typeof fetch;
+    await Promise.resolve(expect(provisionLatestBolterRuntime({ directory: f.directory, platform, isCurrent: () => true, fetch: fetcher,
+      inspectVersion: async () => true })).rejects.toThrow("unavailable"));
+    expect(gets).toBe(0);
+    expect(await readFile(join(release, "bolter-agent"))).toEqual(original);
+  } finally { await f.remove(); }
+});
+
+test("stale authority stops acquisition and concurrent callers share one download", async () => {
+  const staleFixture = await fixture();
+  let current = true;
+  let gets = 0;
+  try {
+    const fetcher = ((_url, init) => {
+      if (init?.method === "HEAD") { current = false; return Promise.resolve(head(currentVersion)); }
+      gets++; return Promise.resolve(artifact(currentVersion, macho()));
+    }) as typeof fetch;
+    await Promise.resolve(expect(provisionLatestBolterRuntime({ directory: staleFixture.directory, platform, isCurrent: () => current,
+      fetch: fetcher, inspectVersion: async () => true })).rejects.toThrow("unavailable"));
+    expect(gets).toBe(0);
+  } finally { await staleFixture.remove(); }
+
+  const concurrentFixture = await fixture();
+  const calls: string[] = [];
+  try {
+    const options = { directory: concurrentFixture.directory, platform, isCurrent: () => true,
+      fetch: provider(currentVersion, macho(), calls), inspectVersion: async () => true };
+    const [first, second] = await Promise.all([provisionLatestBolterRuntime(options), provisionLatestBolterRuntime(options)]);
+    expect(first).toEqual(second);
+    expect(calls).toEqual([`HEAD ${latest}`, `GET ${immutable(currentVersion)}`]);
+  } finally { await concurrentFixture.remove(); }
+});
+
+test("credential directories remain private and scoped to opaque coordinates", async () => {
   const f = await fixture();
   try {
     const first = await createBolterConnectionDirectories(f.directory, scope, "synthetic-handle");
@@ -82,59 +239,4 @@ test("credential directories are stable only for exact owned scope and opaque ho
     await rm(first.home, { recursive: true }); await symlink(f.parent, first.home);
     await Promise.resolve(expect(createBolterConnectionDirectories(f.directory, scope, "synthetic-handle")).rejects.toThrow("unavailable"));
   } finally { await f.remove(); }
-});
-
-test("production artifacts address the exact pinned release and provider platform spelling", () => {
-  expect(productionBolterArtifact("darwin", "arm64")?.url)
-    .toBe(`https://cdn.bolter.chat/bolter-agent/${BOLTER_CLI_RELEASE.version}/darwin-arm64`);
-  expect(productionBolterArtifact("darwin", "x64")?.url)
-    .toBe(`https://cdn.bolter.chat/bolter-agent/${BOLTER_CLI_RELEASE.version}/darwin-amd64`);
-  expect(productionBolterArtifact("darwin", "ia32")).toBeUndefined();
-});
-
-test("acquisition refuses mutable, foreign, mismatched and noncanonical artifact URLs before fetching", async () => {
-  const invalidUrls = [
-    "https://bolter.chat/bolter-agent/darwin-arm64",
-    artifact.url.replace(version, "1".repeat(40)),
-    artifact.url.replace("darwin-arm64", "darwin-x64"),
-    artifact.url.replace("darwin-arm64", "linux-arm64"),
-    artifact.url.replace("cdn.bolter.chat", "cdn.bolter.chat.example.com"),
-    artifact.url.replace("https:", "http:"),
-    artifact.url.replace("https://", "https://fixture@"),
-    artifact.url.replace("/bolter-agent/", "/other/../bolter-agent/"),
-    artifact.url + "?latest=true", artifact.url + "#fragment",
-  ];
-  const f = await fixture();
-  try {
-    let fetched = false;
-    for (const url of invalidUrls) {
-      await Promise.resolve(expect(provisionBolterRuntime({ directory: f.directory, artifact: { ...artifact, url },
-        version, isCurrent: () => true, fetch: (() => { fetched = true; return providerFetch(artifact.url); }) as typeof fetch,
-        inspectVersion: async () => true })).rejects.toThrow("unavailable"));
-    }
-    expect(fetched).toBeFalse();
-    expect(await readdir(f.directory)).toEqual([]);
-  } finally { await f.remove(); }
-});
-
-test("even checksum-matching responses cannot redirect or substitute the immutable resource", async () => {
-  for (const responseFields of [
-    { url: "", redirected: false },
-    { url: artifact.url, redirected: true },
-    { url: artifact.url.replace(version, "1".repeat(40)), redirected: false },
-    { url: artifact.url.replace("darwin-arm64", "darwin-amd64"), redirected: false },
-    { url: artifact.url.replace("cdn.bolter.chat", "foreign.example.com"), redirected: false },
-  ]) {
-    const f = await fixture();
-    try {
-      let inspected = false;
-      const response = new Response(bytes);
-      Object.defineProperties(response, { url: { value: responseFields.url }, redirected: { value: responseFields.redirected } });
-      await Promise.resolve(expect(provisionBolterRuntime({ directory: f.directory, artifact, version, isCurrent: () => true,
-        fetch: (() => Promise.resolve(response)) as typeof fetch,
-        inspectVersion: async () => { inspected = true; return true; } })).rejects.toThrow("unavailable"));
-      expect(inspected).toBeFalse();
-      expect(await readdir(join(f.directory, version))).toEqual([]);
-    } finally { await f.remove(); }
-  }
 });

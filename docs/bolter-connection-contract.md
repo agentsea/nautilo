@@ -8,7 +8,7 @@ availability requires matching server and Desktop releases.
 ## Interface and audience
 
 Connections → Apps & accounts → Bolter owns authentication and connection
-management. The receiving Desktop provisions the pinned CLI and isolates its
+management. The receiving Desktop acquires the latest provider CLI and isolates its
 credentials by server, Human, and connection. The browser receives a validated
 sign-in link and code, never provider credentials or a local filesystem path.
 
@@ -64,8 +64,20 @@ use their durable server identity and sealed Desktop recovery descriptor.
 
 ## Supported boundaries
 
-The initial implementation selects pinned macOS ARM64 or x64 CLI artifacts and
-text-only messages. The conversation picker lists main timelines; it does not
+The implementation selects the latest macOS ARM64 or x64 CLI through Bolter's
+fixed HTTPS download endpoint and supports text-only messages. The endpoint must
+resolve to an exact version on Bolter's CDN. Acquired bytes have a private local
+size/hash receipt and their architecture and reported version are verified before
+activation. Acquisition trusts Bolter's HTTPS endpoints; a local receipt detects
+later changes but is not an independent provider signature or release approval.
+Connecting or restarting a stopped receiver checks the latest release. A CLI or
+receiver failure checks for a newer build and retries a safe operation once only
+when the version changed. A failed recovery stops rather than looping. A released
+send with an uncertain outcome is never replayed; an update repairs future work.
+Updates retain the same credential home, sealed identity and pending inbox batches,
+and retire the old receiver before another process can use that home.
+Response parsers accept additive metadata while validating the fields used for
+identity, routing, text and receipts. Unsupported media remains unavailable. The conversation picker lists main timelines; it does not
 enumerate threads. The transport preserves exact thread bindings and receipts
 when such a binding exists. Unknown provider events, including `profile_requested`,
 are ignored and logged locally by event kind without their text or payload. They

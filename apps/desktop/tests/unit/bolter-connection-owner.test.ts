@@ -4,7 +4,7 @@ import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, chmod, realpath, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { BOLTER_CLI_RELEASE, getBolterProductionDecoders } from "../../electron/bolter-bridge/production-contract";
+import { getBolterProductionDecoders } from "../../electron/bolter-bridge/production-contract";
 import { BolterConnectionOwner } from "../../electron/bolter-bridge/connection-owner";
 import { BolterInboxSpool, createBolterSpoolDirectory } from "../../electron/bolter-bridge/inbox-spool";
 import { handOverBolterBatch, parseBolterHandoverDescriptor } from "../../electron/bolter-bridge/handover";
@@ -12,6 +12,7 @@ import type { BolterCliInvocation, BolterQualifiedDecoders } from "../../electro
 
 const scope = { serverId: "synthetic-server", userId: "synthetic-human", connectionId: "synthetic-connection" };
 const runtime = { executable: "/opt/nautilo/bolter-agent", home: "/var/lib/nautilo/synthetic-home", platform: "linux" as const, version: "synthetic-v1" };
+const productionVersion = "0123456789abcdef0123456789abcdef01234567";
 const selection = { origin: "https://bolter.chat", agentId: "synthetic-agent", cliSelector: "synthetic-agent" };
 const destination = { chatId: "synthetic-chat", threadRootId: null };
 const message = { type: "message", messageId: "synthetic-input", ...destination, senderId: "synthetic-visitor", senderType: "user",
@@ -311,9 +312,9 @@ test("retained system notices drain with later Human messages only after server 
   const agentId = "abcdef01";
   const providerSelection = { origin: "https://bolter.chat", agentId, cliSelector: agentId };
   const owner = new BolterConnectionOwner({ scope,
-    runtime: { ...runtime, version: BOLTER_CLI_RELEASE.version }, selection: providerSelection,
-    decoders: getBolterProductionDecoders(BOLTER_CLI_RELEASE.version),
-    qualification: { ...qualification, version: BOLTER_CLI_RELEASE.version },
+    runtime: { ...runtime, version: productionVersion }, selection: providerSelection,
+    decoders: getBolterProductionDecoders(productionVersion),
+    qualification: { ...qualification, version: productionVersion },
     isCurrent: () => true, isBound: () => true, attest: () => Promise.resolve(true), attestHelper: () => Promise.resolve(true),
     spawn: plan => {
       const child = fake(); children.push(child);
