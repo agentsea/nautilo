@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
 // Windows has no POSIX owner/mode bits. Use the OS security descriptor, from
@@ -314,6 +314,30 @@ export async function createPrivateDirectory(path: string): Promise<void> {
   } else await mkdir(path, { mode: 0o700 });
 }
 
+/**
+ * An operator-configured location may itself be a symbolic link or junction
+ * to its real directory. The checks in this module never follow a link, so
+ * such a location is resolved once before use. Other paths, including missing
+ * ones, are returned unchanged.
+ */
+export function resolveLinkedLocationSync(path: string): string {
+  try {
+    return lstatSync(path).isSymbolicLink() ? realpathSync.native(path) : path;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return path;
+    throw error;
+  }
+}
+
+export async function resolveLinkedLocation(path: string): Promise<string> {
+  try {
+    return (await lstat(path)).isSymbolicLink() ? await realpath(path) : path;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return path;
+    throw error;
+  }
+}
+
 /** Create missing managed directories privately without changing existing ancestors. */
 function missingDirectories(path: string): string[] {
   const missing: string[] = [];
@@ -337,7 +361,9 @@ export function ensurePrivateDirectorySync(path: string): void {
     }
   }
   if (!lstatSync(path).isDirectory()) throw failure("ENOTDIR");
-  if (missing.length === 0) secureFilesystemPathSync(path);
+  // Protecting a Windows directory rewrites the inherited ACL of its whole
+  // subtree, so an existing directory is only protected when it is not private.
+  if (missing.length === 0 && !isPrivateFilesystemPath(path)) secureFilesystemPathSync(path);
 }
 
 export async function ensurePrivateDirectory(path: string): Promise<void> {
@@ -366,7 +392,8 @@ export async function ensurePrivateDirectory(path: string): Promise<void> {
     }
   }
   if (!(await lstat(path)).isDirectory()) throw failure("ENOTDIR");
-  if (missing.length === 0) await secureFilesystemPath(path);
+  // See ensurePrivateDirectorySync: protection is a subtree rewrite on Windows.
+  if (missing.length === 0 && !(await isPrivateFilesystemPathAsync(path))) await secureFilesystemPath(path);
 }
 
 /** Create, write, and fsync an owner-private file without an ACL exposure window. */
@@ -395,6 +422,47 @@ export async function writePrivateFileExclusive(path: string, contents: Uint8Arr
   finally { await file.close(); if (!complete) await unlink(path); }
 }
 
+// Windows refuses a rename while a scanner or indexer briefly holds the source
+// or target open. Seven attempts with doubling waits from 20 ms wait at most
+// 1.26 s in total; other platforms and other errors fail immediately.
+const WINDOWS_RENAME_ATTEMPTS = 7;
+const WINDOWS_RENAME_INITIAL_WAIT_MS = 20;
+
+function windowsRenameWait(error: unknown, attempt: number): number | undefined {
+  const code = (error as NodeJS.ErrnoException).code;
+  const locked = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+  if (process.platform !== "win32" || !locked || attempt >= WINDOWS_RENAME_ATTEMPTS) return undefined;
+  return WINDOWS_RENAME_INITIAL_WAIT_MS * 2 ** (attempt - 1);
+}
+
+/** `renameSync` with the bounded Windows lock retry. */
+export function renameWithWindowsRetrySync(from: string, to: string): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const wait = windowsRenameWait(error, attempt);
+      if (wait === undefined) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
+    }
+  }
+}
+
+/** `rename` with the bounded Windows lock retry. */
+export async function renameWithWindowsRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      const wait = windowsRenameWait(error, attempt);
+      if (wait === undefined) throw error;
+      await new Promise((resolveWait) => setTimeout(resolveWait, wait));
+    }
+  }
+}
+
 /** A sibling in the target directory keeps the final rename on one filesystem. */
 function temporarySibling(target: string): string {
   return `${target}.${process.pid}.${randomUUID()}.tmp`;
@@ -419,7 +487,7 @@ export async function publishPrivateFileAtomically(target: string, contents: Uin
   await writePrivateFileExclusive(temporary, contents);
   try {
     await options.beforePublish?.();
-    await rename(temporary, destination);
+    await renameWithWindowsRetry(temporary, destination);
   } catch (error) {
     await unlink(temporary).catch(() => undefined);
     throw error;
@@ -431,7 +499,7 @@ export function publishPrivateFileAtomicallySync(target: string, contents: Uint8
   const temporary = temporarySibling(destination);
   writePrivateFileExclusiveSync(temporary, contents);
   try {
-    renameSync(temporary, destination);
+    renameWithWindowsRetrySync(temporary, destination);
   } catch (error) {
     try { unlinkSync(temporary); } catch { /* Preserve the publication error. */ }
     throw error;

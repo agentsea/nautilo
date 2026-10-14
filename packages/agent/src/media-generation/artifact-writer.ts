@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { secureFilesystemPath, syncDirectory } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectory, syncDirectory } from "@nautilo/config/private-filesystem";
 import type { VeniceArtifactCommitProof } from "./venice-lifecycle";
 
 const ALLOWED_MEDIA_MIME_TYPES = ["video/mp4", "audio/mp4", "audio/mpeg"] as const;
@@ -209,8 +209,10 @@ export async function writeStagedMediaArtifact(input: WriteStagedMediaArtifactIn
       await fsp.mkdir(stagingDirectory, { recursive: true, mode: 0o700 });
       await fsp.mkdir(finalDirectory, { recursive: true, mode: 0o700 });
       if (process.platform === "win32") {
-        await secureFilesystemPath(stagingDirectory);
-        await secureFilesystemPath(finalDirectory);
+        // Protecting rewrites the inherited ACL of every stored file, so the
+        // shared directories are only protected while they are not private.
+        await ensurePrivateDirectory(stagingDirectory);
+        await ensurePrivateDirectory(finalDirectory);
       }
     } catch (error) {
       throw classifyStorageError(error);

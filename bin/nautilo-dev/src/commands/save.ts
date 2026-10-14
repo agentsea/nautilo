@@ -11,7 +11,7 @@ import {
   resolveInstanceUncached,
   resolveNautiloStorageRoot,
 } from "@nautilo/config";
-import { createPrivateDirectory, ensurePrivateDirectory, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
+import { createPrivateDirectory, ensurePrivateDirectory, renameWithWindowsRetry, resolveLinkedLocation, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import {
   resolveSnapshotDir,
   resolveSnapshotsDir,
@@ -21,7 +21,6 @@ import {
 import { pgBaseBackupTarGzip } from "../lib/docker-db";
 import { logtoDatabaseExists } from "../lib/logto-db";
 import { formatBytes } from "../lib/format-bytes";
-import { renameStagedDirectory } from "../lib/rename-staged-directory";
 import {
   describeBackupArtifact,
   writeManifestFile,
@@ -210,7 +209,8 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
     throw new Error(`A full development backup requires instance.env at ${envPath}`);
   }
 
-  await ensurePrivateDirectory(snapshotsDir);
+  // A linked snapshot root is secured at its real directory.
+  await ensurePrivateDirectory(await resolveLinkedLocation(snapshotsDir));
   const stagingDir = join(snapshotsDir, `.${name}.staging-${process.pid}-${Date.now()}`);
   await createPrivateDirectory(stagingDir);
 
@@ -362,7 +362,8 @@ async function saveInternal(name: string, options: SaveOptions, allowMaintenance
       },
     );
 
-    await renameStagedDirectory(stagingDir, finalDir);
+    // A just-written file inside can briefly block the rename on Windows.
+    await renameWithWindowsRetry(stagingDir, finalDir);
     await secureFilesystemPath(finalDir);
     const manifest = JSON.parse(
       await readFile(join(finalDir, "manifest.json"), "utf8"),

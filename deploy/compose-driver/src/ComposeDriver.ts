@@ -5,7 +5,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, posix, resolve } from "node:path";
-import { ensurePrivateDirectory, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectory, resolveLinkedLocation, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import {
   __resetResolvedInstanceForTests,
@@ -4732,8 +4732,9 @@ export class ComposeDriver {
         return target;
       }
 
-      const bundlePath = requestedBundlePath;
-      await ensurePrivateDirectory(resolve(bundlePath));
+      // A linked backup target is used through its real directory.
+      const bundlePath = await resolveLinkedLocation(resolve(requestedBundlePath));
+      await ensurePrivateDirectory(bundlePath);
       this.deps.log(
         `backup: warning: ${bundlePath} contains plaintext secrets (instance.env, Logto DB, bootstrap tokens, cert private keys). Keep it encrypted or access-restricted.`,
       );

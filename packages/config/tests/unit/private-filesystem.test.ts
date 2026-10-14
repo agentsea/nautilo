@@ -1,10 +1,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as childProcess from "node:child_process";
-import { createPrivateDirectorySync, ensurePrivateDirectory, ensurePrivateDirectorySync, isOwnedFilesystemPathAsync, isPrivateFilesystemPath, secureFilesystemPath, secureFilesystemPathSync, writePrivateFileExclusive, writePrivateFileExclusiveSync } from "../../src/private-filesystem";
+import { createPrivateDirectorySync, ensurePrivateDirectory, ensurePrivateDirectorySync, isOwnedFilesystemPathAsync, isPrivateFilesystemPath, renameWithWindowsRetry, resolveLinkedLocation, resolveLinkedLocationSync, secureFilesystemPath, secureFilesystemPathSync, writePrivateFileExclusive, writePrivateFileExclusiveSync } from "../../src/private-filesystem";
 import { allowOtherReadersSync } from "../../src/private-filesystem-fixtures";
 
 const roots: string[] = [];
@@ -75,6 +75,55 @@ test.skipIf(process.platform !== "win32")("detects a real Windows ACL granting a
   expect(await isOwnedFilesystemPathAsync(path)).toBe(true);
   secureFilesystemPathSync(path);
   expect(isPrivateFilesystemPath(path)).toBe(true);
+}, 15_000);
+
+test("ensuring an existing private directory leaves it untouched but repairs a loosened one", async () => {
+  // Protecting rewrites the ACL (and mode) and therefore the change time; on
+  // Windows it also propagates to the whole subtree.
+  const directory = join(fixture(), "managed");
+  ensurePrivateDirectorySync(directory);
+  const before = lstatSync(directory, { bigint: true }).ctimeNs;
+  await Bun.sleep(20);
+  ensurePrivateDirectorySync(directory);
+  await ensurePrivateDirectory(directory);
+  expect(lstatSync(directory, { bigint: true }).ctimeNs).toBe(before);
+  allowOtherReadersSync(directory);
+  expect(isPrivateFilesystemPath(directory)).toBe(false);
+  await ensurePrivateDirectory(directory);
+  expect(isPrivateFilesystemPath(directory)).toBe(true);
+}, 15_000);
+
+test("a linked location resolves to its real directory and other paths stay unchanged", async () => {
+  const root = fixture();
+  const real = join(root, "real");
+  mkdirSync(real);
+  const link = join(root, "link");
+  symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
+  expect(resolveLinkedLocationSync(link)).toBe(realpathSync.native(real));
+  expect(await resolveLinkedLocation(link)).toBe(realpathSync.native(real));
+  expect(resolveLinkedLocationSync(real)).toBe(real);
+  expect(await resolveLinkedLocation(join(root, "missing"))).toBe(join(root, "missing"));
+  // The private-directory checks never follow the link itself.
+  expect(() => ensurePrivateDirectorySync(link)).toThrow();
+  ensurePrivateDirectorySync(resolveLinkedLocationSync(link));
+  expect(isPrivateFilesystemPath(real)).toBe(true);
+}, 15_000);
+
+test.skipIf(process.platform !== "win32")("a rename waits while another process briefly holds the target open", async () => {
+  const root = fixture();
+  const source = join(root, "source.txt");
+  const target = join(root, "target.txt");
+  writeFileSync(source, "new");
+  writeFileSync(target, "old");
+  const holder = childProcess.spawn("C:\\Program Files\\PowerShell\\7\\pwsh.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    "$held = [IO.File]::Open($env:NAUTILO_HELD_FILE, 'Open', 'Read', 'None'); [Console]::Out.WriteLine('held'); Start-Sleep -Milliseconds 400; $held.Close()",
+  ], { env: { ...process.env, NAUTILO_HELD_FILE: target } });
+  const exited = new Promise((resolveExit) => holder.once("exit", resolveExit));
+  await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+  await renameWithWindowsRetry(source, target);
+  expect(readFileSync(target, "utf8")).toBe("new");
+  await exited;
 }, 15_000);
 
 test("the async writer also runs in the supported Node runtime", () => {

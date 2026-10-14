@@ -1,8 +1,7 @@
 import { copyFile } from "node:fs/promises";
 import { lstat, open, readFile, readdir, rm, statfs } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
-import { renameStagedDirectory } from "./rename-staged-directory";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, renameWithWindowsRetry, resolveLinkedLocationSync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   sha256File,
   verifyFullBackupDirectory,
@@ -95,7 +94,8 @@ export function defaultCloneSeedRoot(userHome: string): string {
 }
 
 export function cloneSeedPaths(root: string): CloneSeedPaths {
-  const absoluteRoot = resolve(root);
+  // A linked seed root is used through its real directory.
+  const absoluteRoot = resolveLinkedLocationSync(resolve(root));
   return {
     root: absoluteRoot,
     generations: join(absoluteRoot, "generations"),
@@ -483,7 +483,8 @@ export async function refreshCloneSeed(input: RefreshCloneSeedInput): Promise<Cl
       stage = "publication";
       await input.beforePublish?.();
       const finalDirectory = seedGenerationDirectory(paths, generation);
-      await renameStagedDirectory(staging, finalDirectory);
+      // A just-written file inside can briefly block the rename on Windows.
+      await renameWithWindowsRetry(staging, finalDirectory);
       staging = null;
       publishedGeneration = generation;
       // The final path is verified before it can become authoritative. Do not

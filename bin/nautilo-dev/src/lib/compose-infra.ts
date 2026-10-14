@@ -160,7 +160,10 @@ function buildInstanceEnvWithServiceSecrets(
 /** Same-filesystem publication used for every local credential authority file. */
 export function writeProtectedInstanceSecretFile(path: string, contents: string): void {
   const destination = resolve(path);
-  ensurePrivateDirectorySync(dirname(destination));
+  // A missing instance directory is created private. An existing or linked one
+  // keeps its permissions: the published file itself carries the secret.
+  const parent = dirname(destination);
+  if (!existsSync(parent)) ensurePrivateDirectorySync(parent);
   publishPrivateFileAtomicallySync(destination, new TextEncoder().encode(contents));
 }
 

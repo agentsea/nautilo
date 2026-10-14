@@ -9,8 +9,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { ensurePrivateDirectorySync } from "@nautilo/config/private-filesystem";
+import { dirname } from "node:path";
+import { ensurePrivateStoreDirectorySync } from "./private-store-directory";
 import {
   hasReadyToWorkExactBinding,
   createReadyToWorkDesiredState,
@@ -41,7 +41,7 @@ export type ReadyToWorkStoreFs = Readonly<{
 }>;
 
 const productionFs: ReadyToWorkStoreFs = {
-  mkdirSync: (directory) => ensurePrivateDirectorySync(resolve(directory)),
+  mkdirSync: ensurePrivateStoreDirectorySync,
   openSync,
   writeFileSync,
   closeSync,
