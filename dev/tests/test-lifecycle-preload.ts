@@ -1,4 +1,4 @@
-import { afterAll, beforeAll } from "bun:test";
+import { afterAll, beforeAll, setDefaultTimeout } from "bun:test";
 
 // A test file owns its lifetime, including teardown. Bun 1.3.11 on Windows can otherwise spin
 // without advancing unref timers (including its own test timeout) when a fake
@@ -14,4 +14,8 @@ if (process.platform === "win32") {
     if (reference === undefined) reference = setInterval(() => {}, 1000);
   });
   afterAll(clearReference);
+  // Private-filesystem calls start a PowerShell ACL helper on Windows; under
+  // concurrent package runs they exceed the 15 s defaults of the test scripts.
+  // Tests with an explicit timeout keep it.
+  setDefaultTimeout(60_000);
 }
