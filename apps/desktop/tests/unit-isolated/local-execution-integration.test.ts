@@ -23,7 +23,7 @@ afterEach(async () => {
 });
 
 function fixture(tty = false, revokeDuringPreparation = false, authorityExpiresAt?: number) {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
   const tools = join(root, "tools"); mkdirSync(tools);
   roots.push(root);
   let closeCount = 0;

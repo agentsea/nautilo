@@ -19,13 +19,10 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import {
-  Sandbox,
-  canonicalize,
-} from "@nautilo/sandbox";
+import { Sandbox } from "@nautilo/sandbox";
 import {
   createWorkspaceGuard,
   RELAY_WORKSTATION_SHELL_BINDING_VERSION,
@@ -249,7 +246,8 @@ function mkRequest(overrides: Partial<RelayDispatchRequest> = {}): RelayDispatch
 }
 
 function mkTmp(prefix: string): string {
-  return canonicalize(mkdtempSync(join(tmpdir(), prefix)));
+  // Grants record the native realpath, which expands Windows 8.3 names.
+  return realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 describe("request-local dispatch policy cleanup", () => {

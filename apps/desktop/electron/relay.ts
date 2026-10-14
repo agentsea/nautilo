@@ -810,7 +810,7 @@ export function createDesktopFilesystemGrantAuthorityResolver(
     // local decision never approved.
     let canonicalRequestedRoot: string;
     try {
-      canonicalRequestedRoot = fsSync.realpathSync(request.requestedRoot);
+      canonicalRequestedRoot = fsSync.realpathSync.native(request.requestedRoot);
     } catch {
       return { ok: false, code: "DESKTOP_FILESYSTEM_GRANT_REQUEST_INVALID" };
     }
@@ -954,7 +954,7 @@ export function createLocalShellWorkspaceAuthorityResolver(
   return async function resolve(candidate) {
     let workspace: string;
     try {
-      workspace = fsSync.realpathSync(candidate);
+      workspace = fsSync.realpathSync.native(candidate);
       if (!fsSync.statSync(workspace).isDirectory()) {
         return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE" };
       }
@@ -2494,7 +2494,7 @@ export function makeDispatchHandler(
         try {
           const executable = await options.getDevelopmentGitHubExecutable?.();
           if (executable !== undefined) {
-            fallbackDirectory = path.dirname(fsSync.realpathSync(executable));
+            fallbackDirectory = path.dirname(fsSync.realpathSync.native(executable));
             nativeEnvironment["PATH"] = [nativeEnvironment["PATH"], fallbackDirectory].filter(Boolean).join(path.delimiter);
           }
         } catch {
@@ -2972,13 +2972,13 @@ export function makeDispatchHandler(
               await verify();
               const selected = options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath;
               if (!selected) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE");
-              const workspace = fsSync.realpathSync(selected);
+              const workspace = fsSync.realpathSync.native(selected);
               const workdir = req.args["workdir"];
               if (typeof workdir === "string" && (path.isAbsolute(workdir) || path.win32.isAbsolute(workdir))) throw new Error("LOCAL_EXECUTION_WORKDIR_MUST_BE_RELATIVE");
               const cwd = await resolveWorkstationRelativeCwd({ workspacePath: workspace, requestedCwd: workdir === "." ? undefined : workdir });
               if (!cwd.ok) throw new Error(cwd.errorCode);
               await verify();
-              if (fsSync.realpathSync(options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath ?? "") !== workspace) {
+              if (fsSync.realpathSync.native(options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath ?? "") !== workspace) {
                 throw new Error("WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH");
               }
               // Full Mac grants account filesystem access, but never injects
@@ -3006,7 +3006,7 @@ export function makeDispatchHandler(
                 preparationSignal.throwIfAborted();
                 const scratch = (options.createGuardedShellScratch ?? createGuardedShellScratch)();
                 basicScratch = scratch.workspace;
-                const managedHome = fsSync.realpathSync(scratch.workspace);
+                const managedHome = fsSync.realpathSync.native(scratch.workspace);
                 const developmentEnvironment = delegation?.developmentEnvironment === undefined
                   ? undefined
                   : await prepareDevelopmentEnvironment(delegation.developmentEnvironment,

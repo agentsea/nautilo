@@ -75,7 +75,7 @@ describe("Current Folder agent adoption authority", () => {
 
     const committed = await f.authority.commit({ preparationId: prepared.preparationId, approved: true });
     expect(committed).toEqual({ ok: true, label: "nautilo", currentFolderRevision: 4 });
-    expect(f.committed).toBe(realpathSync(f.target));
+    expect(f.committed).toBe(realpathSync.native(f.target));
     await expect(f.authority.commit({ preparationId: prepared.preparationId, approved: true })).resolves.toMatchObject({
       ok: false,
       code: "preparation_unknown",

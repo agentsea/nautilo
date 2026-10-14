@@ -39,7 +39,7 @@ describe("workstation shell consent compatibility", () => {
     const identity = await stat(root);
     expect((await store.grant({
       subject,
-      identity: { canonicalRoot: realpathSync(root), device: identity.dev, inode: identity.ino },
+      identity: { canonicalRoot: realpathSync.native(root), device: identity.dev, inode: identity.ino },
     })).ok).toBeTrue();
     const host = createWorkstationShellHost({ consentStore: store, resolveSubject: async () => subject });
 
@@ -74,7 +74,7 @@ describe("workstation shell consent compatibility", () => {
     });
     expect((await store.grant({
       subject,
-      identity: { canonicalRoot: realpathSync(root), device: identity.dev, inode: identity.ino },
+      identity: { canonicalRoot: realpathSync.native(root), device: identity.dev, inode: identity.ino },
     })).ok).toBeTrue();
     const host = createWorkstationShellHost({ consentStore: store, resolveSubject: async () => subject });
     expect(await host.consentStatus(root)).toBe("durable");

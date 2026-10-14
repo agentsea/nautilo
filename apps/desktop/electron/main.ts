@@ -2066,7 +2066,7 @@ function isPathWithinAllowedRoot(targetPath: string): boolean {
 function resolveReal(input: string): string {
   const resolved = path.resolve(input);
   try {
-    return fs.realpathSync(resolved);
+    return fs.realpathSync.native(resolved);
   } catch {
     return resolved;
   }
@@ -2435,7 +2435,7 @@ function queueFsWatchEvent(rootPath: string, changedPath: string): void {
 
 function ensureFsWatchRoot(rootPath: string): void {
   assertPathInAllowedRoot(rootPath);
-  const resolvedRoot = fs.realpathSync(rootPath);
+  const resolvedRoot = fs.realpathSync.native(rootPath);
   if (fsWatchers.has(resolvedRoot)) return;
   const watcher = fs.watch(
     resolvedRoot,
@@ -2477,7 +2477,7 @@ function workingFolderBootstrapOptions(): WorkingFolderBootstrapOptions {
       access: (directory) => {
         fs.accessSync(directory, fs.constants.R_OK | fs.constants.W_OK);
       },
-      realpath: (directory) => fs.realpathSync(directory),
+      realpath: (directory) => fs.realpathSync.native(directory),
       writeFileExclusive: (filePath, contents) => {
         fs.writeFileSync(filePath, contents, {
           encoding: "utf-8",
@@ -10279,7 +10279,7 @@ ipcMain.handle("fs:watchRoot", (e, args: { path: string }) => {
 ipcMain.handle("fs:unwatchRoot", (e, args: { path: string }) => {
   assertMainWindowSender(e);
   try {
-    cleanupFsWatchRoot(fs.realpathSync(args.path));
+    cleanupFsWatchRoot(fs.realpathSync.native(args.path));
   } catch {
     cleanupFsWatchRoot(path.resolve(args.path));
   }

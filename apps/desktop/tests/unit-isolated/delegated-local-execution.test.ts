@@ -23,8 +23,8 @@ afterEach(async () => {
 });
 
 function fixture(tty = false, authorityExpiresAt?: number, ceiling: "basic" | "development" = "basic") {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
-  const policyHome = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-home-")));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
+  const policyHome = realpathSync.native(mkdtempSync(join(tmpdir(), "local-execution-home-")));
   const tools = join(root, "tools"); mkdirSync(tools);
   roots.push(root, policyHome);
   let selected = ""; let allowed = true;

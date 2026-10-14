@@ -58,10 +58,12 @@ export type WorkspaceGuardResult =
  * guard constructed with the same path (macOS canonicalises
  * `/var/folders` → `/private/var/folders`).
  */
+// The native resolver also expands Windows 8.3 short names, matching the
+// async `realpath` used elsewhere for the same roots.
 function canonicalise(path: string): string {
   const abs = resolve(path);
   try {
-    return realpathSync(abs);
+    return realpathSync.native(abs);
   } catch {
     // Walk up to the nearest existing ancestor.
     let current = abs;
@@ -73,7 +75,7 @@ function canonicalise(path: string): string {
       current = parent;
     }
     try {
-      const real = realpathSync(current);
+      const real = realpathSync.native(current);
       return tail.length > 0 ? resolve(real, ...tail) : real;
     } catch {
       return abs;

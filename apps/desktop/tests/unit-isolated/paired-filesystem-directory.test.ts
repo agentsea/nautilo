@@ -39,7 +39,7 @@ function fixture() {
     // This fixture makes system and private folders unavailable while allowing
     // broad roots to be browsed (real policy is stricter at final selection).
     protectedPathPolicy: { check: (candidate) => ({ allowed: basename(candidate) !== "System" }) },
-    checkCurrentFolderSanity: (candidate) => ({ ok: candidate !== realpathSync(home) }),
+    checkCurrentFolderSanity: (candidate) => ({ ok: candidate !== realpathSync.native(home) }),
     createLocationId: (() => { let n = 0; return () => `loc_${++n}`; })(),
   });
   return { authority, home, data };

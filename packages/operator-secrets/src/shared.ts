@@ -108,7 +108,8 @@ export function prepareOperatorSecretsPath(path: string, homeDir?: string): {
   try {
     const st = lstatSync(resolvedPath);
     if (st.isSymbolicLink()) {
-      realPath = realpathSync(resolvedPath);
+      // Native resolution expands Windows 8.3 names before the home comparison.
+      realPath = realpathSync.native(resolvedPath);
       assertSymlinkPolicyForOperatorSecrets({
         path: resolvedPath,
         resolvedRealPath: realPath,
