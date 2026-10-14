@@ -93,6 +93,9 @@ function assertRepresentationAdmission(
 type SemanticChangeReason = DurableSleepClaim["changeReason"];
 
 export interface RecordSemanticCommitmentPort {
+  modelBinding(input: Readonly<{
+    binding: MemoryOperationBinding;
+  }>): Uint8Array;
   sourceDependency(input: Pick<
     DurableSourceDependency,
     "sourceKind" | "logicalSourceRef"
@@ -185,6 +188,14 @@ export function createHmacRecordSemanticCommitmentPort(
   }
   const ownedKey = key.slice();
   const port: RecordSemanticCommitmentPort = {
+    modelBinding(input) {
+      const binding = parseMemoryOperationBinding(input.binding);
+      return semanticHmac(
+        ownedKey,
+        "nautilo/reflection/model-batch-family/v1",
+        [JSON.stringify(binding)],
+      );
+    },
     sourceDependency(input: Pick<
       DurableSourceDependency,
       "sourceKind" | "logicalSourceRef"
@@ -1240,7 +1251,9 @@ export class PostgresSemanticWorkStore
                   candidate.recovered_from_quarantine,
                   candidate.execution_representation,
                   candidate.execution_maximum_stage,
-                  work.projection_refresh_only`,
+                  work.projection_refresh_only,
+                  work.accepted_model_binding,
+                  work.accepted_model_binding_generation`,
         [
           now,
           MAXIMUM_ATTEMPTS,
@@ -1275,6 +1288,24 @@ export class PostgresSemanticWorkStore
           || executionMaximumStage > 2
         )
       ) throw new TypeError("Invalid semantic work execution selection");
+      const rawBinding = row["accepted_model_binding"];
+      const bindingGeneration = row["accepted_model_binding_generation"];
+      if ((rawBinding === null) !== (bindingGeneration === null)) {
+        throw new TypeError("Invalid semantic work model binding");
+      }
+      let modelBatchFamilyKey = "fresh";
+      if (rawBinding !== null) {
+        if (bindingGeneration !== rowInteger(row, "generation")) {
+          throw new TypeError("Invalid semantic work model binding generation");
+        }
+        const binding = parseMemoryOperationBinding(rawBinding);
+        if (binding.role !== "memoryReflection") {
+          throw new TypeError("Invalid semantic work model binding role");
+        }
+        modelBatchFamilyKey = `binding:${Buffer.from(
+          this.options.commitments.modelBinding({ binding }),
+        ).toString("hex")}`;
+      }
       return {
         status: "claimed" as const,
         claim: {
@@ -1284,6 +1315,7 @@ export class PostgresSemanticWorkStore
           changeReason,
           stage: stage as DurableSleepClaim["stage"],
           leaseToken: rowString(row, "lease_token"),
+          modelBatchFamilyKey,
           timing: {
             admittedAtEpochMs: rowDate(row, "due_since")!.getTime(),
             firstClaimedAtEpochMs: rowDate(row, "started_at")!.getTime(),

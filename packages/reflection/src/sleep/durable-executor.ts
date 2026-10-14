@@ -106,6 +106,8 @@ export interface DurableSleepClaim {
   readonly changeReason: DurableSleepChangeReason;
   readonly stage: DurableSleepStage;
   readonly leaseToken: string;
+  /** Ephemeral opaque affinity for provider admission batching. */
+  readonly modelBatchFamilyKey?: string;
   /** Durable admission and first-claim coordinates for exact queue/service time. */
   readonly timing?: Readonly<{
     readonly admittedAtEpochMs: number;
@@ -1633,7 +1635,23 @@ export async function runDurableHierarchySleep(input: {
     } finally {
       for (const item of batch) await closeAttempt(item.attempt,
         item.outcome === "completed" ? "completed" : input.signal?.aborted ? "cancelled" : item.outcome);
-      if (pendingOrganizer.length > 0) await flushOrganizerBatch();
+    }
+  };
+  const pausePendingOrganizerForBudget = async (): Promise<void> => {
+    pausedForBudget = true;
+    for (const item of pendingOrganizer.splice(0)) {
+      item.outcome = "unavailable";
+      try { await pauseClaim(item.claim); }
+      finally { await closeAttempt(item.attempt, "unavailable"); }
+    }
+  };
+  const drainOrganizerBatches = async (): Promise<void> => {
+    while (pendingOrganizer.length > 0) {
+      if (!reserveAllowsAnotherModelOperation(input.budget.hierarchy, usage)) {
+        await pausePendingOrganizerForBudget();
+        return;
+      }
+      await flushOrganizerBatch();
     }
   };
 
@@ -1644,7 +1662,7 @@ export async function runDurableHierarchySleep(input: {
       maximumPreparationElapsedMs > 0
       && modelWindowRemaining(input.executionWindow) <= maximumPreparationElapsedMs
     ) {
-      if (pendingOrganizer.length > 0) await flushOrganizerBatch();
+      if (pendingOrganizer.length > 0) await drainOrganizerBatches();
       pausedForBudget = true;
       break;
     }
@@ -1677,7 +1695,7 @@ export async function runDurableHierarchySleep(input: {
     const next = await input.work.claimNext(input.signal, { maximumStage });
     if (next.status === "empty") {
       if (pendingOrganizer.length > 0) {
-        await flushOrganizerBatch();
+        await drainOrganizerBatches();
         continue;
       }
       break;
@@ -2063,9 +2081,33 @@ export async function runDurableHierarchySleep(input: {
         }
         continue;
       }
+      const batchFamilyKey = claim.modelBatchFamilyKey ?? "fresh";
+      while (
+        pendingOrganizer.length > 0
+        && (pendingOrganizer[0]!.claim.modelBatchFamilyKey ?? "fresh")
+          !== batchFamilyKey
+      ) {
+        if (!reserveAllowsAnotherModelOperation(input.budget.hierarchy, usage)) {
+          await pausePendingOrganizerForBudget();
+          break;
+        }
+        await flushOrganizerBatch();
+      }
+      if (!reserveAllowsAnotherModelOperation(input.budget.hierarchy, usage)) {
+        attemptOutcome = "unavailable";
+        await pauseClaim(claim);
+        pausedForBudget = true;
+        break;
+      }
       if (!pendingFitsWorstCase(loaded.view)) {
         if (pendingOrganizer.length > 0) {
-          await flushOrganizerBatch();
+          await drainOrganizerBatches();
+        }
+        if (!reserveAllowsAnotherModelOperation(input.budget.hierarchy, usage)) {
+          attemptOutcome = "unavailable";
+          await pauseClaim(claim);
+          pausedForBudget = true;
+          break;
         }
         if (!viewFitsWorstCaseOperation(input.budget.hierarchy, usage, loaded.view)) {
           attemptOutcome = "unavailable";
@@ -2079,7 +2121,13 @@ export async function runDurableHierarchySleep(input: {
         organizerInput(claim, loaded.view),
       ]);
       if (!projected.ok && pendingOrganizer.length > 0) {
-        await flushOrganizerBatch();
+        await drainOrganizerBatches();
+        if (!reserveAllowsAnotherModelOperation(input.budget.hierarchy, usage)) {
+          attemptOutcome = "unavailable";
+          await pauseClaim(claim);
+          pausedForBudget = true;
+          break;
+        }
       }
       pendingOrganizer.push({
         ...(attempt ? { attempt } : {}),
@@ -2132,7 +2180,7 @@ export async function runDurableHierarchySleep(input: {
     }
   }
 
-  await flushOrganizerBatch();
+  await drainOrganizerBatches();
   } finally {
     for (const item of pendingOrganizer.splice(0)) await closeAttempt(item.attempt,
       input.signal?.aborted ? "cancelled" : "failed");

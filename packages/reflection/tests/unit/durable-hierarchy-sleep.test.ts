@@ -382,6 +382,124 @@ describe("durable hierarchy Sleep state machine", () => {
     });
   });
 
+  test("partitions fresh and retained model-binding families before admission", async () => {
+    const events: string[] = [];
+    const claims = [
+      { ...claim("record:fresh-a", "organization"), modelBatchFamilyKey: "fresh" },
+      { ...claim("record:fresh-b", "organization"), modelBatchFamilyKey: "fresh" },
+      { ...claim("record:family-a-1", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-a-2", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-b", "organization"), modelBatchFamilyKey: "binding:b" },
+    ];
+    const semantic = semanticHarness(events);
+    const admissions: string[][] = [];
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        ...mixedView(),
+        changed: {
+          handle: "C0",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+      },
+    });
+    semantic.invokeOrganizerBatch = (batchClaims) => {
+      admissions.push(batchClaims.map((item) => item.recordRef));
+      return Promise.resolve(JSON.stringify({
+        answers: batchClaims.map((_, index) => ({
+          question: `Q${index + 1}`,
+          proposal: { operation: "no_change" },
+        })),
+      }));
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: workHarness(claims, events).port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 5 },
+    });
+
+    expect(admissions).toEqual([
+      ["record:fresh-a", "record:fresh-b"],
+      ["record:family-a-1", "record:family-a-2"],
+      ["record:family-b"],
+    ]);
+    expect(result).toMatchObject({
+      completed: 5,
+      usage: { modelCalls: 3 },
+      diagnostics: { modelBatches: 3, modelBatchItems: 5 },
+    });
+  });
+
+  test("drains an exposure-limited family without mixing the next family", async () => {
+    const events: string[] = [];
+    const claims = [
+      { ...claim("record:family-a-1", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-a-2", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-a-3", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-b", "organization"), modelBatchFamilyKey: "binding:b" },
+    ];
+    const work = workHarness(claims, events);
+    const paused: string[] = [];
+    work.port.pause = ({ claim: pausedClaim }) => {
+      paused.push(pausedClaim.recordRef);
+      return Promise.resolve({ status: "accepted" });
+    };
+    const semantic = semanticHarness(events);
+    const admissions: string[][] = [];
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        ...mixedView(),
+        changed: {
+          handle: "C0",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+        modelExposureBatchMaximum: 2,
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: current.recordRef,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [`leaf:${current.recordRef}`],
+        }],
+      },
+    });
+    semantic.invokeOrganizerBatch = (batchClaims) => {
+      admissions.push(batchClaims.map((item) => item.recordRef));
+      return Promise.resolve(JSON.stringify({
+        answers: batchClaims.map((_, index) => ({
+          question: `Q${index + 1}`,
+          proposal: { operation: "no_change" },
+        })),
+      }));
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: work.port,
+      semantic,
+      budget: {
+        hierarchy: { ...hierarchyBudget, maxModelCalls: 2 },
+        maxWorkItems: 4,
+      },
+    });
+
+    expect(admissions).toEqual([["record:family-a-1", "record:family-a-2"]]);
+    expect(admissions.every((batch) => batch.every((recordRef) =>
+      recordRef.includes("family-a")
+    ))).toBe(true);
+    expect(paused).toEqual(["record:family-a-3", "record:family-b"]);
+    expect(result).toMatchObject({
+      claimed: 4,
+      completed: 2,
+      paused: 2,
+      usage: { modelCalls: 1 },
+      diagnostics: { modelBatches: 1, modelBatchItems: 2 },
+      budgetExhausted: true,
+    });
+  });
+
   test("splits model batches before the producer exact-plan ceiling", async () => {
     const events: string[] = [];
     const claims = [

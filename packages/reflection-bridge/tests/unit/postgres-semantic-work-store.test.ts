@@ -752,6 +752,8 @@ describe("PostgreSQL semantic work leases", () => {
           lease_token: "11111111-1111-4111-8111-111111111111",
           due_since: now,
           started_at: now,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       if (normalized.startsWith("update reflection_record_semantic_work")
@@ -773,6 +775,7 @@ describe("PostgreSQL semantic work leases", () => {
         generation: 3,
         recordRef: "record:one",
         stage: "authority_projection",
+        modelBatchFamilyKey: "fresh",
       },
     });
     if (claimed.status !== "claimed") throw new Error("expected claim");
@@ -845,6 +848,57 @@ describe("PostgreSQL semantic work leases", () => {
     )?.statement ?? "")).toContain("lease_expires_at >");
   });
 
+  test("claims a retained model family with one stable opaque batch affinity", async () => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:retained-private",
+      inputCommitment: `hmac-sha256:${"B".repeat(43)}`,
+    };
+    const commitments = createHmacRecordSemanticCommitmentPort(
+      new Uint8Array(32).fill(5),
+    );
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && !normalized.includes("returning")) return [];
+      if (statement.includes("WITH candidate AS")) {
+        return [{
+          record_id: "record:retained",
+          generation: 4,
+          change_reason: "revised",
+          stage: "organization",
+          lease_token: "44444444-4444-4444-8444-444444444444",
+          due_since: now,
+          started_at: now,
+          accepted_model_binding: binding,
+          accepted_model_binding_generation: 4,
+        }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments,
+      clock: () => now,
+    });
+
+    const claimed = await store.claimNext();
+    const expectedKey = `binding:${Buffer.from(
+      commitments.modelBinding({ binding }),
+    ).toString("hex")}`;
+    expect(claimed).toMatchObject({
+      status: "claimed",
+      claim: { modelBatchFamilyKey: expectedKey },
+    });
+    expect(expectedKey).not.toContain(binding.modelId);
+    expect(expectedKey).not.toContain(binding.inputCommitment);
+  });
+
   test("carries projection refresh claims and completes them at the search checkpoint", async () => {
     const now = new Date("2026-10-06T10:00:00.000Z");
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
@@ -863,6 +917,8 @@ describe("PostgreSQL semantic work leases", () => {
           due_since: now,
           started_at: now,
           projection_refresh_only: true,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       if (normalized.startsWith("update reflection_record_semantic_work")
@@ -1032,6 +1088,8 @@ describe("PostgreSQL semantic work leases", () => {
             started_at: now,
             execution_representation: "protected",
             execution_maximum_stage: maximumStageRank,
+            accepted_model_binding: null,
+            accepted_model_binding_generation: null,
           }] as unknown as Row[];
         }
         throw new Error(`unexpected SQL: ${statement}`);
@@ -1120,6 +1178,8 @@ describe("PostgreSQL semantic work leases", () => {
           started_at: now,
           execution_representation: "protected",
           execution_maximum_stage: 0,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         },
         {
           record_id: "record:ordinary",
@@ -1131,6 +1191,8 @@ describe("PostgreSQL semantic work leases", () => {
           started_at: now,
           execution_representation: "ordinary",
           execution_maximum_stage: 2,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         },
       ];
       return [rows[claimIndex++]!] as unknown as Row[];
@@ -1202,6 +1264,8 @@ describe("PostgreSQL semantic work leases", () => {
           started_at: now,
           execution_representation: "ordinary",
           execution_maximum_stage: 2,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       throw new Error(`unexpected SQL: ${statement}`);
@@ -1335,6 +1399,8 @@ describe("PostgreSQL semantic work leases", () => {
           recovered_from_quarantine: true,
           due_since: new Date("2026-08-14T09:00:00.000Z"),
           started_at: new Date("2026-08-14T09:30:00.000Z"),
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       throw new Error(`unexpected SQL: ${statement}`);

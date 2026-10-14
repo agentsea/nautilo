@@ -107,7 +107,7 @@ describe("ServerProviderPolicyCard", () => {
       expect(view.getByRole("status").textContent).toContain("saved");
     });
     expect(policyEvents).toBe(1);
-    expect(view.getByText(/supported private text chat/u)).toBeTruthy();
+    expect(view.getByText(/fund supported chats/u)).toBeTruthy();
     expect(view.queryByText(/not available in this release/u)).toBeNull();
     window.removeEventListener("nautilo:personal-provider-policy-changed", onPolicyChanged);
   });
