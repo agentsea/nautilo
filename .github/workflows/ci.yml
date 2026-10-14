@@ -103,8 +103,9 @@ jobs:
 
       - name: Lint
         env:
-          # Ten concurrent type-aware ESLint processes exhaust runner memory.
-          TURBO_CONCURRENCY: "3"
+          # Ten concurrent type-aware ESLint processes exhaust the standard
+          # runner's memory; the larger pool keeps Turbo's default of ten.
+          TURBO_CONCURRENCY: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER && '10' || '3' }}
         run: bash dev/scripts/ci-gates.sh lint-eslint
 
       - name: Test harness invariants
@@ -220,8 +221,8 @@ jobs:
       - name: Unit tests
         env:
           # Timing-sensitive suites exceed their budgets when ten packages
-          # share a four-core runner.
-          TURBO_CONCURRENCY: "2"
+          # share the four-core standard runner; the larger pool keeps ten.
+          TURBO_CONCURRENCY: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER && '10' || '2' }}
         run: bash dev/scripts/ci-gates.sh unit
 
   db-migration-integration:
