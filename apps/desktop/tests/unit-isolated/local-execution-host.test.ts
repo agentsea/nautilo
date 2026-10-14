@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { LocalExecutionHost, type LocalExecutionStart } from "../../electron/local-execution-host";
 import { spawnLocalExecutionProcess, type LocalExecutionProcess, type LocalProcessExit, type PreparedLocalExecution } from "../../electron/local-execution-process";
 
@@ -583,16 +584,34 @@ describe("owned pipe process adapter", () => {
   });
 
   test("cancellation reaches the detached pipe group and waits for close", async () => {
-    const ready = deferred<void>();
+    const ready = deferred<number>();
+    let output = "";
     const process = spawnLocalExecutionProcess({
-      program: "/bin/sh", args: ["-c", "printf 'ready\\n'; sleep 30 & wait"],
+      // Announce the child only after it exists; printing before fork does not
+      // establish which descendants this cancellation test actually exercised.
+      program: "/bin/sh", args: ["-c", "sleep 30 & printf '%s\\n' \"$!\"; wait"],
       cwd: "/tmp", env: {}, dispose() {},
-    }, false, () => ready.resolve());
-    await ready.promise;
+    }, false, (_stream, bytes) => {
+      output += bytes.toString();
+      if (output.includes("\n")) ready.resolve(Number(output.trim()));
+    });
+    const childPid = await ready.promise;
+    expect(Number.isSafeInteger(childPid) && childPid > 0).toBe(true);
     process.terminate();
     const result = await process.exited;
     expect(result.signal).toBe("SIGKILL");
-    expect(result.failureCode).toBeUndefined();
+    // macOS can retain a killed group through drained close. The adapter must
+    // keep that uncertainty, not suppress EPERM to satisfy a timing assumption.
+    expect([undefined, "LOCAL_EXECUTION_GROUP_CLEANUP_FAILED"]).toContain(result.failureCode);
+    // Independently prove the descendant stopped, even if cleanup could not be
+    // confirmed at close. A zombie cannot execute; sleeping/running children fail.
+    const childState = spawnSync("/bin/ps", ["-p", String(childPid), "-o", "stat="], { encoding: "utf8" });
+    expect(childState.error).toBeUndefined();
+    if (childState.status === 1) expect(childState.stdout.trim()).toBe("");
+    else {
+      expect(childState.status).toBe(0);
+      expect(childState.stdout.trim()).toMatch(/^Z\S*$/);
+    }
   });
 
   test("locally prepared credentials reach the child without being printed", async () => {
