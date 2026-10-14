@@ -2,7 +2,7 @@
  * M071 Phase 2B — compose project name and derived container names match
  * `resolveInstance()` without invoking Docker.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +36,10 @@ import {
   parseContainerNameConflict,
   waitForPgEntrypointComplete,
 } from "../../src/commands/infra-start";
+
+// Clone propagation runs many private-filesystem calls, each through the
+// PowerShell ACL helper on Windows; concurrent package runs exceed 15 s there.
+if (process.platform === "win32") setDefaultTimeout(60_000);
 
 describe("compose propagation (M071 2B)", () => {
   let userHomeDir: string;

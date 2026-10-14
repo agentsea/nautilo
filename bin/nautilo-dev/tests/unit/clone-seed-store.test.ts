@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -18,6 +18,10 @@ import {
   type DevFullBackupManifestV2,
   type VerifiedFullBackup,
 } from "../../src/lib/full-dev-backup";
+
+// Seed publication runs many private-filesystem calls, each through the
+// PowerShell ACL helper on Windows; concurrent package runs exceed 15 s there.
+if (process.platform === "win32") setDefaultTimeout(60_000);
 
 const roots: string[] = [];
 const SHA = "a".repeat(64);

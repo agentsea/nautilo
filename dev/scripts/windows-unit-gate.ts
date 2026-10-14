@@ -48,20 +48,28 @@ const sourceTests = [
   "packaging/openconnector/provenance.test.ts",
 ] as const;
 
+// Private-filesystem calls start a PowerShell ACL helper on Windows, so the
+// package scripts' 5-15 s defaults are too tight on hosted runners. Bun resets
+// a preload's setDefaultTimeout for every file and ignores a bunfig timeout;
+// an appended --timeout overrides the script's own, and the shell runners read
+// BUN_TEST_TIMEOUT_MS.
+const WINDOWS_TEST_TIMEOUT_MS = "60000";
+
 function run(args: string[]): void {
   console.log(`[windows-unit] bun ${args.join(" ")}`);
   const result = spawnSync(process.execPath, args, {
     cwd: repositoryRoot,
     stdio: "inherit",
+    env: { ...process.env, BUN_TEST_TIMEOUT_MS: WINDOWS_TEST_TIMEOUT_MS },
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
 for (const [workspace, script] of packageChecks) {
-  run(["run", "--cwd", workspace, script]);
+  run(["run", "--cwd", workspace, script, "--timeout", WINDOWS_TEST_TIMEOUT_MS]);
 }
 // DOM/mock suites use separate processes, matching their package boundaries.
 for (const path of sourceTests) {
-  run(["test", "--timeout", "60000", path]);
+  run(["test", "--timeout", WINDOWS_TEST_TIMEOUT_MS, path]);
 }
