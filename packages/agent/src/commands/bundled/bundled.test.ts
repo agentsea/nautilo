@@ -135,4 +135,12 @@ Body text.
     expect(frontmatter.version).toBe("2");
     expect(body).toBe("# Heading\n\nBody text.\n");
   });
+
+  test("parses CRLF checkouts like LF files", () => {
+    const { frontmatter, body } = parseFrontmatter(
+      "---\r\nname: test-command\r\ndescription: A test command\r\nsource: official\r\nversion: 2\r\n---\r\n\r\n# Heading\r\n",
+    );
+    expect(frontmatter.name).toBe("test-command");
+    expect(body).toBe("# Heading\n");
+  });
 });

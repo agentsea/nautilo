@@ -391,6 +391,14 @@ describe("OFFICIAL_SKILLS registry", () => {
 });
 
 describe("parseFrontmatter", () => {
+  test("parses CRLF checkouts like LF files", () => {
+    const { frontmatter, body } = parseFrontmatter(
+      "---\r\nname: crlf-skill\r\ndescription: CRLF skill\r\nrequiresTools: []\r\nsource: official\r\nversion: 1\r\n---\r\n\r\n# Heading\r\n",
+    );
+    expect(frontmatter.name).toBe("crlf-skill");
+    expect(body).toBe("# Heading\n");
+  });
+
   test("throws on malformed frontmatter block", () => {
     expect(() => parseFrontmatter("no frontmatter here")).toThrow(
       "must start with a frontmatter block",
