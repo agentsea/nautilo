@@ -1,8 +1,9 @@
 import { describe, test, expect } from "bun:test";
 import { homedir, tmpdir } from "node:os";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { join, normalize } from "node:path";
-import { checkPathAccess, _buildResolvedDenyForTests } from "../../src/path-deny";
+import { checkPathAccess, _buildResolvedDenyForTests, _resolveWithRealpathForTests } from "../../src/path-deny";
 
 describe("checkPathAccess", () => {
   test("allows normal files at standard level", () => {
@@ -163,4 +164,38 @@ describe("checkPathAccess", () => {
     expect(checkPathAccess(native.replaceAll("\\", "/"), "standard").allowed).toBe(false);
     expect(checkPathAccess("~\\.ssh\\nested\\key", "standard").allowed).toBe(false);
   });
+
+  test("Windows deny list covers DPAPI keys, stored credentials, and browser profiles", () => {
+    const home = homedir();
+    const win32Deny = _buildResolvedDenyForTests("win32");
+    for (const entry of ["AppData/Roaming/Microsoft/Protect", "AppData/Roaming/Microsoft/Credentials", "AppData/Local/Google/Chrome/User Data"]) {
+      expect(win32Deny.some((p) => p.includes(join(home, entry)))).toBe(true);
+    }
+    expect(_buildResolvedDenyForTests("linux").some((p) => p.includes(join(home, "AppData")))).toBe(false);
+  });
+
+  test.skipIf(process.platform !== "win32")("Windows 8.3 short names resolve to the protected long path", () => {
+    const shortPath = (path: string): string => {
+      const result = spawnSync("C:\\Program Files\\PowerShell\\7\\pwsh.exe", [
+        "-NoProfile", "-NonInteractive", "-Command",
+        "(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:NAUTILO_SHORT_PATH_TARGET).ShortPath",
+      ], { encoding: "utf8", env: { ...process.env, NAUTILO_SHORT_PATH_TARGET: path } });
+      return result.stdout.trim();
+    };
+    const root = mkdtempSync(join(tmpdir(), "path-deny-long-directory-name-"));
+    try {
+      const alias = shortPath(root);
+      // A volume with 8.3 name generation disabled has no alias to resolve.
+      if (alias !== "" && alias.toLowerCase() !== root.toLowerCase()) {
+        expect(_resolveWithRealpathForTests(join(alias, "missing.txt"))).toBe(join(realpathSync.native(root), "missing.txt"));
+      }
+      // Hosted runners keep their home behind an alias such as RUNNER~1.
+      const homeAlias = shortPath(homedir());
+      if (homeAlias !== "" && homeAlias.toLowerCase() !== homedir().toLowerCase()) {
+        expect(checkPathAccess(join(homeAlias, ".ssh", "id_rsa"), "standard").allowed).toBe(false);
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

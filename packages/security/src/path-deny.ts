@@ -63,12 +63,36 @@ const DARWIN_HOME_RELATIVE_DENY: readonly string[] = [
   "Library/Safari",
 ];
 
+/**
+ * Windows secret stores. The POSIX absolute entries resolve to harmless
+ * drive-relative paths there, so the registry hives get an explicit entry.
+ */
+const WIN32_ABSOLUTE_DENY: readonly string[] = [
+  `${process.env["SystemRoot"] ?? "C:\\Windows"}\\System32\\config`,
+];
+
+const WIN32_HOME_RELATIVE_DENY: readonly string[] = [
+  "AppData/Roaming/Microsoft/Protect",
+  "AppData/Roaming/Microsoft/Credentials",
+  "AppData/Local/Microsoft/Credentials",
+  "AppData/Roaming/Microsoft/Crypto",
+  "AppData/Roaming/gcloud",
+  "AppData/Local/Google/Chrome/User Data",
+  "AppData/Local/Microsoft/Edge/User Data",
+  "AppData/Local/BraveSoftware",
+  "AppData/Local/Chromium/User Data",
+  "AppData/Roaming/Mozilla/Firefox",
+];
+
 function resolveWithRealpath(p: string): string {
   let current = resolve(p);
   const tail: string[] = [];
   for (;;) {
     try {
-      return resolve(realpathSync(current), ...tail);
+      // The native resolver expands Windows 8.3 short names such as
+      // `DOCKER~1`; the JavaScript resolver keeps them, which would let an
+      // alias bypass a protected directory.
+      return resolve(realpathSync.native(current), ...tail);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
@@ -88,9 +112,12 @@ function resolveDenyPath(p: string): string {
 function buildResolvedDeny(platform: NodeJS.Platform): string[] {
   const homeEntries = platform === "darwin"
     ? [...HOME_RELATIVE_DENY, ...DARWIN_HOME_RELATIVE_DENY]
-    : HOME_RELATIVE_DENY;
+    : platform === "win32"
+      ? [...HOME_RELATIVE_DENY, ...WIN32_HOME_RELATIVE_DENY]
+      : HOME_RELATIVE_DENY;
+  const absoluteEntries = platform === "win32" ? [...ABSOLUTE_DENY, ...WIN32_ABSOLUTE_DENY] : ABSOLUTE_DENY;
   return [
-    ...ABSOLUTE_DENY.map(resolveDenyPath),
+    ...absoluteEntries.map(resolveDenyPath),
     ...homeEntries.map((rel) => resolveDenyPath(resolve(HOME, rel))),
   ];
 }
@@ -106,6 +133,11 @@ function containsPath(parent: string, child: string): boolean {
 // without having to mock `process.platform` globally.
 export function _buildResolvedDenyForTests(platform: NodeJS.Platform): string[] {
   return buildResolvedDeny(platform);
+}
+
+// Exported for unit tests only — verifies alias resolution directly.
+export function _resolveWithRealpathForTests(path: string): string {
+  return resolveWithRealpath(path);
 }
 
 export type PathCheckResult = {
