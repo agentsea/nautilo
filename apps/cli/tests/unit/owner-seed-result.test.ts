@@ -15,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import { allowOtherReaders, allowOtherWriters } from "@nautilo/config/private-filesystem-fixtures";
 
@@ -171,7 +171,19 @@ describe("owner seed result destination preflight", () => {
   test("permits another reader of the parent without exposing recovery codes", async () => {
     await allowOtherReaders(outputDirectory);
     expect(await preflightOwnerSeedResultDestination({ path: outputPath })).toEqual({ kind: "available", path: outputPath });
-    await publishOwnerSeedResult({ path: outputPath, result });
+    // A handle opened while the temporary still had the parent's inherited
+    // ACL would keep its access, so the file must be private when first opened.
+    const temporary = join(outputDirectory, `.${basename(outputPath)}.tmp-privatecheck`);
+    let privateWhenOpened: boolean | undefined;
+    await publishOwnerSeedResult({
+      path: outputPath,
+      result,
+      temporarySuffix: () => "privatecheck",
+      filesystem: nativeFilesystem(async (event) => {
+        if (event === "open-temporary") privateWhenOpened = await isPrivateFilesystemPathAsync(temporary);
+      }),
+    });
+    expect(privateWhenOpened).toBe(true);
     expect(await isPrivateFilesystemPathAsync(outputPath)).toBe(true);
   });
 

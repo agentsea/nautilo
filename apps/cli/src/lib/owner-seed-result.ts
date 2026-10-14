@@ -17,7 +17,7 @@ import {
 } from "node:path";
 
 import { HANDLE_RE } from "@nautilo/types";
-import { isOwnerControlledFilesystemPath, isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { isOwnerControlledFilesystemPath, isPrivateFilesystemPathAsync, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 export const OWNER_SEED_RESULT_SCHEMA = "nautilo.owner-seed-result.v1" as const;
 
@@ -366,8 +366,10 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
   }
   const temporary = join(destination.parent, `.${basename(destination.path)}.tmp-${suffix}`);
   const body = `${JSON.stringify(result, null, 2)}\n`;
-  const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-    | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
+  // Windows creates the temporary below before opening it; see the try block.
+  const flags = process.platform === "win32"
+    ? constants.O_WRONLY
+    : constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW;
   let temporaryCreated = false;
   let temporaryIdentity: BigIntStats | undefined;
   let handle: OwnerSeedResultFileHandle | undefined;
@@ -378,10 +380,21 @@ export async function publishOwnerSeedResult(input: OwnerSeedResultDestinationIn
     }
   };
   try {
+    if (process.platform === "win32") {
+      // Windows checks access when a handle is opened, so a handle opened
+      // before a later ACL change would keep reading the recovery codes. The
+      // temporary is created with its owner-only ACL already in place.
+      await writePrivateFileExclusive(temporary, new Uint8Array());
+      temporaryCreated = true;
+      temporaryIdentity = await destination.filesystem.lstat(temporary);
+    }
     handle = await destination.filesystem.open(temporary, flags, OWNER_FILE_MODE);
     temporaryCreated = true;
-    temporaryIdentity = await handle.stat({ bigint: true });
-    if (process.platform === "win32") await secureFilesystemPath(temporary);
+    const opened = await handle.stat({ bigint: true });
+    if (temporaryIdentity !== undefined && (opened.dev !== temporaryIdentity.dev || opened.ino !== temporaryIdentity.ino)) {
+      throw new Error("Temporary result was replaced");
+    }
+    temporaryIdentity = opened;
     await assertTemporaryIdentity();
     await handle.writeFile(body, "utf8");
     await handle.chmod(OWNER_FILE_MODE);

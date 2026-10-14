@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { lstat, open, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, parse, resolve } from "node:path";
-import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { isPrivateFilesystemPathAsync, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 export class ProtectedHandoffError extends Error {
   constructor() {
@@ -92,19 +92,24 @@ export async function reserveProtectedHandoff(
   };
   try {
     await assertNoSymlinkParents(path);
-    handle = await open(
-      path,
-      constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW),
-      0o600,
-    );
-    active = true;
+    if (process.platform === "win32") {
+      // Windows checks access when a handle is opened, so a handle opened
+      // before a later ACL change would keep reading. The empty reservation is
+      // created with its owner-only ACL already in place, then opened.
+      await writePrivateFileExclusive(path, new Uint8Array());
+      active = true;
+      identity = await lstat(path, { bigint: true });
+      handle = await open(path, constants.O_WRONLY);
+    } else {
+      handle = await open(path, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      active = true;
+    }
     const file = handle;
     const reserved = await file.stat({ bigint: true });
-    if (!reserved.isFile()) throw new ProtectedHandoffError();
+    if (!reserved.isFile() || (identity !== undefined && (reserved.dev !== identity.dev || reserved.ino !== identity.ino))) {
+      throw new ProtectedHandoffError();
+    }
     identity = reserved;
-    // The reservation is still empty; restrict its ACL before a caller can
-    // perform the remote operation which creates the secret.
-    if (process.platform === "win32") await secureFilesystemPath(path);
     await assertPrivateFile(path, reserved);
     let writing = false;
     return {
