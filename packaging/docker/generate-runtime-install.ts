@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -278,7 +279,9 @@ function assertTreesEqual(expectedRoot: string, actualRoot: string): void {
 }
 
 export function generateRuntimeInstall(options: { check?: boolean } = {}): ProjectionSummary {
-  const tempRoot = mkdtempSync(join(tmpdir(), "nautilo-runtime-install-"));
+  // Windows temp paths can be 8.3 short names (RUNNER~1); Bun records a
+  // different lockfile for them, so the generation runs on the long form.
+  const tempRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "nautilo-runtime-install-")));
   const generatedRoot = join(tempRoot, basename(RUNTIME_INSTALL_DIR));
   try {
     const summary = writeProjectionTree(generatedRoot);

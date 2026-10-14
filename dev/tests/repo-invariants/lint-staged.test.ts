@@ -18,7 +18,7 @@ let fixtureRoot = "";
 
 describe("lint-staged dispatcher", () => {
   test.each([false, true])("groups paths without splitting spaces through a directory alias: %s", (viaAlias) => {
-    const temporaryRoot = realpathSync(mkdtempSync(join(tmpdir(), "nautilo lint staged ")));
+    const temporaryRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "nautilo lint staged ")));
     fixtureRoot = temporaryRoot;
     try {
       if (viaAlias) {
@@ -62,7 +62,7 @@ describe("lint-staged dispatcher", () => {
       );
 
       expect(result.status, result.stderr).toBe(0);
-      const canonicalRoot = realpathSync(fixtureRoot);
+      const canonicalRoot = realpathSync.native(fixtureRoot);
       expect(readFileSync(log, "utf8").trim().split("\n")).toEqual([
         `[${canonicalRoot}]<eslint><--fix><--><root fixture.ts>`,
         `[${join(canonicalRoot, "packages/example")}]<eslint><--fix><--><src/file with spaces.test.ts><src/second file.test.ts>`,
@@ -74,7 +74,7 @@ describe("lint-staged dispatcher", () => {
   });
 
   test("rejects a path outside the repository before launching a linter", () => {
-    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "nautilo lint staged ")));
+    fixtureRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "nautilo lint staged ")));
     try {
       const bin = join(fixtureRoot, "bin");
       const log = join(fixtureRoot, "invocations.log");
@@ -105,7 +105,7 @@ describe("lint-staged dispatcher", () => {
 
 describe("pre-push gate runner", () => {
   test("executes the requested gates with their comparison refs and unit concurrency", () => {
-    fixtureRoot = realpathSync(mkdtempSync(join(tmpdir(), "nautilo push gates ")));
+    fixtureRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "nautilo push gates ")));
     try {
       const log = join(fixtureRoot, "gates.log");
       write("dev/scripts/ci-gates.sh", `#!/usr/bin/env bash
