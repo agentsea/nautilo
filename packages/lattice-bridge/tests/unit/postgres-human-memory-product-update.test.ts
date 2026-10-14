@@ -618,6 +618,13 @@ describe("Postgres Human Memory product update", () => {
     });
     expect(projection).toMatchObject({ memoryId: MEMORY_ID, contentRevision: 2,
       cryptoAccessRevision: 0 });
+    const productUpdate = connection.calls.find((call) =>
+      normalizedSql(call.statement).includes("UPDATE MEMORIES SET")
+      && normalizedSql(call.statement).includes("EMBEDDING =")
+    );
+    expect(productUpdate?.statement).toContain(
+      '"model_exposure_dependencies"',
+    );
     expect(connection.allocation).toBeNull();
     const replay = await product.lookupOrdinaryFallback({
       authority: mutationOnlyAuthority,

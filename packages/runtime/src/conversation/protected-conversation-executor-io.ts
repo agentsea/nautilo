@@ -14,7 +14,11 @@ import {
   type MessagePayloadV2,
   type ProtectedAgentRuntimeForegroundEntrypointId,
 } from "@nautilo/lattice-bridge";
-import { computeMessageFingerprint } from "@nautilo/agent";
+import {
+  computeMessageFingerprint,
+  encodeModelInputExposureForMetadata,
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+} from "@nautilo/agent";
 
 import type {
   ActiveConversationRepository,
@@ -265,6 +269,21 @@ export function protectedAgentMessagePayload(
   } else {
     throw new TypeError("Unsupported protected Agent message type");
   }
+  const {
+    [MODEL_INPUT_EXPOSURE_METADATA_KEY]: _untrustedExposure,
+    ...sensitiveMetadata
+  } = payload.sensitiveMetadata ?? {};
+  const trustedExposure = encodeModelInputExposureForMetadata(message);
+  const nextSensitiveMetadata = trustedExposure === undefined
+    ? sensitiveMetadata
+    : {
+        ...sensitiveMetadata,
+        [MODEL_INPUT_EXPOSURE_METADATA_KEY]: trustedExposure,
+      };
+  const { sensitiveMetadata: _discardedSensitiveMetadata, ...payloadWithoutSensitiveMetadata } = payload;
+  payload = Object.keys(nextSensitiveMetadata).length === 0
+    ? payloadWithoutSensitiveMetadata
+    : { ...payloadWithoutSensitiveMetadata, sensitiveMetadata: nextSensitiveMetadata };
   if (foregroundExecutionId) {
     payload = {
       ...payload,

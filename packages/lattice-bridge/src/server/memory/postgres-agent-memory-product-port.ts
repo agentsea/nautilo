@@ -44,7 +44,10 @@ import {
   type AtomicMemoryCryptoCompletionPort,
 } from "../../memory/memory-repository.ts";
 import { resolveRequiredMemoryNamespaceIds } from "../../memory/required-namespace-set.ts";
-import type { MemoryPayloadV1 } from "../../memory/memory-payload-v1.ts";
+import {
+  memoryPayloadExposureToDurable,
+  type MemoryPayloadV1,
+} from "../../memory/memory-payload-v1.ts";
 import type { PreparedMemoryCryptoRevision } from "../../memory/memory-repository.ts";
 import {
   assertConversationProductCanonicalTransactionRunner,
@@ -1984,6 +1987,9 @@ export class PostgresAgentMemoryProductPort
     const ordinary = this.#publication.representation === "ordinary_and_protected"
       ? this.#publication.readPreparedPayload(input.prepared)
       : null;
+    const ordinaryExposure = ordinary === null
+      ? null
+      : memoryPayloadExposureToDurable(ordinary) ?? null;
     return this.#transaction(input.authority, async (transaction) => {
       if (!await this.#scopeOpenForMutation(transaction, input.authority)) {
         return "stale" as const;
@@ -2049,6 +2055,7 @@ export class PostgresAgentMemoryProductPort
             tier: 1,
             type: ordinary?.type ?? null,
             content: ordinary?.content ?? null,
+            modelExposureDependencies: ordinaryExposure,
             importance: input.plan.importance,
             embedding: [...input.embedding.vector],
             contentRevision: input.plan.contentRevision,
@@ -2110,6 +2117,7 @@ export class PostgresAgentMemoryProductPort
           conversationProductTypedDb.update(memories).set({
             type: ordinary?.type ?? null,
             content: ordinary?.content ?? null,
+            modelExposureDependencies: ordinaryExposure,
             importance: input.plan.importance,
             embedding: [...input.embedding.vector],
             contentRevision: input.plan.contentRevision,

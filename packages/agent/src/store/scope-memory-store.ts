@@ -20,6 +20,7 @@ import {
 } from "@nautilo/db";
 import { embedTextWithProvenance, type EmbeddingWithProvenanceV1 } from "./embeddings";
 import { fromRuntimeConfig } from "@nautilo/config";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { log } from "@nautilo/logger";
 import { withAgentTrustContext, withSerializableAgentTrustContext } from "./trust-agent-db";
 import type {
@@ -238,7 +239,12 @@ export async function saveScopeMemoryWithDb(handle: typeof db, opts: {
   type: string;
   content: string;
   importance?: number;
-}, prepared?: { embedding: EmbeddingWithProvenanceV1; id?: string; expectedDedupId?: string | null }): Promise<{ id: string; action: "created" | "updated"; similarity?: number }> {
+}, prepared?: {
+  embedding: EmbeddingWithProvenanceV1;
+  id?: string;
+  expectedDedupId?: string | null;
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
+}): Promise<{ id: string; action: "created" | "updated"; similarity?: number }> {
   const { scopeId, type, content } = opts;
   const importance = opts.importance ?? DEFAULT_IMPORTANCE[type] ?? 0.6;
   const embedding = prepared?.embedding ?? await embedTextWithProvenance(content);
@@ -248,6 +254,8 @@ export async function saveScopeMemoryWithDb(handle: typeof db, opts: {
     log(`[scope-memory-store] Dedup: updating scope memory ${top.id} (similarity: ${top.score.toFixed(3)})`);
     await handle.update(memories).set({
       content, type, importance,
+      modelExposureDependencies:
+        prepared?.modelExposureDependencies ?? null,
       ...memoryEmbeddingValues(embedding, sql`${memories.contentRevision}`),
       updatedAt: new Date(),
     }).where(eq(memories.id, top.id));
@@ -259,7 +267,14 @@ export async function saveScopeMemoryWithDb(handle: typeof db, opts: {
   // M127: row-level Memory access is namespace-only. Scope isolation
   // comes from `memory_scopes` + RLS scope branch on `agent_scopes`.
   await handle.insert(memories).values({
-    id, tier: 1, type, content, importance, ...memoryEmbeddingValues(embedding, 0),
+    id,
+    tier: 1,
+    type,
+    content,
+    importance,
+    modelExposureDependencies:
+      prepared?.modelExposureDependencies ?? null,
+    ...memoryEmbeddingValues(embedding, 0),
   });
 
   await handle.insert(memoryScopes).values({
@@ -341,7 +356,8 @@ export async function replaceScopeMemoryWithDb(handle: typeof db, opts: {
   scopeId: string;
   memoryId: string;
   content: string;
-}, preparedEmbedding?: EmbeddingWithProvenanceV1): Promise<void> {
+}, preparedEmbedding?: EmbeddingWithProvenanceV1,
+modelExposureDependencies?: readonly DurableModelExposureDependency[]): Promise<void> {
 
   await requireScopeOriginRow(handle, opts.agentId, opts.scopeId, opts.memoryId);
   const existing = await handle
@@ -359,6 +375,7 @@ export async function replaceScopeMemoryWithDb(handle: typeof db, opts: {
   const embedding = preparedEmbedding ?? await embedTextWithProvenance(opts.content);
   await handle.update(memories).set({
     content: opts.content,
+    modelExposureDependencies: modelExposureDependencies ?? null,
     ...memoryEmbeddingValues(embedding, sql`${memories.contentRevision}`),
     updatedAt: new Date(),
   }).where(eq(memories.id, opts.memoryId));
@@ -634,6 +651,8 @@ export async function getScopeMemoryById(opts: {
           updatedAt: memories.updatedAt,
           demotedAt: memories.demotedAt,
           demotedFrom: memories.demotedFrom,
+          contentRevision: memories.contentRevision,
+          modelExposureDependencies: memories.modelExposureDependencies,
         })
         .from(memories)
         .where(eq(memories.id, opts.memoryId))
@@ -651,6 +670,8 @@ export async function getScopeMemoryById(opts: {
         updatedAt: row.updatedAt,
         demotedAt: row.demotedAt,
         demotedFrom: row.demotedFrom,
+        contentRevision: row.contentRevision,
+        modelExposureDependencies: row.modelExposureDependencies,
         namespaceIds: [],
       };
     },
@@ -698,8 +719,9 @@ export async function updateScopeMemory(opts: {
           if (opts.content !== undefined && contentChanged) {
             const nextContent = opts.content;
             const embedding = await embedTextWithProvenance(nextContent);
-                      await handle.update(memories).set({
+            await handle.update(memories).set({
               content: nextContent, importance: nextImportance,
+              modelExposureDependencies: null,
               ...memoryEmbeddingValues(embedding, sql`${memories.contentRevision}`),
               updatedAt: new Date(),
             }).where(eq(memories.id, opts.memoryId));

@@ -455,6 +455,14 @@ function agentTranscriptMessages(
     messages.push(Object.freeze({
       messageId,
       revision: outcome.revision,
+      roomId: dto.projection.roomId,
+      namespaceId: dto.projection.namespaceId,
+      ...(dto.projection.sourceUserId === undefined
+        ? {}
+        : { sourceUserId: dto.projection.sourceUserId }),
+      ...(dto.projection.authorAgentId === undefined
+        ? {}
+        : { authorAgentId: dto.projection.authorAgentId }),
       createdAt: new Date(dto.projection.createdAt),
       author: Object.freeze({ ...record.author }),
       payload,

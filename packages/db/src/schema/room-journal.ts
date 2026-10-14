@@ -1,10 +1,13 @@
+import type { MemoryOperationBinding } from "@nautilo/types";
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
   customType,
   foreignKey,
   index,
   integer,
+  jsonb,
   pgPolicy,
   pgRole,
   pgTable,
@@ -41,6 +44,24 @@ const bytea = customType<{
 
 const nautiloProductRole = pgRole("nautilo").existing();
 
+export type StenographerCompactionAcceptedPlan =
+  | Readonly<{
+      version: 1;
+      owner: "ordinary";
+      operationId: string;
+      rebuildGeneration: number;
+      previousRollupId: string | null;
+      selectedEventIds: readonly string[];
+      protectedTailEventIds: readonly string[];
+    }>
+  | Readonly<{
+      version: 1;
+      owner: "protected";
+      operationId: string;
+      rebuildGeneration: number;
+      previousRollupId: string | null;
+    }>;
+
 function productPolicy(tableName: string) {
   return pgPolicy(`${tableName}_product_all`, {
     as: "permissive",
@@ -75,6 +96,8 @@ export const roomJournalState = pgTable(
     lastProcessedAt: timestamp("last_processed_at", { withTimezone: true }),
     leaseToken: uuid("lease_token"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    compactionAcceptedModelBinding: jsonb("compaction_accepted_model_binding").$type<MemoryOperationBinding>(),
+    compactionAcceptedPlan: jsonb("compaction_accepted_plan").$type<StenographerCompactionAcceptedPlan>(),
     compactionLeaseToken: uuid("compaction_lease_token"),
     compactionLeaseExpiresAt: timestamp("compaction_lease_expires_at", {
       withTimezone: true,
@@ -94,6 +117,9 @@ export const roomJournalState = pgTable(
     }),
     compactionDueAt: timestamp("compaction_due_at", { withTimezone: true }),
     compactionFailureCount: integer("compaction_failure_count").notNull().default(0),
+    compactionLastAttemptKnownNonusable: boolean(
+      "compaction_last_attempt_known_nonusable",
+    ).notNull().default(false),
     compactionRetryAfter: timestamp("compaction_retry_after", { withTimezone: true }),
     lastCompactionErrorCode: text("last_compaction_error_code"),
     lastCompactionErrorAt: timestamp("last_compaction_error_at", { withTimezone: true }),
@@ -161,6 +187,11 @@ export const roomJournalState = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    check(
+      "room_journal_state_compaction_acceptance_coherent",
+      sql`(${table.compactionAcceptedModelBinding} IS NULL)
+        = (${table.compactionAcceptedPlan} IS NULL)`,
+    ),
     index("idx_room_journal_state_extraction_retry").on(table.extractionRetryAfter),
     index("idx_room_journal_state_compaction_due").on(table.compactionDueAt),
     index("idx_room_journal_state_historical_backfill").on(
@@ -190,6 +221,17 @@ export const roomJournalState = pgTable(
     check(
       "room_journal_state_compaction_failures_nonnegative",
       sql`${table.compactionFailureCount} >= 0`,
+    ),
+    check(
+      "room_journal_state_compaction_known_nonusable",
+      sql`NOT ${table.compactionLastAttemptKnownNonusable} OR (
+        ${table.compactionLeaseToken} IS NULL
+        AND ${table.compactionLeaseExpiresAt} IS NULL
+        AND ${table.lastCompactionErrorCode} IS NOT NULL
+        AND ${table.lastCompactionErrorCode} = 'invalid_output'
+        AND ${table.compactionAcceptedModelBinding} IS NOT NULL
+        AND ${table.compactionAcceptedPlan} IS NOT NULL
+      )`,
     ),
     check(
       "room_journal_state_extraction_lease_pair",
@@ -289,6 +331,7 @@ export const roomJournalBatches = pgTable(
     }).notNull(),
     attemptCount: integer("attempt_count").notNull().default(0),
     operationCount: integer("operation_count"),
+    acceptedModelBinding: jsonb("accepted_model_binding").$type<MemoryOperationBinding>(),
     modelId: text("model_id"),
     errorCode: text("error_code"),
     lastErrorAt: timestamp("last_error_at", { withTimezone: true }),
@@ -557,6 +600,11 @@ export const roomEventRollups = pgTable(
     throughEventSequence: integer("through_event_sequence").notNull(),
     // A current protected representation may exist without an ordinary sibling.
     content: text("content"),
+    /** Ordinary sibling lineage; protected-only lineage stays in encrypted rollup bytes. */
+    modelExposureDependencies: jsonb("model_exposure_dependencies").$type<readonly (
+      | { readonly kind: "record"; readonly recordRef: string; readonly observedProcessingGeneration: number; readonly terminalAuthorityLeafHandles: readonly string[] }
+      | { readonly kind: "source"; readonly sourceKind: string; readonly logicalSourceRef: string; readonly observedRevision?: string; readonly observedContentFingerprint?: string; readonly terminalAuthorityLeafHandle: string }
+    )[]>(),
     sourceEventCount: integer("source_event_count").notNull(),
     modelId: text("model_id").notNull(),
     compactorVersion: text("compactor_version").notNull(),
@@ -574,6 +622,7 @@ export const roomEventRollups = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
+    check("room_event_rollups_exposure_representation", sql`${table.content} IS NOT NULL OR ${table.modelExposureDependencies} IS NULL`),
     uniqueIndex("uq_room_event_rollups_cursor").on(
       table.roomId,
       table.throughEventSequence,

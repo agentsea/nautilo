@@ -64,6 +64,10 @@ import {
   filterPersonalTaskControlTools,
   PERSONAL_TASK_CONTROL_TOOL_NAMES,
 } from "../runtime/personal-task-controls";
+import {
+  bindModelInputExposure,
+  unionModelInputExposures,
+} from "../memory/model-input-exposure";
 
 function signedCatalogEntrySupportsForegroundText(
   entry: ReturnType<typeof getActiveModelCatalogSync>["catalog"]["entries"][number],
@@ -428,6 +432,10 @@ export async function agentNode(
   );
 
   const response = normalizeModelToolCallIdentity(providerResponse, actualPreparedMessages);
+  bindModelInputExposure(
+    response,
+    unionModelInputExposures(actualPreparedMessages),
+  );
   if (config.nautilo_log_tool_calls) {
     logProgressiveToolExposure(
       "agent",

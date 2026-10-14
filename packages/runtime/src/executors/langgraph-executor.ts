@@ -56,6 +56,11 @@ import {
   parseTaskReportBackContinuation,
   classifyModelStreamProgress,
   modelAttemptIdFromStreamEvent,
+  bindModelInputExposure,
+  readModelInputExposure,
+  readCurrentOrdinaryTranscriptExposureRows,
+  iterateWithAuthoredModelInputExposure,
+  type ModelInputExposure,
 } from "@nautilo/agent";
 
 // Re-export so existing importers (notably the runtime's own unit
@@ -67,11 +72,17 @@ import { classifyTurnKind, type TurnKind } from "./turn-kind";
 import { resolveForegroundHistoryMessages } from "../context/foreground-history";
 export { resolveForegroundHistoryMessages } from "../context/foreground-history";
 import {
+  currentOrdinaryHumanModelExposure,
+  projectNeutralCurrentHumanMessageExposure,
+} from
+  "../context/ordinary-source-model-exposure";
+import {
   buildProtectedRoomHybridContext,
 } from "../context/build-transcript-context";
 import type { MemoryAccessEnvelope, RoomParticipant } from "@nautilo/trust";
 import {
   envelopeReadableNamespaces,
+  getRoomWithAccess,
   getPolicyResolver,
   isScopeMemoryEnvelope,
 } from "@nautilo/trust";
@@ -134,8 +145,14 @@ import type { LiveShadowAgentRuntimeTurn } from
 import type {
   LiveShadowAgentTurnSession,
 } from "@nautilo/lattice-bridge/server";
-import { loadForegroundAuthoredContext } from
+import {
+  foregroundProfileSoulFingerprint,
+  foregroundMemoryBriefExposure,
+  loadForegroundAuthoredContext,
+} from
   "./foreground-authored-context";
+import { reflectionMessageSourceFingerprint } from
+  "../reflection/canonical-room-sources";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
 import { getCurrentExternalRoomExecution } from "../external-room-execution";
 import { formatExternalMessageForModel } from "../conductor/external-message-attribution";
@@ -755,22 +772,54 @@ export async function* langgraphExecutor(
     resolveGrant: postModelDeps.resolveComputerUseRootGrant,
   });
   const isGuest = actorRole === "guest";
+  const currentRoomAccess = memoryAccessEnvelope !== null
+    && !isScopeMemoryEnvelope(memoryAccessEnvelope)
+    && roomId.length > 0
+    && memoryAccessEnvelope.actorId.length > 0
+    ? await getRoomWithAccess(roomId, memoryAccessEnvelope.actorId)
+      .catch(() => null)
+    : null;
+  const currentNamespaceId = currentRoomAccess !== null
+    && memoryAccessEnvelope !== null
+    && !isScopeMemoryEnvelope(memoryAccessEnvelope)
+    && memoryAccessEnvelope.readableNamespaces.includes(
+      currentRoomAccess.namespaceId,
+    )
+    ? currentRoomAccess.namespaceId
+    : undefined;
   // Profile is 1:1 with Agent. `ownerId` in room turns is the
   // authorization / transcript owner and can differ from the speaking agent's
   // owner (e.g. a foreign-owned agent in a shared room). Agent identity
   // fields like soul/name/model must therefore resolve by `agentId`.
+  const profileSoulFingerprint = foregroundProfileSoulFingerprint();
   const authoredContext = await loadForegroundAuthoredContext({
     agentId,
     ownerId,
     isGuest,
     externalContext,
+    ...(currentNamespaceId === undefined
+      ? {}
+      : { namespaceId: currentNamespaceId }),
   }, {
     getExecutionConfigByAgentId: getAgentExecutionConfigById,
     resolveEnabledBodies,
+    ...(profileSoulFingerprint === undefined
+      ? {}
+      : { fingerprintProfileSoul: profileSoulFingerprint }),
   });
   const profile = authoredContext.profile;
   const soulFile = authoredContext.soulFile;
   const skills = authoredContext.skills;
+  const authoredModelInputExposure: ModelInputExposure = skills.length > 0
+    ? { status: "incomplete" }
+    : soulFile.length > 0
+      ? authoredContext.soulSourceReceipt === null
+        ? { status: "incomplete" }
+        : {
+            status: "complete",
+            dependencies: authoredContext.modelInputDependencies,
+          }
+      : { status: "complete", dependencies: [] };
   const displayNameFromAgent =
     !isGuest && agentId ? await getAgentDisplayNameById(agentId).catch(() => null) : null;
   const assistantName = displayNameFromAgent ?? profile?.name ?? "Nautilo";
@@ -811,9 +860,8 @@ export async function* langgraphExecutor(
       )
       : await selectMemoryBrief().catch(() => [])
     : [];
-  const memoryBrief = memoryBriefItems
-    .map((memory) => `- [${memory.type}] ${memory.content}`)
-    .join("\n");
+  const memoryBriefReceipt = foregroundMemoryBriefExposure(memoryBriefItems);
+  const memoryBrief = memoryBriefReceipt.content;
   // per-turn model override (decision A: per-thread). Explicit
   // Room/Agent state is never silently replaced if it becomes unavailable.
   const perTurnModelRaw = typeof input["model"] === "string" ? input["model"].trim() : "";
@@ -977,6 +1025,49 @@ export async function* langgraphExecutor(
     userText: message, attachmentTextBlocks, multimodalImages, modelId,
     suppressImageDropNote: true, replyToMessageId,
   });
+  const canonicalCurrentHumanBody = typeof userMessageForTranscript.content === "string"
+    ? userMessageForTranscript.content
+    : null;
+  const plainCurrentHumanInput = currentNamespaceId !== undefined
+    && causalHumanUserId !== null
+    && externalTurn === null
+    && attachmentTextBlocks.length === 0
+    && multimodalImages.length === 0;
+  const exactCanonicalCurrentHumanInput = plainCurrentHumanInput
+    && canonicalCurrentHumanBody !== null;
+  let currentHumanExposure: ModelInputExposure = { status: "incomplete" };
+  if (exactCanonicalCurrentHumanInput && protectedTurn !== undefined) {
+    const currentProtectedHuman = protectedTurn.history.find((candidate) =>
+      candidate.messageId === currentMessageId
+      && candidate.role === "user"
+      && candidate.snippet === message
+      && readModelInputExposure(candidate)?.status === "complete"
+    );
+    currentHumanExposure = currentProtectedHuman === undefined
+      ? { status: "incomplete" }
+      : readModelInputExposure(currentProtectedHuman)
+        ?? { status: "incomplete" };
+  } else if (
+    exactCanonicalCurrentHumanInput
+    && protectedTurn === undefined
+    && humanAlreadyPersisted
+    && currentMessageId !== undefined
+  ) {
+    const rows = await readCurrentOrdinaryTranscriptExposureRows({
+      ownerId: transcriptOwnerId,
+      agentId,
+      roomIds: [roomId],
+      messageIds: [currentMessageId],
+    }).catch(() => []);
+    currentHumanExposure = currentOrdinaryHumanModelExposure({
+      messageId: currentMessageId,
+      roomId,
+      namespaceId: currentNamespaceId,
+      sourceUserId: causalHumanUserId,
+      content: canonicalCurrentHumanBody,
+      rows,
+    });
+  }
   const savedFingerprints = new Set<string>();
   const inputMetadata =
     input["metadata"] && typeof input["metadata"] === "object"
@@ -986,8 +1077,51 @@ export async function* langgraphExecutor(
 
   const foregroundContextReceipts = new ForegroundContextReceipts(currentMessageId);
 
+  const recordCommittedTranscriptRows = (
+    rows: readonly {
+      id: string;
+      role: string;
+      content: string | null;
+      fingerprint: string | null;
+    }[],
+    messages: readonly BaseMessage[],
+  ): void => {
+    if (foregroundContextRefreshEligible) {
+      foregroundContextReceipts.recordMessages(rows, messages);
+    }
+    if (!exactCanonicalCurrentHumanInput || protectedTurn !== undefined) return;
+    const index = messages.findIndex((candidate) =>
+      candidate === userMessageForTranscript
+    );
+    const row = index < 0 ? undefined : rows[index];
+    if (
+      row === undefined
+      || row.role !== "user"
+      || row.content === null
+      || row.content !== canonicalCurrentHumanBody
+    ) return;
+    const messageId = Number(row.id);
+    if (!Number.isSafeInteger(messageId) || messageId < 1) return;
+    currentHumanExposure = {
+      status: "complete",
+      dependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: `message:${row.id}`,
+        observedRevision: "0",
+        observedContentFingerprint: reflectionMessageSourceFingerprint({
+          id: messageId,
+          editRevision: 0,
+          content: row.content,
+        }),
+        terminalAuthorityLeafHandle: currentNamespaceId,
+      }],
+    };
+  };
+
   const persistOptsBase = {
-    ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, onCommittedRows: foregroundContextReceipts.recordRows, foregroundExecutionId } : {}),
+    onCommittedRows: recordCommittedTranscriptRows,
+    ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, foregroundExecutionId } : {}),
     ...(supervisionMetadata === undefined
       ? await memoryReviewAdmission(memoryAccessEnvelope, langgraphThreadId, {
           threadId: langgraphThreadId, transcriptOwnerId, turnId, input,
@@ -1115,6 +1249,12 @@ export async function* langgraphExecutor(
     ...userMessageArgs,
     serverTimePrefixIso,
   });
+  bindModelInputExposure(userMessage, projectNeutralCurrentHumanMessageExposure({
+    sourceExposure: currentHumanExposure,
+    canonicalBody: canonicalCurrentHumanBody ?? "",
+    actualModelBody: userMessage.content,
+    ...(serverTimePrefixIso === undefined ? {} : { serverTimePrefixIso }),
+  }));
 
 
   // the full transcript subsumes the old transient peer-diff /
@@ -1391,17 +1531,21 @@ export async function* langgraphExecutor(
 
   let memoryReviewRecorded = supervisionMetadata !== undefined;
   try {
-    const eventStream = streamForegroundGraph(graph, graphInput, streamConfig, {
-      signal,
-      ...(foregroundContextRefreshEligible ? {
-        rebuildForegroundContext: createForegroundContextRebuilder({
-          roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
-          ...(protectedTurn === undefined ? {} : { protectedTurn }),
-          ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
-          onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
-        }),
-      } : {}),
-    });
+    const eventStream = iterateWithAuthoredModelInputExposure(
+      authoredModelInputExposure,
+      streamForegroundGraph(graph, graphInput, streamConfig, {
+        signal,
+        ...(foregroundContextRefreshEligible ? {
+          rebuildForegroundContext: createForegroundContextRebuilder({
+            roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
+            ...(protectedTurn === undefined ? {} : { protectedTurn }),
+            ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+            onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
+          }),
+        } : {}),
+      }),
+      memoryBriefReceipt,
+    );
 
     for await (const ev of eventStream) {
       if (signal.aborted) {

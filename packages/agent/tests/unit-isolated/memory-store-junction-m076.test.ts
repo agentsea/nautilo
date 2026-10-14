@@ -22,6 +22,14 @@ const embedding = {
   dimensions: 1536,
   contractVersion: 1 as const,
 };
+const modelExposureDependencies = [{
+  kind: "source" as const,
+  sourceKind: "message",
+  logicalSourceRef: "message:41",
+  observedRevision: "3",
+  observedContentFingerprint: "sha256:message",
+  terminalAuthorityLeafHandle: "namespace",
+}];
 
 beforeEach(() => {
   mock.restore();
@@ -109,6 +117,8 @@ function mockUsageModule(): void {
   }));
   mock.module("../../src/usage/usage-context", () => ({
     getUsageContext: () => null,
+    normalizeUsageRoomId: (roomId: string | null | undefined) =>
+      typeof roomId === "string" && roomId.trim().length > 0 ? roomId : null,
   }));
 }
 
@@ -192,6 +202,8 @@ function mockDbModule(opts: {
     kickServerModelConfigRefresh: () => {},
     memoryEmbeddingValues,
     memoryEmbeddingCompatibilityCondition,
+    beginServiceLlmAttempt: async () => { throw new Error("service attempt must not run in memory-store isolation"); },
+    settleServiceLlmAttempt: async () => { throw new Error("service settlement must not run in memory-store isolation"); },
   }));
   return dbHandle;
 }
@@ -269,6 +281,7 @@ describe("M076 — saveMemory + mocked vector path", () => {
     expect(execCount).toBe(0);
     expect(mutations).toHaveLength(2);
     expect(mutations[0]).toMatchObject({ kind: "insert", values: {
+      modelExposureDependencies: null,
       embedding: embedding.vector,
       embeddingRevision: 0,
       embeddingProvider: "openai",
@@ -350,7 +363,10 @@ describe("M076 — saveMemory + mocked vector path", () => {
     expect(r.action).toBe("created");
     expect(execCount).toBe(0);
     expect(mutations).toHaveLength(2);
-    expect(mutations[0]?.kind).toBe("insert");
+    expect(mutations[0]).toMatchObject({
+      kind: "insert",
+      values: { modelExposureDependencies: null },
+    });
     expect(mutations[1]?.values).toEqual({ memoryId: r.id, namespaceId: writableNs });
   });
 
@@ -399,6 +415,10 @@ describe("M076 — saveMemory + mocked vector path", () => {
       embeddingContractVersion: 1,
     } });
     expect(mutations.some((mutation) => mutation.kind === "insert")).toBe(false);
+    expect(mutations[0]).toMatchObject({
+      kind: "update",
+      values: { modelExposureDependencies: null },
+    });
     expect(events).toEqual([
       expect.objectContaining({
         memoryId: "990e8400-e29b-41d4-a716-446655440099",
@@ -424,7 +444,12 @@ describe("prepared canonical Memory publication", () => {
     const store = await importMemoryStore();
     const result = await store.saveMemoryWithDb(handle as unknown as Parameters<typeof store.saveMemoryWithDb>[0], {
       userId: "human", agentId: "agent", namespaceId: "namespace", type: "fact", content: "Prepared fact",
-    }, { id: "stable-memory", embedding, expectedDedupId: null });
+    }, {
+      id: "stable-memory",
+      embedding,
+      expectedDedupId: null,
+      modelExposureDependencies,
+    });
     expect(result).toEqual({ id: "stable-memory", action: "created" });
     expect(queries).toHaveLength(0);
     expect(mutations[0]).toMatchObject({ kind: "insert", values: {
@@ -435,6 +460,7 @@ describe("prepared canonical Memory publication", () => {
       embeddingModel: "text-embedding-test",
       embeddingDimensions: 1536,
       embeddingContractVersion: 1,
+      modelExposureDependencies,
     } });
     expect(queries.some((query) => query.includes("SET TRANSACTION"))).toBe(false);
   });

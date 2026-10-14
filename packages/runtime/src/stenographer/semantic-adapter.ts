@@ -1,10 +1,15 @@
 import {
+  prepareStenographerExtractionEvidence,
   runStenographerCompaction,
   runStenographerExtraction,
+  type StenographerCompactionModelExposure,
+  type StenographerExtractionModelExposure,
   type StenographerExtractionSnapshot,
   type StenographerModelInvoker,
   type StenographerProposal,
 } from "@nautilo/reflection";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import { reflectionMessageSourceFingerprint } from "../reflection/canonical-room-sources";
 import type { CompactionClaim, ExtractionClaim } from "./repository";
 import type { StenographerOutput } from "./types";
 
@@ -187,6 +192,7 @@ export type ExtractionModelResult =
       output: StenographerOutput;
       attempts: 1 | 2;
       inputCodePoints: number;
+      modelExposureDependencies?: readonly DurableModelExposureDependency[];
     }
   | {
       ok: false;
@@ -215,20 +221,131 @@ export async function runExtractionModel(input: {
   if (!mapped.ok) {
     return { ok: false, errorCode: "invalid_output", attempts: 2 };
   }
+  const modelExposureDependencies = resolveExtractionModelExposure(
+    input.claim,
+    result.modelExposure,
+  );
   return {
     ok: true,
     output: mapped.output,
     attempts: result.attempts,
     inputCodePoints: result.inputCodePoints,
+    ...(modelExposureDependencies === undefined
+      ? {}
+      : { modelExposureDependencies }),
   };
 }
 
-export function runCompactionModel(input: {
+function messageExposureDependency(
+  row: ExtractionClaim["sourceRows"][number],
+  namespaceId: string | undefined,
+): DurableModelExposureDependency | undefined {
+  if (namespaceId === undefined || row.editRevision === undefined) {
+    return undefined;
+  }
+  return {
+    kind: "source",
+    sourceKind: "message",
+    logicalSourceRef: `message:${row.id}`,
+    observedRevision: String(row.editRevision),
+    observedContentFingerprint: reflectionMessageSourceFingerprint({
+      id: row.id,
+      editRevision: row.editRevision,
+      content: row.text,
+    }),
+    terminalAuthorityLeafHandle: namespaceId,
+  };
+}
+
+function resolveExtractionModelExposure(
+  claim: ExtractionClaim,
+  exposure: StenographerExtractionModelExposure | null,
+): readonly DurableModelExposureDependency[] | undefined {
+  if (exposure === null) return undefined;
+  const dependencies: Array<DurableModelExposureDependency | undefined> = [
+    ...exposure.currentRowPositions.map((position) => {
+      const row = claim.sourceRows[position];
+      return row === undefined
+        ? undefined
+        : messageExposureDependency(row, claim.namespaceId);
+    }),
+    ...exposure.priorRowPositions.map((position) => {
+      const row = claim.priorContextRows[position];
+      return row === undefined
+        ? undefined
+        : messageExposureDependency(row, claim.namespaceId);
+    }),
+    ...(exposure.latestRollupIncluded
+      ? [claim.latestRollup?.modelExposureDependency]
+      : []),
+    ...exposure.visibleEventReferences.map((reference) =>
+      claim.visibleEvents.find(
+        (event) => `E${event.sequence}` === reference,
+      )?.modelExposureDependency
+    ),
+  ];
+  return dependencies.length === 0
+    || dependencies.some((dependency) => dependency === undefined)
+    ? undefined
+    : dependencies as DurableModelExposureDependency[];
+}
+
+function resolveCompactionModelExposure(
+  claim: CompactionClaim,
+  exposure: StenographerCompactionModelExposure | null,
+): readonly DurableModelExposureDependency[] | undefined {
+  if (exposure === null) return undefined;
+  const eventBySequence = new Map([
+    ...claim.plan.selectedEvents,
+    ...claim.plan.protectedTail,
+  ].map((event) => [event.sequence, event]));
+  const dependencies: Array<DurableModelExposureDependency | undefined> = [
+    ...(exposure.previousRollupThroughEventSequence === null
+      ? []
+      : claim.previousRollup?.throughEventSequence
+          === exposure.previousRollupThroughEventSequence
+        ? [claim.previousRollup.modelExposureDependency]
+        : [undefined]),
+    ...exposure.selectedEventSequences.map((sequence) =>
+      eventBySequence.get(sequence)?.modelExposureDependency
+    ),
+    ...exposure.protectedTailEventSequences.map((sequence) =>
+      eventBySequence.get(sequence)?.modelExposureDependency
+    ),
+  ];
+  return dependencies.length === 0
+    || dependencies.some((dependency) => dependency === undefined)
+    ? undefined
+    : dependencies as DurableModelExposureDependency[];
+}
+
+export async function runCompactionModel(input: {
   claim: CompactionClaim;
   invoke: StenographerModelInvoker;
 }) {
-  return runStenographerCompaction({
+  const result = await runStenographerCompaction({
     prompt: input.claim.plan.prompt,
     invoke: input.invoke,
+    modelExposure: input.claim.plan.modelExposure,
   });
+  if (!result.ok) return result;
+  const modelExposureDependencies = resolveCompactionModelExposure(
+    input.claim,
+    result.modelExposure,
+  );
+  return {
+    ...result,
+    ...(modelExposureDependencies === undefined
+      ? {}
+      : { modelExposureDependencies }),
+  };
 }
+
+/** Derive the same actual projection before the first paid dispatch. */
+export function extractionModelExposureDependencies(claim: ExtractionClaim): readonly DurableModelExposureDependency[] | undefined {
+  const { snapshot } = extractionInputs(claim);
+  const projection = prepareStenographerExtractionEvidence(snapshot);
+  if (!projection.ok || !snapshot.hasConversationalContent) return undefined;
+  return resolveExtractionModelExposure(claim, { ...projection.modelExposure, latestRollupIncluded: snapshot.latestRollup !== null, visibleEventReferences: snapshot.visibleEvents.map(event => event.localReference) });
+}
+export function compactionModelExposureDependencies(claim: CompactionClaim): readonly DurableModelExposureDependency[] | undefined { return resolveCompactionModelExposure(claim, claim.plan.modelExposure); }

@@ -15,6 +15,10 @@ import type {
   CrossRoomChangedRecordCoordinate,
   CrossRoomOrganizerCandidate,
 } from "../../src/server/postgres-cross-room-organizer-store";
+import type {
+  CrossRoomCandidatePlan,
+  CrossRoomRecordInputCoordinate,
+} from "../../src/server/cross-room-execution";
 
 const selection = {
   selectedRepresentation: "ordinary",
@@ -466,12 +470,211 @@ describe("cross-Room Organizer partition", () => {
     });
     expect(ordinaryPlans).toBe(0);
 
+    const otherCoordinate = {
+      kind: "record" as const,
+      role: "changed" as const,
+      recordRef: "record:other-batch-item",
+      processingGeneration: 7,
+      representationGeneration: 1,
+      authorityGeneration: 7,
+      read: { namespaceRef: "namespace:other", bindingRef: "binding:other" },
+    };
+    const otherExposure = {
+      kind: "record" as const,
+      recordRef: otherCoordinate.recordRef,
+      observedProcessingGeneration: otherCoordinate.processingGeneration,
+      terminalAuthorityLeafHandles: ["namespace:other"],
+    };
+    const otherToken = codec.seal({
+      ...candidate,
+      workRef: otherCoordinate.recordRef,
+      workGeneration: 3,
+      inputs: [otherCoordinate],
+      publicationPlan: {
+        ...candidate.publicationPlan!,
+        selectedInputs: [otherCoordinate],
+        modelExposureDependencies: [otherExposure],
+        idempotencyKey: "sleep:record:other-batch-item:3",
+      },
+    });
+    const batchExposure = [
+      ...candidate.publicationPlan!.modelExposureDependencies!,
+      otherExposure,
+    ];
+    expect(await partition.planPublication({
+      applicationPlanToken: result.applicationPlanToken,
+      applicationPlanTokens: [result.applicationPlanToken, otherToken],
+      proposal: { operation: "no_change" },
+      modelExposureDependencies: batchExposure,
+    })).toMatchObject({
+      status: "planned",
+      plan: { modelExposureDependencies: batchExposure },
+    });
+    const batchCall = exposureCalls.at(-1) as Readonly<{
+      candidatePlan: Readonly<{
+        inputs: readonly Readonly<{ recordRef?: string }>[];
+      }>;
+      modelExposureDependencies: unknown;
+    }>;
+    expect(batchCall.candidatePlan.inputs.map((input) => input.recordRef))
+      .toContain("record:changed");
+    expect(batchCall.candidatePlan.inputs.map((input) => input.recordRef))
+      .toContain("record:other-batch-item");
+    expect(batchCall.modelExposureDependencies).toEqual(batchExposure);
+
     emptyAudience = true;
     expect(await partition.augment(augmentation)).toEqual({
       status: "no_change",
       reason: "no_effective_audience",
     });
-    expect(seals).toBe(1);
+    expect(seals).toBe(2);
+  });
+
+  test("merges reciprocal batch plans without treating changed and candidate roles as stale", async () => {
+    const codec = createCrossRoomApplicationPlanCodec(new Uint8Array(32).fill(11));
+    const coordinate = (
+      recordRef: string,
+      role: "changed" | "candidate",
+    ): CrossRoomRecordInputCoordinate => ({
+      kind: "record",
+      role,
+      recordRef,
+      processingGeneration: 1,
+      representationGeneration: 1,
+      authorityGeneration: 1,
+      read: {
+        namespaceRef: `namespace:${recordRef}`,
+        bindingRef: `binding:${recordRef}`,
+      },
+    });
+    const plan = (
+      changedRef: string,
+      candidateRef: string,
+    ): CrossRoomCandidatePlan => ({
+      workRef: changedRef,
+      workGeneration: 1,
+      policyVersion: "candidate-policy-v1",
+      inputs: [
+        coordinate(changedRef, "changed"),
+        coordinate(candidateRef, "candidate"),
+      ],
+      commitments: {
+        authority: "authority:fixed",
+        search: "search:fixed",
+        representation: "ordinary:v1",
+      },
+      budget: {
+        maxInputItems: 2,
+        maxInputBytes: 1_024,
+        maxModelCalls: 2,
+        maxOutputItems: 1,
+        maxOutputBytes: 1_024,
+      },
+      idempotencyKey: `sleep:${changedRef}:1`,
+    });
+    const planA = plan("record:a", "record:b");
+    const planB = plan("record:b", "record:a");
+    const tokenA = codec.seal(planA);
+    const tokenB = codec.seal(planB);
+    const dependencies = ["record:a", "record:b"].map((recordRef) => ({
+      kind: "record" as const,
+      recordRef,
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: [`namespace:${recordRef}`],
+    }));
+    const exposurePlans: CrossRoomCandidatePlan[] = [];
+    const partition = new OrdinaryCrossRoomOrganizerPartition({
+      selection,
+      store: {} as never,
+      repository: {} as never,
+      memories: {} as never,
+      codec,
+      publicationPlans: {
+        async plan() {
+          return { status: "unavailable", failureDetail: "publication_plan_invalid" } as const;
+        },
+        async planExposure(input) {
+          exposurePlans.push(input.candidatePlan);
+          return {
+            status: "planned",
+            plan: {
+              applicationPlanToken: input.applicationPlanToken,
+              policyVersion: input.candidatePlan.policyVersion,
+              selectedInputs: input.candidatePlan.inputs,
+              modelExposureDependencies: input.modelExposureDependencies,
+              output: {
+                accessRoomRef: "room:fixed",
+                accessNamespaceRef: "namespace:fixed",
+                publicationBindingRef: "binding:fixed",
+                authorityGeneration: 1,
+                includesPublicBoundary: false,
+              },
+              commitments: {
+                authority: "authority:fixed",
+                representation: input.candidatePlan.commitments.representation,
+              },
+              budget: input.candidatePlan.budget,
+              idempotencyKey: input.candidatePlan.idempotencyKey,
+            },
+          } as const;
+        },
+      },
+    });
+
+    for (const [primary, sibling, changedRef] of [
+      [tokenA, tokenB, "record:a"],
+      [tokenB, tokenA, "record:b"],
+    ] as const) {
+      expect(await partition.planPublication({
+        applicationPlanToken: primary,
+        applicationPlanTokens: [primary, sibling],
+        proposal: { operation: "no_change" },
+        modelExposureDependencies: dependencies,
+      })).toMatchObject({ status: "planned" });
+      const merged = exposurePlans.at(-1)!;
+      expect(merged.inputs).toHaveLength(2);
+      const changedInputs = merged.inputs.filter((input) => input.role === "changed");
+      expect(changedInputs).toHaveLength(1);
+      expect(changedInputs[0]).toMatchObject({ recordRef: changedRef });
+      expect(merged.inputs.find((input) => input.role === "candidate"))
+        .toMatchObject({ recordRef: changedRef === "record:a" ? "record:b" : "record:a" });
+    }
+
+    for (const conflicting of [
+      { processingGeneration: 2 },
+      { representationGeneration: 2 },
+      { authorityGeneration: 2 },
+      { read: { namespaceRef: "namespace:record:b", bindingRef: "binding:changed" } },
+    ] as const) {
+      const conflictToken = codec.seal({
+        ...planB,
+        inputs: [
+          { ...coordinate("record:b", "changed"), ...conflicting },
+          coordinate("record:a", "candidate"),
+        ],
+      });
+      expect(await partition.planPublication({
+        applicationPlanToken: tokenA,
+        applicationPlanTokens: [tokenA, conflictToken],
+        proposal: { operation: "no_change" },
+        modelExposureDependencies: dependencies,
+      })).toEqual({
+        status: "stale",
+        failureDetail: "publication_plan_stale",
+      });
+    }
+    expect(exposurePlans).toHaveLength(2);
+
+    const retargeted = codec.seal({ ...planB, workRef: "record:other" });
+    expect(await partition.planPublication({
+      applicationPlanToken: tokenA,
+      applicationPlanTokens: [tokenA, retargeted],
+      proposal: { operation: "no_change" },
+      modelExposureDependencies: dependencies,
+    })).toEqual({
+      status: "unavailable",
+      failureDetail: "publication_plan_invalid",
+    });
   });
 
   test("protected cross-Room unavailability preserves the existing same-Room view", async () => {

@@ -8,6 +8,10 @@ import { registerAllTools } from "../../src/tools/register-all";
 import type { NautiloState } from "../../src/agent/state";
 import { MAX_SUBAGENT_DEPTH } from "../../src/agent/state";
 import type { RoomParticipant } from "@nautilo/trust";
+import {
+  readModelInputExposure,
+  runWithAuthoredModelInputExposure,
+} from "../../src/memory/model-input-exposure";
 
 /**
  * pre_model roster injection.
@@ -118,6 +122,65 @@ async function systemPromptOf(state: NautiloState): Promise<string> {
 // ===========================================================================
 
 describe("preModelNode — roster injection", () => {
+  test("accepts only the exact process-receipted Memory brief bytes", async () => {
+    const dependency = { kind: "source" as const, sourceKind: "memory", logicalSourceRef: "memory:one",
+      observedRevision: "2", observedContentFingerprint: "hmac-sha256:abc", terminalAuthorityLeafHandle: "namespace-one" };
+    const receipt = { content: "- [preference] Precise evidence", exposure: { status: "complete" as const, dependencies: [dependency] } };
+    const invoke = (memoryBrief: string) => runWithAuthoredModelInputExposure(
+      { status: "complete", dependencies: [] },
+      () => preModelNode(makeState({ memoryBrief })), receipt,
+    );
+    const exact = await invoke(receipt.content);
+    const system = exact.preparedMessages?.[0];
+    if (system === undefined) throw new Error("missing brief system message");
+    expect(readModelInputExposure(system)).toEqual(receipt.exposure);
+    const changed = await invoke(`${receipt.content} forged addition`);
+    const changedSystem = changed.preparedMessages?.[0];
+    if (changedSystem === undefined) throw new Error("missing changed system message");
+    expect(readModelInputExposure(changedSystem)).toEqual({ status: "incomplete" });
+  });
+
+  test("binds exact authored evidence only when every dynamic prompt block is covered", async () => {
+    const dependency = {
+      kind: "source" as const,
+      sourceKind: "profile_soul",
+      logicalSourceRef: "agent-soul:agent-genie",
+      observedRevision: "3",
+      observedContentFingerprint: "hmac-sha256:abc",
+      terminalAuthorityLeafHandle: "namespace-one",
+    };
+    const covered = await runWithAuthoredModelInputExposure(
+      { status: "complete", dependencies: [dependency] },
+      () => preModelNode(makeState({
+        soulFile: "Care about precise evidence.",
+        roomRoster: [{
+          actorId: "actor-owner",
+          kind: "user",
+          displayName: "Owner",
+          roomRole: "admin",
+        }],
+      })),
+    );
+    const coveredSystem = covered.preparedMessages?.[0];
+    if (coveredSystem === undefined) throw new Error("missing covered system message");
+    expect(readModelInputExposure(coveredSystem)).toEqual({
+      status: "complete",
+      dependencies: [dependency],
+    });
+
+    const incomplete = await runWithAuthoredModelInputExposure(
+      { status: "complete", dependencies: [dependency] },
+      () => preModelNode(makeState({
+        soulFile: "Care about precise evidence.",
+        memoryBrief: "Unreceipted memory summary",
+      })),
+    );
+    const incompleteSystem = incomplete.preparedMessages?.[0];
+    if (incompleteSystem === undefined) throw new Error("missing incomplete system message");
+    expect(readModelInputExposure(incompleteSystem))
+      .toEqual({ status: "incomplete" });
+  });
+
   test("injects participants block when roomRoster is populated", async () => {
     const roster: RoomParticipant[] = [
       {

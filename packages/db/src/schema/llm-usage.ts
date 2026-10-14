@@ -171,7 +171,7 @@ export const llmUsageEvents = pgTable(
         (${table.attemptOutcome} IS NULL AND ${table.costState} IS NULL AND ${table.recoveryState} IS NULL)
         OR
         (${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL AND ${table.endpoint} IS NOT NULL AND length(${table.endpoint}) > 0
-          AND (${table.providerRoute} = 'surplus' OR (${table.fundingKind} = 'personal' AND ${table.recoveryState} IS NULL)))
+          AND (${table.providerRoute} = 'surplus' OR (${table.fundingKind} IN ('personal', 'server', 'service') AND ${table.recoveryState} IS NULL)))
       )`,
     ),
     check(
@@ -196,7 +196,7 @@ export const llmUsageEvents = pgTable(
         (${table.attemptOwnerToken} IS NULL AND ${table.attemptLeaseExpiresAt} IS NULL)
         OR
         (${table.attemptOwnerToken} IS NOT NULL AND ${table.attemptLeaseExpiresAt} IS NOT NULL
-          AND ${table.fundingKind} = 'personal' AND ${table.providerRoute} <> 'surplus'
+          AND ${table.fundingKind} IN ('personal', 'server', 'service') AND ${table.providerRoute} <> 'surplus'
           AND ${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL)
       )`,
     ),

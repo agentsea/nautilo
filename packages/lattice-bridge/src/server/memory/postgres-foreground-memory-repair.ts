@@ -18,7 +18,7 @@ import type { CanonicalTranscriptTx } from "@nautilo/trust";
 
 import type { ForegroundMemoryContextItem, ForegroundMemoryRepairSelection } from
   "../../memory/foreground-memory-history.ts";
-import { encodeMemoryPayloadV1 } from
+import { encodeMemoryPayloadV1, memoryPayloadExposureFromDurable } from
   "../../memory/memory-payload-v1.ts";
 import {
   deriveMemoryCryptoObjectIdV1,
@@ -150,7 +150,12 @@ async function loadPostgresMemoryRepairSourcesInTransaction(input: Readonly<{
         conversationProductTypedDb.select({
           id: memories.id,
           ...(input.representationMode === "ordinary-and-protected"
-            ? { type: memories.type, content: memories.content }
+            ? {
+                type: memories.type,
+                content: memories.content,
+                modelExposureDependencies:
+                  memories.modelExposureDependencies,
+              }
             : {}),
           importance: memories.importance,
           tier: memories.tier,
@@ -254,6 +259,9 @@ async function loadPostgresMemoryRepairSourcesInTransaction(input: Readonly<{
       );
       const ordinaryType = typeof row.type === "string" ? row.type : null;
       const ordinaryContent = typeof row.content === "string" ? row.content : null;
+      const modelExposureDependencies = (row as typeof row & Readonly<{
+        model_exposure_dependencies?: typeof row.modelExposureDependencies;
+      }>).model_exposure_dependencies ?? row.modelExposureDependencies;
       const plaintextBytes = input.representationMode === "protected-only"
           || ordinaryType === null
           || ordinaryContent === null
@@ -262,6 +270,15 @@ async function loadPostgresMemoryRepairSourcesInTransaction(input: Readonly<{
           formatVersion: 1,
           type: ordinaryType,
           content: ordinaryContent,
+          ...(modelExposureDependencies === null
+            || modelExposureDependencies === undefined
+            ? {}
+            : {
+                modelExposureDependencies:
+                  memoryPayloadExposureFromDurable(
+                    modelExposureDependencies,
+                  ),
+              }),
         });
       if (plaintextBytes !== null) destroyOnFailure.push(plaintextBytes);
       if (input.taskScope !== undefined && plaintextBytes === null) {
@@ -680,6 +697,7 @@ export async function restorePostgresForegroundMemoryOrdinary(input: Readonly<{
       const updated = await tx.update(memories).set({
         type: input.type,
         content: input.content,
+        modelExposureDependencies: null,
       })
           .where(and(
             eq(memories.id, input.source.memory.id),

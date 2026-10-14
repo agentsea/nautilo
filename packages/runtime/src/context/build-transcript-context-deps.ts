@@ -14,6 +14,7 @@ import {
   roomEventRollups,
   roomEvents,
   roomJournalState,
+  rooms,
   sql,
   type ResolvedServerContextConfig,
   type ServerContextConfigDb,
@@ -23,6 +24,10 @@ import {
   getAgentDisplayNameById,
   getAgentHandleById,
 } from "@nautilo/agent";
+import {
+  stenographerJournalEventObservationFingerprint,
+  stenographerJournalRollupObservationFingerprint,
+} from "@nautilo/reflection-bridge/server";
 import { log } from "@nautilo/logger";
 import {
   runAgentTranscriptToHits,
@@ -242,8 +247,12 @@ export function defaultBuildTranscriptContextDeps(
     },
     async readRoomJournal(scope) {
       const [state] = await db
-        .select({ rebuildRequestedAt: roomJournalState.rebuildRequestedAt })
+        .select({
+          rebuildRequestedAt: roomJournalState.rebuildRequestedAt,
+          namespaceId: rooms.namespaceId,
+        })
         .from(roomJournalState)
+        .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
         .where(eq(roomJournalState.roomId, scope.roomId));
       // fail closed while an edit-triggered full rebuild is pending.
       if (state?.rebuildRequestedAt != null) {
@@ -263,8 +272,12 @@ export function defaultBuildTranscriptContextDeps(
         );
       const [rollupRow] = await db
         .select({
+          id: roomEventRollups.id,
           throughEventSequence: roomEventRollups.throughEventSequence,
           content: roomEventRollups.content,
+          sourceEventCount: roomEventRollups.sourceEventCount,
+          compactorVersion: roomEventRollups.compactorVersion,
+          modelExposureDependencies: roomEventRollups.modelExposureDependencies,
         })
         .from(roomEventRollups)
         .where(
@@ -285,6 +298,8 @@ export function defaultBuildTranscriptContextDeps(
           roomId: roomEvents.roomId,
           sequence: roomEvents.sequence,
           kind: roomEvents.kind,
+          projectionKind: roomEvents.projectionKind,
+          recordId: roomEvents.recordId,
           statement: sql<string>`CASE
             WHEN ${roomEvents.projectionKind} = 'legacy'
               THEN ${roomEvents.statement}
@@ -347,12 +362,70 @@ export function defaultBuildTranscriptContextDeps(
         status: row.status,
         supersedesEventId: row.supersedesEventId,
         resolvesEventId: row.resolvesEventId,
+        ...(row.projectionKind === "native" && row.recordId !== null
+          ? { nativeRecordRef: row.recordId }
+          : row.projectionKind === "legacy" && state?.namespaceId !== undefined
+            ? {
+                modelExposureDependency: {
+                  kind: "source" as const,
+                  sourceKind: "journal_event" as const,
+                  logicalSourceRef: `journal-event:${row.id}`,
+                  observedRevision: `sequence:${row.sequence}:status:${row.status}`,
+                  observedContentFingerprint:
+                    stenographerJournalEventObservationFingerprint({
+                      eventId: row.id,
+                      sequence: row.sequence,
+                      kind: row.kind,
+                      statement: row.statement,
+                      status: row.status,
+                    }),
+                  terminalAuthorityLeafHandle: state.namespaceId,
+                },
+              }
+            : {}),
       }));
       return {
         rollup: rollupRow
           ? {
               throughEventSequence: through,
               content: rollupRow.content,
+              ...(rollupRow.id === undefined ? {} : { id: rollupRow.id }),
+              ...(rollupRow.sourceEventCount === undefined
+                ? {}
+                : { sourceEventCount: rollupRow.sourceEventCount }),
+              ...(rollupRow.compactorVersion === undefined
+                ? {}
+                : { compactorVersion: rollupRow.compactorVersion }),
+              ...(rollupRow.modelExposureDependencies === null
+                ? {}
+                : { modelExposureDependencies: rollupRow.modelExposureDependencies }),
+              ...(rollupRow.id === undefined
+                || rollupRow.compactorVersion === undefined
+                || state?.namespaceId === undefined
+                ? {}
+                : {
+                    modelExposureDependency: {
+                      kind: "source" as const,
+                      sourceKind: "journal_rollup" as const,
+                      logicalSourceRef: `journal-rollup:${rollupRow.id}`,
+                      observedRevision:
+                        `through:${through}:version:${rollupRow.compactorVersion}`,
+                      observedContentFingerprint:
+                        stenographerJournalRollupObservationFingerprint({
+                          rollupId: rollupRow.id,
+                          throughEventSequence: through,
+                          content: rollupRow.content,
+                          compactorVersion: rollupRow.compactorVersion,
+                          ...(rollupRow.modelExposureDependencies === null
+                            ? {}
+                            : {
+                                modelExposureDependencies:
+                                  rollupRow.modelExposureDependencies,
+                              }),
+                        }),
+                      terminalAuthorityLeafHandle: state.namespaceId,
+                    },
+                  }),
             }
           : null,
         events,

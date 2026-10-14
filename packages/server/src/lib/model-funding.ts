@@ -30,6 +30,7 @@ import { getServerDirectDb } from "./server-direct-db";
 export type ModelFundingWorkload =
   | "foreground_text_chat"
   | "native_text_task"
+  | "memory"
   | "research"
   | "decision"
   | "image_assistance"
@@ -231,7 +232,7 @@ export async function resolveModelFunding(
   deps: ModelFundingDeps = DEFAULT_DEPS,
 ): Promise<ModelFundingDecision> {
   if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task"
-    && input.workload !== "research" && input.workload !== "decision"
+    && input.workload !== "research" && input.workload !== "memory" && input.workload !== "decision"
     && input.workload !== "image_assistance" && input.workload !== "generation") {
     throw new ModelFundingError("unsupported_workload");
   }

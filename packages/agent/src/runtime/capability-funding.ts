@@ -47,7 +47,7 @@ export interface CapabilityFundingSession {
   readonly decisionModelId?: string | null;
   readonly mediaGenerationReady?: Readonly<Record<"image" | "video" | "music", boolean>>;
   resolveModel(role: PersonalCapabilityRole, configuredId?: string | null): Promise<CapabilityModelSelection>;
-  openModel(modelId: string, workload: "research" | "decision", prior?: TaskFundingBinding): Promise<AdmittedCapabilityModel>;
+  openModel(modelId: string, workload: "research" | "decision" | "memory", prior?: TaskFundingBinding): Promise<AdmittedCapabilityModel>;
   projectMediaFunding?(modelId: string, role: "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech"): Promise<TaskFundingBinding>;
   openMedia?(modelId: string, family: "image" | "video" | "music", options?: {
     readonly operation?: "generate" | "edit";

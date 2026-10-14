@@ -4,6 +4,7 @@ import type {
   ProcessorTransformOutput,
 } from "@nautilo/lattice-crypto";
 import { encodeMessagePayloadV2 } from "@nautilo/lattice-bridge";
+import { decodeDurableRecordEnvelope } from "@nautilo/reflection-bridge/server";
 
 import {
   runProtectedStenographerExtraction,
@@ -74,6 +75,208 @@ function publicationPort(
 }
 
 describe("protected Stenographer extraction", () => {
+  test("admits the exact opened prompt before dispatch and retains its ancestry", async () => {
+    const state = fixture();
+    let published: Uint8Array | undefined;
+    let currentChecks = 0;
+    const result = await runProtectedStenographerExtraction({
+      signal: new AbortController().signal,
+      capability: {
+        openInputs: () => Promise.resolve(state.opened),
+        publishOutputs: (outputs) => {
+          published = outputs[0]?.plaintext.slice();
+          return Promise.resolve();
+        },
+      },
+      work: {
+        requestId: "request-admitted",
+        workId: "stenographer-work-admitted",
+        workIdentityHash: new Uint8Array(32).fill(1),
+        descriptorHash: new Uint8Array(32).fill(2),
+        sourceBindingFingerprint:
+          fingerprintProtectedStenographerSourceBindings(state.bindings),
+        requiresContentRecheck: false,
+        roomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        sourceBatchId: BATCH_ID,
+        rebuildGeneration: 0,
+        fromMessageIdExclusive: 10,
+        throughMessageIdInclusive: 11,
+        extractorVersion: "m241-v1",
+        createdAt: CREATED_AT,
+        bindings: state.bindings,
+        outputSlots: [{
+          eventId: EVENT_ID,
+          objectId: "journal-output-admitted",
+        }],
+      },
+      resolveParticipantDisplays: () => Promise.resolve([{
+        participantId: "human-alice",
+        displayLabel: "Alice",
+      }]),
+      admitModel: ({ sources, dependencies }) => {
+        expect(sources.currentMessages[0]?.payload.content)
+          .toBe("Remember the blue deployment.");
+        expect(dependencies).toHaveLength(1);
+        expect(dependencies?.[0]).toMatchObject({
+          kind: "source",
+          sourceKind: "message",
+          logicalSourceRef: "message:11",
+          observedRevision: "0",
+          terminalAuthorityLeafHandle: NAMESPACE_ID,
+        });
+        expect(
+          dependencies?.[0]?.kind === "source"
+            ? dependencies[0].observedContentFingerprint
+            : undefined,
+        ).toMatch(/^sha256:/);
+        return Promise.resolve({
+          modelId: "bound-model",
+          assertCurrent: () => {
+            currentChecks += 1;
+            return Promise.resolve();
+          },
+          invoke: () => Promise.resolve(JSON.stringify({
+            operations: [{
+              op: "append",
+              kind: "fact",
+              statement: "Deployment color is blue.",
+              sourceMessageIds: ["M1"],
+            }],
+          })),
+        });
+      },
+      publication: publicationPort([], []),
+    });
+    expect(result).toEqual({ status: "completed", outputCount: 1 });
+    expect(currentChecks).toBeGreaterThanOrEqual(3);
+    expect(published).toBeDefined();
+    const record = decodeDurableRecordEnvelope({
+      recordRef: EVENT_ID,
+      lifecycle: "current",
+      structuralHeight: 0,
+      processingGeneration: 1,
+      payloadBytes: published!,
+    });
+    expect(record.semantic.modelExposureDependencies)
+      .toHaveLength(1);
+    expect(record.semantic.modelExposureDependencies?.[0])
+      .toMatchObject({ logicalSourceRef: "message:11" });
+  });
+
+  test("marks a returned provider result unknown when its admitted proof changes", async () => {
+    const state = fixture();
+    let checks = 0;
+    let reservations = 0;
+    const result = await runProtectedStenographerExtraction({
+      signal: new AbortController().signal,
+      capability: {
+        openInputs: () => Promise.resolve(state.opened),
+        publishOutputs: () => Promise.resolve(),
+      },
+      work: {
+        requestId: "request-changed-proof",
+        workId: "stenographer-work-changed-proof",
+        workIdentityHash: new Uint8Array(32).fill(1),
+        descriptorHash: new Uint8Array(32).fill(2),
+        sourceBindingFingerprint:
+          fingerprintProtectedStenographerSourceBindings(state.bindings),
+        requiresContentRecheck: false,
+        roomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        sourceBatchId: BATCH_ID,
+        rebuildGeneration: 0,
+        fromMessageIdExclusive: 10,
+        throughMessageIdInclusive: 11,
+        extractorVersion: "m241-v1",
+        createdAt: CREATED_AT,
+        bindings: state.bindings,
+        outputSlots: [],
+      },
+      resolveParticipantDisplays: () => Promise.resolve([{
+        participantId: "human-alice",
+        displayLabel: "Alice",
+      }]),
+      admitModel: () => Promise.resolve({
+        modelId: "bound-model",
+        assertCurrent: () => {
+          checks += 1;
+          return checks === 1
+            ? Promise.resolve()
+            : Promise.reject(new Error("grant changed"));
+        },
+        invoke: () => Promise.resolve(JSON.stringify({ operations: [] })),
+      }),
+      publication: {
+        ...publicationPort([], []),
+        reserve: () => {
+          reservations += 1;
+          return Promise.resolve("reserved");
+        },
+      },
+    });
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "provider_outcome_unknown",
+    });
+    expect(reservations).toBe(0);
+  });
+
+  test("does not replay a paid invalid response when proof changes before repair", async () => {
+    const state = fixture();
+    let checks = 0;
+    let modelCalls = 0;
+    const result = await runProtectedStenographerExtraction({
+      signal: new AbortController().signal,
+      capability: {
+        openInputs: () => Promise.resolve(state.opened),
+        publishOutputs: () => Promise.resolve(),
+      },
+      work: {
+        requestId: "request-changed-before-repair",
+        workId: "stenographer-work-changed-before-repair",
+        workIdentityHash: new Uint8Array(32).fill(1),
+        descriptorHash: new Uint8Array(32).fill(2),
+        sourceBindingFingerprint:
+          fingerprintProtectedStenographerSourceBindings(state.bindings),
+        requiresContentRecheck: false,
+        roomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        sourceBatchId: BATCH_ID,
+        rebuildGeneration: 0,
+        fromMessageIdExclusive: 10,
+        throughMessageIdInclusive: 11,
+        extractorVersion: "m241-v1",
+        createdAt: CREATED_AT,
+        bindings: state.bindings,
+        outputSlots: [],
+      },
+      resolveParticipantDisplays: () => Promise.resolve([{
+        participantId: "human-alice",
+        displayLabel: "Alice",
+      }]),
+      admitModel: () => Promise.resolve({
+        modelId: "bound-model",
+        assertCurrent: () => {
+          checks += 1;
+          return checks < 3
+            ? Promise.resolve()
+            : Promise.reject(new Error("grant changed before repair"));
+        },
+        invoke: () => {
+          modelCalls += 1;
+          return Promise.resolve("{}");
+        },
+      }),
+      publication: publicationPort([], []),
+    });
+    expect(result).toEqual({
+      status: "rejected",
+      reason: "provider_outcome_unknown",
+    });
+    expect(modelCalls).toBe(1);
+  });
+
   test("opens, invokes, reserves metadata, publishes the exact prefix, and attaches in order", async () => {
     const state = fixture();
     const calls: string[] = [];

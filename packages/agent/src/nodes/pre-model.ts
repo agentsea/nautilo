@@ -109,6 +109,13 @@ import { projectSystemMessagesForProvider } from "../utils/provider-system-messa
 import { COMPUTER_RESULT_DURABLE_SIDECAR_KEY } from "../tools/computer/model-result-projector";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import {
+  bindModelInputExposure,
+  copyModelInputExposure,
+  getAuthoredModelInputExposure,
+  getAuthoredMemoryBriefExposure,
+  unionModelInputExposures,
+} from "../memory/model-input-exposure";
+import {
   recallRecordsToolContextForState,
   toolPolicyWithRecallRecordsAvailability,
   type RecallRecordsPortForState,
@@ -446,7 +453,7 @@ function cloneMessageWithContent(msg: BaseMessage, content: unknown): BaseMessag
     return msg;
   }
   if (msg.id) cloned.id = msg.id;
-  return cloned;
+  return copyModelInputExposure(msg, cloned);
 }
 
 export function sanitizeImagesForModel(messages: BaseMessage[], modelId: string): { messages: BaseMessage[]; stripped: number } {
@@ -551,11 +558,11 @@ export function projectOpenAIMultimodalToolResults(
       }
       return block;
     });
-    projected.push(pairedToolMessage);
-    projected.push(new HumanMessage({
+    projected.push(copyModelInputExposure(message, pairedToolMessage));
+    projected.push(copyModelInputExposure(message, new HumanMessage({
       content: openAIContent,
       additional_kwargs: { nautilo_multimodal_tool_projection: true },
-    }));
+    })));
   }
   return projected;
 }
@@ -882,6 +889,8 @@ export async function preModelNode(
     explicitlySelected: state.explicitlySelected,
   }) + activeComputerUseModelGuidanceForBoundTools(tools) + localExecutionGuidance;
   let systemPrompt = stableSystemPrefix;
+  let hasUnreceiptedDynamicSystemContent = false;
+  let hasAuthoredSystemContent = false;
 
   if (
     !isGuest &&
@@ -898,7 +907,12 @@ export async function preModelNode(
       callingRoomId: state.callingRoomId ?? null,
       memoryAccessEnvelope: state.memoryAccessEnvelope ?? undefined,
     });
-    systemPrompt += buildConnectedWebAccountCapabilityBlock(connectedWebAccounts);
+    const connectedAccountBlock =
+      buildConnectedWebAccountCapabilityBlock(connectedWebAccounts);
+    if (connectedAccountBlock) {
+      systemPrompt += connectedAccountBlock;
+      hasUnreceiptedDynamicSystemContent = true;
+    }
   }
 
   // Exact client surface is process-local and varies per accepted turn, so it
@@ -970,6 +984,7 @@ export async function preModelNode(
         ? `${state.soulFile.slice(0, config.nautilo_soul_char_limit)}\n\n[truncated]`
         : state.soulFile;
     systemPrompt += SOUL_FILE_HEADER + soulFile;
+    hasAuthoredSystemContent = true;
   }
 
   // catalog-only + engaged-set re-injection (guest-withheld).
@@ -988,7 +1003,10 @@ export async function preModelNode(
       eligibleToolNames,
     });
     const catalogBlock = buildAvailableSkillsBlock(catalog);
-    if (catalogBlock) systemPrompt += catalogBlock;
+    if (catalogBlock) {
+      systemPrompt += catalogBlock;
+      hasAuthoredSystemContent = true;
+    }
 
     const skillByName = new Map(enabledSkills.map((s) => [s.name, s]));
     for (const name of state.engagedSkillNames ?? []) {
@@ -996,6 +1014,7 @@ export async function preModelNode(
       if (!skill || !requiresToolsMet(skill, availableToolNames)) continue;
       if (alreadyInContext.has(name)) continue;
       systemPrompt += buildSkillBodyBlock(skill);
+      hasAuthoredSystemContent = true;
     }
   }
 
@@ -1011,14 +1030,23 @@ export async function preModelNode(
       workspacePath: state.workspacePath ?? "",
       securityResearchReadOnly: state.toolWhitelist?.includes("security_scan") === true,
     });
-    if (twoPathBlock) systemPrompt += twoPathBlock;
+    if (twoPathBlock) {
+      systemPrompt += twoPathBlock;
+      hasUnreceiptedDynamicSystemContent = true;
+    }
     const activeMiniAppBlock = buildActiveMiniAppBlock(state.activeMiniApp);
-    if (activeMiniAppBlock) systemPrompt += activeMiniAppBlock;
+    if (activeMiniAppBlock) {
+      systemPrompt += activeMiniAppBlock;
+      hasUnreceiptedDynamicSystemContent = true;
+    }
     const liveMiniAppSessionBlock = buildLiveMiniAppSessionBlock(
       effectiveLiveMiniAppSessionForState(state),
       { backgroundTask: state.trustedExecutionEntrypoint === "background.task" },
     );
-    if (liveMiniAppSessionBlock) systemPrompt += liveMiniAppSessionBlock;
+    if (liveMiniAppSessionBlock) {
+      systemPrompt += liveMiniAppSessionBlock;
+      hasUnreceiptedDynamicSystemContent = true;
+    }
     // quote-reply pointer. The reply FK rides on the latest human
     // HumanMessage's `additional_kwargs.nautilo_reply_to_message_id` (set
     // by `buildForegroundUserHumanMessage`). We inject a LIGHTWEIGHT
@@ -1037,6 +1065,7 @@ export async function preModelNode(
         const rawReplyId = (replyHuman.additional_kwargs ?? {})["nautilo_reply_to_message_id"];
         if (typeof rawReplyId === "number" && Number.isInteger(rawReplyId) && rawReplyId >= 0) {
           systemPrompt += buildReplyPointerBlock({ replyToMessageId: rawReplyId });
+          hasUnreceiptedDynamicSystemContent = true;
         }
       }
     }
@@ -1053,15 +1082,22 @@ export async function preModelNode(
     if (!isGuest && state.agentId) {
       const assignedVoices = await assignedVoicesPortForState(state.agentId).catch(() => ({}));
       systemPrompt += buildAssignedVoicesPrompt(assignedVoices);
+      if (Object.keys(assignedVoices).length > 0) {
+        hasUnreceiptedDynamicSystemContent = true;
+      }
     }
   }
 
   if (!isGuest && state.memoryBrief) {
     systemPrompt += MEMORY_BRIEF_HEADER + state.memoryBrief;
+    if (getAuthoredMemoryBriefExposure(state.memoryBrief)?.status !== "complete") {
+      hasUnreceiptedDynamicSystemContent = true;
+    }
   }
 
   if (!isGuest && state.memoryDelta) {
     systemPrompt += MEMORY_DELTA_HEADER + state.memoryDelta;
+    hasUnreceiptedDynamicSystemContent = true;
   }
 
   if (!isGuest) {
@@ -1074,9 +1110,13 @@ export async function preModelNode(
     const focusedResourcesBlock = buildFocusedResourcesBlock(state.focusedResources);
     if (focusedResourcesBlock) {
       systemPrompt += focusedResourcesBlock;
+      hasUnreceiptedDynamicSystemContent = true;
     } else {
       const artifactRefsBlock = buildArtifactRefsBlock(state.artifactRefs);
-      if (artifactRefsBlock) systemPrompt += artifactRefsBlock;
+      if (artifactRefsBlock) {
+        systemPrompt += artifactRefsBlock;
+        hasUnreceiptedDynamicSystemContent = true;
+      }
     }
   }
 
@@ -1099,6 +1139,7 @@ export async function preModelNode(
       const block = buildSessionNotificationsBlock(notifications);
       if (block) {
         systemPrompt += "\n\n" + block + "\n";
+        hasUnreceiptedDynamicSystemContent = true;
         log(
           `[pre-model] injected ${notifications.length} session-notification(s) for thread=${state.langgraphThreadId} agent=${state.agentId}`,
         );
@@ -1119,7 +1160,10 @@ export async function preModelNode(
   if (researchContinuity) systemPrompt += "\n\n" + SECURITY_RESEARCH_WORKFLOW;
   if (researchContinuity) {
     const roleMessage = buildResearchWorkContextMessage({ ...state, messages: turnMessages });
-    if (roleMessage) systemPrompt += "\n\n" + roleMessage;
+    if (roleMessage) {
+      systemPrompt += "\n\n" + roleMessage;
+      hasUnreceiptedDynamicSystemContent = true;
+    }
   }
   let compactionHint: SystemMessage | null = null;
 
@@ -1176,6 +1220,19 @@ export async function preModelNode(
   } else {
     systemMessage = new SystemMessage(systemPrompt);
   }
+  const authoredExposure = getAuthoredModelInputExposure();
+  const briefExposure = !isGuest && state.memoryBrief
+    ? getAuthoredMemoryBriefExposure(state.memoryBrief)
+    : undefined;
+  bindModelInputExposure(
+    systemMessage,
+    hasUnreceiptedDynamicSystemContent
+      ? { status: "incomplete" }
+      : unionModelInputExposures([], [hasAuthoredSystemContent
+        ? authoredExposure ?? { status: "incomplete" }
+        : { status: "complete", dependencies: [] },
+        ...(briefExposure === undefined ? [] : [briefExposure])]),
+  );
 
   const roleHistory = researchContinuity ? prepareResearchRoleHistory(state, turnMessages) : turnMessages;
   const llmMessages = roleHistory.filter((msg) => {
@@ -1306,7 +1363,13 @@ export async function preModelNode(
     const content = typeof leading.content === "string" ? replacement
       : leading.content.map((part, index) => index === 0 && typeof part === "object" && part.type === "text"
         ? { ...part, text: replacement } : part);
-    const nextPrepared = [new SystemMessage({ ...leading, content }), ...preparedMessages.slice(1)];
+    const nextPrepared = [
+      copyModelInputExposure(
+        leading,
+        new SystemMessage({ ...leading, content }),
+      ),
+      ...preparedMessages.slice(1),
+    ];
     // Entry removes inapplicable tools/guidance and increases free workspace.
     // Exit carries nonempty exact recovery, so it cannot re-enter this phase.
     finalResearchContext = budgetResearchContext({ ...state, researchContextRecovery: researchContext.recovery }, nextPrepared, finalMessageTokens);

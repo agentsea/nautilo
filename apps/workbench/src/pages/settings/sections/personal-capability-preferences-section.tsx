@@ -169,7 +169,7 @@ export function PersonalCapabilityPreferencesSection() {
     <SectionCard
       id="capability-models"
       title="Capability models"
-      description="Choose account-wide models for your own research, decisions, generated media and speech. Inherit keeps each workflow's current default; Genie and Room model settings remain separate."
+      description="Choose account-wide models for your own research, decisions, eligible personal Memory processing, generated media and speech. Inherit keeps each workflow's current default; Genie and Room model settings remain separate."
     >
       {!enabled ? <GuestPlaceholder what="Capability model preferences" /> : null}
       {enabled && loading && !state ? <p className="text-sm text-foreground-muted">Loading model choices…</p> : null}

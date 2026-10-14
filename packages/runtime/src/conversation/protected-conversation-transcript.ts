@@ -11,6 +11,13 @@ import type {
 import type {
   ForegroundAuthorizationView,
 } from "../protected-execution/foreground-authorization-session";
+import {
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+  bindModelInputExposure,
+  bindModelInputExposureFromAuthorizedPersistedPayload,
+} from "@nautilo/agent";
+import { reflectionMessageSourceFingerprint } from
+  "../reflection/canonical-room-sources";
 
 const PUBLIC_TRANSCRIPT_TEXT_MAX_BYTES = 4_096;
 const PUBLIC_TRANSCRIPT_EMOJI_MAX_BYTES = 64;
@@ -170,7 +177,7 @@ export function protectedTranscriptMessagesToHistoryHits(
             : "tool: "
         }${message.payload.content}`
         : message.payload.content;
-    hits.push({
+    const hit: RoomHistoryHit = {
       messageId: message.messageId,
       ts: new Date(message.createdAt.getTime()),
       role: message.payload.role,
@@ -194,7 +201,36 @@ export function protectedTranscriptMessagesToHistoryHits(
             count: reaction.count,
           })),
         }),
-    });
+    };
+    if (
+      message.payload.role === "user"
+      && message.sourceUserId !== undefined
+      && message.namespaceId !== undefined
+    ) {
+      bindModelInputExposure(hit, {
+        status: "complete",
+        dependencies: [{
+          kind: "source",
+          sourceKind: "message",
+          logicalSourceRef: `message:${message.messageId}`,
+          observedRevision: String(message.revision),
+          observedContentFingerprint: reflectionMessageSourceFingerprint({
+            id: message.messageId,
+            editRevision: message.revision,
+            content: message.payload.content,
+          }),
+          terminalAuthorityLeafHandle: message.namespaceId,
+        }],
+      });
+    } else if (message.payload.role !== "user") {
+      bindModelInputExposureFromAuthorizedPersistedPayload(
+        hit,
+        message.payload.sensitiveMetadata?.[
+          MODEL_INPUT_EXPOSURE_METADATA_KEY
+        ],
+      );
+    }
+    hits.push(hit);
   }
   return hits;
 }

@@ -2,6 +2,7 @@ import { HumanMessage, SystemMessage, ToolMessage, AIMessage, type BaseMessage }
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { fromRuntimeConfig } from "@nautilo/config";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { createUniversalModel } from "../providers/universal";
 import { runWithUsageContext, type UsageCallType } from "../usage/usage-context";
 import { createManageMemoryTool } from "../tools/memory/manage-memory";
@@ -9,8 +10,17 @@ import { createSearchMemoryTool, formatSearchMemoryResults } from "../tools/memo
 import { SOUL_FILE_HEADER } from "../prompts/templates";
 import { resolveModelRole } from "../config/model-role-resolution";
 import { normalizeModelToolCallIdentity } from "../nodes/model-tool-call-identity";
+import { MemoryProviderOutcomeUnknownError } from "../utils/chat-model-invocation";
 import { createOrdinaryMemoryReviewStaging, type PreparedMemoryReview } from "./memory-review-publication";
-import { MemoryReviewError, type MemoryReviewMutation } from "./memory-review-staging";
+import {
+  MemoryReviewError,
+  type MemoryReviewMutation,
+  type MemoryReviewSnapshot,
+} from "./memory-review-staging";
+import {
+  bindModelInputExposure,
+  readModelInputExposure,
+} from "./model-input-exposure";
 
 const REVIEWER_PROMPT = [
   "Review this recent conversation snippet for memory-worthy information.",
@@ -38,6 +48,14 @@ export interface MemoryReviewOptions {
   signal?: AbortSignal;
   /** The runtime supplies the shared, policy-admitted invocation helper. */
   invokeModel?: (input: MemoryReviewModelInvocation) => Promise<BaseMessage>;
+  /** Trusted content-free evidence fence before each model call and publication. */
+  onModelExposure?: (snapshots: readonly MemoryReviewSnapshot[]) => void | Promise<void>;
+  /** Exact transcript, tool and Soul inputs supplied by the runtime owner. */
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
+  /** Reopen actual retrieved Memories and return their current source proof. */
+  resolveMemoryExposureDependencies?: (
+    snapshots: readonly MemoryReviewSnapshot[],
+  ) => Promise<readonly DurableModelExposureDependency[] | undefined>;
   /** Internal flush reuse; these retain its own model/turn configuration. */
   callType?: Extract<UsageCallType, "memory_review" | "memory_flush">;
   prompt?: string;
@@ -45,7 +63,7 @@ export interface MemoryReviewOptions {
 }
 export type MemoryReviewPreparation =
   | { status: "prepared"; proposal: PreparedMemoryReview; turns: number; modelId: string }
-  | { status: "failed"; reason: MemoryReviewError["code"]; turns: number };
+  | { status: "failed"; reason: MemoryReviewError["code"] | "provider_outcome_unknown"; turns: number };
 
 /** Scheduling belongs to durable runtime coverage, not the supplied history length. */
 export async function prepareMemoryReview(messages: BaseMessage[], options: MemoryReviewOptions): Promise<MemoryReviewPreparation> {
@@ -86,6 +104,7 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
             }
             return { ...result, type: result.type, content: result.content };
           });
+          await staging.captureModelExposure(ordinaryResults);
           return formatSearchMemoryResults(ordinaryResults);
         },
       }),
@@ -102,8 +121,24 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
       ...(identity ? [new SystemMessage(identity)] : []),
       new HumanMessage(`${options.prompt ?? REVIEWER_PROMPT}\n\nConversation:\n${renderMemoryReviewConversation(messages)}`),
     ];
+    let admittedModelExposureDependencies:
+      | readonly DurableModelExposureDependency[]
+      | undefined;
+    const assertModelExposure = async () => {
+      await staging.assertCurrentExposure();
+      const snapshots = staging.modelExposureSnapshots();
+      await options.onModelExposure?.(snapshots);
+      const retrieved = snapshots.length === 0
+        ? []
+        : await options.resolveMemoryExposureDependencies?.(snapshots);
+      admittedModelExposureDependencies = canonicalModelExposureUnion(
+        options.modelExposureDependencies,
+        retrieved,
+      );
+    };
     for (let iteration = 0; iteration < (options.maxIterations ?? config.nautilo_reviewer_max_iterations); iteration += 1) {
       if (options.signal?.aborted) throw new MemoryReviewError("cancelled");
+      await assertModelExposure();
       const response = await invoke({ modelId, messages: conversation, tools, ...(options.signal ? { signal: options.signal } : {}) });
       if (options.signal?.aborted) throw new MemoryReviewError("cancelled");
       if (!AIMessage.isInstance(response)) throw new MemoryReviewError("invalid_proposal");
@@ -111,7 +146,17 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
       conversation.push(admittedResponse);
       if (admittedResponse.invalid_tool_calls?.length) throw new MemoryReviewError("invalid_proposal");
       if (!admittedResponse.tool_calls?.length) {
-        const proposal = staging.prepared();
+        await assertModelExposure();
+        const prepared = staging.prepared();
+        const proposal: PreparedMemoryReview = {
+          ...prepared,
+          ...(admittedModelExposureDependencies === undefined
+            ? {}
+            : {
+                modelExposureDependencies:
+                  admittedModelExposureDependencies,
+              }),
+        };
         if (proposal.operations.length === 0 && (typeof admittedResponse.content !== "string" || admittedResponse.content.trim() !== "Nothing to save.")) throw new MemoryReviewError("invalid_proposal");
         return { status: "prepared", proposal, turns, modelId };
       }
@@ -128,8 +173,23 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
     }
     throw new MemoryReviewError("iteration_exhausted");
   } catch (error) {
-    return { status: "failed", reason: options.signal?.aborted ? "cancelled" : error instanceof MemoryReviewError ? error.code : "provider_failed", turns };
+    return { status: "failed", reason: options.signal?.aborted ? "cancelled"
+      : error instanceof MemoryProviderOutcomeUnknownError ? "provider_outcome_unknown"
+      : error instanceof MemoryReviewError ? error.code : "provider_failed", turns };
   }
+}
+
+function canonicalModelExposureUnion(
+  initial: readonly DurableModelExposureDependency[] | undefined,
+  retrieved: readonly DurableModelExposureDependency[] | undefined,
+): readonly DurableModelExposureDependency[] | undefined {
+  if (initial === undefined || retrieved === undefined) return undefined;
+  const carrier = bindModelInputExposure({}, {
+    status: "complete",
+    dependencies: [...initial, ...retrieved],
+  });
+  const normalized = readModelInputExposure(carrier);
+  return normalized?.status === "complete" ? normalized.dependencies : undefined;
 }
 
 function renderMemoryReviewConversation(messages: BaseMessage[]): string {

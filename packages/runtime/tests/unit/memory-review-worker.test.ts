@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { HumanMessage } from "@langchain/core/messages";
-import type { PreparedMemoryReview } from "@nautilo/agent";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { getUsageContext, type PreparedMemoryReview } from "@nautilo/agent";
 import {
   MemoryReviewWorker,
   type MemoryReviewClaim,
@@ -58,7 +58,7 @@ describe("durable Memory review worker", () => {
 
     expect(events).toEqual([
       "effects", "claim", "reconcile", "fence", "load", "fence", "model",
-      "fence", "publish", "effects",
+      "fence", "fence", "publish", "effects",
     ]);
     expect(outcomes).toEqual(["completed"]);
     expect(failures).toEqual([]);
@@ -84,6 +84,23 @@ describe("durable Memory review worker", () => {
     expect(events).not.toContain("load");
     expect(events).not.toContain("model");
     expect(failures[0]).toMatchObject({ reason: "publication_uncertain", retryable: false });
+  });
+
+  test("prior uncertain wire evidence is quarantined after current authority but before another model call", async () => {
+    const { deps, events, failures } = fixture();
+    deps.repository.modelReplaySafety = async () => {
+      events.push("replay-safety");
+      return "block_unknown";
+    };
+    await run(deps);
+    expect(events).toContain("load");
+    expect(events).toContain("fence");
+    expect(events).toContain("replay-safety");
+    expect(events).not.toContain("model");
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.phase).toBe("model");
+    expect(failures[0]?.reason).toBe("provider_outcome_unknown");
+    expect(failures[0]?.retryable).toBe(false);
   });
 
   test("a failed receipt read blocks transformation until a later reconciliation proves absence", async () => {
@@ -143,6 +160,86 @@ describe("durable Memory review worker", () => {
     await run(deps);
     expect(events).toContain("publish");
     expect(failures).toEqual([]);
+  });
+
+  test("default service invocation is service-attributed and freezes the accepted model", async () => {
+    const { deps, events } = fixture();
+    let usageUserId: string | null | undefined = "unset";
+    let bound: [string, string] | undefined;
+    deps.repository.bindServiceModel = async (_claim, resolveModelId) => {
+      bound = [_claim.attemptId, resolveModelId()];
+      return "frozen-model";
+    };
+    deps.invokeModel = async () => {
+      usageUserId = getUsageContext()?.userId;
+      return new AIMessage("Nothing to save.");
+    };
+    deps.prepare = async (_messages, options) => {
+      events.push("model");
+      await options.invokeModel!({ modelId: options.modelId!, messages: [], tools: [] });
+      return { status: "prepared", turns: 1, modelId: options.modelId!, proposal };
+    };
+    await run(deps);
+    expect(bound).toEqual(["attempt", "model"]);
+    expect(usageUserId).toBeNull();
+    expect(events).toContain("publish");
+  });
+
+  test("bound service work does not consult a changed or invalid current default", async () => {
+    const { deps, events } = fixture();
+    let resolved = false;
+    deps.resolveModelId = () => { resolved = true; throw new Error("current default unavailable"); };
+    deps.repository.bindServiceModel = async () => "previously-bound-model";
+    deps.prepare = async (_messages, options) => {
+      events.push("model");
+      expect(options.modelId).toBe("previously-bound-model");
+      return { status: "prepared", turns: 1, modelId: options.modelId!, proposal };
+    };
+    await run(deps);
+    expect(resolved).toBe(false);
+    expect(events).toContain("publish");
+  });
+
+  test("trusted admission fences exposure, every invocation, and publication", async () => {
+    const { deps, events, failures } = fixture();
+    let admittedChecks = 0;
+    let exposures = 0;
+    deps.admitModel = async () => ({
+      modelId: "personal-model",
+      invokeModel: async () => new AIMessage("Nothing to save."),
+      assertCurrent: async () => { admittedChecks += 1; },
+      onModelExposure: async () => { exposures += 1; },
+    });
+    deps.prepare = async (_messages, options) => {
+      events.push("model");
+      await options.onModelExposure?.([]);
+      await options.invokeModel!({ modelId: options.modelId!, messages: [], tools: [] });
+      return { status: "prepared", turns: 1, modelId: options.modelId!, proposal };
+    };
+    await run(deps);
+    expect(admittedChecks).toBe(3);
+    expect(exposures).toBe(1);
+    expect(events).toContain("publish");
+    expect(failures).toEqual([]);
+  });
+
+  test("revoked admitted authority stops before the paid call", async () => {
+    const { deps, events, failures } = fixture();
+    let invoked = false;
+    deps.admitModel = async () => ({
+      modelId: "personal-model",
+      invokeModel: async () => { invoked = true; return new AIMessage(""); },
+      assertCurrent: async () => { throw new Error("personal_key_policy_changed"); },
+    });
+    deps.prepare = async (_messages, options) => {
+      events.push("model");
+      await options.invokeModel!({ modelId: options.modelId!, messages: [], tools: [] });
+      return { status: "prepared", turns: 1, modelId: options.modelId!, proposal };
+    };
+    await run(deps);
+    expect(invoked).toBe(false);
+    expect(events).not.toContain("publish");
+    expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed" });
   });
 
   test("wake coalesces and shutdown fences a model that ignores cancellation", async () => {

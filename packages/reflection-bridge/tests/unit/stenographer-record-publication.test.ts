@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assertStenographerRecordPayloadBinding,
   buildStenographerRecordPublication,
+  decodeDurableRecordEnvelope,
   encodeDurableRecordEnvelope,
 } from "../../src/server";
 
@@ -68,6 +69,66 @@ describe("Stenographer Record publication mapping", () => {
     expect(encodeDurableRecordEnvelope(left.record)).toEqual(
       encodeDurableRecordEnvelope(right.record),
     );
+  });
+
+  test("round-trips complete model exposure without promoting it to cited support", () => {
+    const modelExposureDependencies = [
+      {
+        kind: "source" as const,
+        sourceKind: "message",
+        logicalSourceRef: "message:40",
+        observedRevision: "2",
+        observedContentFingerprint: "sha256:source-message-40-r2",
+        terminalAuthorityLeafHandle: base.namespaceId,
+      },
+      {
+        kind: "record" as const,
+        recordRef: "journal-rollup:10",
+        observedProcessingGeneration: 4,
+        terminalAuthorityLeafHandles: [base.namespaceId],
+      },
+      {
+        kind: "source" as const,
+        sourceKind: "message",
+        logicalSourceRef: "message:41",
+        observedRevision: "3",
+        observedContentFingerprint: "sha256:source-message-41-r3",
+        terminalAuthorityLeafHandle: base.namespaceId,
+      },
+    ];
+    const publication = buildStenographerRecordPublication({
+      ...base,
+      modelExposureDependencies,
+    });
+    expect(publication.record.semantic.sourceDependencies.map(
+      (dependency) => dependency.logicalSourceRef,
+    )).toEqual(["message:41"]);
+
+    const decoded = decodeDurableRecordEnvelope({
+      recordRef: publication.record.recordRef,
+      lifecycle: publication.record.lifecycle,
+      structuralHeight: publication.record.structuralHeight,
+      processingGeneration: publication.record.processingGeneration,
+      payloadBytes: encodeDurableRecordEnvelope(publication.record),
+    });
+    expect(decoded.semantic.modelExposureDependencies).toEqual([
+      modelExposureDependencies[1]!,
+      modelExposureDependencies[0]!,
+      modelExposureDependencies[2]!,
+    ]);
+
+    const reordered = buildStenographerRecordPublication({
+      ...base,
+      modelExposureDependencies: [...modelExposureDependencies].reverse(),
+    });
+    expect(encodeDurableRecordEnvelope(reordered.record)).toEqual(
+      encodeDurableRecordEnvelope(publication.record),
+    );
+  });
+
+  test("keeps legacy publication exposure incomplete", () => {
+    expect(buildStenographerRecordPublication(base).record.semantic
+      .modelExposureDependencies).toBeUndefined();
   });
 
   test("maps successor operations without changing the new Record lifecycle", () => {

@@ -84,6 +84,7 @@ function fakeProfile(overrides: Partial<NautiloProfile> = {}): NautiloProfile {
     agentId: AGENT,
     name: "Jeannie",
     soulFile: "my soul text",
+    soulRevision: 0,
     language: "en",
     privacySpectrum: 3,
     workLifeMode: "both",

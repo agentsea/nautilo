@@ -250,12 +250,164 @@ describe("PostgreSQL semantic work commitments and admission", () => {
     })).toEqual({ admitted: true, generation: 3 });
     expect(reason).toBe("dependency_lost");
     expect(lastWorkMutationStatement).toContain("ordinary_fallback_reason =");
+    expect(lastWorkMutationStatement).toContain("accepted_model_binding =");
+    expect(lastWorkMutationStatement).toContain(
+      "accepted_model_binding_generation =",
+    );
     expect(lastWorkMutationParameters).toContain("dependency_lost");
     expect(lastWorkMutationParameters).not.toContain("scheduled_review");
   });
 });
 
 describe("PostgreSQL semantic work leases", () => {
+  test.each([
+    ["timestamp string", (value: Date) => value.toISOString()],
+    ["Date", (value: Date) => value],
+  ] as const)("atomically binds a fresh family, reopens a bound subset, and rejects partial binding with a %s lease", async (_label, transportLease) => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    const accepted = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:fixed",
+      inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+    };
+    let mode: "fresh" | "resumed" | "subset" | "mixed" = "fresh";
+    const claims: DurableSleepClaim[] = ["b", "a"].map((suffix) => ({
+      logicalObjectRef: `record:${suffix}`,
+      recordRef: `record:${suffix}`,
+      generation: 3,
+      changeReason: "revised",
+      stage: "organization",
+      leaseToken: `lease:${suffix}`,
+    }));
+    const row = (claim: DurableSleepClaim, binding: unknown) => ({
+      record_id: claim.recordRef,
+      generation: claim.generation,
+      claim_generation: claim.generation,
+      lease_token: claim.leaseToken,
+      lease_expires_at: transportLease(new Date(now.getTime() + 30_000)),
+      state: "claimed",
+      stage: claim.stage,
+      change_reason: claim.changeReason,
+      accepted_model_binding: binding,
+      accepted_model_binding_generation: binding === null ? null : claim.generation,
+      disposition: "available",
+    });
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select")) {
+        const sorted = [...claims].sort((left, right) =>
+          left.recordRef.localeCompare(right.recordRef)
+        );
+        const selected = mode === "subset" ? sorted.slice(0, 1) : sorted;
+        return selected.map((claim, index) => row(
+          claim,
+          mode === "fresh" ? null : mode === "resumed" || index === 0
+            ? accepted
+            : null,
+        )) as unknown as Row[];
+      }
+      if (normalized.startsWith("update reflection_record_semantic_work")) {
+        return [{ record_id: "updated" }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+      clock: () => now,
+    });
+    let resolves = 0;
+    expect(await store.bindAcceptedModelOperation(claims, async () => {
+      resolves += 1;
+      return accepted;
+    })).toEqual(accepted);
+    expect(resolves).toBe(1);
+    expect(normalizedSql(value.queries[0]!.statement)).toContain(
+      "order by reflection_record_semantic_work.record_id asc for update",
+    );
+
+    mode = "resumed";
+    expect(await store.bindAcceptedModelOperation(claims, async () => {
+      resolves += 1;
+      return accepted;
+    })).toEqual(accepted);
+    expect(resolves).toBe(1);
+
+    mode = "subset";
+    const subset = [...claims].sort((left, right) =>
+      left.recordRef.localeCompare(right.recordRef)
+    ).slice(0, 1);
+    expect(await store.bindAcceptedModelOperation(subset, async () => {
+      resolves += 1;
+      return accepted;
+    })).toEqual(accepted);
+    expect(resolves).toBe(1);
+
+    mode = "mixed";
+    expect(store.bindAcceptedModelOperation(claims, async () => accepted))
+      .rejects.toThrow("partially bound");
+  });
+
+  test.each([
+    ["null", null],
+    ["malformed", "not-a-timestamp"],
+    ["expired string", "2026-09-05T09:59:59.999Z"],
+    ["expired Date", new Date("2026-09-05T09:59:59.999Z")],
+  ] as const)("rejects a %s lease before resolving a model binding", async (_label, leaseExpiresAt) => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: "record:one",
+      recordRef: "record:one",
+      generation: 3,
+      changeReason: "revised",
+      stage: "organization",
+      leaseToken: "lease:one",
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      if (!normalizedSql(statement).startsWith("select")) {
+        throw new Error(`unexpected SQL: ${statement}`);
+      }
+      return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: leaseExpiresAt,
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        accepted_model_binding: null,
+        accepted_model_binding_generation: null,
+        disposition: "available",
+      }] as unknown as Row[];
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(3)),
+      clock: () => now,
+    });
+    let resolves = 0;
+    const error = await store.bindAcceptedModelOperation([claim], async () => {
+      resolves += 1;
+      return {
+        version: 1,
+        kind: "service",
+        role: "memoryReflection",
+        modelId: "model:fixed",
+        inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+      };
+    }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(resolves).toBe(0);
+    expect(value.queries).toHaveLength(1);
+  });
+
   test("checks exact live claim metadata without reading payloads or changing work", async () => {
     const now = new Date("2026-09-05T10:00:00.000Z");
     let current = true;
@@ -600,6 +752,8 @@ describe("PostgreSQL semantic work leases", () => {
           lease_token: "11111111-1111-4111-8111-111111111111",
           due_since: now,
           started_at: now,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       if (normalized.startsWith("update reflection_record_semantic_work")
@@ -621,6 +775,7 @@ describe("PostgreSQL semantic work leases", () => {
         generation: 3,
         recordRef: "record:one",
         stage: "authority_projection",
+        modelBatchFamilyKey: "fresh",
       },
     });
     if (claimed.status !== "claimed") throw new Error("expected claim");
@@ -693,6 +848,57 @@ describe("PostgreSQL semantic work leases", () => {
     )?.statement ?? "")).toContain("lease_expires_at >");
   });
 
+  test("claims a retained model family with one stable opaque batch affinity", async () => {
+    const now = new Date("2026-09-05T10:00:00.000Z");
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:retained-private",
+      inputCommitment: `hmac-sha256:${"B".repeat(43)}`,
+    };
+    const commitments = createHmacRecordSemanticCommitmentPort(
+      new Uint8Array(32).fill(5),
+    );
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && !normalized.includes("returning")) return [];
+      if (statement.includes("WITH candidate AS")) {
+        return [{
+          record_id: "record:retained",
+          generation: 4,
+          change_reason: "revised",
+          stage: "organization",
+          lease_token: "44444444-4444-4444-8444-444444444444",
+          due_since: now,
+          started_at: now,
+          accepted_model_binding: binding,
+          accepted_model_binding_generation: 4,
+        }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments,
+      clock: () => now,
+    });
+
+    const claimed = await store.claimNext();
+    const expectedKey = `binding:${Buffer.from(
+      commitments.modelBinding({ binding }),
+    ).toString("hex")}`;
+    expect(claimed).toMatchObject({
+      status: "claimed",
+      claim: { modelBatchFamilyKey: expectedKey },
+    });
+    expect(expectedKey).not.toContain(binding.modelId);
+    expect(expectedKey).not.toContain(binding.inputCommitment);
+  });
+
   test("carries projection refresh claims and completes them at the search checkpoint", async () => {
     const now = new Date("2026-10-06T10:00:00.000Z");
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
@@ -711,6 +917,8 @@ describe("PostgreSQL semantic work leases", () => {
           due_since: now,
           started_at: now,
           projection_refresh_only: true,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       if (normalized.startsWith("update reflection_record_semantic_work")
@@ -880,6 +1088,8 @@ describe("PostgreSQL semantic work leases", () => {
             started_at: now,
             execution_representation: "protected",
             execution_maximum_stage: maximumStageRank,
+            accepted_model_binding: null,
+            accepted_model_binding_generation: null,
           }] as unknown as Row[];
         }
         throw new Error(`unexpected SQL: ${statement}`);
@@ -968,6 +1178,8 @@ describe("PostgreSQL semantic work leases", () => {
           started_at: now,
           execution_representation: "protected",
           execution_maximum_stage: 0,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         },
         {
           record_id: "record:ordinary",
@@ -979,6 +1191,8 @@ describe("PostgreSQL semantic work leases", () => {
           started_at: now,
           execution_representation: "ordinary",
           execution_maximum_stage: 2,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         },
       ];
       return [rows[claimIndex++]!] as unknown as Row[];
@@ -1050,6 +1264,8 @@ describe("PostgreSQL semantic work leases", () => {
           started_at: now,
           execution_representation: "ordinary",
           execution_maximum_stage: 2,
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       throw new Error(`unexpected SQL: ${statement}`);
@@ -1183,6 +1399,8 @@ describe("PostgreSQL semantic work leases", () => {
           recovered_from_quarantine: true,
           due_since: new Date("2026-08-14T09:00:00.000Z"),
           started_at: new Date("2026-08-14T09:30:00.000Z"),
+          accepted_model_binding: null,
+          accepted_model_binding_generation: null,
         }] as unknown as Row[];
       }
       throw new Error(`unexpected SQL: ${statement}`);

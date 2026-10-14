@@ -14,6 +14,9 @@ import {
   PostgresProtectedStenographerWorkRepository,
   PROTECTED_STENOGRAPHER_WORK_LEASE_MS,
 } from "../../src/stenographer/protected-stenographer-work-repository";
+import {
+  fingerprintProtectedStenographerSourceBindings,
+} from "../../src/stenographer/protected-source-loader";
 
 const NOW = new Date("2026-08-04T13:00:00.000Z");
 const ROOM_ID = "11111111-1111-4111-8111-111111111111";
@@ -1081,7 +1084,7 @@ describe("protected Stenographer product work repository", () => {
     assertMetadataOnly(postgres.connection.statements);
   });
 
-  test("recovers exact compaction selection using the current durable lease", async () => {
+  test("recovers the descriptor-owned compaction selection without absorbing newer events", async () => {
     const createdAt = new Date(NOW.getTime() - 30_000).toISOString();
     const event = {
       event_id: "70000000-0000-4000-8000-000000000001",
@@ -1116,10 +1119,35 @@ describe("protected Stenographer product work repository", () => {
       [event],
     ]);
     const workId = `stenographer-compaction/${ROOM_ID}/3/1`;
+    const bindings = [{
+      kind: "event" as const,
+      objectId: "journal/event/1",
+      status: "active" as const,
+      binding: {
+        eventId: event.event_id,
+        roomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        sequence: 1,
+        kind: "fact" as const,
+        supersedesEventId: null,
+        resolvesEventId: null,
+        sourceMessageIds: [1],
+        sourceBatchId: BATCH_ID,
+        batchLocalOrdinal: 0,
+        extractorVersion: "m241-v1",
+        createdAt: NOW.toISOString(),
+      },
+    }];
     const result = await postgres.repository.recoverCompaction({
       workId,
       createdAt,
       now: NOW,
+      descriptorPlan: {
+        throughEventSequence: 1,
+        inputObjectIds: ["journal/event/1"],
+        sourceBindingFingerprint:
+          fingerprintProtectedStenographerSourceBindings(bindings),
+      },
     });
     expect(result.status).toBe("claimed");
     if (result.status !== "claimed") return;
@@ -1135,6 +1163,18 @@ describe("protected Stenographer product work repository", () => {
     expect(postgres.connection.statements.some((statement) =>
       normalizedSql(statement).includes("set compaction_lease_token")
     )).toBe(false);
+    const activeCount = postgres.connection.statements.findIndex((statement) =>
+      normalizedSql(statement).includes("count(*)")
+    );
+    expect(normalizedSql(postgres.connection.statements[activeCount] ?? ""))
+      .toContain("room_events.sequence <= $");
+    expect(postgres.connection.parameters[activeCount]).toContain(1);
+    const selectedEvents = postgres.connection.statements.findIndex(
+      (statement) => normalizedSql(statement).includes("with active_event"),
+    );
+    expect(normalizedSql(postgres.connection.statements[selectedEvents] ?? ""))
+      .toContain("event.sequence <= $3");
+    expect(postgres.connection.parameters[selectedEvents]).toContain(1);
     assertMetadataOnly(postgres.connection.statements);
   });
 

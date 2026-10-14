@@ -262,6 +262,20 @@ describe("RoomEventPayloadV1 canonical codec", () => {
 });
 
 describe("RoomEventRollupPayloadV1 canonical codec", () => {
+  test("confidential complete exposure survives canonical encoding without entering clear binding", () => {
+    const base = rollupPayload();
+    const payload = rollupPayload({ modelExposureDependencies: [{
+      kind: "source", sourceKind: "message", logicalObjectRef: "message:42",
+      observedRevision: "2", observedContentFingerprint: "exact-snapshot",
+      terminalAuthorityLeafHandle: base.namespaceId,
+    }] });
+    const opened = decodeRoomEventRollupPayloadV1(encodeRoomEventRollupPayloadV1(payload));
+    expect(opened.modelExposureDependencies).toEqual(payload.modelExposureDependencies);
+    const { content: _content, ...binding } = base;
+    expect(() => assertRoomEventRollupPayloadBindingV1(opened, binding)).not.toThrow();
+    expect(decodeRoomEventRollupPayloadV1(encodeRoomEventRollupPayloadV1(base)).modelExposureDependencies).toBeUndefined();
+  });
+
   test("round-trips immutable rollup facts with a distinct domain", () => {
     const payload = rollupPayload();
     const bytes = encodeRoomEventRollupPayloadV1(payload);

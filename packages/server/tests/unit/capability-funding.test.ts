@@ -162,3 +162,34 @@ describe("capability funding projection", () => {
     expect(await errorCode(decision.openModel(invalidDecision.id, "decision"))).toBe("unsupported_workload");
   });
 });
+
+
+describe("personal Memory funding projection", () => {
+  test("admitted Memory uses an optional sparse exact model without changing payer priority", async () => {
+    const custody = createPersonalProviderCustody();
+    const row = credential("openrouter", custody);
+    const session = createCapabilityFundingSession(HUMAN_ID, undefined, personalProjectionDeps(row), {
+      readPreferences: async () => ({ revision: 8, overrides: { memoryReview: RESEARCH_MODEL } }),
+      readProjectionCustody: async () => custody,
+    });
+    expect(await session.resolveModel("memoryReview")).toEqual({modelId:RESEARCH_MODEL,preferenceRevision:8});
+    expect(await session.openModel(RESEARCH_MODEL,"memory")).toMatchObject({binding:{kind:"personal",providerRoute:"openrouter",credentialId:CREDENTIAL_ID,credentialRevision:1},fundingSession:{workload:"memory"}});
+  });
+  test("Memory selection respects server-first priority even with a Human override", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, undefined, serverProjectionDeps(), {
+      readPreferences: async () => ({ revision:9,overrides:{memorySummarization:RESEARCH_MODEL} }),
+    });
+    expect(await session.resolveModel("memorySummarization")).toEqual({modelId:RESEARCH_MODEL,preferenceRevision:9});
+    expect((await session.openModel(RESEARCH_MODEL,"memory")).binding.kind).toBe("server");
+  });
+  test("a disabled explicit Memory model produces repair rather than silent replacement", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, undefined, serverProjectionDeps(), {
+      readPreferences: async () => ({revision:10,overrides:{memoryReflection:"unknown:model"}}),
+    });
+    const failure = await session.resolveModel("memoryReflection").then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(Error);
+  });
+});

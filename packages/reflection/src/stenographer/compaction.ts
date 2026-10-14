@@ -8,6 +8,7 @@ import {
 } from "./constants";
 import type {
   StenographerCompactionEvent,
+  StenographerCompactionModelExposure,
   StenographerCompactionRollup,
 } from "./types";
 
@@ -50,6 +51,7 @@ export interface JournalCompactionPlan<
   inputCodePoints: number;
   hasMoreEligiblePrefix: boolean;
   scheduleAnotherPassAfterPublish: boolean;
+  modelExposure: StenographerCompactionModelExposure;
 }
 
 export type JournalCompactionPlanResult<
@@ -200,6 +202,14 @@ export function planJournalCompaction<
       inputCodePoints: countCodePoints(selectedPrompt),
       hasMoreEligiblePrefix: selectedEvents.length < eligiblePrefix.length,
       scheduleAnotherPassAfterPublish: remainingTrigger.due,
+      modelExposure: {
+        previousRollupThroughEventSequence:
+          previousRollup?.throughEventSequence ?? null,
+        selectedEventSequences: selectedEvents.map((event) => event.sequence),
+        protectedTailEventSequences: protectedTail.map(
+          (event) => event.sequence,
+        ),
+      },
     },
   };
 }

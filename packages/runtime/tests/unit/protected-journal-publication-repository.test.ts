@@ -1670,6 +1670,15 @@ describe("protected journal publication repository", () => {
     expect(rollup.connection.parameters[rollupInsert]).toContain(
       PROTECTED_JOURNAL_CONTENT_SENTINEL,
     );
+    const terminalStateUpdate = rollup.connection.statements.find(
+      (statement) => normalizedSql(statement).includes(
+        "update room_journal_state",
+      ),
+    );
+    expect(normalizedSql(terminalStateUpdate ?? ""))
+      .toContain("compaction_accepted_model_binding = $");
+    expect(normalizedSql(terminalStateUpdate ?? ""))
+      .toContain("compaction_accepted_plan = $");
   });
 
   test("failures, bounded listing, and tombstone lifecycle are typed and leased", async () => {

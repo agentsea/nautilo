@@ -22,6 +22,7 @@
     }
   },
   "dependencies": {
+    "@nautilo/types": "workspace:*",
     "@nautilo/db": "workspace:*",
     "@nautilo/lattice-bridge": "workspace:*",
     "@nautilo/lattice-crypto": "workspace:*",

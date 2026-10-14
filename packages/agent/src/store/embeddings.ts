@@ -1,8 +1,10 @@
 import { fromRuntimeConfig } from "@nautilo/config";
 import { getCachedServerModelConfigRow } from "@nautilo/db";
 import { resolveProviderKey } from "../resolve-provider-key";
-import { recordLlmUsage } from "../usage/record-usage";
-import { getUsageContext } from "../usage/usage-context";
+import {
+  runServiceEmbeddingAttempt,
+  type ServiceEmbeddingAttemptEvidence,
+} from "../usage/service-embedding-attempt";
 import { VENICE_EMBEDDINGS_URL } from "../providers/venice-api";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 
@@ -307,82 +309,87 @@ async function embedTextsWithResolvedProvider(
   const dims = fixed?.dimensions ?? config.dims;
   const resolved = fixed?.resolved ?? resolveEmbeddingProvider(config.model);
 
-  let response: Response;
-  try {
-    response = await fetch(resolved.endpoint, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${resolved.apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: resolved.model,
-        input: texts,
-        // OpenRouter documents output dimensions on its embedding request.
-        // Pinning them keeps the provider response aligned with pgvector.
-        ...(resolved.provider === "openrouter" || resolved.provider === "venice"
-          ? { dimensions: dims }
-          : {}),
-      }),
-      ...(signal === undefined ? {} : { signal }),
-    });
-  } catch {
-    throw new EmbeddingProviderError({
-      message: `${embeddingProviderLabel(resolved.provider)} could not be reached for embeddings. Check network access and retry.`,
-      code: "request_failed",
-      provider: resolved.provider,
-      retryable: true,
-    });
-  }
+  return runServiceEmbeddingAttempt({
+    provider: resolved.provider,
+    model: resolved.model,
+    endpoint: resolved.endpoint,
+    dimensions: dims,
+    ...(signal === undefined ? {} : { signal }),
+    invoke: async (observeEvidence) => {
+      let response: Response;
+      try {
+        response = await fetch(resolved.endpoint, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${resolved.apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: resolved.model,
+            input: texts,
+            // OpenRouter documents output dimensions on its embedding request.
+            // Pinning them keeps the provider response aligned with pgvector.
+            ...(resolved.provider === "openrouter" || resolved.provider === "venice"
+              ? { dimensions: dims }
+              : {}),
+          }),
+          ...(signal === undefined ? {} : { signal }),
+        });
+      } catch {
+        throw new EmbeddingProviderError({
+          message: `${embeddingProviderLabel(resolved.provider)} could not be reached for embeddings. Check network access and retry.`,
+          code: "request_failed",
+          provider: resolved.provider,
+          retryable: true,
+        });
+      }
 
-  if (!response.ok) {
-    throw new EmbeddingProviderError({
-      message: providerFailureMessage(resolved.provider, response.status),
-      code: "request_failed",
-      provider: resolved.provider,
-      status: response.status,
-      retryable: response.status === 429 || response.status >= 500,
-    });
-  }
+      if (!response.ok) {
+        const providerRequestId = response.headers.get("x-request-id")?.trim();
+        if (providerRequestId) observeEvidence({ providerRequestId });
+        throw new EmbeddingProviderError({
+          message: providerFailureMessage(resolved.provider, response.status),
+          code: "request_failed",
+          provider: resolved.provider,
+          status: response.status,
+          retryable: response.status === 429 || response.status >= 500,
+        });
+      }
 
-  let data: {
-    data: Array<{ embedding: number[]; index: number }>;
-    usage?: { prompt_tokens?: number; total_tokens?: number; cost?: number };
-  };
-  try {
-    data = (await response.json()) as typeof data;
-  } catch {
-    throwInvalidEmbeddingResponse(resolved.provider);
-  }
+      let data: {
+        data: Array<{ embedding: number[]; index: number }>;
+        usage?: { prompt_tokens?: number; total_tokens?: number; cost?: number };
+      };
+      try {
+        data = (await response.json()) as typeof data;
+      } catch {
+        throwInvalidEmbeddingResponse(resolved.provider);
+      }
 
-  const embeddings = parseEmbeddingResponse(data, texts.length, dims, resolved.provider);
+      const evidence: ServiceEmbeddingAttemptEvidence = {};
+      const promptTokens = data.usage?.prompt_tokens;
+      if (typeof promptTokens === "number" && Number.isSafeInteger(promptTokens)
+        && promptTokens >= 0) {
+        evidence.inputTokens = promptTokens;
+      }
+      const totalTokens = data.usage?.total_tokens;
+      if (typeof totalTokens === "number" && Number.isSafeInteger(totalTokens)
+        && totalTokens >= 0) {
+        evidence.totalTokens = totalTokens;
+      }
+      const reportedCost = data.usage?.cost;
+      if (resolved.provider === "openrouter" && typeof reportedCost === "number"
+        && Number.isFinite(reportedCost) && reportedCost >= 0) {
+        evidence.actualCostUsd = reportedCost;
+      }
+      const providerRequestId = response.headers.get("x-request-id")?.trim();
+      if (providerRequestId) evidence.providerRequestId = providerRequestId;
+      if (Object.keys(evidence).length > 0) observeEvidence(evidence);
 
-  // Costs dashboard (D405): embeddings bypass the LangChain callback, so meter
-  // them explicitly from the API's reported usage.
-  const promptTokens = data.usage?.prompt_tokens ?? 0;
-  if (promptTokens > 0) {
-    const ctx = getUsageContext();
-    const reportedCost = data.usage?.cost;
-    const actualCostUsd =
-      resolved.provider === "openrouter" &&
-      typeof reportedCost === "number" &&
-      Number.isFinite(reportedCost) &&
-      reportedCost >= 0
-        ? reportedCost
-        : null;
-    recordLlmUsage({
-      model: `${resolved.provider}:${resolved.model}`,
-      callType: "embedding",
-      userId: ctx?.userId ?? null,
-      roomId: ctx?.roomId ?? null,
-      inputTokens: promptTokens,
-      totalTokens: data.usage?.total_tokens ?? promptTokens,
-      ...(actualCostUsd === null ? {} : { actualCostUsd }),
-      ...(ctx?.metadata ? { metadata: ctx.metadata } : {}),
-    });
-  }
-
-  return { embeddings, resolved, dimensions: dims };
+      const embeddings = parseEmbeddingResponse(data, texts.length, dims, resolved.provider);
+      return { embeddings, resolved, dimensions: dims };
+    },
+  });
 }
 
 export async function embedTexts(texts: string[], signal?: AbortSignal): Promise<number[][]> {

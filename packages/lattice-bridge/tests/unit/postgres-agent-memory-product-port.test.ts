@@ -1480,6 +1480,14 @@ describe("Postgres foreground Agent Memory product port", () => {
   });
 
   test.each(["protected_only", "ordinary_and_protected"] as const)("publishes the exact prepared revision with %s and closes its receipt", async (representation) => {
+    const modelExposureDependencies = [{
+      kind: "source" as const,
+      sourceKind: "message",
+      logicalObjectRef: "message:41",
+      observedRevision: "3",
+      observedContentFingerprint: "sha256:current",
+      terminalAuthorityLeafHandle: NAMESPACE_A,
+    }];
     const plan: ProtectedMemoryMutationPlan = Object.freeze({
       operationId: "memory.save.1",
       action: "created",
@@ -1545,7 +1553,12 @@ describe("Postgres foreground Agent Memory product port", () => {
         expect(revision).toBe(prepared);
         expect(deps.completed).toEqual([prepared]);
         payloadReads += 1;
-        return { formatVersion: 1, type: "private authored type", content: "verified Shadow body" };
+        return {
+          formatVersion: 1,
+          type: "private authored type",
+          content: "verified Shadow body",
+          modelExposureDependencies,
+        };
       } },
     });
 
@@ -1562,6 +1575,13 @@ describe("Postgres foreground Agent Memory product port", () => {
     expect(insert).toBeDefined();
     expect(insert!.parameters.includes("private authored type")).toBe(representation === "ordinary_and_protected");
     expect(insert!.parameters.includes("verified Shadow body")).toBe(representation === "ordinary_and_protected");
+    expect(normalizedSql(insert!.statement)).toContain(
+      "model_exposure_dependencies",
+    );
+    expect(insert!.parameters.some((parameter) =>
+      typeof parameter === "string"
+      && parameter.includes('"logicalSourceRef":"message:41"')
+    )).toBe(representation === "ordinary_and_protected");
     expect(insert!.parameters).toContain("unmapped");
     expect(insert!.parameters).not.toContain(plan.cryptoObjectId);
     const mapping = connection.queries.find((query) =>
@@ -1637,6 +1657,13 @@ describe("Postgres foreground Agent Memory product port", () => {
     ]);
     const { port } = await createPort(connection);
     expect(await port.publishPrepared({ authority: namespaceAuthority, plan, prepared, embedding })).toBe("published");
+    const productUpdate = connection.queries.find((query) =>
+      normalizedSql(query.statement).includes("update memories")
+      && query.parameters.includes(nextObjectId)
+    );
+    expect(normalizedSql(productUpdate!.statement)).toContain(
+      "model_exposure_dependencies",
+    );
     connection.assertExhausted();
   });
 

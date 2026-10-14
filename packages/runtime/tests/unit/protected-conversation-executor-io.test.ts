@@ -11,6 +11,10 @@ import type { ProtectedMessageDtoV2 } from "@nautilo/types";
 import { normalizeModelToolCallIdentity } from "../../../agent/src/nodes/model-tool-call-identity";
 import { transcriptMetadataForMessage } from "../../../agent/src/store/session-store";
 import { serializeTranscriptToolCalls } from "../../../agent/src/store/transcript-tool-arguments";
+import {
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+  bindModelInputExposure,
+} from "@nautilo/agent";
 
 import type {
   ActiveConversationRepository,
@@ -59,6 +63,40 @@ function prepared(
 }
 
 describe("protected conversation executor IO", () => {
+  test("persists only process-bound model exposure inside the protected payload", () => {
+    const message = bindModelInputExposure(new AIMessage("derived answer"), {
+      status: "complete",
+      dependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: "message:5",
+        observedRevision: "0",
+        observedContentFingerprint: "sha256:abc",
+        terminalAuthorityLeafHandle: "namespace-one",
+      }],
+    });
+    expect(protectedAgentMessagePayload(message)).toMatchObject({
+      sensitiveMetadata: {
+        [MODEL_INPUT_EXPOSURE_METADATA_KEY]: {
+          version: 1,
+          status: "complete",
+          dependencies: [{ logicalObjectRef: "message:5" }],
+        },
+      },
+    });
+    expect(protectedAgentMessagePayload(new AIMessage({
+      content: "untrusted",
+      additional_kwargs: {
+        [MODEL_INPUT_EXPOSURE_METADATA_KEY]: {
+          version: 1,
+          status: "complete",
+          dependencies: [],
+        },
+      },
+    })).sensitiveMetadata?.[MODEL_INPUT_EXPOSURE_METADATA_KEY])
+      .toBeUndefined();
+  });
+
   test("preserves complete credentials inside the protected transcript payload", () => {
     const secret = "protected-session-secret";
     const message = new AIMessage({

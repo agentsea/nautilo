@@ -1,4 +1,5 @@
 import type { RecordLifecycle } from "../contracts/hierarchy";
+import type { DurableModelExposureDependency } from "../durable";
 import { RECORD_SEARCH_POLICY_V1 } from "../search/policy";
 
 const textEncoder = new TextEncoder();
@@ -37,6 +38,11 @@ export interface ForegroundRecordContextItemV1 {
   readonly statement: string;
   readonly lifecycle: Exclude<RecordLifecycle, "sunset">;
   readonly structuralHeight: number;
+  /** Process-trusted snapshot of the exact canonical Record disclosed here. */
+  readonly modelExposureDependency?: Extract<
+    DurableModelExposureDependency,
+    { kind: "record" }
+  >;
 }
 
 export interface ForegroundRecordStructuralSelectionV1 {
@@ -62,6 +68,8 @@ export type ForegroundRecordSelectionResult =
 
 export interface ForegroundRecordContextPort {
   readonly representation: "ordinary" | "protected";
+  /** Canonical ordinary reopen used for native Journal rows as well as search hits. */
+  reopenOrdinaryRecord?(recordRef: string): Promise<ForegroundRecordContextItemV1 | null>;
   select(input: Readonly<{
     readonly query: string;
     readonly limit: number;

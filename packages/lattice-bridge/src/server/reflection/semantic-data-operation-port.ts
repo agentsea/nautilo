@@ -348,12 +348,12 @@ export function bindReflectionSemanticDataOperationPort(input: Readonly<{
       }
       return useSemantic(operation.claim, "organization", operation.signal, port => port.resolveDependencyLoss(operation));
     },
-    async invokeOrganizer(claim, prompt, signal) {
+    async invokeOrganizer(claim, prompt, signal, modelExposureDependencies) {
       if (input.invokePreparedOrganizerBatch !== undefined) {
-        return invokePrepared([claim], prompt, signal);
+        return invokePrepared([claim], prompt, signal, modelExposureDependencies);
       }
       return useSemantic(claim, "organization", signal, port =>
-        port.invokeOrganizer(claim, prompt, signal));
+        port.invokeOrganizer(claim, prompt, signal, modelExposureDependencies));
     },
     async applyProposal(operation) {
       return useSemantic(
@@ -417,7 +417,8 @@ export function bindReflectionSemanticDataOperationPort(input: Readonly<{
     };
   }
 
-  async function invokePrepared(batch: readonly DurableSleepClaim[], prompt: string, signal?: AbortSignal): Promise<string> {
+  async function invokePrepared(batch: readonly DurableSleepClaim[], prompt: string, signal?: AbortSignal,
+    modelExposureDependencies?: Parameters<DurableSleepSemanticPort["invokeOrganizer"]>[3]): Promise<string> {
     if (batch.length === 0 || new Set(batch).size !== batch.length) {
       throw invalidClaimResult("Prepared Organizer batch is empty or duplicated");
     }
@@ -435,14 +436,13 @@ export function bindReflectionSemanticDataOperationPort(input: Readonly<{
       }
       await attempt?.assertCurrent();
     }
-    const result = await input.invokePreparedOrganizerBatch!(batch, prompt, signal);
+    const result = await input.invokePreparedOrganizerBatch!(batch, prompt, signal, modelExposureDependencies);
     for (const selection of selections) await revalidate(selection, signal);
     return result;
   }
 
   if (input.invokePreparedOrganizerBatch !== undefined || input.ordinary.invokeOrganizerBatch !== undefined || input.protected.semantic?.invokeOrganizerBatch !== undefined) {
-    semantic.invokeOrganizerBatch = async (batch, prompt, signal) => {
-      if (input.invokePreparedOrganizerBatch !== undefined) return invokePrepared(batch, prompt, signal);
+    semantic.invokeOrganizerBatch = async (batch, prompt, signal, modelExposureDependencies) => {
       if (batch.length === 0) {
         throw invalidClaimResult("Organizer batch is empty");
       }
@@ -460,11 +460,34 @@ export function bindReflectionSemanticDataOperationPort(input: Readonly<{
         || selection.maximumStage !== "organization")) {
         throw invalidClaimResult("Organizer batch mixes policy or representation");
       }
+      if (input.invokePreparedOrganizerBatch !== undefined) {
+        // Protected questions must enter their live grant owner before the
+        // shared provider callback. Mixed representations cannot share one
+        // disclosure scope and were rejected above.
+        if (representation === "protected") {
+          if (port?.invokeOrganizerBatch === undefined) unsupportedProtectedOperation();
+          for (const [index, selection] of selections.entries()) {
+            if (!readyQuestions.has(batch[index]!) || selection.maximumStage !== "organization") {
+              throw invalidClaimResult("Organizer question is not ready under the current policy");
+            }
+            await revalidate(selection, signal);
+            await attempts.get(batch[index]!)?.assertCurrent();
+          }
+          const value = await port.invokeOrganizerBatch(batch, prompt, signal, modelExposureDependencies);
+          for (const [index, selection] of selections.entries()) {
+            await attempts.get(batch[index]!)?.assertCurrent();
+            await revalidate(selection, signal);
+          }
+          return value;
+        }
+        return invokePrepared(batch, prompt, signal, modelExposureDependencies);
+      }
       for (const selection of selections) await revalidate(selection, signal);
       const value = await port.invokeOrganizerBatch(
         batch,
         prompt,
         signal,
+        modelExposureDependencies,
       );
       for (const selection of selections) await revalidate(selection, signal);
       return value;

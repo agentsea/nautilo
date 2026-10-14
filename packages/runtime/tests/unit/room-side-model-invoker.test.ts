@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SurplusOutcomeUnknownError } from "@nautilo/agent";
+import { MemoryProviderOutcomeUnknownError, SurplusOutcomeUnknownError } from "@nautilo/agent";
 import {
   classifyRoomSideInvocationFailure,
   mapModelFailure,
@@ -11,6 +11,10 @@ describe("room-side model failure classification", () => {
     const failure = new SurplusOutcomeUnknownError();
     expect(classifyRoomSideInvocationFailure(failure)).toBe(failure);
     expect(mapModelFailure(failure)).toBe("provider_outcome_unknown");
+  });
+
+  test("preserves an uncertain direct Memory outcome as a non-replayable failure", () => {
+    expect(mapModelFailure(new MemoryProviderOutcomeUnknownError())).toBe("provider_outcome_unknown");
   });
 
   test("retains ordinary provider and timeout recovery", () => {

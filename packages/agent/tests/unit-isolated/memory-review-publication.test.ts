@@ -9,17 +9,18 @@ import { MemoryMutationAuthorityError, revalidateMemoryMutationAuthority, revali
 
 const writes: { name: string; tx: unknown }[] = [];
 const propagatedEmbeddings: unknown[] = [];
+const propagatedExposure: unknown[] = [];
 mock.module("../../src/store/memory-store", () => ({
   findMemorySaveTarget: async () => null, getMemoryById: async () => null, searchMemory: async () => [],
-  saveMemoryWithDb: async (tx: unknown, _opts: unknown, prepared: { id: string; embedding: unknown }) => { writes.push({ name: "save", tx }); propagatedEmbeddings.push(prepared.embedding); return { id: prepared.id, action: "created" }; },
-  replaceMemoryWithDb: async (tx: unknown, _id: unknown, _content: unknown, _mutable: unknown, embedding: unknown) => { writes.push({ name: "replace", tx }); propagatedEmbeddings.push(embedding); return true; },
+  saveMemoryWithDb: async (tx: unknown, _opts: unknown, prepared: { id: string; embedding: unknown; modelExposureDependencies?: unknown }) => { writes.push({ name: "save", tx }); propagatedEmbeddings.push(prepared.embedding); propagatedExposure.push(prepared.modelExposureDependencies); return { id: prepared.id, action: "created" }; },
+  replaceMemoryWithDb: async (tx: unknown, _id: unknown, _content: unknown, _mutable: unknown, embedding: unknown, exposure: unknown) => { writes.push({ name: "replace", tx }); propagatedEmbeddings.push(embedding); propagatedExposure.push(exposure); return true; },
   demoteMemoryWithDb: async (tx: unknown) => { writes.push({ name: "demote", tx }); return true; },
   promoteMemoryWithDb: async (tx: unknown) => { writes.push({ name: "promote", tx }); return true; },
 }));
 mock.module("../../src/store/scope-memory-store", () => ({
   findScopeMemorySaveTarget: async () => null, getScopeMemoryById: async () => null, searchScopeMemory: async () => [],
-  saveScopeMemoryWithDb: async (tx: unknown, _opts: unknown, prepared: { id: string; embedding: unknown }) => { writes.push({ name: "scope-save", tx }); propagatedEmbeddings.push(prepared.embedding); return { id: prepared.id, action: "created" }; },
-  replaceScopeMemoryWithDb: async (tx: unknown, _opts: unknown, embedding: unknown) => { writes.push({ name: "scope-replace", tx }); propagatedEmbeddings.push(embedding); },
+  saveScopeMemoryWithDb: async (tx: unknown, _opts: unknown, prepared: { id: string; embedding: unknown; modelExposureDependencies?: unknown }) => { writes.push({ name: "scope-save", tx }); propagatedEmbeddings.push(prepared.embedding); propagatedExposure.push(prepared.modelExposureDependencies); return { id: prepared.id, action: "created" }; },
+  replaceScopeMemoryWithDb: async (tx: unknown, _opts: unknown, embedding: unknown, exposure: unknown) => { writes.push({ name: "scope-replace", tx }); propagatedEmbeddings.push(embedding); propagatedExposure.push(exposure); },
   demoteScopeMemoryWithDb: async (tx: unknown) => { writes.push({ name: "scope-demote", tx }); },
   promoteScopeMemoryWithDb: async (tx: unknown) => { writes.push({ name: "scope-promote", tx }); },
 }));
@@ -29,8 +30,10 @@ import type { PreparedMemoryReview, MemoryReviewTransaction, MemoryReviewEffect 
 const envelope: MemoryAccessEnvelope = { ownerId: "human", actorId: "actor", agentId: "agent", roomId: "room", readableNamespaces: ["namespace"], mutableNamespaces: ["namespace"], writableNamespaces: ["namespace"], toolPolicy: {} };
 const original = { id: "existing", type: "fact", content: "Private Memory content", importance: 0.6, tier: 1, createdAt: new Date(0), updatedAt: new Date(0), demotedAt: null, demotedFrom: null, namespaceIds: ["namespace"] };
 const embedding = { vector: [1, 0], provider: "openai" as const, canonicalModel: "model-a", dimensions: 2, contractVersion: 1 as const };
+const exposure = [{ kind: "source" as const, sourceKind: "message", logicalSourceRef: "message:41", observedRevision: "3", observedContentFingerprint: "sha256:message", terminalAuthorityLeafHandle: "namespace" }];
 function proposal(): PreparedMemoryReview {
   return { envelope, speakerUserId: "human", snapshots: [{ memoryId: original.id, fingerprint: memoryReviewFingerprint(original) }],
+    modelExposureDependencies: exposure,
     operations: [{ operationId: "work:mutation:0", action: "replace", memoryId: original.id, expectedDedupId: null, type: "fact", content: "New private content", embedding }],
   };
 }
@@ -64,7 +67,7 @@ function transaction(options: { noSpeaker?: boolean; noAgent?: boolean; noCapabi
   };
   return { tx: tx as unknown as MemoryReviewTransaction, events };
 }
-afterEach(() => { writes.length = 0; propagatedEmbeddings.length = 0; setMemoryAuditSink(null); _resetAuthoredMemorySemanticChangeSinkForTests(); });
+afterEach(() => { writes.length = 0; propagatedEmbeddings.length = 0; propagatedExposure.length = 0; setMemoryAuditSink(null); _resetAuthoredMemorySemanticChangeSinkForTests(); });
 describe("Memory transaction publication", () => {
   test("Human library authority does not borrow Agent membership, but retains Human and product gates", async () => {
     await revalidateHumanMemoryMutationAuthority(transaction({ noAgent: true }).tx, {
@@ -97,6 +100,26 @@ describe("Memory transaction publication", () => {
     expect(error).toBeInstanceOf(MemoryMutationAuthorityError);
     expect(writes).toEqual([]);
   });
+  test("validates search-only exposure with readable authority instead of edit authority", async () => {
+    const exposure: PreparedMemoryReview = {
+      envelope,
+      speakerUserId: "human",
+      operations: [],
+      snapshots: [],
+      exposureSnapshots: [{
+        memoryId: original.id,
+        fingerprint: memoryReviewFingerprint(original),
+      }],
+    };
+    await publishPreparedMemoryReview(transaction({ readOnly: true }).tx, exposure);
+    expect(writes).toEqual([]);
+    expect(await publishPreparedMemoryReview(transaction({
+      readOnly: true,
+      sourceChanged: true,
+    }).tx, exposure).catch((error: unknown) => error)).toMatchObject({
+      code: "source_changed",
+    });
+  });
   test("shared foreground authority rejects substituted subjects before locking and stale mutable or writable sets", async () => {
     const { tx, events } = transaction();
     expect(await revalidateMemoryMutationAuthority(tx, {
@@ -126,6 +149,7 @@ describe("Memory transaction publication", () => {
     const result = await publishPreparedMemoryReview(tx, proposal());
     expect(writes).toEqual([{ name: "replace", tx }]);
     expect(propagatedEmbeddings).toEqual([embedding]);
+    expect(propagatedExposure).toEqual([exposure]);
     expect(result.counts).toEqual({ created: 0, replaced: 1, promoted: 0, demoted: 0 });
     expect(result.effects[0]).toMatchObject({ operationId: "work:mutation:0", memoryId: "existing", changeKind: "replace" });
     expect(JSON.stringify(result)).not.toContain("private");
@@ -143,6 +167,7 @@ describe("Memory transaction publication", () => {
     await publishPreparedMemoryReview(tx, pending);
     expect(writes).toEqual([{ name: "save", tx }]);
     expect(propagatedEmbeddings).toEqual([embedding]);
+    expect(propagatedExposure).toEqual([exposure]);
   });
   test("preserves scope ownership/lifecycle and refuses seed mutation", async () => {
     const pending = proposal();
@@ -156,6 +181,7 @@ describe("Memory transaction publication", () => {
     await publishPreparedMemoryReview(tx, pending);
     expect(writes).toEqual([{ name: "scope-replace", tx }]);
     expect(propagatedEmbeddings).toEqual([embedding]);
+    expect(propagatedExposure).toEqual([exposure]);
   });
   test("post-commit delivery failures stay observable and use stable identities on retry", async () => {
     const effect: MemoryReviewEffect = { operationId: "work:mutation:0", memoryId: "existing", action: "replaced", changeKind: "replace",

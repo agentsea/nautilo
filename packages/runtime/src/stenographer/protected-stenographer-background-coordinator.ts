@@ -544,6 +544,13 @@ export class ProtectedStenographerBackgroundCoordinator {
       if (corruptStoredEvidence || cause instanceof ProcessorCredentialClaimError) {
         return this.terminal(latest, "integrity_failure");
       }
+      // The model result may already be known non-replayable even when the
+      // processor subsequently loses its grant while closing or publishing.
+      // Preserve that terminal evidence instead of scheduling another paid
+      // invocation from the generic claim-expiry recovery below.
+      if (rejectedExecutionRequiresReplayQuarantine(execution)) {
+        return this.terminal(latest, "provider_outcome_unknown");
+      }
       if (
         latest.snapshot.state === "running"
         && (
@@ -803,4 +810,11 @@ export class ProtectedStenographerBackgroundCoordinator {
     }
     return null;
   }
+}
+
+export function rejectedExecutionRequiresReplayQuarantine(
+  execution: Readonly<{ status: string; reason?: string }> | undefined,
+): boolean {
+  return execution?.status === "rejected"
+    && execution.reason === "provider_outcome_unknown";
 }

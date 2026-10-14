@@ -11,6 +11,8 @@ type Application = Parameters<DurableSleepSemanticPort["applyProposal"]>[0];
 
 export interface ProtectedReflectionSemanticQuestionValue {
   readonly view: DurableSleepOrganizerView;
+  /** Runs one provider disclosure while this question's existing crypto grant remains current. */
+  runModel?<Value>(run: () => Promise<Value>): Promise<Value>;
   /** Existing publisher returns its real result after the supplied gate completion attaches it. */
   applyProposal(application: Application, completeOutput: (output: ReflectionSemanticOutputV2 | null) =>
     ReturnType<ReflectionSemanticOperationPort["runSemantic"]>): Promise<DurableSleepApplyResult>;
@@ -120,9 +122,10 @@ export function createProtectedReflectionSemanticQuestions(ports: ProtectedRefle
         return prepared.status === "ready" ? {status: "ready", view: prepared.value.view} : prepared;
       } catch (error) {await entry.close().catch(() => {}); throw error;}
     },
-    async invokeOrganizer(claim, prompt, signal) {
-      await assertQuestion(claim, signal);
-      return ports.invokeOrganizer(claim, prompt, signal);
+    async invokeOrganizer(claim, prompt, signal, modelExposureDependencies) {
+      const entry = await assertQuestion(claim, signal);
+      const invoke = () => ports.invokeOrganizer(claim, prompt, signal, modelExposureDependencies);
+      return entry.question!.value.runModel?.(invoke) ?? invoke();
     },
     async applyProposal(application) {
       const entry = entryFor(application.claim, application.signal);
@@ -161,12 +164,18 @@ export function createProtectedReflectionSemanticQuestions(ports: ProtectedRefle
     },
   };
   if (ports.modelLaneReadiness !== undefined) semantic.modelLaneReadiness = signal => ports.modelLaneReadiness!(signal);
-  if (ports.invokeOrganizerBatch !== undefined) semantic.invokeOrganizerBatch = async (claims, prompt, signal) => {
+  if (ports.invokeOrganizerBatch !== undefined) semantic.invokeOrganizerBatch = async (claims, prompt, signal, modelExposureDependencies) => {
     if (claims.length === 0 || new Set(claims).size !== claims.length) throw unavailable();
-    for (const claim of claims) await assertQuestion(claim, signal);
+    const current = [] as Entry[];
+    for (const claim of claims) current.push(await assertQuestion(claim, signal));
     // Each grant was checked separately. Do not abort siblings or invalidate their
     // answers because another question expires after this shared disclosure.
-    return ports.invokeOrganizerBatch!(claims, prompt, signal);
+    let invoke = () => ports.invokeOrganizerBatch!(claims, prompt, signal, modelExposureDependencies);
+    for (const entry of current) {
+      const previous = invoke;
+      invoke = () => entry.question!.value.runModel?.(previous) ?? previous();
+    }
+    return invoke();
   };
   return Object.freeze(semantic);
 }

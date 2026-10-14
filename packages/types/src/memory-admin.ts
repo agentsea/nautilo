@@ -6,6 +6,7 @@ const timestamp = z.string().datetime({ offset: true });
 export const memoryReviewFailureCodeSchema = z.enum([
   "invalid_proposal", "memory_unavailable", "source_changed", "embedding_failed",
   "iteration_exhausted", "model_unavailable", "provider_failed", "cancelled",
+  "provider_outcome_unknown",
   "execution_unavailable", "publication_uncertain", "source_or_lease_changed",
   "authority_or_source_unavailable", "storage_failed", "unknown",
 ]);
