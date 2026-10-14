@@ -8,15 +8,19 @@ availability requires matching server and Desktop releases.
 ## Interface and audience
 
 Connections → Apps & accounts → Bolter owns authentication and connection
-management. The receiving Desktop provisions the pinned CLI and isolates its
+management. The receiving Desktop acquires the latest provider CLI and isolates its
 credentials by server, Human, and connection. The browser receives a validated
 sign-in link and code, never provider credentials or a local filesystem path.
 
 Creating a linked room selects an observed Bolter conversation, a Genie, and
-explicit model sponsorship. It creates a fresh private room with an external
-context restriction. Connecting does not expose another room's history or make
+explicit model sponsorship. It creates a fresh room classified as External, with
+restricted membership and a permanent external context restriction. Connecting does not expose another room's history or make
 the room publicly discoverable. Room Members contains the link's management
 controls. The room's privacy boundary and transcript survive disconnection.
+Linked rooms appear as normal room entries in Groups. Their External classification
+is read-only: Genies can use only this room's context, and the room cannot be
+switched to Private or Public. This classification does not grant public-by-ID
+access or self-join permission.
 
 External sender attribution is distinct from the sponsoring Human and from
 execution authority. Incoming text is untrusted content. External turns use the
@@ -41,6 +45,9 @@ Starting a process reports Receiver running. Listening requires a recognized
 provider packet to have reached durable storage. A blocked or failed queue drain
 reports Delivery needs attention and retains the queued batch. These states do
 not assert that every message has completed a Genie turn.
+Creating the linked room refreshes the Human's live room subscriptions and
+catalogue before the receiver starts, so the open Desktop can receive its first
+message and completion updates without reconnecting.
 
 Only exact, currently authorized text is released for sending. Ambiguous provider
 results remain uncertain and are not automatically retried. Check the external
@@ -57,11 +64,28 @@ use their durable server identity and sealed Desktop recovery descriptor.
 
 ## Supported boundaries
 
-The initial implementation selects pinned macOS ARM64 or x64 CLI artifacts and
-text-only messages. The conversation picker lists main timelines; it does not
+The implementation selects the latest macOS ARM64 or x64 CLI through Bolter's
+fixed HTTPS download endpoint and supports text-only messages. The endpoint must
+resolve to an exact version on Bolter's CDN. Acquired bytes have a private local
+size/hash receipt and their architecture and reported version are verified before
+activation. Acquisition trusts Bolter's HTTPS endpoints; a local receipt detects
+later changes but is not an independent provider signature or release approval.
+Connecting or restarting a stopped receiver checks the latest release. A CLI or
+receiver failure checks for a newer build and retries a safe operation once only
+when the version changed. A failed recovery stops rather than looping. A released
+send with an uncertain outcome is never replayed; an update repairs future work.
+Updates retain the same credential home, sealed identity and pending inbox batches,
+and retire the old receiver before another process can use that home.
+Pause and disconnection cancel their pending acquisition without interrupting a
+shared download still needed by another current connection.
+Response parsers accept additive metadata while validating the fields used for
+identity, routing, text and receipts. Unsupported media remains unavailable. The conversation picker lists main timelines; it does not
 enumerate threads. The transport preserves exact thread bindings and receipts
-when such a binding exists. Unknown event, sender, or media formats remain blocked
-rather than interpreted as instructions or silently discarded.
+when such a binding exists. Unknown provider events, including `profile_requested`,
+are ignored and logged locally by event kind without their text or payload. They
+do not reach a Genie or block later queued messages, and do not establish Listening
+on their own. Profile requests currently receive no response. Malformed recognized
+events and unqualified message, sender, or media formats remain blocked.
 
 Only the server's plaintext content mode is eligible. Protected-content modes
 remain unavailable; connecting never changes that mode. Local credential homes

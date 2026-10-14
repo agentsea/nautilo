@@ -123,7 +123,8 @@ export function ExplorerRow({
     label: row.label,
   });
   const isOpen = row.roomKind === "open";
-  const isExternal = isOpen && row.roomDiscoverable === false;
+  const isLinkedExternal = row.roomExternalContext === true;
+  const isExternal = isLinkedExternal || (isOpen && row.roomDiscoverable === false);
   const roomOverride = notifications.snapshot?.preferences.roomOverrides.find(
     (override) => override.roomId === row.roomId,
   );
@@ -394,7 +395,7 @@ export function ExplorerRow({
               </span>
             ) : null}
             <span className="min-w-0 flex-1 truncate">{rowLabel(row)}</span>
-            {isOpen ? (
+            {isExternal || isOpen ? (
               <span className="shrink-0" aria-label={isExternal ? "External room" : "Public room"}>
                 {isExternal ? "◌" : "🌐"}
               </span>
@@ -494,7 +495,7 @@ export function ExplorerRow({
                   className={menuItemClass}
                   data-testid="explorer-row-visibility"
                 >
-                  ◐ Visibility: {isExternal ? "External" : isOpen ? "Public" : "Private"}…
+                  ◐ Visibility: {isLinkedExternal ? "External (permanent)" : isExternal ? "External" : isOpen ? "Public" : "Private"}…
                 </button>
                 <div role="none" className="px-2 py-1.5">
                   <label

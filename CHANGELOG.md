@@ -14,6 +14,21 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   work retains its model and funding across recovery, while embeddings keep the
   server-wide configuration. Costs records provider attempts and unresolved
   charges without replaying inference.
+
+- Desktop acquires the latest Bolter CLI without waiting for a Desktop release.
+  Failed CLI operations can upgrade and retry once when a newer build is
+  available, preserving credentials and queued messages. Uncertain sends are
+  never automatically replayed. Additional provider metadata no longer blocks
+  otherwise valid messages.
+
+- Bolter-linked rooms update their creator's live room subscriptions before
+  receiving messages. They appear as External rooms under Groups, with permanent
+  room-only Genie context and read-only visibility controls.
+
+- Unknown Bolter events, including profile requests, are logged locally and
+  ignored so later messages can reach their linked room. Profile support remains
+  deferred; message and sender validation are unchanged.
+
 - Personal model funding now follows the initiating member across permitted
   group Rooms, other members' Genies, Conductor routing and native nested,
   delegated and scheduled Tasks. Existing invocation and content permissions

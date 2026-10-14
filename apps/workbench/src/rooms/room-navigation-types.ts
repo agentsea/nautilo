@@ -5,6 +5,8 @@ import type { RoomSummaryDto } from "@nautilo/types";
  * entities on the server (Phase 1).
  */
 export interface WorkbenchRoomSummary extends RoomSummaryDto {
+  /** Permanent room-scoped context boundary for an externally linked Genie. */
+  externalContext?: boolean;
   pinned: boolean;
   /** True when the Room is locally open in the tab rail. */
   tabOpen: boolean;
