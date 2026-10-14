@@ -202,6 +202,7 @@ function flatRoomRow(args: {
     lastActivityAt: activityMs(room),
     roomKind: room.kind,
     roomDiscoverable: room.discoverable,
+    roomExternalContext: room.externalContext,
     ...(handle ? { handle } : {}),
   };
 }
@@ -283,6 +284,7 @@ function buildRoomLeafRow(args: {
     lastActivityAt: activityMs(room),
     roomKind: room.kind,
     roomDiscoverable: room.discoverable,
+    roomExternalContext: room.externalContext,
     ...(threadsContainer ? { children: [threadsContainer] } : {}),
   };
 }
@@ -452,6 +454,20 @@ export function groupRoomsForExplorer(args: {
 
   for (const room of topLevel) {
     const roster = rosterFor(rosters, room.id);
+
+    // Externally linked Genie rooms have a permanent, room-scoped context
+    // boundary. Keep them as ordinary Group room entries even when their
+    // restricted membership would otherwise classify them as a personal chat.
+    if (room.externalContext === true) {
+      groupsRows.push(
+        flatRoomRow({
+          id: `group:${room.id}`,
+          label: roomLabelForExplorer(room),
+          room,
+        }),
+      );
+      continue;
+    }
 
     // Discoverable open rooms are channel-like and get their own home. Missing
     // discoverable is the legacy Public fallback. External rooms remain in the

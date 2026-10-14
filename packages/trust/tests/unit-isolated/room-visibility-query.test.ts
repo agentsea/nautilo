@@ -21,6 +21,7 @@ type VisibilityRoom = {
   type: string;
   kind: string;
   discoverable: boolean;
+  externalContext?: boolean;
 };
 
 type VisibilityMember = {
@@ -41,14 +42,16 @@ function visibilityDbMock(
       operations.push("lock");
       return [];
     },
-    select: () => ({
+    select: (selection?: Record<string, unknown>) => ({
       from: (table: unknown) => {
         if (table === RealDb.rooms) {
           return {
             where: () => ({
               limit: async () => {
                 operations.push("room");
-                return room ? [room] : [];
+                if (!room) return [];
+                if (!selection) return [room];
+                return [Object.fromEntries(Object.keys(selection).map((key) => [key, room[key as keyof VisibilityRoom]]))];
               },
             }),
           };
@@ -104,6 +107,7 @@ function room(overrides: Partial<VisibilityRoom> = {}): VisibilityRoom {
     type: "shared",
     kind: "open",
     discoverable: true,
+    externalContext: false,
     ...overrides,
   };
 }
@@ -116,6 +120,31 @@ function personalRoster(): VisibilityMember[] {
 }
 
 describe("updateRoomVisibility", () => {
+  test.each([
+    ["open and hidden", "open" as const, false],
+    ["open and discoverable", "open" as const, true],
+    ["private no-op", "group" as const, false],
+  ])("rejects an external Room visibility request for %s before mutation or roster reads", async (_label, kind, discoverable) => {
+    const fixture = visibilityDbMock(room({
+      kind: "private", type: "private", discoverable: false, externalContext: true,
+    }), personalRoster());
+    mock.module("@nautilo/db", () => ({
+      ...RealDb,
+      getSharedDirectDb: () => fixture.db,
+    }));
+    const { MembershipOpError, updateRoomVisibility } = await loadQueriesFresh();
+
+    const error = await updateRoomVisibility(ROOM_ID, kind, discoverable).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(MembershipOpError);
+    expect(error).toMatchObject({ opCode: "external_room_visibility_immutable" });
+    expect(fixture.getOperations()).toEqual(["lock", "room"]);
+    expect(fixture.getUpdateCount()).toBe(0);
+    expect(fixture.getUpdatedValues()).toBeNull();
+  });
+
   test("a flag-only public change updates discoverable without touching kind", async () => {
     const fixture = visibilityDbMock(room());
     mock.module("@nautilo/db", () => ({
