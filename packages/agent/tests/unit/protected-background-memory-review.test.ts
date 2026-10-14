@@ -394,6 +394,93 @@ describe("protected background Memory Agent staging", () => {
     expect(outputs[0]?.payload.content).toBe("Uses metric units");
   });
 
+  test("uses the injected invocation owner and encrypts actual retrieved ancestry", async () => {
+    const initial = {
+      kind: "source" as const,
+      sourceKind: "message",
+      logicalSourceRef: "message:7",
+      observedRevision: "0",
+      observedContentFingerprint: "sha256:message",
+      terminalAuthorityLeafHandle: NAMESPACE_A,
+    };
+    const retrieved = {
+      kind: "source" as const,
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY_ID}`,
+      observedRevision: "2",
+      observedContentFingerprint: "hmac-sha256:memory",
+      terminalAuthorityLeafHandle: NAMESPACE_A,
+    };
+    const observedSnapshots: unknown[] = [];
+    let calls = 0;
+    const outputs = await runProtectedBackgroundMemoryReview({
+      kind: "memory.review",
+      authority,
+      inputs,
+      outputSlots: slots,
+      tierSlots: [],
+      embedding: embedding(),
+      modelId: "review-model",
+      roomId: "room-background-lineage",
+      maximumIterations: 3,
+      mutationRequestId: "background-request-lineage",
+      modelExposureDependencies: [initial],
+      resolveMemoryExposureDependencies: async (snapshots) => {
+        observedSnapshots.push(snapshots);
+        return snapshots.length === 0 ? [] : [retrieved];
+      },
+      invokeModel: async () => {
+        calls += 1;
+        if (calls === 1) return new AIMessage({
+          content: "",
+          tool_calls: [{
+            name: "search_memory",
+            args: { query: "concise", limit: 1 },
+          }],
+        });
+        if (calls === 2) return new AIMessage({
+          content: "",
+          tool_calls: [{
+            name: "manage_memory",
+            args: {
+              action: "save",
+              type: "preference",
+              content: "Uses metric units",
+            },
+          }],
+        });
+        return new AIMessage("Done.");
+      },
+    });
+
+    expect(calls).toBe(3);
+    expect(observedSnapshots.some((value) =>
+      JSON.stringify(value).includes(MEMORY_ID)
+    )).toBe(true);
+    expect(outputs).toHaveLength(1);
+    if (outputs[0]?.kind !== "content_revision") {
+      throw new Error("expected content output");
+    }
+    expect(outputs[0].payload.modelExposureDependencies).toEqual([
+      {
+        kind: "source",
+        sourceKind: "memory",
+        logicalObjectRef: `memory:${MEMORY_ID}`,
+        observedRevision: "2",
+        observedContentFingerprint: "hmac-sha256:memory",
+        terminalAuthorityLeafHandle: NAMESPACE_A,
+      },
+      {
+        kind: "source",
+        sourceKind: "message",
+        logicalObjectRef: "message:7",
+        observedRevision: "0",
+        observedContentFingerprint: "sha256:message",
+        terminalAuthorityLeafHandle: NAMESPACE_A,
+      },
+    ]);
+  });
+
   test("requires a real Room identity for Namespace background work", async () => {
     let error: unknown;
     try {

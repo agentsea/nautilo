@@ -598,53 +598,68 @@ describe("Reflection semantic data operation port", () => {
     expect(calls.filter(value => value.endsWith(":organizer-batch"))).toEqual([]);
   });
 
-  test("shared dispatch batches prepared ordinary and protected questions without reopening either", async () => {
+  test("shared prepared dispatch rejects mixed representations before a paid call", async () => {
     const calls: string[] = [];
     const a = claim("private-a", "organization"), b = claim("private-b", "organization");
-    const queue = [{claim: a, executionRepresentation: "protected" as const}, {claim: b, executionRepresentation: "ordinary" as const}];
+    const queue = [{claim: a, executionRepresentation: "protected" as const},
+      {claim: b, executionRepresentation: "ordinary" as const}];
     const ordinary = semanticPort({calls, label: "ordinary", includeAttempt: true});
+    const protectedSemantic = semanticPort({calls, label: "protected", includeAttempt: true, includeBatch: true});
+    const ports = bindReflectionSemanticDataOperationPort({
+      policy: policyBinding({policy: POLICIES.fallback, calls}),
+      work: workPort({next: async () => ({status: "claimed", maximumStage: "organization", ...queue.shift()!})}),
+      ordinary, protected: {ensureAuthority: protectedSemantic.ensureAuthority, semantic: protectedSemantic},
+      invokePreparedOrganizerBatch: async () => {calls.push("paid"); return "answers";},
+    });
+    await ports.work.claimNext(); await ports.work.claimNext();
+    const error: unknown = await ports.semantic.invokeOrganizerBatch!([a, b], "prompt").catch((cause: unknown) => cause);
+    expect(error instanceof Error && error.message.includes("mixes policy or representation")).toBe(true);
+    expect(calls).not.toContain("paid");
+  });
+
+  test("production-shaped protected prepared batches enter the live semantic wrapper", async () => {
+    const calls: string[] = [];
+    const a = claim("private-a", "organization"), b = claim("private-b", "organization");
+    const queue = [a, b];
     const protectedSemantic = semanticPort({calls, label: "protected", includeAttempt: true});
-    let revoked = false;
-    const openAttempt = protectedSemantic.openOrganizationAttempt!;
-    protectedSemantic.openOrganizationAttempt = async (current, signal) => {
-      const attempt = await openAttempt(current, signal);
-      return {...attempt, assertCurrent: async () => {
-        if (revoked) throw new Error("Question grant revoked");
-        await attempt.assertCurrent();
-      }};
-    };
-    let waiting = true;
     const view: DurableSleepSemanticPort["loadOrganizerView"] = current => Promise.resolve({status: "ready", view: {
       changed: {handle: "R1", dependency: {kind: "record", recordRef: current.recordRef}, snapshot: {
         recordRef: current.recordRef, observedContentFingerprint: current.recordRef, posture: "authored", anchors: [current.recordRef],
         statement: "Prepared evidence", sourceRefs: [], childRecordRefs: [], structuralHeight: 0, lifecycle: "current",
       }}, candidates: [], existingParents: [], maxSelectedChildren: 2,
     }});
-    ordinary.loadOrganizerView = view;
-    protectedSemantic.loadOrganizerView = current => waiting ? Promise.resolve({status: "waiting", retryAt: 1000}) : view(current);
+    protectedSemantic.loadOrganizerView = view;
+    let forwardedExposure: unknown;
+    const paid: NonNullable<DurableSleepSemanticPort["invokeOrganizerBatch"]> = async (claims, _prompt, _signal, exposure) => {
+      forwardedExposure = exposure;
+      calls.push(`paid:${claims.map(item => item.recordRef).join(",")}`);
+      return "answers";
+    };
+    protectedSemantic.invokeOrganizerBatch = async (claims, prompt, signal, exposure) => {
+      calls.push("protected:live-model-wrapper");
+      return paid(claims, prompt, signal, exposure);
+    };
     const ports = bindReflectionSemanticDataOperationPort({
-      policy: policyBinding({policy: POLICIES.fallback, calls}),
-      work: workPort({next: async () => ({status: "claimed", maximumStage: "organization", ...queue.shift()!})}),
-      ordinary, protected: {ensureAuthority: protectedSemantic.ensureAuthority, semantic: protectedSemantic},
-      invokePreparedOrganizerBatch: async selected => {calls.push(`shared:${selected.map(item => item.recordRef).join(",")}`); return "answers";},
+      policy: policyBinding({policy: POLICIES.full, calls}),
+      work: workPort({next: async () => ({status: "claimed", claim: queue.shift()!,
+        executionRepresentation: "protected", maximumStage: "organization"})}),
+      ordinary: semanticPort({calls, label: "ordinary"}),
+      protected: {ensureAuthority: protectedSemantic.ensureAuthority, semantic: protectedSemantic},
+      invokePreparedOrganizerBatch: paid,
     });
     await ports.work.claimNext(); await ports.work.claimNext();
-    const attempt = await ports.semantic.openOrganizationAttempt!(a);
+    const first = await ports.semantic.openOrganizationAttempt!(a);
+    const second = await ports.semantic.openOrganizationAttempt!(b);
     await ports.semantic.loadOrganizerView(a); await ports.semantic.loadOrganizerView(b);
-    const waitingError: unknown = await ports.semantic.invokeOrganizerBatch!([a, b], "prompt").catch((error: unknown) => error);
-    expect(waitingError instanceof Error && waitingError.message.includes("not ready")).toBe(true);
-    expect(calls.some(call => call.startsWith("shared:"))).toBe(false);
-    waiting = false; await ports.semantic.loadOrganizerView(a);
-    expect(await ports.semantic.invokeOrganizerBatch!([a, b], "prompt")).toBe("answers");
-    expect(calls.filter(call => call.startsWith("shared:"))).toEqual(["shared:private-a,private-b"]);
-    expect(calls.some(call => call.endsWith(":organizer-batch"))).toBe(false);
-    revoked = true;
-    const revokedError: unknown = await ports.semantic.invokeOrganizerBatch!([a, b], "prompt").catch((error: unknown) => error);
-    expect(revokedError instanceof Error && revokedError.message.includes("revoked")).toBe(true);
-    expect(calls.filter(call => call.startsWith("shared:"))).toHaveLength(1);
-    await attempt.close("cancelled");
-    const closedError: unknown = await ports.semantic.invokeOrganizerBatch!([a, b], "prompt").catch((error: unknown) => error);
-    expect(closedError instanceof Error && closedError.message.includes("not ready")).toBe(true);
+    const exposure = [{kind: "record" as const, recordRef: "private-a", observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: ["namespace-a"]}];
+    const currentBefore = calls.filter(value => value === "protected:attempt-current").length;
+    expect(await ports.semantic.invokeOrganizerBatch!([a, b], "prompt", undefined, exposure)).toBe("answers");
+    expect(calls.filter(value => value === "protected:attempt-current")).toHaveLength(currentBefore + 4);
+    expect(calls.filter(value => value === "protected:live-model-wrapper")).toHaveLength(1);
+    expect(calls.filter(value => value.startsWith("paid:"))).toEqual(["paid:private-a,private-b"]);
+    expect(forwardedExposure).toEqual(exposure);
+    await first.close("cancelled"); await second.close("cancelled");
   });
 
   test("protected provider calls revalidate before and after use", async () => {

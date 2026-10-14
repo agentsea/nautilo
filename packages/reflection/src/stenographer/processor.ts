@@ -3,7 +3,9 @@ import { projectStenographerEvidence } from "./evidence-projection";
 import { validateStenographerOutputWithRepair } from "./output-validation";
 import type {
   StenographerCompactionEvent,
+  StenographerCompactionModelExposure,
   StenographerCompactionRollup,
+  StenographerExtractionModelExposure,
   StenographerExtractionSnapshot,
   StenographerModelInvoker,
   StenographerProposal,
@@ -57,6 +59,7 @@ export type ExtractionProcessorResult =
       proposal: StenographerProposal;
       attempts: 1 | 2;
       inputCodePoints: number;
+      modelExposure: StenographerExtractionModelExposure | null;
     }
   | {
       ok: false;
@@ -72,11 +75,7 @@ export async function runStenographerExtraction(input: {
     proposal: StenographerProposal,
   ) => { ok: true } | { ok: false; reason: string };
 }): Promise<ExtractionProcessorResult> {
-  const projection = projectStenographerEvidence({
-    priorRows: input.snapshot.priorRows,
-    rows: input.snapshot.rows,
-    journalContext: journalContext(input.snapshot),
-  });
+  const projection = prepareStenographerExtractionEvidence(input.snapshot);
   if (!projection.ok) {
     return { ok: false, errorCode: "input_too_large", attempts: 0 };
   }
@@ -110,6 +109,16 @@ export async function runStenographerExtraction(input: {
     proposal: validation.proposal,
     attempts: validation.attempts,
     inputCodePoints: projection.codePoints,
+    modelExposure: input.snapshot.hasConversationalContent
+      ? {
+          currentRowPositions: projection.modelExposure.currentRowPositions,
+          priorRowPositions: projection.modelExposure.priorRowPositions,
+          latestRollupIncluded: input.snapshot.latestRollup !== null,
+          visibleEventReferences: input.snapshot.visibleEvents.map(
+            (event) => event.localReference,
+          ),
+        }
+      : null,
   };
 }
 
@@ -142,15 +151,27 @@ export async function runStenographerCompaction(input: {
   prompt: string;
   invoke: StenographerModelInvoker;
   signal?: AbortSignal;
+  modelExposure?: StenographerCompactionModelExposure;
 }): Promise<
-  | { ok: true; content: string; attempts: 1 | 2 }
+  | {
+      ok: true;
+      content: string;
+      attempts: 1 | 2;
+      modelExposure: StenographerCompactionModelExposure | null;
+    }
   | { ok: false; errorCode: "invalid_output"; attempts: 2 }
 > {
   const prompt = `${COMPACTION_CONTRACT}\n\n${input.prompt}`;
   const first = parseCompactionResponse(
     await input.invoke(prompt, input.signal),
   );
-  if (first.ok) return { ...first, attempts: 1 };
+  if (first.ok) {
+    return {
+      ...first,
+      attempts: 1,
+      modelExposure: input.modelExposure ?? null,
+    };
+  }
   const second = parseCompactionResponse(
     await input.invoke(
       `${COMPACTION_CONTRACT}\n\nYour previous response was invalid. Return corrected JSON only.\n\n${input.prompt}`,
@@ -158,7 +179,11 @@ export async function runStenographerCompaction(input: {
     ),
   );
   return second.ok
-    ? { ...second, attempts: 2 }
+    ? {
+        ...second,
+        attempts: 2,
+        modelExposure: input.modelExposure ?? null,
+      }
     : { ok: false, errorCode: "invalid_output", attempts: 2 };
 }
 
@@ -169,4 +194,9 @@ export function planStenographerCompaction(input: {
   forceDue?: boolean;
 }) {
   return planJournalCompaction(input);
+}
+
+/** One projection owner for pre-dispatch admission and the actual prompt. */
+export function prepareStenographerExtractionEvidence(snapshot: StenographerExtractionSnapshot) {
+  return projectStenographerEvidence({ priorRows: snapshot.priorRows, rows: snapshot.rows, journalContext: journalContext(snapshot) });
 }

@@ -44,6 +44,12 @@ export async function createOrdinaryMemoryReviewStaging(workId: string, envelope
       if (scope) return getScopeMemoryById({ ...scope, memoryId });
       const result = await getMemoryById(memoryId, envelopeReadableNamespaces(envelope), trust);
       if (result === "forbidden") return null;
+      return result;
+    },
+    async readMutable(memoryId) {
+      if (scope) return getScopeMemoryById({ ...scope, memoryId });
+      const result = await getMemoryById(memoryId, envelopeReadableNamespaces(envelope), trust);
+      if (result === "forbidden") return null;
       if (result && !isScopeMemoryEnvelope(envelope) && !result.namespaceIds.some((id) => envelope.mutableNamespaces.includes(id))) return null;
       return result;
     },
@@ -80,6 +86,26 @@ export async function publishPreparedMemoryReview(tx: MemoryReviewTransaction, p
       if (!row || row.content === null || !authorized || memoryReviewFingerprint({ ...row, namespaceIds: scope ? [] : namespaceIds }) !== snapshot.fingerprint) throw new MemoryReviewError("source_changed");
     }
   }
+  const exposureIds = [...new Set((proposal.exposureSnapshots ?? [])
+    .map((snapshot) => snapshot.memoryId))].sort();
+  if (exposureIds.length) {
+    const rows = await tx.select().from(memories).where(inArray(memories.id, exposureIds)).orderBy(memories.id).for("share");
+    const namespaceRows = await tx.select().from(memoryNamespaces).where(inArray(memoryNamespaces.memoryId, exposureIds)).orderBy(memoryNamespaces.memoryId, memoryNamespaces.namespaceId).for("share");
+    const scopeRows = scope ? await tx.select().from(memoryScopes).where(inArray(memoryScopes.memoryId, exposureIds)).orderBy(memoryScopes.memoryId, memoryScopes.scopeId).for("share") : [];
+    for (const snapshot of proposal.exposureSnapshots ?? []) {
+      const row = rows.find((candidate) => candidate.id === snapshot.memoryId);
+      const namespaceIds = namespaceRows.filter((edge) => edge.memoryId === snapshot.memoryId
+        && envelopeReadableNamespaces(envelope).includes(edge.namespaceId))
+        .map((edge) => edge.namespaceId);
+      const readable = scope
+        ? scopeRows.some((edge) => edge.memoryId === snapshot.memoryId
+          && edge.scopeId === scope.scopeId && edge.origin === "scope")
+        : namespaceIds.length > 0;
+      if (!row || row.content === null || !readable
+        || memoryReviewFingerprint({ ...row, namespaceIds: scope ? [] : namespaceIds })
+          !== snapshot.fingerprint) throw new MemoryReviewError("source_changed");
+    }
+  }
   const result: MemoryReviewPublication = { counts: { created: 0, replaced: 0, promoted: 0, demoted: 0 }, effects: [] };
   for (const operation of proposal.operations) {
     const memoryId = operation.memoryId;
@@ -90,7 +116,17 @@ export async function publishPreparedMemoryReview(tx: MemoryReviewTransaction, p
     if (operation.action === "save") {
       if (!operation.embedding || !operation.content || (!scope && !namespaceId)) throw new MemoryReviewError("invalid_proposal");
       const content = operation.content;
-      const prepared = { embedding: operation.embedding, id: memoryId, expectedDedupId: operation.expectedDedupId };
+      const prepared = {
+        embedding: operation.embedding,
+        id: memoryId,
+        expectedDedupId: operation.expectedDedupId,
+        ...(proposal.modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies:
+                proposal.modelExposureDependencies,
+            }),
+      };
       const saved = await recheckDedup(async () => scope
         ? await saveScopeMemoryWithDb(handle, { ...scope, content, type: operation.type }, prepared)
         : await saveMemoryWithDb(handle, { userId: speakerUserId, agentId: envelope.agentId, namespaceId: namespaceId!, content, type: operation.type }, prepared));
@@ -102,8 +138,23 @@ export async function publishPreparedMemoryReview(tx: MemoryReviewTransaction, p
       if (!before) throw new MemoryReviewError("source_changed");
       if (operation.action === "replace") {
         if (!operation.content || (before.content !== operation.content && !operation.embedding)) throw new MemoryReviewError("invalid_proposal");
-        if (scope) await replaceScopeMemoryWithDb(handle, { ...scope, memoryId, content: operation.content }, operation.embedding);
-        else await replaceMemoryWithDb(handle, memoryId, operation.content, mutable, operation.embedding);
+        if (scope) {
+          await replaceScopeMemoryWithDb(
+            handle,
+            { ...scope, memoryId, content: operation.content },
+            operation.embedding,
+            proposal.modelExposureDependencies,
+          );
+        } else {
+          await replaceMemoryWithDb(
+            handle,
+            memoryId,
+            operation.content,
+            mutable,
+            operation.embedding,
+            proposal.modelExposureDependencies,
+          );
+        }
         if (before.content !== operation.content) { action = "replaced"; changeKind = "replace"; }
       } else if (operation.action === "promote") {
         if (scope) await promoteScopeMemoryWithDb(handle, { ...scope, memoryId });

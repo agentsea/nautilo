@@ -23,10 +23,12 @@ import {
   type PersonalCapabilityRole,
   type ResearchCapabilityRole,
   isMediaCapabilityRole,
+  isMemoryCapabilityRole,
 } from "@nautilo/types";
 import { createCapabilityFundingSession } from "../lib/capability-funding";
 import { createModelFundingSnapshot } from "../lib/model-funding";
 import { personalMediaModels } from "../lib/media-model-preferences";
+import { personalMemoryModels } from "../lib/memory-model-preferences";
 import { getServerDirectDb } from "../lib/server-direct-db";
 
 const RESEARCH_ROLE = {
@@ -50,6 +52,9 @@ const PRESENTATION: Readonly<Record<PersonalCapabilityRole, { label: string; des
   musicGeneration: { label: "Music generation", description: "Creates music; accepted jobs keep their selected model and account." },
   speech: { label: "Speech", description: "Uses an ElevenLabs speech model with the Genie's selected voice." },
   decision: { label: "Decisions", description: "Evaluates supported choices, scores, and strict decision questions." },
+  memoryReview: { label: "Memory review", description: "Reviews eligible personal conversations and Memory evidence." },
+  memoryReflection: { label: "Memory reflection", description: "Reflects on eligible personal Memory evidence during Sleep." },
+  memorySummarization: { label: "Memory summarization", description: "Summarizes eligible personal conversation evidence for Memory." },
 };
 
 interface StructuralModel {
@@ -104,6 +109,7 @@ function decisionModels(): StructuralModel[] {
 
 function listPersonalCapabilityModels(role: PersonalCapabilityRole): readonly StructuralModel[] {
   return isMediaCapabilityRole(role) ? personalMediaModels(role)
+    : isMemoryCapabilityRole(role) ? personalMemoryModels(role)
     : role === "decision" ? decisionModels() : researchModels(role);
 }
 
@@ -138,7 +144,8 @@ async function projectPreferences(
 ): Promise<readonly PersonalCapabilityPreferenceProjection[]> {
   const readiness = new Map<string, Promise<PersonalCapabilityModelReadiness>>();
   const readinessFor = (modelId: string, role: PersonalCapabilityRole) => {
-    const workload = role === "decision" ? "decision" : "research";
+    const workload = role === "decision" ? "decision"
+      : isMemoryCapabilityRole(role) ? "memory" : "research";
     const key = `${isMediaCapabilityRole(role) ? role : workload}:${modelId}`;
     const cached = readiness.get(key);
     if (cached) return cached;

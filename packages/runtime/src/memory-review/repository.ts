@@ -3,6 +3,7 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage }
 import {
   and, asc, desc, lt, eq, inArray, isNull, sql, getSharedDirectDb, memoryReviewTurns, acquireRoomWriteLock,
   memoryReviewReceipts, sessionMessages, users,
+  resolveModelAttemptReplaySafety,
   type DirectDatabase,
 } from "@nautilo/db";
 import {
@@ -10,9 +11,15 @@ import {
 } from "@nautilo/trust";
 import {
   getProfileByAgentId, getAgentDisplayNameById, publishPreparedMemoryReview, MemoryReviewError, revalidateMemoryReviewAuthority,
+  bindModelInputExposureFromAuthorizedPersistedPayload,
   deliverMemoryReviewEffect, type MemoryReviewEffect, withSerializableAgentTrustContext,
 } from "@nautilo/agent";
+import { MODEL_INPUT_EXPOSURE_METADATA_KEY } from "@nautilo/agent";
+import { reflectionMessageSourceFingerprint } from "../reflection/canonical-room-sources";
+import type { ProfileSoulFingerprintInput } from "../executors/foreground-authored-context";
 import type { MemoryReviewClaim, MemoryReviewRepository } from "./worker";
+import type { MemoryReviewInput } from "./worker";
+import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nautilo/types";
 
 type Turn = typeof memoryReviewTurns.$inferSelect;
 type Source = typeof sessionMessages.$inferSelect;
@@ -32,6 +39,24 @@ export function selectMemoryReviewPrefix(turns: readonly Turn[], threshold: numb
   return [];
 }
 
+export function classifyPriorMemoryReviewAttempts(turns: readonly Turn[]): Readonly<{
+  attemptIds: readonly string[];
+  knownNonusableAttemptIds: readonly string[];
+}> {
+  const attempts = new Map<string, boolean>();
+  for (const turn of turns) {
+    if (!turn.attemptId) continue;
+    const knownNonusable = turn.failurePhase === "model"
+      && (turn.failureCode === "invalid_proposal" || turn.failureCode === "iteration_exhausted");
+    attempts.set(turn.attemptId, (attempts.get(turn.attemptId) ?? true) && knownNonusable);
+  }
+  return {
+    attemptIds: [...attempts.keys()],
+    knownNonusableAttemptIds: [...attempts]
+      .flatMap(([attemptId, knownNonusable]) => knownNonusable ? [attemptId] : []),
+  };
+}
+
 function sourceFingerprint(rows: readonly Source[]): string {
   // Kept inside the access lifetime only. Source revisions fence publication.
   return JSON.stringify(rows.map((row) => [row.id, row.sessionId, row.editRevision, row.cryptoObjectId]));
@@ -46,6 +71,21 @@ function messageFromRow(row: Source): BaseMessage {
   return new SystemMessage(row.content);
 }
 
+function acceptedOperation(value: unknown): MemoryOperationBinding | null {
+  try { return parseMemoryOperationBinding(value); } catch { return null; }
+}
+
+function sameBinding(left: MemoryOperationBinding, right: MemoryOperationBinding): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function legacyServiceBinding(value: unknown): { kind: "service"; modelId: string } | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  return row["kind"] === "service" && typeof row["modelId"] === "string" && row["modelId"].trim()
+    && Object.keys(row).length === 2 ? { kind: "service", modelId: row["modelId"] } : null;
+}
+
 export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
   private readonly sources = new Map<string, { ids: number[]; fingerprint: string }>();
   constructor(private readonly policy: {
@@ -55,6 +95,7 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
     retentionMs: number;
     retentionBatchSize: number;
     assertAvailable(): Promise<void>;
+    fingerprintProfileSoul?: (input: ProfileSoulFingerprintInput) => string;
   }, private readonly db: DirectDatabase = getSharedDirectDb()) {}
 
   async claimNext({ now }: { now: Date }): Promise<MemoryReviewClaim | null> {
@@ -99,14 +140,43 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       // receipt before reading content or invoking a model, including uncertain
       // attempts left by older servers without a reconciliation retry time.
       const attemptId = randomUUID();
+      const priorAttempts = classifyPriorMemoryReviewAttempts(prefix);
       const leaseUntil = new Date(now.getTime() + this.policy.leaseMs);
       const turnIds = prefix.map((turn) => turn.id);
       await tx.update(memoryReviewTurns).set({ attemptId, leaseUntil, lastAttemptAt: now, failureCode: null, failurePhase: null, retryAt: null }).where(inArray(memoryReviewTurns.id, turnIds));
-      return { workId: head.generationId, attemptId, ownerId: head.ownerId, actorId: head.actorId,
+      return { workId: head.generationId, attemptId,
+        ...(priorAttempts.attemptIds.length === 0
+          ? {}
+          : { priorAttemptIds: priorAttempts.attemptIds }),
+        ...(priorAttempts.knownNonusableAttemptIds.length === 0
+          ? {}
+          : { knownNonusableAttemptIds: priorAttempts.knownNonusableAttemptIds }),
+        ownerId: head.ownerId, actorId: head.actorId,
         agentId: head.agentId, roomId: head.roomId, threadId: head.threadId,
         scopeId: head.accessScope === "namespace" ? null : head.accessScope,
         turnIds, sourceIds: prefix.flatMap((turn) => turn.sourceIds).sort((a,b) => a-b), leaseUntil };
     });
+  }
+
+  async modelReplaySafety(claim: MemoryReviewClaim): Promise<"allow" | "block_unknown"> {
+    const attemptIds = claim.priorAttemptIds ?? [];
+    if (attemptIds.length === 0) return "allow";
+    const knownNonusable = new Set(claim.knownNonusableAttemptIds ?? []);
+    const unaccountedAttemptIds = attemptIds.filter((attemptId) => !knownNonusable.has(attemptId));
+    if (unaccountedAttemptIds.length > 0) {
+      const unaccounted = await resolveModelAttemptReplaySafety({
+        kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
+        attemptIds: unaccountedAttemptIds,
+      }, { db: this.db });
+      if (unaccounted.decision === "block_unknown") return "block_unknown";
+    }
+    const exactKnownNonusableAttemptIds = attemptIds.filter((attemptId) => knownNonusable.has(attemptId));
+    if (exactKnownNonusableAttemptIds.length === 0) return "allow";
+    const known = await resolveModelAttemptReplaySafety({
+      kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
+      attemptIds: exactKnownNonusableAttemptIds,
+    }, { db: this.db, knownNonusableResult: true });
+    return known.decision;
   }
 
   private async envelope(claim: MemoryReviewClaim): Promise<MemoryAccessEnvelope> {
@@ -130,6 +200,91 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       isNull(memoryReviewTurns.receiptId), sql`${memoryReviewTurns.leaseUntil} > now()`,
     ));
     if (rows.length !== claim.turnIds.length) throw new Error("lease_lost");
+    const loaded = this.sources.get(claim.attemptId);
+    if (loaded) {
+      const sourceRows = await withSerializableAgentTrustContext({ userId: speakerUserId!, agentId: claim.agentId }, async (tx) => {
+        await revalidateMemoryReviewAuthority(tx, { envelope, speakerUserId: speakerUserId!, operations: [] });
+        return tx.select().from(sessionMessages).where(inArray(sessionMessages.id, loaded.ids)).orderBy(sessionMessages.id);
+      });
+      if (sourceRows.length !== loaded.ids.length || sourceFingerprint(sourceRows) !== loaded.fingerprint) {
+        throw new MemoryReviewError("source_changed");
+      }
+    }
+  }
+
+  async bindServiceModel(claim: MemoryReviewClaim, resolveModelId: () => string): Promise<string> {
+    return this.db.transaction(async (tx) => {
+      const turns = await this.lockClaim(tx, claim);
+      const raw = turns.flatMap((turn) => turn.acceptedModelBinding === null ? [] : [turn.acceptedModelBinding]);
+      const models = raw.map((binding) => acceptedOperation(binding)?.modelId ?? legacyServiceBinding(binding)?.modelId ?? null);
+      if (models.some((model) => model === null) || new Set(models).size > 1
+        || raw.some((binding) => acceptedOperation(binding)?.kind === "human")) {
+        throw new MemoryReviewError("source_changed");
+      }
+      const modelId = models[0] ?? resolveModelId().trim();
+      if (!modelId) throw new MemoryReviewError("model_unavailable");
+      const serviceBinding = raw.length ? (acceptedOperation(raw[0]) ?? { kind: "service" as const, modelId })
+        : { kind: "service" as const, modelId };
+      const unboundIds = turns.filter((turn) => turn.acceptedModelBinding === null).map((turn) => turn.id);
+      if (unboundIds.length) {
+        const updated = await tx.update(memoryReviewTurns).set({ acceptedModelBinding: serviceBinding }).where(and(
+          inArray(memoryReviewTurns.id, unboundIds), eq(memoryReviewTurns.attemptId, claim.attemptId),
+          isNull(memoryReviewTurns.receiptId), sql`${memoryReviewTurns.leaseUntil} > now()`,
+        )).returning({ id: memoryReviewTurns.id });
+        if (updated.length !== unboundIds.length) throw new Error("lease_lost");
+      }
+      return modelId;
+    });
+  }
+
+  async getAcceptedModelOperation(claim: MemoryReviewClaim): Promise<MemoryOperationBinding | null> {
+    const turns = await this.db.select({ binding: memoryReviewTurns.acceptedModelBinding }).from(memoryReviewTurns).where(and(
+      inArray(memoryReviewTurns.id, claim.turnIds), eq(memoryReviewTurns.attemptId, claim.attemptId),
+      isNull(memoryReviewTurns.receiptId), sql`${memoryReviewTurns.leaseUntil} > now()`,
+    ));
+    if (turns.length !== claim.turnIds.length) throw new Error("lease_lost");
+    const raw = turns.flatMap((turn) => turn.binding === null ? [] : [turn.binding]);
+    const legacy = raw.map(legacyServiceBinding).filter((binding) => binding !== null);
+    const parsed = raw.map(acceptedOperation).filter((binding) => binding !== null);
+    if (legacy.length + parsed.length !== raw.length || (legacy.length && parsed.length)
+      || new Set(legacy.map((binding) => binding.modelId)).size > 1) {
+      throw new MemoryReviewError("source_changed");
+    }
+    if (legacy.length) return null;
+    const bindings = parsed;
+    const first = bindings[0];
+    if (first && bindings.some((binding) => !sameBinding(first, binding))) throw new MemoryReviewError("source_changed");
+    return first ?? null;
+  }
+
+  async bindModelOperation(claim: MemoryReviewClaim, resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding> {
+    return this.db.transaction(async (tx) => {
+      const turns = await this.lockClaim(tx, claim);
+      const raw = turns.flatMap((turn) => turn.acceptedModelBinding === null ? [] : [turn.acceptedModelBinding]);
+      const legacy = raw.map(legacyServiceBinding).filter((binding) => binding !== null);
+      const parsed = raw.map(acceptedOperation).filter((binding) => binding !== null);
+      if (legacy.length + parsed.length !== raw.length || new Set(legacy.map((binding) => binding.modelId)).size > 1
+        || (legacy.length && parsed.length)) throw new MemoryReviewError("source_changed");
+      const bindings = parsed;
+      const first = bindings[0];
+      if (first && bindings.some((binding) => !sameBinding(first, binding))) throw new MemoryReviewError("source_changed");
+      if (first) return first;
+      const proposed = acceptedOperation(await resolve(legacy[0]?.modelId));
+      if (!proposed || proposed.role !== "memoryReview") throw new MemoryReviewError("source_changed");
+      const accepted: MemoryOperationBinding = legacy.length
+        ? { version: 1, kind: "service", role: "memoryReview", modelId: legacy[0]!.modelId,
+            inputCommitment: proposed.inputCommitment }
+        : proposed;
+      const updateIds = turns.filter((turn) => turn.acceptedModelBinding === null || legacyServiceBinding(turn.acceptedModelBinding) !== null).map((turn) => turn.id);
+      if (updateIds.length) {
+        const updated = await tx.update(memoryReviewTurns).set({ acceptedModelBinding: accepted }).where(and(
+          inArray(memoryReviewTurns.id, updateIds), eq(memoryReviewTurns.attemptId, claim.attemptId),
+          isNull(memoryReviewTurns.receiptId), sql`${memoryReviewTurns.leaseUntil} > now()`,
+        )).returning({ id: memoryReviewTurns.id });
+        if (updated.length !== updateIds.length) throw new Error("lease_lost");
+      }
+      return accepted;
+    });
   }
 
   async renew(claim: MemoryReviewClaim): Promise<void> {
@@ -165,11 +320,43 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
     const name = await getAgentDisplayNameById(claim.agentId);
     const turns = await this.db.select({ firstMessageId: memoryReviewTurns.firstMessageId, state: memoryReviewTurns.state }).from(memoryReviewTurns).where(inArray(memoryReviewTurns.id, claim.turnIds));
     const interruptedStarts = new Set(turns.filter((turn) => turn.state === "interrupted").map((turn) => turn.firstMessageId));
-    const messages = rows.flatMap((row) => [
-      ...(interruptedStarts.has(row.id) ? [new SystemMessage("This turn was interrupted. Only its persisted evidence follows; no completed response is implied.")] : []),
-      messageFromRow(row),
-    ]);
-    return { messages, memoryAccessEnvelope, assistantName: name ?? profile?.name ?? "Nautilo", soulFile: profile?.soulFile ?? "" };
+    const namespaceId = claim.scopeId ?? (memoryAccessEnvelope.memoryMode !== "scope"
+      && memoryAccessEnvelope.writableNamespaces.length === 1
+      ? memoryAccessEnvelope.writableNamespaces[0]
+      : undefined);
+    let completeExposure = namespaceId !== undefined;
+    const dependencies = [] as NonNullable<MemoryReviewInput["modelExposureDependencies"]>[number][];
+    const messages = rows.flatMap((row) => {
+      const message = messageFromRow(row);
+      if (row.role !== "user") {
+        const metadata = row.metadata?.[MODEL_INPUT_EXPOSURE_METADATA_KEY];
+        bindModelInputExposureFromAuthorizedPersistedPayload(message, metadata);
+        // Exact review exposure is distinct from the source's derivation.
+        // The live evidence reader classifies missing legacy ancestry as service.
+      }
+      if (namespaceId !== undefined) dependencies.push({
+        kind: "source", sourceKind: "message", logicalSourceRef: `message:${row.id}`,
+        observedRevision: String(row.editRevision),
+        observedContentFingerprint: reflectionMessageSourceFingerprint({ id: row.id, editRevision: row.editRevision, content: row.content ?? "" }),
+        terminalAuthorityLeafHandle: namespaceId,
+      });
+      return [
+        ...(interruptedStarts.has(row.id) ? [new SystemMessage("This turn was interrupted. Only its persisted evidence follows; no completed response is implied.")] : []),
+        message,
+      ];
+    });
+    if (profile?.soulFile) {
+      if (namespaceId === undefined || !this.policy.fingerprintProfileSoul) completeExposure = false;
+      else dependencies.push({
+        kind: "source", sourceKind: "profile_soul", logicalSourceRef: `agent-soul:${profile.agentId}`,
+        observedRevision: String(profile.soulRevision),
+        observedContentFingerprint: this.policy.fingerprintProfileSoul({ agentId: profile.agentId,
+          profileId: profile.id, userId: profile.userId, soulRevision: profile.soulRevision, soulFile: profile.soulFile }),
+        terminalAuthorityLeafHandle: namespaceId,
+      });
+    }
+    return { messages, memoryAccessEnvelope, assistantName: name ?? profile?.name ?? "Nautilo", soulFile: profile?.soulFile ?? "",
+      ...(completeExposure ? { modelExposureDependencies: dependencies } : {}) };
   }
 
   async reconcile(claim: MemoryReviewClaim) {
@@ -205,10 +392,11 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
     } finally { this.sources.delete(claim.attemptId); }
   }
 
-  private async lockClaim(tx: Tx, claim: MemoryReviewClaim) {
+  private async lockClaim(tx: Tx, claim: MemoryReviewClaim): Promise<Turn[]> {
     const turns = await tx.select().from(memoryReviewTurns).where(inArray(memoryReviewTurns.id, claim.turnIds)).orderBy(memoryReviewTurns.id).for("update");
     if (turns.length !== claim.turnIds.length || turns.some((turn) => turn.attemptId !== claim.attemptId || turn.receiptId || !turn.leaseUntil || turn.leaseUntil <= new Date())) throw new Error("lease_lost");
     if (JSON.stringify(turns.flatMap((turn) => turn.sourceIds).sort((a,b) => a-b)) !== JSON.stringify(claim.sourceIds)) throw new MemoryReviewError("source_changed");
+    return turns;
   }
 
   async fail(input: Parameters<MemoryReviewRepository["fail"]>[0]) {

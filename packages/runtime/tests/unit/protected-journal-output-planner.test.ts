@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { decodeRoomEventRollupPayloadV1 } from "@nautilo/lattice-bridge";
+import { decodeDurableRecordEnvelope } from "@nautilo/reflection-bridge/server";
 
 import {
   decodeProtectedJournalAttachmentPlanV1,
@@ -17,6 +19,76 @@ const ROLLUP_ID = "50000000-0000-4000-8000-000000000001";
 const CREATED_AT = "2026-08-04T12:00:00.000Z";
 
 describe("protected journal output planner", () => {
+  test("keeps exact model ancestry inside encrypted Record and rollup payloads", () => {
+    const dependencies = [{
+      kind: "source" as const,
+      sourceKind: "message",
+      logicalSourceRef: "message:11",
+      observedRevision: "0",
+      observedContentFingerprint: "sha256:exact-message",
+      terminalAuthorityLeafHandle: NAMESPACE_ID,
+    }];
+    const extraction = planProtectedExtractionOutputs({
+      roomId: ROOM_ID,
+      namespaceId: NAMESPACE_ID,
+      sourceBatchId: BATCH_ID,
+      rebuildGeneration: 0,
+      extractorVersion: "m241-v1",
+      createdAt: CREATED_AT,
+      existingEvents: [],
+      operations: [{
+        op: "append",
+        kind: "fact",
+        statement: "Protected fact.",
+        sourceMessageIds: [11],
+      }],
+      outputSlots: [{ eventId: EVENT_1, objectId: "record-output" }],
+      messageBindings: [{
+        messageId: 11,
+        editRevision: 0,
+        observedContentFingerprint: "sha256:exact-message",
+      }],
+      modelExposureDependencies: dependencies,
+    });
+    expect(extraction.status).toBe("planned");
+    if (extraction.status !== "planned") return;
+    const record = decodeDurableRecordEnvelope({
+      recordRef: EVENT_1,
+      lifecycle: "current",
+      structuralHeight: 0,
+      processingGeneration: 1,
+      payloadBytes: extraction.outputs[0]!.plaintext,
+    });
+    expect(record.semantic.modelExposureDependencies).toEqual(dependencies);
+
+    const rollup = planProtectedRollupOutput({
+      roomId: ROOM_ID,
+      namespaceId: NAMESPACE_ID,
+      rebuildGeneration: 0,
+      rollupId: ROLLUP_ID,
+      outputObjectId: "rollup-output",
+      throughEventSequence: 1,
+      content: "Protected rollup.",
+      sourceEventCount: 1,
+      modelId: "bound-model",
+      compactorVersion: "m241-v1",
+      createdAt: CREATED_AT,
+      modelExposureDependencies: dependencies,
+    });
+    expect(
+      decodeRoomEventRollupPayloadV1(
+        rollup.outputs[0]!.plaintext,
+      ).modelExposureDependencies,
+    ).toEqual([{
+      kind: "source",
+      sourceKind: "message",
+      logicalObjectRef: "message:11",
+      observedRevision: "0",
+      observedContentFingerprint: "sha256:exact-message",
+      terminalAuthorityLeafHandle: NAMESPACE_ID,
+    }]);
+  });
+
   test("plans only the actual ordered output prefix and keeps plaintext out of the attachment plan", () => {
     const result = planProtectedExtractionOutputs({
       roomId: ROOM_ID,

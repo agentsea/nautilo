@@ -1,5 +1,6 @@
 import {createHash} from "node:crypto";
-import {createPostgresJsBridgeConnection, type DirectDatabase} from "@nautilo/db";
+import {MODEL_INPUT_EXPOSURE_METADATA_KEY, bindModelInputExposureFromAuthorizedPersistedPayload, readModelInputExposure} from "@nautilo/agent";
+import {createPostgresJsBridgeConnection, findReflectionEnabledHumanOwnersWith, findReflectionMessageSourceWith, type DirectDatabase} from "@nautilo/db";
 import {
   createProtectedReflectionSemanticQuestions, prepareReflectionSemanticQuestion,
   PostgresProtectedOrganizerMetadata, type ProtectedOrganizerRecordMetadata, type ProtectedOrganizerMemoryMetadata,
@@ -12,7 +13,7 @@ import {CANDIDATE_POLICY_V1, runDependencyLossRewrite} from "@nautilo/reflection
 import {
   DURABLE_RECORD_PAGE_LIMIT_MAX, durableEnvelopeToRecordSnapshot, type DurableSourceDependency,
   type DurableRecordLifecycleMutation, type DurableRecordLifecycleMutationResult,
-  type DurableSleepSemanticPort, type DurableSleepClaim, type DurableSleepOrganizerViewResult, type DurableSleepOrganizerView,
+  type DurableSleepSemanticPort, type DurableSleepClaim, type DurableSleepOrganizerViewResult, type DurableSleepOrganizerView, type DurableModelExposureDependency,
 } from "@nautilo/reflection/durable";
 import {
   DualModeRecordRepository, PostgresRecordProductStore, PostgresSemanticWorkStore, PostgresGroundedDependencyRecordState, resolveCurrentDependencyInputRef,
@@ -27,8 +28,8 @@ import {
   type RecordProductStorePort, type CrossRoomCandidatePlan, type DurableOrganizerModelPort,
   type SameRoomSemanticBinding, type CrossRoomPublicationPlan, type CrossRoomInputCoordinate,
   type CrossRoomOrganizerPartitionPort, type CrossRoomOrganizerDiscoveryResult,
-  type RoomLocalMemoryCandidate, type CanonicalRecordSourceReadPort, type RecordSourceInvalidationPort,
-  type RecordAccessAudiencePort, type CanonicalSourceAuthorityPort,
+  type RoomLocalMemoryCandidate, type CanonicalRecordSourceReadPort, type RecordSourceInvalidationPort, type PersonalMemoryEvidencePort,
+  type RecordAccessAudiencePort, type CanonicalSourceAuthorityPort, type MemorySourceDerivation,
 } from "@nautilo/reflection-bridge/server";
 import {
   createCanonicalSameRoomBindingPorts, createCanonicalRecordAccessAudience,
@@ -37,6 +38,7 @@ import {
 } from "@nautilo/runtime";
 
 import {attachReflectionShadowSibling} from "./attach-shadow-sibling";
+import {runWithProtectedMemoryEvidence} from "../lib/protected-memory-model-evidence";
 
 class ExpandedReflectionInputsRequired extends Error {}
 class PendingReflectionInputsRequired extends Error {}
@@ -816,6 +818,93 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
               || fixed.plan.output.accessRoomRef !== output.accessRoomId) throw unavailable();
             plan = fixed.plan;
           }
+          const sourceAuthority = new CanonicalRoomNamespaceSourceAuthority();
+          const readAudience = async (leaf: string) => {
+            executionSignal.throwIfAborted(); await assertCrossRoomCurrent();
+            const resolved = await sourceAuthority.resolve(leaf);
+            if (resolved.status !== "available" || resolved.leaf.alternatives.length !== 1) return null;
+            const alternative = resolved.leaf.alternatives[0]!;
+            const humans = await findReflectionEnabledHumanOwnersWith(input.db, alternative.humanRefs);
+            await assertCrossRoomCurrent();
+            return humans === null ? null : {humanIds: humans, includesPublicBoundary: alternative.includesPublicBoundary};
+          };
+          const evidence: PersonalMemoryEvidencePort = Object.freeze({
+            async readRecord(dependency: Extract<DurableModelExposureDependency, {kind: "record"}>) {
+              executionSignal.throwIfAborted(); await assertCrossRoomCurrent();
+              const held = exact.get(dependency.recordRef);
+              if (held === undefined) return null;
+              const currentRecord = await metadata.resolveRecord({recordRef: dependency.recordRef,
+                namespaceId: held.metadata.inputBinding.namespaceId, signal: executionSignal});
+              await assertCrossRoomCurrent();
+              if (currentRecord === null || digest(currentRecord) !== digest(held.metadata)) return null;
+              const envelope = decodeDurableRecordEnvelope({...held.metadata,
+                payloadBytes: payloads.get(held.metadata.inputBinding.objectId)!.plaintext});
+              return envelope.processingGeneration === dependency.observedProcessingGeneration
+                && digest([...envelope.semantic.terminalAuthorityLeafHandles].sort())
+                  === digest([...dependency.terminalAuthorityLeafHandles].sort()) ? envelope : null;
+            },
+            async readSource(dependency: Extract<DurableModelExposureDependency, {kind: "source"}>): Promise<MemorySourceDerivation | null> {
+              executionSignal.throwIfAborted(); await assertCrossRoomCurrent();
+              const audience = await readAudience(dependency.terminalAuthorityLeafHandle);
+              if (audience === null) return null;
+              if (dependency.sourceKind === "memory") {
+                const value = memoryValues.get(dependency.logicalSourceRef);
+                if (value === undefined || await validateMemory({...dependency, authorityBearing: true}) !== "current") return null;
+                const metadataValue = exactMemories.get(dependency.logicalSourceRef);
+                if (metadataValue === undefined) return null;
+                const opened = payloads.get(metadataValue.inputBinding.objectId);
+                if (opened === undefined) return null;
+                const body = decodeMemoryPayloadV1(opened.plaintext);
+                await assertCrossRoomCurrent();
+                return {status: "current" as const, audienceHumanIds: audience.humanIds,
+                  includesPublicBoundary: audience.includesPublicBoundary,
+                  ...(body.modelExposureDependencies === undefined
+                    ? {kind: "unknown" as const}
+                    : {kind: "derived" as const, modelExposureDependencies: body.modelExposureDependencies.map(dependency =>
+                        dependency.kind === "record" ? {kind: "record" as const, recordRef: dependency.recordId,
+                          observedProcessingGeneration: dependency.observedProcessingGeneration,
+                          terminalAuthorityLeafHandles: dependency.terminalAuthorityLeafHandles}
+                          : {kind: "source" as const, sourceKind: dependency.sourceKind,
+                              logicalSourceRef: dependency.logicalObjectRef,
+                              ...(dependency.observedRevision === null ? {} : {observedRevision: dependency.observedRevision}),
+                              ...(dependency.observedContentFingerprint === null ? {} : {
+                                observedContentFingerprint: dependency.observedContentFingerprint}),
+                              terminalAuthorityLeafHandle: dependency.terminalAuthorityLeafHandle})})};
+              }
+              if (dependency.sourceKind !== "message") return null;
+              const metadataValue = exactMessages.get(dependency.logicalSourceRef);
+              const value = messageValues.get(dependency.logicalSourceRef);
+              if (metadataValue === undefined || value === undefined
+                || dependency.observedRevision !== value.dependency.observedRevision
+                || dependency.observedContentFingerprint !== value.dependency.observedContentFingerprint) return null;
+              const opened = payloads.get(metadataValue.inputBinding.objectId);
+              if (opened === undefined) return null;
+              const body = decodeMessagePayloadV2(opened.plaintext);
+              const structural = await findReflectionMessageSourceWith(input.db, metadataValue.messageId,
+                metadataValue.roomId, metadataValue.namespaceId);
+              await assertCrossRoomCurrent();
+              if (structural === null || structural.editRevision !== metadataValue.editRevision
+                || structural.role !== body.role || structural.sourceUserDisabledAt !== null) return null;
+              if (body.role === "user" && structural.externalAuthorship === false) return {status: "current",
+                audienceHumanIds: audience.humanIds, includesPublicBoundary: audience.includesPublicBoundary,
+                kind: "human", authorHumanId: structural.sourceUserId};
+              if ((body.role === "assistant" || body.role === "tool") && structural.externalAuthorship === false) {
+                const carrier = {};
+                if (!bindModelInputExposureFromAuthorizedPersistedPayload(carrier,
+                  body.sensitiveMetadata?.[MODEL_INPUT_EXPOSURE_METADATA_KEY])) return {status: "current",
+                    audienceHumanIds: audience.humanIds, includesPublicBoundary: audience.includesPublicBoundary, kind: "unknown"};
+                const ancestry = readModelInputExposure(carrier);
+                return ancestry?.status === "complete" && ancestry.dependencies.length > 0
+                  ? {status: "current" as const, audienceHumanIds: audience.humanIds, includesPublicBoundary: audience.includesPublicBoundary,
+                      kind: "derived", modelExposureDependencies: ancestry.dependencies}
+                  : {status: "current" as const, audienceHumanIds: audience.humanIds,
+                      includesPublicBoundary: audience.includesPublicBoundary, kind: "unknown"};
+              }
+              return {status: "current" as const, audienceHumanIds: audience.humanIds,
+                includesPublicBoundary: audience.includesPublicBoundary, kind: "unknown"};
+            },
+            readAudience,
+          });
           const gatePublication = publication;
           const publisher = new OrganizerProposalPublisher({repository: {
             read: value => repository.read(value), readCompletedPublication: value => repository.readCompletedPublication(value),
@@ -826,10 +915,22 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
             preserveExactPlanInvocationOrigin: true,
             room: {roomAnchorRef: binding.roomAnchorRef, terminalAuthorityLeafHandle: current.namespaceId,
               readBindingRef: binding.readBindingRef, publicationBindingRef: binding.publicationBindingRef, producerPolicyVersion: CANDIDATE_POLICY_V1.version}});
-          return {view, async applyProposal(application, complete) {
+          view = {...view, modelExposureDependencies};
+          return {view, runModel: async run => {
+            await assertCrossRoomCurrent();
+            return runWithProtectedMemoryEvidence(evidence, run);
+          }, async applyProposal(application, complete) {
             gatePublication.setCompletion(complete);
             try {
-              if (application.claim !== claim || application.claim.changeReason === "parent_conflict") throw unavailable();
+              if (application.claim !== claim || application.claim.changeReason === "parent_conflict"
+                || application.modelExposureDependencies === undefined) throw unavailable();
+              const replanned = await planner.planExposure({applicationPlanToken: crossRoomApplicationPlanToken(
+                `protected.application.${digest(application.applicationPlanTokens ?? [application.applicationPlanToken])}`),
+                candidatePlan, modelExposureDependencies: application.modelExposureDependencies, signal: executionSignal});
+              if (replanned.status !== "planned" || replanned.plan.output.accessNamespaceRef !== output.accessNamespaceId
+                || replanned.plan.output.accessRoomRef !== output.accessRoomId) throw unavailable();
+              plan = replanned.plan;
+              await assertCrossRoomCurrent();
               const result = await publisher.apply({proposal: application.proposal, changedRecordRef: claim.recordRef,
                 idempotencyKey: application.idempotencyKey, budget: application.budget, changeReason: application.claim.changeReason,
                 ...(plan === undefined ? {} : {publicationPlan: plan}), signal: executionSignal});
@@ -859,8 +960,8 @@ export function createProductionProtectedReflectionSemantics(input: ProductionPr
   };
   return createProtectedReflectionSemanticQuestions({
     ...input.readiness, resolveParentConflict: input.resolveParentConflict,
-    invokeOrganizer: (claim, prompt, signal) => input.model.invoke(claim, prompt, signal),
-    invokeOrganizerBatch: (claims, prompt, signal) => input.model.invokeBatch(claims, prompt, signal),
+    invokeOrganizer: (claim, prompt, signal, dependencies) => input.model.invoke(claim, prompt, signal, dependencies),
+    invokeOrganizerBatch: (claims, prompt, signal, dependencies) => input.model.invokeBatch(claims, prompt, signal, dependencies),
     ...(input.model.readiness === undefined ? {} : {modelLaneReadiness: (signal?: AbortSignal) => input.model.readiness!(signal)}),
     async assertClaimCurrent(claim, signal) {signal?.throwIfAborted(); if (!await work.isClaimCurrent(claim)) throw unavailable(); signal?.throwIfAborted();},
     prepareQuestion,

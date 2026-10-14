@@ -5,6 +5,7 @@ import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
+  readModelInputExposure,
 } from "@nautilo/agent";
 import { ModelCatalogSchema } from "@nautilo/types";
 import {
@@ -51,6 +52,167 @@ function depsFrom(room: RoomHistoryHit[], sub: RoomHistoryHit[] = []): BuildTran
     readSubagentTranscript: async () => sub,
   };
 }
+
+test("ordinary multi-turn narration carries the authorized canonical row union", async () => {
+  const dependencies = [
+    { kind: "source" as const, sourceKind: "message" as const, logicalSourceRef: "message:1",
+      observedRevision: "0", observedContentFingerprint: "sha256:one", terminalAuthorityLeafHandle: "namespace" },
+    { kind: "source" as const, sourceKind: "message" as const, logicalSourceRef: "message:2",
+      observedRevision: "1", observedContentFingerprint: "sha256:two", terminalAuthorityLeafHandle: "namespace" },
+  ];
+  const messages = await buildTranscriptContext({
+    scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" },
+  }, {
+    ...depsFrom([
+      { ...makeHit("alice", "Alice", "first", "2026-06-01T10:00:01Z", "user"), messageId: 1 },
+      { ...makeHit("nova", "Nova", "answer", "2026-06-01T10:00:02Z", "assistant"), messageId: 2 },
+      { ...makeHit("alice", "Alice", "second", "2026-06-01T10:00:03Z", "user"), messageId: 3 },
+    ]),
+    readOrdinaryModelExposure: async (_scope, hits) => {
+      expect(hits.map((hit) => hit.messageId)).toEqual([1, 2, 3]);
+      return { status: "complete", dependencies };
+    },
+  });
+  expect(readModelInputExposure(messages[0]!)).toEqual({ status: "complete", dependencies });
+});
+
+test("journal narration remains incomplete without native journal lineage", async () => {
+  const messages = await buildTranscriptContext({
+    scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" },
+  }, {
+    ...depsFrom([{ ...makeHit("alice", "Alice", "first", "2026-06-01T10:00:01Z", "user"), messageId: 1 }]),
+    readOrdinaryModelExposure: async () => ({ status: "complete", dependencies: [] }),
+    readRoomJournal: async () => ({ rollup: null, events: [{ sequence: 1, kind: "decision", statement: "Keep it", status: "active" }] as never }),
+  });
+  expect(readModelInputExposure(messages[0]!)).toEqual({ status: "incomplete" });
+});
+
+test("repeated native Journal context preserves one exact canonical Record dependency", async () => {
+  const dependency = {
+    kind: "record" as const,
+    recordRef: "record:journal-decision",
+    observedProcessingGeneration: 4,
+    terminalAuthorityLeafHandles: ["namespace:room"],
+  };
+  const messages = await buildTranscriptContext({
+    scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" },
+    recordContext: {
+      representation: "ordinary",
+      async select() {
+        throw new Error("Journal-only context must not search Records");
+      },
+      async reopenOrdinaryRecord(recordRef) {
+        return {
+          recordRef,
+          statement: "Keep the canonical decision.",
+          lifecycle: "current",
+          structuralHeight: 1,
+          modelExposureDependency: dependency,
+        };
+      },
+    },
+  }, {
+    ...depsFrom([{ ...makeHit("nova", "Nova", "Earlier answer", "2026-06-01T10:00:01Z", "assistant"), messageId: 2 }]),
+    readOrdinaryModelExposure: async () => ({ status: "complete", dependencies: [dependency] }),
+    readRoomJournal: async () => ({ rollup: null, events: [{
+      id: "event", roomId: "room", sequence: 1, kind: "decision",
+      statement: "Keep the canonical decision.", status: "active",
+      nativeRecordRef: "record:journal-decision",
+    }] }),
+  });
+
+  expect(readModelInputExposure(messages[0]!)).toEqual({
+    status: "complete",
+    dependencies: [dependency],
+  });
+});
+
+test("Record narration binds only the Records that the projection actually packs", async () => {
+  const first = {
+    kind: "record" as const, recordRef: "record:first",
+    observedProcessingGeneration: 1, terminalAuthorityLeafHandles: ["namespace:room"],
+  };
+  const second = {
+    kind: "record" as const, recordRef: "record:second",
+    observedProcessingGeneration: 1, terminalAuthorityLeafHandles: ["namespace:room"],
+  };
+  const messages = await buildTranscriptContext({
+    scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" },
+    currentHumanText: "recall",
+    maximumContextCharacters: 600,
+    recordContext: {
+      representation: "ordinary",
+      async select() {
+        return {
+          status: "available", representation: "ordinary",
+          queryEmbeddingStatus: "available", candidateCount: 3,
+          records: [
+            { recordRef: first.recordRef, statement: `FIRST ${"a".repeat(90)}`, lifecycle: "current", structuralHeight: 1, modelExposureDependency: first },
+            { recordRef: second.recordRef, statement: `SECOND ${"b".repeat(90)}`, lifecycle: "current", structuralHeight: 1, modelExposureDependency: second },
+            { recordRef: "record:third", statement: `THIRD ${"c".repeat(90)}`, lifecycle: "current", structuralHeight: 1, modelExposureDependency: {
+              kind: "record", recordRef: "record:third", observedProcessingGeneration: 1,
+              terminalAuthorityLeafHandles: ["namespace:room"],
+            } },
+          ],
+        };
+      },
+    },
+  }, {
+    ...depsFrom([{ ...makeHit("alice", "Alice", "prior question", "2026-06-01T10:00:01Z", "user"), messageId: 1 }]),
+    readOrdinaryModelExposure: async () => ({ status: "complete", dependencies: [] }),
+  });
+  const rendered = messages.map((message) =>
+    typeof message.content === "string" ? message.content : JSON.stringify(message.content)
+  ).join("\n");
+  expect(rendered).toContain("FIRST");
+  expect(rendered).not.toContain("SECOND");
+  expect(readModelInputExposure(messages[0]!)).toEqual({
+    status: "complete", dependencies: [first],
+  });
+});
+
+test("mixed Record narration fails closed when any packed Record lacks canonical evidence", async () => {
+  const messages = await buildTranscriptContext({
+    scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" },
+    currentHumanText: "recall",
+    maximumContextCharacters: 4_000,
+    recordContext: {
+      representation: "ordinary",
+      async select() {
+        return {
+          status: "available", representation: "ordinary",
+          queryEmbeddingStatus: "available", candidateCount: 1,
+          records: [{ recordRef: "record:legacy", statement: "No receipt", lifecycle: "current", structuralHeight: 1 }],
+        };
+      },
+    },
+  }, {
+    ...depsFrom([]),
+    readOrdinaryModelExposure: async () => ({ status: "complete", dependencies: [] }),
+  });
+  expect(readModelInputExposure(messages[0]!)).toEqual({ status: "incomplete" });
+});
+
+test("legacy Journal evidence remains explicit for downstream unknown classification", async () => {
+  const dependency = {
+    kind: "source" as const, sourceKind: "journal_event" as const,
+    logicalSourceRef: "journal-event:legacy", observedRevision: "sequence:1:status:active",
+    observedContentFingerprint: "sha256:legacy", terminalAuthorityLeafHandle: "namespace:room",
+  };
+  const messages = await buildTranscriptContext({
+    scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" },
+  }, {
+    ...depsFrom([]),
+    readOrdinaryModelExposure: async () => ({ status: "complete", dependencies: [] }),
+    readRoomJournal: async () => ({ rollup: null, events: [{
+      id: "legacy", roomId: "room", sequence: 1, kind: "fact",
+      statement: "Legacy fact", status: "active", modelExposureDependency: dependency,
+    }] }),
+  });
+  expect(readModelInputExposure(messages[0]!)).toEqual({
+    status: "complete", dependencies: [dependency],
+  });
+});
 
 describe("admitted Human inputs in reconstructed current turns", () => {
   test("pins a reply once between its question and subsequent progress", async () => {

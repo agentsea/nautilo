@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, sql, type SQL } from "drizzle-orm";
 import { HANDLE_RE, normalizeHandle, type ProfileVoices } from "@nautilo/types";
 import type { DirectDatabase } from "../config/direct-database";
 import { agents } from "../schema/agents";
@@ -506,8 +506,11 @@ export async function applyWave1AProfileFieldsInTx(
   payload: Wave1AProfilePayload,
   now: Date = new Date(),
 ): Promise<void> {
-  const set: Partial<typeof profiles.$inferInsert> = { updatedAt: now };
-  if (payload.soulFile !== undefined) set.soulFile = payload.soulFile;
+  const set: Omit<Partial<typeof profiles.$inferInsert>, "soulRevision"> & { soulRevision?: SQL } = { updatedAt: now };
+  if (payload.soulFile !== undefined) {
+    set.soulFile = payload.soulFile;
+    set.soulRevision = sql`CASE WHEN ${profiles.soulFile} IS DISTINCT FROM ${payload.soulFile} THEN ${profiles.soulRevision} + 1 ELSE ${profiles.soulRevision} END`;
+  }
   if (payload.personalityPrompt !== undefined) set.personalityPrompt = payload.personalityPrompt;
   if (payload.personalityTone !== undefined) set.personalityTone = payload.personalityTone;
   if (payload.motherAnswer !== undefined) set.motherAnswer = payload.motherAnswer;

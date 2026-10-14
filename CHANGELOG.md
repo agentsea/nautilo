@@ -7,6 +7,14 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal Memory review, reflection and summarization models can be selected
+  independently. Memory processing uses a member's admitted funding only when
+  current input evidence proves that member's exclusive authorship and audience;
+  shared, mixed and uncertain work remains an explicit server service. Accepted
+  work retains its model and funding across recovery, while embeddings keep the
+  server-wide configuration. Costs records provider attempts and unresolved
+  charges without replaying inference.
+
 - Desktop acquires the latest Bolter CLI without waiting for a Desktop release.
   Failed CLI operations can upgrade and retry once when a newer build is
   available, preserving credentials and queued messages. Uncertain sends are

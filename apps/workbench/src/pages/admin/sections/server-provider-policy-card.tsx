@@ -140,8 +140,8 @@ export function ServerProviderPolicyCard() {
           <p className="mt-1 text-xs text-foreground-muted">
             Controls whether eligible members may use their own provider credentials.
             When enabled, eligible members can add personal keys in Settings and
-            use supported private text chat and native text Tasks with their own Genie. Other paid work is being added in
-            later stages.
+            fund supported chats, Tasks, media, research and Memory processing according to the priority below.
+            Shared or uncertain Memory work and embeddings use server funding.
           </p>
           {persisted !== null ? (
             <p className="mt-2 text-xs font-medium text-foreground" data-testid="server-provider-policy-persisted">

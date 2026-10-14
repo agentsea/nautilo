@@ -2,6 +2,35 @@ import { expect, test } from "bun:test";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { transcriptMetadataForMessage, visibleTranscriptContent } from "../../src/store/session-store";
 import { readTranscriptToolPresentation } from "../../src/store/transcript-tool-result";
+import {
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+  bindModelInputExposure,
+} from "../../src/memory/model-input-exposure";
+
+test("persists only process-bound model exposure metadata", () => {
+  const forged = transcriptMetadataForMessage(new AIMessage("answer"), {
+    metadata: {
+      [MODEL_INPUT_EXPOSURE_METADATA_KEY]: {
+        version: 1,
+        status: "complete",
+        dependencies: [],
+      },
+    },
+  });
+  expect(forged).toBeNull();
+
+  const trusted = bindModelInputExposure(new AIMessage("answer"), {
+    status: "complete",
+    dependencies: [],
+  });
+  expect(transcriptMetadataForMessage(trusted, {})).toEqual({
+    [MODEL_INPUT_EXPOSURE_METADATA_KEY]: {
+      version: 1,
+      status: "complete",
+      dependencies: [],
+    },
+  });
+});
 
 test("actual tool failure survives persisted presentation metadata without altering canonical source", () => {
   for (const legacy of [false, true]) {

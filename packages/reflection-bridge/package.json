@@ -37,6 +37,7 @@
     "test:integration": "bun scripts/run-postgres-integration.ts"
   },
   "dependencies": {
+    "@nautilo/types": "workspace:*",
     "@nautilo/db": "workspace:*",
     "@nautilo/lattice-bridge": "workspace:*",
     "@nautilo/lattice-crypto": "workspace:*",

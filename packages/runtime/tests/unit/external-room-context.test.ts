@@ -44,7 +44,13 @@ describe("external room runtime admission", () => {
     const forbidden = async (): Promise<never> => { throw new Error("private-context-read"); };
     expect(await loadForegroundAuthoredContext({ agentId: "genie", ownerId: "sponsor", isGuest: false, externalContext: true }, {
       getExecutionConfigByAgentId: forbidden, resolveEnabledBodies: forbidden,
-    })).toEqual({ profile: null, soulFile: "", skills: [] });
+    })).toEqual({
+      profile: null,
+      soulFile: "",
+      soulSourceReceipt: null,
+      modelInputDependencies: [],
+      skills: [],
+    });
   });
   test("automatic memory review does not reserve external conversation sources", async () => {
     expect(await memoryReviewAdmission({ ...envelope("a"), externalContext: true }, "checkpoint", {

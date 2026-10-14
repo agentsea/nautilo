@@ -98,6 +98,10 @@ describe("Stenographer failure transitions", () => {
     expect(state.updates[0]?.values["lastCompactionErrorModelId"]).toBe(
       "model-b",
     );
+    expect(state.updates[0]?.values)
+      .not.toHaveProperty("compactionAcceptedModelBinding");
+    expect(state.updates[0]?.values)
+      .not.toHaveProperty("compactionAcceptedPlan");
   });
 
   test("persists uncertain provider outcomes without scheduling extraction replay", async () => {
@@ -140,5 +144,34 @@ describe("Stenographer failure transitions", () => {
     expect(state.updates[0]?.values["lastCompactionErrorCode"])
       .toBe("provider_outcome_unknown");
     expect(state.updates[0]?.values["compactionRetryAfter"]).toBeNull();
+    expect(state.updates[0]?.values["compactionLastAttemptKnownNonusable"])
+      .toBeFalse();
+  });
+
+  test("retains the accepted plan and marks only an exact invalid result nonusable", async () => {
+    const state = failureDb({
+      compaction_failure_count: 1,
+      compaction_accepted_model_binding: { version: 1 },
+      compaction_accepted_plan: { version: 1 },
+    });
+
+    await failCompaction({
+      claim: {
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+        attemptCount: 2,
+      } as never,
+      errorCode: "invalid_output",
+      modelId: "model-b",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values["compactionLastAttemptKnownNonusable"])
+      .toBeTrue();
+    expect(state.updates[0]?.values)
+      .not.toHaveProperty("compactionAcceptedModelBinding");
+    expect(state.updates[0]?.values)
+      .not.toHaveProperty("compactionAcceptedPlan");
   });
 });

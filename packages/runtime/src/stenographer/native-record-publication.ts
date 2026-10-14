@@ -1,4 +1,5 @@
 import type { DirectDatabase } from "@nautilo/db";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
   PostgresOrdinaryStenographerRecordPublisher,
   PostgresSemanticWorkStore,
@@ -73,6 +74,7 @@ export interface NativeStenographerPublicationRuntime {
     modelId: string | null;
     now?: Date;
     ordinaryFallbackReason?: "device" | "authority";
+    modelExposureDependencies?: readonly DurableModelExposureDependency[];
   }>): Promise<{ published: boolean; eventsWritten: number }>;
   convertNextLegacyPage(input?: Readonly<{
     limit?: number;
@@ -139,6 +141,12 @@ export async function createNativeStenographerExtractionPublisher(
         ...(publication.ordinaryFallbackReason === undefined
           ? {}
           : { ordinaryFallbackReason: publication.ordinaryFallbackReason }),
+        ...(publication.modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies:
+                publication.modelExposureDependencies,
+            }),
       };
       return publisher.publishExtraction(bridgeInput);
     },

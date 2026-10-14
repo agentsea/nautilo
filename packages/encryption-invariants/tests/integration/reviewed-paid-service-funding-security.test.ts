@@ -172,5 +172,19 @@ describe("paid service funding encryption review", () => {
     expect(connectedApps).toContain(
       'warn("[connected-apps] hosted cost settlement unavailable")',
     );
+    const embeddingAttempt = await Bun.file(resolve(
+      repoRoot,
+      "packages/agent/src/usage/service-embedding-attempt.ts",
+    )).text();
+    expect(embeddingAttempt).toContain(
+      'warn("[nautilo/usage] service embedding attempt settlement unavailable", {\n        failureCode: "attempt_settlement_failed",\n      })',
+    );
+    const executor = await Bun.file(resolve(
+      repoRoot,
+      "packages/runtime/src/executors/langgraph-executor.ts",
+    )).text();
+    expect(executor).toContain(
+      "log(`[nautilo/executor] Token usage: in=${input} out=${output} total=${total}`)",
+    );
   }, 120_000);
 });

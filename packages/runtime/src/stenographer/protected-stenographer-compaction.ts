@@ -7,13 +7,17 @@ import {
   planJournalCompaction,
   runStenographerCompaction,
 } from "@nautilo/reflection";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import { mapModelFailure } from "./model-invoker";
 import {
   planProtectedRollupOutput,
   type ProtectedJournalAttachmentPlanV1,
 } from "./protected-journal-output-planner";
 import {
   fingerprintProtectedStenographerSourceBindings,
+  protectedCompactionModelExposureDependencies,
   withProtectedStenographerSources,
+  type OpenedProtectedStenographerSources,
   type ProtectedStenographerSourceBinding,
 } from "./protected-source-loader";
 
@@ -98,10 +102,22 @@ export interface RunProtectedStenographerCompactionInput {
   >;
   readonly work: ProtectedStenographerCompactionWork;
   readonly signal: AbortSignal;
-  readonly invokeModel: (
+  readonly invokeModel?: (
     prompt: string,
     signal: AbortSignal,
   ) => Promise<string>;
+  readonly admitModel?: (input: Readonly<{
+    readonly sources: OpenedProtectedStenographerSources;
+    readonly dependencies:
+      readonly DurableModelExposureDependency[] | undefined;
+  }>) => Promise<Readonly<{
+    readonly modelId: string;
+    readonly invoke: (
+      prompt: string,
+      signal?: AbortSignal,
+    ) => Promise<string>;
+    readonly assertCurrent: () => Promise<void>;
+  }>>;
   readonly publication: ProtectedStenographerCompactionPublicationPort;
 }
 
@@ -127,6 +143,13 @@ function assertActive(signal: AbortSignal): void {
   throw signal.reason instanceof Error
     ? signal.reason
     : new Error("protected Stenographer compaction aborted");
+}
+
+class ProtectedStenographerProviderOutcomeUnknownError extends Error {
+  constructor() {
+    super("Protected Stenographer provider outcome is unknown");
+    this.name = "ProtectedStenographerProviderOutcomeUnknownError";
+  }
 }
 
 async function rejectWithoutPublication(
@@ -220,19 +243,58 @@ export async function runProtectedStenographerCompaction(
         );
         return;
       }
+      const modelExposureDependencies =
+        protectedCompactionModelExposureDependencies(
+          sources,
+          input.work.namespaceId,
+          compactable.plan.modelExposure,
+        );
+      const admitted = input.admitModel === undefined
+        ? undefined
+        : await input.admitModel({
+            sources,
+            dependencies: modelExposureDependencies,
+          });
+      const invokeModel = admitted?.invoke ?? input.invokeModel;
+      if (invokeModel === undefined) {
+        throw new Error("Protected Stenographer model admission is unavailable");
+      }
+      let providerHasReturned = false;
+      const guardedInvoke = async (prompt: string): Promise<string> => {
+        try {
+          await admitted?.assertCurrent();
+        } catch (error) {
+          if (providerHasReturned) {
+            throw new ProtectedStenographerProviderOutcomeUnknownError();
+          }
+          throw error;
+        }
+        const value = await invokeModel(prompt, input.signal);
+        providerHasReturned = true;
+        try {
+          await admitted?.assertCurrent();
+        } catch {
+          throw new ProtectedStenographerProviderOutcomeUnknownError();
+        }
+        return value;
+      };
       let compacted: Awaited<ReturnType<typeof runStenographerCompaction>>;
       try {
         compacted = await runStenographerCompaction({
           prompt: compactable.plan.prompt,
-          invoke: (prompt) => input.invokeModel(prompt, input.signal),
+          invoke: guardedInvoke,
           signal: input.signal,
+          modelExposure: compactable.plan.modelExposure,
         });
         assertActive(input.signal);
-      } catch {
+      } catch (error) {
         assertActive(input.signal);
         result = await rejectWithoutPublication(
           input.capability,
-          "provider_failure",
+          error instanceof ProtectedStenographerProviderOutcomeUnknownError
+              || mapModelFailure(error) === "provider_outcome_unknown"
+            ? "provider_outcome_unknown"
+            : "provider_failure",
         );
         return;
       }
@@ -254,9 +316,12 @@ export async function runProtectedStenographerCompaction(
         sourceEventCount:
           (compactable.plan.previousRollup?.sourceEventCount ?? 0)
           + compactable.plan.selectedEvents.length,
-        modelId: input.work.modelId,
+        modelId: admitted?.modelId ?? input.work.modelId,
         compactorVersion: input.work.compactorVersion,
         createdAt: input.work.createdAt,
+        ...(modelExposureDependencies === undefined
+          ? {}
+          : { modelExposureDependencies }),
       });
       const attachmentPlanHash = hash(planned.attachmentPlanBytes);
       const reservation = await input.publication.reserve(Object.freeze({
@@ -286,6 +351,15 @@ export async function runProtectedStenographerCompaction(
         result = await rejectWithoutPublication(
           input.capability,
           "stale_work",
+        );
+        return;
+      }
+      try {
+        await admitted?.assertCurrent();
+      } catch {
+        result = await rejectWithoutPublication(
+          input.capability,
+          "provider_outcome_unknown",
         );
         return;
       }

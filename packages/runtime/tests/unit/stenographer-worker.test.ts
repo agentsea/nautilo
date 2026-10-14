@@ -7,6 +7,7 @@ import type {
 import {
   createOrdinaryStenographerIntentAdapter,
   StenographerWorker,
+  type CompactionClaim,
   type ExtractionClaim,
   type StenographerCandidatePort,
   type StenographerWorkerDeps,
@@ -54,10 +55,11 @@ function claim(
     },
     sourceRows: trigger === "skip_excluded"
       ? []
-      : [{ ...source, displayLabel: "Alice (@alice)" }],
+      : [{ ...source, displayLabel: "Alice (@alice)", editRevision: 0 }],
     priorContextRows: [],
     latestRollup: null,
     visibleEvents: [],
+    namespaceId: "namespace-1",
   };
 }
 
@@ -347,6 +349,7 @@ describe("ordinary Stenographer intent adapter", () => {
     let invocations = 0;
     let publications = 0;
     const fallbackReasons: Array<"device" | "authority" | undefined> = [];
+    const exposures: unknown[] = [];
     const adapter = createOrdinaryStenographerIntentAdapter({
       claimExtraction: async () => claim(),
       claimCompaction: async () => null,
@@ -358,6 +361,7 @@ describe("ordinary Stenographer intent adapter", () => {
       publishExtraction: async (input) => {
         publications += 1;
         fallbackReasons.push(input.ordinaryFallbackReason);
+        exposures.push(input.modelExposureDependencies);
         return { published: true, eventsWritten: 0 };
       },
       logger: silentLogger(),
@@ -377,6 +381,15 @@ describe("ordinary Stenographer intent adapter", () => {
     });
     expect(publications).toBe(1);
     expect(fallbackReasons[0]).toBeUndefined();
+    expect(exposures[0]).toEqual([{
+      kind: "source",
+      sourceKind: "message",
+      logicalSourceRef: "message:1",
+      observedRevision: "0",
+      observedContentFingerprint:
+        "sha256:f77ca43ff9b7ddb3d343bdb65325b0fb64f6b99696dcdbe74726ca0bde51c97f",
+      terminalAuthorityLeafHandle: "namespace-1",
+    }]);
     const fallbackPrepared = await adapter.prepareExtraction({
       roomId: "room-1",
       lane: "live",
@@ -389,6 +402,224 @@ describe("ordinary Stenographer intent adapter", () => {
       ordinaryFallbackReason: "authority",
     })).toMatchObject({ status: "completed", processed: true });
     expect(fallbackReasons).toEqual([undefined, "authority"]);
+  });
+
+  test("retains uncited transcript, prior, rollup, and journal prompt exposure", async () => {
+    const base = claim();
+    const fullClaim: ExtractionClaim = {
+      ...base,
+      plan: {
+        ...base.plan,
+        fromMessageIdExclusive: 9,
+        throughMessageIdInclusive: 11,
+        sourceRows: [
+          {
+            ...base.plan.sourceRows[0]!,
+            id: 10,
+          },
+          {
+            id: 11,
+            createdAt: NOW,
+            role: "assistant",
+            text: "Uncited but disclosed.",
+            fingerprint: null,
+            conversationalBoundary: false,
+          },
+        ],
+        coveredMessageIds: [10, 11],
+      },
+      sourceRows: [
+        {
+          ...base.sourceRows[0]!,
+          id: 10,
+        },
+        {
+          id: 11,
+          createdAt: NOW,
+          role: "assistant",
+          text: "Uncited but disclosed.",
+          fingerprint: null,
+          displayLabel: "Genie",
+          editRevision: 1,
+        },
+      ],
+      priorContextRows: [{
+        id: 3,
+        createdAt: NOW,
+        role: "tool",
+        text: "Prior disclosed context.",
+        fingerprint: null,
+        displayLabel: "Tool",
+        editRevision: 2,
+      }],
+      latestRollup: {
+        throughEventSequence: 4,
+        content: "Prior cumulative rollup.",
+        modelExposureDependency: {
+          kind: "source",
+          sourceKind: "journal_rollup",
+          logicalSourceRef: "journal-rollup:rollup-1",
+          observedRevision: "through:4:version:v1",
+          observedContentFingerprint: "sha256:rollup",
+          terminalAuthorityLeafHandle: "namespace-1",
+        },
+      },
+      visibleEvents: [{
+        id: "event-5",
+        roomId: "room-1",
+        sequence: 5,
+        kind: "decision",
+        statement: "Existing journal decision.",
+        status: "active",
+        modelExposureDependency: {
+          kind: "record",
+          recordRef: "event-5",
+          observedProcessingGeneration: 3,
+          terminalAuthorityLeafHandles: ["namespace-1"],
+        },
+      }],
+    };
+    let publishedExposure: readonly unknown[] | undefined;
+    const adapter = createOrdinaryStenographerIntentAdapter({
+      claimExtraction: async () => fullClaim,
+      createInvoker: () => async () => JSON.stringify({
+        operations: [{
+          op: "append",
+          kind: "decision",
+          statement: "Ship it.",
+          sourceMessageIds: ["M1"],
+        }],
+      }),
+      publishExtraction: async (input) => {
+        publishedExposure = input.modelExposureDependencies;
+        return { published: true, eventsWritten: 1 };
+      },
+      logger: silentLogger(),
+    });
+    const prepared = await adapter.prepareExtraction({
+      roomId: "room-1",
+      lane: "live",
+      modelId: "model",
+      now: NOW,
+      signal: new AbortController().signal,
+    });
+    expect((await prepared.publish({ revalidationToken: 1 })).status)
+      .toBe("completed");
+    expect(publishedExposure?.map((dependency) =>
+      (dependency as { kind: string; logicalSourceRef?: string; recordRef?: string })
+        .logicalSourceRef
+        ?? (dependency as { recordRef?: string }).recordRef
+    )).toEqual([
+      "message:10",
+      "message:11",
+      "message:3",
+      "journal-rollup:rollup-1",
+      "event-5",
+    ]);
+  });
+
+  test("retains previous rollup, selected events, and protected tail for compaction", async () => {
+    const dependency = (recordRef: string) => ({
+      kind: "record" as const,
+      recordRef,
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: ["namespace-1"],
+    });
+    const selected = {
+      id: "event-1",
+      roomId: "room-1",
+      sequence: 1,
+      kind: "decision" as const,
+      statement: "Selected event.",
+      status: "active" as const,
+      modelExposureDependency: dependency("event-1"),
+    };
+    const tail = {
+      ...selected,
+      id: "event-2",
+      sequence: 2,
+      statement: "Protected tail.",
+      modelExposureDependency: dependency("event-2"),
+    };
+    const compactionClaim = {
+      roomId: "room-1",
+      ownerId: "owner-1",
+      leaseToken: "lease-1",
+      attemptCount: 1,
+      modelOperationId: "operation-1",
+      acceptedPlan: {
+        version: 1,
+        owner: "ordinary",
+        operationId: "operation-1",
+        rebuildGeneration: 0,
+        previousRollupId: "rollup-1",
+        selectedEventIds: [selected.id],
+        protectedTailEventIds: [tail.id],
+      },
+      namespaceId: "namespace-1",
+      previousRollup: {
+        throughEventSequence: 0,
+        content: "Previous rollup.",
+        modelExposureDependency: {
+          kind: "source",
+          sourceKind: "journal_rollup",
+          logicalSourceRef: "journal-rollup:rollup-1",
+          observedRevision: "through:0:version:v1",
+          observedContentFingerprint: "sha256:rollup",
+          terminalAuthorityLeafHandle: "namespace-1",
+        },
+      },
+      plan: {
+        trigger: {
+          due: true,
+          byCount: true,
+          byCodePoints: false,
+          effectiveEventCount: 2,
+          statementCodePoints: 32,
+        },
+        prompt: "Compaction evidence.",
+        previousRollup: {
+          throughEventSequence: 0,
+          content: "Previous rollup.",
+        },
+        selectedEvents: [selected],
+        protectedTail: [tail],
+        throughEventSequence: 1,
+        inputCodePoints: 128,
+        hasMoreEligiblePrefix: false,
+        scheduleAnotherPassAfterPublish: false,
+        modelExposure: {
+          previousRollupThroughEventSequence: 0,
+          selectedEventSequences: [1],
+          protectedTailEventSequences: [2],
+        },
+      },
+    } as CompactionClaim;
+    let publishedExposure: readonly unknown[] | undefined;
+    const adapter = createOrdinaryStenographerIntentAdapter({
+      publishExtraction: async () => ({ published: true, eventsWritten: 0 }),
+      claimExtraction: async () => null,
+      claimCompaction: async () => compactionClaim,
+      createInvoker: () => async () => '{"content":"New cumulative rollup."}',
+      publishCompaction: async (input) => {
+        publishedExposure = input.modelExposureDependencies;
+        return true;
+      },
+      logger: silentLogger(),
+    });
+    const prepared = await adapter.prepareCompaction({
+      roomId: "room-1",
+      modelId: "model",
+      now: NOW,
+      signal: new AbortController().signal,
+    });
+    expect((await prepared.publish({ revalidationToken: 1 })).status)
+      .toBe("completed");
+    expect(publishedExposure).toEqual([
+      compactionClaim.previousRollup!.modelExposureDependency,
+      dependency("event-1"),
+      dependency("event-2"),
+    ]);
   });
 
   test("excluded ranges publish no model output and provider failures persist", async () => {

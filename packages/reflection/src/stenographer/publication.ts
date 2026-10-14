@@ -1,4 +1,5 @@
 import type {
+  DurableModelExposureDependency,
   DurableRecordEnvelope,
   DurableRecordPredecessor,
 } from "../persistence/repository";
@@ -35,6 +36,8 @@ export interface StenographerObservationPublicationInput {
   readonly producerPolicyVersion: string;
   readonly processingGeneration: number;
   readonly transition: StenographerObservationTransition;
+  /** Exact model inputs, separate from cited semantic support sources. */
+  readonly modelExposureDependencies?: readonly DurableModelExposureDependency[];
 }
 
 /**
@@ -142,6 +145,11 @@ export function planStenographerObservationPublication(
           policyVersion: input.producerPolicyVersion,
         },
         terminalAuthorityLeafHandles: [input.terminalAuthorityLeafHandle],
+        ...(input.modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies: input.modelExposureDependencies,
+            }),
       },
     },
     ...(predecessor === undefined ? {} : { predecessor }),

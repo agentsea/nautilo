@@ -27,6 +27,9 @@ import {
 import {
   publishLegacyExtractionBeforeRecordCutoverForTests,
 } from "../support/legacy-stenographer-writer";
+import {
+  stenographerJournalEventObservationFingerprint,
+} from "@nautilo/reflection-bridge/server";
 
 const NOW = new Date("2026-07-27T12:00:00.000Z");
 
@@ -121,6 +124,146 @@ function queryText(query: SQL): string {
 }
 
 describe("stenographer postgres-js parameters", () => {
+  test("compaction persists the exact revalidated model exposure", async () => {
+    const roomId = "44444444-4444-4444-8444-444444444444";
+    const namespaceId = "55555555-5555-4555-8555-555555555555";
+    const selected = {
+      id: "77777777-7777-4777-8777-777777777777",
+      roomId,
+      sequence: 1,
+      kind: "decision" as const,
+      statement: "Selected decision.",
+      status: "active" as const,
+      supersedesEventId: null,
+      resolvesEventId: null,
+    };
+    const tail = {
+      ...selected,
+      id: "88888888-8888-4888-8888-888888888888",
+      sequence: 2,
+      statement: "Protected tail.",
+    };
+    const exposure = [selected, tail].map((event) => ({
+      kind: "source" as const,
+      sourceKind: "journal_event",
+      logicalSourceRef: `journal-event:${event.id}`,
+      observedRevision: `sequence:${event.sequence}:status:active`,
+      observedContentFingerprint:
+        stenographerJournalEventObservationFingerprint({
+          eventId: event.id,
+          sequence: event.sequence,
+          kind: event.kind,
+          statement: event.statement,
+          status: event.status,
+        }),
+      terminalAuthorityLeafHandle: namespaceId,
+    }));
+    const claim = {
+      roomId,
+      ownerId: "owner-1",
+      leaseToken: "99999999-9999-4999-8999-999999999999",
+      attemptCount: 1,
+      modelOperationId: "operation-1",
+      acceptedPlan: {
+        version: 1,
+        owner: "ordinary",
+        operationId: "operation-1",
+        rebuildGeneration: 0,
+        previousRollupId: null,
+        selectedEventIds: [selected.id],
+        protectedTailEventIds: [tail.id],
+      },
+      namespaceId,
+      previousRollup: null,
+      plan: {
+        trigger: {
+          due: true,
+          byCount: true,
+          byCodePoints: false,
+          effectiveEventCount: 2,
+          statementCodePoints: 32,
+        },
+        prompt: "Compaction evidence.",
+        previousRollup: null,
+        selectedEvents: [selected],
+        protectedTail: [tail],
+        throughEventSequence: 1,
+        inputCodePoints: 128,
+        hasMoreEligiblePrefix: false,
+        scheduleAnotherPassAfterPublish: false,
+        modelExposure: {
+          previousRollupThroughEventSequence: null,
+          selectedEventSequences: [1],
+          protectedTailEventSequences: [2],
+        },
+      },
+    } as CompactionClaim;
+    const eventRows = [selected, tail].map((event) => ({
+      id: event.id,
+      room_id: roomId,
+      sequence: event.sequence,
+      kind: event.kind,
+      projection_kind: "legacy",
+      record_id: null,
+      processing_generation: null,
+      statement: event.statement,
+      status: event.status,
+      supersedes_event_id: null,
+      resolves_event_id: null,
+    }));
+    const inserted: Record<string, unknown>[] = [];
+    const selects = scriptedSelect([
+      [{
+        compactionLeaseToken: claim.leaseToken,
+        suspendedAt: null,
+        namespaceId,
+        rebuildGeneration: 0,
+        acceptedModelBinding: {},
+        acceptedPlan: claim.acceptedPlan,
+        hasAgent: true,
+      }],
+      [],
+      eventRows,
+      eventRows,
+      [{
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        roomId,
+        throughEventSequence: 1,
+        content: "New rollup.",
+        sourceEventCount: 1,
+        modelId: "model",
+        compactorVersion: "m219-v1",
+        createdAt: NOW,
+        ordinaryFallbackReason: null,
+        ordinaryFallbackRebuildGeneration: null,
+        ordinaryOutputFingerprint: null,
+        modelExposureDependencies: exposure,
+      }],
+    ]);
+    const tx = {
+      execute: async () => [],
+      select: selects,
+      insert: () => resultBuilder(
+        () => [{ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
+        (values) => inserted.push(values as Record<string, unknown>),
+      ),
+    };
+    const db = {
+      transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+        run(tx),
+    };
+
+    expect(await publishCompaction({
+      claim,
+      content: "New rollup.",
+      modelId: "model",
+      modelExposureDependencies: exposure,
+      now: NOW,
+      db: db as never,
+    })).toBeTrue();
+    expect(inserted[0]?.["modelExposureDependencies"]).toEqual(exposure);
+  });
+
   test.each([
     [
       "new fallback winner",
@@ -158,6 +301,15 @@ describe("stenographer postgres-js parameters", () => {
       leaseToken: "88888888-8888-4888-8888-888888888888",
       attemptCount: 1,
       modelOperationId: "operation-1",
+      acceptedPlan: {
+        version: 1,
+        owner: "ordinary",
+        operationId: "operation-1",
+        rebuildGeneration: 4,
+        previousRollupId: null,
+        selectedEventIds: [selectedEvent.id],
+        protectedTailEventIds: [],
+      },
       plan: {
         selectedEvents: [selectedEvent],
         throughEventSequence: 9,
@@ -173,6 +325,8 @@ describe("stenographer postgres-js parameters", () => {
         suspendedAt: null,
         namespaceId,
         rebuildGeneration: 4,
+        acceptedModelBinding: {},
+        acceptedPlan: claim.acceptedPlan,
         hasAgent: true,
       }],
       [selectedEvent],
@@ -242,6 +396,10 @@ describe("stenographer postgres-js parameters", () => {
     expect(executed).toHaveLength(2);
     expect(queryText(executed[0]!)).toContain("SELECT id FROM rooms");
     expect(queryText(executed[1]!)).toContain("WITH remaining");
+    expect(queryText(executed[1]!))
+      .toContain("compaction_accepted_model_binding = NULL");
+    expect(queryText(executed[1]!))
+      .toContain("compaction_accepted_plan = NULL");
     if (!insertedByTransaction) {
       expect(updated).toEqual([]);
       return;
@@ -364,6 +522,106 @@ describe("stenographer postgres-js parameters", () => {
     expect(executes).toBe(2);
   });
 
+  test("reuses an expired running extraction range before a newer live head", async () => {
+    const roomId = "44444444-4444-4444-8444-444444444444";
+    const batchId = "33333333-3333-4333-8333-333333333333";
+    const queries: SQL[] = [];
+    const insertedValues: Record<string, unknown>[] = [];
+    const updatedValues: Record<string, unknown>[] = [];
+    const executeResponses: unknown[] = [
+      [],
+      [{
+        room_id: roomId,
+        owner_id: "55555555-5555-4555-8555-555555555555",
+        kind: "private",
+        namespace_id: "66666666-6666-4666-8666-666666666666",
+        last_processed_message_id: 10,
+        suspended_at: null,
+        lease_token: "77777777-7777-4777-8777-777777777777",
+        lease_expires_at: new Date(NOW.getTime() - 1),
+        extraction_retry_after: null,
+        historical_backfill_status: "not_needed",
+        historical_backfill_cursor_message_id: null,
+        historical_backfill_target_message_id: null,
+        stenographer_prior_conversation_limit: 10,
+        prior_context_floor_message_id: 0,
+        rebuild_generation: 0,
+        rebuild_requested_at: null,
+        rebuild_target_message_id: null,
+        has_agent: true,
+        // The expired batch stopped at 15. A newer message at 20 must not
+        // change the range identity used by the replay ledger lookup.
+        upper_bound_message_id: 15,
+        replay_batch_status: "running",
+        // A stale failure from an older execution must not excuse the
+        // succeeded wire belonging to this crashed running attempt.
+        replay_batch_error_code: "invalid_output",
+        replay_through_message_id: 15,
+      }],
+      [11, 12, 13, 14, 15].map((id) => ({
+        id,
+        created_at: new Date(NOW.getTime() - 180_000),
+        role: "user",
+        content: `message-${id}`,
+        fingerprint: null,
+        edit_revision: 0,
+        transcript_origin: "main",
+        originated_by: null,
+        display_name: "Alice",
+        handle: "alice",
+        excluded_from_evidence: false,
+      })),
+    ];
+    const tx = {
+      execute: async (query: SQL) => {
+        queries.push(query);
+        return executeResponses.shift() ?? [];
+      },
+      selectDistinct: () => resultBuilder(() => []),
+      select: scriptedSelect([[
+        {
+          id: "88888888-8888-4888-8888-888888888888",
+          attemptOutcome: "succeeded",
+          failureCode: null,
+          metadata: { operationId: batchId },
+        },
+      ]]),
+      insert: () => resultBuilder(
+        () => [{ id: batchId, attempt_count: 2 }],
+        (value) => insertedValues.push(value as Record<string, unknown>),
+      ),
+      update: () => ({
+        set: (value: Record<string, unknown>) => {
+          updatedValues.push(value);
+          return { where: async () => [] };
+        },
+      }),
+    };
+    const db = {
+      transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+        run(tx),
+    };
+
+    expect(await tryClaimRoom(db as never, roomId, NOW)).toBeNull();
+    expect(insertedValues[0]).toMatchObject({
+      roomId,
+      fromMessageIdExclusive: 10,
+      throughMessageIdInclusive: 15,
+      lane: "live",
+    });
+    expect(updatedValues[0]).toMatchObject({
+      status: "failed",
+      errorCode: "provider_outcome_unknown",
+    });
+    const stateQuery = queryText(queries[1]!);
+    expect(stateQuery).toContain("LEFT JOIN LATERAL");
+    expect(stateQuery).toContain("rjb.status = 'running'");
+    expect(stateQuery).toMatch(/COALESCE\(\s*replay_batch\.through_message_id_inclusive/);
+    const sourceQueryParameters = parameterValues(queries[2]!);
+    expect(sourceQueryParameters).toContain(15);
+    expect(sourceQueryParameters).not.toContain(20);
+  });
+
   test("does not reclaim compaction after an uncertain provider outcome", async () => {
     const roomId = "44444444-4444-4444-8444-444444444444";
     let executes = 0;
@@ -388,6 +646,154 @@ describe("stenographer postgres-js parameters", () => {
 
     expect(await tryClaimCompactionRoom(db as never, roomId, NOW)).toBeNull();
     expect(executes).toBe(2);
+  });
+
+  test("reclaims the exact accepted compaction plan without absorbing newer events", async () => {
+    const roomId = "44444444-4444-4444-8444-444444444444";
+    const namespaceId = "55555555-5555-4555-8555-555555555555";
+    const eventRows = Array.from({ length: 53 }, (_, index) => ({
+      id: `${(index + 1).toString(16).padStart(8, "0")}-0000-4000-8000-000000000001`,
+      room_id: roomId,
+      sequence: index + 1,
+      kind: "fact",
+      projection_kind: "legacy",
+      record_id: null,
+      processing_generation: null,
+      statement: `event-${index + 1}`,
+      status: "active",
+      supersedes_event_id: null,
+      resolves_event_id: null,
+    }));
+    const acceptedPlan = {
+      version: 1,
+      owner: "ordinary",
+      operationId: "compaction:frozen-operation",
+      rebuildGeneration: 7,
+      previousRollupId: null,
+      selectedEventIds: eventRows.slice(0, 2).map((event) => event.id),
+      protectedTailEventIds: eventRows.slice(2, 52).map((event) => event.id),
+    };
+    let executes = 0;
+    const updates: Record<string, unknown>[] = [];
+    const tx = {
+      execute: async () => (++executes === 1 ? [] : [{
+        owner_id: "66666666-6666-4666-8666-666666666666",
+        namespace_id: namespaceId,
+        kind: "private",
+        suspended_at: null,
+        has_agent: true,
+        compaction_due_at: NOW,
+        compaction_lease_token: null,
+        compaction_lease_expires_at: null,
+        compaction_retry_after: null,
+        compaction_failure_count: 1,
+        compaction_last_attempt_known_nonusable: true,
+        last_compaction_error_code: "invalid_output",
+        rebuild_generation: 7,
+        compaction_accepted_model_binding: { version: 1 },
+        compaction_accepted_plan: acceptedPlan,
+      }]),
+      select: scriptedSelect([[], eventRows, eventRows, [{
+        id: "attempt-1",
+        attemptOutcome: "succeeded",
+        failureCode: null,
+        metadata: { operationId: acceptedPlan.operationId },
+      }]]),
+      update: () => ({
+        set: (values: Record<string, unknown>) => {
+          updates.push(values);
+          return resultBuilder(() => []);
+        },
+      }),
+    };
+    const db = {
+      transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+        run(tx),
+    };
+
+    const claim = await tryClaimCompactionRoom(db as never, roomId, NOW);
+    expect(claim?.modelOperationId).toBe(acceptedPlan.operationId);
+    expect(claim?.plan.selectedEvents.map((event) => event.id))
+      .toEqual(acceptedPlan.selectedEventIds);
+    expect(claim?.plan.protectedTail.map((event) => event.id))
+      .toEqual(acceptedPlan.protectedTailEventIds);
+    expect(claim?.plan.protectedTail.some((event) => event.sequence === 53))
+      .toBeFalse();
+    expect(updates.at(-1)).toMatchObject({
+      compactionLastAttemptKnownNonusable: false,
+    });
+  });
+
+  test("quarantines an expired compaction lease when the prior wire outcome is not proven unusable", async () => {
+    const roomId = "44444444-4444-4444-8444-444444444444";
+    const namespaceId = "55555555-5555-4555-8555-555555555555";
+    const eventRows = Array.from({ length: 52 }, (_, index) => ({
+      id: `${(index + 1).toString(16).padStart(8, "0")}-0000-4000-8000-000000000001`,
+      room_id: roomId,
+      sequence: index + 1,
+      kind: "fact",
+      projection_kind: "legacy",
+      record_id: null,
+      processing_generation: null,
+      statement: `event-${index + 1}`,
+      status: "active",
+      supersedes_event_id: null,
+      resolves_event_id: null,
+    }));
+    const acceptedPlan = {
+      version: 1,
+      owner: "ordinary",
+      operationId: "compaction:crashed-operation",
+      rebuildGeneration: 7,
+      previousRollupId: null,
+      selectedEventIds: eventRows.slice(0, 2).map((event) => event.id),
+      protectedTailEventIds: eventRows.slice(2).map((event) => event.id),
+    };
+    let executes = 0;
+    const updates: Record<string, unknown>[] = [];
+    const tx = {
+      execute: async () => (++executes === 1 ? [] : [{
+        owner_id: "66666666-6666-4666-8666-666666666666",
+        namespace_id: namespaceId,
+        kind: "private",
+        suspended_at: null,
+        has_agent: true,
+        compaction_due_at: NOW,
+        compaction_lease_token: "77777777-7777-4777-8777-777777777777",
+        compaction_lease_expires_at: new Date(NOW.getTime() - 1),
+        compaction_retry_after: null,
+        compaction_failure_count: 1,
+        compaction_last_attempt_known_nonusable: false,
+        last_compaction_error_code: null,
+        rebuild_generation: 7,
+        compaction_accepted_model_binding: { version: 1 },
+        compaction_accepted_plan: acceptedPlan,
+      }]),
+      select: scriptedSelect([[], eventRows, eventRows, [{
+        id: "attempt-1",
+        attemptOutcome: "succeeded",
+        failureCode: null,
+        metadata: { operationId: acceptedPlan.operationId },
+      }]]),
+      update: () => ({
+        set: (values: Record<string, unknown>) => {
+          updates.push(values);
+          return resultBuilder(() => []);
+        },
+      }),
+    };
+    const db = {
+      transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+        run(tx),
+    };
+
+    expect(await tryClaimCompactionRoom(db as never, roomId, NOW)).toBeNull();
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      compactionLeaseToken: null,
+      compactionLeaseExpiresAt: null,
+      lastCompactionErrorCode: "provider_outcome_unknown",
+    });
   });
 
   test("bodyless protected source defers without claiming or advancing", async () => {

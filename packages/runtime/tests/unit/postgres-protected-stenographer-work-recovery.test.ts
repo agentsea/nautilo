@@ -254,6 +254,22 @@ describe("PostgreSQL protected Stenographer exact recovery", () => {
 
   test("recovers compaction and binds the current content-free model policy", async () => {
     const claim = compactionClaim();
+    const descriptor = {
+      formatVersion: 1,
+      requestId: "request-recovery",
+      workId: claim.workId,
+      workKind: "stenographer.compaction",
+      namespaceId: NAMESPACE_ID,
+      source: {
+        kind: "journal_range",
+        startSequence: 7,
+        endSequence: 7,
+        rebuildGeneration: 3,
+        fingerprint: claim.sourceBindingFingerprint,
+      },
+      inputObjectIds: claim.inputObjectIds,
+      outputObjectIds: [claim.outputSlot.objectId],
+    } as unknown as BackgroundWorkDescriptorV1;
     const repository: ProtectedStenographerRecoveryWorkRepository = {
       recoverExtraction: () => Promise.reject(new Error("not used")),
       recoverCompaction: (input) => {
@@ -261,6 +277,11 @@ describe("PostgreSQL protected Stenographer exact recovery", () => {
           workId: claim.workId,
           createdAt: NOW.toISOString(),
           now: NOW,
+          descriptorPlan: {
+            throughEventSequence: 7,
+            inputObjectIds: claim.inputObjectIds,
+            sourceBindingFingerprint: claim.sourceBindingFingerprint,
+          },
         });
         return Promise.resolve({ status: "claimed", claim });
       },
@@ -277,7 +298,7 @@ describe("PostgreSQL protected Stenographer exact recovery", () => {
     );
     expect(await recovery.recoverExact({
       record: record("stenographer.compaction", claim.workId),
-      descriptor: null,
+      descriptor,
       now: NOW,
     })).toEqual({
       status: "recovered",

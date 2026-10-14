@@ -4,6 +4,7 @@ import {
   check,
   index,
   integer,
+  jsonb,
   real,
   pgTable,
   text,
@@ -39,6 +40,22 @@ const bytea = customType<{
   driverData: Uint8Array;
 }>({ dataType: () => "bytea" });
 
+export type MemoryModelExposureDependency =
+  | Readonly<{
+      kind: "record";
+      recordRef: string;
+      observedProcessingGeneration: number;
+      terminalAuthorityLeafHandles: readonly string[];
+    }>
+  | Readonly<{
+      kind: "source";
+      sourceKind: string;
+      logicalSourceRef: string;
+      observedRevision?: string;
+      observedContentFingerprint?: string;
+      terminalAuthorityLeafHandle: string;
+    }>;
+
 export const memories = pgTable(
   "memories",
   {
@@ -48,6 +65,9 @@ export const memories = pgTable(
     // obtain it from their authenticated protected representation.
     type: text("type").default("general"),
     content: text("content"),
+    /** Complete ordinary model-input ancestry; protected ancestry stays encrypted. */
+    modelExposureDependencies: jsonb("model_exposure_dependencies")
+      .$type<readonly MemoryModelExposureDependency[]>(),
     importance: real("importance").notNull().default(0.5),
     embedding: vector("embedding", { dimensions: 1536 }),
     /**
@@ -116,6 +136,10 @@ export const memories = pgTable(
     check(
       "memories_content_revision_nonnegative",
       sql`${table.contentRevision} >= 0`,
+    ),
+    check(
+      "memories_exposure_representation",
+      sql`${table.content} is not null or ${table.modelExposureDependencies} is null`,
     ),
     check(
       "memories_crypto_mapping_revision_coherent",

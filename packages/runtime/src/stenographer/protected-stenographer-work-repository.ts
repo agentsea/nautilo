@@ -131,6 +131,12 @@ export interface ProtectedStenographerCompactionWorkClaim {
   readonly createdAt: string;
 }
 
+export interface ProtectedStenographerCompactionRecoveryPlan {
+  readonly throughEventSequence: number;
+  readonly inputObjectIds: readonly string[];
+  readonly sourceBindingFingerprint: Uint8Array;
+}
+
 export type ProtectedStenographerExtractionClaimResult =
   | Readonly<{
     readonly status: "claimed";
@@ -220,6 +226,7 @@ interface CompactionRecoveryContext {
   readonly rebuildGeneration: number;
   readonly throughEventSequence: number;
   readonly createdAt: string;
+  readonly descriptorPlan: ProtectedStenographerCompactionRecoveryPlan | null;
 }
 
 interface ProductWorkState {
@@ -2317,6 +2324,7 @@ export class PostgresProtectedStenographerWorkRepository {
     readonly workId: string;
     readonly createdAt: string;
     readonly now: Date;
+    readonly descriptorPlan?: ProtectedStenographerCompactionRecoveryPlan;
   }>): Promise<ProtectedStenographerCompactionClaimResult> {
     const workId = portableId(
       "protected compaction recovery work",
@@ -2328,6 +2336,44 @@ export class PostgresProtectedStenographerWorkRepository {
     if (match === null) {
       return Object.freeze({ status: "unavailable", reason: "missing" });
     }
+    const descriptorPlan = input.descriptorPlan === undefined
+      ? null
+      : Object.freeze({
+        throughEventSequence: counter(
+          "protected compaction descriptor sequence",
+          input.descriptorPlan.throughEventSequence,
+        ),
+        inputObjectIds: Object.freeze(
+          input.descriptorPlan.inputObjectIds.map((objectId) =>
+            portableId("protected compaction descriptor input", objectId)
+          ),
+        ),
+        sourceBindingFingerprint:
+          input.descriptorPlan.sourceBindingFingerprint.slice(),
+      });
+    if (
+      descriptorPlan !== null
+      && (
+        descriptorPlan.inputObjectIds.length === 0
+        || descriptorPlan.inputObjectIds.length
+          > PROTECTED_STENOGRAPHER_COMPACTION_MAX_EVENT_INPUTS + 1
+        || new Set(descriptorPlan.inputObjectIds).size
+          !== descriptorPlan.inputObjectIds.length
+        || descriptorPlan.sourceBindingFingerprint.byteLength !== 32
+      )
+    ) {
+      throw new TypeError("protected compaction descriptor plan is invalid");
+    }
+    const recoveredThrough = counter(
+      "protected compaction recovery sequence",
+      match[3],
+    );
+    if (
+      descriptorPlan !== null
+      && descriptorPlan.throughEventSequence !== recoveredThrough
+    ) {
+      return Object.freeze({ status: "unavailable", reason: "stale" });
+    }
     const recovery: CompactionRecoveryContext = Object.freeze({
       workId,
       roomId: uuid("protected compaction recovery Room", match[1]),
@@ -2335,14 +2381,12 @@ export class PostgresProtectedStenographerWorkRepository {
         "protected compaction recovery generation",
         match[2],
       ),
-      throughEventSequence: counter(
-        "protected compaction recovery sequence",
-        match[3],
-      ),
+      throughEventSequence: recoveredThrough,
       createdAt: timestampText(
         "protected compaction recovery creation time",
         input.createdAt,
       ),
+      descriptorPlan,
     });
     const now = date("protected compaction recovery time", input.now);
     return this.handle.transaction(
@@ -2417,6 +2461,12 @@ export class PostgresProtectedStenographerWorkRepository {
           eq(roomEvents.roomId, roomId),
           eq(roomEvents.status, "active"),
           sql`${roomEvents.sequence} > ${through}`,
+          ...(recovery === undefined
+            ? []
+            : [lte(
+              roomEvents.sequence,
+              recovery.throughEventSequence,
+            )]),
         )),
       ),
     );
@@ -2433,11 +2483,14 @@ export class PostgresProtectedStenographerWorkRepository {
           WHERE event.room_id = $1::uuid
             AND event.status = 'active'
             AND event.sequence > $2::integer
+            ${recovery === undefined
+              ? ""
+              : "AND event.sequence <= $3::integer"}
        ),
        selected_event AS (
          (SELECT * FROM active_event
            ORDER BY sequence
-           LIMIT $3::integer)
+           LIMIT ${recovery === undefined ? "$3" : "$4"}::integer)
          UNION
          (SELECT * FROM active_event
            ORDER BY sequence DESC
@@ -2447,6 +2500,9 @@ export class PostgresProtectedStenographerWorkRepository {
       [
         roomId,
         through,
+        ...(recovery === undefined
+          ? []
+          : [recovery.throughEventSequence]),
         COMPACTION_OLDEST_EVENT_LIMIT,
       ],
     );
@@ -2469,6 +2525,23 @@ export class PostgresProtectedStenographerWorkRepository {
         status: "blocked",
         reason: planned.reason,
       });
+    }
+    if (
+      recovery?.descriptorPlan !== null
+      && recovery?.descriptorPlan !== undefined
+      && (
+        recovery.descriptorPlan.inputObjectIds.length
+          !== planned.inputObjectIds.length
+        || recovery.descriptorPlan.inputObjectIds.some(
+          (objectId, index) => objectId !== planned.inputObjectIds[index],
+        )
+        || !equalBytes(
+          recovery.descriptorPlan.sourceBindingFingerprint,
+          planned.sourceBindingFingerprint,
+        )
+      )
+    ) {
+      return Object.freeze({ status: "unavailable", reason: "stale" });
     }
     const lastSequence = events.at(-1)?.sequence
       ?? latestRollup?.throughEventSequence

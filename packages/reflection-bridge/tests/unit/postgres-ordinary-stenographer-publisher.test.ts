@@ -3,6 +3,7 @@ import { stenographerOrdinaryOutputFingerprint } from "@nautilo/lattice-bridge";
 
 import {
   PostgresOrdinaryStenographerRecordPublisher,
+  stenographerMessageObservationFingerprint,
   verifyRecordProductPostgresHandle,
   type RecordProductPostgresConnection,
   type RecordProductPostgresExecutor,
@@ -30,6 +31,7 @@ describe("ordinary Stenographer native-Record publisher", () => {
     const statements: string[] = [];
     const parametersByStatement = new Map<string, readonly unknown[]>();
     let transactionCount = 0;
+    let committedExposure: unknown;
     const execute = async <Row extends RecordProductPostgresRow>(
       statement: string,
       parameters: readonly unknown[] = [],
@@ -45,7 +47,12 @@ describe("ordinary Stenographer native-Record publisher", () => {
           has_agent: true,
         }] as unknown as readonly Row[];
       }
-      if (statement.includes("FROM sessions session") && statement.includes("message.edit_revision")) {
+      if (
+        (statement.includes("FROM sessions session")
+          && statement.includes("message.edit_revision"))
+        || (normalizedSql(statement).includes("from session_messages")
+          && normalizedSql(statement).includes("inner join sessions"))
+      ) {
         return [{
           id: 41,
           edit_revision: 0,
@@ -104,7 +111,13 @@ describe("ordinary Stenographer native-Record publisher", () => {
     const publisher = new PostgresOrdinaryStenographerRecordPublisher({
       handle,
       selection: { selectedRepresentation: "ordinary", migrationGeneration: 7 },
-      commitment: { commit: () => new Uint8Array(32).fill(0x42) },
+      commitment: {
+        commit: (_bytes, publication) => {
+          committedExposure =
+            publication.record.semantic.modelExposureDependencies;
+          return new Uint8Array(32).fill(0x42);
+        },
+      },
     });
 
     expect(await publisher.publishExtraction({
@@ -137,7 +150,36 @@ describe("ordinary Stenographer native-Record publisher", () => {
       extractorVersion: "m219-v1",
       now: new Date("2026-08-14T10:00:00.000Z"),
       ordinaryFallbackReason: "device",
+      modelExposureDependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: "message:41",
+        observedRevision: "0",
+        observedContentFingerprint:
+          stenographerMessageObservationFingerprint({
+            messageId: 41,
+            editRevision: 0,
+            content: "We selected PostgreSQL.",
+          }),
+        terminalAuthorityLeafHandle:
+          "0198f40a-5058-7000-8000-000000000003",
+      }],
     })).toEqual({ published: true, eventsWritten: 1 });
+
+    expect(committedExposure).toEqual([{
+      kind: "source",
+      sourceKind: "message",
+      logicalSourceRef: "message:41",
+      observedRevision: "0",
+      observedContentFingerprint:
+        stenographerMessageObservationFingerprint({
+          messageId: 41,
+          editRevision: 0,
+          content: "We selected PostgreSQL.",
+        }),
+      terminalAuthorityLeafHandle:
+        "0198f40a-5058-7000-8000-000000000003",
+    }]);
 
     expect(transactionCount).toBe(1);
     expect(statements.some((statement) =>
@@ -211,6 +253,86 @@ describe("ordinary Stenographer native-Record publisher", () => {
       selection: { selectedRepresentation: "protected", migrationGeneration: 2 },
       commitment: { commit: () => new Uint8Array(32) },
     })).toThrow("canonical ordinary selection");
+  });
+
+  test("rejects a changed exposed message before any native publication", async () => {
+    const statements: string[] = [];
+    const execute = async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ): Promise<readonly Row[]> => {
+      statements.push(statement);
+      if (statement.includes("FROM room_journal_state state")) {
+        return [{
+          lease_token: "0198f40a-5058-7000-8000-000000000010",
+          suspended_at: null,
+          rebuild_generation: 0,
+          namespace_id: "0198f40a-5058-7000-8000-000000000003",
+          has_agent: true,
+        }] as unknown as readonly Row[];
+      }
+      if (
+        normalizedSql(statement).includes("from session_messages")
+        && normalizedSql(statement).includes("inner join sessions")
+      ) {
+        return [{
+          id: 41,
+          edit_revision: 1,
+          content: "Edited after model invocation.",
+        }] as unknown as readonly Row[];
+      }
+      return [];
+    };
+    const handle = await verifyRecordProductPostgresHandle({
+      query: <Row extends RecordProductPostgresRow>(statement: string) =>
+        statement.startsWith("SELECT current_user")
+          ? Promise.resolve([{
+              current_role: "nautilo",
+              session_role: "nautilo",
+            }] as unknown as readonly Row[])
+          : execute<Row>(statement),
+      transaction: (callback) => callback({ query: execute }),
+    });
+    const publisher = new PostgresOrdinaryStenographerRecordPublisher({
+      handle,
+      selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+      commitment: { commit: () => new Uint8Array(32) },
+    });
+
+    expect(publisher.publishExtraction({
+      claim: {
+        batchId: "0198f40a-5058-7000-8000-000000000004",
+        roomId: "0198f40a-5058-7000-8000-000000000002",
+        leaseToken: "0198f40a-5058-7000-8000-000000000010",
+        lane: "live",
+        fromMessageIdExclusive: 40,
+        throughMessageIdInclusive: 41,
+        rebuildGeneration: null,
+      },
+      transition: {
+        statusUpdates: [],
+        inserts: [],
+        foldedBatchLocalOrdinals: [],
+        nextSequence: 1,
+      },
+      operationCount: 0,
+      modelId: "openai:test-model",
+      extractorVersion: "m219-v1",
+      now: new Date("2026-08-14T10:00:00.000Z"),
+      modelExposureDependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: "message:41",
+        observedRevision: "0",
+        observedContentFingerprint: "sha256:stale",
+        terminalAuthorityLeafHandle:
+          "0198f40a-5058-7000-8000-000000000003",
+      }],
+    })).rejects.toThrow(
+      "Stenographer model exposure changed before native publication",
+    );
+    expect(statements.some((statement) =>
+      normalizedSql(statement).includes("insert into reflection_records")
+    )).toBeFalse();
   });
 
   test("converts one bounded legacy page without invoking a model", async () => {

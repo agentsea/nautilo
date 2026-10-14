@@ -17,6 +17,7 @@ import type {
 import {
   PostgresProtectedStenographerWorkRepository,
   type ProtectedStenographerCompactionClaimResult,
+  type ProtectedStenographerCompactionRecoveryPlan,
   type ProtectedStenographerCompactionWorkClaim,
   type ProtectedStenographerExtractionClaimResult,
   type ProtectedStenographerExtractionWorkClaim,
@@ -31,6 +32,7 @@ export interface ProtectedStenographerRecoveryWorkRepository {
     readonly workId: string;
     readonly createdAt: string;
     readonly now: Date;
+    readonly descriptorPlan?: ProtectedStenographerCompactionRecoveryPlan;
   }>) => Promise<ProtectedStenographerCompactionClaimResult>;
 }
 
@@ -239,10 +241,30 @@ implements ProtectedStenographerDurableWorkRecoveryPort {
     if (input.record.workKind !== "stenographer.compaction") {
       return Object.freeze({ status: "stale" as const });
     }
+    const descriptorPlan = input.descriptor === null
+      ? undefined
+      : input.descriptor.source.kind
+          === (input.descriptor.formatVersion === 2
+            ? "stenographer_work"
+            : "journal_range")
+      ? {
+        throughEventSequence: input.descriptor.source.endSequence,
+        inputObjectIds: input.descriptor.formatVersion === 2
+          ? input.descriptor.inputBindings.map((binding) => binding.objectId)
+          : input.descriptor.inputObjectIds,
+        sourceBindingFingerprint: input.descriptor.source.fingerprint,
+      }
+      : null;
+    if (descriptorPlan === null) {
+      return Object.freeze({ status: "stale" as const });
+    }
     const result = await this.#repository.recoverCompaction({
       workId: input.record.snapshot.workId,
       createdAt: new Date(input.record.snapshot.createdAt).toISOString(),
       now: new Date(input.now),
+      ...(descriptorPlan === undefined
+        ? {}
+        : { descriptorPlan }),
     });
     const notRecovered = unavailable(result);
     if (notRecovered !== null) return notRecovered;

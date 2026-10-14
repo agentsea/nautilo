@@ -9,6 +9,10 @@ import {
   protectedTranscriptSearchUnavailable,
   withProtectedAgentTranscriptHistory,
 } from "../../src/conversation/protected-conversation-transcript";
+import {
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+  readModelInputExposure,
+} from "@nautilo/agent";
 
 const PRODUCT_READ_AUTHORIZATION =
   Object.freeze({}) as ProtectedConversationProductReadAuthorization;
@@ -16,9 +20,11 @@ const PRODUCT_READ_AUTHORIZATION =
 function transcriptMessage(
   overrides: Partial<ActiveConversationTranscriptMessage> = {},
 ): ActiveConversationTranscriptMessage {
-  return {
+  const message: ActiveConversationTranscriptMessage = {
     messageId: 7,
     revision: 2,
+    roomId: "room-one",
+    namespaceId: "namespace-one",
     createdAt: new Date("2026-08-03T09:10:11.000Z"),
     author: {
       actorId: "actor-alice",
@@ -31,6 +37,9 @@ function transcriptMessage(
     },
     ...overrides,
   };
+  return message.payload.role === "user"
+    ? { ...message, sourceUserId: "human-one" }
+    : message;
 }
 
 describe("protected conversation transcript context", () => {
@@ -40,6 +49,7 @@ describe("protected conversation transcript context", () => {
       transcriptMessage({
         messageId: 8,
         revision: 0,
+        authorAgentId: "agent-one",
         createdAt: new Date("2026-08-03T09:10:12.000Z"),
         author: {
           actorId: "actor-genie",
@@ -60,6 +70,7 @@ describe("protected conversation transcript context", () => {
       transcriptMessage({
         messageId: 9,
         revision: 0,
+        authorAgentId: "agent-one",
         createdAt: new Date("2026-08-03T09:10:13.000Z"),
         author: {
           actorId: "actor-genie",
@@ -107,6 +118,59 @@ describe("protected conversation transcript context", () => {
         snippet: "tool:inspect private tool result",
       },
     ]);
+    expect(readModelInputExposure(hits[0]!)).toMatchObject({
+      status: "complete",
+      dependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: "message:7",
+        observedRevision: "2",
+        terminalAuthorityLeafHandle: "namespace-one",
+      }],
+    });
+  });
+
+  test("rebinds only protected ancestry carried inside authorized payload", () => {
+    const [trusted, missing] = protectedTranscriptMessagesToHistoryHits([
+      transcriptMessage({
+        authorAgentId: "agent-one",
+        payload: {
+          role: "assistant",
+          content: "derived answer",
+          sensitiveMetadata: {
+            [MODEL_INPUT_EXPOSURE_METADATA_KEY]: {
+              version: 1,
+              status: "complete",
+              dependencies: [{
+                kind: "source",
+                sourceKind: "message",
+                logicalObjectRef: "message:5",
+                observedRevision: "0",
+                observedContentFingerprint: "sha256:abc",
+                terminalAuthorityLeafHandle: "namespace-one",
+              }],
+            },
+          },
+        },
+      }),
+      transcriptMessage({
+        messageId: 8,
+        authorAgentId: "agent-one",
+        payload: { role: "assistant", content: "legacy answer" },
+      }),
+    ]);
+    expect(readModelInputExposure(trusted!)).toEqual({
+      status: "complete",
+      dependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: "message:5",
+        observedRevision: "0",
+        observedContentFingerprint: "sha256:abc",
+        terminalAuthorityLeafHandle: "namespace-one",
+      }],
+    });
+    expect(readModelInputExposure(missing!)).toBeUndefined();
   });
 
   test("does not mutate the decrypted payload or public metadata", () => {

@@ -8,14 +8,16 @@ import {
   type AuthoredMemorySemanticChange,
   type RecallRecordsPort,
   type RecallRecordsPortForState,
+  type ForegroundChatFundingSession,
 } from "@nautilo/agent";
 import {
-  findReflectionRoomOwnerIdWith,
   type DirectDatabase,
+  resolveModelAttemptReplaySafety,
 } from "@nautilo/db";
 import {
   CANDIDATE_POLICY_V1,
   DurableSleepModelLaneUnavailableError,
+  DurableSleepProviderOutcomeUnknownError,
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
   runDependencyLossRewrite,
   type DurableSleepRunBudget,
@@ -36,6 +38,8 @@ import {
   type RecordEvidencePort,
   type RecordSearchPort,
 } from "@nautilo/reflection/search";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   BoundedRecordEvidenceTraversalCheckpoints,
   BoundedRecordSearchTraversalCheckpoints,
@@ -171,6 +175,7 @@ export const REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 = Object.freeze({
 } as const);
 
 export interface ProductionReflectionMemoryRuntime {
+  readonly readMemoryEvidenceRecord: (dependency: Extract<import("@nautilo/reflection/durable").DurableModelExposureDependency, { kind: "record" }>) => Promise<import("@nautilo/reflection/durable").DurableRecordEnvelope | null>;
   readonly worker: ReflectionSemanticWorker;
   readonly recallRecordsPortForState: RecallRecordsPortForState;
   readonly foregroundRecordContextPortForRoom: (
@@ -212,6 +217,9 @@ export interface ProductionReflectionMemoryInput {
     }>): Promise<void>;
   }>;
   readonly resolveModelId: () => string;
+  readonly admitMemoryModel?: (
+    request: AdmitReflectionMemoryModelRequest,
+  ) => Promise<AdmittedReflectionMemoryModel>;
   /** Deterministic composition seam for integration qualification. Production
    * omits it and retains the canonical configured embedding provider. */
   readonly recordEmbedding?: RecordEmbeddingPort;
@@ -219,6 +227,48 @@ export interface ProductionReflectionMemoryInput {
   readonly protectedAuthorityRepublisher?: ProtectedAuthorityRepublisherPort;
   readonly protectedMemoryCandidates?: RoomLocalMemoryCandidatePort;
   readonly protectedSource?: CanonicalRecordSourceReadPort;
+}
+
+export interface AdmitReflectionMemoryModelRequest {
+  readonly claims: readonly DurableSleepClaim[];
+  readonly dependencies: readonly DurableModelExposureDependency[] | undefined;
+  readonly assertCurrent: () => Promise<void>;
+  readonly bind: (
+    resolve: () => Promise<MemoryOperationBinding>,
+  ) => Promise<MemoryOperationBinding>;
+}
+
+export interface AdmittedReflectionMemoryModel {
+  readonly binding: MemoryOperationBinding;
+  readonly modelId: string;
+  readonly humanUserId: string | null;
+  readonly fundingSession?: ForegroundChatFundingSession;
+  readonly assertCurrent: () => Promise<void>;
+  readonly assertExposure: (
+    dependencies: readonly DurableModelExposureDependency[] | undefined,
+  ) => Promise<void>;
+}
+
+export function reflectionModelOperationId(
+  binding: MemoryOperationBinding,
+  wireKind: "primary" | "repair",
+): string {
+  return `reflection:${binding.inputCommitment}:${wireKind}`;
+}
+
+export function selectRetainedReflectionRepair<T extends object>(
+  cached: readonly (T | undefined)[],
+  consumed: WeakSet<T>,
+): T | null {
+  const present = cached.filter((value): value is T => value !== undefined);
+  if (present.length === 0) return null;
+  const first = present[0]!;
+  if (
+    present.length !== cached.length
+    || present.some((value) => value !== first)
+    || consumed.has(first)
+  ) throw new Error("Reflection model batch admission changed");
+  return first;
 }
 
 function recordEmbedding(): RecordEmbeddingPort {
@@ -260,6 +310,9 @@ export function classifyReflectionModelInvocationFailure(
 ): unknown {
   const failure = mapModelFailure(error);
   if (failure === "unknown") return error;
+  if (failure === "provider_outcome_unknown") {
+    return new DurableSleepProviderOutcomeUnknownError();
+  }
   if (modelInvokeCooldownRemainingMs(modelId) === 0) {
     markModelInvokeFailure(modelId, `room_reflection_${failure}`);
   }
@@ -457,26 +510,22 @@ export async function createProductionReflectionMemoryRuntime(
     if (opened.status !== "available") return null;
     const resolved = await bindings.semantic.resolve(opened.record);
     if (resolved.status !== "available") return null;
-    const ownerId = await findReflectionRoomOwnerIdWith(
-      input.db,
-      resolved.binding.roomAnchorRef,
-    );
-    if (ownerId === null) return null;
-    return { opened: opened.record, binding: resolved.binding, ownerId };
+    return { opened: opened.record, binding: resolved.binding };
   };
-  type ModelInvocationContext = Readonly<{ ownerId: string; roomId: string }>;
+  type ModelInvocationContext = Readonly<{ roomId: string }>;
+  const admittedModels = new Map<string, AdmittedReflectionMemoryModel>();
+  const consumedRepairs = new WeakSet<AdmittedReflectionMemoryModel>();
+  const replayCheckedExecutions = new Set<string>();
+  const claimKey = (claim: DurableSleepClaim): string =>
+    `${claim.recordRef}\0${claim.generation}`;
   const dispatchForRecords = async (
     claims: readonly DurableSleepClaim[],
     prompt: string,
     resolveContexts: () => Promise<readonly (ModelInvocationContext | null)[]>,
     signal?: AbortSignal,
+    dependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string> => {
     if (claims.length < 1) throw new TypeError("Record model batch cannot be empty");
-    const modelId = input.resolveModelId();
-    const currentCooldown = modelInvokeCooldownRemainingMs(modelId);
-    if (currentCooldown > 0) {
-      throw new DurableSleepModelLaneUnavailableError(currentCooldown);
-    }
     const contexts = await resolveContexts();
     if (contexts.length !== claims.length) {
       throw new Error("record_model_binding_unavailable");
@@ -485,14 +534,88 @@ export async function createProductionReflectionMemoryRuntime(
       throw new Error("record_model_binding_unavailable");
     }
     const context = contexts[0]!;
+    const assertCurrent = async () => {
+      if (signal?.aborted) throw new Error("record_model_binding_unavailable");
+      const current = await Promise.all(
+        claims.map((claim) => semanticWork.isClaimCurrent(claim)),
+      );
+      if (current.some((value) => !value)) {
+        throw new Error("record_model_binding_unavailable");
+      }
+    };
+    let wireKind: "primary" | "repair" = "primary";
+    const cached = claims.map((claim) => admittedModels.get(claimKey(claim)));
+    let admitted: AdmittedReflectionMemoryModel | Readonly<{
+      modelId: string;
+      humanUserId: null;
+      fundingSession: undefined;
+      assertCurrent: () => Promise<void>;
+      assertExposure: () => Promise<void>;
+    }>;
+    const retained = selectRetainedReflectionRepair(cached, consumedRepairs);
+    if (retained !== null) {
+      admitted = retained;
+      wireKind = "repair";
+    } else admitted = input.admitMemoryModel === undefined
+      ? {
+          modelId: input.resolveModelId(),
+          humanUserId: null,
+          fundingSession: undefined,
+          assertCurrent,
+          assertExposure: () => Promise.resolve(),
+        }
+      : await input.admitMemoryModel({
+          claims,
+          dependencies,
+          assertCurrent,
+          bind: (resolve) => semanticWork.bindAcceptedModelOperation(
+            claims,
+            resolve,
+          ),
+        });
+    const modelId = admitted.modelId;
+    const currentCooldown = modelInvokeCooldownRemainingMs(modelId);
+    if (currentCooldown > 0) {
+      throw new DurableSleepModelLaneUnavailableError(currentCooldown);
+    }
     try {
-      return await createRoomSideModelInvoker({
+      const sortedClaims = [...claims]
+        .sort((left, right) => left.recordRef.localeCompare(right.recordRef));
+      const operationId = "binding" in admitted
+        ? reflectionModelOperationId(admitted.binding, wireKind)
+        : `reflection:${sortedClaims
+            .map((claim) => `${claim.recordRef}:${claim.generation}`)
+            .join(":")}`;
+      const executionKey = `${operationId}:${sortedClaims.map((claim) => claim.leaseToken).join(":")}`;
+      const assertInvocationCurrent = async () => {
+        await admitted.assertCurrent();
+        await admitted.assertExposure(dependencies);
+      };
+      if (!replayCheckedExecutions.has(executionKey)) {
+        await assertInvocationCurrent();
+        const replaySafety = await resolveModelAttemptReplaySafety({
+          kind: "operation",
+          roomId: context.roomId,
+          callType: "room_reflection",
+          operationId,
+        }, { db: input.db });
+        if (replaySafety.decision === "block_unknown") {
+          throw new DurableSleepProviderOutcomeUnknownError();
+        }
+        replayCheckedExecutions.add(executionKey);
+      }
+      if (wireKind === "repair" && "binding" in admitted) {
+        consumedRepairs.add(admitted);
+      }
+      const response = await createRoomSideModelInvoker({
         modelId,
-        userId: context.ownerId,
+        ...(admitted.humanUserId === null
+          ? {}
+          : { userId: admitted.humanUserId }),
         roomId: context.roomId,
         laneKey: `room:${context.roomId}:reflection`,
         callType: "room_reflection",
-        operationId: `reflection:${claims.map((claim) => claim.leaseToken).join(":")}`,
+        operationId,
         invocationPolicy: {
           maximumElapsedMs:
             REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.modelInvocation.maximumElapsedMilliseconds,
@@ -501,9 +624,25 @@ export async function createProductionReflectionMemoryRuntime(
           sameModelRetryMode:
             REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.modelInvocation.sameModelRetryMode,
         },
+        ...(admitted.fundingSession === undefined
+          ? {}
+          : { fundingSession: admitted.fundingSession }),
+        assertCurrent: assertInvocationCurrent,
       })(prompt, signal);
+      try {
+        await assertInvocationCurrent();
+      } catch {
+        // The paid result cannot be published safely and is not durably
+        // checkpointed, so this generation must never invoke it again.
+        throw new DurableSleepProviderOutcomeUnknownError();
+      }
+      if ("binding" in admitted) {
+        for (const claim of claims) admittedModels.set(claimKey(claim), admitted);
+      }
+      return response;
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (error instanceof DurableSleepProviderOutcomeUnknownError) throw error;
       throw classifyReflectionModelInvocationFailure(error, modelId);
     }
   };
@@ -511,6 +650,7 @@ export async function createProductionReflectionMemoryRuntime(
     claims: readonly DurableSleepClaim[],
     prompt: string,
     signal?: AbortSignal,
+    dependencies?: readonly DurableModelExposureDependency[],
   ): Promise<string> => dispatchForRecords(
     claims,
     prompt,
@@ -519,106 +659,118 @@ export async function createProductionReflectionMemoryRuntime(
       return context === null
         ? null
         : {
-            ownerId: context.ownerId,
             roomId: context.binding.roomAnchorRef,
           };
     })),
     signal,
+    dependencies,
   );
   const invokePreparedOrganizerBatch: NonNullable<
     DurableSleepSemanticPort["invokeOrganizerBatch"]
-  > = async (claims, prompt, signal) => dispatchForRecords(
+  > = async (claims, prompt, signal, dependencies) => dispatchForRecords(
     claims,
     prompt,
     async () => Promise.all(claims.map(async (claim) => {
       if (!await semanticWork.isClaimCurrent(claim)) return null;
       const binding = await bindings.invocation.resolve(claim.recordRef);
       if (binding === null) return null;
-      const ownerId = await findReflectionRoomOwnerIdWith(input.db, binding.roomId);
-      return ownerId === null ? null : { ownerId, roomId: binding.roomId };
+      return { roomId: binding.roomId };
     })),
     signal,
+    dependencies,
   );
   const invokeForRecord = (
     claim: DurableSleepClaim,
     prompt: string,
     signal?: AbortSignal,
-  ): Promise<string> => invokeForRecords([claim], prompt, signal);
+    dependencies?: readonly DurableModelExposureDependency[],
+  ): Promise<string> => invokeForRecords([claim], prompt, signal, dependencies);
   const proposals: DurableOrganizerProposalApplicationPort = {
     async apply(application) {
       if (application.claim.changeReason === "parent_conflict") {
         throw new TypeError("parent-conflict work cannot publish an Organizer proposal");
       }
-      const context = await contextForRecord(application.claim.recordRef);
-      if (context === null) {
-        return {
-          status: "unavailable" as const,
-          failureCode: "publication_unavailable" as const,
-          failureDetail: "publication_evidence_unavailable" as const,
-        };
-      }
-      const handles = context.opened.semantic.terminalAuthorityLeafHandles;
-      const legacyLeaf = resolveOrganizerPublicationLegacyLeafOutcome({
-        terminalAuthorityLeafHandles: handles,
-        hasExactPublicationPlan: application.publicationPlan !== undefined,
-      });
-      const legacyTerminalAuthorityLeafHandle = legacyLeaf.status === "available"
-        ? legacyLeaf.leaf
-        : undefined;
-      const dissolveLeaf = application.proposal.operation === "dissolve_parent"
-        ? handles[0]
-        : undefined;
-      const publicationLeaf = legacyTerminalAuthorityLeafHandle ?? dissolveLeaf;
-      if (publicationLeaf === undefined) {
-        return {
-          status: "unavailable" as const,
-          failureCode: "publication_unavailable" as const,
-          failureDetail: legacyLeaf.status === "unavailable"
-            ? legacyLeaf.failureDetail
-            : "publication_legacy_leaf_unavailable" as const,
-        };
-      }
-      return new OrganizerProposalPublisher({
-        repository,
-        sourceDependencies: {
-          async validate({ dependency, readBindingRef, signal }) {
-            const result = await sources.readExact({
-              dependency,
-              evidenceBindingRef: readBindingRef,
-              returnedBytesMaximum: RECORD_SEARCH_POLICY_V1.returnedBytesMaximum,
-              ...(signal === undefined ? {} : { signal }),
-            });
-            if (result.status === "available") return "current";
-            await invalidation.admit({
-              dependency,
-              reason: result.status === "changed" ? "changed" : "unavailable",
-            });
-            return "unavailable";
+      const admitted = admittedModels.get(claimKey(application.claim));
+      try {
+        await admitted?.assertCurrent();
+        const context = await contextForRecord(application.claim.recordRef);
+        if (context === null) {
+          return {
+            status: "unavailable" as const,
+            failureCode: "publication_unavailable" as const,
+            failureDetail: "publication_evidence_unavailable" as const,
+          };
+        }
+        const handles = context.opened.semantic.terminalAuthorityLeafHandles;
+        const legacyLeaf = resolveOrganizerPublicationLegacyLeafOutcome({
+          terminalAuthorityLeafHandles: handles,
+          hasExactPublicationPlan: application.publicationPlan !== undefined,
+        });
+        const legacyTerminalAuthorityLeafHandle = legacyLeaf.status === "available"
+          ? legacyLeaf.leaf
+          : undefined;
+        const dissolveLeaf = application.proposal.operation === "dissolve_parent"
+          ? handles[0]
+          : undefined;
+        const publicationLeaf = legacyTerminalAuthorityLeafHandle ?? dissolveLeaf;
+        if (publicationLeaf === undefined) {
+          return {
+            status: "unavailable" as const,
+            failureCode: "publication_unavailable" as const,
+            failureDetail: legacyLeaf.status === "unavailable"
+              ? legacyLeaf.failureDetail
+              : "publication_legacy_leaf_unavailable" as const,
+          };
+        }
+        return await new OrganizerProposalPublisher({
+          repository,
+          sourceDependencies: {
+            async validate({ dependency, readBindingRef, signal }) {
+              const result = await sources.readExact({
+                dependency,
+                evidenceBindingRef: readBindingRef,
+                returnedBytesMaximum: RECORD_SEARCH_POLICY_V1.returnedBytesMaximum,
+                ...(signal === undefined ? {} : { signal }),
+              });
+              if (result.status === "available") return "current";
+              await invalidation.admit({
+                dependency,
+                reason: result.status === "changed" ? "changed" : "unavailable",
+              });
+              return "unavailable";
+            },
           },
-        },
-        identity: createHmacOrganizerPublicationIdentityPort(input.commitmentKey),
-        crossRoomFences: crossRoomPublicationPlanner,
-        recordBindings: publicationBindings,
-        room: {
-          roomAnchorRef: context.binding.roomAnchorRef,
-          // Exact cross-Room plans carry and revalidate the complete output
-          // authority. This legacy leaf is consulted only by same-Room plans.
-          terminalAuthorityLeafHandle: publicationLeaf,
-          readBindingRef: context.binding.readBindingRef,
-          publicationBindingRef: context.binding.publicationBindingRef,
-          producerPolicyVersion: CANDIDATE_POLICY_V1.version,
-        },
-      }).apply({
-        proposal: application.proposal,
-        changedRecordRef: application.claim.recordRef,
-        idempotencyKey: application.idempotencyKey,
-        budget: application.budget,
-        changeReason: application.claim.changeReason,
-        ...(application.publicationPlan === undefined
-          ? {}
-          : { publicationPlan: application.publicationPlan }),
-        ...(application.signal === undefined ? {} : { signal: application.signal }),
-      });
+          identity: createHmacOrganizerPublicationIdentityPort(input.commitmentKey),
+          crossRoomFences: crossRoomPublicationPlanner,
+          recordBindings: publicationBindings,
+          room: {
+            roomAnchorRef: context.binding.roomAnchorRef,
+            // Exact cross-Room plans carry and revalidate the complete output
+            // authority. This legacy leaf is consulted only by same-Room plans.
+            terminalAuthorityLeafHandle: publicationLeaf,
+            readBindingRef: context.binding.readBindingRef,
+            publicationBindingRef: context.binding.publicationBindingRef,
+            producerPolicyVersion: CANDIDATE_POLICY_V1.version,
+          },
+        }).apply({
+          proposal: application.proposal,
+          changedRecordRef: application.claim.recordRef,
+          idempotencyKey: application.idempotencyKey,
+          budget: application.budget,
+          changeReason: application.claim.changeReason,
+          ...(application.publicationPlan === undefined
+            ? {}
+            : { publicationPlan: application.publicationPlan }),
+          ...(application.signal === undefined ? {} : { signal: application.signal }),
+        });
+      } finally {
+        admittedModels.delete(claimKey(application.claim));
+        for (const key of replayCheckedExecutions) {
+          if (key.includes(`:${application.claim.leaseToken}`)) {
+            replayCheckedExecutions.delete(key);
+          }
+        }
+      }
     },
   };
   const semantic = new SameRoomDurableSemanticComposition({
@@ -666,11 +818,17 @@ export async function createProductionReflectionMemoryRuntime(
           ? { status: "cooldown" as const, retryAfterMilliseconds: remaining }
           : { status: "ready" as const });
       },
-      invoke: (claim, prompt, signal) => invokeForRecord(claim, prompt, signal),
-      invokeBatch: (claims, prompt, signal) => invokeForRecords(
+      invoke: (claim, prompt, signal, dependencies) => invokeForRecord(
+        claim,
+        prompt,
+        signal,
+        dependencies,
+      ),
+      invokeBatch: (claims, prompt, signal, dependencies) => invokeForRecords(
         claims,
         prompt,
         signal,
+        dependencies,
       ),
     },
     proposals,
@@ -838,10 +996,34 @@ export async function createProductionReflectionMemoryRuntime(
             bindingRef: bindingRef(room.namespaceId, input.selection),
             representation: input.selection.selectedRepresentation,
             search,
+            ...(input.selection.selectedRepresentation !== "ordinary" ? {} : {
+              reopenOrdinaryRecord: async (recordRef: string) => {
+                const context = await contextForRecord(recordRef);
+                if (context === null || context.opened.lifecycle !== "current") return null;
+                return {
+                  recordRef: context.opened.recordRef,
+                  statement: context.opened.semantic.statement,
+                  lifecycle: context.opened.lifecycle,
+                  structuralHeight: context.opened.structuralHeight,
+                  modelExposureDependency: {
+                    kind: "record" as const,
+                    recordRef: context.opened.recordRef,
+                    observedProcessingGeneration: context.opened.processingGeneration,
+                    terminalAuthorityLeafHandles: context.opened.semantic.terminalAuthorityLeafHandles,
+                  },
+                };
+              },
+            }),
           })
     );
     return Object.freeze({
       representation: input.selection.selectedRepresentation,
+      ...(input.selection.selectedRepresentation !== "ordinary" ? {} : {
+        reopenOrdinaryRecord: async (recordRef: string) => {
+          const port = await resolve();
+          return port?.reopenOrdinaryRecord?.(recordRef) ?? null;
+        },
+      }),
       async select(
         request: Parameters<ForegroundRecordContextPort["select"]>[0],
       ) {
@@ -870,6 +1052,12 @@ export async function createProductionReflectionMemoryRuntime(
     });
   };
   return {
+    async readMemoryEvidenceRecord(dependency) {
+      const context = await contextForRecord(dependency.recordRef);
+      if (context === null || context.opened.processingGeneration !== dependency.observedProcessingGeneration
+        || JSON.stringify([...context.opened.semantic.terminalAuthorityLeafHandles].sort()) !== JSON.stringify([...dependency.terminalAuthorityLeafHandles].sort())) return null;
+      return context.opened;
+    },
     worker,
     recallRecordsPortForState,
     foregroundRecordContextPortForRoom,

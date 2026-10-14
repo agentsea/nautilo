@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { memoryReviewTurns, type SQL } from "@nautilo/db";
-import { PostgresMemoryReviewRepository, selectMemoryReviewPrefix } from "../../src/memory-review/repository";
+import {
+  classifyPriorMemoryReviewAttempts,
+  PostgresMemoryReviewRepository,
+  selectMemoryReviewPrefix,
+} from "../../src/memory-review/repository";
 import type { MemoryReviewClaim } from "../../src/memory-review/worker";
 
 const dialect = new PgDialect();
@@ -35,9 +39,100 @@ describe("Memory durable coverage selection", () => {
     expect(selectMemoryReviewPrefix(rows, 2)).toEqual(rows.slice(1));
     expect(selectMemoryReviewPrefix(rows.slice(0, 3), 2)).toEqual([]);
   });
+
+  test("attributes nonusable output only to the exact durably failed attempt", () => {
+    const known = {
+      ...turn("1", "completed"), attemptId: "attempt-known",
+      failurePhase: "model", failureCode: "invalid_proposal",
+    };
+    const crashed = {
+      ...turn("2", "completed"), attemptId: "attempt-crashed",
+      failurePhase: null, failureCode: null,
+    };
+    expect(classifyPriorMemoryReviewAttempts([known, crashed])).toEqual({
+      attemptIds: ["attempt-known", "attempt-crashed"],
+      knownNonusableAttemptIds: ["attempt-known"],
+    });
+    expect(classifyPriorMemoryReviewAttempts([
+      known,
+      { ...known, id: "3", failureCode: null },
+    ])).toEqual({
+      attemptIds: ["attempt-known"],
+      knownNonusableAttemptIds: [],
+    });
+  });
 });
 
 describe("Memory repository query contracts without a live database", () => {
+  test("service model binding is frozen across retry and rejects disagreeing coalesced turns", async () => {
+    const baseTurn = { ...turn("1", "completed"), attemptId: claim.attemptId, receiptId: null,
+      leaseUntil: new Date("2099-01-01"), acceptedModelBinding: { kind: "service" as const, modelId: "first-model" } };
+    const makeDb = (turns: typeof baseTurn[]) => ({
+      transaction: async <T>(run: (tx: unknown) => Promise<T>) => run({
+        select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ for: async () => turns }) }) }) }),
+        update: () => ({ set: () => ({ where: () => ({ returning: async () => [] }) }) }),
+      }),
+    });
+    const retryRepo = new PostgresMemoryReviewRepository(policy, makeDb([baseTurn]) as never);
+    let resolutions = 0;
+    expect(await retryRepo.bindServiceModel(claim, () => { resolutions += 1; return "new-default"; })).toBe("first-model");
+    expect(resolutions).toBe(0);
+
+    const mismatchRepo = new PostgresMemoryReviewRepository(policy, makeDb([
+      baseTurn,
+      { ...baseTurn, id: "2", sourceIds: [], acceptedModelBinding: { kind: "service", modelId: "other-model" } },
+    ]) as never);
+    const coalesced = { ...claim, turnIds: ["1", "2"] };
+    await mismatchRepo.bindServiceModel(coalesced, () => { resolutions += 1; return "new-default"; }).then(
+      () => { throw new Error("expected mismatched binding to fail"); },
+      (error: unknown) => { expect(error).toMatchObject({ code: "source_changed" }); },
+    );
+    expect(resolutions).toBe(0);
+
+    const malformedRepo = new PostgresMemoryReviewRepository(policy, makeDb([
+      { ...baseTurn, acceptedModelBinding: { kind: "service", modelId: 42 } as never },
+    ]) as never);
+    await malformedRepo.bindServiceModel(claim, () => "new-default").then(
+      () => { throw new Error("expected malformed binding to fail"); },
+      (error: unknown) => { expect(error).toMatchObject({ code: "source_changed" }); },
+    );
+  });
+
+  test("accepted Memory operation CAS is lazy on resume and upgrades legacy service without changing its model", async () => {
+    const commitment = `hmac-sha256:${"a".repeat(43)}`;
+    const accepted = { version: 1 as const, kind: "human" as const, role: "memoryReview" as const,
+      modelId: "personal-model", inputCommitment: commitment, humanUserId: "human",
+      preferenceRevision: 3, funding: { kind: "server" as const, providerRoute: "openai" } };
+    const base = { ...turn("1", "completed"), attemptId: claim.attemptId, receiptId: null,
+      leaseUntil: new Date("2099-01-01"), acceptedModelBinding: accepted };
+    const makeDb = (turns: typeof base[]) => ({ transaction: async <T>(run: (tx: unknown) => Promise<T>) => run({
+      select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ for: async () => turns }) }) }) }),
+      update: () => ({ set: () => ({ where: () => ({ returning: async () => turns.map(({ id }) => ({ id })) }) }) }),
+    }) });
+    let resolved = 0;
+    const resumed = new PostgresMemoryReviewRepository(policy, makeDb([base]) as never);
+    expect(await resumed.bindModelOperation(claim, async () => { resolved += 1; return accepted; })).toEqual(accepted);
+    expect(resolved).toBe(0);
+
+    let persisted: unknown;
+    const legacyDb = { transaction: async <T>(run: (tx: unknown) => Promise<T>) => run({
+      select: () => ({ from: () => ({ where: () => ({ orderBy: () => ({ for: async () => [
+        { ...base, acceptedModelBinding: { kind: "service", modelId: "legacy-model" } },
+      ] }) }) }) }),
+      update: () => ({ set: (value: { acceptedModelBinding: unknown }) => {
+        persisted = value.acceptedModelBinding;
+        return { where: () => ({ returning: async () => [{ id: "1" }] }) };
+      } }),
+    }) };
+    const legacy = new PostgresMemoryReviewRepository(policy, legacyDb as never);
+    const proposed = { version: 1 as const, kind: "human" as const, role: "memoryReview" as const,
+      modelId: "new-personal", inputCommitment: commitment, humanUserId: "human",
+      preferenceRevision: 9, funding: { kind: "server" as const, providerRoute: "openai" } };
+    const upgraded = await legacy.bindModelOperation(claim, async () => proposed);
+    expect(upgraded).toMatchObject({ kind: "service", modelId: "legacy-model", inputCommitment: commitment });
+    expect(persisted).toEqual(upgraded);
+  });
+
   test("candidate discovery reads only work metadata and partitions predecessors by Agent and authority scope", async () => {
     const queries: SQL[] = [];
     const db = { execute: async (query: SQL) => { queries.push(query); return []; } };
@@ -64,6 +159,58 @@ describe("Memory repository query contracts without a live database", () => {
     expect(query.params).toContain("logical-work");
     expect(query.params).toContain("published");
     expect(query.params).not.toContain("new-attempt");
+  });
+
+  test("replay safety excuses only exact failed attempts and blocks an unaccounted sibling", async () => {
+    const attemptRow = (
+      id: string,
+      attemptOutcome: "succeeded" | "failed" | "unknown",
+      failureCode: string | null = null,
+    ) => ({ id, attemptOutcome, failureCode, metadata: {} });
+    const makeDb = (responses: unknown[][]) => {
+      const predicates: SQL[] = [];
+      return {
+        predicates,
+        handle: {
+          select: () => {
+            const builder = {
+              from: () => builder,
+              where: (predicate: SQL) => {
+                predicates.push(predicate);
+                return builder;
+              },
+              limit: async () => responses.shift() ?? [],
+            };
+            return builder;
+          },
+        },
+      };
+    };
+    const replayClaim: MemoryReviewClaim = {
+      ...claim,
+      priorAttemptIds: ["attempt-known", "attempt-unaccounted"],
+      knownNonusableAttemptIds: ["attempt-known"],
+    };
+    const safe = makeDb([
+      [attemptRow("wire-refused", "failed", "provider_refused")],
+      [attemptRow("wire-known", "succeeded")],
+    ]);
+    const safeRepository = new PostgresMemoryReviewRepository(policy, safe.handle as never);
+    expect(await safeRepository.modelReplaySafety(replayClaim)).toBe("allow");
+    expect(safe.predicates).toHaveLength(2);
+    const unaccountedQuery = dialect.sqlToQuery(safe.predicates[0]!);
+    const knownQuery = dialect.sqlToQuery(safe.predicates[1]!);
+    expect(unaccountedQuery.params).toContain("attempt-unaccounted");
+    expect(unaccountedQuery.params).not.toContain("attempt-known");
+    expect(knownQuery.params).toContain("attempt-known");
+    expect(knownQuery.params).not.toContain("attempt-unaccounted");
+
+    const unknown = makeDb([[
+      attemptRow("wire-unknown", "unknown"),
+    ]]);
+    const unknownRepository = new PostgresMemoryReviewRepository(policy, unknown.handle as never);
+    expect(await unknownRepository.modelReplaySafety(replayClaim)).toBe("block_unknown");
+    expect(unknown.predicates).toHaveLength(1);
   });
 
   test("failed attempts persist content-free diagnostics and fence newer or committed attempts", async () => {

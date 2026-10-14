@@ -97,6 +97,8 @@ export type {
   ActiveConversationMutationResult,
   ActiveConversationRepository,
   ActiveConversationTranscriptMessage,
+  OrdinaryConversationTranscriptExposureReader,
+  OrdinaryConversationTranscriptExposureRow,
   AgentTranscriptOpenResult,
   HumanConversationRead,
   HumanConversationReadResult,
@@ -107,6 +109,7 @@ export type {
   ProtectedAgentMessageWritePreparer,
   ProtectedConversationProductReadAuthorization,
 } from "./conversation/active-conversation-repository";
+export { ordinaryTranscriptModelExposure } from "./context/ordinary-source-model-exposure";
 export {
   createProtectedAgentMessageWriteCoordinator,
 } from "./conversation/protected-agent-message-write-coordinator";
@@ -740,7 +743,7 @@ export {
 } from "./memory/protected-agent-scope-close-worker";
 
 export { MemoryReviewWorker, type MemoryReviewClaim, type MemoryReviewRepository,
-  type MemoryReviewWorkerDeps, type MemoryReviewInput, type MemoryReviewPhase,
+  type MemoryReviewWorkerDeps, type MemoryReviewInput, type AdmittedMemoryReviewModel, type MemoryReviewPhase,
   type MemoryReviewPublicationState } from "./memory-review/worker";
 export { PostgresMemoryReviewRepository, selectMemoryReviewPrefix } from "./memory-review/repository";
 export { memoryReviewAdmission, finishMemoryReviewTurn } from "./memory-review/admission";
@@ -759,3 +762,13 @@ export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type 
 export { setTaskLocalExecutionSourceComposition, resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable, isTaskLocalExecutionOfflineSourceReady } from "./tasks/local-execution-delegation";
 
 export { getCurrentExternalRoomExecution, type ExternalRoomExecutionContext, type ExternalRoomExecutionCandidate, type ExternalRoomJobReference } from "./external-room-execution";
+
+export { createHmacProfileSoulFingerprint, installForegroundAuthoredFingerprintPort, uninstallForegroundAuthoredFingerprintPort, foregroundProfileSoulFingerprint, type ProfileSoulFingerprintInput } from "./executors/foreground-authored-context";
+
+export { extractionModelExposureDependencies, compactionModelExposureDependencies } from "./stenographer/semantic-adapter";
+export { createRoomSideModelInvoker } from "./stenographer/model-invoker";
+export type { AdmittedStenographerModel } from "./stenographer/ordinary-stenographer-data-operation";
+
+export type { ExtractionClaim, CompactionClaim } from "./stenographer/repository";
+
+export type { AdmitReflectionMemoryModelRequest, AdmittedReflectionMemoryModel } from "./reflection/production-reflection-memory";

@@ -843,6 +843,8 @@ export {
   insertLlmUsageEvent,
   beginSurplusLlmAttempt,
   beginPersonalLlmAttempt,
+  beginServiceLlmAttempt,
+  beginServerLlmAttempt,
   renewPersonalLlmAttemptLeases,
   interruptExpiredPersonalLlmAttempts,
   interruptPersonalLlmAttemptsByOwner,
@@ -854,6 +856,8 @@ export {
   attachSurplusRequestReceipt,
   settleSurplusLlmAttempt,
   settlePersonalLlmAttempt,
+  settleServiceLlmAttempt,
+  settleServerLlmAttempt,
   listPendingSurplusAttempts,
   DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
   reconcileSurplusLlmAttemptCost,
@@ -870,6 +874,7 @@ export {
   type SurplusCostState,
   type BeginSurplusLlmAttemptInput,
   type BeginPersonalLlmAttemptInput,
+  type BeginServiceLlmAttemptInput,
   type AttachSurplusRequestReceiptInput,
   type SettleSurplusLlmAttemptInput,
   type SettlePersonalLlmAttemptInput,
@@ -885,6 +890,12 @@ export {
   type CostsSummary,
   type PersonalCostsData,
 } from "./queries/llm-usage";
+export {
+  classifyModelAttemptReplaySafety,
+  resolveModelAttemptReplaySafety,
+  type ModelAttemptReplayIdentity,
+  type ModelAttemptReplaySafety,
+} from "./queries/model-attempt-replay-safety";
 export {
   insertProviderCostEvent,
   insertProviderCostEventWith,

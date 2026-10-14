@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, type Mock, spyOn, test } from "bun:test";
 import { setConfigOverrides } from "@nautilo/config";
 import * as db from "@nautilo/db";
+import * as serviceAttempt from "../../src/usage/service-embedding-attempt";
 import {
   EmbeddingProviderError,
   embedTextWithProvenance,
@@ -18,6 +19,7 @@ type ServerModelConfigRow = NonNullable<ReturnType<typeof db.getCachedServerMode
 
 let serverEmbeddingModel: string | null | undefined;
 let serverConfigSpy: Mock<typeof db.getCachedServerModelConfigRow>;
+let serviceAttemptSpy: Mock<typeof serviceAttempt.runServiceEmbeddingAttempt>;
 
 function restoreEnv(name: "OPENAI_API_KEY" | "OPENROUTER_API_KEY" | "VENICE_API_KEY" | "NAUTILO_MANAGED_GATEWAY_API_KEY" | "NAUTILO_MANAGED_GATEWAY_BASE_URL", value: string | undefined) {
   if (value === undefined) delete process.env[name];
@@ -58,6 +60,8 @@ describe("memory embedding providers", () => {
       serverEmbeddingModel === undefined
         ? null
         : ({ embeddingModel: serverEmbeddingModel } as ServerModelConfigRow));
+    serviceAttemptSpy = spyOn(serviceAttempt, "runServiceEmbeddingAttempt")
+      .mockImplementation(async (input) => input.invoke(() => {}));
   });
 
   afterEach(() => {
@@ -68,6 +72,7 @@ describe("memory embedding providers", () => {
     restoreEnv("NAUTILO_MANAGED_GATEWAY_API_KEY", ORIGINAL_MANAGED_GATEWAY_KEY);
     restoreEnv("NAUTILO_MANAGED_GATEWAY_BASE_URL", ORIGINAL_MANAGED_GATEWAY_BASE_URL);
     serverConfigSpy.mockRestore();
+    serviceAttemptSpy.mockRestore();
     setConfigOverrides({});
   });
 
@@ -88,6 +93,7 @@ describe("memory embedding providers", () => {
     expect(rejected).toMatchObject({ message:
       "The approved embedding configuration changed. Prepare the Memory request again." });
     expect(calls).toBe(0);
+    expect(serviceAttemptSpy).not.toHaveBeenCalled();
     delete process.env["VENICE_API_KEY"];
     expect(await embedTextWithProvenance("private Memory", undefined, approved))
       .toMatchObject({ provider: "openrouter", canonicalModel: approved.model });
@@ -285,6 +291,34 @@ describe("memory embedding providers", () => {
     expect(requestSignal).toBe(abort.signal);
   });
 
+  test("hands exact resolved service provenance and zero-token actual evidence to accounting", async () => {
+    process.env["OPENROUTER_API_KEY"] = "openrouter-secret";
+    let attempt: serviceAttempt.ServiceEmbeddingAttemptInput<unknown> | undefined;
+    let evidence: serviceAttempt.ServiceEmbeddingAttemptEvidence | undefined;
+    serviceAttemptSpy.mockImplementation(async (input) => {
+      attempt = input;
+      return input.invoke((observed) => { evidence = observed; });
+    });
+    globalThis.fetch = (async () => Response.json({
+      data: [{ index: 0, embedding: [1, 2, 3] }],
+      usage: { prompt_tokens: 0, total_tokens: 0, cost: 0 },
+    }, { headers: { "x-request-id": "embedding-request-1" } })) as unknown as typeof fetch;
+
+    expect(await embedTexts(["hello"])).toEqual([[1, 2, 3]]);
+    expect(attempt).toMatchObject({
+      provider: "openrouter",
+      model: "openai/text-embedding-3-small",
+      endpoint: "https://openrouter.ai/api/v1/embeddings",
+      dimensions: 3,
+    });
+    expect(evidence).toEqual({
+      inputTokens: 0,
+      totalTokens: 0,
+      actualCostUsd: 0,
+      providerRequestId: "embedding-request-1",
+    });
+  });
+
   test("accepts an explicit OpenRouter-prefixed embedding model", async () => {
     process.env["OPENAI_API_KEY"] = "openai-secret-that-must-not-win";
     process.env["OPENROUTER_API_KEY"] = "openrouter-secret";
@@ -325,6 +359,7 @@ describe("memory embedding providers", () => {
       retryable: false,
     });
     expect(calls).toBe(0);
+    expect(serviceAttemptSpy).not.toHaveBeenCalled();
   });
 
   test("preserves a custom bare model in OpenRouter canonical form", async () => {

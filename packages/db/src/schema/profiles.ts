@@ -34,6 +34,8 @@ export const profiles = pgTable(
       .references(() => agents.id),
     name: varchar("name", { length: 100 }).notNull().default("Nautilo"),
     soulFile: text("soul_file"),
+    /** Monotonic provenance token; advances only when Soul content changes. */
+    soulRevision: bigint("soul_revision", { mode: "number" }).notNull().default(0),
     language: varchar("language", { length: 5 }).notNull().default("en"),
     privacySpectrum: integer("privacy_spectrum"),
     workLifeMode: varchar("work_life_mode", { length: 20 }),

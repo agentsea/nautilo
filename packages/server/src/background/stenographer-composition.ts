@@ -2,8 +2,14 @@ import {createHash, randomUUID} from "node:crypto";
 import {
   actors, and, asc, desc, backgroundCryptoAuthorizationRequests, createPostgresJsBridgeConnection, eq, getEncryptionTransitionPolicy,
   inArray, isNotNull, isNull, lte, gt, or, roomJournalState, rooms,
+  sessionMessages, sessions, users,
   type DirectDatabase, type PostgresJsBridgeConnection,
 } from "@nautilo/db";
+import {
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+  bindModelInputExposureFromAuthorizedPersistedPayload,
+  readModelInputExposure,
+} from "@nautilo/agent";
 import {LatticeCrypto, ProcessorTransformRecipientRegistry, type ProcessorTransformCapability, type ProcessorTransformInput} from "@nautilo/lattice-crypto";
 import {ProcessorReconciliationIntegrityErrorV2, inspectBackgroundAuthorizationResponseV2, decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import {ClassifiedDataOperationError} from "@nautilo/lattice-bridge";
@@ -35,16 +41,298 @@ import {
   recoverProtectedStenographerExecutionWork, runProtectedStenographerCompaction, runProtectedStenographerExtraction,
   type BackgroundAuthorizationRecord, type BackgroundAuthorizationRepository, type ProtectedStenographerBackgroundCoordinatorOptions, type CurrentProtectedStenographerAuthority,
   type ProtectedStenographerCompactionWork, type ProtectedStenographerExtractionWork,
+  type OpenedProtectedStenographerSources,
+  type AdmittedStenographerModel,
   type ProtectedStenographerRecoveredWork, type ProtectedStenographerDurableWorkRecoveryPort, type StenographerCandidatePort,
 } from "@nautilo/runtime";
-import type {ProtectedStenographerRecordCommitmentPort, RecordSemanticCommitmentPort} from "@nautilo/reflection-bridge/server";
+import {
+  stenographerJournalEventObservationFingerprint,
+  stenographerJournalRollupObservationFingerprint,
+  type MemorySourceDerivation,
+  type PersonalMemoryEvidencePort,
+  type ProtectedStenographerRecordCommitmentPort,
+  type RecordSemanticCommitmentPort,
+} from "@nautilo/reflection-bridge/server";
+import type {DurableModelExposureDependency, DurableRecordEnvelope} from "@nautilo/reflection/durable";
+import {parseMemoryOperationBinding} from "@nautilo/types";
 import {createProductionStenographerOutputRepair} from "./stenographer-output-repair-composition";
 import {createHumanProductTransactionContext} from "../routes/human-message-product-store";
+import {runWithProtectedMemoryEvidence} from "../lib/protected-memory-model-evidence";
+import type {ProtectedStenographerFundingClaim} from "../lib/stenographer-memory-funding";
 
 const activeStates = ["awaiting_recipient", "awaiting_device", "grant_ready", "claimed", "running", "publication_reconciliation"] as const;
 const unavailable = (): StenographerOperationOutcome => ({status: "unavailable", processed: false});
 const completed = (): StenographerOperationOutcome => ({status: "completed", processed: true});
 const prepared = (result: StenographerOperationOutcome): StenographerPreparedOperation => ({publish: () => Promise.resolve(result)});
+
+type SourceDependency = Extract<
+  DurableModelExposureDependency,
+  { kind: "source" }
+>;
+
+function durableRollupAncestry(
+  sources: OpenedProtectedStenographerSources,
+  rollupId: string,
+): readonly DurableModelExposureDependency[] | undefined {
+  const payload = sources.latestRollup?.payload;
+  if (payload?.rollupId !== rollupId) return undefined;
+  return payload.modelExposureDependencies?.map((dependency) =>
+    dependency.kind === "record"
+      ? Object.freeze({
+          kind: "record" as const,
+          recordRef: dependency.recordId,
+          observedProcessingGeneration:
+            dependency.observedProcessingGeneration,
+          terminalAuthorityLeafHandles:
+            Object.freeze([...dependency.terminalAuthorityLeafHandles]),
+        })
+      : Object.freeze({
+          kind: "source" as const,
+          sourceKind: dependency.sourceKind,
+          logicalSourceRef: dependency.logicalObjectRef,
+          ...(dependency.observedRevision === null
+            ? {}
+            : { observedRevision: dependency.observedRevision }),
+          ...(dependency.observedContentFingerprint === null
+            ? {}
+            : {
+                observedContentFingerprint:
+                  dependency.observedContentFingerprint,
+              }),
+          terminalAuthorityLeafHandle:
+            dependency.terminalAuthorityLeafHandle,
+        })
+  );
+}
+
+function sourceResult(
+  audience: NonNullable<Awaited<
+    ReturnType<PersonalMemoryEvidencePort["readAudience"]>
+  >>,
+  evidence:
+    | Readonly<{ kind: "human"; authorHumanId: string }>
+    | Readonly<{
+        kind: "derived";
+        modelExposureDependencies:
+          readonly DurableModelExposureDependency[];
+      }>
+    | Readonly<{ kind: "unknown" }>,
+): MemorySourceDerivation {
+  return Object.freeze({
+    status: "current" as const,
+    audienceHumanIds: audience.humanIds,
+    includesPublicBoundary: audience.includesPublicBoundary,
+    ...evidence,
+  });
+}
+
+/**
+ * The protected transform owns all plaintext in this port. Dependencies not
+ * present in its signed input inventory deliberately remain unresolvable.
+ */
+export function createProtectedStenographerMemoryEvidence(input: Readonly<{
+  db: DirectDatabase;
+  roomId: string;
+  namespaceId: string;
+  sources: OpenedProtectedStenographerSources;
+  audience: Pick<PersonalMemoryEvidencePort, "readAudience">;
+  assertCurrent(): Promise<void>;
+}>): PersonalMemoryEvidencePort {
+  const readAudience = async (leaf: string) => {
+    await input.assertCurrent();
+    const result = leaf === input.namespaceId
+      ? await input.audience.readAudience(leaf)
+      : null;
+    await input.assertCurrent();
+    return result;
+  };
+  const messageByRef = new Map<string, OpenedProtectedStenographerSources["currentMessages"][number]>(
+    [...input.sources.currentMessages, ...input.sources.priorMessages]
+      .map((source) => [`message:${source.messageId}`, source] as const),
+  );
+  const eventByRef = new Map<string, OpenedProtectedStenographerSources["events"][number]>(
+    input.sources.events.map((source) => [
+      `journal-event:${source.payload.eventId}`,
+      source,
+    ] as const),
+  );
+  const recordByRef = new Map<string, DurableRecordEnvelope>(
+    input.sources.events.flatMap((source) =>
+      source.recordEnvelope === undefined
+        ? []
+        : [[source.recordEnvelope.recordRef, source.recordEnvelope] as const]
+    ),
+  );
+  const dependencyCoordinateIsOpened = (
+    dependency: DurableModelExposureDependency,
+  ): boolean => dependency.kind === "record"
+    ? recordByRef.has(dependency.recordRef)
+    : dependency.sourceKind === "message"
+      ? messageByRef.has(dependency.logicalSourceRef)
+      : dependency.sourceKind === "journal_event"
+        ? eventByRef.has(dependency.logicalSourceRef)
+        : dependency.sourceKind === "journal_rollup"
+          && dependency.logicalSourceRef
+            === `journal-rollup:${input.sources.latestRollup?.payload.rollupId}`;
+  return Object.freeze({
+    async readRecord(
+      dependency: Extract<
+        DurableModelExposureDependency,
+        { kind: "record" }
+      >,
+    ) {
+      await input.assertCurrent();
+      const record = recordByRef.get(dependency.recordRef);
+      const result = record !== undefined
+        && record.processingGeneration
+          === dependency.observedProcessingGeneration
+        && JSON.stringify(
+          [...record.semantic.terminalAuthorityLeafHandles].sort(),
+        ) === JSON.stringify(
+          [...dependency.terminalAuthorityLeafHandles].sort(),
+        )
+        ? record
+        : null;
+      await input.assertCurrent();
+      return result;
+    },
+    async readSource(dependency: SourceDependency) {
+      const audience = await readAudience(
+        dependency.terminalAuthorityLeafHandle,
+      );
+      if (audience === null) return null;
+      if (dependency.sourceKind === "message") {
+        const source = messageByRef.get(dependency.logicalSourceRef);
+        if (
+          source === undefined
+          || dependency.observedRevision !== String(source.editRevision)
+          || dependency.observedContentFingerprint
+            !== `sha256:${createHash("sha256").update(JSON.stringify([
+              "nautilo/stenographer/message-observation/v1",
+              source.messageId,
+              source.editRevision,
+              source.payload.content,
+            ]), "utf8").digest("hex")}`
+        ) return null;
+        await input.assertCurrent();
+        const rows = await input.db.select({
+          id: sessionMessages.id,
+          editRevision: sessionMessages.editRevision,
+          role: sessionMessages.role,
+          externalAuthorship: sessionMessages.externalAuthorship,
+          authorHumanId: sessions.ownerId,
+          agentId: sessions.agentId,
+          roomId: sessions.roomId,
+          namespaceId: rooms.namespaceId,
+          disabledAt: users.disabledAt,
+        }).from(sessionMessages)
+          .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+          .innerJoin(rooms, eq(rooms.id, sessions.roomId))
+          .innerJoin(users, eq(users.id, sessions.ownerId))
+          .where(and(
+            eq(sessionMessages.id, source.messageId),
+            eq(sessionMessages.editRevision, source.editRevision),
+            eq(sessions.roomId, input.roomId),
+            eq(rooms.namespaceId, input.namespaceId),
+          )).limit(2);
+        await input.assertCurrent();
+        const row = rows.length === 1 ? rows[0]! : null;
+        if (
+          row === null
+          || row.role !== source.payload.role
+          || row.disabledAt !== null
+          || row.roomId !== input.roomId
+          || row.namespaceId !== input.namespaceId
+        ) return null;
+        if (source.payload.role === "user" && !row.externalAuthorship) {
+          return sourceResult(audience, {
+            kind: "human",
+            authorHumanId: row.authorHumanId,
+          });
+        }
+        if (
+          (source.payload.role === "assistant"
+            || source.payload.role === "tool")
+          && !row.externalAuthorship
+          && row.agentId !== null
+        ) {
+          const carrier = {};
+          if (!bindModelInputExposureFromAuthorizedPersistedPayload(
+            carrier,
+            source.payload.sensitiveMetadata?.[
+              MODEL_INPUT_EXPOSURE_METADATA_KEY
+            ],
+          )) return sourceResult(audience, { kind: "unknown" });
+          const exposure = readModelInputExposure(carrier);
+          return exposure?.status === "complete"
+            && exposure.dependencies.length > 0
+            && exposure.dependencies.every(dependencyCoordinateIsOpened)
+            ? sourceResult(audience, {
+                kind: "derived",
+                modelExposureDependencies: exposure.dependencies,
+              })
+            : sourceResult(audience, { kind: "unknown" });
+        }
+        return sourceResult(audience, { kind: "unknown" });
+      }
+      if (dependency.sourceKind === "journal_rollup") {
+        const rollup = input.sources.latestRollup;
+        if (
+          rollup === null
+          || dependency.logicalSourceRef
+            !== `journal-rollup:${rollup.payload.rollupId}`
+        ) return null;
+        const ancestry = durableRollupAncestry(
+          input.sources,
+          rollup.payload.rollupId,
+        );
+        if (
+          dependency.observedRevision
+            !== `through:${rollup.payload.throughEventSequence}:version:${rollup.payload.compactorVersion}`
+          || dependency.observedContentFingerprint
+            !== stenographerJournalRollupObservationFingerprint({
+              rollupId: rollup.payload.rollupId,
+              throughEventSequence:
+                rollup.payload.throughEventSequence,
+              content: rollup.payload.content,
+              compactorVersion: rollup.payload.compactorVersion,
+              ...(ancestry === undefined
+                ? {}
+                : { modelExposureDependencies: ancestry }),
+            })
+        ) return null;
+        return ancestry === undefined
+          || !ancestry.every(dependencyCoordinateIsOpened)
+          ? sourceResult(audience, { kind: "unknown" })
+          : sourceResult(audience, {
+              kind: "derived",
+              modelExposureDependencies: ancestry,
+            });
+      }
+      if (dependency.sourceKind === "journal_event") {
+        const event = eventByRef.get(dependency.logicalSourceRef);
+        if (
+          event === undefined
+          || event.recordEnvelope !== undefined
+          || dependency.observedRevision
+            !== `sequence:${event.payload.sequence}:status:${event.status}`
+          || dependency.observedContentFingerprint
+            !== stenographerJournalEventObservationFingerprint({
+              eventId: event.payload.eventId,
+              sequence: event.payload.sequence,
+              kind: event.payload.kind,
+              statement: event.payload.statement,
+              status: event.status,
+            })
+        ) return null;
+        return sourceResult(audience, { kind: "unknown" });
+      }
+      // A protected question never falls through to ordinary source bytes.
+      return null;
+    },
+    readAudience,
+  });
+}
 
 /** Only absent custody is an availability condition; inconsistent authority is not fallback. */
 export function assertStenographerNamespaceWaitingReason(reason: string): void {
@@ -189,6 +477,19 @@ export async function createProductionProtectedStenographerComposition(input: Re
   recordCommitment: ProtectedStenographerRecordCommitmentPort;
   semanticCommitments?: RecordSemanticCommitmentPort;
   resolveModelId(): string;
+  memoryEvidence?: PersonalMemoryEvidencePort;
+  admitExtractionModel?: (
+    claim: Extract<ProtectedStenographerFundingClaim, { kind: "extraction" }>,
+    dependencies: () => Promise<
+      readonly DurableModelExposureDependency[] | undefined
+    >,
+  ) => Promise<AdmittedStenographerModel>;
+  admitCompactionModel?: (
+    claim: Extract<ProtectedStenographerFundingClaim, { kind: "compaction" }>,
+    dependencies: () => Promise<
+      readonly DurableModelExposureDependency[] | undefined
+    >,
+  ) => Promise<AdmittedStenographerModel>;
   authorizationRequested?(record: BackgroundAuthorizationRecord): Promise<void>;
   now?(): Date;
 }>, dependencies: Readonly<{
@@ -366,6 +667,15 @@ export async function createProductionProtectedStenographerComposition(input: Re
           const plan = decodeProtectedJournalAttachmentPlanV1(receipt.attachmentPlanBytes);
           if (plan.kind === "rollup") return plan.rollup!.modelId;
         }
+        const [state] = await input.db.select({
+          accepted: roomJournalState.compactionAcceptedModelBinding,
+        }).from(roomJournalState).where(eq(
+          roomJournalState.roomId,
+          roomId,
+        )).limit(2);
+        if (state?.accepted !== null && state?.accepted !== undefined) {
+          return parseMemoryOperationBinding(state.accepted).modelId;
+        }
         return modelId;
       },
     });
@@ -521,9 +831,58 @@ export async function createProductionProtectedStenographerComposition(input: Re
         const invokeModel = createRoomSideModelInvoker({modelId, userId: recovered.claim.ownerId, roomId,
           laneKey: `stenographer:${record.workKind}`, callType: recovered.claim.kind === "extraction" ? "room_stenographer" : "room_event_compaction",
           operationId: recovered.claim.workId});
+        const assertProcessorCurrent = async () => {
+          if (record.acceptedMaterial === null) {
+            throw new Error("Stenographer processor grant is unavailable");
+          }
+          const context = inspectBackgroundAuthorizationResponseV2(
+            record.acceptedMaterial.responseBytes,
+          );
+          const current = await withValidatedAuthority()({
+            context,
+            signal,
+            use: () => Promise.resolve({ value: true }),
+          });
+          if (current === null || current.value !== true) {
+            throw new Error("Stenographer processor grant changed");
+          }
+        };
         if (recovered.claim.kind === "extraction") {
+          const extractionClaim = recovered.claim;
           return runProtectedStenographerExtraction({capability, work: recovered.work as ProtectedStenographerExtractionWork,
             signal, invokeModel,
+            ...(input.admitExtractionModel === undefined
+                || input.memoryEvidence === undefined
+              ? {}
+              : {
+                  admitModel: (context) => {
+                    const evidence = createProtectedStenographerMemoryEvidence({
+                      db: input.db,
+                      roomId,
+                      namespaceId: extractionClaim.namespaceId,
+                      sources: context.sources,
+                      audience: input.memoryEvidence!,
+                      assertCurrent: assertProcessorCurrent,
+                    });
+                    return runWithProtectedMemoryEvidence(evidence, async () => {
+                      await assertProcessorCurrent();
+                      const admitted = await input.admitExtractionModel!(
+                        extractionClaim,
+                        () => Promise.resolve(context.dependencies),
+                      );
+                      await assertProcessorCurrent();
+                      return Object.freeze({
+                        modelId: admitted.modelId,
+                        invoke: admitted.invoke,
+                        assertCurrent: async () => {
+                          await assertProcessorCurrent();
+                          await admitted.assertCurrent();
+                          await assertProcessorCurrent();
+                        },
+                      });
+                    });
+                  },
+                }),
             resolveParticipantDisplays: async (participantIds, operationSignal) => {
               operationSignal.throwIfAborted();
               if (participantIds.length === 0) return [];
@@ -536,8 +895,55 @@ export async function createProductionProtectedStenographerComposition(input: Re
             publication: createProtectedStenographerExtractionPublicationAdapter({repository: publication,
               work: recovered.claim, publicationLeaseToken: leaseToken, now})});
         }
+        const compactionClaim = recovered.claim;
         return runProtectedStenographerCompaction({capability, work: recovered.work as ProtectedStenographerCompactionWork,
-          signal, invokeModel, publication: createProtectedStenographerCompactionPublicationAdapter({repository: publication,
+          signal, invokeModel,
+          ...(input.admitCompactionModel === undefined
+              || input.memoryEvidence === undefined
+            ? {}
+            : {
+                admitModel: (context) => {
+                  const evidence = createProtectedStenographerMemoryEvidence({
+                    db: input.db,
+                    roomId,
+                    namespaceId: compactionClaim.namespaceId,
+                    sources: context.sources,
+                    audience: input.memoryEvidence!,
+                    assertCurrent: assertProcessorCurrent,
+                  });
+                  return runWithProtectedMemoryEvidence(evidence, async () => {
+                    await assertProcessorCurrent();
+                    const admitted = await input.admitCompactionModel!(
+                      Object.freeze({
+                        ...compactionClaim,
+                        acceptedPlan: Object.freeze({
+                          version: 1 as const,
+                          owner: "protected" as const,
+                          operationId: compactionClaim.workId,
+                          rebuildGeneration:
+                            compactionClaim.rebuildGeneration,
+                          previousRollupId:
+                            compactionClaim.bindings.find(
+                              (binding) => binding.kind === "rollup",
+                            )?.binding.rollupId ?? null,
+                        }),
+                      }),
+                      () => Promise.resolve(context.dependencies),
+                    );
+                    await assertProcessorCurrent();
+                    return Object.freeze({
+                      modelId: admitted.modelId,
+                      invoke: admitted.invoke,
+                      assertCurrent: async () => {
+                        await assertProcessorCurrent();
+                        await admitted.assertCurrent();
+                        await assertProcessorCurrent();
+                      },
+                    });
+                  });
+                },
+              }),
+          publication: createProtectedStenographerCompactionPublicationAdapter({repository: publication,
             work: recovered.claim, publicationLeaseToken: leaseToken, now})});
       }});
     const coordinator = createCoordinator({repository: requests, recipients,
