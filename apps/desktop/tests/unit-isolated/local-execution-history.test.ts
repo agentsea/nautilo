@@ -3,7 +3,7 @@ import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { tmpdir } from "node:os";
-import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
+import { isPrivateFilesystemPathAsync, renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import {
   LocalExecutionHistoryStore,
   parseLocalExecutionHistoryRecord,
@@ -302,7 +302,7 @@ describe("encrypted managed execution history", () => {
     let opened: Awaited<ReturnType<typeof fs.open>> | undefined;
     const race = spyOn(fs, "open").mockImplementation(async (...args: Parameters<typeof fs.open>) => {
       if (args[0] === file) {
-        await fs.rename(file, retained);
+        await renameWithWindowsRetry(file, retained);
         await fs.copyFile(retained, file);
         opened = await open(...args);
         return opened;
@@ -326,7 +326,7 @@ describe("encrypted managed execution history", () => {
     const file = await f.archiveFile();
     const outside = path.join(f.root, "external.sealed");
     const original = await fs.readFile(file);
-    await fs.rename(file, outside);
+    await renameWithWindowsRetry(file, outside);
     await fs.symlink(outside, file);
     const decrypts = f.calls.decrypt;
     await expectError(read(f.store), "LOCAL_EXECUTION_HISTORY_UNAVAILABLE");
@@ -342,7 +342,7 @@ describe("encrypted managed execution history", () => {
     await f.store.save(record());
     const fileName = path.basename(await f.archiveFile());
     const outside = path.join(f.root, "external-history");
-    await fs.rename(f.directory, outside);
+    await renameWithWindowsRetry(f.directory, outside);
     await fs.symlink(outside, f.directory, process.platform === "win32" ? "junction" : "dir");
     const before = await fs.readFile(path.join(outside, fileName));
     await expectError(read(f.store), "LOCAL_EXECUTION_HISTORY_UNAVAILABLE");

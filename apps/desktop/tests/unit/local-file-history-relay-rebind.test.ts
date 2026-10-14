@@ -57,7 +57,10 @@ async function fixture(publish: "published" | "not_published") {
 
 async function waitForActionableOutbox(journalRoot: string): Promise<void> {
   const storage = createJournalStorage(journalRoot);
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // A deadline rather than an attempt count: on Windows every journal write
+  // goes through the ACL helper, so the pump is slower under suite load.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const manifest = await storage.readManifest();
     if (manifest?.v !== 1 && manifest.outbox.some((row) =>
       row.state === "pending" && row.attempts >= 1
