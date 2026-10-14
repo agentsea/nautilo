@@ -689,6 +689,8 @@ export interface RoomSummaryDto {
   kind: RoomKind;
   /** Open-room directory eligibility. Omitted by older servers; defaults to true. */
   discoverable?: boolean;
+  /** Permanent external context boundary; Genies can use only this Room's context. */
+  externalContext?: boolean;
   parentRoomId?: string | null;
   threadRootMessageId?: number | null;
   /**
@@ -801,6 +803,8 @@ export interface RoomDetailResponse {
   kind: RoomKind;
   /** Open-room directory eligibility. Omitted by older servers; defaults to true. */
   discoverable?: boolean;
+  /** Permanent external context boundary, independent of directory visibility. */
+  externalContext?: boolean;
   parentRoomId?: string | null;
   threadRootMessageId?: number | null;
   /** smart routing policy for group-room conductor inference. */

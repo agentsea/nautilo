@@ -170,6 +170,7 @@ export function MembersPanel({
   const [roomLabel, setRoomLabel] = useState<string>("");
   const [roomKind, setRoomKind] = useState<RoomKind>("private");
   const [roomDiscoverable, setRoomDiscoverable] = useState<boolean>(true);
+  const [roomExternalContext, setRoomExternalContext] = useState<boolean>(false);
   const [conductorMode, setConductorMode] = useState<RoomConductorMode>("advanced");
   const [loading, setLoading] = useState<boolean>(false);
   const [loadedRoomId, setLoadedRoomId] = useState<string | null>(null);
@@ -217,6 +218,7 @@ export function MembersPanel({
       setRoomLabel(detail.label);
       setRoomKind(detail.kind);
       setRoomDiscoverable(detail.discoverable !== false);
+      setRoomExternalContext(detail.externalContext === true);
       setConductorMode(detail.conductorMode === "standard" ? "standard" : "advanced");
       setLoadedRoomId(roomId);
     } catch (e) {
@@ -280,7 +282,10 @@ export function MembersPanel({
   const canEditRoom = viewerIsAdmin || canManageRooms;
   const canEditMemberRoles = canEditRoom;
   const canFlipVisibility =
-    loadedRoomId === roomId && canManageRooms && supportsVisibilityMutation(roomKind);
+    loadedRoomId === roomId &&
+    canManageRooms &&
+    !roomExternalContext &&
+    supportsVisibilityMutation(roomKind);
   const canFlipConductorMode = canManageRooms && roomKind !== "private";
 
   const sorted = useMemo(
@@ -398,6 +403,7 @@ export function MembersPanel({
       if (
         loadedRoomId !== roomId ||
         !canManageRooms ||
+        roomExternalContext ||
         !supportsVisibilityMutation(roomKind) ||
         visibilityBusy
       ) {
@@ -463,6 +469,7 @@ export function MembersPanel({
       refresh,
       loadedRoomId,
       roomDiscoverable,
+      roomExternalContext,
       roomId,
       roomKind,
       supportsRoomDiscoverability,
@@ -617,6 +624,7 @@ export function MembersPanel({
               label={roomLabel}
               kind={roomKind}
               discoverable={roomDiscoverable}
+              externalContext={roomExternalContext}
               supportsRoomDiscoverability={supportsRoomDiscoverability}
               conductorMode={conductorMode}
               canEdit={canEditRoom}
@@ -738,6 +746,7 @@ function RoomSettingsSection({
   label,
   kind,
   discoverable,
+  externalContext,
   supportsRoomDiscoverability,
   conductorMode,
   canEdit,
@@ -753,6 +762,7 @@ function RoomSettingsSection({
   readonly label: string;
   readonly kind: RoomKind;
   readonly discoverable: boolean;
+  readonly externalContext: boolean;
   readonly supportsRoomDiscoverability: boolean;
   readonly conductorMode: RoomConductorMode;
   readonly canEdit: boolean;
@@ -770,7 +780,9 @@ function RoomSettingsSection({
     setDraft(label);
   }, [label]);
 
-  const visibility = kind !== "open" ? "private" : discoverable ? "public" : "external";
+  const visibility = externalContext
+    ? "linked-external"
+    : kind !== "open" ? "private" : discoverable ? "public" : "external";
 
   return (
     <div
@@ -840,7 +852,9 @@ function RoomSettingsSection({
           </fieldset>
         ) : (
           <span className="text-xs text-foreground" data-testid="members-panel-visibility">
-            {visibility === "public"
+            {visibility === "linked-external"
+              ? "External — permanent; the linked Genie is limited to this room."
+              : visibility === "public"
               ? "Public 🌐"
               : visibility === "external"
                 ? "External — public access, hidden from discovery"

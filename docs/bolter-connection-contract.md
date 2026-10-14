@@ -13,10 +13,14 @@ credentials by server, Human, and connection. The browser receives a validated
 sign-in link and code, never provider credentials or a local filesystem path.
 
 Creating a linked room selects an observed Bolter conversation, a Genie, and
-explicit model sponsorship. It creates a fresh private room with an external
-context restriction. Connecting does not expose another room's history or make
+explicit model sponsorship. It creates a fresh room classified as External, with
+restricted membership and a permanent external context restriction. Connecting does not expose another room's history or make
 the room publicly discoverable. Room Members contains the link's management
 controls. The room's privacy boundary and transcript survive disconnection.
+Linked rooms appear as normal room entries in Groups. Their External classification
+is read-only: Genies can use only this room's context, and the room cannot be
+switched to Private or Public. This classification does not grant public-by-ID
+access or self-join permission.
 
 External sender attribution is distinct from the sponsoring Human and from
 execution authority. Incoming text is untrusted content. External turns use the
@@ -41,6 +45,9 @@ Starting a process reports Receiver running. Listening requires a recognized
 provider packet to have reached durable storage. A blocked or failed queue drain
 reports Delivery needs attention and retains the queued batch. These states do
 not assert that every message has completed a Genie turn.
+Creating the linked room refreshes the Human's live room subscriptions and
+catalogue before the receiver starts, so the open Desktop can receive its first
+message and completion updates without reconnecting.
 
 Only exact, currently authorized text is released for sending. Ambiguous provider
 results remain uncertain and are not automatically retried. Check the external

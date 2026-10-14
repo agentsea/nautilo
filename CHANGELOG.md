@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Bolter-linked rooms update their creator's live room subscriptions before
+  receiving messages. They appear as External rooms under Groups, with permanent
+  room-only Genie context and read-only visibility controls.
+
 - Unknown Bolter events, including profile requests, are logged locally and
   ignored so later messages can reach their linked room. Profile support remains
   deferred; message and sender validation are unchanged.

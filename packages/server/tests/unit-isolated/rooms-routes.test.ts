@@ -517,6 +517,7 @@ describe("rooms routes (M065)", () => {
         lastMessageAt: null,
         unreadCount: 0,
         kind: "private",
+        externalContext: true,
         parentRoomId: null,
         threadRootMessageId: null,
         roster: rosterA,
@@ -545,6 +546,8 @@ describe("rooms routes (M065)", () => {
     const withRoster = body.rooms.find((r) => r.id === UUID_A);
     const emptyRoster = body.rooms.find((r) => r.id === UUID_B);
     expect(withRoster?.roster).toEqual(rosterA);
+    expect(withRoster).toMatchObject({ externalContext: true });
+    expect(emptyRoster).not.toHaveProperty("externalContext");
     // An explicitly-empty roster is preserved (not dropped) so the explorer
     // can distinguish "loaded, zero members" from "not loaded".
     expect(emptyRoster?.roster).toEqual([]);
@@ -2197,6 +2200,25 @@ describe("D194 — room visibility flip", () => {
       newKind: "private",
       discoverable: true,
     });
+  });
+
+  test("POST visibility reports the permanent external boundary without publishing a change", async () => {
+    updateRoomVisibilityMock.mockRejectedValueOnce(
+      new trustModule.MembershipOpError("external_room_visibility_immutable"),
+    );
+    const app = makeApp("owner", MANAGER_ACTOR, MANAGER_USER);
+    const res = await app.inject({
+      method: "POST", url: `/api/rooms/${UUID_A}/visibility`,
+      payload: { public: true, discoverable: false },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json<{ error: string; code: string }>()).toEqual({
+      error: "External Room context is permanent", code: "external_room_visibility_immutable",
+    });
+    expect(writeSecurityAuditEventMock).not.toHaveBeenCalled();
+    expect(convergeHumanRoomCatalogsMock).not.toHaveBeenCalled();
+    expect(publishRoomMembersChangedMock).not.toHaveBeenCalled();
+    await app.close();
   });
 
   test("POST visibility does not audit an idempotent private request", async () => {
