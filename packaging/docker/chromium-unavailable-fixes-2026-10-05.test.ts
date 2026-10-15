@@ -10,9 +10,11 @@ const fixture = read("fixtures/chromium-unavailable-fixes-2026-10-05.json") as {
   architectures: Record<Architecture, Tuple[]>; renewals: Record<Architecture, Tuple[]>;
 };
 const advisories = new Set(fixture.architectures["linux/amd64"].map(tuple => tuple[1]));
-const decisions = (read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] })
+const decisions = (read("fixtures/server-policy-before-chromium-upgrade-2026-10-15.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] })
   .exceptions.filter(entry => fixture.architectures["linux/amd64"].some(tuple =>
-    tuple[1] === entry.advisoryId && tuple[2] === entry.packageName && tuple[3] === entry.installedVersion && tuple[4] === entry.severity));
+    tuple[1] === entry.advisoryId && tuple[2] === entry.packageName && tuple[3] === entry.installedVersion && tuple[4] === entry.severity))
+  // Preserve this observation's upstream floor, not a later Debian metadata refresh.
+  .map(entry => ({ ...entry, unavailableFix: { ...entry.unavailableFix!, fixedVersion: "154.0.8037.97" } }));
 const digest = `sha256:${"a".repeat(64)}`;
 const evaluatedAt = "2026-10-05T10:40:00Z";
 
