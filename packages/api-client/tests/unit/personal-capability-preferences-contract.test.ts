@@ -51,13 +51,13 @@ describe("personal capability preferences client contract", () => {
     })).toEqual(response);
     expect(calls).toEqual([
       {
-        url: `${BASE}/api/account/capability-preferences`,
+        url: `${BASE}/api/account/capability-preferences?include=imageUnderstanding`,
         method: "GET",
         body: undefined,
         authorization: "Bearer human-session",
       },
       {
-        url: `${BASE}/api/account/capability-preferences`,
+        url: `${BASE}/api/account/capability-preferences?include=imageUnderstanding`,
         method: "PUT",
         body: { expectedRevision: 2, overrides: {} },
         authorization: "Bearer human-session",

@@ -1,3 +1,4 @@
+import { failImageAssistance } from "../../src/executors/image-assistance";
 import { describe, expect, test } from "bun:test";
 import { AIMessage } from "@langchain/core/messages";
 import { attributeImageAssistance, imageAssistanceHistory, imageAssistanceObservation, retainedImageAssistance } from "../../src/executors/image-assistance";
@@ -31,4 +32,15 @@ describe("retained image observations", () => {
     expect(protectedPayload.sensitiveMetadata?.["imageAssistance"]).toEqual({ status: "completed", modelId: "model-a", modelDisplayName: "Model A", attachmentIds: ["image-a"] });
     expect(JSON.stringify(metadata)).not.toContain(result.observations);
   });
+});
+
+
+test("lost image-result persistence explains safe recovery without misreporting a read failure", () => {
+  const signal = new AbortController().signal;
+  expect(() => failImageAssistance(new Error("private storage error"), signal, "save"))
+    .toThrow("will not be generated again automatically");
+  expect(() => failImageAssistance(new Error("private storage error"), signal, "save"))
+    .not.toThrow("private storage error");
+  const abort = new AbortController(); abort.abort();
+  expect(() => failImageAssistance(new Error("storage"), abort.signal, "save")).toThrow();
 });

@@ -493,7 +493,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -528,7 +528,11 @@ async function invokeOnceWithShortRetries(
         endpoint,
         signal: llmCallConfig.signal,
         hasObservedProviderWork: () => hasAssistantVisibleOutputForCurrentTurn(agentId),
-        invoke: () => invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress),
+        invoke: async () => {
+          const response = await invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress);
+          attemptPolicyOptions.validateResponse?.(response);
+          return response;
+        },
       });
     } catch (error) {
       const personalAttemptError = error instanceof PersonalAttemptInvocationError ? error : undefined;
@@ -578,7 +582,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -791,6 +795,8 @@ export async function invokeChatModelWithFallback(
   laneKey: string | null,
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
+    /** Producer validation runs before settling a buffered response as usable. */
+    validateResponse?: (response: AIMessage) => void;
     /** Exact initiating Human; separate from the Agent owner's model policy. */
     fundingHumanUserId?: string;
     /** Trusted request-local authority for foreground funding and credential injection. */
@@ -850,7 +856,14 @@ export async function invokeChatModelWithFallback(
   const personalFunding = fundingSession?.kind === "personal";
   const contentPrivateDiagnostics = hasContentPrivateModelDiagnostics()
     || fundingSession?.contentPrivateDiagnostics === true;
-  if (personalFunding && messagesContainImageInputs(messages)) {
+  const admittedPersonalNativeVision = personalFunding
+    && fundingSession.workload === undefined
+    && fundingSession.admission?.modelId === initialModelId
+    && fundingSession.admission.binding.kind === "personal"
+    && modelSupportsInput(initialModelId, "image");
+  if (personalFunding && messagesContainImageInputs(messages)
+    && !admittedPersonalNativeVision
+    && (fundingSession.workload !== "image_assistance" || tools.length !== 0)) {
     throw new ModelUnavailableError(initialModelId, "unsupported-capability", "personal funding supports foreground text chat only");
   }
   // Direct callers receive the same model-tool fence as agentNode. The
@@ -1084,6 +1097,7 @@ export async function invokeChatModelWithFallback(
                 ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
                 funding: surplusFunding,
                 hasDeliveredOutput: attemptVisibility.hasVisibleOutput,
+                ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
                 invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
                   model,
                   selectedMessages,
@@ -1198,6 +1212,7 @@ export async function invokeChatModelWithFallback(
               callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
               ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
+              ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
             },
             endpoint,
           );

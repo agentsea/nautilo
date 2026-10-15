@@ -25,6 +25,11 @@ import {
   type ModelFundingDeps,
 } from "../../src/lib/model-funding";
 
+const EMPTY_IMAGE_ASSISTANCE_PREFERENCES = Object.freeze({
+  revision: 0,
+  overrides: Object.freeze({}),
+});
+
 describe("GET /api/config/models controls", () => {
   afterEach(() => {
     resetRuntimeModelCatalog();
@@ -164,6 +169,7 @@ describe("caller-scoped model availability", () => {
           if (input.workload === "image_assistance") auxiliary.push(input.modelId);
           return resolveModelFunding(input, fundingDeps);
         },
+        readImageAssistancePreferences: async () => EMPTY_IMAGE_ASSISTANCE_PREFERENCES,
       });
     expect(result.selectableInThisRelease).toBe(true);
     expect(result.model.capabilities.vision).toBe(false);
@@ -171,6 +177,38 @@ describe("caller-scoped model availability", () => {
     expect(result.funding?.kind).toBe("personal");
     expect(auxiliary.length).toBeGreaterThan(0);
     expect(JSON.stringify(result.model)).not.toContain("synthetic-key");
+  });
+
+  test("keeps a personal-funded text model selectable when image assistance preferences are unavailable", async () => {
+    const result = await resolveCallerModelAvailability(
+      "human-1",
+      "openrouter:moonshotai/kimi-k2.6",
+      { purpose: "chat", env: {} },
+      {
+        resolveFunding: async (input) => ({
+          kind: "personal",
+          humanUserId: input.humanUserId,
+          payerHumanId: input.humanUserId,
+          credentialId: "credential-1",
+          credentialRevision: 1,
+          modelId: input.modelId,
+          providerRoute: "openrouter",
+          workload: input.workload,
+        }),
+        readImageAssistancePreferences: async () => {
+          throw new Error("synthetic preference store unavailable");
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      selectableInThisRelease: true,
+      funding: { kind: "personal" },
+      model: {
+        availability: "selectable",
+        imageInput: "unavailable",
+      },
+    });
   });
 
   test("a personal key cannot make an image-output model selectable for chat", async () => {
@@ -292,6 +330,7 @@ describe("caller-scoped model availability", () => {
           providerRoute: "openrouter",
           workload: input.workload,
         }),
+        readImageAssistancePreferences: async () => EMPTY_IMAGE_ASSISTANCE_PREFERENCES,
       },
     );
     expect(result.selectableInThisRelease).toBe(true);

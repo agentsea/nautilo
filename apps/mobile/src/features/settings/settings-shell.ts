@@ -90,7 +90,7 @@ export function createSettingsLanding(input: SettingsLandingInput): SettingsLand
     accountRows.push(
       { id: "security", label: "PIN, password & recovery", route: "/settings/security", accessibilityHint: "Opens your PIN, password, and separate recovery-code settings." },
       { id: "provider-keys", label: "API keys and subscriptions", route: "/settings/provider-keys", accessibilityHint: "Manages your personal provider keys and linked ChatGPT subscriptions." },
-      { id: "capability-models", label: "Capability models", route: "/settings/capability-models", accessibilityHint: "Chooses account-wide model preferences for your research, decisions, generated media and speech." },
+      { id: "capability-models", label: "Capability models", route: "/settings/capability-models", accessibilityHint: "Chooses account-wide model preferences for your research, decisions, image understanding, generated media and speech." },
       { id: "personal-costs", label: "Your costs", route: "/settings/personal-costs", accessibilityHint: "Reviews charges and estimates paid with your personal provider keys." },
       { id: "approvals", label: "Standing approvals", route: "/settings/approvals", accessibilityHint: "Opens your active standing tool approvals." },
       { id: "account-deletion", label: "Delete account", route: "/settings/account-deletion", accessibilityHint: "Opens permanent account deletion for this server." },

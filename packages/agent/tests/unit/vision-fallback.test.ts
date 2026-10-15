@@ -5,7 +5,7 @@ import {
 } from "../../src/chat/vision-fallback";
 import { getUsageContext } from "../../src/usage/usage-context";
 import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
-import type { createUniversalModel } from "../../src/providers/universal";
+import type { invokeChatModelWithFallback } from "../../src/utils/chat-model-invocation";
 
 const image = { type: "image" as const, attachmentId: "image-a", filename: "chart.png", mimeType: "image/png", base64: "YWJj" };
 const input = { humanUserId: "human-a", mainModelId: "openrouter:typesafe/jev-1.13", turnId: "turn-a", userText: "What is the total?", images: [image] };
@@ -18,12 +18,19 @@ function harness(response: BaseMessage | Error = new AIMessage("image-a: Total 1
       return callback({ usageFunding: { kind: "personal", humanUserId: "human-a", payerHumanId: "human-a", providerRoute: "openai", credentialId: "credential-a", credentialRevision: 1 }, personalCredential: { apiKey: "test-only-key" } });
     },
   };
-  const createModel = (async (_modelId: string, options: unknown) => ({ invoke: async (messages: unknown) => {
-    calls.push({ messages, options, usage: getUsageContext() });
-    if (response instanceof Error) throw response;
-    return response;
-  } })) as unknown as typeof createUniversalModel;
-  return { calls, assistance: { modelId: "openai:gpt-6-luna", fundingSession: session }, createModel };
+  const invoke = (async (messages, tools, modelId, _human, _agent, _lane, _config, options) => {
+    expect(tools).toEqual([]);
+    expect(options).toMatchObject({ modelFallbackMode: "none", sameModelRetryMode: "none", isolatedProgress: true });
+    return options!.fundingSession!.runAttempt(modelId, async (attempt) => {
+      calls.push({ messages, options: { personalCredential: attempt.personalCredential }, usage: { ...getUsageContext(), funding: attempt.usageFunding } });
+      if (response instanceof Error) throw response;
+      options?.validateResponse?.(response as AIMessage);
+      return { response: response as AIMessage, modelUsed: modelId };
+    }, "direct");
+  }) as typeof invokeChatModelWithFallback;
+  return { calls, assistance: { modelId: "openai:gpt-6-luna", fundingSession: session,
+    operationId: "image-assistance:job-a", preferenceRevision: 3 }, invoke };
+
 }
 
 describe("automatic image assistance", () => {

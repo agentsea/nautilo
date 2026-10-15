@@ -1281,6 +1281,15 @@ export const serverModelConfigSchema = z.object({
     }),
     decision: z.object({ operations: z.array(z.string()) }).nullable().optional(),
   })).optional(),
+  imageUnderstandingModel: z.string().nullable().optional().default(null),
+  effectiveImageUnderstandingModel: z.string().nullable().optional().default(null),
+  imageUnderstandingModels: z.array(z.object({
+    id: z.string(),
+    displayName: z.string(),
+    provider: z.string(),
+    available: z.boolean(),
+    unavailableReason: z.string().optional(),
+  })).optional().default([]),
   imageModel: z.string().nullable().optional().default(null),
   musicModel: z.string().nullable().optional().default(null),
   videoModel: z.string().nullable().optional().default(null),
@@ -4361,6 +4370,7 @@ export class NautiloApiClient {
         reflectionModel?: string;
         memoryReviewModel?: string | null;
         embeddingModel?: string | null;
+        imageUnderstandingModel?: string | null;
         imageModel?: string | null;
         musicModel?: string | null;
         videoModel?: string | null;
@@ -6100,7 +6110,7 @@ export class NautiloApiClient {
     options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<PersonalCapabilityPreferencesResponse> {
     return this.request({
-      path: "/api/account/capability-preferences",
+      path: "/api/account/capability-preferences?include=imageUnderstanding",
       auth: "session-fresh",
       schema: personalCapabilityPreferencesResponseSchema,
       defaultErrorPrefix: "GET /api/account/capability-preferences",
@@ -6115,7 +6125,7 @@ export class NautiloApiClient {
   ): Promise<PersonalCapabilityPreferencesResponse> {
     return this.request({
       method: "PUT",
-      path: "/api/account/capability-preferences",
+      path: "/api/account/capability-preferences?include=imageUnderstanding",
       auth: "session-fresh",
       body: replacePersonalCapabilityPreferencesRequestSchema.parse(input),
       schema: personalCapabilityPreferencesResponseSchema,
