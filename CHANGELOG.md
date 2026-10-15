@@ -16,6 +16,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   funding sources can run each helper and retain unavailable saved choices;
   independently shipped clients keep their compatible preference contract.
 
+- Server image builds include the shared Reflection payload sources required
+  by Workbench, so clean container builds can resolve Lattice's type imports.
+
 - The Room composer accepts PDFs from the paperclip or file drop through the
   same Room-scoped Workspace storage as existing document references. Text-only
   Genies can read PDF text locally, with page continuation and explicit visual
