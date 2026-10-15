@@ -107,6 +107,8 @@ const WORKBENCH_BUILD_PROFILE_PORTABILITY_INPUT = "packages/profile-portability"
 /** Workbench's Lattice dev dependency adds lattice-crypto's build task to Turbo's closure. */
 const WORKBENCH_BUILD_LATTICE_CRYPTO_INPUT =
   "packages/lattice-crypto" as const;
+/** Lattice payload types depend on Reflection's browser-safe subpath exports. */
+const WORKBENCH_BUILD_REFLECTION_INPUT = "packages/reflection" as const;
 /** Exact browser-safe Desktop source closure imported by Workbench. */
 const WORKBENCH_BUILD_DESKTOP_CONNECTION_INPUTS = [
   "apps/desktop/electron/server-target.ts",
@@ -308,6 +310,18 @@ describe("Dockerfile stage shape", () => {
   test("workbench-build stage derives from deps", () => {
     const w = byName.get("workbench-build");
     expect(w?.from).toBe("deps");
+  });
+
+  test("workbench-build includes Reflection payload sources before compilation", () => {
+    const workbench = byName.get("workbench-build");
+    expect(workbench).toBeDefined();
+    expect(stageContainsCopySource(workbench!.body, WORKBENCH_BUILD_REFLECTION_INPUT)).toBe(true);
+    expect(workbench!.body.indexOf(WORKBENCH_BUILD_REFLECTION_INPUT)).toBeLessThan(
+      workbench!.body.indexOf("bunx turbo run build"),
+    );
+    for (const entry of ["payload", "durable"]) {
+      expect(existsSync(join(REPO_ROOT, WORKBENCH_BUILD_REFLECTION_INPUT, "src", `${entry}.ts`))).toBe(true);
+    }
   });
 
   test("mobile-web-build derives from deps with only its audited source closure", () => {
