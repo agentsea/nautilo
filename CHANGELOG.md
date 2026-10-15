@@ -100,6 +100,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   on the search path.
 - Windows tests retain an event-loop reference while each test runs, allowing
   unref timers and test timeouts to settle instead of leaving a busy test process.
+- Packaged upgrades install Bolter lifecycle guards before withdrawing their
+  temporary trigger permission. Existing migration files and final restricted
+  database privileges remain unchanged.
+
 - Image understanding has independent administrator and personal model choices
   beside media generation settings. Text-only chats can use a qualified vision
   helper through their admitted direct or Surplus credentials. Costs separates
