@@ -3,6 +3,8 @@ import { createServer, type Socket } from "node:net";
 
 import {
   fetchCdpTargets,
+  methodSurfaceContractMismatch,
+  NAUTILO_CHATGPT_SURFACE,
   NAUTILO_COMPANION_OWNER_SURFACE,
   NAUTILO_DESKTOP_SURFACE,
   NAUTILO_FIRST_RUN_SURFACE,
@@ -29,6 +31,33 @@ describe("packaged Desktop preload smoke contract", () => {
     expect(NAUTILO_DESKTOP_SURFACE).toContain("encryptionRecovery");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("browserResearch");
     expect(NAUTILO_DESKTOP_SURFACE).toContain("uncontainedHostCommands");
+    expect(NAUTILO_DESKTOP_SURFACE).toContain("chatGPT");
+  });
+
+  test("pins the exact ChatGPT callback bridge without invoking it", () => {
+    expect(NAUTILO_CHATGPT_SURFACE).toEqual([
+      "cancel",
+      "prepare",
+      "receive",
+    ]);
+    expect(
+      methodSurfaceContractMismatch(
+        ["cancel", "prepare", "receive"],
+        ["function", "function", "function"],
+        NAUTILO_CHATGPT_SURFACE,
+      ),
+    ).toEqual({ undocumented: [], missing: [], nonFunctions: [] });
+    expect(
+      methodSurfaceContractMismatch(
+        ["prepare", "unexpected"],
+        ["string", "function"],
+        NAUTILO_CHATGPT_SURFACE,
+      ),
+    ).toEqual({
+      undocumented: ["unexpected"],
+      missing: ["cancel", "receive"],
+      nonFunctions: ["prepare"],
+    });
   });
 
   test("pins the exact companion owner bridge", () => {
