@@ -108,8 +108,8 @@ describe("envelopeFactsForArtifacts", () => {
     const r = envelopeFactsForArtifacts(scopeEnv);
     expect(r.ok).toBe(false);
     if (!r.ok) {
-      expect(r.reason).toContain("Artifact scope mode is not implemented yet");
-      expect(r.reason).toContain("M088 Phase 4");
+      expect(r.reason).toContain("Workspace artifacts are unavailable in an isolated memory scope");
+      expect(r.reason).toContain("in_background");
     }
   });
 

@@ -100,6 +100,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   on the search path.
 - Windows tests retain an event-loop reference while each test runs, allowing
   unref timers and test timeouts to settle instead of leaving a busy test process.
+- The Room composer accepts PDFs from the paperclip or file drop through the
+  same Room-scoped Workspace storage as existing document references. Text-only
+  Genies can read PDF text locally, with page continuation and explicit visual
+  limitations. Workspace PDFs can be converted locally to text, Markdown, or
+  Word without generated scripts. Text conversion preserves neither layout nor
+  annotations and refuses to silently produce an incomplete document.
+
 - Personal Memory review, reflection and summarization models can be selected
   independently. Memory processing uses a member's admitted funding only when
   current input evidence proves that member's exclusive authorship and audience;

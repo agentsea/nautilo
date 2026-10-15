@@ -44,7 +44,7 @@ const inScopeSchema = z.object({
 type InScopeArgs = z.infer<typeof inScopeSchema>;
 
 const IN_SCOPE_DESCRIPTION =
-  "Have a helper do a narrow task with only the tools you list and none of your private memory (scoped). Runs in the background; I'll report back to this chat when it's done. After calling this, tell the user the work is running in the background.";
+  "Have a helper do a narrow task with only the tools you list and none of your private memory (scoped). Runs in the background; I'll report back to this chat when it's done. This isolated scope cannot access Workspace artifacts. For an existing Room document, use file.read or convert directly, or in_background with the same Room context; do not use in_scope. After calling this, tell the user the work is running in the background.";
 
 export function createInScopeTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
