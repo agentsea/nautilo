@@ -342,6 +342,8 @@ COPY packages/model-capabilities   packages/model-capabilities
 # is not enough.
 COPY packages/profile-portability  packages/profile-portability
 COPY packages/realtime-client      packages/realtime-client
+# Lattice payload types import Reflection's browser-safe payload/durable exports.
+COPY packages/reflection           packages/reflection
 COPY packages/security             packages/security
 COPY packages/types                packages/types
 COPY packages/vault                packages/vault
