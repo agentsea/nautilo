@@ -20,6 +20,7 @@ import {
   formatMeasuredUsage,
   formatPercent,
   formatUsd,
+  providerOperationLabel,
   type ModelCostBarRow,
 } from "./costs-view-model";
 
@@ -497,17 +498,6 @@ function ProviderCostList({
       </table>
     </div>
   );
-}
-
-function providerOperationLabel(
-  provider: string,
-  operation: string,
-): string {
-  if (provider === "browser_use" && operation === "hosted_read")
-    return "Browser Use · Hosted read";
-  return `${provider} · ${operation}`
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 interface BarListRow {

@@ -4,7 +4,7 @@ import type { ChatMultimodalImagePart, ImageAssistanceSummary } from "@nautilo/t
 import { normalizeAcceptedChatImageMime } from "@nautilo/attachments";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
 import { scanContent } from "@nautilo/security";
-import { createUniversalModel } from "../providers/universal";
+import { invokeChatModelWithFallback } from "../utils/chat-model-invocation";
 import { resolveCatalogModel } from "../config/resolved-catalog";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
 import { runWithUsageContext } from "../usage/usage-context";
@@ -18,7 +18,7 @@ export interface ImageAssistanceResult extends ImageAssistanceSummary {
 export class ImageAssistanceError extends Error {
   readonly code = "image_assistance_failed" as const;
   constructor(stage: "read" | "save" = "read") {
-    super(stage === "save" ? "The image turn could not be saved. Retry the turn or reattach the images."
+    super(stage === "save" ? "The image result could not be saved. It will not be generated again automatically. Send a new message or reattach the images to try again."
       : "The images could not be read. They are still in this conversation. Retry, reattach them, or choose a model with image input.");
     this.name = "ImageAssistanceError";
   }
@@ -61,10 +61,11 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
   agentId?: string;
   replyContext?: string;
   signal?: AbortSignal;
-  assistance?: { modelId: string; fundingSession: ForegroundChatFundingSession } | null;
+  assistance?: { modelId: string; fundingSession: ForegroundChatFundingSession;
+    operationId: string; preferenceRevision: number } | null;
   /** Only results read through the current authorized conversation scope may be supplied. */
   retainedResults?: readonly ImageAssistanceResult[];
-  createModel?: typeof createUniversalModel;
+  invoke?: typeof invokeChatModelWithFallback;
 }): Promise<ImageAssistanceResult | null> {
   if (args.images.length === 0 || modelSupportsInput(args.mainModelId, "image")) return null;
   args.signal?.throwIfAborted();
@@ -88,25 +89,22 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
     parts.push({ type: "image_url", image_url: { url: `data:${mime};base64,${image.base64}` } });
   }
   try {
-    const response = await assistance.fundingSession.runAttempt(modelId, async (attempt) => {
-      args.signal?.throwIfAborted();
-      const model = await (args.createModel ?? createUniversalModel)(modelId, {
-        ...(attempt.personalCredential ? { personalCredential: attempt.personalCredential } : {}),
-      });
-      return runWithUsageContext({
-        callType: "other", userId: args.humanUserId, roomId: args.roomId ?? null,
-        funding: attempt.usageFunding,
-        metadata: { workload: "image_assistance", turnId: args.turnId, agentId: args.agentId },
-      }, () => model.invoke([new HumanMessage({ content: parts })], {
-        ...(args.signal ? { signal: args.signal } : {}),
-      }) as Promise<BaseMessage>);
-    }, "direct");
+    const { response, modelUsed } = await runWithUsageContext({
+      callType: "image_assistance", userId: args.humanUserId, roomId: args.roomId ?? null,
+      metadata: { operationId: assistance.operationId, turnId: args.turnId,
+        agentId: args.agentId, preferenceRevision: assistance.preferenceRevision },
+    }, () => (args.invoke ?? invokeChatModelWithFallback)(
+      [new HumanMessage({ content: parts })], [], modelId, args.humanUserId,
+      args.agentId ?? null, null, { ...(args.signal ? { signal: args.signal } : {}) }, {
+        fundingHumanUserId: args.humanUserId, fundingSession: assistance.fundingSession,
+        modelFallbackMode: "none", sameModelRetryMode: "none", isolatedProgress: true,
+        reasoningOutput: false,
+        validateResponse: (response) => { imageObservations(response); },
+      },
+    ));
     args.signal?.throwIfAborted();
-    if (!AIMessage.isInstance(response)) throw new ImageAssistanceError();
-    const text = typeof response.content === "string" ? response.content : response.content.map((block) =>
-      typeof block === "string" ? block : "text" in block ? String(block.text) : "").join("");
-    const observations = text.trim();
-    if (!observations || !scanContent(observations, "attachment-vision-summary").safe) throw new ImageAssistanceError();
+    if (modelUsed !== modelId) throw new ImageAssistanceError();
+    const observations = imageObservations(response);
     return {
       status: "completed", modelId, turnId: args.turnId,
       modelDisplayName: resolveCatalogModel(modelId).displayName,
@@ -118,4 +116,14 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
     // Provider errors may contain submitted image content or credential details.
     throw new ImageAssistanceError();
   }
+}
+
+/** Validate buffered image evidence before accepting it as a usable answer. */
+function imageObservations(response: BaseMessage): string {
+  if (!AIMessage.isInstance(response) || response.tool_calls?.length) throw new ImageAssistanceError();
+  const text = typeof response.content === "string" ? response.content : response.content.map((block) =>
+    typeof block === "string" ? block : block.type === "text" && "text" in block ? String(block.text) : "").join("");
+  const observations = text.trim();
+  if (!observations || !scanContent(observations, "attachment-vision-summary").safe) throw new ImageAssistanceError();
+  return observations;
 }

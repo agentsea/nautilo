@@ -78,7 +78,7 @@ describe("model attempt replay safety", () => {
         workId: "memory-work-1",
         attemptIds: ["memory-attempt-1"],
       },
-      ...(["room_stenographer", "room_event_compaction", "room_reflection"] as const).map((callType) => ({
+      ...(["room_stenographer", "room_event_compaction", "room_reflection", "image_assistance"] as const).map((callType) => ({
         kind: "operation" as const,
         roomId: "11111111-1111-4111-8111-111111111111",
         callType,
@@ -113,5 +113,31 @@ describe("model attempt replay safety", () => {
     expect(refusalQuery.params).toContain("provider_refused");
     expect(refusalQuery.params).toContain("no_sellers_for_model");
     expect(refusalQuery.params).toContain("pre_service_refusal");
+  });
+
+  test("scopes image assistance by operation and never replays a succeeded wire without retained output", async () => {
+    const identity: ModelAttemptReplayIdentity = {
+      kind: "operation",
+      roomId: "11111111-1111-4111-8111-111111111111",
+      callType: "image_assistance",
+      operationId: "image-assistance:turn-a:digest-a",
+    };
+    const succeeded = queryDb([row("succeeded")]);
+    expect(await resolveModelAttemptReplaySafety(identity, {
+      db: succeeded.db,
+      knownNonusableResult: true,
+    })).toEqual({
+      decision: "block_unknown",
+      blockingAttemptId: "attempt-succeeded",
+    });
+    const query = succeeded.query();
+    expect(query.params).toContain(identity.roomId);
+    expect(query.params).toContain("image_assistance");
+    expect(query.sql).toContain("->>'operationId'");
+    expect(query.params).toContain(identity.operationId);
+
+    const refusal = queryDb([row("failed", "pre_service_refusal")]);
+    expect(await resolveModelAttemptReplaySafety(identity, { db: refusal.db }))
+      .toEqual({ decision: "allow" });
   });
 });

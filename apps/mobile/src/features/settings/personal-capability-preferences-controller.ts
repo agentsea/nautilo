@@ -1,5 +1,7 @@
 import type {
+  PersonalCapabilityModelReadiness,
   PersonalCapabilityPreferencesResponse,
+  PersonalCapabilityPreferenceProjection,
   PersonalCapabilityRole,
   ReplacePersonalCapabilityPreferencesRequest,
 } from "@nautilo/api-client/browser";
@@ -21,6 +23,102 @@ export interface PersonalCapabilityPreferencesApi {
 export interface PersonalCapabilityPreferenceDraft {
   readonly role: PersonalCapabilityRole;
   readonly modelId: string | null;
+}
+
+export const PERSONAL_CAPABILITY_INHERIT = "__inherit__";
+
+export interface PersonalCapabilityPickerOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
+  readonly disabled?: boolean;
+}
+
+const IMAGE_FUNDING_HELPER = "The helper follows the current chat funding and the main model's privacy requirements.";
+
+function imageFundingAvailability(readiness: PersonalCapabilityModelReadiness): string {
+  if (readiness.status !== "ready") return readiness.reason ?? "Unavailable now";
+  if (readiness.fundingSource === "server") return "Server-funded chats only";
+  if (readiness.fundingSource === "personal") return "Personal-funded chats only";
+  return "Both funding sources";
+}
+
+export function personalCapabilitySelectionDisplayName(
+  capability: PersonalCapabilityPreferenceProjection,
+): string {
+  return capability.role === "imageUnderstanding"
+    && capability.selection.source === "inherited"
+    && capability.selection.modelId === null
+    ? "Automatic — depends on chat funding"
+    : capability.selection.displayName;
+}
+
+export function personalCapabilityDescription(
+  capability: PersonalCapabilityPreferenceProjection,
+): string {
+  return capability.role === "imageUnderstanding"
+    ? `${capability.description} ${IMAGE_FUNDING_HELPER}`
+    : capability.description;
+}
+
+export function personalCapabilityReadinessLabel(
+  capability: PersonalCapabilityPreferenceProjection,
+): string {
+  if (capability.role !== "imageUnderstanding") {
+    return capability.readiness.status === "ready"
+      ? capability.readiness.fundingSource === "personal"
+        ? `Ready · Your ${capability.readiness.providerRoute} credential`
+        : `Ready · Server ${capability.readiness.providerRoute} credential`
+      : capability.readiness.reason ?? "Unavailable";
+  }
+  const availability = imageFundingAvailability(capability.readiness);
+  return capability.readiness.status === "ready" && capability.readiness.reason
+    ? `${availability} · ${capability.readiness.reason}`
+    : availability;
+}
+
+export function personalCapabilityPickerOptions(
+  capability: PersonalCapabilityPreferencesResponse["capabilities"][number],
+  query: string,
+  savedModelId?: string | null,
+): PersonalCapabilityPickerOption[] {
+  const needle = query.trim().toLocaleLowerCase();
+  const retainedOption = savedModelId && !capability.options.some((option) => option.modelId === savedModelId)
+    ? [{
+        id: savedModelId,
+        label: capability.selection.modelId === savedModelId
+          ? capability.selection.displayName
+          : savedModelId,
+        description: `${savedModelId} · Retained unavailable choice`,
+        disabled: true,
+      }]
+    : [];
+  const selectionDisplayName = personalCapabilitySelectionDisplayName(capability);
+  return [
+    {
+      id: PERSONAL_CAPABILITY_INHERIT,
+      label: `Inherit · ${capability.selection.source === "inherited" ? selectionDisplayName : "workflow default"}`,
+      description: capability.role === "imageUnderstanding" && capability.readiness.reason
+        ? `Follow the current workflow default. ${capability.readiness.reason}`
+        : "Follow the current workflow default.",
+    },
+    ...retainedOption,
+    ...capability.options.filter((option) => !needle || [option.modelId, option.displayName, option.provider]
+      .some((value) => value.toLocaleLowerCase().includes(needle)))
+      .map((option) => ({
+        id: option.modelId,
+        label: option.displayName,
+        description: `${option.modelId} · ${option.provider} · ${capability.role === "imageUnderstanding"
+          ? `${imageFundingAvailability(option.readiness)}${option.readiness.status === "ready" && option.readiness.reason
+            ? ` · ${option.readiness.reason}`
+            : ""}`
+          : option.readiness.status === "ready"
+            ? option.readiness.fundingSource === "personal"
+              ? `Your ${option.readiness.providerRoute} credential`
+              : `Server ${option.readiness.providerRoute} credential`
+            : option.readiness.reason ?? "Unavailable now"}`,
+      })),
+  ];
 }
 
 export interface PersonalCapabilityPreferencesController {

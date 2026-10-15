@@ -10,6 +10,7 @@ const AGENT = "22222222-2222-4222-8222-222222222222";
 const ROOM = "33333333-3333-4333-8333-333333333333";
 const MODEL = "openrouter:moonshotai/kimi-k2.6";
 const FALLBACK = "openrouter:z-ai/glm-5.2";
+const CHINA_ROUTED_MODEL = "venice:z-ai-glm-5-3";
 
 let switchOn = true;
 let capabilities = ["use_personal_provider_credentials"];
@@ -67,7 +68,7 @@ const assertInvoke = mock(async (input: AgentInvocationAdmissionInput) => {
 
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
-  resolveRetainedModels: (ids: string[]) => ids.map((id) => ({ id, availability: "missing-key" })),
+  resolveRetainedModels: actualAgent.resolveRetainedModels,
   getEligibleModels: () => [MODEL, FALLBACK].map((id) => ({ id, availability: "missing-key" })),
   modelHasRunnableCredentials: (modelId: string, env: NodeJS.ProcessEnv) =>
     modelId.startsWith("openrouter:") && Boolean(env["OPENROUTER_API_KEY"]),
@@ -113,6 +114,7 @@ mock.module("../../src/lib/model-funding", () => ({
   resolveServerFundingRoute: (modelId: string) => actualAgent.modelHasRunnableCredentials(modelId, process.env)
     ? modelId.split(":", 1)[0] : null,
   withAdmittedPersonalCredential: (decision: Record<string, unknown>, run: (credential: { apiKey: string }) => Promise<unknown>, deps: unknown, initial: Record<string, unknown>) => withKey(decision, key => run({ apiKey: key }), deps, initial),
+  withAdmittedPersonalProviderKey: withKey,
 }));
 
 mock.module("../../src/lib/caller-task-model-context", () => ({
@@ -134,6 +136,7 @@ const {
   isOwnPrivateGenieRoom,
 } =
   await import("../../src/lib/foreground-chat-funding");
+const { resolveCallerImageInput } = await import("../../src/lib/image-assistance");
 
 const input = {
   humanUserId: HUMAN,
@@ -178,6 +181,50 @@ describe("foreground chat funding admission", () => {
     expect(openForegroundChatFundingSession({ ...input, modelId: "openai:gpt-image-2" }))
       .rejects.toMatchObject({ code: "unsupported_workload" });
     expect(resolveFunding).not.toHaveBeenCalled();
+  });
+  test("subscription funding keeps native vision but cannot borrow a separately funded helper", async () => {
+    const modelId = "openai:gpt-5.6-luna";
+    const catalog = actualAgent.resolveCatalogModel(modelId, { env: {} });
+    const funding = {
+      kind: "personal" as const,
+      humanUserId: HUMAN,
+      payerHumanId: HUMAN,
+      modelId,
+      workload: "foreground_text_chat" as const,
+      providerRoute: "openai-chatgpt",
+      credentialId: "synthetic-subscription",
+      credentialRevision: 3,
+    };
+
+    expect(await resolveCallerImageInput({ humanUserId: HUMAN, modelId, funding })).toBe("direct");
+    expect(await resolveCallerImageInput({ humanUserId: HUMAN, modelId, funding }, {
+      resolveCatalog: () => ({ ...catalog, input: ["text"] }),
+      readPreferences: async () => {
+        throw new Error("subscription helper exclusion must precede preference projection");
+      },
+    })).toBe("unavailable");
+  });
+  test("enforces current operator consent for a signed China-routed foreground model", async () => {
+    const previous = process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"];
+    try {
+      delete process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"];
+      expect(await openForegroundChatFundingSession({ ...input, modelId: CHINA_ROUTED_MODEL })
+        .then(() => null, (error: unknown) => error)).toMatchObject({ code: "unsupported_provider" });
+      expect(resolveFunding).not.toHaveBeenCalled();
+
+      process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] = "true";
+      const session = await openForegroundChatFundingSession({ ...input, modelId: CHINA_ROUTED_MODEL });
+      expect(session?.kind).toBe("personal");
+      expect(resolveFunding).toHaveBeenCalledTimes(1);
+
+      delete process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"];
+      expect(await session!.runAttempt(CHINA_ROUTED_MODEL, async () => "must not run")
+        .then(() => null, (error: unknown) => error)).toMatchObject({ code: "unsupported_provider" });
+      expect(resolveFunding).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"];
+      else process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] = previous;
+    }
   });
   test("pins the original Human and credential across a different fallback model", async () => {
     const session = await openForegroundChatFundingSession(input);

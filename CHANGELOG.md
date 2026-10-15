@@ -7,6 +7,15 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Image understanding has independent administrator and personal model choices
+  beside media generation settings. Text-only chats can use a qualified vision
+  helper through their admitted direct or Surplus credentials. Costs separates
+  helper attempts from the main reply, including failures and uncertain charges;
+  retained observations and accepted funding survive recovery without automatic
+  regeneration of a previously dispatched helper call. Settings show which chat
+  funding sources can run each helper and retain unavailable saved choices;
+  independently shipped clients keep their compatible preference contract.
+
 - Server images retire obsolete Chromium security decisions after installing
   the supported update. Remaining source-fixed but binary-unavailable findings
   require fresh authenticated package evidence and short-lived exact approvals.

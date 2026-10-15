@@ -54,7 +54,7 @@ export interface ForegroundChatFundingSession {
   /** Trusted request-local diagnostics policy; independent of who pays. Never serialized. */
   readonly contentPrivateDiagnostics?: true;
   /** Server-admitted operation family, never accepted from serialized input. */
-  readonly workload?: "research" | "decision" | "memory";
+  readonly workload?: "research" | "decision" | "memory" | "image_assistance";
   /** Independently admitted child research/decision operations. Never serialized. */
   readonly capabilityFunding?: CapabilityFundingSession;
   /**

@@ -7,7 +7,10 @@ import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
 import {
   createPersonalCapabilityPreferencesController,
+  personalCapabilityDescription,
   personalCapabilityPreferenceErrorMessage,
+  personalCapabilityReadinessLabel,
+  personalCapabilitySelectionDisplayName,
   type PersonalCapabilityPreferencesController,
 } from "@/features/settings/personal-capability-preferences-controller";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
@@ -69,7 +72,7 @@ export default function CapabilityModelsScreen() {
     <View style={styles.container}>
       <Stack.Screen options={{ header: () => <AppBar title="Capability models" left={<AppBarBackButton onPress={goBack} />} /> }} />
       <Screen edgeTop={false} contentStyle={styles.content}>
-        <Text style={styles.helper}>These account-wide choices apply to your own research, decisions, eligible personal Memory processing, generated media and speech. Genie and Room model settings stay separate.</Text>
+        <Text style={styles.helper}>These account-wide choices apply to your own research, decisions, image understanding, eligible personal Memory processing, generated media and speech. Genie and Room model settings stay separate.</Text>
         {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before changing capability models.</SettingsStatus> : null}
         {state.loading && !state.data ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading capability models" /> : null}
         {state.loadError ? <SettingsStatus tone="error">{personalCapabilityPreferenceErrorMessage(state.loadError)}</SettingsStatus> : null}
@@ -85,13 +88,10 @@ export default function CapabilityModelsScreen() {
           >
             <View style={styles.rowCopy}>
               <Text style={styles.rowLabel}>{capability.label}</Text>
-              <Text style={styles.rowDetail}>{capability.selection.displayName} · {capability.selection.source === "personal" ? "Your choice" : "Inherited"}</Text>
+              <Text style={styles.rowDetail}>{personalCapabilitySelectionDisplayName(capability)} · {capability.selection.source === "personal" ? "Your choice" : "Inherited"}</Text>
+              {capability.role === "imageUnderstanding" ? <Text style={styles.rowDetail}>{personalCapabilityDescription(capability)}</Text> : null}
               <Text style={[styles.readiness, capability.readiness.status !== "ready" && styles.warning]}>
-                {capability.readiness.status === "ready"
-                  ? capability.readiness.fundingSource === "personal"
-                    ? `Ready · Your ${capability.readiness.providerRoute} credential`
-                    : `Ready · Server ${capability.readiness.providerRoute} credential`
-                  : capability.readiness.reason ?? "Unavailable"}
+                {personalCapabilityReadinessLabel(capability)}
               </Text>
             </View>
             <Text style={styles.chevron}>›</Text>

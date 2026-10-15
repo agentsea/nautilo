@@ -24,6 +24,13 @@ const QUALIFIED_SURPLUS_ROUTE = {
   maxContextTokens: 100_000,
   maxOutputTokens: 8_000,
 };
+const QUALIFIED_VISION_SURPLUS_ROUTE = {
+  ...QUALIFIED_SURPLUS_ROUTE,
+  catalogModelId: KNOWN_MODEL,
+  surplusModelId: "claude-sonnet-4-6",
+  providerPin: "anthropic" as const,
+  supportsVision: true,
+};
 const MEDIA_MODELS = {
   image: [{ id: "venice:gpt-image-2", displayName: "GPT Image 2", provider: "venice", available: true }],
   music: [{ id: "venice:sonilo-v1-1-music", displayName: "Sonilo", provider: "venice", available: true }],
@@ -96,6 +103,7 @@ const modelConfig: ResolvedServerModelConfig = {
   reflectionModel: "anthropic:claude-haiku-4-5",
   memoryReviewModel: null,
   embeddingModel: null,
+  imageUnderstandingModel: null,
   imageModel: null,
   musicModel: null,
   videoModel: null, speechModel: null,
@@ -166,6 +174,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
       reflectionModel: KNOWN_MODEL,
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -182,6 +191,7 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         reflectionModel: KNOWN_MODEL,
         memoryReviewModel: null,
         embeddingModel: null,
+        imageUnderstandingModel: null,
         imageModel: null,
         musicModel: null,
         videoModel: null, speechModel: null,
@@ -279,6 +289,7 @@ describe("server-models toWire", () => {
       reflectionModel: "",
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -294,6 +305,7 @@ describe("server-models toWire", () => {
       reflectionModel: "",
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -554,6 +566,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           reflectionModel: patch.reflectionModel ?? modelConfig.reflectionModel,
           memoryReviewModel: null,
           embeddingModel: null,
+          imageUnderstandingModel: null,
           imageModel: null,
           musicModel: null,
           videoModel: null, speechModel: null,
@@ -616,6 +629,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         reflectionModel: null,
         memoryReviewModel: null,
         embeddingModel: null,
+        imageUnderstandingModel: null,
         imageModel: null,
         musicModel: null,
         videoModel: null, speechModel: null,
@@ -715,6 +729,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         reflectionModel: null,
         memoryReviewModel: null,
         embeddingModel: null,
+        imageUnderstandingModel: null,
         imageModel: null,
         musicModel: null,
         videoModel: null, speechModel: null,
@@ -856,6 +871,68 @@ test("embedding GET ignores retired managed Gateway settings without an OpenRout
     else process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = previousBase;
     if (previousOpenRouter === undefined) delete process.env["OPENROUTER_API_KEY"];
     else process.env["OPENROUTER_API_KEY"] = previousOpenRouter;
+  }
+});
+
+test("image understanding accepts Automatic or a signed vision chat model", () => {
+  expect(parseUpdateBodyForTests({ imageUnderstandingModel: null })).toEqual({
+    ok: true, patch: { imageUnderstandingModel: null },
+  });
+  expect(parseUpdateBodyForTests({ imageUnderstandingModel: "anthropic:claude-sonnet-4-6" })).toEqual({
+    ok: true, patch: { imageUnderstandingModel: "anthropic:claude-sonnet-4-6" },
+  });
+  expect(parseUpdateBodyForTests({ imageUnderstandingModel: "openai:gpt-image-2" })).toEqual({
+    ok: false, error: "Unsupported image understanding model",
+  });
+});
+
+test("image understanding GET returns the configured default and signed choices", async () => {
+  const choices = [{
+    id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet", provider: "anthropic", available: false,
+    unavailableReason: "Anthropic credential is not configured",
+  }];
+  const call = routeHarness({
+    getCapabilities: async () => ["read_server_settings"],
+    getDb: () => ({}) as never,
+    getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+    getConfig: async () => ({ ...modelConfig, imageUnderstandingModel: "anthropic:claude-sonnet-4-6" }),
+    refreshConfigCache: async () => null,
+    listImageUnderstandingModels: () => choices,
+  });
+  const result = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+  expect(result).toMatchObject({ status: 200, body: {
+    imageUnderstandingModel: "anthropic:claude-sonnet-4-6",
+    effectiveImageUnderstandingModel: null,
+    imageUnderstandingModels: choices,
+  } });
+});
+
+test("image understanding projects qualified Surplus vision and resolves Automatic truthfully", async () => {
+  const previous = process.env["ANTHROPIC_API_KEY"];
+  try {
+    delete process.env["ANTHROPIC_API_KEY"];
+    const call = routeHarness({
+      getCapabilities: async () => ["read_server_settings"],
+      getDb: () => ({}) as never,
+      getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+      getConfig: async () => ({ ...modelConfig, preferSurplus: true, imageUnderstandingModel: null }),
+      refreshConfigCache: async () => null,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [QUALIFIED_VISION_SURPLUS_ROUTE],
+    });
+    const result = await call("GET", { ...requestBase, sessionUserId: "viewer" });
+    const body = result.body as {
+      effectiveImageUnderstandingModel: string | null;
+      imageUnderstandingModels: Array<{ id: string; available: boolean }>;
+    };
+    expect(result.status).toBe(200);
+    expect(body.imageUnderstandingModels.find((model) => model.id === KNOWN_MODEL))
+      .toMatchObject({ available: true });
+    expect(body.effectiveImageUnderstandingModel)
+      .toBe(body.imageUnderstandingModels.find((model) => model.available)?.id ?? null);
+  } finally {
+    if (previous === undefined) delete process.env["ANTHROPIC_API_KEY"];
+    else process.env["ANTHROPIC_API_KEY"] = previous;
   }
 });
 

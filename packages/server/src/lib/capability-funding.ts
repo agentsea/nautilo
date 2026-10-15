@@ -24,6 +24,7 @@ import { openServiceFunding } from "./service-funding";
 import { mediaPreferenceFunding, resolvePersonalMediaModel } from "./media-model-preferences";
 import { openMediaFunding } from "./media-funding";
 import { currentMemoryOperatorDefaults, personalMemoryModels, resolveMemoryModelPreference } from "./memory-model-preferences";
+import { resolveImageUnderstandingModel } from "./image-model-preferences";
 
 const RESEARCH_ROLES = {
   webSearchSynthesis: { role: "webSearchSynthesis", env: "NAUTILO_WEB_SEARCH_MODEL", tools: false },
@@ -36,7 +37,7 @@ const RESEARCH_ROLES = {
 
 function assertModel(
   modelId: string,
-  workload: "research" | "decision" | "memory",
+  workload: "research" | "decision" | "memory" | "image_assistance",
   tools = false,
   resolveModel: typeof resolveCatalogModel = resolveCatalogModel,
 ): void {
@@ -44,6 +45,7 @@ function assertModel(
   if (!["selectable", "missing_credentials"].includes(row.availability)
     || row.workload !== (workload === "decision" ? "decision" : "chat")
     || (workload !== "decision" && !row.output.includes("text"))
+    || (workload === "image_assistance" && !row.input.includes("image"))
     || (workload === "decision" && !row.decision?.operations.includes("choice"))
     || (tools && !row.features.tools)) throw new ModelFundingError("unsupported_workload");
 }
@@ -74,7 +76,7 @@ export function createCapabilityFundingSession(
   const subscription = overrides.parentBinding?.kind === "personal" && overrides.parentBinding.providerRoute === "openai-chatgpt"
     ? overrides.parentBinding : undefined;
   const denySeparateFunding = () => { if (subscription) throw new ModelFundingError("unsupported_workload"); };
-  const resolveFunding = (modelId: string, workload: "research" | "decision" | "memory", priorDecision?: ModelFundingDecision) => {
+  const resolveFunding = (modelId: string, workload: "research" | "decision" | "memory" | "image_assistance", priorDecision?: ModelFundingDecision) => {
     if (subscription && workload !== "research") throw new ModelFundingError("unsupported_workload");
     const pinned: ModelFundingDecision | undefined = subscription
       ? { ...subscription, humanUserId, payerHumanId: humanUserId, modelId, workload } : undefined;
@@ -114,6 +116,28 @@ export function createCapabilityFundingSession(
       throw new ModelFundingError("personal_credential_unavailable");
     }
   };
+  const resolveImageProjection = async (
+    configuredId: string | null | undefined,
+    parentFundingKind?: "personal" | "server",
+    currentPreferences?: PersonalCapabilityPreferences,
+  ) => {
+    const preferences = currentPreferences ?? await readPreferences(humanUserId);
+    const explicit = configuredId?.trim();
+    const snapshot = explicit
+      ? { ...preferences, overrides: { ...preferences.overrides, imageUnderstanding: explicit } }
+      : preferences;
+    return resolveImageUnderstandingModel({
+      humanUserId,
+      preferences: snapshot,
+      ...(parentFundingKind ? { parentFundingKind } : {}),
+    }, {
+      resolveCatalog,
+      ...(projectionDeps ? {
+        resolveFunding: (input) => resolveModelFunding(input, projectionDeps),
+        validateFunding: validateProjectionCredential,
+      } : {}),
+    });
+  };
   return {
     humanUserId,
     async resolveModel(role, configuredId) {
@@ -122,6 +146,11 @@ export function createCapabilityFundingSession(
       if (isMediaCapabilityRole(role)) {
         denySeparateFunding();
         return resolvePersonalMediaModel(humanUserId, role, configuredId, preferences, projectionDeps, validateProjectionCredential);
+      }
+      if (role === "imageUnderstanding") {
+        denySeparateFunding();
+        const selection = await resolveImageProjection(configuredId, undefined, preferences);
+        return { modelId: selection.modelId, preferenceRevision: selection.preferenceRevision };
       }
       if (isMemoryCapabilityRole(role)) {
         denySeparateFunding();
@@ -185,7 +214,13 @@ export function createCapabilityFundingSession(
         await recheckAuthority();
         if (candidate !== modelId) throw new ModelFundingError("funding_source_changed");
         assertModel(candidate, workload, false, resolveCatalog);
-        return resolveModelFunding({ humanUserId, modelId, workload, priorDecision: admitted, ...(transport ? { transport } : {}) });
+        return resolveModelFunding({
+          humanUserId,
+          modelId,
+          workload,
+          priorDecision: admitted,
+          ...(transport ? { transport } : {}),
+        });
       };
       let lastAttempt: ModelFundingDecision | undefined;
       return {
@@ -208,6 +243,15 @@ export function createCapabilityFundingSession(
               (personalCredential) => run({ usageFunding, personalCredential }), undefined, admitted);
           },
         },
+      };
+    },
+    async projectImageUnderstandingFunding(configuredId, parentFundingKind) {
+      denySeparateFunding();
+      await recheckAuthority();
+      const selection = await resolveImageProjection(configuredId, parentFundingKind);
+      return {
+        modelId: selection.modelId,
+        binding: capabilityFundingBinding(selection.funding),
       };
     },
     async projectMediaFunding(modelId, role) {

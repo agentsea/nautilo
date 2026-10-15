@@ -10,6 +10,7 @@ import {
   resolveProviderKey,
   resolveOpenRouterTransport,
   resolveSurplusChatServingAvailability,
+  resolveQualifiedSurplusChatRoute,
   deriveSurplusMediaModelId,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
@@ -178,7 +179,12 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   serverRoute: (modelId, _workload, transport) => resolveServerFundingRoute(modelId, {
     ...(transport === undefined ? {} : { preferSurplus: transport === "surplus" }),
   }),
-  personalSurplusRoute: (modelId, workload) => workload === "generation"
+  personalSurplusRoute: (modelId, workload) => workload === "image_assistance"
+    ? resolveQualifiedSurplusChatRoute(modelId)?.supportsVision === true
+      && resolveSurplusChatServingAvailability({ catalogModelId: modelId,
+        policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
+        keyConfigured: true, fundingKind: "personal" }).status === "available"
+    : workload === "generation"
     ? getCachedServerModelConfigRow()?.preferSurplus === true && deriveSurplusMediaModelId(modelId) !== null
     : (workload === "decision" ? resolveSurplusDecisionServingAvailability : resolveSurplusChatServingAvailability)({
     catalogModelId: modelId,
@@ -241,9 +247,6 @@ export async function resolveModelFunding(
   if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task"
     && input.workload !== "research" && input.workload !== "memory" && input.workload !== "decision"
     && input.workload !== "image_assistance" && input.workload !== "generation") {
-    throw new ModelFundingError("unsupported_workload");
-  }
-  if (input.workload === "image_assistance" && input.transport !== "direct") {
     throw new ModelFundingError("unsupported_workload");
   }
   if (input.directOnly && input.workload !== "generation") {
@@ -310,9 +313,9 @@ export async function resolveModelFunding(
   // needs neither a personal row lookup nor access to personal key custody.
   const serverRoute = (transport: "direct" | "surplus" | undefined = input.directOnly ? "direct" : input.transport) => {
     const route = deps.serverRoute(input.modelId, input.workload, transport);
-    // Image assistance uses the reviewed direct adapters. A text marketplace
-    // mapping is not proof that the same route accepts image payloads.
-    return input.workload === "image_assistance" && route === "surplus" ? null : route;
+    // Only image-capable signed routes may receive the helper's image envelope.
+    return input.workload === "image_assistance" && route === "surplus"
+      && resolveQualifiedSurplusChatRoute(input.modelId)?.supportsVision !== true ? null : route;
   };
   if (!prior && input.fundingKind !== "personal" && policy.fundingPreference === "server_first"
     && caps.includes("use_server_provider_credentials")) {

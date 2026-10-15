@@ -23,6 +23,7 @@ import {
   personalCostCallTypeRows,
   personalCostDayRows,
   personalCostProviderEvidence,
+  personalCostProviderOperationLabel,
   personalCostTaskRows,
   personalCostsForRequestedRange,
   personalUnknownProviderOperations,
@@ -420,7 +421,10 @@ export default function PersonalCostsScreen() {
                     <View style={styles.modelRow}>
                       <View style={styles.modelCopy}>
                         <Text style={styles.title}>
-                          {row.provider} / {row.operation}
+                          {personalCostProviderOperationLabel(
+                            row.provider,
+                            row.operation,
+                          )}
                         </Text>
                         <Text style={styles.help}>
                           {integer(row.operations)} operations

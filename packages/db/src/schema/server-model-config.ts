@@ -28,6 +28,8 @@ export const serverModelConfig = pgTable("server_model_config", {
   memoryReviewModel: text("memory_review_model"),
   /** Null inherits operator config; empty selects automatic credential priority. */
   embeddingModel: text("embedding_model"),
+  /** Null selects the automatic signed, fundable vision helper for each Human. */
+  imageUnderstandingModel: text("image_understanding_model"),
   /** Null inherits operator config; empty selects the automatic catalogue default. */
   imageModel: text("image_model"),
   /** Null inherits operator config; empty selects the automatic catalogue default. */

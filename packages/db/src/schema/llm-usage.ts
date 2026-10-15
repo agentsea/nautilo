@@ -56,7 +56,7 @@ export const llmUsageEvents = pgTable(
     /**
      * What kind of call this was:
      * `chat` | `subagent` | `conductor` | `room_stenographer` | `room_reflection`
-     * | `room_event_compaction` | `embedding` | `image_gen`
+     * | `room_event_compaction` | `embedding` | `image_gen` | `image_assistance`
      * | `memory_flush` | `memory_review` | `web_search` | `session_search`
      * | `title` | `capability_probe` | `soul` | `other`.
      */

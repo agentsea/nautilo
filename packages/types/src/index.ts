@@ -1,5 +1,6 @@
 export * from "./external-message-origin";
 export * from "./human-presence";
+export * from "./image-assistance-admission";
 export * from "./api";
 export * from "./workspace-media";
 export * from "./workspace-logical-path";

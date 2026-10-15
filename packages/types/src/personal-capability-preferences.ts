@@ -6,6 +6,7 @@ export const PERSONAL_CAPABILITY_ROLES = [
   "deepResearchCompression",
   "deepResearchFinalReport",
   "decision",
+  "imageUnderstanding",
   "imageGeneration",
   "videoGeneration",
   "musicGeneration",
@@ -19,7 +20,7 @@ export type PersonalCapabilityRole =
   (typeof PERSONAL_CAPABILITY_ROLES)[number];
 
 export type ResearchCapabilityRole = Exclude<PersonalCapabilityRole,
-  "decision" | "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech"
+  "decision" | "imageUnderstanding" | "imageGeneration" | "videoGeneration" | "musicGeneration" | "speech"
   | "memoryReview" | "memoryReflection" | "memorySummarization">;
 
 export type MemoryCapabilityRole = Extract<PersonalCapabilityRole,

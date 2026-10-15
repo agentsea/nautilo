@@ -33,6 +33,7 @@ export interface ResolvedServerModelConfig {
   reflectionModel: string;
   memoryReviewModel: string | null;
   embeddingModel: string | null;
+  imageUnderstandingModel: string | null;
   imageModel: string | null;
   musicModel: string | null;
   videoModel: string | null;
@@ -56,6 +57,7 @@ export type ServerModelConfigPatch = Partial<
     | "reflectionModel"
     | "memoryReviewModel"
     | "embeddingModel"
+    | "imageUnderstandingModel"
     | "imageModel"
     | "musicModel"
     | "videoModel"
@@ -81,6 +83,7 @@ export function resolveServerModelConfig(
     reflectionModel: row?.reflectionModel ?? "",
     memoryReviewModel: row?.memoryReviewModel ?? null,
     embeddingModel: row?.embeddingModel ?? null,
+    imageUnderstandingModel: row?.imageUnderstandingModel ?? null,
     imageModel: row?.imageModel ?? null,
     musicModel: row?.musicModel ?? null,
     videoModel: row?.videoModel ?? null,
@@ -134,6 +137,9 @@ export async function upsertServerModelConfig(
   }
   if (patch.memoryReviewModel !== undefined) set.memoryReviewModel = patch.memoryReviewModel;
   if (patch.embeddingModel !== undefined) set.embeddingModel = patch.embeddingModel;
+  if (patch.imageUnderstandingModel !== undefined) {
+    set.imageUnderstandingModel = patch.imageUnderstandingModel;
+  }
   if (patch.imageModel !== undefined) set.imageModel = patch.imageModel;
   if (patch.musicModel !== undefined) set.musicModel = patch.musicModel;
   if (patch.videoModel !== undefined) set.videoModel = patch.videoModel;

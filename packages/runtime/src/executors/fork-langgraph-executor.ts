@@ -552,6 +552,8 @@ export async function* forkLanggraphExecutor(
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
     causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork" ? "foreground.fork" : null,
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+    jobId: jobId, turnId: turnId || jobId,
+    inputDigest: imageAssistanceInputDigest({ turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
     ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
@@ -695,7 +697,7 @@ export async function* forkLanggraphExecutor(
     } else await persistMessages(transcriptThreadId, ownerId, observations, savedFingerprints, { ...persistOptsBase, requireDurable: true });
   }
   } catch (error) {
-    failImageAssistance(error, signal);
+    failImageAssistance(error, signal, "save");
   }
 
   const protectedCheckpointSaver = protectedServices === undefined

@@ -14,6 +14,7 @@ describe("personal capability preference contract", () => {
       "deepResearchCompression",
       "deepResearchFinalReport",
       "decision",
+      "imageUnderstanding",
       "imageGeneration",
       "videoGeneration",
       "musicGeneration",
@@ -27,10 +28,12 @@ describe("personal capability preference contract", () => {
   test("normalizes sparse overrides and rejects unknown or blank fields", () => {
     expect(parsePersonalCapabilityPreferenceOverrides({
       webSearchSynthesis: "  openrouter:model-a  ",
+      imageUnderstanding: "  anthropic:claude-sonnet-4-6  ",
       speech: "elevenlabs:eleven_v3",
       memoryReview: "openrouter:review-model",
     })).toEqual({
       webSearchSynthesis: "openrouter:model-a",
+      imageUnderstanding: "anthropic:claude-sonnet-4-6",
       speech: "elevenlabs:eleven_v3",
       memoryReview: "openrouter:review-model",
     });

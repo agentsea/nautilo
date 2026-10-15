@@ -16,6 +16,8 @@ const HUMAN_ID = "10000000-0000-4000-8000-000000000001";
 const CREDENTIAL_ID = "20000000-0000-4000-8000-000000000002";
 const DECISION_MODEL = "openrouter:typesafe/jev-1.13";
 const RESEARCH_MODEL = "openrouter:anthropic/claude-sonnet-4.6";
+const VISION_MODEL = "anthropic:claude-sonnet-4-6";
+const SUBSCRIPTION_VISION_MODEL = "openai:gpt-5.6-luna";
 
 function credential(
   provider: PersonalProviderId,
@@ -135,6 +137,153 @@ describe("capability funding projection", () => {
     expect(custodyReads).toBe(0);
   });
 
+  test("resolves and opens the sparse image-understanding preference with its revision", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverProjectionDeps(), {
+      readPreferences: async () => ({
+        revision: 6,
+        overrides: { imageUnderstanding: VISION_MODEL },
+      }),
+    });
+    expect(await session.resolveModel("imageUnderstanding")).toEqual({
+      modelId: VISION_MODEL,
+      preferenceRevision: 6,
+    });
+    expect(await session.openModel(VISION_MODEL, "image_assistance")).toMatchObject({
+      binding: { kind: "server", providerRoute: "openrouter" },
+      fundingSession: { workload: "image_assistance" },
+    });
+  });
+
+  test("keeps a qualified Surplus image-understanding admission through readiness and open", async () => {
+    const projectionDeps: ModelFundingDeps = {
+      ...serverProjectionDeps(),
+      serverRoute: (_modelId, _workload, transport) => transport === "direct" ? "anthropic" : "surplus",
+    };
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, projectionDeps, {
+      readPreferences: async () => ({
+        revision: 2,
+        overrides: { imageUnderstanding: VISION_MODEL },
+      }),
+    });
+    expect(await session.resolveModel("imageUnderstanding")).toEqual({
+      modelId: VISION_MODEL,
+      preferenceRevision: 2,
+    });
+    const opened = await session.openModel(VISION_MODEL, "image_assistance");
+    expect(opened.binding).toEqual({ kind: "server", providerRoute: "surplus" });
+  });
+
+  test("projects image-understanding availability for the requested payer under either priority", async () => {
+    for (const fundingPreference of ["personal_first", "server_first"] as const) {
+      const custody = createPersonalProviderCustody();
+      const personalRow = credential("anthropic", custody);
+      const personalOnlyDeps: ModelFundingDeps = {
+        getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+        getCapabilities: async () => ["use_personal_provider_credentials", "use_server_provider_credentials"],
+        getCredential: async (humanId, provider) => humanId === HUMAN_ID && provider === "anthropic"
+          ? personalRow : null,
+        serverRoute: () => null,
+        personalSurplusRoute: () => false,
+        readCustody: async () => { throw new Error("projection must not decrypt credentials"); },
+        decrypt: decryptPersonalProviderCredential,
+      };
+      let authorityChecks = 0;
+      const personalOnly = createCapabilityFundingSession(HUMAN_ID, async () => {
+        authorityChecks += 1;
+      }, personalOnlyDeps, {
+        readPreferences: async () => ({ revision: 4, overrides: {} }),
+        readProjectionCustody: async () => custody,
+      });
+
+      expect(await personalOnly.projectImageUnderstandingFunding!(VISION_MODEL, "personal")).toEqual({
+        modelId: VISION_MODEL,
+        binding: {
+          kind: "personal",
+          providerRoute: "anthropic",
+          credentialId: CREDENTIAL_ID,
+          credentialRevision: 1,
+        },
+      });
+      expect(await errorCode(personalOnly.projectImageUnderstandingFunding!(VISION_MODEL, "server")))
+        .toBe("provider_credentials_missing");
+      expect(authorityChecks).toBe(2);
+
+      const serverOnlyDeps: ModelFundingDeps = {
+        getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+        getCapabilities: async () => ["use_personal_provider_credentials", "use_server_provider_credentials"],
+        getCredential: async () => null,
+        serverRoute: () => "anthropic",
+        personalSurplusRoute: () => false,
+        readCustody: async () => { throw new Error("server projection must not read custody"); },
+        decrypt: decryptPersonalProviderCredential,
+      };
+      const serverOnly = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverOnlyDeps, {
+        readPreferences: async () => ({ revision: 5, overrides: {} }),
+        readProjectionCustody: async () => { throw new Error("server projection must not read custody"); },
+      });
+
+      expect(await serverOnly.projectImageUnderstandingFunding!(VISION_MODEL, "server")).toEqual({
+        modelId: VISION_MODEL,
+        binding: { kind: "server", providerRoute: "anthropic" },
+      });
+      expect(await errorCode(serverOnly.projectImageUnderstandingFunding!(VISION_MODEL, "personal")))
+        .toBe("personal_credential_missing");
+    }
+  });
+
+  test("projects an exact image-understanding candidate or inherits the saved preference", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverProjectionDeps(), {
+      readPreferences: async () => ({
+        revision: 7,
+        overrides: { imageUnderstanding: VISION_MODEL },
+      }),
+    });
+
+    expect(await session.projectImageUnderstandingFunding!(null, "server")).toEqual({
+      modelId: VISION_MODEL,
+      binding: { kind: "server", providerRoute: "openrouter" },
+    });
+    expect(await errorCode(session.projectImageUnderstandingFunding!("unknown:model", "server")))
+      .toBe("unsupported_workload");
+  });
+
+  test("projects an eligible subscription image model without API-key custody", async () => {
+    const deps: ModelFundingDeps = {
+      ...personalProjectionDeps(credential("openai")),
+      getCredential: async () => null,
+      getSubscription: async () => ({
+        id: CREDENTIAL_ID,
+        revision: 1,
+        available: true,
+        modelIds: [SUBSCRIPTION_VISION_MODEL],
+      }),
+      getSubscriptionModels: async () => [SUBSCRIPTION_VISION_MODEL],
+    };
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, deps, {
+      readPreferences: async () => ({
+        revision: 8,
+        overrides: { imageUnderstanding: SUBSCRIPTION_VISION_MODEL },
+      }),
+      readProjectionCustody: async () => {
+        throw new Error("subscription projection must not read API-key custody");
+      },
+    });
+
+    expect(await session.resolveModel("imageUnderstanding")).toEqual({
+      modelId: SUBSCRIPTION_VISION_MODEL,
+      preferenceRevision: 8,
+    });
+    expect(await session.projectImageUnderstandingFunding!(null, "personal")).toEqual({
+      modelId: SUBSCRIPTION_VISION_MODEL,
+      binding: {
+        kind: "personal",
+        providerRoute: "openai-chatgpt",
+        credentialId: CREDENTIAL_ID,
+        credentialRevision: 1,
+      },
+    });
+  });
+
   test("rejects non-text research and decision models without choice support", async () => {
     const resolvedDecision = resolveCatalogModel(DECISION_MODEL, { env: {} });
     const invalidResearch = {
@@ -172,6 +321,9 @@ test("subscription parent cannot fund auxiliary work through another credential"
   expect(await errorCode(session.openModel(DECISION_MODEL, "decision"))).toBe("unsupported_workload");
   expect(await errorCode(session.openModel(RESEARCH_MODEL, "memory"))).toBe("unsupported_workload");
   expect(await errorCode(session.resolveModel("memoryReview"))).toBe("unsupported_workload");
+  expect(await errorCode(session.resolveModel("imageUnderstanding"))).toBe("unsupported_workload");
+  expect(await errorCode(session.openModel(VISION_MODEL, "image_assistance"))).toBe("unsupported_workload");
+  expect(await errorCode(session.projectImageUnderstandingFunding!(VISION_MODEL, "personal"))).toBe("unsupported_workload");
   expect(await errorCode(session.openService("tavily"))).toBe("unsupported_workload");
   expect(await errorCode(session.openMedia!("openai:gpt-image-2", "image"))).toBe("unsupported_workload");
   expect(await errorCode(session.projectMediaFunding!("openai:gpt-image-2", "imageGeneration"))).toBe("unsupported_workload");

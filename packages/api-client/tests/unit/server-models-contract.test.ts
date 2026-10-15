@@ -25,6 +25,11 @@ const SAMPLE = {
     displayName: "Text Embedding 3 Small (Venice)",
     available: true,
   }],
+  imageUnderstandingModel: "anthropic:claude-sonnet-4-6",
+  effectiveImageUnderstandingModel: "anthropic:claude-sonnet-4-6",
+  imageUnderstandingModels: [{
+    id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet", provider: "anthropic", available: true,
+  }],
   speechModel: null,
   effectiveSpeechModel: "elevenlabs:eleven_v3_conversational",
   speechModels: [],
@@ -88,6 +93,9 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
       effectiveEmbeddingModel: _effectiveEmbeddingModel,
       embeddingSelectionPending: _embeddingSelectionPending,
       embeddingModels: _embeddingModels,
+      imageUnderstandingModel: _imageUnderstandingModel,
+      effectiveImageUnderstandingModel: _effectiveImageUnderstandingModel,
+      imageUnderstandingModels: _imageUnderstandingModels,
       speechModel: _speechModel,
       effectiveSpeechModel: _effectiveSpeechModel,
       speechModels: _speechModels,
@@ -114,6 +122,9 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
     expect(out.effectiveEmbeddingModel).toBeNull();
     expect(out.embeddingSelectionPending).toBe(false);
     expect(out.embeddingModels).toEqual([]);
+    expect(out.imageUnderstandingModel).toBeNull();
+    expect(out.effectiveImageUnderstandingModel).toBeNull();
+    expect(out.imageUnderstandingModels).toEqual([]);
     expect(out.speechModel).toBeNull();
     expect(out.effectiveSpeechModel).toBeNull();
     expect(out.speechModels).toEqual([]);
@@ -154,6 +165,7 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
       reflectionModel: "anthropic:claude-haiku-4-5",
       memoryReviewModel: null,
       embeddingModel: "openai:text-embedding-3-small",
+      imageUnderstandingModel: null,
       imageModel: "",
       musicModel: null,
       videoModel: "venice:seedance-2-5-text-to-video-basic",
@@ -168,6 +180,7 @@ describe("admin.serverModels HTTP contract (mocked fetch)", () => {
       reflectionModel: "anthropic:claude-haiku-4-5",
       memoryReviewModel: null,
       embeddingModel: "openai:text-embedding-3-small",
+      imageUnderstandingModel: null,
       imageModel: "",
       musicModel: null,
       videoModel: "venice:seedance-2-5-text-to-video-basic",

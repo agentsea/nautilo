@@ -16,6 +16,7 @@ export type UsageCallType =
   | "room_event_compaction"
   | "embedding"
   | "image_gen"
+  | "image_assistance"
   | "memory_flush"
   | "memory_review"
   | "web_search"

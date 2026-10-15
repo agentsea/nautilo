@@ -56,6 +56,7 @@ const CALL_TYPE_LABELS: Record<string, string> = {
   room_event_compaction: "Room event compaction",
   embedding: "Embeddings",
   image_gen: "Image generation",
+  image_assistance: "Image understanding",
   memory_flush: "Memory flush",
   memory_review: "Memory review",
   web_search: "Web search",
@@ -97,6 +98,15 @@ export function personalCostCallTypeRows(
     calls: row.calls,
     knownCostUsd: row.totalCostUsd,
   }));
+}
+
+export function personalCostProviderOperationLabel(
+  provider: string,
+  operation: string,
+): string {
+  return `${provider} / ${
+    operation === "image_assistance" ? "Image understanding" : operation
+  }`;
 }
 
 export function personalUnknownProviderOperations(

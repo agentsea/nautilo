@@ -12,6 +12,9 @@ import {
   resolveProviderKey,
 } from "@nautilo/agent";
 import { fromRuntimeConfig } from "@nautilo/config";
+import { getPersonalCapabilityPreferences } from "@nautilo/db";
+import type { PersonalCapabilityPreferences } from "@nautilo/types";
+import { getServerDirectDb } from "../lib/server-direct-db";
 import {
   createModelFundingSnapshot,
   ModelFundingError,
@@ -40,6 +43,7 @@ export interface CallerModelAvailabilityDeps {
   readonly resolveFunding?: typeof resolveModelFunding;
   readonly resolveImageInput?: typeof resolveCallerImageInput;
   readonly imageAssistanceSelections?: Map<string, Promise<ModelFundingDecision | null>>;
+  readonly readImageAssistancePreferences?: () => Promise<PersonalCapabilityPreferences>;
 }
 
 const FUNDING_UNAVAILABLE_REASON: Readonly<Record<ModelFundingError["code"], string>> = {
@@ -145,6 +149,7 @@ export async function resolveCallerModelAvailability(
       }, {
         ...(deps.resolveFunding ? { resolveFunding: deps.resolveFunding } : {}),
         ...(deps.imageAssistanceSelections ? { selectionCache: deps.imageAssistanceSelections } : {}),
+        ...(deps.readImageAssistancePreferences ? { readPreferences: deps.readImageAssistancePreferences } : {}),
       }),
       ...(funding.kind === "personal"
         ? {
@@ -261,13 +266,16 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
     });
     const snapshot = deps.resolveCallerAvailability ? null : await createModelFundingSnapshot(humanUserId);
     const imageAssistanceSelections = new Map<string, Promise<ModelFundingDecision | null>>();
+    let preferenceSnapshot: Promise<PersonalCapabilityPreferences> | undefined;
+    const readImageAssistancePreferences = () => preferenceSnapshot ??= getPersonalCapabilityPreferences(getServerDirectDb(), humanUserId);
     const resolved = await Promise.all(
       candidates.map(async (candidate) => {
         const availability = await resolveAvailability(
           humanUserId,
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
-          { imageAssistanceSelections, ...(snapshot ? { resolveFunding: (input) => resolveModelFunding(input, snapshot.deps) } : {}) },
+          { imageAssistanceSelections, readImageAssistancePreferences,
+            ...(snapshot ? { resolveFunding: (input) => resolveModelFunding(input, snapshot.deps) } : {}) },
         );
         return {
           ...availability.model,

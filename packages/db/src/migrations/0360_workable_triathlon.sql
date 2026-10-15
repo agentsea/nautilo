@@ -1,0 +1,1 @@
+ALTER TABLE "server_model_config" ADD COLUMN "image_understanding_model" text;
