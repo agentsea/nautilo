@@ -10,6 +10,7 @@ import {
   modelRowTitle,
   normalizeAdminCosts,
   normalizePersonalCosts,
+  providerOperationLabel,
   type CostsModelBarInput,
 } from "../../src/pages/costs/costs-view-model";
 import type { CostsSummary } from "../../src/lib/costs-api";
@@ -233,6 +234,18 @@ test("labels research and decision workloads", () => {
   expect(callTypeLabel("decision")).toBe("Decision");
   expect(callTypeLabel("deep_research")).toBe("Deep research");
   expect(callTypeLabel("future_workload")).toBe("future_workload");
+});
+
+test("labels image understanding provider operations without changing fallbacks", () => {
+  expect(providerOperationLabel("openrouter", "image_assistance")).toBe(
+    "Openrouter · Image understanding",
+  );
+  expect(providerOperationLabel("surplus", "image_assistance")).toBe(
+    "Surplus · Image understanding",
+  );
+  expect(providerOperationLabel("future_provider", "custom_operation")).toBe(
+    "Future Provider · Custom Operation",
+  );
 });
 
 test("provider normalization retains evidence buckets and safely defaults legacy fields", () => {

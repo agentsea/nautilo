@@ -100,6 +100,15 @@ export function personalCostCallTypeRows(
   }));
 }
 
+export function personalCostProviderOperationLabel(
+  provider: string,
+  operation: string,
+): string {
+  return `${provider} / ${
+    operation === "image_assistance" ? "Image understanding" : operation
+  }`;
+}
+
 export function personalUnknownProviderOperations(
   summary: Pick<PersonalCostsSummary, "totals">,
 ): number {

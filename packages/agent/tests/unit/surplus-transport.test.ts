@@ -348,6 +348,92 @@ describe("Surplus wire boundary", () => {
     expect(() => assertCompleteSurplusResponse({ truncated: false }, response)).not.toThrow();
   });
 
+  test("qualified OpenRouter vision preserves text and image_url on the SDK wire", async () => {
+    const route = resolveQualifiedSurplusChatRoute("openrouter:google/gemini-3.1-flash-lite-preview");
+    if (!route) throw new Error("Expected the signed vision route to remain qualified");
+    const personalFunding = {
+      kind: "personal" as const,
+      humanUserId: "user-vision",
+      payerHumanId: "user-vision",
+      providerRoute: "surplus",
+      credentialId: "credential-surplus",
+      credentialRevision: 1,
+    };
+    expect(route).toMatchObject({
+      surplusModelId: "google/gemini-3.1-flash-lite-preview",
+      providerPin: "openrouter",
+      supportsVision: true,
+    });
+    expect(canUseQualifiedSurplusChatRoute({
+      route,
+      funding: personalFunding,
+      prefersSurplus: true,
+      hasSurplusCredential: true,
+      needsVision: true,
+      requiresTools: false,
+      reasoningRequested: false,
+      hasRequestChangingServingProfile: false,
+      estimatedInputTokens: 100,
+      maxOutputTokens: 32,
+    })).toBe(true);
+    expect(canUseQualifiedSurplusChatRoute({
+      route: VENICE_ROUTE,
+      funding: { kind: "server", providerRoute: "venice", humanUserId: "user-vision" },
+      prefersSurplus: true,
+      hasSurplusCredential: true,
+      needsVision: true,
+      requiresTools: false,
+      reasoningRequested: false,
+      hasRequestChangingServingProfile: false,
+      estimatedInputTokens: 100,
+      maxOutputTokens: 32,
+    })).toBe(false);
+
+    let requestBody: Record<string, unknown> | undefined;
+    const fetchImpl = (async (request: string | URL | Request, init?: RequestInit) => {
+      const rawBody = init?.body ?? (request instanceof Request ? await request.clone().text() : undefined);
+      requestBody = typeof rawBody === "string" ? JSON.parse(rawBody) as Record<string, unknown> : undefined;
+      const chunk = {
+        id: "chatcmpl-surplus-vision",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: { role: "assistant", content: "Seen" }, finish_reason: "stop" }],
+      };
+      return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+        status: 200,
+        headers: {
+          "content-type": "text/event-stream",
+          "x-request-id": "request-vision",
+          "x-si-provider-family": route.providerPin,
+        },
+      });
+    }) as typeof fetch;
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "synthetic-key",
+      maxOutputTokens: 32,
+      onResponse: () => {},
+      fetchImpl,
+    });
+
+    const response = await model.invoke([new HumanMessage({ content: [
+      { type: "text", text: "What is shown?" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+    ] })]) as AIMessage;
+
+    expect(response.content).toBe("Seen");
+    expect(requestBody?.["model"]).toBe(route.surplusModelId);
+    expect(requestBody?.["provider"]).toBe(route.providerPin);
+    expect(requestBody?.["messages"]).toEqual([{
+      role: "user",
+      content: [
+        { type: "text", text: "What is shown?" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+      ],
+    }]);
+  });
+
   test("OpenRouter conflicting terminal signals retain actual cost and can replay before publication", async () => {
     let requests = 0;
     const route = QUALIFIED_OPENROUTER_ROUTE;

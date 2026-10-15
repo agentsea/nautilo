@@ -5,6 +5,7 @@ import {
   personalCostCallTypeRows,
   personalCostDayRows,
   personalCostProviderEvidence,
+  personalCostProviderOperationLabel,
   personalCostTaskRows,
   personalCostsForRequestedRange,
   personalServiceOperations,
@@ -71,6 +72,18 @@ test("labels known call types and preserves unknown semantic identifiers", () =>
     },
   ]);
   expect(personalUnknownProviderOperations(summary)).toBe(4);
+});
+
+test("labels image understanding provider operations without changing fallbacks", () => {
+  expect(
+    personalCostProviderOperationLabel("openrouter", "image_assistance"),
+  ).toBe("openrouter / Image understanding");
+  expect(
+    personalCostProviderOperationLabel("surplus", "image_assistance"),
+  ).toBe("surplus / Image understanding");
+  expect(
+    personalCostProviderOperationLabel("future_provider", "custom_operation"),
+  ).toBe("future_provider / custom_operation");
 });
 
 test("presents provider actual, current estimate, and unresolved evidence without treating zero actual as missing", () => {

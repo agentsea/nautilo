@@ -146,6 +146,23 @@ export function callTypeLabel(callType: string): string {
   return CALL_TYPE_LABELS[callType] ?? callType;
 }
 
+export function providerOperationLabel(
+  provider: string,
+  operation: string,
+): string {
+  if (provider === "browser_use" && operation === "hosted_read")
+    return "Browser Use · Hosted read";
+  const providerLabel = provider
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const operationLabel = operation === "image_assistance"
+    ? "Image understanding"
+    : operation
+      .replaceAll("_", " ")
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+  return `${providerLabel} · ${operationLabel}`;
+}
+
 /** Short axis label for a `YYYY-MM-DD` day, e.g. `Jul 9`. */
 export function formatDayShort(day: string): string {
   const d = new Date(`${day}T00:00:00Z`);
