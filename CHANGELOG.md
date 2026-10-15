@@ -16,6 +16,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   funding sources can run each helper and retain unavailable saved choices;
   independently shipped clients keep their compatible preference contract.
 
+- Server images retire obsolete Chromium security decisions after installing
+  the supported update. Remaining source-fixed but binary-unavailable findings
+  require fresh authenticated package evidence and short-lived exact approvals.
+
 - Server image builds include the shared Reflection payload sources required
   by Workbench, so clean container builds can resolve Lattice's type imports.
 

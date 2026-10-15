@@ -9,10 +9,13 @@ const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, pat
 const fixture = read("fixtures/server-security-refresh-2026-10-07.json") as {
   architectures: Record<Architecture, Tuple[]>; upstreamFixes: Record<string, string>;
 };
-const current = read("server-vulnerability-exceptions.input.json") as {exceptions: VulnerabilityPolicyV1["exceptions"]};
+const current = read("fixtures/server-policy-before-chromium-upgrade-2026-10-15.json") as {exceptions: VulnerabilityPolicyV1["exceptions"]};
 // Historical replay covers only risk tuples observed in this retained inventory.
 current.exceptions = current.exceptions.filter(e => fixture.architectures["linux/amd64"].some(t =>
   t[1] === e.advisoryId && t[2] === e.packageName && t[3] === e.installedVersion && t[4] === e.severity));
+// Later scanner metadata must not replace the fixed thresholds this replay observed.
+current.exceptions = current.exceptions.map(e => e.unavailableFix && fixture.upstreamFixes[e.advisoryId]
+  ? { ...e, unavailableFix: { ...e.unavailableFix, fixedVersion: fixture.upstreamFixes[e.advisoryId]! } } : e);
 const retired = read("fixtures/server-policy-before-retirement-2026-10-07.json") as typeof current;
 const digest = `sha256:${"a".repeat(64)}`;
 const now = "2026-10-07T09:45:00Z";
