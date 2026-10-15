@@ -23,6 +23,39 @@ export interface PersonalCapabilityPreferenceDraft {
   readonly modelId: string | null;
 }
 
+export const PERSONAL_CAPABILITY_INHERIT = "__inherit__";
+
+export interface PersonalCapabilityPickerOption {
+  readonly id: string;
+  readonly label: string;
+  readonly description: string;
+}
+
+export function personalCapabilityPickerOptions(
+  capability: PersonalCapabilityPreferencesResponse["capabilities"][number],
+  query: string,
+): PersonalCapabilityPickerOption[] {
+  const needle = query.trim().toLocaleLowerCase();
+  return [
+    {
+      id: PERSONAL_CAPABILITY_INHERIT,
+      label: `Inherit · ${capability.selection.source === "inherited" ? capability.selection.displayName : "workflow default"}`,
+      description: "Follow the current workflow default.",
+    },
+    ...capability.options.filter((option) => !needle || [option.modelId, option.displayName, option.provider]
+      .some((value) => value.toLocaleLowerCase().includes(needle)))
+      .map((option) => ({
+        id: option.modelId,
+        label: option.displayName,
+        description: `${option.modelId} · ${option.provider} · ${option.readiness.status === "ready"
+          ? option.readiness.fundingSource === "personal"
+            ? `Your ${option.readiness.providerRoute} credential`
+            : `Server ${option.readiness.providerRoute} credential`
+          : option.readiness.reason ?? "Unavailable now"}`,
+      })),
+  ];
+}
+
 export interface PersonalCapabilityPreferencesController {
   readonly data: SettingsDataStateController<
     PersonalCapabilityPreferencesResponse,

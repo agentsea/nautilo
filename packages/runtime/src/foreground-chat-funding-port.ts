@@ -25,11 +25,17 @@ export interface ForegroundChatFundingOpenInput {
 export interface ImageAssistanceSession {
   readonly modelId: string;
   readonly fundingSession: ForegroundChatFundingSession;
+  readonly operationId: string;
+  readonly preferenceRevision: number;
 }
 
 export interface ForegroundChatFundingPort {
   openImageAssistance?(
-    input: ForegroundChatFundingOpenInput & { readonly fundingKind?: "server" | "personal" },
+    input: Omit<ForegroundChatFundingOpenInput, "entrypoint"> & {
+      readonly entrypoint: "foreground.main" | "foreground.fork";
+      readonly fundingKind?: "server" | "personal";
+      readonly jobId: string; readonly turnId: string; readonly inputDigest: string;
+    },
   ): Promise<ImageAssistanceSession | null>;
 
   openSession(
@@ -229,9 +235,11 @@ export function assertForegroundChatFundingWorkloadSupported(
 export async function openImageAssistanceForInvocation(
   input: Parameters<typeof openForegroundChatFundingSessionForInvocation>[0] & {
     fundingKind?: "server" | "personal";
+    jobId: string; turnId: string; inputDigest: string;
   },
 ): Promise<ImageAssistanceSession | null> {
-  if (!installedPort?.openImageAssistance || !input.authority || !input.entrypoint
+  if (!installedPort?.openImageAssistance || !input.authority
+    || (input.entrypoint !== "foreground.main" && input.entrypoint !== "foreground.fork")
     || hasUnsupportedForegroundFundingShape(input.jobInput)) return null;
   const humanUserId = getAcceptedInvocationAuthoritySubject(input.authority);
   if (!humanUserId || input.jobInput["requestorId"] !== humanUserId
@@ -239,6 +247,7 @@ export async function openImageAssistanceForInvocation(
   return installedPort.openImageAssistance({
     humanUserId, modelId: input.modelId, roomId: input.roomId,
     agentId: input.agentId, entrypoint: input.entrypoint,
+    jobId: input.jobId, turnId: input.turnId, inputDigest: input.inputDigest,
     ...(input.fundingKind ? { fundingKind: input.fundingKind } : {}),
   });
 }

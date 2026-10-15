@@ -109,6 +109,7 @@ test("personal settings keep their native header and back navigation visible", a
 test("capability-model account actions resolve to existing settings screens", async () => {
   const screen = await Bun.file(new URL("../../app/(drawer)/(tabs)/settings/capability-models.tsx", import.meta.url)).text();
   expect(screen).toContain("eligible personal Memory processing");
+  expect(screen).toContain("image understanding");
   expect(screen).toContain("Genie and Room model settings stay separate");
   const destinations = [...screen.matchAll(/router\.push\("\/\(drawer\)\/\(tabs\)\/settings\/([^"/]+)"\)/g)];
   expect(destinations.length).toBeGreaterThan(0);

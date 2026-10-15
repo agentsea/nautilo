@@ -79,6 +79,12 @@ const initialConfig = {
       available: true,
     },
   ],
+  imageUnderstandingModel: null as string | null,
+  effectiveImageUnderstandingModel: "openai:gpt-5.4-mini" as string | null,
+  imageUnderstandingModels: [
+    { id: "openai:gpt-5.4-mini", displayName: "GPT-5.4 mini", provider: "openai", available: true },
+    { id: "openrouter:qwen/qwen3-vl", displayName: "Qwen3 VL", provider: "openrouter", available: false, unavailableReason: "OpenRouter credential is not configured" },
+  ],
   imageModel: null as string | null,
   musicModel: null as string | null,
   videoModel: null as string | null,
@@ -771,6 +777,82 @@ describe("ModelsSection media generation models", () => {
     expect(setServerModelsMock.mock.calls[0]?.[0]).not.toHaveProperty("imageModel");
     expect(setServerModelsMock.mock.calls[0]?.[0].stenographerModel)
       .toBe("openai:gpt-5.4-mini");
+  });
+});
+
+describe("ModelsSection image understanding model", () => {
+  test("distinguishes image understanding from generation and shows readiness", async () => {
+    const view = render(<ModelsSection />);
+    const select = await waitFor(() =>
+      view.getByTestId("server-image-understanding-model") as HTMLSelectElement,
+    );
+
+    expect(view.getByText("Reads and reasons about attached images. This is separate from the image model that creates new images."))
+      .toBeTruthy();
+    expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
+      "Automatic — first available supported model",
+      "GPT-5.4 mini",
+      "Qwen3 VL (Unavailable)",
+    ]);
+    expect(select.options[2]?.disabled).toBe(true);
+    expect(view.getByTestId("effective-image-understanding-model").textContent)
+      .toBe("Current effective model: GPT-5.4 mini");
+  });
+
+  test("saves and resets image understanding independently", async () => {
+    const view = render(<ModelsSection />);
+    const select = await waitFor(() =>
+      view.getByTestId("server-image-understanding-model") as HTMLSelectElement,
+    );
+
+    await act(async () => fireEvent.change(select, { target: { value: "openai:gpt-5.4-mini" } }));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+    await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0]).toEqual({
+      imageUnderstandingModel: "openai:gpt-5.4-mini",
+    }));
+
+    await act(async () => fireEvent.change(select, { target: { value: "" } }));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+    await waitFor(() => expect(setServerModelsMock.mock.calls[1]?.[0]).toEqual({
+      imageUnderstandingModel: null,
+    }));
+  });
+
+  test("explains when Automatic has no runnable image understanding candidate", async () => {
+    savedConfig.effectiveImageUnderstandingModel = null;
+    savedConfig.imageUnderstandingModels = savedConfig.imageUnderstandingModels.map((model) => ({
+      ...model,
+      available: false,
+    }));
+    const view = render(<ModelsSection />);
+    const select = await waitFor(() =>
+      view.getByTestId("server-image-understanding-model") as HTMLSelectElement,
+    );
+
+    expect(select.value).toBe("");
+    expect(select.selectedOptions[0]?.textContent)
+      .toBe("Automatic — first available supported model");
+    expect(view.getByTestId("effective-image-understanding-model").textContent)
+      .toBe("Current effective model: No runnable model available");
+  });
+
+  test("preserves an unavailable explicit selection and does not resubmit it with another change", async () => {
+    savedConfig.imageUnderstandingModel = "legacy:vision-model";
+    savedConfig.effectiveImageUnderstandingModel = null;
+    const view = render(<ModelsSection />);
+    const select = await waitFor(() =>
+      view.getByTestId("server-image-understanding-model") as HTMLSelectElement,
+    );
+
+    expect(select.selectedOptions[0]?.textContent).toBe("legacy:vision-model (Unavailable)");
+    expect(view.getByTestId("effective-image-understanding-model").textContent)
+      .toBe("Current effective model: Unavailable");
+    const stenographer = view.getByTestId("server-stenographer-model");
+    await act(async () => fireEvent.change(stenographer, { target: { value: "openai:gpt-5.4-mini" } }));
+    await act(async () => fireEvent.click(view.getByRole("button", { name: "Save changes" })));
+
+    await waitFor(() => expect(setServerModelsMock).toHaveBeenCalledTimes(1));
+    expect(setServerModelsMock.mock.calls[0]?.[0]).not.toHaveProperty("imageUnderstandingModel");
   });
 });
 

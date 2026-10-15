@@ -4,6 +4,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   EmbeddingProviderError,
   getDefaultMediaGenerationModel,
+  getEligibleModels,
   getProtectedMemoryEmbeddingConfiguration,
   getServerSpeechModel,
   hasRunnableOpenRouterTransport,
@@ -16,6 +17,7 @@ import {
   resolveModelRole,
   resolveProviderKey,
   resolveRetainedModels,
+  resolveQualifiedSurplusChatRoute,
   resolveServerFundedForegroundCatalogModel,
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,
@@ -34,6 +36,10 @@ import { warn } from "@nautilo/logger";
 import { getUserCapabilities } from "@nautilo/trust";
 import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/security-audit-log";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import {
+  isSignedImageUnderstandingModel,
+  listOrderedImageUnderstandingModels,
+} from "../lib/image-model-preferences";
 
 const REASONING_EFFORTS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 /** Read-only display projection of the same live catalog used by execution. */
@@ -117,6 +123,31 @@ function effectiveMediaGenerationModel(kind: MediaGenerationModelKind): string |
   }
 }
 
+function imageUnderstandingModels(input: {
+  readonly policyEnabled: boolean;
+  readonly keyConfigured: boolean;
+  readonly routes?: readonly QualifiedSurplusChatRoute[];
+}) {
+  const directModels = new Map(getEligibleModels({ purpose: "vision", includeUnavailable: true })
+    .map((model) => [model.id, model] as const));
+  return listOrderedImageUnderstandingModels().map((model) => {
+    const direct = directModels.get(model.modelId)!;
+    const projected = resolveServerFundedForegroundCatalogModel(model.modelId, input);
+    const surplusRoute = resolveQualifiedSurplusChatRoute(model.modelId, input.routes);
+    const available = direct.availability === "selectable"
+      || (projected.availability === "selectable" && surplusRoute?.supportsVision === true);
+    return {
+      id: model.modelId,
+      displayName: model.displayName,
+      provider: model.provider,
+      available,
+      ...(!available && projected.unavailableReason
+        ? { unavailableReason: projected.unavailableReason }
+        : {}),
+    };
+  });
+}
+
 function auditPath(): string {
   return join(homedir(), ".nautilo", "logs", "security-audit.log");
 }
@@ -194,6 +225,17 @@ function parseUpdateBody(
   }
   const raw = body as Record<string, unknown>;
   const patch: ServerModelConfigPatch = {};
+  if ("imageUnderstandingModel" in raw) {
+    const value = raw["imageUnderstandingModel"];
+    if (value !== null && typeof value !== "string") {
+      return { ok: false, error: "imageUnderstandingModel must be a string or null" };
+    }
+    const id = value?.trim() || null;
+    if (id && !isSignedImageUnderstandingModel(id)) {
+      return { ok: false, error: "Unsupported image understanding model" };
+    }
+    patch.imageUnderstandingModel = id;
+  }
   if ("speechModel" in raw) {
     const value = raw["speechModel"];
     if (value !== null && typeof value !== "string") return { ok: false, error: "speechModel must be a string or null" };
@@ -395,6 +437,7 @@ function parseUpdateBody(
     patch.reflectionModel === undefined &&
     patch.memoryReviewModel === undefined &&
     patch.embeddingModel === undefined &&
+    patch.imageUnderstandingModel === undefined &&
     patch.imageModel === undefined &&
     patch.musicModel === undefined &&
     patch.videoModel === undefined &&
@@ -417,6 +460,7 @@ export function toWire(config: ResolvedServerModelConfig) {
     reflectionModel: config.reflectionModel,
     memoryReviewModel: config.memoryReviewModel,
     embeddingModel: config.embeddingModel,
+    imageUnderstandingModel: config.imageUnderstandingModel,
     imageModel: config.imageModel,
     musicModel: config.musicModel,
     videoModel: config.videoModel,
@@ -467,6 +511,7 @@ export interface ServerModelsRouteDeps {
   getEffectiveEmbeddingModel?: typeof effectiveEmbeddingModel;
   getActiveEmbeddingSelection?: () => string | null;
   listMediaModels?: typeof mediaGenerationModels;
+  listImageUnderstandingModels?: typeof imageUnderstandingModels;
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
   getEffectiveSpeechModel?: () => string | null;
   getSurplusKeyConfigured?: () => boolean;
@@ -488,6 +533,7 @@ export function serverModelsRoutes(
   const activeEmbeddingSelection = overrides.getActiveEmbeddingSelection
     ?? (() => getCachedServerModelConfigRow()?.embeddingModel ?? null);
   const listMediaModels = overrides.listMediaModels ?? mediaGenerationModels;
+  const listVisionModels = overrides.listImageUnderstandingModels ?? imageUnderstandingModels;
   const getEffectiveMediaModel = overrides.getEffectiveMediaModel ?? effectiveMediaGenerationModel;
   const wire = (config: ResolvedServerModelConfig) => {
     const keyConfigured = (overrides.getSurplusKeyConfigured
@@ -498,6 +544,12 @@ export function serverModelsRoutes(
       keyConfigured,
       ...(routes === undefined ? {} : { routes }),
     });
+    const visionProjection = {
+      policyEnabled: config.preferSurplus,
+      keyConfigured,
+      ...(routes === undefined ? {} : { routes }),
+    };
+    const visionModels = listVisionModels(visionProjection);
     return ({ ...toWire(config),
       surplus: {
         keyConfigured,
@@ -509,6 +561,10 @@ export function serverModelsRoutes(
       effectiveEmbeddingModel: (overrides.getEffectiveEmbeddingModel ?? effectiveEmbeddingModel)(),
       embeddingSelectionPending: activeEmbeddingSelection() !== config.embeddingModel,
       embeddingModels: embeddingModels(),
+      imageUnderstandingModels: visionModels,
+      effectiveImageUnderstandingModel: config.imageUnderstandingModel
+        ? visionModels.find((model) => model.id === config.imageUnderstandingModel && model.available)?.id ?? null
+        : visionModels.find((model) => model.available)?.id ?? null,
       imageModels: listMediaModels("image"),
       musicModels: listMediaModels("music"),
       videoModels: listMediaModels("video"),

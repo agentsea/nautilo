@@ -104,7 +104,7 @@ describe("personal capability preference routes", () => {
     const body = parse(response);
     expect(body["overrides"]).toEqual({});
     const capabilities = body["capabilities"] as Array<Record<string, unknown>>;
-    expect(capabilities).toHaveLength(14);
+    expect(capabilities).toHaveLength(15);
     expect(capabilities[0]).toMatchObject({
       selection: { source: "inherited", modelId: null, displayName: "Automatic" },
       readiness: { status: "missing-credentials" },
@@ -124,6 +124,7 @@ describe("personal capability preference routes", () => {
     });
     expect(source.openedSessionCount()).toBe(1);
     expect(source.openedWorkloads).toContain("memory");
+    expect(source.openedWorkloads).toContain("image_assistance");
     const capabilities = parse(response)["capabilities"] as Array<Record<string, unknown>>;
     expect(capabilities.filter((entry) => String(entry["role"]).startsWith("memory"))
       .map((entry) => [entry["role"], entry["label"]])).toEqual([

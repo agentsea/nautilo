@@ -5,7 +5,7 @@ import {
   resolveCallerImageInput,
   openImageAssistance,
   selectCallerImageAssistance,
-  type ImageAssistanceSelectionDeps,
+  type ImageAssistanceExecutionDeps,
 } from "../../src/lib/image-assistance";
 import { ModelFundingError, type ModelFundingDecision } from "../../src/lib/model-funding";
 
@@ -21,7 +21,7 @@ function model(id: string): EligibleModel {
 function decision(modelId: string, kind: "server" | "personal" = "personal"): ModelFundingDecision {
   const fields = { humanUserId: HUMAN, modelId, providerRoute: "openai", workload: "image_assistance" as const };
   return kind === "server" ? { ...fields, kind }
-    : { ...fields, kind, payerHumanId: HUMAN, credentialId: "synthetic-credential", credentialRevision: 1 };
+    : { ...fields, kind, payerHumanId: HUMAN, credentialId: "00000000-0000-4000-8000-000000000001", credentialRevision: 1 };
 }
 function harness(ids: string[], costs: Record<string, number> = {}) {
   const calls: Array<{ modelId: string; fundingKind?: string }> = [];
@@ -29,7 +29,10 @@ function harness(ids: string[], costs: Record<string, number> = {}) {
   const filtered = new Set<string>();
   const textOnly = new Set<string>(["openai:main", "openai:other-main"]);
   const encrypted = new Set<string>();
-  const deps: ImageAssistanceSelectionDeps = {
+  const deps: ImageAssistanceExecutionDeps = {
+    commitInput: (_jobId, digest) => `hmac-sha256:${digest}`,
+    readPreferences: async () => ({ revision: 0, overrides: {} }),
+    getServerSelection: () => null,
     listModels: () => ids.map(model),
     resolveCatalog: (id) => ({
       ...base, id, availability: filtered.has(id) ? "routing_filtered" : "missing_credentials",
@@ -55,7 +58,7 @@ describe("automatic caller image selection", () => {
     expect(await selectCallerImageAssistance({ humanUserId: HUMAN, fundingKind: "personal", mainModelId: "openai:main" }, h.deps))
       .toMatchObject({ modelId: "openai:new-vision", kind: "personal" });
     expect(h.calls.map((call) => call.modelId)).toEqual(["openai:cheap", "openai:new-vision"]);
-    expect(h.calls[0]).toMatchObject({ workload: "image_assistance", transport: "direct", fundingKind: "personal" });
+    expect(h.calls[0]).toMatchObject({ workload: "image_assistance", fundingKind: "personal" });
   });
 
   test("breaks equal estimated cost ties deterministically and never ranks unknown prices as free", async () => {
@@ -121,18 +124,18 @@ describe("automatic caller image selection", () => {
     expect(h.calls).toEqual([]);
   });
 
-  test("personal execution remains tool-free and rechecks exact Room ownership before credential access", async () => {
+  test("personal execution remains tool-free and rechecks current Room invocation authority before credential access", async () => {
     const h = harness(["openai:vision"]);
     let ownRoom = true;
     let decrypted = 0;
     let invoked = 0;
     const session = await openImageAssistance({
       humanUserId: HUMAN, modelId: "openai:main", roomId: "synthetic-room", agentId: "synthetic-agent",
-      entrypoint: "foreground.main", fundingKind: "personal",
+      entrypoint: "foreground.main", fundingKind: "personal", jobId: "job-main", turnId: "turn-main", inputDigest: "a".repeat(64),
     }, {
       ...h.deps,
-      privateRoom: async () => ownRoom,
-      assertInvocation: async () => undefined,
+      assertRoomAuthority: async () => { if (!ownRoom) throw new ModelFundingError("unsupported_workload"); },
+      readAdmission: async () => null, pinAdmission: async (_identity, value) => value, assertReplaySafe: async () => {}, claimDispatch: async () => true,
       withCredential: async (_decision, useKey) => { decrypted++; return useKey("synthetic-key"); },
     });
     expect(session?.fundingSession.personalTaskControls).toBeUndefined();
@@ -156,11 +159,11 @@ describe("automatic caller image selection", () => {
     const resolveFunding = h.deps.resolveFunding!;
     const session = await openImageAssistance({
       humanUserId: HUMAN, modelId: "openai:main", roomId: "synthetic-room", agentId: "synthetic-agent",
-      entrypoint: "foreground.fork", fundingKind: "personal",
+      entrypoint: "foreground.fork", fundingKind: "personal", jobId: "job-fork", turnId: "turn-fork", inputDigest: "b".repeat(64),
     }, {
       ...h.deps,
-      privateRoom: async () => true,
-      assertInvocation: async () => undefined,
+      assertRoomAuthority: async () => undefined,
+      readAdmission: async () => null, pinAdmission: async (_identity, value) => value, assertReplaySafe: async () => {}, claimDispatch: async () => true,
       resolveFunding: async (input) => {
         if (stale && input.priorDecision) throw new ModelFundingError("personal_credential_stale");
         return resolveFunding(input);
@@ -178,5 +181,80 @@ describe("automatic caller image selection", () => {
     expect(routeError).toMatchObject({ code: "unsupported_workload" });
     expect(invoked).toBe(0);
     expect(h.calls.every((call) => call.fundingKind === "personal")).toBe(true);
+  });
+});
+
+const invocation = {
+  humanUserId: HUMAN, modelId: "openai:main", roomId: "synthetic-room", agentId: "synthetic-agent",
+  entrypoint: "foreground.main" as const, fundingKind: "personal" as const,
+  jobId: "job-admitted", turnId: "turn-admitted", inputDigest: "c".repeat(64),
+};
+
+describe("durable helper admission", () => {
+  test("retains the first model and preference across a settings edit, then blocks duplicate dispatch", async () => {
+    const h = harness(["openai:vision", "openai:new-vision"]);
+    let preference = { revision: 1, overrides: { imageUnderstanding: "openai:vision" } };
+    let retained: import("@nautilo/types").ImageAssistanceAdmission | null = null;
+    let claims = 0;
+    const deps = {
+      ...h.deps, readPreferences: async () => preference,
+      assertRoomAuthority: async () => undefined,
+      readAdmission: async () => retained,
+      pinAdmission: async (_identity: unknown, value: import("@nautilo/types").ImageAssistanceAdmission) => retained ??= value,
+      assertReplaySafe: async () => {},
+      claimDispatch: async () => {
+        claims++;
+        if (retained?.state !== "admitted") return false;
+        retained = { ...retained, state: "dispatched" };
+        return true;
+      },
+      withCredential: async (_binding: unknown, useKey: (value: string) => unknown) => useKey("synthetic-key"),
+    };
+    await openImageAssistance(invocation, deps as never);
+    preference = { revision: 2, overrides: { imageUnderstanding: "openai:new-vision" } };
+    const resumed = await openImageAssistance(invocation, deps as never);
+    expect(resumed).toMatchObject({ modelId: "openai:vision", preferenceRevision: 1, operationId: "image-assistance:job-admitted" });
+    const competing = await openImageAssistance(invocation, deps as never);
+    expect(await resumed!.fundingSession.runAttempt("openai:vision", async () => "answer")).toBe("answer");
+    expect(await competing!.fundingSession.runAttempt("openai:vision", async () => "duplicate")
+      .then(() => null, (error: unknown) => error)).toMatchObject({ code: "funding_source_changed" });
+    expect(await openImageAssistance(invocation, deps as never)
+      .then(() => null, (error: unknown) => error)).toMatchObject({ code: "funding_source_changed" });
+    expect(claims).toBe(2);
+  });
+
+  test("one dispatch claim covers Surplus then exact same-payer direct fallback", async () => {
+    const h = harness(["openai:vision"]);
+    const calls: Array<{ transport?: string; priorDecision?: ModelFundingDecision }> = [];
+    const marketplace = { ...decision("openai:vision"), providerRoute: "surplus" } as ModelFundingDecision;
+    let claims = 0;
+    const session = await openImageAssistance(invocation, {
+      ...h.deps, assertRoomAuthority: async () => undefined,
+      readAdmission: async () => null, pinAdmission: async (_identity, value) => value,
+      assertReplaySafe: async () => {},
+      claimDispatch: async () => { claims++; return true; },
+      resolveFunding: async (input) => { calls.push(input); return input.transport === "direct" ? decision(input.modelId) : marketplace; },
+      withCredential: async (binding, useKey) => useKey(binding.providerRoute === "surplus" ? "marketplace-key" : "direct-key"),
+    });
+    expect(await session!.fundingSession.runAttempt("openai:vision", async (attempt) => attempt.personalCredential?.apiKey)).toBe("marketplace-key");
+    expect(await session!.fundingSession.runAttempt("openai:vision", async (attempt) => attempt.personalCredential?.apiKey, "direct")).toBe("direct-key");
+    expect(calls.slice(1).map((call) => call.transport)).toEqual(["surplus", "direct"]);
+    expect(calls.slice(1).every((call) => call.priorDecision?.providerRoute === "surplus")).toBe(true);
+    expect(claims).toBe(1);
+    expect(await session!.fundingSession.runAttempt("openai:new-model", async () => "bad", "direct")
+      .then(() => null, (error: unknown) => error)).toMatchObject({ code: "unsupported_workload" });
+  });
+
+  test("a direct admitted helper cannot acquire Surplus after policy changes", async () => {
+    const h = harness(["openai:vision"]);
+    const session = await openImageAssistance(invocation, {
+      ...h.deps, assertRoomAuthority: async () => undefined,
+      readAdmission: async () => null, pinAdmission: async (_identity, value) => value,
+      assertReplaySafe: async () => {},
+      claimDispatch: async () => true,
+      withCredential: async (_binding, useKey) => useKey("direct-key"),
+    });
+    expect(await session!.fundingSession.runAttempt("openai:vision", async () => "bad", "surplus")
+      .then(() => null, (error: unknown) => error)).toMatchObject({ code: "funding_source_changed" });
   });
 });

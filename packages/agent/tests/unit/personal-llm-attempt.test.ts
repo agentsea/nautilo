@@ -254,3 +254,153 @@ describe("explicit nonpersonal Memory model attempts", () => {
     expect(calls).toBe(0);
   });
 });
+
+describe("server-funded image assistance attempts", () => {
+  function imageHarness() {
+    const begun: BeginServiceLlmAttemptInput[] = [];
+    const settled: SettlePersonalLlmAttemptInput[] = [];
+    const ordinary = harness();
+    return {
+      begun,
+      settled,
+      deps: {
+        ...ordinary.deps,
+        beginServer: async (input: BeginServiceLlmAttemptInput) => { begun.push(input); },
+        settleServer: async (input: SettlePersonalLlmAttemptInput) => { settled.push(input); },
+      },
+    };
+  }
+
+  const imageScope = <T>(fn: () => T) => runWithUsageContext({
+    callType: "image_assistance",
+    userId: "10000000-0000-4000-8000-000000000001",
+    roomId: "30000000-0000-4000-8000-000000000003",
+    funding: {
+      kind: "server" as const,
+      humanUserId: "10000000-0000-4000-8000-000000000001",
+      providerRoute: "openai",
+    },
+    metadata: { operationId: "image-assistance:turn-a:digest-a", turnId: "turn-a" },
+  }, fn);
+
+  test("begins before dispatch and settles callback evidence on the same attempt", async () => {
+    const h = imageHarness();
+    const result = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => {
+        expect(h.begun).toHaveLength(1);
+        expect(h.begun[0]).toMatchObject({
+          callType: "image_assistance",
+          userId: "10000000-0000-4000-8000-000000000001",
+          roomId: "30000000-0000-4000-8000-000000000003",
+          providerRoute: "openai",
+          metadata: {
+            operationId: "image-assistance:turn-a:digest-a",
+            turnId: "turn-a",
+          },
+        });
+        expect(getUsageContext()?.trackedAttemptId).toBe(h.begun[0]!.id);
+        getUsageContext()?.onAttemptUsage?.({
+          inputTokens: 120,
+          outputTokens: 24,
+          reasoningTokens: 0,
+          cachedInputTokens: 0,
+          cacheCreationTokens: 0,
+          actualCostUsd: null,
+        });
+        return "observations";
+      },
+    }, h.deps));
+
+    expect(result).toBe("observations");
+    expect(h.settled).toHaveLength(1);
+    expect(h.settled[0]).toMatchObject({
+      attemptId: h.begun[0]!.id,
+      outcome: "succeeded",
+      costState: "estimated",
+      inputTokens: 120,
+      outputTokens: 24,
+    });
+  });
+
+  test("keeps missing usage unknown and records a proven refusal without replay", async () => {
+    const missing = imageHarness();
+    await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => "observations",
+    }, missing.deps));
+    expect(missing.settled).toHaveLength(1);
+    expect(missing.settled[0]).toMatchObject({ outcome: "succeeded", costState: "unknown" });
+
+    const refused = imageHarness();
+    let invokes = 0;
+    const providerError = Object.assign(new Error("rejected"), { status: 429 });
+    const error = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { invokes += 1; throw providerError; },
+    }, refused.deps)).then(() => null, (caught: unknown) => caught);
+    expect(error).toMatchObject({ disposition: "safe_refusal", cause: providerError });
+    expect(invokes).toBe(1);
+    expect(refused.begun).toHaveLength(1);
+    expect(refused.settled).toHaveLength(1);
+    expect(refused.settled[0]).toMatchObject({
+      outcome: "failed",
+      costState: "unknown",
+      failureCode: "provider_refused",
+    });
+  });
+
+  test("preserves cancellation when late actual cost arrives", async () => {
+    const h = imageHarness();
+    const abort = new AbortController();
+    let callback: NonNullable<ReturnType<typeof getUsageContext>>["onAttemptUsage"];
+    const error = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      signal: abort.signal,
+      invoke: async () => {
+        callback = getUsageContext()!.onAttemptUsage;
+        abort.abort();
+        throw new Error("cancelled");
+      },
+    }, h.deps)).then(() => null, (caught: unknown) => caught);
+    expect(error).toMatchObject({ disposition: "terminal_cancelled" });
+    expect(h.settled[0]).toMatchObject({ outcome: "cancelled", costState: "unknown" });
+
+    callback!({
+      inputTokens: 12,
+      outputTokens: 3,
+      reasoningTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationTokens: 0,
+      actualCostUsd: 0.002,
+    });
+    expect(h.settled[1]).toMatchObject({
+      outcome: "cancelled",
+      costState: "actual",
+      actualCostUsd: 0.002,
+      preserveOutcome: true,
+    });
+  });
+
+  test("settlement failure returns completed output without another invocation", async () => {
+    const h = imageHarness();
+    let invokes = 0;
+    let settlements = 0;
+    const result = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { invokes += 1; return "retained observations"; },
+    }, {
+      ...h.deps,
+      settleServer: async () => { settlements += 1; throw new Error("database unavailable"); },
+    }));
+    expect(result).toBe("retained observations");
+    expect(invokes).toBe(1);
+    expect(settlements).toBe(2);
+    expect(h.begun).toHaveLength(1);
+  });
+});

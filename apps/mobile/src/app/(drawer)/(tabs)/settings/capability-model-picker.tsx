@@ -8,6 +8,8 @@ import { SettingsPickerScreen } from "@/components/settings/settings-picker-scre
 import { SettingsStatus } from "@/components/settings/settings-status";
 import {
   createPersonalCapabilityPreferencesController,
+  PERSONAL_CAPABILITY_INHERIT,
+  personalCapabilityPickerOptions,
   personalCapabilityPreferenceErrorMessage,
   type PersonalCapabilityPreferencesController,
 } from "@/features/settings/personal-capability-preferences-controller";
@@ -17,8 +19,6 @@ import { useAuth } from "@/providers/auth";
 import { useServers } from "@/providers/server-registry";
 import { useAppTheme } from "@/providers/theme";
 import type { AppTheme } from "@/theme/tokens";
-
-const INHERIT = "__inherit__";
 
 export default function CapabilityModelPickerScreen() {
   const params = useLocalSearchParams<{ role?: string }>();
@@ -76,34 +76,18 @@ export default function CapabilityModelPickerScreen() {
   }, [controller, scope]);
 
   const capability = role ? state.data?.capabilities.find((entry) => entry.role === role) : undefined;
-  const needle = query.trim().toLocaleLowerCase();
-  const options = capability ? [
-    {
-      id: INHERIT,
-      label: `Inherit · ${capability.selection.source === "inherited" ? capability.selection.displayName : "workflow default"}`,
-      description: "Follow the current workflow default.",
-    },
-    ...capability.options.filter((option) => !needle || [option.modelId, option.displayName, option.provider]
-      .some((value) => value.toLocaleLowerCase().includes(needle)))
-      .map((option) => ({
-        id: option.modelId,
-        label: option.displayName,
-        description: `${option.modelId} · ${option.provider} · ${option.readiness.status === "ready"
-          ? option.readiness.fundingSource === "personal"
-            ? `Your ${option.readiness.providerRoute} credential`
-            : `Server ${option.readiness.providerRoute} credential`
-          : option.readiness.reason ?? "Unavailable now"}`,
-      })),
-  ] : [];
-  const selectedId = role && state.data?.overrides[role] ? state.data.overrides[role] : INHERIT;
+  const options = capability ? personalCapabilityPickerOptions(capability, query) : [];
+  const selectedId = role && state.data?.overrides[role]
+    ? state.data.overrides[role]
+    : PERSONAL_CAPABILITY_INHERIT;
   const pendingId = state.mutating
-    ? state.draft?.modelId ?? INHERIT
+    ? state.draft?.modelId ?? PERSONAL_CAPABILITY_INHERIT
     : undefined;
 
   const apply = async (id: string) => {
     if (!role) return;
     try {
-      const result = await controller.apply(role, id === INHERIT ? null : id);
+      const result = await controller.apply(role, id === PERSONAL_CAPABILITY_INHERIT ? null : id);
       if (result.status === "applied") router.replace("/(drawer)/(tabs)/settings/capability-models");
     } catch {
       // The controller retains the canonical state and exposes the error below.

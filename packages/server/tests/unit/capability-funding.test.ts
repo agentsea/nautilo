@@ -16,6 +16,7 @@ const HUMAN_ID = "10000000-0000-4000-8000-000000000001";
 const CREDENTIAL_ID = "20000000-0000-4000-8000-000000000002";
 const DECISION_MODEL = "openrouter:typesafe/jev-1.13";
 const RESEARCH_MODEL = "openrouter:anthropic/claude-sonnet-4.6";
+const VISION_MODEL = "anthropic:claude-sonnet-4-6";
 
 function credential(
   provider: PersonalProviderId,
@@ -133,6 +134,42 @@ describe("capability funding projection", () => {
       binding: { kind: "server", providerRoute: "openrouter" },
     });
     expect(custodyReads).toBe(0);
+  });
+
+  test("resolves and opens the sparse image-understanding preference with its revision", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverProjectionDeps(), {
+      readPreferences: async () => ({
+        revision: 6,
+        overrides: { imageUnderstanding: VISION_MODEL },
+      }),
+    });
+    expect(await session.resolveModel("imageUnderstanding")).toEqual({
+      modelId: VISION_MODEL,
+      preferenceRevision: 6,
+    });
+    expect(await session.openModel(VISION_MODEL, "image_assistance")).toMatchObject({
+      binding: { kind: "server", providerRoute: "openrouter" },
+      fundingSession: { workload: "image_assistance" },
+    });
+  });
+
+  test("keeps a qualified Surplus image-understanding admission through readiness and open", async () => {
+    const projectionDeps: ModelFundingDeps = {
+      ...serverProjectionDeps(),
+      serverRoute: (_modelId, _workload, transport) => transport === "direct" ? "anthropic" : "surplus",
+    };
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, projectionDeps, {
+      readPreferences: async () => ({
+        revision: 2,
+        overrides: { imageUnderstanding: VISION_MODEL },
+      }),
+    });
+    expect(await session.resolveModel("imageUnderstanding")).toEqual({
+      modelId: VISION_MODEL,
+      preferenceRevision: 2,
+    });
+    const opened = await session.openModel(VISION_MODEL, "image_assistance");
+    expect(opened.binding).toEqual({ kind: "server", providerRoute: "surplus" });
   });
 
   test("rejects non-text research and decision models without choice support", async () => {

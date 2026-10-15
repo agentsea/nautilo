@@ -55,7 +55,10 @@ export function usageFundingFor(decision: ModelFundingDecision) {
 }
 
 function assertSignedChatModel(modelId: string): void {
-  const model = resolveRetainedModels([modelId], { purpose: "chat", env: {} })[0];
+  const model = resolveRetainedModels([modelId], {
+    purpose: "chat",
+    env: { NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] },
+  })[0];
   if (!model || (model.availability !== "selectable" && model.availability !== "missing-key")) {
     throw new ModelFundingError("unsupported_provider");
   }
@@ -82,7 +85,7 @@ export async function isOwnPrivateGenieRoom(
     && genie.agentOwnerUserId === humanUserId;
 }
 
-async function assertForegroundRoomAuthority(input: Readonly<{
+export async function assertForegroundRoomAuthority(input: Readonly<{
   humanUserId: string;
   roomId: string;
   agentId?: string;

@@ -2,7 +2,10 @@
 
 import { describe, expect, test } from "bun:test";
 import type { PersonalCapabilityPreferencesResponse } from "@nautilo/api-client/browser";
-import { createPersonalCapabilityPreferencesController } from "./personal-capability-preferences-controller";
+import {
+  createPersonalCapabilityPreferencesController,
+  personalCapabilityPickerOptions,
+} from "./personal-capability-preferences-controller";
 
 const scope = { serverId: "server-a", userId: "user-a", actorId: "actor-a" };
 
@@ -72,5 +75,71 @@ describe("personal capability preferences controller", () => {
     await controller.load();
     expect(controller.apply("webSearchSynthesis", "openai:unknown")).rejects.toThrow();
     expect(writes).toBe(0);
+  });
+
+  test("applies and independently resets the projected image understanding role", async () => {
+    let current = {
+      ...snapshot(),
+      capabilities: [{
+        role: "imageUnderstanding" as const,
+        label: "Image understanding",
+        description: "Reads and reasons about attached images without generating them.",
+        selection: { source: "inherited" as const, modelId: "openai:gpt-5.4-mini", displayName: "GPT-5.4 mini" },
+        readiness: { status: "ready" as const, reason: null, fundingSource: "server" as const, providerRoute: "openai" },
+        options: [{
+          modelId: "openai:gpt-5.4-mini",
+          displayName: "GPT-5.4 mini",
+          provider: "openai",
+          readiness: { status: "ready" as const, reason: null, fundingSource: "server" as const, providerRoute: "openai" },
+        }],
+      }],
+    } satisfies PersonalCapabilityPreferencesResponse;
+    const writes: unknown[] = [];
+    const controller = createPersonalCapabilityPreferencesController(() => ({
+      getPersonalCapabilityPreferences: async () => current,
+      replacePersonalCapabilityPreferences: async (input) => {
+        writes.push(input);
+        current = { ...current, revision: current.revision + 1, overrides: input.overrides };
+        return current;
+      },
+    }));
+    controller.setScope(scope);
+    await controller.load();
+
+    expect((await controller.apply("imageUnderstanding", "openai:gpt-5.4-mini")).status).toBe("applied");
+    expect((await controller.apply("imageUnderstanding", null)).status).toBe("applied");
+    expect(writes).toEqual([
+      { expectedRevision: 0, overrides: { imageUnderstanding: "openai:gpt-5.4-mini" } },
+      { expectedRevision: 1, overrides: {} },
+    ]);
+  });
+
+  test("presents inherited, explicit, and unavailable image understanding choices", () => {
+    const capability = {
+      role: "imageUnderstanding" as const,
+      label: "Image understanding",
+      description: "Reads images.",
+      selection: { source: "inherited" as const, modelId: "openai:gpt-5.4-mini", displayName: "GPT-5.4 mini" },
+      readiness: { status: "ready" as const, reason: null, fundingSource: "server" as const, providerRoute: "openai" },
+      options: [{
+        modelId: "openrouter:qwen/qwen3-vl",
+        displayName: "Qwen3 VL",
+        provider: "openrouter",
+        readiness: { status: "missing-credentials" as const, reason: "Add an OpenRouter key.", fundingSource: null, providerRoute: null },
+      }],
+    };
+
+    expect(personalCapabilityPickerOptions(capability, "qwen")).toEqual([
+      {
+        id: "__inherit__",
+        label: "Inherit · GPT-5.4 mini",
+        description: "Follow the current workflow default.",
+      },
+      {
+        id: "openrouter:qwen/qwen3-vl",
+        label: "Qwen3 VL",
+        description: "openrouter:qwen/qwen3-vl · openrouter · Add an OpenRouter key.",
+      },
+    ]);
   });
 });

@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Image understanding has independent administrator and personal model choices
+  beside media generation settings. Text-only chats can use a qualified vision
+  helper through their admitted direct or Surplus credentials. Costs separates
+  helper attempts from the main reply, including failures and uncertain charges;
+  retained observations and accepted funding survive recovery without automatic
+  regeneration of a previously dispatched helper call.
+
 - Personal Memory review, reflection and summarization models can be selected
   independently. Memory processing uses a member's admitted funding only when
   current input evidence proves that member's exclusive authorship and audience;

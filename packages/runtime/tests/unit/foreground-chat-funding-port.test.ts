@@ -189,9 +189,10 @@ describe("foreground chat funding port", () => {
   test.each(["foreground.main", "foreground.fork"] as const)("image assistance uses accepted %s authority and pinned funding", async (entrypoint) => {
     const opened: unknown[] = [];
     installForegroundChatFundingPort({ openSession: async () => personalSession,
-      openImageAssistance: async (input) => { opened.push(input); return { modelId: "vision-a", fundingSession: personalSession }; } });
+      openImageAssistance: async (input) => { opened.push(input); return { modelId: "vision-a", fundingSession: personalSession, operationId: "image-assistance:job-image", preferenceRevision: 0 }; } });
     const input = { authority: createAcceptedInvocationAuthority("human-1"), jobInput: baseJobInput,
-      causalHumanUserId: "human-1", entrypoint, modelId: "text-a", roomId: "room-1", agentId: "agent-1", fundingKind: "personal" as const };
+      causalHumanUserId: "human-1", entrypoint, modelId: "text-a", roomId: "room-1", agentId: "agent-1", fundingKind: "personal" as const,
+      jobId: "job-image", turnId: "turn-image", inputDigest: "a".repeat(64) };
     expect((await openImageAssistanceForInvocation(input))?.modelId).toBe("vision-a");
     expect(opened[0]).toMatchObject({ humanUserId: "human-1", fundingKind: "personal", entrypoint });
     expect(openImageAssistanceForInvocation({ ...input, causalHumanUserId: "other" })).rejects.toBeInstanceOf(ForegroundChatFundingAuthorityError);

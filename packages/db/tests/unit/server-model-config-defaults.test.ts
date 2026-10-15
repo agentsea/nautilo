@@ -26,6 +26,7 @@ describe("resolveServerModelConfig", () => {
       reflectionModel: "",
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -45,6 +46,7 @@ describe("resolveServerModelConfig", () => {
       reflectionModel: null,
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -61,6 +63,7 @@ describe("resolveServerModelConfig", () => {
       reflectionModel: "",
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -80,6 +83,7 @@ describe("resolveServerModelConfig", () => {
       reflectionModel: "anthropic:claude-haiku-4-5",
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -96,6 +100,7 @@ describe("resolveServerModelConfig", () => {
       reflectionModel: "anthropic:claude-haiku-4-5",
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -117,6 +122,7 @@ describe("upsertServerModelConfig", () => {
       reflectionModel: null,
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -165,7 +171,7 @@ describe("upsertServerModelConfig", () => {
     expect(result.preferSurplus).toBe(true);
   });
 
-  it("round-trips independent nullable and automatic media selections", async () => {
+  it("round-trips independent image understanding and media selections", async () => {
     const stored = {
       id: "server",
       defaultChatModel: DEFAULTS.defaultChatModel,
@@ -174,6 +180,7 @@ describe("upsertServerModelConfig", () => {
       reflectionModel: null,
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,
@@ -195,11 +202,13 @@ describe("upsertServerModelConfig", () => {
     } as unknown as ServerModelConfigDb;
 
     const result = await upsertServerModelConfig(db, {
+      imageUnderstandingModel: "anthropic:claude-sonnet-4-6",
       imageModel: "",
       musicModel: null,
       videoModel: "venice:seedance-2-5-text-to-video-basic",
     }, DEFAULTS);
     expect(result).toMatchObject({
+      imageUnderstandingModel: "anthropic:claude-sonnet-4-6",
       imageModel: "",
       musicModel: null,
       videoModel: "venice:seedance-2-5-text-to-video-basic",
@@ -225,6 +234,7 @@ describe("server model config cache", () => {
       reflectionModel: null,
       memoryReviewModel: null,
       embeddingModel: null,
+      imageUnderstandingModel: null,
       imageModel: null,
       musicModel: null,
       videoModel: null, speechModel: null,

@@ -29,6 +29,7 @@ import { createCapabilityFundingSession } from "../lib/capability-funding";
 import { createModelFundingSnapshot } from "../lib/model-funding";
 import { personalMediaModels } from "../lib/media-model-preferences";
 import { personalMemoryModels } from "../lib/memory-model-preferences";
+import { listPersonalImageUnderstandingModels } from "../lib/image-model-preferences";
 import { getServerDirectDb } from "../lib/server-direct-db";
 
 const RESEARCH_ROLE = {
@@ -47,6 +48,7 @@ const PRESENTATION: Readonly<Record<PersonalCapabilityRole, { label: string; des
   deepResearchSummarization: { label: "Research summarization", description: "Summarizes research evidence between stages." },
   deepResearchCompression: { label: "Research compression", description: "Compresses retained research context for continuation." },
   deepResearchFinalReport: { label: "Final research report", description: "Writes the final Deep Research report." },
+  imageUnderstanding: { label: "Image understanding", description: "Interprets attached images when the selected chat model cannot read them directly." },
   imageGeneration: { label: "Image generation", description: "Creates and edits images with supported models." },
   videoGeneration: { label: "Video generation", description: "Creates videos; accepted jobs keep their selected model and account." },
   musicGeneration: { label: "Music generation", description: "Creates music; accepted jobs keep their selected model and account." },
@@ -110,6 +112,7 @@ function decisionModels(): StructuralModel[] {
 function listPersonalCapabilityModels(role: PersonalCapabilityRole): readonly StructuralModel[] {
   return isMediaCapabilityRole(role) ? personalMediaModels(role)
     : isMemoryCapabilityRole(role) ? personalMemoryModels(role)
+    : role === "imageUnderstanding" ? listPersonalImageUnderstandingModels()
     : role === "decision" ? decisionModels() : researchModels(role);
 }
 
@@ -145,6 +148,7 @@ async function projectPreferences(
   const readiness = new Map<string, Promise<PersonalCapabilityModelReadiness>>();
   const readinessFor = (modelId: string, role: PersonalCapabilityRole) => {
     const workload = role === "decision" ? "decision"
+      : role === "imageUnderstanding" ? "image_assistance"
       : isMemoryCapabilityRole(role) ? "memory" : "research";
     const key = `${isMediaCapabilityRole(role) ? role : workload}:${modelId}`;
     const cached = readiness.get(key);

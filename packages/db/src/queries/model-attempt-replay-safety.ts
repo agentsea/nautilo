@@ -12,7 +12,7 @@ export type ModelAttemptReplayIdentity =
   | Readonly<{
       kind: "operation";
       roomId: string;
-      callType: "room_stenographer" | "room_event_compaction" | "room_reflection";
+      callType: "room_stenographer" | "room_event_compaction" | "room_reflection" | "image_assistance";
       operationId: string;
     }>;
 
@@ -67,6 +67,11 @@ export async function resolveModelAttemptReplaySafety(
     return { decision: "allow" };
   }
   const callType = identity.kind === "memory_review" ? "memory_review" : identity.callType;
+  // Image assistance has no separate durable work row that can prove a
+  // succeeded provider result was unusable. Without a retained transcript
+  // observation, every non-refusal wire outcome remains non-replayable.
+  const knownNonusableResult = options.knownNonusableResult === true
+    && callType !== "image_assistance";
   const unsafeFailedAttempt = and(
     eq(llmUsageEvents.attemptOutcome, "failed"),
     or(
@@ -74,7 +79,7 @@ export async function resolveModelAttemptReplaySafety(
       notInArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES]),
     ),
   );
-  const blockingAttempt = options.knownNonusableResult === true
+  const blockingAttempt = knownNonusableResult
     ? or(
         isNull(llmUsageEvents.attemptOutcome),
         notInArray(llmUsageEvents.attemptOutcome, ["failed", "succeeded"]),
@@ -105,5 +110,5 @@ export async function resolveModelAttemptReplaySafety(
       blockingAttempt,
     ))
     .limit(1);
-  return classifyModelAttemptReplaySafety(rows, options);
+  return classifyModelAttemptReplaySafety(rows, { knownNonusableResult });
 }

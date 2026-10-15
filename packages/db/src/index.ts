@@ -4,6 +4,7 @@ export { moderationAccessAllowedSql, moderationBanAbsentSql, moderationEffective
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";
 export * from "./queries/invocation-origin-access";
+export * from "./queries/image-assistance-admission";
 export { createEventFeedPreferenceStore } from "./queries/event-feed-preferences";
 export * from "./queries/media-generations";
 export * from "./queries/conversion-operations";

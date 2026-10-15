@@ -37,6 +37,7 @@ const summary = {
     { callType: "chat", calls: 2, totalCostUsd: 3 },
     { callType: "decision", calls: 1, totalCostUsd: 0.25 },
     { callType: "deep_research", calls: 1, totalCostUsd: 0.75 },
+    { callType: "image_assistance", calls: 1, totalCostUsd: 0.1 },
     { callType: "custom_operation", calls: 1, totalCostUsd: 0.5 },
   ],
   totals: { unknownProviderOperations: 4 },
@@ -61,6 +62,7 @@ test("labels known call types and preserves unknown semantic identifiers", () =>
     { key: "chat", label: "Chat", calls: 2, knownCostUsd: 3 },
     { key: "decision", label: "Decision", calls: 1, knownCostUsd: 0.25 },
     { key: "deep_research", label: "Deep research", calls: 1, knownCostUsd: 0.75 },
+    { key: "image_assistance", label: "Image understanding", calls: 1, knownCostUsd: 0.1 },
     {
       key: "custom_operation",
       label: "custom_operation",

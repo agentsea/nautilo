@@ -42,6 +42,7 @@ export interface SurplusChatAttemptInput {
   /** True only after this attempt delivered text or an executable action outside the provider buffer. */
   readonly hasDeliveredOutput: () => boolean;
   readonly invokeModel: InvokeModel;
+  readonly validateResponse?: (response: AIMessage) => void;
 }
 
 export type SurplusChatAttemptResult =
@@ -270,7 +271,8 @@ function memoryAttemptCorrelation(context: ReturnType<typeof getUsageContext>): 
   }
   if (context?.callType === "room_stenographer"
     || context?.callType === "room_event_compaction"
-    || context?.callType === "room_reflection") {
+    || context?.callType === "room_reflection"
+    || context?.callType === "image_assistance") {
     const operationId = nonEmptyMetadataString(context.metadata, "operationId");
     return operationId ? { operationId } : {};
   }
@@ -399,6 +401,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     );
     terminalUsage = readSurplusResponseUsage(response);
     assertCompleteSurplusResponse(receipt, response);
+    input.validateResponse?.(response);
     const usage = terminalUsage;
     const costMicro = usage.buyerCostMicro ?? receipt?.buyerCostMicro;
     try {
