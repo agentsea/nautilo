@@ -441,6 +441,28 @@ describe("portable recovery image job", () => {
     expect(sqlMutationEvents(events)).toEqual([]);
   });
 
+  test("accepts a direct credential key in the final COPY field with CRLF framing", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    const sql = ["COPY public.personal_provider_credentials (id, key_id) FROM stdin;",
+      `credential\t${CUSTODY_KEY_ID}`, String.raw`\.`, ""].join("\r\n");
+
+    await runPortableRecoveryJob({ direction: "restore", operationId: "op", objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256), fs: fakeFs(events),
+      runner: runner(events, APP_RESTORE_TOC_WITH_CREDENTIALS, { restoredCredentialSql: sql, restoredCredentialChunkSize: 1 }), storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    });
+
+    expect(sqlMutationEvents(events).some(event => event.includes("chatgpt_restore"))).toBe(true);
+  });
+
   test.each([
     ["matching identity and token custody", CUSTODY_KEY_ID, CUSTODY_KEY_ID, true],
     ["disconnected identity custody", CUSTODY_KEY_ID, null, true],

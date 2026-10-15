@@ -965,7 +965,11 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       if (fieldIndex === 0 && firstFieldPrefix.length < 3) firstFieldPrefix += character;
       if (fieldIndex === keyIndex) {
         if (table === PERSONAL_PROVIDER_TABLE) {
-          if (currentKeyId.length >= UUID_TEXT_LENGTH) invalidate("portable recovery personal credential row has invalid custody identity");
+          // Permit the final CRLF framing byte after a complete UUID; retain
+          // other carriage returns so malformed field content fails validation.
+          const finalCarriageReturn = character === "\r" && fieldIndex === columnCount - 1
+            && currentKeyId.length === UUID_TEXT_LENGTH;
+          if (currentKeyId.length >= UUID_TEXT_LENGTH && !finalCarriageReturn) invalidate("portable recovery personal credential row has invalid custody identity");
           else currentKeyId += character;
         } else {
           identityEnvelope ??= new SubscriptionEnvelopeKeyIdReader();
