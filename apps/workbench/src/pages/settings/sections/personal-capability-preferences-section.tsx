@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import type {
   PersonalCapabilityModelReadiness,
+  PersonalCapabilityPreferenceProjection,
   PersonalCapabilityPreferenceOverrides,
   PersonalCapabilityPreferencesResponse,
   PersonalCapabilityRole,
@@ -39,6 +40,27 @@ function fundingLabel(readiness: PersonalCapabilityModelReadiness): string {
   return readiness.fundingSource === "personal"
     ? `Your ${readiness.providerRoute} credential`
     : `Server ${readiness.providerRoute} credential`;
+}
+
+function imageFundingLabel(readiness: PersonalCapabilityModelReadiness): string {
+  if (readiness.status !== "ready") return statusLabel(readiness.status);
+  if (readiness.fundingSource === "server") return "Server-funded chats only";
+  if (readiness.fundingSource === "personal") return "Personal-funded chats only";
+  return "Both funding sources";
+}
+
+function selectionDisplayName(capability: PersonalCapabilityPreferenceProjection): string {
+  return capability.role === "imageUnderstanding"
+    && capability.selection.source === "inherited"
+    && capability.selection.modelId === null
+    ? "Automatic — depends on chat funding"
+    : capability.selection.displayName;
+}
+
+function capabilityDescription(capability: PersonalCapabilityPreferenceProjection): string {
+  return capability.role === "imageUnderstanding"
+    ? `${capability.description} The helper follows the current chat funding and the main model's privacy requirements.`
+    : capability.description;
 }
 
 export function PersonalCapabilityPreferencesSection() {
@@ -180,6 +202,15 @@ export function PersonalCapabilityPreferencesSection() {
           </p>
           {state.capabilities.map((capability) => {
             const saved = state.overrides[capability.role];
+            const retainedUnavailable = saved && !capability.options.some((option) => option.modelId === saved)
+              ? {
+                  modelId: saved,
+                  displayName: capability.selection.modelId === saved
+                    ? capability.selection.displayName
+                    : saved,
+                }
+              : null;
+            const displayName = selectionDisplayName(capability);
             return (
               <div key={capability.role} className="border-b border-border/40 pb-5 last:border-0 last:pb-0">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -187,10 +218,12 @@ export function PersonalCapabilityPreferencesSection() {
                     <label htmlFor={`capability-${capability.role}`} className="text-sm font-medium text-foreground">
                       {capability.label}
                     </label>
-                    <p className="mt-0.5 text-xs text-foreground-muted">{capability.description}</p>
+                    <p className="mt-0.5 text-xs text-foreground-muted">{capabilityDescription(capability)}</p>
                   </div>
                   <StatusPill tone={statusTone(capability.readiness.status)}>
-                    {statusLabel(capability.readiness.status)}
+                    {capability.role === "imageUnderstanding" && capability.readiness.status === "ready"
+                      ? imageFundingLabel(capability.readiness)
+                      : statusLabel(capability.readiness.status)}
                   </StatusPill>
                 </div>
                 <select
@@ -200,17 +233,24 @@ export function PersonalCapabilityPreferencesSection() {
                   disabled={savingRole !== null}
                   onChange={(event) => { void save(capability.role, event.target.value); }}
                 >
-                  <option value="">Inherit — {capability.selection.source === "inherited" ? capability.selection.displayName : "workflow default"}</option>
+                  <option value="">Inherit — {capability.selection.source === "inherited" ? displayName : "workflow default"}</option>
+                  {retainedUnavailable ? (
+                    <option value={retainedUnavailable.modelId} disabled>
+                      {retainedUnavailable.displayName} · Retained unavailable choice
+                    </option>
+                  ) : null}
                   {capability.options.map((option) => (
                     <option key={option.modelId} value={option.modelId}>
-                      {option.displayName} · {option.provider} · {option.readiness.status === "ready" ? fundingLabel(option.readiness) : statusLabel(option.readiness.status)}
+                      {option.displayName} · {option.provider} · {capability.role === "imageUnderstanding"
+                        ? imageFundingLabel(option.readiness)
+                        : option.readiness.status === "ready" ? fundingLabel(option.readiness) : statusLabel(option.readiness.status)}
                     </option>
                   ))}
                 </select>
                 <p className="mt-2 text-xs text-foreground-muted">
-                  Effective: <strong className="text-foreground">{capability.selection.displayName}</strong>
+                  Effective: <strong className="text-foreground">{displayName}</strong>
                   {` · ${capability.selection.source === "personal" ? "Your choice" : "Inherited"}`}
-                  {` · ${fundingLabel(capability.readiness)}`}
+                  {` · ${capability.role === "imageUnderstanding" ? imageFundingLabel(capability.readiness) : fundingLabel(capability.readiness)}`}
                   {capability.readiness.reason ? ` · ${capability.readiness.reason}` : ""}
                 </p>
               </div>

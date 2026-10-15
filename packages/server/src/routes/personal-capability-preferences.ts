@@ -20,6 +20,7 @@ import {
   type PersonalCapabilityModelReadiness,
   type PersonalCapabilityPreferenceProjection,
   type PersonalCapabilityPreferences,
+  type PersonalCapabilityPreferenceOverrides,
   type PersonalCapabilityRole,
   type ResearchCapabilityRole,
   isMediaCapabilityRole,
@@ -144,11 +145,11 @@ async function projectPreferences(
   preferences: PersonalCapabilityPreferences,
   session: CapabilityFundingSession,
   listModels: (role: PersonalCapabilityRole) => readonly StructuralModel[],
+  roles: readonly PersonalCapabilityRole[],
 ): Promise<readonly PersonalCapabilityPreferenceProjection[]> {
   const readiness = new Map<string, Promise<PersonalCapabilityModelReadiness>>();
   const readinessFor = (modelId: string, role: PersonalCapabilityRole) => {
     const workload = role === "decision" ? "decision"
-      : role === "imageUnderstanding" ? "image_assistance"
       : isMemoryCapabilityRole(role) ? "memory" : "research";
     const key = `${isMediaCapabilityRole(role) ? role : workload}:${modelId}`;
     const cached = readiness.get(key);
@@ -167,8 +168,74 @@ async function projectPreferences(
     return pending;
   };
 
-  return Promise.all(PERSONAL_CAPABILITY_ROLES.map(async (role) => {
+  const imageProjections = new Map<string | null, Promise<{
+    modelId: string | null;
+    readiness: PersonalCapabilityModelReadiness;
+  }>>();
+  const projectImage = (configuredId: string | null) => {
+    const cached = imageProjections.get(configuredId);
+    if (cached) return cached;
+    const pending = (async () => {
+      const sources = await Promise.all((["server", "personal"] as const).map(async (kind) => {
+        try {
+          if (!session.projectImageUnderstandingFunding) throw new Error("Image projection unavailable");
+          const selected = await session.projectImageUnderstandingFunding(configuredId, kind);
+          return { kind, modelId: selected.modelId, readiness: {
+            status: "ready", reason: null, fundingSource: kind,
+            providerRoute: selected.binding.providerRoute,
+          } as PersonalCapabilityModelReadiness };
+        } catch (error) {
+          const unavailable = unavailableReadiness(error);
+          return { kind, modelId: null, readiness: {
+            ...unavailable,
+            reason: unavailable.status === "missing-credentials"
+              ? kind === "server" ? "Ask an administrator to configure compatible server provider credentials."
+                : "Add a compatible personal provider key."
+              : unavailable.reason,
+          } };
+        }
+      }));
+      const ready = sources.filter((source) => source.readiness.status === "ready");
+      const modelIds = new Set(ready.map((source) => source.modelId));
+      const modelId = modelIds.size === 1 ? ready[0]!.modelId : null;
+      const reason = sources.map((source) => {
+        const name = source.modelId ? listModels("imageUnderstanding")
+          .find((model) => model.modelId === source.modelId)?.displayName ?? source.modelId : null;
+        const detail = name ? `${name} is ready` : source.readiness.reason?.replace(/\.$/, "");
+        return `${source.kind === "server" ? "Server" : "Personal"}-funded chats: ${detail}`;
+      }).join(". ") + ". The helper follows the chat's funding source and privacy requirements.";
+      return { modelId, readiness: {
+        status: ready.length > 0 ? "ready" : sources.every((source) => source.readiness.status === "missing-credentials")
+          ? "missing-credentials" : "unavailable",
+        reason,
+        fundingSource: ready.length === 1 ? ready[0]!.kind : null,
+        providerRoute: ready.length === 1 ? ready[0]!.readiness.providerRoute : null,
+      } as PersonalCapabilityModelReadiness };
+    })();
+    imageProjections.set(configuredId, pending);
+    return pending;
+  };
+
+  return Promise.all(roles.map(async (role) => {
     const models = [...listModels(role)];
+    if (role === "imageUnderstanding") {
+      const override = preferences.overrides.imageUnderstanding;
+      const current = await projectImage(override ?? null);
+      const modelId = override ?? current.modelId;
+      return {
+        role, ...PRESENTATION[role],
+        selection: {
+          source: override ? "personal" as const : "inherited" as const,
+          modelId,
+          displayName: models.find((model) => model.modelId === modelId)?.displayName
+            ?? modelId ?? "Automatic — depends on chat funding",
+        },
+        readiness: current.readiness,
+        options: await Promise.all(models.map(async (model) => ({
+          ...model, readiness: (await projectImage(model.modelId)).readiness,
+        }))),
+      };
+    }
     const override = preferences.overrides[role];
     let inheritedModelId: string | null = null;
     let inheritedReadiness: PersonalCapabilityModelReadiness | null = null;
@@ -216,6 +283,22 @@ function parsePutBody(body: unknown): { expectedRevision: number; overrides: Ret
   return overrides ? { expectedRevision: input["expectedRevision"] as number, overrides } : null;
 }
 
+/** Independently shipped clients opt into roles their strict parsers understand. */
+function includesImageUnderstanding(query: unknown): boolean {
+  return query !== null && typeof query === "object"
+    && "include" in query && query.include === "imageUnderstanding";
+}
+
+function visiblePreferences(
+  preferences: PersonalCapabilityPreferences,
+  includeImage: boolean,
+): PersonalCapabilityPreferences {
+  if (includeImage) return preferences;
+  const overrides = { ...preferences.overrides };
+  delete overrides.imageUnderstanding;
+  return { revision: preferences.revision, overrides };
+}
+
 export function personalCapabilityPreferenceRoutes(
   app: FastifyInstance,
   overrides: PersonalCapabilityPreferenceRouteDeps = {},
@@ -242,25 +325,28 @@ export function personalCapabilityPreferenceRoutes(
   const projectResponse = async (
     humanId: string,
     preferences: PersonalCapabilityPreferences,
+    includeImage: boolean,
   ) => {
     const projection = await deps.openSession(humanId, preferences);
     return {
-      ...preferences,
+      ...visiblePreferences(preferences, includeImage),
       fundingPreference: projection.fundingPreference,
-      capabilities: await projectPreferences(preferences, projection.session, deps.listModels),
+      capabilities: await projectPreferences(preferences, projection.session, deps.listModels,
+        PERSONAL_CAPABILITY_ROLES.filter((role) => includeImage || role !== "imageUnderstanding")),
     };
   };
 
-  const read = async (humanId: string) => projectResponse(
+  const read = async (humanId: string, includeImage: boolean) => projectResponse(
     humanId,
     await deps.getPreferences(deps.getDb(), humanId),
+    includeImage,
   );
 
   app.get("/api/account/capability-preferences", async (request, reply) => {
     const humanId = request.sessionUserId;
     if (!humanId) return reply.code(401).send({ error: "authentication_required" });
     try {
-      return reply.send(await read(humanId));
+      return reply.send(await read(humanId, includesImageUnderstanding(request.query)));
     } catch {
       return reply.code(503).send({ error: "capability_preferences_unavailable", retryable: true });
     }
@@ -271,10 +357,23 @@ export function personalCapabilityPreferenceRoutes(
     if (!humanId) return reply.code(401).send({ error: "authentication_required" });
     const body = parsePutBody(request.body);
     if (!body) return reply.code(422).send({ error: "invalid_capability_preferences" });
+    const includeImage = includesImageUnderstanding(request.query);
+    if (!includeImage && body.overrides.imageUnderstanding !== undefined) {
+      return reply.code(422).send({ error: "invalid_capability_preferences" });
+    }
     try {
       for (const [role, modelId] of Object.entries(body.overrides)) {
         if (!deps.listModels(role as PersonalCapabilityRole).some((model) => model.modelId === modelId)) {
           return reply.code(422).send({ error: "unsupported_capability_model", role });
+        }
+      }
+      // A legacy full-map replacement cannot reset a role that client never saw.
+      // The write's revision fence also guards this read/merge against newer saves.
+      const nextOverrides: PersonalCapabilityPreferenceOverrides = { ...body.overrides };
+      if (!includeImage) {
+        const current = await deps.getPreferences(deps.getDb(), humanId);
+        if (current.overrides.imageUnderstanding !== undefined) {
+          nextOverrides.imageUnderstanding = current.overrides.imageUnderstanding;
         }
       }
       // Complete every fallible projection dependency before the CAS write.
@@ -282,17 +381,17 @@ export function personalCapabilityPreferenceRoutes(
       // merely because a response-time catalogue or funding read then failed.
       const projected = await projectResponse(humanId, {
         revision: body.expectedRevision + 1,
-        overrides: body.overrides,
-      });
+        overrides: nextOverrides,
+      }, includeImage);
       const result = await deps.replacePreferences(deps.getDb(), {
         humanId,
         expectedRevision: body.expectedRevision,
-        overrides: body.overrides,
+        overrides: nextOverrides,
       });
       if (result.status === "conflict") {
         return reply.code(409).send({ error: "capability_preference_conflict", currentRevision: result.currentRevision });
       }
-      return reply.send({ ...projected, ...result.preferences });
+      return reply.send({ ...projected, ...visiblePreferences(result.preferences, includeImage) });
     } catch {
       return reply.code(503).send({ error: "capability_preferences_unavailable", retryable: true });
     }

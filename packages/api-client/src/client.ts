@@ -6057,7 +6057,7 @@ export class NautiloApiClient {
     options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<PersonalCapabilityPreferencesResponse> {
     return this.request({
-      path: "/api/account/capability-preferences",
+      path: "/api/account/capability-preferences?include=imageUnderstanding",
       auth: "session-fresh",
       schema: personalCapabilityPreferencesResponseSchema,
       defaultErrorPrefix: "GET /api/account/capability-preferences",
@@ -6072,7 +6072,7 @@ export class NautiloApiClient {
   ): Promise<PersonalCapabilityPreferencesResponse> {
     return this.request({
       method: "PUT",
-      path: "/api/account/capability-preferences",
+      path: "/api/account/capability-preferences?include=imageUnderstanding",
       auth: "session-fresh",
       body: replacePersonalCapabilityPreferencesRequestSchema.parse(input),
       schema: personalCapabilityPreferencesResponseSchema,

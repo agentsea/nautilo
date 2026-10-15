@@ -76,7 +76,8 @@ export default function CapabilityModelPickerScreen() {
   }, [controller, scope]);
 
   const capability = role ? state.data?.capabilities.find((entry) => entry.role === role) : undefined;
-  const options = capability ? personalCapabilityPickerOptions(capability, query) : [];
+  const savedModelId = role ? state.data?.overrides[role] : undefined;
+  const options = capability ? personalCapabilityPickerOptions(capability, query, savedModelId) : [];
   const selectedId = role && state.data?.overrides[role]
     ? state.data.overrides[role]
     : PERSONAL_CAPABILITY_INHERIT;

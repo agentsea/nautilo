@@ -172,6 +172,80 @@ describe("capability funding projection", () => {
     expect(opened.binding).toEqual({ kind: "server", providerRoute: "surplus" });
   });
 
+  test("projects image-understanding availability for the requested payer under either priority", async () => {
+    for (const fundingPreference of ["personal_first", "server_first"] as const) {
+      const custody = createPersonalProviderCustody();
+      const personalRow = credential("anthropic", custody);
+      const personalOnlyDeps: ModelFundingDeps = {
+        getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+        getCapabilities: async () => ["use_personal_provider_credentials", "use_server_provider_credentials"],
+        getCredential: async (humanId, provider) => humanId === HUMAN_ID && provider === "anthropic"
+          ? personalRow : null,
+        serverRoute: () => null,
+        personalSurplusRoute: () => false,
+        readCustody: async () => { throw new Error("projection must not decrypt credentials"); },
+        decrypt: decryptPersonalProviderCredential,
+      };
+      let authorityChecks = 0;
+      const personalOnly = createCapabilityFundingSession(HUMAN_ID, async () => {
+        authorityChecks += 1;
+      }, personalOnlyDeps, {
+        readPreferences: async () => ({ revision: 4, overrides: {} }),
+        readProjectionCustody: async () => custody,
+      });
+
+      expect(await personalOnly.projectImageUnderstandingFunding!(VISION_MODEL, "personal")).toEqual({
+        modelId: VISION_MODEL,
+        binding: {
+          kind: "personal",
+          providerRoute: "anthropic",
+          credentialId: CREDENTIAL_ID,
+          credentialRevision: 1,
+        },
+      });
+      expect(await errorCode(personalOnly.projectImageUnderstandingFunding!(VISION_MODEL, "server")))
+        .toBe("provider_credentials_missing");
+      expect(authorityChecks).toBe(2);
+
+      const serverOnlyDeps: ModelFundingDeps = {
+        getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+        getCapabilities: async () => ["use_personal_provider_credentials", "use_server_provider_credentials"],
+        getCredential: async () => null,
+        serverRoute: () => "anthropic",
+        personalSurplusRoute: () => false,
+        readCustody: async () => { throw new Error("server projection must not read custody"); },
+        decrypt: decryptPersonalProviderCredential,
+      };
+      const serverOnly = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverOnlyDeps, {
+        readPreferences: async () => ({ revision: 5, overrides: {} }),
+        readProjectionCustody: async () => { throw new Error("server projection must not read custody"); },
+      });
+
+      expect(await serverOnly.projectImageUnderstandingFunding!(VISION_MODEL, "server")).toEqual({
+        modelId: VISION_MODEL,
+        binding: { kind: "server", providerRoute: "anthropic" },
+      });
+      expect(await errorCode(serverOnly.projectImageUnderstandingFunding!(VISION_MODEL, "personal")))
+        .toBe("personal_credential_missing");
+    }
+  });
+
+  test("projects an exact image-understanding candidate or inherits the saved preference", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverProjectionDeps(), {
+      readPreferences: async () => ({
+        revision: 7,
+        overrides: { imageUnderstanding: VISION_MODEL },
+      }),
+    });
+
+    expect(await session.projectImageUnderstandingFunding!(null, "server")).toEqual({
+      modelId: VISION_MODEL,
+      binding: { kind: "server", providerRoute: "openrouter" },
+    });
+    expect(await errorCode(session.projectImageUnderstandingFunding!("unknown:model", "server")))
+      .toBe("unsupported_workload");
+  });
+
   test("rejects non-text research and decision models without choice support", async () => {
     const resolvedDecision = resolveCatalogModel(DECISION_MODEL, { env: {} });
     const invalidResearch = {

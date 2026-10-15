@@ -97,6 +97,28 @@ export function createCapabilityFundingSession(
       throw new ModelFundingError("personal_credential_unavailable");
     }
   };
+  const resolveImageProjection = async (
+    configuredId: string | null | undefined,
+    parentFundingKind?: "personal" | "server",
+    currentPreferences?: PersonalCapabilityPreferences,
+  ) => {
+    const preferences = currentPreferences ?? await readPreferences(humanUserId);
+    const explicit = configuredId?.trim();
+    const snapshot = explicit
+      ? { ...preferences, overrides: { ...preferences.overrides, imageUnderstanding: explicit } }
+      : preferences;
+    return resolveImageUnderstandingModel({
+      humanUserId,
+      preferences: snapshot,
+      ...(parentFundingKind ? { parentFundingKind } : {}),
+    }, {
+      resolveCatalog,
+      ...(projectionDeps ? {
+        resolveFunding: (input) => resolveModelFunding(input, projectionDeps),
+        validateFunding: validateProjectionCredential,
+      } : {}),
+    });
+  };
   return {
     humanUserId,
     async resolveModel(role, configuredId) {
@@ -106,19 +128,7 @@ export function createCapabilityFundingSession(
         return resolvePersonalMediaModel(humanUserId, role, configuredId, preferences, projectionDeps, validateProjectionCredential);
       }
       if (role === "imageUnderstanding") {
-        const snapshot = configuredId?.trim()
-          ? { ...preferences, overrides: { ...preferences.overrides, imageUnderstanding: configuredId.trim() } }
-          : preferences;
-        const selection = await resolveImageUnderstandingModel({
-          humanUserId,
-          preferences: snapshot,
-        }, {
-          resolveCatalog,
-          ...(projectionDeps ? {
-            resolveFunding: (input) => resolveModelFunding(input, projectionDeps),
-            validateFunding: validateProjectionCredential,
-          } : {}),
-        });
+        const selection = await resolveImageProjection(configuredId, undefined, preferences);
         return { modelId: selection.modelId, preferenceRevision: selection.preferenceRevision };
       }
       if (isMemoryCapabilityRole(role)) {
@@ -216,6 +226,14 @@ export function createCapabilityFundingSession(
               (apiKey) => run({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
           },
         },
+      };
+    },
+    async projectImageUnderstandingFunding(configuredId, parentFundingKind) {
+      await recheckAuthority();
+      const selection = await resolveImageProjection(configuredId, parentFundingKind);
+      return {
+        modelId: selection.modelId,
+        binding: capabilityFundingBinding(selection.funding),
       };
     },
     async projectMediaFunding(modelId, role) {

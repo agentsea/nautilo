@@ -165,6 +165,73 @@ describe("personal capability preference editing", () => {
       overrides: {},
     }));
   });
+
+  test("keeps a saved missing model visible while allowing reset to inherit", async () => {
+    const projected = response("server", { selected: true });
+    projected.overrides = { webSearchSynthesis: "openrouter:retired-model" };
+    projected.capabilities = [{
+      ...projected.capabilities[0]!,
+      selection: {
+        source: "personal",
+        modelId: "openrouter:retired-model",
+        displayName: "Retired Model",
+      },
+    }];
+    getPersonalCapabilityPreferences.mockResolvedValueOnce(projected);
+    replacePersonalCapabilityPreferences.mockResolvedValueOnce({
+      ...projected,
+      revision: 1,
+      overrides: {},
+    });
+    const view = renderSection();
+    const select = await view.findByLabelText("Web search synthesis") as HTMLSelectElement;
+    const retained = view.getByRole("option", { name: "Retired Model · Retained unavailable choice" }) as HTMLOptionElement;
+
+    expect(select.value).toBe("openrouter:retired-model");
+    expect(retained.disabled).toBe(true);
+    fireEvent.change(select, { target: { value: "" } });
+    await waitFor(() => expect(replacePersonalCapabilityPreferences).toHaveBeenCalledWith({
+      expectedRevision: 0,
+      overrides: {},
+    }));
+  });
+
+  test("shows per-chat image funding, automatic selection, and the readiness explanation", async () => {
+    const projected = response("server");
+    projected.capabilities = [{
+      role: "imageUnderstanding",
+      label: "Image understanding",
+      description: "Reads images.",
+      selection: { source: "inherited", modelId: null, displayName: "Automatic" },
+      readiness: {
+        status: "ready",
+        reason: "Server uses Vision A; personal chats use Vision B.",
+        fundingSource: null,
+        providerRoute: null,
+      },
+      options: [{
+        modelId: "openai:vision-a",
+        displayName: "Vision A",
+        provider: "openai",
+        readiness: {
+          status: "ready",
+          reason: "Available only when the chat uses server funding.",
+          fundingSource: "server",
+          providerRoute: "openai",
+        },
+      }],
+    }];
+    getPersonalCapabilityPreferences.mockResolvedValueOnce(projected);
+    const view = renderSection();
+
+    expect(await view.findByText("Both funding sources")).toBeTruthy();
+    expect(view.getByText(/helper follows the current chat funding/)).toBeTruthy();
+    expect(view.getByRole("option", { name: "Inherit — Automatic — depends on chat funding" })).toBeTruthy();
+    expect(view.getByRole("option", {
+      name: "Vision A · openai · Server-funded chats only",
+    })).toBeTruthy();
+    expect(view.getByText(/Server uses Vision A; personal chats use Vision B/)).toBeTruthy();
+  });
 });
 
 describe("personal capability funding refresh", () => {

@@ -7,7 +7,10 @@ import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
 import {
   createPersonalCapabilityPreferencesController,
+  personalCapabilityDescription,
   personalCapabilityPreferenceErrorMessage,
+  personalCapabilityReadinessLabel,
+  personalCapabilitySelectionDisplayName,
   type PersonalCapabilityPreferencesController,
 } from "@/features/settings/personal-capability-preferences-controller";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
@@ -85,13 +88,10 @@ export default function CapabilityModelsScreen() {
           >
             <View style={styles.rowCopy}>
               <Text style={styles.rowLabel}>{capability.label}</Text>
-              <Text style={styles.rowDetail}>{capability.selection.displayName} · {capability.selection.source === "personal" ? "Your choice" : "Inherited"}</Text>
+              <Text style={styles.rowDetail}>{personalCapabilitySelectionDisplayName(capability)} · {capability.selection.source === "personal" ? "Your choice" : "Inherited"}</Text>
+              {capability.role === "imageUnderstanding" ? <Text style={styles.rowDetail}>{personalCapabilityDescription(capability)}</Text> : null}
               <Text style={[styles.readiness, capability.readiness.status !== "ready" && styles.warning]}>
-                {capability.readiness.status === "ready"
-                  ? capability.readiness.fundingSource === "personal"
-                    ? `Ready · Your ${capability.readiness.providerRoute} credential`
-                    : `Ready · Server ${capability.readiness.providerRoute} credential`
-                  : capability.readiness.reason ?? "Unavailable"}
+                {personalCapabilityReadinessLabel(capability)}
               </Text>
             </View>
             <Text style={styles.chevron}>›</Text>

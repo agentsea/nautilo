@@ -12,7 +12,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   helper through their admitted direct or Surplus credentials. Costs separates
   helper attempts from the main reply, including failures and uncertain charges;
   retained observations and accepted funding survive recovery without automatic
-  regeneration of a previously dispatched helper call.
+  regeneration of a previously dispatched helper call. Settings show which chat
+  funding sources can run each helper and retain unavailable saved choices;
+  independently shipped clients keep their compatible preference contract.
 
 - Personal Memory review, reflection and summarization models can be selected
   independently. Memory processing uses a member's admitted funding only when
