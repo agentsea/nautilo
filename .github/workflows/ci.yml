@@ -250,6 +250,12 @@ jobs:
         env:
           NAUTILO_CONTENT_ACCESS_MIGRATION_TEST_ADMIN_URL: postgres://postgres:synthetic-admin@127.0.0.1:5432/postgres
         run: bun test packages/db/tests/integration/content-access-trigger-migration.integration.test.ts
+      - name: Provision immutable isolated migration fixture
+        run: docker pull pgvector/pgvector@sha256:494dff7e67e7bc2c826b94c331364978d145ebb86fd338154138b084223b7f67
+      - name: Verify complete packaged migration tail as its restricted owner
+        env:
+          NAUTILO_TEST_BOLTER_MIGRATIONS: "1"
+        run: bun test --timeout 60000 packages/db/tests/integration/bolter-migration-privileges.integration.test.ts
 
   ci:
     name: CI

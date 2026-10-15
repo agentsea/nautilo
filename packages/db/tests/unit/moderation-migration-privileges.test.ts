@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, test } from "bun:test";
 
 import { finalizeModerationMigration } from "../../scripts/finalize-moderation";
-import { repairModerationMigration, withModerationMigrationCompat } from "../../src/utils/moderation-migration-compat";
+import { repairModerationMigration, withMigrationPrivilegeCompat } from "../../src/utils/migration-privilege-compat";
 
 const triggerPrivilegeRevoke =
   'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "moderation_actions" FROM "nautilo";';
@@ -42,7 +42,7 @@ describe("moderation migration trigger privileges", () => {
     expect(migration.indexOf(triggerPrivilegeRevoke)).toBeLessThan(migration.indexOf(rowTrigger));
     expectTriggerPrivilegeOrder(repairModerationMigration(migration));
     expect(() => repairModerationMigration(`${migration}\n-- changed`)).toThrow("Refusing unknown");
-    await withModerationMigrationCompat(migrationsFolder.pathname, async (folder) => {
+    await withMigrationPrivilegeCompat(migrationsFolder.pathname, async (folder) => {
       expectTriggerPrivilegeOrder(readFileSync(`${folder}/0300_flimsy_kingpin.sql`, "utf8"));
       expect(readFileSync(`${folder}/meta/_journal.json`, "utf8"))
         .toBe(readFileSync(new URL("meta/_journal.json", migrationsFolder), "utf8"));
