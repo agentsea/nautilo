@@ -10,7 +10,7 @@ const fixture = read("fixtures/server-security-review-2026-10-11.json") as {
   reviewedAt: string; expiresAt: string; architectures: Record<Architecture, Tuple[]>;
   reviewedAdvisories: Record<string, { url: string; fixedThreshold: string | null; releases: Record<string, { status: string }> }>;
 };
-const source = read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
+const source = read("fixtures/server-policy-before-chromium-upgrade-2026-10-15.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
 // Replay the earlier scanner metadata with its original exact fixed thresholds.
 // Current Debian-package thresholds are qualified separately against new raw
 // observations; changing current policy must not rewrite this historical input.

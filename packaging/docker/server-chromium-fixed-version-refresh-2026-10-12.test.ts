@@ -14,7 +14,7 @@ const fixture=read("fixtures/server-chromium-fixed-version-refresh-2026-10-12.js
     sourceFixedVersion:string; originalReviewedAt:string; originalExpiresAt:string}[];
 };
 const earlier=read("fixtures/"+fixture.priorInventory) as {architectures:Record<Architecture,Tuple[]>};
-const source=read("server-vulnerability-exceptions.input.json") as {exceptions:VulnerabilityPolicyV1["exceptions"]};
+const source=read("fixtures/server-policy-before-chromium-upgrade-2026-10-15.json") as {exceptions:VulnerabilityPolicyV1["exceptions"]};
 const revision=(e:{advisoryId:string;severity:string;packageName:string;installedVersion:string})=>
   fixture.packages.includes(e.packageName)&&e.installedVersion===fixture.installedVersion
     ? fixture.cases.find(c=>c.advisoryId===e.advisoryId&&c.severity===e.severity) : undefined;

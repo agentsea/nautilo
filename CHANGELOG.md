@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server images retire obsolete Chromium security decisions after installing
+  the supported update. Remaining source-fixed but binary-unavailable findings
+  require fresh authenticated package evidence and short-lived exact approvals.
+
 - Server image builds include the shared Reflection payload sources required
   by Workbench, so clean container builds can resolve Lattice's type imports.
 
