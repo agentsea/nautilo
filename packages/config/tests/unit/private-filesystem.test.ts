@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import * as childProcess from "node:child_process";
-import { createPrivateDirectorySync, ensurePrivateDirectory, ensurePrivateDirectorySync, isOwnedFilesystemPathAsync, isPrivateFilesystemPath, renameWithWindowsRetry, resolveLinkedLocation, resolveLinkedLocationSync, secureFilesystemPath, secureFilesystemPathSync, writePrivateFileExclusive, writePrivateFileExclusiveSync } from "../../src/private-filesystem";
+import { createPrivateDirectorySync, ensurePrivateDirectory, ensurePrivateDirectorySync, isOwnedFilesystemPathAsync, isPrivateFilesystemPath, renameWithWindowsRetry, renameWithWindowsRetrySync, resolveLinkedLocation, resolveLinkedLocationSync, secureFilesystemPath, secureFilesystemPathSync, writePrivateFileExclusive, writePrivateFileExclusiveSync } from "../../src/private-filesystem";
 import { allowOtherReadersSync } from "../../src/private-filesystem-fixtures";
 
 const roots: string[] = [];
@@ -109,22 +109,39 @@ test("a linked location resolves to its real directory and other paths stay unch
   expect(isPrivateFilesystemPath(real)).toBe(true);
 }, 15_000);
 
-test.skipIf(process.platform !== "win32")("a rename waits while another process briefly holds the target open", async () => {
+// Holds `path` open without sharing for two seconds, as a scanner can for a
+// freshly written file under load.
+// The release promise sits in an object: an async function returning a bare
+// promise would only settle once the holder has exited.
+async function holdWithoutSharing(path: string): Promise<{ released: Promise<unknown> }> {
+  const holder = childProcess.spawn("C:\\Program Files\\PowerShell\\7\\pwsh.exe", [
+    "-NoProfile", "-NonInteractive", "-Command",
+    "$held = [IO.File]::Open($env:NAUTILO_HELD_FILE, 'Open', 'Read', 'None'); [Console]::Out.WriteLine('held'); Start-Sleep -Milliseconds 2000; $held.Close()",
+  ], { env: { ...process.env, NAUTILO_HELD_FILE: path } });
+  const released = new Promise((resolveExit) => holder.once("exit", resolveExit));
+  await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+  // A rename that meets no lock would pass without exercising the retry.
+  expect(() => readFileSync(path)).toThrow();
+  return { released };
+}
+
+test.skipIf(process.platform !== "win32")("renames wait while another process holds the target open", async () => {
   const root = fixture();
   const source = join(root, "source.txt");
   const target = join(root, "target.txt");
-  writeFileSync(source, "new");
+  writeFileSync(source, "async");
   writeFileSync(target, "old");
-  const holder = childProcess.spawn("C:\\Program Files\\PowerShell\\7\\pwsh.exe", [
-    "-NoProfile", "-NonInteractive", "-Command",
-    "$held = [IO.File]::Open($env:NAUTILO_HELD_FILE, 'Open', 'Read', 'None'); [Console]::Out.WriteLine('held'); Start-Sleep -Milliseconds 400; $held.Close()",
-  ], { env: { ...process.env, NAUTILO_HELD_FILE: target } });
-  const exited = new Promise((resolveExit) => holder.once("exit", resolveExit));
-  await new Promise<void>((resolveHeld) => holder.stdout.once("data", () => resolveHeld()));
+  let hold = await holdWithoutSharing(target);
   await renameWithWindowsRetry(source, target);
-  expect(readFileSync(target, "utf8")).toBe("new");
-  await exited;
-}, 15_000);
+  expect(readFileSync(target, "utf8")).toBe("async");
+  await hold.released;
+
+  writeFileSync(source, "sync");
+  hold = await holdWithoutSharing(target);
+  renameWithWindowsRetrySync(source, target);
+  expect(readFileSync(target, "utf8")).toBe("sync");
+  await hold.released;
+}, 30_000);
 
 test("the async writer also runs in the supported Node runtime", () => {
   const path = join(fixture(), "node-secret.json");

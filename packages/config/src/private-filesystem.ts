@@ -422,27 +422,32 @@ export async function writePrivateFileExclusive(path: string, contents: Uint8Arr
   finally { await file.close(); if (!complete) await unlink(path); }
 }
 
-// Windows refuses a rename while a scanner or indexer briefly holds the source
-// or target open. Seven attempts with doubling waits from 20 ms wait at most
-// 1.26 s in total; other platforms and other errors fail immediately.
-const WINDOWS_RENAME_ATTEMPTS = 7;
+// Windows refuses a rename while a scanner or indexer holds the source or
+// target open. Under load, a scan of a freshly written file can outlast a
+// second, so the retry waits with doubling pauses from 20 ms, capped at
+// 500 ms, until 10 s have passed. Other platforms and other errors fail
+// immediately.
+const WINDOWS_RENAME_DEADLINE_MS = 10_000;
 const WINDOWS_RENAME_INITIAL_WAIT_MS = 20;
+const WINDOWS_RENAME_MAX_WAIT_MS = 500;
 
-function windowsRenameWait(error: unknown, attempt: number): number | undefined {
+function windowsRenameWait(error: unknown, attempt: number, startedAt: number): number | undefined {
   const code = (error as NodeJS.ErrnoException).code;
   const locked = code === "EPERM" || code === "EACCES" || code === "EBUSY";
-  if (process.platform !== "win32" || !locked || attempt >= WINDOWS_RENAME_ATTEMPTS) return undefined;
-  return WINDOWS_RENAME_INITIAL_WAIT_MS * 2 ** (attempt - 1);
+  const remaining = WINDOWS_RENAME_DEADLINE_MS - (Date.now() - startedAt);
+  if (process.platform !== "win32" || !locked || remaining <= 0) return undefined;
+  return Math.min(WINDOWS_RENAME_INITIAL_WAIT_MS * 2 ** (attempt - 1), WINDOWS_RENAME_MAX_WAIT_MS, remaining);
 }
 
 /** `renameSync` with the bounded Windows lock retry. */
 export function renameWithWindowsRetrySync(from: string, to: string): void {
+  const startedAt = Date.now();
   for (let attempt = 1; ; attempt++) {
     try {
       renameSync(from, to);
       return;
     } catch (error) {
-      const wait = windowsRenameWait(error, attempt);
+      const wait = windowsRenameWait(error, attempt, startedAt);
       if (wait === undefined) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
     }
@@ -451,12 +456,13 @@ export function renameWithWindowsRetrySync(from: string, to: string): void {
 
 /** `rename` with the bounded Windows lock retry. */
 export async function renameWithWindowsRetry(from: string, to: string): Promise<void> {
+  const startedAt = Date.now();
   for (let attempt = 1; ; attempt++) {
     try {
       await rename(from, to);
       return;
     } catch (error) {
-      const wait = windowsRenameWait(error, attempt);
+      const wait = windowsRenameWait(error, attempt, startedAt);
       if (wait === undefined) throw error;
       await new Promise((resolveWait) => setTimeout(resolveWait, wait));
     }
