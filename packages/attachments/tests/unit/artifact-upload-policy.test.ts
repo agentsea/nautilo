@@ -73,6 +73,12 @@ describe("artifact-upload-policy", () => {
     });
   });
 
+  test("PDF uploads require PDF bytes and retain executable/archive denies", () => {
+    expect(classifyArtifactUpload({ filename: "sample.pdf", headBytes: new TextEncoder().encode("%PDF-1.4\n") })).toEqual({ ok: true });
+    expect(classifyArtifactUpload({ filename: "sample.pdf", headBytes: new TextEncoder().encode("not a PDF") })).toMatchObject({ ok: false, code: "pdf_header_missing" });
+    expect(classifyArtifactUpload({ filename: "sample.pdf", headBytes: new Uint8Array([0x4d, 0x5a]) })).toMatchObject({ ok: false, code: "executable_magic" });
+  });
+
   test("classifyArtifactUpload accepts plain markdown bytes", () => {
     const md = new TextEncoder().encode("# Hello\n");
     expect(classifyArtifactUpload({ filename: "readme.md", headBytes: md })).toEqual({ ok: true });
@@ -173,7 +179,7 @@ describe("artifact-upload-policy", () => {
     });
   });
 
-  // ─── D423 Phase 2 — workspace-artifact .mp4 (ISO-BMFF ftyp magic) ───────
+  // ─── workspace-artifact .mp4 (ISO-BMFF ftyp magic) ───────
   //
   // The .mp4 extension is admitted by the workspace artifact policy ONLY
   // (ARTIFACT_VIDEO_EXTENSIONS), and never on extension alone: the sniffed

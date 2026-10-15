@@ -8,7 +8,7 @@ import { dispatchWorkspaceCommand, isWorkspaceArtifactCommand } from "../../src/
 import type { DispatchContext } from "../../src/tools/file/dispatch";
 import * as trustAgentDb from "../../src/store/trust-agent-db";
 
-// M033 Phase 6 — `resolveWorkspaceArtifact` / `listWorkspaceArtifacts` /
+// `resolveWorkspaceArtifact` / `listWorkspaceArtifacts` /
 // `applyWorkspaceArtifactRowChange` wrap RLS-gated reads in `withAgentTrustContext`,
 // which would otherwise open a real postgres-js connection in this unit test.
 // Mock so the wrap fans out to the inner fn with a stub conn (the test mocks
@@ -32,9 +32,9 @@ function namespaceEnvelope(over?: Partial<Extract<MemoryAccessEnvelope, { memory
   };
 }
 
-describe("isWorkspaceArtifactCommand (M162 — undo/redo route through artifact resolver)", () => {
+describe("isWorkspaceArtifactCommand (undo/redo route through artifact resolver)", () => {
   test("undo and redo are workspace-artifact commands", () => {
-    // Regression guard: before M162, undo/redo skipped the artifact
+    // Regression guard: previously, undo/redo skipped the artifact
     // resolver and fell through to the generic workspace-FS resolver,
     // so Revert on a workspace artifact failed with file_missing.
     expect(isWorkspaceArtifactCommand("undo")).toBe(true);
@@ -117,7 +117,7 @@ describe("dispatchWorkspaceCommand (workspace authorization and coordinator admi
       { command: "read", zone: "workspace", path: "a.md" },
       { ...ctxBase, memoryAccessEnvelope: scopeEnv },
     );
-    expect(out as string).toContain("Artifact scope mode is not implemented yet");
+    expect(out as string).toContain("Workspace artifacts are unavailable in an isolated memory scope");
   });
 
   test("file.write new artifact with writableNamespaces=[] → no writable namespace error", async () => {

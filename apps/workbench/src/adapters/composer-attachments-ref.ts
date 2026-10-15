@@ -43,6 +43,8 @@ export interface ComposerAttachment {
   /** server attachmentId after the bytes are uploaded. Set when the
    *  chip's upload completes; the send path references this. */
   attachmentId?: string;
+  /** PDFs use the canonical Room-scoped Workspace upload and focus path. */
+  workspaceArtifact?: { artifactId: string; roomId: string };
   /** UX state. The server-side gate remains authoritative; this is for
    *  composer feedback only. */
   status?: "pending" | "queued" | "error";
@@ -73,7 +75,7 @@ export function addAttachment(att: ComposerAttachment): boolean {
 
 export function updateAttachment(
   id: string,
-  patch: { mimeType?: string; status?: ComposerAttachment["status"]; errorReason?: string | null; attachmentId?: string },
+  patch: { mimeType?: string; status?: ComposerAttachment["status"]; errorReason?: string | null; attachmentId?: string; workspaceArtifact?: ComposerAttachment["workspaceArtifact"] },
 ): void {
   let changed = false;
   state.items = state.items.map((att) => {
@@ -81,6 +83,7 @@ export function updateAttachment(
     changed = true;
     const next: ComposerAttachment = {
       ...att,
+      ...(patch.workspaceArtifact ? { workspaceArtifact: patch.workspaceArtifact } : {}),
       ...(patch.mimeType !== undefined ? { mimeType: patch.mimeType } : {}),
       ...(patch.status !== undefined ? { status: patch.status } : {}),
       ...(typeof patch.errorReason === "string" ? { errorReason: patch.errorReason } : {}),

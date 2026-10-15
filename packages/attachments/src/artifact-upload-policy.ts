@@ -11,7 +11,7 @@ import {
 const EXTRA_DATA_EXTENSIONS = [".ndjson", ".parquet", ".geojson", ".log", ".ini"] as const;
 
 /**
- * D423 Phase 2 — video extensions admitted by the workspace artifact upload
+ * video extensions admitted by the workspace artifact upload
  * policy ONLY. Deliberately NOT added to the composer-chat attachment sets in
  * `policy.ts` (which the chat classifier in `classify.ts` consumes), so chat
  * attachment extensions and the chat classifier are untouched. Workspace
@@ -244,6 +244,9 @@ export function classifyArtifactUpload({
     };
   }
   const ext = extensionOfArtifactName(filename);
+  if (ext === ".pdf" && new TextDecoder().decode(headBytes.subarray(0, 5)) !== "%PDF-") {
+    return { ok: false, reason: "PDF artifact missing PDF header", code: "pdf_header_missing" };
+  }
   if (ARTIFACT_VIDEO_EXTENSIONS.has(ext) && !isLikelyIsoBmffMp4(headBytes)) {
     return {
       ok: false,

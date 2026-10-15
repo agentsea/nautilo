@@ -1,3 +1,4 @@
+import { workspaceAttachmentsForSend } from "../lib/composer-pdf-upload";
 import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
@@ -7048,8 +7049,20 @@ export function NautiloRuntimeProvider({
       const isDetachedFocusedTurn = options?.detachedFocusedResources !== undefined;
       const queuedAttachments = isDetachedFocusedTurn ? [] : getAttachments();
       const fileContext = readFileContext();
+      const workspaceAttachments = workspaceAttachmentsForSend(queuedAttachments, roomIdForSend);
+      // A pending/failed document must never disappear from a send, or move to another Room.
+      if (!workspaceAttachments.ok) {
+        for (const attachment of queuedAttachments) {
+          if (attachment.workspaceArtifact && attachment.workspaceArtifact.roomId !== roomIdForSend) {
+            updateAttachment(attachment.id, { status: "error",
+              errorReason: "This PDF belongs to another room. Remove it here and attach it in the intended room." });
+          }
+        }
+        return false;
+      }
       const attachments: ChatUploadedAttachmentRef[] = [];
       for (const att of queuedAttachments) {
+        if (att.workspaceArtifact) continue;
         if (att.attachmentId && att.status !== "error") {
           attachments.push({ attachmentId: att.attachmentId });
         } else {
@@ -7074,7 +7087,7 @@ export function NautiloRuntimeProvider({
         ? [...options.detachedFocusedResources]
         : mergeFocusedResourcesForSend(
             getFocusedResources().map((item) => item.ref),
-            options?.contextualFocusedResources ?? [],
+            [...(options?.contextualFocusedResources ?? []), ...workspaceAttachments.refs],
           );
       const hasFocusedResourcePayload = focusedResources.length > 0;
 
@@ -7111,7 +7124,7 @@ export function NautiloRuntimeProvider({
       const optimisticId = newMessageId("user");
       const optimisticBubbleText = buildUserBubbleText({
         text,
-        queuedAttachments: hasAttachmentPayload ? queuedAttachments : [],
+        queuedAttachments: hasAttachmentPayload || workspaceAttachments.refs.length > 0 ? queuedAttachments : [],
       });
       const workcardContinuation: AdvancedVideoWorkcardContinuation | undefined =
         options?.cardContinuation === "advanced_video"

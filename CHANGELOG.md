@@ -16,6 +16,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   funding sources can run each helper and retain unavailable saved choices;
   independently shipped clients keep their compatible preference contract.
 
+- The Room composer accepts PDFs from the paperclip or file drop through the
+  same Room-scoped Workspace storage as existing document references. Text-only
+  Genies can read PDF text locally, with page continuation and explicit visual
+  limitations. Workspace PDFs can be converted locally to text, Markdown, or
+  Word without generated scripts. Text conversion preserves neither layout nor
+  annotations and refuses to silently produce an incomplete document.
+
 - Personal Memory review, reflection and summarization models can be selected
   independently. Memory processing uses a member's admitted funding only when
   current input evidence proves that member's exclusive authorship and audience;

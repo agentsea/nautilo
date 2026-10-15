@@ -6,6 +6,8 @@ import {
   isPdfMimeForModelInput,
   sniffMimeFromPathAndBytes,
 } from "@nautilo/attachments";
+import { scanContent } from "@nautilo/security";
+import { extractPdfText, pdfTextContent } from "../pdf-text";
 import { modelSupportsInput } from "@nautilo/model-capabilities";
 import type { CommandHandler } from "./_shared";
 import { getFileBackend } from "../dispatch";
@@ -14,7 +16,7 @@ import { modelIdForCapabilityProjection } from "../../../config/model-role-resol
 
 const DEFAULT_MAX_LINES = 2000;
 const BINARY_SNIFF_BYTES = 8 * 1024;
-/** Cap for image/PDF bytes loaded into the model context (D069). */
+/** Cap for image/PDF bytes loaded into the model context. */
 const MAX_MULTIMODAL_READ_BYTES = 10 * 1024 * 1024;
 const OFFICE_DOCUMENT_PATH = /\.(?:docx|xlsx|pptx)$/i;
 
@@ -50,11 +52,9 @@ export const handleRead: CommandHandler<"read"> = async (
 
     if (sniffedMime && (isImageMimeForModelInput(sniffedMime) || isPdfMimeForModelInput(sniffedMime))) {
       const isImage = isImageMimeForModelInput(sniffedMime);
-      const requiredModality = isImage ? "image" : "file";
-      if (!modelSupportsInput(activeModelId, requiredModality)) {
-        const capLabel = isImage ? "vision" : "PDF document understanding";
+      if (isImage && !modelSupportsInput(activeModelId, "image")) {
         return (
-          `${sniffedMime} file ${resolution.resolved} — current model (${activeModelId}) does not support ${capLabel}. ` +
+          `${sniffedMime} file ${resolution.resolved} — current model (${activeModelId}) does not support vision. ` +
           "Switch to a model that supports this modality to read the file."
         );
       }
@@ -66,6 +66,23 @@ export const handleRead: CommandHandler<"read"> = async (
       const bytes = await backend.readRange(resolution.resolved, 0, stat.size);
       if ((await backend.stat(resolution.resolved)).sourceVersion !== stat.sourceVersion) {
         return fileToolError("Error: source changed during read; retry the file.");
+      }
+      if (!isImage && !modelSupportsInput(activeModelId, "file")) {
+        const extracted = await extractPdfText(bytes, {
+          fromPage: offset,
+          ...(args.lineRange ? { pageCount: args.lineRange.to - args.lineRange.from + 1 }
+            : args.limit !== undefined ? { pageCount: args.limit } : {}),
+          ...(_ctx.signal ? { signal: _ctx.signal } : {}),
+        });
+        const text = pdfTextContent(extracted);
+        if (!scanContent(text, "pdf-text").safe) return fileToolError("Error: PDF text was blocked by the content scanner.");
+        return JSON.stringify({
+          format: "pdf", representation: "extracted_text", untrusted: true,
+          ...extracted,
+          note: "Extracted text only; images, layout, annotations, and redline styling are not interpreted. "
+            + (extracted.emptyPages.length ? "Pages without text may be scans; use a PDF-capable reader for those pages. " : "")
+            + (extracted.nextPage ? `Continue with offset=${extracted.nextPage}; offset and limit count PDF pages.` : ""),
+        });
       }
       const b64 = bytes.toString("base64");
       const kind = isImage ? "Image" : "PDF";
@@ -97,7 +114,7 @@ export const handleRead: CommandHandler<"read"> = async (
             },
       ];
 
-      // D113A — stash a structured summary on additional_kwargs so the
+      // stash a structured summary on additional_kwargs so the
       // workbench tool card can render a thumbnail (image) / metadata
       // block (PDF) instead of the generic "[multimodal tool result]"
       // placeholder. Field name is namespaced; LangChain ignores
@@ -132,6 +149,7 @@ export const handleRead: CommandHandler<"read"> = async (
       currentVersion: async () => (await backend.stat(resolution.resolved)).sourceVersion ?? "",
     }, { from: offset, to: offset + limit - 1, ...(args.readCursor ? { cursor: args.readCursor } : {}), ...(_ctx.signal ? { signal: _ctx.signal } : {}) }));
   } catch (err) {
+    _ctx.signal?.throwIfAborted();
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes("ENOENT")) {
       return fileToolError(`Error: file not found: ${resolution.resolved}`);

@@ -155,7 +155,8 @@ compact where every listed member shares the same version and license.
 | [OpenID/JWT libraries: Logto JS](https://github.com/logto-io/js) and [jose](https://github.com/panva/jose) | browser 3.0.13; react 4.0.13; jose 6.2.3 | Logto / panva | MIT / MIT | Desktop, Workbench, mobile, and server authentication. |
 | [Noble cryptography](https://github.com/paulmillr/noble-curves) family | ciphers 2.2.0; curves 2.2.0; hashes 2.2.0 | Paul Miller | MIT | Server and mobile cryptography. |
 | [HPKE JS](https://github.com/dajiaji/hpke-js) / [ts-mls](https://github.com/LukaJCB/ts-mls) | 1.9.0 / 1.6.2 | dajiaji / LukaJCB | MIT / MIT | Server lattice-crypto runtime. |
-| [PDF.js](https://github.com/mozilla/pdf.js) / [React PDF](https://github.com/diegomura/react-pdf) | 6.2.108 / 4.5.1 | Mozilla / Diego Muracciole | Apache-2.0 / MIT | Workbench, mobile, and server document rendering. |
+| [PDF.js](https://github.com/mozilla/pdf.js) / [React PDF](https://github.com/diegomura/react-pdf) | 6.2.108 / 4.5.1 | Mozilla / Diego Muracciole | Apache-2.0 / MIT | Workbench, mobile, and server document rendering and local PDF text extraction. |
+| [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas) | 1.0.7 | napi-rs contributors | MIT | PDF.js Node runtime geometry support; optional platform binaries selected by the package manager. |
 | [docx](https://github.com/dolanmiu/docx) / [Wafflebase Docs](https://github.com/wafflebase/wafflebase) | 9.6.1 / owned 0.6.9 | dolanmiu / Wafflebase | MIT / Apache-2.0 | Server document creation and editing. |
 | [CodeMirror](https://github.com/codemirror) language/state/view packages | language 6.12.3; state 6.6.0; view 6.43.1; format-specific packages in `bun.lock` | CodeMirror | MIT | Workbench editor. |
 | [Lexical](https://github.com/facebook/lexical) packages via [MDXEditor](https://github.com/mdx-editor/editor) | 0.35.0 / 4.0.4 | Meta / MDXEditor | MIT / MIT | Workbench rich-text editor. |

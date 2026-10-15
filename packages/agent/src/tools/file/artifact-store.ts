@@ -1,5 +1,5 @@
 /**
- * M088B — Artifact-aware workspace store for the `file` tool.
+ * Artifact-aware workspace store for the `file` tool.
  *
  * Translates between the agent-facing logical artifact path and the
  * server-side DB-indexed `artifacts` row + physical storage location.
@@ -16,9 +16,9 @@
  * `artifact_namespaces` junction), not the disk layout.
  *
  * A file on disk without a matching DB row is invisible to the
- * `workspace` zone. The Phase 6 migrator relocates pre-M088B byte
+ * `workspace` zone. The legacy artifact migrator relocates earlier byte
  * locations + ingests legacy flat `~/Documents/Nautilo/` files; until
- * it runs, anything created before M088B is unreachable via the `file`
+ * it runs, unmigrated artifacts are unreachable via the `file`
  * tool.
  */
 
@@ -208,7 +208,7 @@ function emitWorkspaceArtifactEvent(event: WorkspaceArtifactBusEvent): void {
  * Metadata stamped onto a staged patch when the patch targets a
  * workspace artifact. The retained importer/editor compatibility path uses
  * this only to create an `artifacts` row (+ `artifact_namespaces` row) or
- * bump the revision of an existing row. Canonical D448 structural mutations
+ * bump the revision of an existing row. Canonical structural mutations
  * do not pass through this facade.
  *
  * Lives at `metadata.workspaceArtifact` on `StagedPatch.metadata` to
@@ -233,7 +233,7 @@ export interface WorkspaceArtifactPatchMeta {
   clientMutationId?: string;
   /** When true, emit `reloadRequired` on the legacy changed invalidation event. */
   reloadRequired?: boolean;
-  /** D448 restore-time optimistic row guard, captured from the existing
+  /** Restore-time optimistic row guard, captured from the existing
    * Namespace-authorized artifact resolver. Undefined for legacy mutation
    * callers, which retain their established behavior. */
   expectedRevision?: number;
@@ -310,7 +310,7 @@ export function physicalPathFromStorageUri(storageUri: string): string | null {
 export interface EnvelopeFacts {
   userId: string;
   /**
-   * M127: `agentId` is preserved on the envelope facts for
+   * `agentId` is preserved on the envelope facts for
    * `withAgentTrustContext` routing only. It is no longer a row-level
    * filter on `artifacts` (namespace membership is the sole content
    * boundary).
@@ -324,7 +324,7 @@ export interface EnvelopeFacts {
 /**
  * Pull the artifact-relevant fields out of a `MemoryAccessEnvelope`,
  * with an explicit not-supported error for scope-mode envelopes
- * (M088B reserves scope schema but does not implement scope behavior).
+ * (isolated scope does not admit Workspace artifact access).
  */
 export function envelopeFactsForArtifacts(
   envelope: MemoryAccessEnvelope | null | undefined,
@@ -341,7 +341,7 @@ export function envelopeFactsForArtifacts(
     return {
       ok: false,
       reason:
-        "Artifact scope mode is not implemented yet; use namespace context or wait for M088 Phase 4.",
+        "Workspace artifacts are unavailable in an isolated memory scope. Read or convert the artifact in the originating Room, or use in_background with that Room context and the required tools. Do not search local or server filesystem paths for Workspace artifacts.",
     };
   }
   const ownerId = envelope.ownerId;
@@ -420,7 +420,7 @@ export async function resolveWorkspaceArtifact(params: {
     if (!physical) {
       return {
         ok: false,
-        reason: `Artifact ${existing.artifactId} has unrecognized storage_uri scheme; M088B only handles file:// URIs.`,
+        reason: `Artifact ${existing.artifactId} has unrecognized storage_uri scheme; Workspace storage only handles file:// URIs.`,
       };
     }
     if (intent !== "read") {
@@ -474,7 +474,7 @@ export async function resolveWorkspaceArtifact(params: {
 }
 
 /**
- * D448 — re-resolve a history row's artifact identity through the same
+ * re-resolve a history row's artifact identity through the same
  * Namespace/trust context as normal Workspace mutation. Unlike the normal
  * logical-path resolver, this permits a soft-deleted row solely so its own
  * authorized history can restore it. It is not a discovery API.
@@ -553,7 +553,7 @@ export async function applyWorkspaceArtifactRowChange(
   computedSize: number,
   userId: string,
   /**
-   * M127: `agentId` is no longer carried on `WorkspaceArtifactPatchMeta`
+   * `agentId` is no longer carried on `WorkspaceArtifactPatchMeta`
    * (row-level Memory/Artifact scope is namespace-only). It is still
    * required here for `withAgentTrustContext` so RLS GUCs are set
    * correctly during the artifacts INSERT + junction attach.
@@ -567,12 +567,12 @@ export async function applyWorkspaceArtifactRowChange(
 
     switch (meta.mode) {
       case "create": {
-        // M033 Phase 6 — client-generated UUID (no INSERT...RETURNING).
+        // client-generated UUID (no INSERT...RETURNING).
         // Under the narrow `nautilo_agent` role, RETURNING re-runs the
         // SELECT policy on the freshly-inserted row, which requires an
         // `artifact_namespaces` junction we haven't created yet. Same
         // pattern as `memory-store.saveMemory`.
-        // D448 may allocate a UUID before byte reconciliation so the linked
+        // Structural mutations may allocate a UUID before byte reconciliation so the linked
         // history row can identify a create. It is still an ordinary opaque
         // row id; Namespace attachment below remains the authority check.
         const internalId = meta.rowId ?? crypto.randomUUID();
