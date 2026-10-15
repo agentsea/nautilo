@@ -13,6 +13,7 @@ import {
 } from "@nautilo/agent";
 import { fromRuntimeConfig } from "@nautilo/config";
 import {
+  createModelFundingSnapshot,
   ModelFundingError,
   resolveModelFunding,
   type ModelFundingDecision,
@@ -258,6 +259,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
       // The signed catalogue projection must not require a process-wide key.
       env: {},
     });
+    const snapshot = deps.resolveCallerAvailability ? null : await createModelFundingSnapshot(humanUserId);
     const imageAssistanceSelections = new Map<string, Promise<ModelFundingDecision | null>>();
     const resolved = await Promise.all(
       candidates.map(async (candidate) => {
@@ -265,7 +267,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
           humanUserId,
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
-          { imageAssistanceSelections },
+          { imageAssistanceSelections, ...(snapshot ? { resolveFunding: (input) => resolveModelFunding(input, snapshot.deps) } : {}) },
         );
         return {
           ...availability.model,

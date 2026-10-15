@@ -1,3 +1,4 @@
+import { findChatGPTSubscriptionError } from "../providers/chatgpt-plan-errors";
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
@@ -536,6 +537,8 @@ async function invokeOnceWithShortRetries(
       // failure. Never turn it into a same-model retry because a provider's
       // cooperative AbortError happens to resemble a timeout.
       if (llmCallConfig.signal?.aborted) throw error;
+      const subscriptionError = findChatGPTSubscriptionError(providerError);
+      if (subscriptionError) throw subscriptionError;
       // Unknown/visible timeout outcomes cannot be replayed. Safe supervised timeouts
       // use the existing bounded same-model retry policy, including strict model mode.
       if (isProviderTimeoutError(providerError) && (!isSafelyRetryableProviderTimeout(providerError)
@@ -1277,6 +1280,8 @@ export async function invokeChatModelWithFallback(
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
           : providerFailure;
       }
+      const subscriptionError = findChatGPTSubscriptionError(providerFailure);
+      if (subscriptionError) throw subscriptionError;
       const classified = classifyError(providerFailure);
       const terminalProviderError = personalFunding
         && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)

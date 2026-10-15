@@ -1794,6 +1794,12 @@ interface NautiloDesktopAPI {
   toolRuntimes?: DesktopToolRuntimesAPI;
   /** Google Workspace OAuth connect (desktop only). */
   googleWorkspace?: DesktopGoogleWorkspaceAPI;
+  /** Local browser callback only. The Server owns PKCE and all plan tokens. */
+  chatGPT?: {
+    prepare: () => Promise<{ listenerId: string; port: number }>;
+    receive: (args: { listenerId: string; authorizationUrl: string }) => Promise<string>;
+    cancel: (listenerId: string) => Promise<void>;
+  };
   /** terminal (PTY) work surface bridge (desktop only; feature-detect). */
   terminal?: DesktopTerminalAPI;
   /** Exact managed local command lifecycle (desktop only; feature-detect). */

@@ -1,6 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
+  count,
+  sum,
   asc,
   desc,
   eq,
@@ -18,6 +20,7 @@ import {
   type SQL,
 } from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
+import { chatgptRegistrations } from "../schema/chatgpt-registrations";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
 import type { DirectDatabase } from "../config/direct-database";
@@ -1010,7 +1013,7 @@ export async function reconcileSurplusLlmAttemptCost(input: {
 }
 
 // ---------------------------------------------------------------------------
-// Costs dashboard aggregations (D405)
+// Costs dashboard aggregations
 // ---------------------------------------------------------------------------
 
 export interface CostsRange {
@@ -1202,6 +1205,7 @@ export function buildCostsSummaryQueries(
   // the storage boundary and remain in totals for continuity; explicitly
   // personal-funded calls are excluded.
   const inWindow = and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     ...(payerHumanId === undefined
@@ -1350,6 +1354,34 @@ export function buildCostsSummaryQueries(
   return { totals, byModel, byCallType, byUser, timeSeries };
 }
 
+/** Account-scoped plan usage. Frozen API prices are comparisons, never charges. */
+export function buildPersonalSubscriptionUsageQuery(
+  range: CostsRange,
+  handle: Pick<DirectDatabase, "select">,
+  payerHumanId: string,
+) {
+  return handle.select({
+    registrationId: llmUsageEvents.credentialId,
+    model: llmUsageEvents.model,
+    attempts: count(),
+    unresolvedAttempts: sql<number>`COUNT(*) FILTER (
+      WHERE ${llmUsageEvents.attemptOutcome} IN ('in_progress', 'unknown', 'interrupted')
+    )::int`,
+    inputTokens: sum(llmUsageEvents.inputTokens),
+    cachedInputTokens: sum(llmUsageEvents.cachedInputTokens),
+    outputTokens: sum(llmUsageEvents.outputTokens),
+    totalTokens: sum(llmUsageEvents.totalTokens),
+    apiEquivalentCostUsd: sum(llmUsageEvents.estimatedCostUsd),
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.payerHumanId, payerHumanId),
+    eq(llmUsageEvents.providerRoute, "openai-chatgpt"),
+    gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
+    lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
+  )).groupBy(llmUsageEvents.credentialId, llmUsageEvents.model)
+    .orderBy(asc(llmUsageEvents.credentialId), asc(llmUsageEvents.model));
+}
+
 /** Personal model spend grouped by the actual funded transport route. */
 export function buildPersonalCostsByRouteQuery(
   range: CostsRange,
@@ -1367,6 +1399,7 @@ export function buildPersonalCostsByRouteQuery(
     actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
     total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
   }).from(llmUsageEvents).where(and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     eq(llmUsageEvents.fundingKind, "personal"),
@@ -1392,6 +1425,7 @@ export function buildPersonalCostsByTaskQuery(
     actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
     total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
   }).from(llmUsageEvents).where(and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     eq(llmUsageEvents.fundingKind, "personal"),
@@ -1417,6 +1451,7 @@ export function buildCostsRecoveryAttemptsQuery(
     failureCode: llmUsageEvents.failureCode,
     updatedAt: llmUsageEvents.updatedAt,
   }).from(llmUsageEvents).where(and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     inArray(llmUsageEvents.costState, ["pending", "unknown"]),
@@ -1676,7 +1711,7 @@ export async function getPersonalCostsSummary(input: {
     [totalsRow], byModelRows, byCallTypeRows, modelTimeSeriesRows,
     [providerTotalsRow], byProviderRows, providerTimeSeriesRows, modelByRouteRows,
     modelByTaskRows, providerByTaskRows, recoveryRows, serviceRecoveryRows,
-    credentialRows, llmHistoryRows, providerHistoryRows,
+    credentialRows, llmHistoryRows, providerHistoryRows, subscriptionRows, registrationRows,
   ] = await Promise.all([
     queries.totals,
     queries.byModel,
@@ -1713,6 +1748,9 @@ export async function getPersonalCostsSummary(input: {
         eq(providerCostEvents.payerHumanId, payerHumanId),
       ))
       .limit(1),
+    buildPersonalSubscriptionUsageQuery(input.range, db(), payerHumanId),
+    db().select({ id: chatgptRegistrations.id }).from(chatgptRegistrations)
+      .where(eq(chatgptRegistrations.userId, payerHumanId)).limit(1),
   ]);
 
   const providerOperations = n(providerTotalsRow?.["operations"]);
@@ -1821,9 +1859,20 @@ export async function getPersonalCostsSummary(input: {
       totalCostUsd: (current?.totalCostUsd ?? 0) + n(row["total_cost"]),
     });
   }
-  const hasPersonalCredentials = credentialRows.length > 0;
+  const hasPersonalCredentials = credentialRows.length > 0 || registrationRows.length > 0;
   const hasHistory = llmHistoryRows.length > 0 || providerHistoryRows.length > 0;
   return {
+    subscriptions: subscriptionRows.map(row => ({
+      registrationId: row.registrationId,
+      model: row.model,
+      attempts: n(row.attempts),
+      unresolvedAttempts: n(row.unresolvedAttempts),
+      inputTokens: n(row.inputTokens),
+      cachedInputTokens: n(row.cachedInputTokens),
+      outputTokens: n(row.outputTokens),
+      totalTokens: n(row.totalTokens),
+      apiEquivalentCostUsd: n(row.apiEquivalentCostUsd),
+    })),
     entry: {
       available: hasPersonalCredentials || hasHistory,
       hasPersonalCredentials,

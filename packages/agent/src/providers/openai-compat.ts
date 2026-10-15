@@ -27,7 +27,7 @@ function record(value: unknown): RecordValue | undefined {
  * ID and requires the output to reference the original provider call_id, so both
  * sides of that pair are restored from preserved metadata at this boundary.
  */
-function convertCanonicalResponsesInput(
+export function convertCanonicalResponsesInput(
   params: Parameters<typeof convertMessagesToResponsesInput>[0],
 ): ReturnType<typeof convertMessagesToResponsesInput> {
   const providerIds = new Map<string, unknown>();

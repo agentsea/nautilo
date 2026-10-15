@@ -121,6 +121,8 @@ function credentialRestoreSql(keyIds: readonly string[]): string {
 
 interface RunnerEvidence {
   readonly sourceTable?: string;
+  readonly subscriptionTable?: string;
+  readonly subscriptionEvidence?: string;
   readonly sourceEvidence?: string;
   readonly restoredCredentialSql?: string;
   readonly restoredCredentialChunkSize?: number;
@@ -144,8 +146,8 @@ function runner(events: string[], appRestoreToc = APP_RESTORE_TOC, evidence: Run
         return evidence.restoredCredentialChunkSize === undefined ? child(value) : chunkedChild(value, evidence.restoredCredentialChunkSize);
       }
       const sql = input.args.at(-1) ?? "";
-      if (input.command === "psql" && sql.includes("to_regclass")) return child(evidence.sourceTable ?? "");
-      if (input.command === "psql" && sql.includes("json_build_object")) return child(evidence.sourceEvidence ?? "");
+      if (input.command === "psql" && sql.includes("to_regclass")) return child(sql.includes("chatgpt_registrations") ? evidence.subscriptionTable ?? "" : evidence.sourceTable ?? "");
+      if (input.command === "psql" && sql.includes("json_build_object")) return child(sql.includes("chatgpt_registrations") ? evidence.subscriptionEvidence ?? "" : evidence.sourceEvidence ?? "");
       return child();
     },
   };
@@ -238,7 +240,7 @@ describe("portable recovery image job", () => {
     ]);
   });
 
-  test("refuses export before publish or dump when credential rows have no custody", async () => {
+  test.each(["personal_provider_credentials", "chatgpt_registrations"])("refuses export of %s rows without custody before dump or publish", async table => {
     const events: string[] = [];
     let published = false;
     const storage: PortableRecoveryObjectStore = {
@@ -253,8 +255,7 @@ describe("portable recovery image job", () => {
       environment: env,
       fs: fakeFs(events),
       runner: runner(events, APP_RESTORE_TOC, {
-        sourceTable: "personal_provider_credentials",
-        sourceEvidence: JSON.stringify({ recordCount: 1, keyIds: [CUSTODY_KEY_ID] }),
+        ...(table === "personal_provider_credentials" ? { sourceTable: table, sourceEvidence: JSON.stringify({ recordCount: 1, keyIds: [CUSTODY_KEY_ID] }) } : { subscriptionTable: table, subscriptionEvidence: JSON.stringify({ recordCount: 1, keyIds: [CUSTODY_KEY_ID] }) }),
       }),
       storage,
       assertFreshTarget: { assertFresh: async () => undefined },
@@ -290,7 +291,7 @@ describe("portable recovery image job", () => {
       random: () => new Uint8Array(32).fill(3),
     });
     expect(published).toBeTrue();
-    expect(events.filter((event) => event.startsWith("psql:"))).toHaveLength(2);
+    expect(events.filter((event) => event.startsWith("psql:"))).toHaveLength(3);
   });
 
   test("carries custody inside the encrypted bundle and restores it without source environment custody", async () => {
@@ -435,6 +436,133 @@ describe("portable recovery image job", () => {
       fs: fakeFs(events),
       runner: runner(events, APP_RESTORE_TOC_WITH_CREDENTIALS, { restoredCredentialSql: credentialRestoreSql([CUSTODY_KEY_ID]) }),
       storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
+    expect(sqlMutationEvents(events)).toEqual([]);
+  });
+
+  test.each([
+    ["matching identity and token custody", CUSTODY_KEY_ID, CUSTODY_KEY_ID, true],
+    ["disconnected identity custody", CUSTODY_KEY_ID, null, true],
+    ["foreign identity custody", RESET_KEY_ID, CUSTODY_KEY_ID, false],
+    ["foreign token custody", CUSTODY_KEY_ID, RESET_KEY_ID, false],
+    ["malformed identity", "invalid", null, false],
+  ] as const)("subscription portable restore: %s", async (_label, identityKey, tokenKey, accepted) => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    const sql = ["COPY public.chatgpt_registrations (id, identity_envelope, envelope) FROM stdin;",
+      ["registration", JSON.stringify({ keyId: identityKey }), tokenKey === null ? String.raw`\N` : JSON.stringify({ keyId: tokenKey })].join("\t"), String.raw`\.`, ""].join("\n");
+    const toc = [APP_RESTORE_TOC, "102; 1259 20002 TABLE public chatgpt_registrations nautilo", "202; 0 20002 TABLE DATA public chatgpt_registrations nautilo"].join("\n");
+    let failure: unknown;
+    try {
+      await runPortableRecoveryJob({ direction: "restore", operationId: "op", objectId: "object",
+        environment: restoreEnvironment(sealed.receipt.ciphertextSha256), fs: fakeFs(events),
+        runner: runner(events, toc, { restoredCredentialSql: sql, restoredCredentialChunkSize: 1 }), storage,
+        assertFreshTarget: { assertFresh: async () => undefined },
+      });
+    } catch (error) { failure = error; }
+    if (accepted) {
+      expect(failure).toBeUndefined();
+      expect(sqlMutationEvents(events).some(event => event.includes("chatgpt_restore"))).toBe(true);
+    } else {
+      expect(failure).toMatchObject({ code: "VERIFICATION_FAILED" });
+      expect(sqlMutationEvents(events)).toEqual([]);
+    }
+  });
+
+  test.each([
+    ["duplicate key whose last value is null", `{"keyId":"${CUSTODY_KEY_ID}","keyId":null}`, String.raw`\N`, "\n", 3, false],
+    ["duplicate key whose last value is an object", `{"keyId":"${CUSTODY_KEY_ID}","keyId":{}}`, String.raw`\N`, "\n", 5, false],
+    ["duplicate key whose later value is valid", `{"keyId":null,"keyId":"${CUSTODY_KEY_ID}"}`, String.raw`\N`, "\n", 2, true],
+    ["CRLF null token envelope", `{"keyId":"${CUSTODY_KEY_ID}"}`, String.raw`\N`, "\r\n", 1, true],
+    ["leading-zero number", `{"payload":01,"keyId":"${CUSTODY_KEY_ID}"}`, String.raw`\N`, "\n", 4, false],
+    ["number missing a fractional digit", `{"payload":1.,"keyId":"${CUSTODY_KEY_ID}"}`, String.raw`\N`, "\n", 6, false],
+    ["number missing an exponent digit", `{"payload":1e,"keyId":"${CUSTODY_KEY_ID}"}`, String.raw`\N`, "\n", 7, false],
+    ["primitive envelope", "true", String.raw`\N`, "\n", 1, false],
+    ["trailing JSON value", `{"keyId":"${CUSTODY_KEY_ID}"}null`, String.raw`\N`, "\n", 8, false],
+    ["COPY and JSON escapes split across chunks", `{"payload":"tab\\\\t-path\\\\\\\\value","\\\\u006beyId":"${CUSTODY_KEY_ID}"}`, String.raw`\N`, "\n", 1, true],
+  ] as const)("subscription streaming parser: %s", async (_label, identityEnvelope, tokenEnvelope, lineEnding, chunkSize, accepted) => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    const sql = ["COPY public.chatgpt_registrations (id, identity_envelope, envelope) FROM stdin;",
+      ["registration", identityEnvelope, tokenEnvelope].join("\t"), String.raw`\.`, ""].join(lineEnding);
+    const toc = [APP_RESTORE_TOC, "102; 1259 20002 TABLE public chatgpt_registrations nautilo", "202; 0 20002 TABLE DATA public chatgpt_registrations nautilo"].join("\n");
+    let failure: unknown;
+    try {
+      await runPortableRecoveryJob({ direction: "restore", operationId: "op", objectId: "object",
+        environment: restoreEnvironment(sealed.receipt.ciphertextSha256), fs: fakeFs(events),
+        runner: runner(events, toc, { restoredCredentialSql: sql, restoredCredentialChunkSize: chunkSize }), storage,
+        assertFreshTarget: { assertFresh: async () => undefined },
+      });
+    } catch (error) { failure = error; }
+    if (accepted) {
+      expect(failure).toBeUndefined();
+      expect(sqlMutationEvents(events).some(event => event.includes("chatgpt_restore"))).toBe(true);
+    } else {
+      expect(failure).toMatchObject({ code: "VERIFICATION_FAILED" });
+      expect(sqlMutationEvents(events)).toEqual([]);
+    }
+  });
+
+  test("streams subscription envelopes larger than restore-list metadata while preserving custody checks", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    const identityEnvelope = JSON.stringify({ payload: `escaped\t\\${"x".repeat(100_000)}`, keyId: CUSTODY_KEY_ID })
+      .replace('"keyId"', String.raw`"\u006beyId"`)
+      .replace(/\\/g, "\\\\");
+    const sql = ["COPY public.chatgpt_registrations (id, identity_envelope, envelope) FROM stdin;",
+      ["registration", identityEnvelope, String.raw`\N`].join("\t"), String.raw`\.`, ""].join("\n");
+    const toc = [APP_RESTORE_TOC, "102; 1259 20002 TABLE public chatgpt_registrations nautilo", "202; 0 20002 TABLE DATA public chatgpt_registrations nautilo"].join("\n");
+
+    await runPortableRecoveryJob({ direction: "restore", operationId: "op", objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256), fs: fakeFs(events),
+      runner: runner(events, toc, { restoredCredentialSql: sql, restoredCredentialChunkSize: 7 }), storage,
+      assertFreshTarget: { assertFresh: async () => undefined },
+    });
+
+    expect(sqlMutationEvents(events).some(event => event.includes("chatgpt_restore"))).toBe(true);
+  });
+
+  test("rejects a malformed large subscription envelope before the first SQL mutation", async () => {
+    const events: string[] = [];
+    const sealed = await sealedBundle(CUSTODY);
+    const storage: PortableRecoveryObjectStore = {
+      publish: async () => { throw new Error("not used"); },
+      download: async () => ({
+        descriptor: { format: "nautilo-recovery-v1", version: 1, operationId: "op", objectId: "object", sourceReleaseId: "release-test", completedAt: new Date(0).toISOString(), ...sealed.receipt },
+        body: bytesFrom(sealed.body),
+      }),
+    };
+    const malformedEnvelope = `{"payload":"${"x".repeat(100_000)}","keyId":"${CUSTODY_KEY_ID}",}`;
+    const sql = ["COPY public.chatgpt_registrations (id, identity_envelope, envelope) FROM stdin;",
+      ["registration", malformedEnvelope, String.raw`\N`].join("\t"), String.raw`\.`, ""].join("\n");
+    const toc = [APP_RESTORE_TOC, "102; 1259 20002 TABLE public chatgpt_registrations nautilo", "202; 0 20002 TABLE DATA public chatgpt_registrations nautilo"].join("\n");
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's matcher settles before the mutation assertion.
+    await expect(runPortableRecoveryJob({ direction: "restore", operationId: "op", objectId: "object",
+      environment: restoreEnvironment(sealed.receipt.ciphertextSha256), fs: fakeFs(events),
+      runner: runner(events, toc, { restoredCredentialSql: sql, restoredCredentialChunkSize: 11 }), storage,
       assertFreshTarget: { assertFresh: async () => undefined },
     })).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
     expect(sqlMutationEvents(events)).toEqual([]);

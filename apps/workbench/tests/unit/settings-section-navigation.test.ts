@@ -7,10 +7,10 @@ import {
 } from "../../src/pages/settings/settings-page";
 
 describe("desktop Settings section navigation", () => {
-  test("puts Personal API keys before My Agents and desktop-only This Mac", () => {
+  test("puts API keys and subscriptions before My Agents and desktop-only This Mac", () => {
     const profileIndex = SETTINGS_SECTIONS.findIndex((section) => section.id === "profile");
     expect(SETTINGS_SECTIONS[profileIndex]).toEqual({ id: "profile", label: "Profile", catalogueTarget: "settings.profile" });
-    expect(SETTINGS_SECTIONS[profileIndex + 1]).toEqual({ id: "personal-provider-keys", label: "Personal API keys", catalogueTarget: "settings.personal_api_keys" });
+    expect(SETTINGS_SECTIONS[profileIndex + 1]).toEqual({ id: "personal-provider-keys", label: "API keys and subscriptions", catalogueTarget: "settings.personal_api_keys" });
     expect(SETTINGS_SECTIONS[profileIndex + 2]).toEqual({ id: "my-agents", label: "My Agents", catalogueTarget: "settings.my_agents" });
     expect(SETTINGS_SECTIONS[profileIndex + 3]).toEqual({ id: "this-mac", label: "This Mac", catalogueTarget: "settings.this_mac" });
     expect(SETTINGS_SECTIONS[profileIndex + 4]).toEqual({ id: "notifications", label: "Notifications", catalogueTarget: "settings.notifications" });

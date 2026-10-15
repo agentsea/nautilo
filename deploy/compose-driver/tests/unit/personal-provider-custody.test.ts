@@ -487,3 +487,24 @@ describe("Compose personal provider custody", () => {
     }
   });
 });
+
+test("subscription-only backups require matching custody and inspect both envelopes", async () => {
+  const envelope = JSON.stringify({ keyId: custody.keyId });
+  const dump = `COPY public.chatgpt_registrations (id, identity_envelope, envelope) FROM stdin;\nsynthetic\t${envelope}\t${envelope}\n\\.\n`;
+  const evidence = await readPersonalProviderCredentialEvidenceFromDump(dumpPath(dump));
+  expect(evidence).toEqual({ state: "rows", keyIds: [custody.keyId] });
+  expect(() => assertPersonalProviderRestoreCustody({ database: evidence, instanceEnvRaw: undefined })).toThrow();
+  expect(() => assertPersonalProviderRestoreCustody({ database: evidence,
+    instanceEnvRaw: `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n` })).not.toThrow();
+  const disconnected = dump.replace(`\t${envelope}\n`, "\t\\N\n");
+  expect(await readPersonalProviderCredentialEvidenceFromDump(dumpPath(disconnected))).toEqual(evidence);
+  await expect(readPersonalProviderCredentialEvidenceFromDump(dumpPath(dump.replace(envelope, "{}")))).rejects.toThrow();
+});
+test("connected custody inspection combines API keys and subscription registrations", () => {
+  expect(parseConnectedPersonalProviderCredentialEvidence([
+    JSON.stringify({ rowCount: 0, keyIds: [] }), JSON.stringify({ rowCount: 1, keyIds: [custody.keyId] }),
+  ].join("\n"))).toEqual({ state: "rows", keyIds: [custody.keyId] });
+  expect(() => parseConnectedPersonalProviderCredentialEvidence([
+    JSON.stringify({ rowCount: 0, keyIds: [] }), JSON.stringify({ rowCount: 1, keyIds: [null] }),
+  ].join("\n"))).toThrow();
+});

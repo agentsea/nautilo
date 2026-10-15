@@ -106,6 +106,7 @@ export async function resolveCallerImageInput(
     // that the executor would skip.
     return "unavailable";
   }
+  if (input.funding.providerRoute === "openai-chatgpt") return "unavailable";
   return await selectCallerImageAssistance({
     humanUserId: input.humanUserId, fundingKind: input.funding.kind, mainModelId: input.modelId,
   }, deps) ? "assisted" : "unavailable";

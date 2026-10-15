@@ -1,3 +1,4 @@
+import { ChatGPTPlanSection } from "./chatgpt-plan-section";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ProviderCredentialApiError,
@@ -487,7 +488,7 @@ export function PersonalProviderKeysSection({
   return (
     <SectionCard
       id="personal-provider-keys"
-      title="Personal API keys"
+      title="Personal API keys and subscriptions"
       description={personalKeysDisabled ? undefined : "Add your own provider keys for supported personal chat, native text Tasks, Research, Decisions, browsing and file conversion. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
       actions={<a className="text-sm font-medium text-primary hover:underline" href="/account/costs">View your costs</a>}
     >
@@ -530,6 +531,7 @@ export function PersonalProviderKeysSection({
           <p className="mb-4 text-xs text-foreground-muted">
             Model readiness appears in the relevant model selector. Saving a key here only makes it available for eligible personal requests.
           </p></> : null}
+          {state.kind === "ready" ? <ChatGPTPlanSection policyEnabled={state.allowPersonalProviderKeys} /> : null}
           {providerRows.map((provider) => {
             const current = byProvider.get(provider.id);
             const action = rowActions[provider.id] ?? { kind: "idle" };
