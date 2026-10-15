@@ -68,7 +68,7 @@ test("shows retained history independently of current key state", async () => {
   );
   expect(await view.findByText("Known spend (30d)")).toBeTruthy();
   expect(
-    view.getByText(/history remains available even though no personal API key/),
+    view.getByText(/history remains available even though no personal funding/),
   ).toBeTruthy();
   expect(
     view
@@ -91,10 +91,10 @@ test("shows the informative setup state only when there is no key or history", a
       <PersonalCostsSection />
     </MemoryRouter>,
   );
-  expect(await view.findByText(/Add a personal API key/)).toBeTruthy();
+  expect(await view.findByText(/Connect your ChatGPT plan/)).toBeTruthy();
   expect(
     view
-      .getByRole("link", { name: "Manage personal API keys" })
+      .getByRole("link", { name: "Manage personal API keys and subscriptions" })
       .getAttribute("href"),
   ).toBe("/settings#personal-provider-keys");
 });
@@ -119,4 +119,13 @@ test("keeps a recovery route available when the compact read fails", async () =>
   expect((await view.findByRole("alert")).textContent).toContain("could not be loaded");
   expect(view.getByRole("link", { name: /Open the full dashboard/ }).getAttribute("href"))
     .toBe("/account/costs");
+});
+
+
+test("links subscription usage to the same account dashboard without adding it to spending", async () => {
+  summary.subscriptions = [{ registrationId: "11111111-1111-4111-8111-111111111111", model: "openai:synthetic", attempts: 1,
+    unresolvedAttempts: 0, inputTokens: 10, cachedInputTokens: 0, outputTokens: 2, totalTokens: 12, apiEquivalentCostUsd: 5 }];
+  const view = render(<MemoryRouter><PersonalCostsSection /></MemoryRouter>);
+  expect(await view.findByText(/ChatGPT plan: 12 reported tokens/)).toBeTruthy();
+  expect(view.getByRole("link", { name: /View full cost dashboard/ }).getAttribute("href")).toBe("/account/costs");
 });

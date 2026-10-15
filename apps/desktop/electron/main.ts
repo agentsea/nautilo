@@ -1,3 +1,4 @@
+import { createChatGPTDesktopListener } from "./chatgpt-plan-loopback";
 import "./instance-argv-bootstrap.ts";
 import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
@@ -3674,6 +3675,9 @@ function broadcastAuthState(state: "signed-in" | "signed-out"): void {
 }
 
 function invalidateMiniAppRecoveryAuthentication(): void {
+  chatGPTDesktopPreparation?.abort();
+  chatGPTDesktopEnrollment?.controller.abort();
+  chatGPTDesktopEnrollment = null;
   githubCliConnection.cancel();
   githubAccountCustody.retire();
   clearHumanTerminalHandoff();
@@ -9319,6 +9323,69 @@ ipcMain.handle(
     return { ok: true as const, status };
   },
 );
+
+let chatGPTDesktopPreparation: AbortController | null = null;
+let chatGPTDesktopEnrollment: { listener: Awaited<ReturnType<typeof createChatGPTDesktopListener>>;
+  controller: AbortController; senderId: number } | null = null;
+ipcMain.handle("chatGPT:prepare", async e => {
+  const session = resolveSessionFromSender(e);
+  if (!session.signedIn) throw new Error("Sign in to Nautilo first.");
+  const destination = new URL(session.serverUrl);
+  if (destination.protocol !== "https:" && !(destination.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(destination.hostname))) {
+    throw new Error("ChatGPT enrollment requires HTTPS for a remote Server.");
+  }
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const snapshot = authoritativeConnectionSnapshot();
+  if (!snapshot?.serverFingerprint || snapshot.scope !== destination.origin) throw new Error("The active Server could not be verified.");
+  const authority = JSON.stringify(snapshot);
+  const current = () => {
+    try { return serverSessions.active === session && serverSessions.getBySender(e.sender.id) === session && session.signedIn
+      && miniAppRecoveryAuthGeneration === authGeneration
+      && JSON.stringify(authoritativeConnectionSnapshot()) === authority && !e.sender.isDestroyed(); }
+    catch { return false; }
+  };
+  chatGPTDesktopPreparation?.abort();
+  chatGPTDesktopEnrollment?.controller.abort();
+  const controller = new AbortController();
+  chatGPTDesktopPreparation = controller;
+  const unsubscribe = serverSessions.onChange(() => { if (!current()) controller.abort(); });
+  const cancel = () => controller.abort();
+  e.sender.once("destroyed", cancel);
+  const navigate = (_event: Electron.Event, _url: string, _inPlace: boolean, isMainFrame: boolean) => { if (isMainFrame) cancel(); };
+  e.sender.on("did-start-navigation", navigate);
+  controller.signal.addEventListener("abort", () => {
+    unsubscribe();
+    if (chatGPTDesktopPreparation === controller) chatGPTDesktopPreparation = null;
+    e.sender.removeListener("destroyed", cancel); e.sender.removeListener("did-start-navigation", navigate);
+  }, { once: true });
+  try {
+    const listener = await createChatGPTDesktopListener({ current, signal: controller.signal });
+    chatGPTDesktopEnrollment = { listener, controller, senderId: e.sender.id };
+    return { listenerId: listener.id, port: listener.port };
+  } catch { controller.abort(); throw new Error("Could not prepare ChatGPT sign-in."); }
+});
+ipcMain.handle("chatGPT:receive", async (e, args: { listenerId?: unknown; authorizationUrl?: unknown }) => {
+  resolveSessionFromSender(e);
+  const entry = chatGPTDesktopEnrollment;
+  if (!entry || entry.senderId !== e.sender.id || args?.listenerId !== entry.listener.id || typeof args.authorizationUrl !== "string") {
+    throw new Error("ChatGPT sign-in is no longer active.");
+  }
+  try {
+    const callback = entry.listener.receive(args.authorizationUrl);
+    // receive() arms state validation synchronously, before even a fast SSO
+    // redirect can reach the listener.
+    await shell.openExternal(args.authorizationUrl);
+    return await callback;
+  }
+  finally { entry.controller.abort(); if (chatGPTDesktopEnrollment === entry) chatGPTDesktopEnrollment = null; }
+});
+ipcMain.handle("chatGPT:cancel", (e, listenerId: unknown) => {
+  resolveSessionFromSender(e);
+  const entry = chatGPTDesktopEnrollment;
+  if (entry?.senderId === e.sender.id && entry.listener.id === listenerId) {
+    entry.controller.abort(); chatGPTDesktopEnrollment = null;
+  }
+});
 
 ipcMain.handle("googleWorkspace:authStatus", async (e) => {
   assertMainWindowSender(e);

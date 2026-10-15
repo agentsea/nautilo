@@ -60,8 +60,10 @@ Move the whole logical instance: database, identity, files and protected canonic
 configuration. A database dump alone cannot recover credentials. Quiesce source
 writes and paid execution before capture; keep the source quiesced through cutover.
 Restore matching custody before admitting traffic, then verify both ordinary
-runtime acceptance and the custody diagnostic. Re-encryption and user re-entry
-are unnecessary when custody is preserved. Do not run paid work on both copies.
+runtime acceptance and the custody diagnostic. API-key re-entry is unnecessary when custody is preserved. ChatGPT subscription
+registrations require reconnect after restore: their old renewable tokens are
+cleared before execution resumes. Account identity and explicit selection remain,
+so this recovery never silently switches a subscription to paid API funding. Do not run paid work on both copies.
 
 Source and Compose restore inspect credential key IDs before replacing the target
 database. Full recovery uses the protected source configuration. Data-only Compose
@@ -128,3 +130,24 @@ that a new custody key may be generated.
 Mocked deployment tests and local source acceptance are not remote deployment
 qualification. Qualify remote Compose and Railway separately on explicitly
 authorized disposable targets before claiming those lifecycle paths tested.
+
+## ChatGPT subscriptions
+
+`chatgpt_registrations` stores separate issued-client registrations for each
+Human, encrypted with the same operator custody. Each registration retains its
+verified account identity and stable Server host identity. Token rotation is
+serialized in the database; reconnect changes the authority revision so an
+already admitted Task cannot silently adopt a replacement account or grant.
+Unfinished first sign-ins retain an encrypted client registration with no tokens
+or verified identity. They cannot be selected for inference.
+
+Source and Compose restore require matching custody for subscription-only
+backups too. Restore clears renewable tokens and requires reconnect, including
+when restoring onto the original Server. This prevents a stale backup from
+becoming a second rotating-token custodian. QA clones remove the registrations
+entirely. Out-of-band database restores must keep the runtime stopped and clear
+subscription token envelopes before it starts; copying a database and custody
+key is not permission to run two active copies.
+
+See [Connect a ChatGPT subscription](./chatgpt-subscriptions.md) for supported
+clients, model selection, funding switches and account recovery.

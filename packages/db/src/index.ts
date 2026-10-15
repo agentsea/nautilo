@@ -1026,3 +1026,4 @@ export {
 } from "./queries/protected-task-parked-preexecution";
 
 export * from "./queries/external-room-execution-claims";
+export * from "./queries/chatgpt-registrations";

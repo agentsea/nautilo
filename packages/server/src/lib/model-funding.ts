@@ -1,4 +1,7 @@
+import type { PersonalProviderCredential } from "@nautilo/agent";
+import { chatGPTFundingModels, chatGPTFundingRegistration, chatGPTSessionStore, type ChatGPTFundingRegistration } from "./chatgpt-plan/runtime";
 import {
+  DEFAULT_PROVIDER_TIMEOUT_MS,
   modelHasRunnableCredentials,
   resolveCatalogModel,
   resolveSurplusDecisionServingAvailability,
@@ -106,6 +109,8 @@ export interface ModelFundingDeps {
   personalSurplusRoute?: (modelId: string, workload?: ModelFundingWorkload) => boolean;
   readCustody: () => Promise<PersonalProviderCustody>;
   decrypt: typeof decryptPersonalProviderCredential;
+  getSubscription?: (userId: string, id?: string) => Promise<ChatGPTFundingRegistration | null>;
+  getSubscriptionModels?: (userId: string, id: string) => Promise<readonly string[]>;
 }
 
 export function resolveServerFundingRoute(
@@ -164,6 +169,8 @@ export function resolveServerFundingRoute(
 }
 
 const DEFAULT_DEPS: ModelFundingDeps = {
+  getSubscription: chatGPTFundingRegistration,
+  getSubscriptionModels: chatGPTFundingModels,
   getPolicy: () => getServerProviderPolicy(getServerDirectDb()),
   getCapabilities: getUserCapabilities,
   getCredential: (humanUserId, provider) =>
@@ -212,7 +219,7 @@ function verifyPrior(input: ResolveModelFundingInput, provider: PersonalProvider
   if (prior.kind === "personal" && !provider) {
     throw new ModelFundingError("funding_source_changed");
   }
-  if (prior.kind === "personal" && prior.providerRoute !== "surplus"
+  if (prior.kind === "personal" && prior.providerRoute !== "surplus" && prior.providerRoute !== "openai-chatgpt"
     && directProvider(prior.modelId) !== prior.providerRoute) {
     throw new ModelFundingError("funding_source_changed");
   }
@@ -269,6 +276,34 @@ export async function resolveModelFunding(
   }
   if (prior?.kind === "personal" && !personalAllowed) {
     throw new ModelFundingError("personal_credentials_forbidden");
+  }
+
+  // Explicit subscription selection pins a registration, including its failed
+  // state. It must never degrade into API-key or server-funded inference.
+  const pinnedSubscription = prior?.kind === "personal" && prior.providerRoute === "openai-chatgpt";
+  const subscription = pinnedSubscription || (!prior && provider === "openai" && input.fundingKind !== "server")
+    ? await deps.getSubscription?.(input.humanUserId, pinnedSubscription ? prior.credentialId : undefined)
+    : null;
+  if (subscription || pinnedSubscription) {
+    if (!policy.allowPersonalProviderKeys) throw new ModelFundingError("personal_credentials_disabled");
+    if (!personalAllowed) throw new ModelFundingError("personal_credentials_forbidden");
+    if (provider !== "openai" || input.transport === "surplus") throw new ModelFundingError("funding_source_changed");
+    if (input.workload === "decision" || input.workload === "generation") throw new ModelFundingError("unsupported_workload");
+    if (!subscription || (pinnedSubscription && (subscription.id !== prior.credentialId || subscription.revision !== prior.credentialRevision))) {
+      throw new ModelFundingError("personal_credential_stale");
+    }
+    if (!subscription.available) throw new ModelFundingError("personal_credential_unavailable");
+    let modelIds: readonly string[] | undefined;
+    try { modelIds = await deps.getSubscriptionModels?.(input.humanUserId, subscription.id) ?? subscription.modelIds; }
+    catch { throw new ModelFundingError("personal_credential_unavailable"); }
+    if (!modelIds || !modelIds.includes(input.modelId)) throw new ModelFundingError("unsupported_provider");
+    const catalog = resolveCatalogModel(input.modelId, { env: {} });
+    if (catalog.workload !== "chat" || !["selectable", "missing_credentials"].includes(catalog.availability)) {
+      throw new ModelFundingError("unsupported_provider");
+    }
+    return { kind: "personal", humanUserId: input.humanUserId, payerHumanId: input.humanUserId,
+      modelId: input.modelId, workload: input.workload, providerRoute: "openai-chatgpt",
+      credentialId: subscription.id, credentialRevision: subscription.revision };
   }
 
   // Priority applies only to fresh admissions. An eligible server-first route
@@ -422,14 +457,52 @@ export async function withAdmittedPersonalProviderKey<T>(
 }
 
 
-/** Request-local, presence-only projection. Never use these dependencies to dispatch. */
+/** Typed credential injection for chat adapters; subscription tokens never masquerade as API keys. */
+export async function withAdmittedPersonalCredential<T>(
+  decision: Extract<ModelFundingDecision, { kind: "personal" }>,
+  useCredential: (credential: PersonalProviderCredential) => Promise<T> | T,
+  deps: ModelFundingDeps = DEFAULT_DEPS,
+  initialDecision: ModelFundingDecision = decision,
+): Promise<T> {
+  if (decision.providerRoute !== "openai-chatgpt") {
+    return withAdmittedPersonalProviderKey(decision, apiKey => useCredential({ apiKey }), deps, initialDecision);
+  }
+  const current = await resolveModelFunding({ humanUserId: decision.humanUserId, modelId: decision.modelId,
+    workload: decision.workload, priorDecision: initialDecision, transport: "direct" }, deps);
+  if (current.kind !== "personal" || current.providerRoute !== "openai-chatgpt"
+    || current.credentialId !== decision.credentialId || current.credentialRevision !== decision.credentialRevision) {
+    throw new ModelFundingError("personal_credential_stale");
+  }
+  // Token acquisition is an unbilled control-plane call. Its lifecycle follows
+  // the existing provider request timeout; inference receives its own signal.
+  const accessToken = await chatGPTSessionStore.accessToken(decision.humanUserId, decision.credentialId,
+    decision.credentialRevision, AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS));
+  return useCredential({ kind: "chatgpt_plan", accessToken });
+}
+
+/** Request-local readiness projection; subscription discovery can refresh tokens but never runs inference. Never use these dependencies to dispatch. */
 export async function createModelFundingSnapshot(humanUserId: string) {
   const [policy, capabilities, credentials] = await Promise.all([
     DEFAULT_DEPS.getPolicy(), DEFAULT_DEPS.getCapabilities(humanUserId),
     listPersonalProviderCredentials(getServerDirectDb(), humanUserId),
   ]);
+  const subscriptions = new Map<string, Promise<ChatGPTFundingRegistration | null>>();
+  const subscriptionModels = new Map<string, Promise<readonly string[]>>();
   const deps: ModelFundingDeps = {
     ...DEFAULT_DEPS,
+    getSubscriptionModels: (human, id) => {
+      if (human !== humanUserId) return Promise.resolve([]);
+      let value = subscriptionModels.get(id);
+      if (!value) { value = chatGPTFundingModels(human, id); subscriptionModels.set(id, value); }
+      return value;
+    },
+    getSubscription: (human, id) => {
+      if (human !== humanUserId) return Promise.resolve(null);
+      const key = id ?? "selected";
+      let value = subscriptions.get(key);
+      if (!value) { value = chatGPTFundingRegistration(human, id); subscriptions.set(key, value); }
+      return value;
+    },
     getPolicy: () => Promise.resolve(policy),
     getCapabilities: (human) => Promise.resolve(human === humanUserId ? capabilities : []),
     getCredential: (human, provider) => Promise.resolve(

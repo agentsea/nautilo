@@ -35,7 +35,7 @@ test("personal API keys have a permanent Settings destination", () => {
   for (const isDesktopShell of [false, true]) {
     const sections = visibleSettingsSections({ isDesktopShell, canCreateInvites: false });
     expect(sections.find((section) => section.id === "personal-provider-keys")?.label)
-      .toBe("Personal API keys");
+      .toBe("API keys and subscriptions");
   }
   expect(WORKBENCH_APPLICATION_TARGETS["settings.personal_api_keys"].href)
     .toBe("/settings#personal-provider-keys");

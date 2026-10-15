@@ -1,3 +1,4 @@
+import { CHATGPT_PLAN_SOURCE_DECLARATIONS } from "../../baseline/reviewed-chatgpt-plan-coverage";
 import { BOLTER_NATIVE_STORAGE_DECLARATIONS } from "../../baseline/reviewed-bolter-native-storage";
 import { BOLTER_PLAINTEXT_SOURCE_DECLARATIONS } from "../../baseline/reviewed-bolter-plaintext-carriers";
 import { createHash } from "node:crypto";
@@ -40,6 +41,7 @@ export type SourceDeclaration = {
 const declaration = <T extends SourceDeclaration>(value: T): T => value;
 
 export const SOURCE_DECLARATIONS: readonly SourceDeclaration[] = [
+  ...CHATGPT_PLAN_SOURCE_DECLARATIONS,
   ...BOLTER_PLAINTEXT_SOURCE_DECLARATIONS,
   ...BOLTER_NATIVE_STORAGE_DECLARATIONS,
   declaration({

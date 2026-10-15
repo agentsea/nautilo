@@ -96,13 +96,16 @@ mock.module("../../src/lib/model-funding", () => ({
   ModelFundingError: TestModelFundingError,
   resolveModelFunding: async (input: { humanUserId: string; modelId: string; priorDecision?: unknown }) => {
     fundingInputs.push({ humanUserId: input.humanUserId, modelId: input.modelId, prior: input.priorDecision });
+    if (input.priorDecision && typeof input.priorDecision === "object" && "providerRoute" in input.priorDecision && input.priorDecision.providerRoute === "openai-chatgpt") {
+      return { ...input.priorDecision, modelId: input.modelId, humanUserId: input.humanUserId, payerHumanId: input.humanUserId, workload: "native_text_task" as const };
+    }
     return input.modelId === PERSONAL_MODEL
       ? { ...PERSONAL_BINDING, humanUserId: input.humanUserId, payerHumanId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const }
       : { kind: "server" as const, providerRoute: "openrouter", humanUserId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const };
   },
-  withAdmittedPersonalProviderKey: async () => { throw new Error("not used"); },
+  withAdmittedPersonalCredential: async () => { throw new Error("not used"); },
 }));
 
 const { nativeTaskFundingPort, isPersonalOnlyNativeTaskSelection } = await import("../../src/lib/native-task-funding");
@@ -332,6 +335,25 @@ describe("multi-user native Task funding", () => {
     taskRows.set(candidate.id, task({ ...candidate, metadata: { bringBack: false } }));
     await rejects(session.recheckAttempt(SERVER_MODEL),
       (error: unknown) => (error as { code?: unknown }).code === "funding_source_changed");
+  });
+
+  test("subscription-funded children inherit the originating run and persist its account pin", async () => {
+    const binding = { ...PERSONAL_BINDING, providerRoute: "openai-chatgpt" };
+    const parent = task({ id: PARENT_ID, requestedModelId: PERSONAL_MODEL, targetRoomId: GROUP_ROOM });
+    taskRows.set(parent.id, parent);
+    runRows.set(PARENT_RUN_ID, { id: PARENT_RUN_ID, taskId: parent.id, status: "running", modelId: PERSONAL_MODEL, fundingBinding: binding } as TaskRun);
+    const child = task({ parentTaskId: parent.id, depth: 1, requestedModelId: PERSONAL_MODEL });
+    const provenance = createAgentTurnTaskCreationProvenance({ ownerId: GENIE_OWNER,
+      invocation: { ownerId: GENIE_OWNER, roomId: GROUP_ROOM, entrypoint: "background.task", taskId: parent.id, taskRunId: PARENT_RUN_ID } });
+    const admission = await nativeTaskFundingPort.prepareCreation(child, provenance);
+    expect(admission).toEqual({ modelId: PERSONAL_MODEL, binding });
+    expect(fundingInputs.at(-1)?.prior).toMatchObject({ ...binding, humanUserId: HUMAN_A, payerHumanId: HUMAN_A });
+    const persisted = { ...child, metadata: { subscriptionFunding: binding } };
+    expect(await nativeTaskFundingPort.admit(persisted)).toEqual({ modelId: PERSONAL_MODEL, binding });
+    expect(fundingInputs.at(-1)?.prior).toMatchObject(binding);
+    await rejects(nativeTaskFundingPort.prepareCreation(persisted, provenance), /funding_source_changed/);
+    await rejects(nativeTaskFundingPort.prepareCreation({ ...child, toolsWhitelist: ["unsupported-tool"], toolsMode: "whitelist" }, provenance), /unsupported_workload/);
+    await rejects(nativeTaskFundingPort.admit(persisted, { id: PARENT_RUN_ID, taskId: child.id, modelId: PERSONAL_MODEL, fundingBinding: PERSONAL_BINDING } as TaskRun), /funding_source_changed/);
   });
 
   test("forged parent lineage and unclassified metadata fail before funding", async () => {

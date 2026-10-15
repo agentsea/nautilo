@@ -229,8 +229,10 @@ export function assertForegroundChatFundingWorkloadSupported(
 export async function openImageAssistanceForInvocation(
   input: Parameters<typeof openForegroundChatFundingSessionForInvocation>[0] & {
     fundingKind?: "server" | "personal";
+    parentFunding?: ForegroundChatFundingSession;
   },
 ): Promise<ImageAssistanceSession | null> {
+  if (input.parentFunding?.admission?.binding.providerRoute === "openai-chatgpt") return null;
   if (!installedPort?.openImageAssistance || !input.authority || !input.entrypoint
     || hasUnsupportedForegroundFundingShape(input.jobInput)) return null;
   const humanUserId = getAcceptedInvocationAuthoritySubject(input.authority);

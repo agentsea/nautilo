@@ -60,11 +60,11 @@ async function configureFile(custody?: PersonalProviderCustody): Promise<string>
   return path;
 }
 
-function installDb(recordCount: number, keyId = RESTORED.keyId): void {
+function installDb(providerCredentialCount: number, keyId = RESTORED.keyId, subscriptionCount = 0) {
   const direct = spyOn(serverDirectDb, "getServerDirectDb").mockReturnValue({} as ReturnType<typeof serverDirectDb.getServerDirectDb>);
   const evidence = spyOn(credentialDb, "getPersonalProviderCredentialCustodyEvidence").mockResolvedValue({
-    recordCount,
-    keyIds: recordCount === 0 ? [] : [keyId],
+    recordCount: providerCredentialCount + subscriptionCount,
+    keyIds: providerCredentialCount + subscriptionCount === 0 ? [] : [keyId],
   });
   const context = {
     id: "30000000-0000-4000-8000-000000000003",
@@ -73,12 +73,14 @@ function installDb(recordCount: number, keyId = RESTORED.keyId): void {
     revision: 1,
     destination: null,
   } as const;
-  const rows = recordCount === 0 ? [] : [{
+  const rows = providerCredentialCount === 0 ? [] : [{
     ...context,
     envelope: encryptPersonalProviderCredential(RESTORED, "synthetic-provider-secret", context),
   }];
   const list = spyOn(credentialDb, "listPersonalProviderCredentialsForCustody").mockResolvedValue(rows);
-  restores.push(() => list.mockRestore(), () => evidence.mockRestore(), () => direct.mockRestore());
+  const subscriptions = spyOn(credentialDb, "listChatGPTRegistrationsForCustody").mockResolvedValue([]);
+  restores.push(() => subscriptions.mockRestore(), () => list.mockRestore(), () => evidence.mockRestore(), () => direct.mockRestore());
+  return { evidence };
 }
 
 describe("personal provider custody restore maintenance", () => {
@@ -113,6 +115,29 @@ describe("personal provider custody restore maintenance", () => {
     const path = await configureFile();
     delete process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
     installDb(1);
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking the filesystem.
+    await expect(ensureRestoredPersonalProviderCustodyMaintenanceEvidence()).rejects.toBeInstanceOf(PersonalProviderCustodyError);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before this test completes.
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("subscription-only restored rows prevent minting replacement custody", async () => {
+    const path = await configureFile();
+    delete process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
+    installDb(0, RESTORED.keyId, 1);
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking the filesystem.
+    await expect(ensureRestoredPersonalProviderCustodyMaintenanceEvidence()).rejects.toBeInstanceOf(PersonalProviderCustodyError);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before this test completes.
+    await expect(readFile(path, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("the provisioning recheck observes a subscription restored after inspection", async () => {
+    const path = await configureFile();
+    delete process.env[PERSONAL_PROVIDER_CUSTODY_ENV];
+    const { evidence } = installDb(0, RESTORED.keyId, 1);
+    evidence.mockResolvedValueOnce({ recordCount: 0, keyIds: [] });
 
     // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun's rejection matcher must settle before checking the filesystem.
     await expect(ensureRestoredPersonalProviderCustodyMaintenanceEvidence()).rejects.toBeInstanceOf(PersonalProviderCustodyError);

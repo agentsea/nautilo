@@ -38,7 +38,7 @@ export interface TaskFundingAdmission {
 
 /** Server composition owns live funding policy and custody; Runtime owns Task identity. */
 export interface TaskFundingPort {
-  prepareCreation(input: TaskCreateInput, provenance: TaskCreationProvenance): Promise<boolean>;
+  prepareCreation(input: TaskCreateInput, provenance: TaskCreationProvenance): Promise<boolean | TaskFundingAdmission>;
   admit(task: Task, priorRun?: TaskRun): Promise<TaskFundingAdmission>;
   openSession(task: Task, run: TaskRun, modelId: string, wake: boolean): Promise<ForegroundChatFundingSession>;
 }
@@ -57,7 +57,7 @@ export function uninstallTaskFundingPort(): void {
 export async function prepareTaskCreationFunding(
   input: TaskCreateInput,
   provenance: TaskCreationProvenance,
-): Promise<boolean> {
+): Promise<boolean | TaskFundingAdmission> {
   return installedPort ? installedPort.prepareCreation(input, provenance) : false;
 }
 

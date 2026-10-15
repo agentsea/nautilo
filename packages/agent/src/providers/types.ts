@@ -14,10 +14,11 @@ export interface ProviderInitOptions {
  * resolver. This value must remain transient at the provider boundary.
  */
 export type PersonalProviderCredential = Readonly<{
+  kind?: "api_key";
   apiKey: string;
   /** Exact administrator-owned endpoint admitted for a personal Gateway key. */
   destination?: string | undefined;
-}>;
+}> | Readonly<{ kind: "chatgpt_plan"; accessToken: string; apiKey?: never; destination?: never }>;
 
 export type UniversalModelOptions = Record<string, unknown> & Readonly<{
   personalCredential?: PersonalProviderCredential;
@@ -116,30 +117,30 @@ export interface CreateModelOptions extends ProviderInitOptions {
    */
   reasoningOutput?: boolean;
   /**
-   * D331 — reasoning effort (Anthropic `output_config.effort`; maps to
+   * reasoning effort (Anthropic `output_config.effort`; maps to
    * provider effort knobs elsewhere). Defaults to `"medium"` when unset.
    */
   reasoningEffort?: ReasoningEffort;
   /**
-   * D462 — reviewed Fireworks Kimi K3 serving choice. This is intentionally
+   * reviewed Fireworks Kimi K3 serving choice. This is intentionally
    * not a general provider-kwargs surface: the factory resolves this closed
    * profile id into the only verified Fireworks request shapes.
    */
   fireworksServingProfileId?: FireworksKimiK3ServingProfileId;
   /**
-   * D526 — opaque Room-scoped Fireworks cache affinity. Closed provider
+   * opaque Room-scoped Fireworks cache affinity. Closed provider
    * option; only a valid UUID is projected as `x-session-affinity`.
    */
   fireworksSessionAffinityId?: string;
   /**
-   * D334 — when true, direct `openai:*` reasoning models may use the OpenAI
+   * when true, direct `openai:*` reasoning models may use the OpenAI
    * Responses API (`ChatOpenAI.useResponsesApi`). Explicit opt-in only;
    * non-OpenAI providers and OpenRouter/Venice/Fireworks/gateway paths ignore
    * this flag. Foreground agent callers thread it via `invokeChatModelWithFallback`.
    */
   useOpenAIResponsesApi?: boolean;
   /**
-   * D526 — direct GPT-5.6 Responses requests use the provider's explicit
+   * direct GPT-5.6 Responses requests use the provider's explicit
    * stable-prefix breakpoint contract. Closed provider option; ignored by
    * non-OpenAI routes.
    */

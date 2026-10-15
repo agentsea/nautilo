@@ -250,3 +250,21 @@ test("shows an empty panel after a key is saved but before its first paid reques
     await view.findByText("No personal-key usage recorded in this window yet."),
   ).toBeTruthy();
 });
+
+
+test("subscription-only usage stays visible without being shown as spending or a plan balance", async () => {
+  summary.totals = { ...summary.totals, calls: 0, providerOperations: 0, unknownProviderOperations: 0,
+    inputTokens: 0, outputTokens: 0, totalTokens: 0, estimatedCostUsd: 0, actualCostUsd: 0, totalCostUsd: 0,
+    pendingAttempts: 0, unknownAttempts: 0, blockedAttempts: 0 };
+  summary.byModel = []; summary.byProvider = [];
+  summary.recovery = { attempts: [], pendingAttempts: 0, unknownAttempts: 0, blockedAttempts: 0, retryableAttempts: 0 };
+  summary.subscriptions = [{ registrationId: "11111111-1111-4111-8111-111111111111", model: "openai:subscription-model",
+    attempts: 2, unresolvedAttempts: 1, inputTokens: 100, cachedInputTokens: 20, outputTokens: 30, totalTokens: 130, apiEquivalentCostUsd: 0.25 }];
+  const view = render(<MemoryRouter><PersonalCostsPage /></MemoryRouter>);
+  expect(await view.findByText("Your ChatGPT plan usage")).toBeTruthy();
+  expect(view.getByText(/ChatGPT connection 11111111/)).toBeTruthy();
+  expect(view.getByText(/100 input tokens/)).toBeTruthy();
+  expect(view.getByText(/API-equivalent estimate: \$0.25/)).toBeTruthy();
+  expect(view.getByText(/not additional charges/)).toBeTruthy();
+  expect(view.getByText(/1 attempts have unconfirmed outcomes/)).toBeTruthy();
+});

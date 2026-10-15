@@ -1,3 +1,4 @@
+import { chatGPTFundingRegistration } from "./chatgpt-plan/runtime";
 import { createCapabilityFundingSession, prepareCapabilityFundingSession } from "./capability-funding";
 import {
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
@@ -9,7 +10,7 @@ import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@
 import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission } from "@nautilo/runtime";
 import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
 import { usageFundingFor } from "./foreground-chat-funding";
-import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
+import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
@@ -18,7 +19,7 @@ type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
 
 const NATIVE_TASK_METADATA_KEYS = new Set([
   "preparation", "lastInterruption", "deepResearch", "bringBack",
-  "writerReviewAwaiting", "writerReviewAcceptedReceipt",
+  "writerReviewAwaiting", "writerReviewAcceptedReceipt", "subscriptionFunding",
 ]);
 
 // These fields are durable runtime progress, not admitted prompt, routing, or
@@ -156,11 +157,22 @@ function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
     : { kind: "server", providerRoute: decision.providerRoute };
 }
 
+function subscriptionPin(task: Candidate): Extract<TaskFundingBinding, { kind: "personal" }> | null {
+  if (!Object.hasOwn(task.metadata ?? {}, "subscriptionFunding")) return null;
+  try {
+    const binding = parseTaskFundingBinding(task.metadata!["subscriptionFunding"]);
+    if (binding.kind !== "personal" || binding.providerRoute !== "openai-chatgpt") throw new Error();
+    return binding;
+  } catch { throw new TaskFundingError("funding_source_changed"); }
+}
+
 function restoreDecision(task: Task, run: TaskRun): ModelFundingDecision {
   if (run.taskId !== task.id || !run.modelId) throw new TaskFundingError("funding_source_changed");
   let binding: TaskFundingBinding;
   try { binding = parseTaskFundingBinding(run.fundingBinding); }
   catch { throw new TaskFundingError("funding_source_changed"); }
+  const pin = subscriptionPin(task);
+  if (pin && JSON.stringify(pin) !== JSON.stringify(binding)) throw new TaskFundingError("funding_source_changed");
   const base = { humanUserId: task.requestorId, modelId: run.modelId,
     providerRoute: binding.providerRoute, workload: "native_text_task" as const };
   return binding.kind === "personal"
@@ -283,8 +295,12 @@ export async function isPersonalOnlyNativeTaskSelection(
 async function admit(task: Task, priorRun?: TaskRun): Promise<TaskFundingAdmission> {
   await assertCanonicalShape(task);
   const modelId = await selectTaskModel(task, priorRun);
+  const pin = subscriptionPin(task);
+  const priorDecision = priorRun ? restoreDecision(task, priorRun) : pin ? {
+    ...pin, humanUserId: task.requestorId, payerHumanId: task.requestorId, modelId, workload: "native_text_task" as const,
+  } : undefined;
   const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId,
-    workload: "native_text_task", ...(priorRun ? { priorDecision: restoreDecision(task, priorRun) } : {}) });
+    workload: "native_text_task", ...(priorDecision ? { priorDecision } : {}) });
   return { modelId, binding: bindingFor(decision) };
 }
 
@@ -366,6 +382,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       task.requestorId,
       async () => { await resolveCandidate(modelId); },
       admitted.kind,
+      bindingFor(admitted),
     ),
     async recheckAttempt(candidate, transport) {
       const current = await resolveCandidate(candidate, transport);
@@ -382,8 +399,8 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
         lastAttempt = decision;
         const usageFunding = usageFundingFor(decision);
         if (decision.kind === "server") return await runAttempt({ usageFunding });
-        return await withAdmittedPersonalProviderKey(decision,
-          (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+        return await withAdmittedPersonalCredential(decision,
+          (personalCredential) => runAttempt({ usageFunding, personalCredential }), undefined, admitted);
       } catch (error) {
         const reason = taskFundingFailureCode(error);
         if (wake && run.status === "completed" && reason) {
@@ -406,6 +423,24 @@ async function fundingBoundary<T>(work: () => Promise<T>): Promise<T> {
 
 export const nativeTaskFundingPort: TaskFundingPort = {
   async prepareCreation(input, provenance) {
+    if (Object.hasOwn(input.metadata ?? {}, "subscriptionFunding")) throw new TaskFundingError("funding_source_changed");
+    let inheritedSubscription: ModelFundingDecision | undefined;
+    if (provenance.kind === "agent_turn" && provenance.parentTaskId && provenance.parentTaskRunId) {
+      const db = getServerDirectDb();
+      const parent = await getTaskById(db, provenance.parentTaskId);
+      const run = await getTaskRunForTask(db, provenance.parentTaskId, provenance.parentTaskRunId);
+      if (!parent || parent.requestorId !== input.requestorId || !run || !["running", "awaiting", "completed"].includes(run.status)) {
+        throw new TaskFundingError("unsupported_workload");
+      }
+      if (run.fundingBinding !== null && run.fundingBinding !== undefined) {
+        const decision = restoreDecision(parent, run);
+        if (decision.kind === "personal" && decision.providerRoute === "openai-chatgpt") inheritedSubscription = decision;
+      }
+    }
+    const wouldUseSelectedSubscription = async () => {
+      const selected = await chatGPTFundingRegistration(input.requestorId);
+      return selected !== null && (await selectTaskModel(input)).startsWith("openai:");
+    };
     const caps = await getUserCapabilities(input.requestorId);
     const policy = await getServerProviderPolicy(getServerDirectDb());
     let admittedDeepResearch: boolean;
@@ -417,7 +452,15 @@ export const nativeTaskFundingPort: TaskFundingPort = {
     if (!shouldPrepareNativeTaskCallerFunding(input.metadata, {
       allowPersonalProviderKeys: policy.allowPersonalProviderKeys,
       capabilities: caps,
-    })) return false;
+    }) && !inheritedSubscription) {
+      // An unavailable explicitly selected plan is still a funding choice.
+      // Never reinterpret policy disable/revocation as permission to charge
+      // the legacy server lane when a queued Task is created.
+      if (await wouldUseSelectedSubscription()) throw new TaskFundingError(
+        policy.allowPersonalProviderKeys ? "personal_credentials_forbidden" : "personal_credentials_disabled",
+      );
+      return false;
+    }
     const inputParentTaskId = input.parentTaskId ?? null;
     const originSupported = provenance.kind === "human_api"
       ? provenance.requestedParentTaskId === inputParentTaskId
@@ -426,10 +469,11 @@ export const nativeTaskFundingPort: TaskFundingPort = {
         && provenance.parentTaskId === inputParentTaskId
         && (provenance.parentTaskId === null || provenance.parentTaskRunId !== null);
     if (!originSupported || !supportedShape(input) || !input.callingRoomId) {
-      if (!admittedDeepResearch && caps.includes("use_server_provider_credentials")) return false;
+      if (!inheritedSubscription && !admittedDeepResearch && caps.includes("use_server_provider_credentials")
+        && !await wouldUseSelectedSubscription()) return false;
       throw new TaskFundingError("unsupported_workload");
     }
-    await fundingBoundary(async () => {
+    const decision = await fundingBoundary(async () => {
       if (provenance.kind === "agent_turn" && provenance.parentTaskId && provenance.parentTaskRunId) {
         const parentRun = await getTaskRunForTask(getServerDirectDb(), provenance.parentTaskId, provenance.parentTaskRunId);
         if (!parentRun || !["running", "awaiting", "completed"].includes(parentRun.status)) {
@@ -438,9 +482,11 @@ export const nativeTaskFundingPort: TaskFundingPort = {
       }
       await assertCanonicalShape(input);
       const modelId = await selectTaskModel(input);
-      await resolveModelFunding({ humanUserId: input.requestorId, modelId, workload: "native_text_task" });
+      return resolveModelFunding({ humanUserId: input.requestorId, modelId, workload: "native_text_task",
+        ...(inheritedSubscription ? { priorDecision: inheritedSubscription } : {}) });
     });
-    return true;
+    return decision.kind === "personal" && decision.providerRoute === "openai-chatgpt"
+      ? { modelId: decision.modelId, binding: bindingFor(decision) } : true;
   },
   admit: (task, priorRun) => fundingBoundary(() => admit(task, priorRun)),
   openSession: (task, run, modelId, wake) => fundingBoundary(() => openSession(task, run, modelId, wake)),
