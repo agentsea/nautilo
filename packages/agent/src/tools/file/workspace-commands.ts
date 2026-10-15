@@ -1,5 +1,5 @@
 /**
- * M088B — `zone: "workspace"` command dispatch for the `file` tool.
+ * `zone: "workspace"` command dispatch for the `file` tool.
  *
  * Workspace operations no longer treat `<workspaceRoot>/<path>` as the
  * source of truth. The artifact DB row (and its `artifact_namespaces`
@@ -12,11 +12,11 @@
  *
  * Bytes live under the server-owned artifact root (`getArtifactsRoot()`,
  * default `~/.nautilo/artifacts/`) — independent of any client-supplied
- * `workspacePath`. Existing rows whose `namespace_id` was the M088A
+ * `workspacePath`. Existing rows whose `namespace_id` was the legacy
  * column live on through their `artifact_namespaces` junction row(s);
  * mutations check overlap with the envelope's `mutableNamespaces`.
  *
- * D306 Phase 1B — `copy` now mints or updates workspace artifact rows
+ * `copy` now mints or updates workspace artifact rows
  * (binary delivered formats).
  */
 
@@ -45,9 +45,9 @@ import { handleRead } from "./commands/read";
 import { handleWrite } from "./commands/write";
 import { handleInsert } from "./commands/insert";
 import { handleStrReplace } from "./commands/str-replace";
-// D121-P4 / D087-P2B — six block-edit commands. All operate on the
+// six block-edit commands. All operate on the
 // resolved artifact's physical bytes via linkedom; mutating commands
-// stage through the existing D087 pipeline.
+// stage through the existing mutation pipeline.
 import {
   handleInsertBlock,
   handleListBlocks,
@@ -137,13 +137,13 @@ const WORKSPACE_ARTIFACT_COMMANDS = new Set<FileToolRawArgs["command"]>([
   "delete",
   "move",
   "copy",
-  // M162 — undo/redo must resolve the artifact's physical storage path
+  // undo/redo must resolve the artifact's physical storage path
   // (and sync its row) rather than fall through to the generic
   // workspace-FS resolver, which addressed the Genie Workspace tree and
   // could never find artifact-store bytes (file_missing on Revert).
   "undo",
   "redo",
-  // D121-P4 / D087-P2B — block-edit surface. Workspace-only; the
+  // block-edit surface. Workspace-only; the
   // filesystem-zone dispatcher rejects these because the substrate is
   // designed around the artifact DB index.
   "list_blocks",
@@ -220,7 +220,7 @@ async function rejectOpenWorkspaceArtifact(
 }
 
 /**
- * M088B — top-level entry point for any `zone: "workspace"` (or legacy
+ * top-level entry point for any `zone: "workspace"` (or legacy
  * `home` / `scratch` alias) command. Per-command branches encode the
  * authorization rules from the issue:
  *
@@ -373,9 +373,7 @@ async function handleWorkspaceList(
   const rows = await listWorkspaceArtifacts(facts, {
     ...(prefix ? { pathPrefix: prefix } : {}),
   });
-  // Bulk-fetch namespace attachments per row for the response. Cheap
-  // because list is bounded by visible rows; no pagination concern in
-  // M088B (Phase 5 introduces server HTTP routes that paginate).
+  // Fetch namespace attachments for the visible artifact rows.
   const entries = await Promise.all(
     rows.map(async (row) => ({
       artifactId: row.artifactId,
@@ -673,7 +671,7 @@ async function handleWorkspaceMutate(
 }
 
 /**
- * D448 Phase 11.2 — Workspace undo/redo selects and restores only canonical
+ * Workspace undo/redo selects and restores only canonical
  * coordinator receipts. The server owns history selection, immutable receipt
  * bytes, current Room authority, exact-version evidence, and final commit.
  * No physical path or legacy file_revisions row enters this mutation path.
@@ -745,7 +743,7 @@ async function handleWorkspaceUndoRedo(
 }
 
 // ---------------------------------------------------------------------------
-// D121-P4 / D087-P2B — block-edit wrappers
+// block-edit wrappers
 //
 // Read-side block commands (list_blocks / read_block) resolve the
 // artifact with `intent: "read"` and hand the physical-path
@@ -898,7 +896,7 @@ async function executeWorkspaceStructuralMutation(
     validatedDestination?.ok &&
     sourceValidated.path === validatedDestination.path
   ) {
-    return fileToolError("Error: source and destination paths are identical.");
+    return fileToolError("Error: source and destination paths are identical. workspace, home, and scratch all address the same Workspace artifact namespace. Changing only the zone does not copy or export a file. Read or convert the existing Workspace artifact directly; use a different logical destinationPath only when a separate artifact is needed.");
   }
   const execution = getWorkspaceFileStructuralMutationExecution();
   const envelope = ctx.memoryAccessEnvelope;

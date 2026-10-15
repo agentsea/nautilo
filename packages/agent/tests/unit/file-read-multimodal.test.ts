@@ -1,5 +1,5 @@
 /**
- * D069 — multimodal `file:read` returns ToolMessage for image/PDF paths when
+ * multimodal `file:read` returns ToolMessage for image/PDF paths when
  * the active model supports the modality (`DispatchContext.activeModelId`).
  */
 
@@ -8,6 +8,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
 import { ToolMessage } from "@langchain/core/messages";
+import { syntheticPdf } from "../helpers/synthetic-pdf";
 import { handleRead } from "../../src/tools/file/commands/read";
 import type { DispatchContext } from "../../src/tools/file/dispatch";
 
@@ -33,7 +34,7 @@ afterEach(async () => {
   TMP = "";
 });
 
-describe("handleRead multimodal (D069)", () => {
+describe("handleRead multimodal", () => {
   test("PNG returns ToolMessage when model supports vision", async () => {
     const p = path.join(TMP, "one.png");
     await fsp.writeFile(p, MIN_PNG);
@@ -51,7 +52,7 @@ describe("handleRead multimodal (D069)", () => {
     expect(blocks[0]?.type).toBe("text");
     expect(blocks[1]?.type).toBe("image_url");
 
-    // D113A — workbench-side renderer envelope on additional_kwargs.
+    // workbench-side renderer envelope on additional_kwargs.
     const summaryRaw = tm.additional_kwargs["nautilo_event_summary"];
     expect(typeof summaryRaw).toBe("string");
     const summary = JSON.parse(summaryRaw as string) as Record<string, unknown>;
@@ -98,6 +99,20 @@ describe("handleRead multimodal (D069)", () => {
       tm.additional_kwargs["nautilo_event_summary"] as string,
     ) as Record<string, unknown>;
     expect(summary["kind"]).toBe("pdf");
+  });
+
+  test("text-only models read a Workspace PDF without delegation or raw binary", async () => {
+    const p = path.join(TMP, "stored-artifact");
+    await fsp.writeFile(p, syntheticPdf(["Synthetic page one", "Synthetic page two"]));
+    const out = await handleRead(
+      { command: "read", path: "sample.pdf", zone: "workspace", offset: 0, limit: 1 },
+      { resolved: p, resolvedZone: "workspace" },
+      { ...BASE_CTX, activeModelId: "fireworks:accounts/fireworks/models/kimi-k2p5" },
+    );
+    expect(typeof out).toBe("string");
+    expect(JSON.parse(out as string)).toMatchObject({ representation: "extracted_text", untrusted: true,
+      pages: [{ page: 1, text: "Synthetic page one" }], nextPage: 2, complete: false });
+    expect(out).not.toContain("base64");
   });
 
   test("PNG returns rejection string for text-only model", async () => {

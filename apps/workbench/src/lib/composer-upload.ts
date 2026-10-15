@@ -4,6 +4,7 @@
  * (paperclip now; drag-drop next) so there is ONE ingestion path.
  */
 import { apiClient } from "./api";
+import { uploadComposerPdf } from "./composer-pdf-upload";
 import { updateAttachment } from "../adapters/composer-attachments-ref";
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -20,6 +21,12 @@ async function uploadBlob(
   opts?: { roomId?: string | null },
 ): Promise<void> {
   try {
+    if (/\.pdf$/i.test(filename)) {
+      const workspaceArtifact = await uploadComposerPdf({ id, blob, filename, roomId: opts?.roomId },
+        (file, options) => apiClient.createWorkspaceArtifact(file, options));
+      updateAttachment(id, { status: "queued", errorReason: null, workspaceArtifact, mimeType: "application/pdf" });
+      return;
+    }
     const res = await apiClient.uploadMessageAttachment(blob, filename, {
       ...(opts?.roomId ? { roomId: opts.roomId } : {}),
     });
@@ -50,8 +57,8 @@ export async function uploadComposerAttachment(
   opts?: { roomId?: string | null },
 ): Promise<void> {
   try {
-    const result = await uploadPickedAttachment(file, opts);
-    updateAttachment(id, { status: "queued", errorReason: null, attachmentId: result.attachmentId, mimeType: result.mimeType });
+    const bytes = base64ToBytes(file.base64);
+    await uploadBlob(id, new Blob([bytes.buffer as ArrayBuffer]), file.name, opts);
   } catch (error) {
     updateAttachment(id, { status: "error", errorReason: error instanceof Error ? error.message : "Attachment upload failed" });
   }

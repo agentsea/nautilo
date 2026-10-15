@@ -62,6 +62,7 @@
     "linkedom": "0.18.12",
     "mdast-util-to-string": "4.0.0",
     "pg": "8.13.1",
+    "pdfjs-dist": "6.2.108",
     "react": "19.2.5",
     "remark": "15.0.1",
     "remark-gfm": "4.0.1",
@@ -76,6 +77,7 @@
     "@types/react": "19.2.14",
     "@types/write-file-atomic": "4.0.3",
     "dotenv": "16.6.1",
+    "fflate": "0.8.3",
     "jimp": "^1.6.1",
     "typescript": "5.9.3"
   }

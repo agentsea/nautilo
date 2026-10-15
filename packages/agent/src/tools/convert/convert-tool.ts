@@ -1,11 +1,13 @@
 /**
- * D306 — dedicated first-class `convert` tool.
+ * dedicated first-class `convert` tool.
  *
  * Converts inline HTML/Markdown or file/artifact sources to delivered
  * formats. Local backend handles Markdown → PDF/DOCX; CloudConvert
  * (when keyed) handles the broader matrix.
  */
 
+import { ATTACHMENT_POLICY } from "@nautilo/attachments";
+import { convertPdfText, PDF_TEXT_CONVERSION_WARNING } from "./pdf-to-text";
 import * as fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -75,7 +77,7 @@ const CLOUD_FORMAT_MATRIX =
   "No html→xlsx — use the officecli tool for spreadsheets.";
 
 const LOCAL_DESCRIPTION =
-  "Convert documents to delivered formats. Local (keyless) routes: Markdown → PDF or DOCX. " +
+  "Convert documents to delivered formats. Local (keyless) routes: Markdown → PDF or DOCX; Workspace PDF text layer → TXT, Markdown or DOCX. PDF conversion does not preserve images, layout, annotations or redline styling; it fails if pages have no text. " +
   "Provide inline markdown/html or sourcePath+sourceZone, plus format and destinationPath " +
   "(destinationZone defaults to workspace artifacts). " +
   "Set backend to local|cloud|auto (or NAUTILO_CONVERT_BACKEND env).";
@@ -231,6 +233,9 @@ async function readWorkspaceSourceBytes(
     return { ok: false, error: `No workspace artifact at "${validated.path}" to convert.` };
   }
   try {
+    if (inputFormat === "pdf" && (await fsp.stat(resolution.physicalPath)).size > ATTACHMENT_POLICY.maxAcceptedBytesPerMessage) {
+      return { ok: false, error: "PDF exceeds the attachment processing byte budget. Split the document before conversion." };
+    }
     const bytes = await fsp.readFile(resolution.physicalPath);
     return {
       ok: true,
@@ -337,9 +342,13 @@ async function runLocalConversion(
   outputFormat: string,
   sourceBytes: Buffer,
   deps: ConvertToolDeps,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const input = normalizeFormat(inputFormat);
   const output = normalizeFormat(outputFormat);
+  if (input === "pdf" && (output === "txt" || output === "md" || output === "docx")) {
+    return convertPdfText(sourceBytes, output, signal);
+  }
   if (input !== "md") {
     throw new Error(`Local backend only supports Markdown sources (got ${input})`);
   }
@@ -1119,12 +1128,14 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
         }
         generatedBytes =
           backend === "local"
-            ? await runLocalConversion(source.inputFormat, outputFormat, source.bytes, deps)
+            ? await runLocalConversion(source.inputFormat, outputFormat, source.bytes, deps, config?.signal)
             : await runCloudConversion(source.inputFormat, outputFormat, source.bytes, deps, recordProviderCost);
       } catch (err) {
+        config?.signal?.throwIfAborted();
         const msg = err instanceof Error ? err.message : String(err);
         return `Error converting ${source.inputFormat} → ${outputFormat}: ${msg}`;
       }
+      config?.signal?.throwIfAborted();
       const byteCount = generatedBytes.byteLength;
       const sizeError = assertGeneratedSize(byteCount);
       if (sizeError) return `Error: ${sizeError}`;
@@ -1135,6 +1146,10 @@ export function createConvertTool(context?: unknown, deps: ConvertToolDeps = {})
           ? `Applied convert inline ${source.inputFormat.toUpperCase()} to ${label} (${byteCount} bytes) via ${backend} backend — revertable.`
           : `Applied convert ${source.sourcePath} to ${label} (${byteCount} bytes) via ${backend} backend — revertable.`;
       const warnings: string[] = [`Converted via ${backend} backend.`];
+      if (backend === "local" && normalizeFormat(source.inputFormat) === "pdf") {
+        summary += ` ${PDF_TEXT_CONVERSION_WARNING}`;
+        warnings.push(PDF_TEXT_CONVERSION_WARNING);
+      }
       if (backend === "cloud") {
         const region = cloudRegionLabel();
         summary += ` Bytes were sent to CloudConvert (region: ${region}).`;

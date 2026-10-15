@@ -9,7 +9,7 @@ import { workspaceArtifactsRoutes } from "../../src/routes/workspace-artifacts";
 import { ArtifactWriteDeniedError } from "@nautilo/trust";
 
 /**
- * D423 Phase 2 — route-level proof that a malformed `.mp4` (no ISO-BMFF
+ * route-level proof that a malformed `.mp4` (no ISO-BMFF
  * `ftyp` header) creates no workspace artifact.
  *
  * The route handler writes the uploaded bytes to a temp file under the
@@ -136,6 +136,17 @@ describe("workspace-artifacts routes module", () => {
     // route's `finally` orphan-cleanup removed the uploaded file because
     // `attached` stayed false (insertArtifact was never reached).
     expect(readdirSync(root)).toEqual([]);
+  });
+
+  test("a renamed non-PDF is rejected and its uploaded bytes are removed", async () => {
+    const app = await makeApp();
+    const fd = new FormData();
+    fd.set("file", new Blob(["synthetic non-PDF"], { type: "application/pdf" }), "sample.pdf");
+    fd.set("path", "Attachments/synthetic/sample.pdf");
+    const response = await app.inject({ method: "POST", url: "/api/workspace/artifacts", payload: fd });
+    expect(response.statusCode).toBe(415);
+    expect(response.json()).toMatchObject({ code: "pdf_header_missing" });
+    expect(readdirSync(artifactRoots.at(-1)!)).toEqual([]);
   });
 
   test("Artifact upload denies before multipart bytes reach disk without write_artifacts", async () => {
