@@ -6,6 +6,9 @@ export type BackendPreference = ConvertBackend | "auto";
 const LOCAL_PAIRS: ReadonlyArray<readonly [string, string]> = [
   ["md", "pdf"],
   ["md", "docx"],
+  ["pdf", "txt"],
+  ["pdf", "md"],
+  ["pdf", "docx"],
 ];
 
 export function normalizeFormat(format: string): string {
@@ -43,7 +46,7 @@ export function resolveConvertBackend(args: {
         ok: false,
         error:
           `Local backend cannot convert ${input} → ${output}. ` +
-          `Local routes: Markdown → PDF/DOCX. Use backend="cloud" after connecting CloudConvert for other pairs.`,
+          `Local routes: Markdown → PDF/DOCX; PDF text layer → TXT/Markdown/DOCX. Use backend="cloud" after connecting CloudConvert for other pairs.`,
       };
     }
     return { ok: true, backend: "local" };
@@ -69,6 +72,6 @@ export function resolveConvertBackend(args: {
     ok: false,
     error:
       `No backend can convert ${input} → ${output}. ` +
-      `Connect CloudConvert for cloud conversion, or use a supported local pair (Markdown → PDF/DOCX).`,
+      `Connect CloudConvert for cloud conversion, or use a supported local pair (Markdown → PDF/DOCX or PDF text layer → TXT/Markdown/DOCX).`,
   };
 }

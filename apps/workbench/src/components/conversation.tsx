@@ -2521,6 +2521,7 @@ function Composer({
   const canSubmitComposer =
     canSend &&
     !composerSendPending && !imageAttachmentConflict &&
+    !attachments.some((attachment) => attachment.status === "pending" || attachment.status === "error") &&
     (composerText.trim().length > 0 || attachments.length > 0 || focusedResources.length > 0);
 
   const submitComposer = useCallback(async () => {
@@ -2711,7 +2712,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name);
+      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -2845,7 +2846,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name);
+      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -3247,7 +3248,7 @@ function AttachmentChip({ attachment }: { attachment: ComposerAttachment }) {
     ? `rejected: ${attachment.errorReason ?? "not sent"}`
     : attachment.status === "pending"
       ? "pending"
-      : "ready"; // matched server send — not an upload progress state
+      : attachment.workspaceArtifact ? "ready — stored in this Room’s Workspace" : "ready";
   return (
     <span
       className={`flex max-w-[16rem] items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${
@@ -3594,8 +3595,7 @@ function Message({
   // returns a fresh object
   // literal on every render → useSyncExternalStore treats every render
   // as a store change → infinite update loop (React error #185, "The
-  // result of getSnapshot should be cached"). Pin: see conversation
-  // crash on first turn render, 2026-05-18, Phase 10.D session-3.
+  // result of getSnapshot should be cached").
   const messageId = useMessage((state) => {
     const n = Number(state.id);
     return Number.isInteger(n) && n > 0 ? n : null;
