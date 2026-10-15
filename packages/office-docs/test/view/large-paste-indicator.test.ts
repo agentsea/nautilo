@@ -57,6 +57,10 @@ function installCanvasShim(): void {
   };
 }
 
+// Disposed after each test: a live editor keeps its cursor blink interval
+// running past the jsdom teardown, where it fails on the missing `window`.
+const liveEditors: EditorAPI[] = [];
+
 function setupEditor(): {
   editor: EditorAPI;
   textarea: HTMLTextAreaElement;
@@ -69,6 +73,7 @@ function setupEditor(): {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const editor = initialize(container, store);
+  liveEditors.push(editor);
   const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
   editor._setSelectionForTest({
     anchor: { blockId: 'b1', offset: 4 },
@@ -149,6 +154,7 @@ describe('large paste busy indicator', () => {
   });
 
   afterEach(() => {
+    for (const editor of liveEditors.splice(0)) editor.dispose();
     HTMLCanvasElement.prototype.getContext = originalGetContext;
     (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
       originalResizeObserver;
