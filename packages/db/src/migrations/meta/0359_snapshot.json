@@ -1,5 +1,5 @@
 {
-  "id": "c3814d1e-83ba-4e78-a09f-a1cd782be79c",
+  "id": "b2fed082-9cdc-4a1d-83c9-9c8c0c55d3cd",
   "prevId": "59fa08d9-b7a5-4788-a201-cbcb09b34f0d",
   "version": "7",
   "dialect": "postgresql",
@@ -22445,12 +22445,6 @@
         },
         "embedding_model": {
           "name": "embedding_model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "image_understanding_model": {
-          "name": "image_understanding_model",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -46631,6 +46625,165 @@
       },
       "checkConstraints": {},
       "isRLSEnabled": true
+    },
+    "public.chatgpt_registrations": {
+      "name": "chatgpt_registrations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_id": {
+          "name": "client_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "server_instance_id": {
+          "name": "server_instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "host_id": {
+          "name": "host_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "authority_revision": {
+          "name": "authority_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_generation": {
+          "name": "token_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "selected": {
+          "name": "selected",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_envelope": {
+          "name": "identity_envelope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "envelope": {
+          "name": "envelope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "uq_chatgpt_registrations_user_client": {
+          "name": "uq_chatgpt_registrations_user_client",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "client_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_chatgpt_registrations_selected": {
+          "name": "uq_chatgpt_registrations_selected",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chatgpt_registrations\".\"selected\" = true",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "chatgpt_registrations_user_id_users_id_fk": {
+          "name": "chatgpt_registrations_user_id_users_id_fk",
+          "tableFrom": "chatgpt_registrations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "chatgpt_registrations_versions": {
+          "name": "chatgpt_registrations_versions",
+          "value": "\"chatgpt_registrations\".\"authority_revision\" >= 1 and \"chatgpt_registrations\".\"token_generation\" >= 1"
+        },
+        "chatgpt_registrations_state": {
+          "name": "chatgpt_registrations_state",
+          "value": "\"chatgpt_registrations\".\"state\" in ('connected', 'reconnect_required', 'disconnected')"
+        },
+        "chatgpt_registrations_envelope": {
+          "name": "chatgpt_registrations_envelope",
+          "value": "(\"chatgpt_registrations\".\"state\" = 'connected' and \"chatgpt_registrations\".\"envelope\" is not null) or (\"chatgpt_registrations\".\"state\" <> 'connected' and \"chatgpt_registrations\".\"envelope\" is null)"
+        }
+      },
+      "isRLSEnabled": false
     }
   },
   "enums": {

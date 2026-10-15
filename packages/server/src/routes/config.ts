@@ -16,6 +16,7 @@ import { getPersonalCapabilityPreferences } from "@nautilo/db";
 import type { PersonalCapabilityPreferences } from "@nautilo/types";
 import { getServerDirectDb } from "../lib/server-direct-db";
 import {
+  createModelFundingSnapshot,
   ModelFundingError,
   resolveModelFunding,
   type ModelFundingDecision,
@@ -263,6 +264,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
       // The signed catalogue projection must not require a process-wide key.
       env: {},
     });
+    const snapshot = deps.resolveCallerAvailability ? null : await createModelFundingSnapshot(humanUserId);
     const imageAssistanceSelections = new Map<string, Promise<ModelFundingDecision | null>>();
     let preferenceSnapshot: Promise<PersonalCapabilityPreferences> | undefined;
     const readImageAssistancePreferences = () => preferenceSnapshot ??= getPersonalCapabilityPreferences(getServerDirectDb(), humanUserId);
@@ -272,7 +274,8 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
           humanUserId,
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
-          { imageAssistanceSelections, readImageAssistancePreferences },
+          { imageAssistanceSelections, readImageAssistancePreferences,
+            ...(snapshot ? { resolveFunding: (input) => resolveModelFunding(input, snapshot.deps) } : {}) },
         );
         return {
           ...availability.model,

@@ -303,6 +303,7 @@ import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
 import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
 import { personalCapabilityPreferenceRoutes } from "./routes/personal-capability-preferences";
+import { chatGPTPlanRoutes } from "./routes/chatgpt-plan";
 import { personalProviderCredentialRoutes } from "./routes/personal-provider-credentials";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
@@ -3117,6 +3118,16 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   serverProviderPolicyRoutes(app);
+  chatGPTPlanRoutes(app, async request => {
+    const authorization = request.headers.authorization;
+    if (!authorization?.startsWith("Bearer ")) return false;
+    const current = await resolveBearer(authorization.slice(7), { depth: "rbac" });
+    if (!current.ok || current.sessionUserId !== request.sessionUserId) return false;
+    if ((await getEncryptionTransitionPolicy(getServerDirectDb())).mode !== "plaintext_only") {
+      await resolveCurrentDeviceAdmission({ request, composition: deviceAdmissionComposition, now: Date.now() });
+    }
+    return true;
+  });
   personalCapabilityPreferenceRoutes(app);
   personalProviderCredentialRoutes(app, {
     auditEvent: (request, event) => {

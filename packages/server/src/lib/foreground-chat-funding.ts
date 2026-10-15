@@ -13,7 +13,7 @@ import {
 import {
   ModelFundingError,
   resolveModelFunding,
-  withAdmittedPersonalProviderKey,
+  withAdmittedPersonalCredential,
   type ModelFundingDecision,
 } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
@@ -176,7 +176,7 @@ export async function openForegroundChatFundingSession(
     kind: admitted.kind,
     ...(external ? { contentPrivateDiagnostics: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
-    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind),
+    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind, capabilityFundingBinding(admitted)),
     personalTaskControls: admitted.kind === "personal"
       && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
     runnableModelIds,
@@ -195,9 +195,9 @@ export async function openForegroundChatFundingSession(
       lastAttempt = decision;
       const usageFunding = usageFundingFor(decision);
       if (decision.kind === "server") return run({ usageFunding });
-      return withAdmittedPersonalProviderKey(
+      return withAdmittedPersonalCredential(
         decision,
-        (apiKey) => run({ usageFunding, personalCredential: { apiKey } }),
+        (personalCredential) => run({ usageFunding, personalCredential }),
         undefined,
         admitted,
       );
@@ -252,9 +252,9 @@ export async function openForegroundConductorFundingSession(
       lastAttempt = decision;
       const usageFunding = usageFundingFor(decision);
       if (decision.kind === "server") return run({ usageFunding });
-      return withAdmittedPersonalProviderKey(
+      return withAdmittedPersonalCredential(
         decision,
-        (apiKey) => run({ usageFunding, personalCredential: { apiKey } }),
+        (personalCredential) => run({ usageFunding, personalCredential }),
         undefined,
         admitted,
       );

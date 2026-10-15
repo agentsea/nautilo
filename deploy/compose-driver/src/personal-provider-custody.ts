@@ -63,24 +63,28 @@ const shellCustodyIdentityHelpers = [
 export function buildReadConnectedPersonalProviderCredentialEvidenceScript(
   psqlCommand: string,
 ): string {
-  const relationQuery = shellQuote(
-    "SELECT coalesce(to_regclass('public.personal_provider_credentials')::text, '');",
-  );
-  const evidenceQuery = shellQuote(
-    "SELECT json_build_object('rowCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id::text), '[]'::json))::text FROM public.personal_provider_credentials;",
-  );
-  return [
-    "set -eu",
-    `relation="$(${psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${relationQuery})"`,
-    `if [ -z "$relation" ]; then printf '%s\\n' ${shellQuote(TABLE_ABSENT_SENTINEL)}; exit 0; fi`,
-    `${psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${evidenceQuery}`,
-  ].join("; ");
+  const tables = [
+    { name: "personal_provider_credentials", keys: "SELECT key_id::text AS key_id FROM public.personal_provider_credentials" },
+    { name: "chatgpt_registrations", keys: "SELECT identity_envelope->>'keyId' AS key_id FROM public.chatgpt_registrations UNION ALL SELECT envelope->>'keyId' AS key_id FROM public.chatgpt_registrations WHERE envelope IS NOT NULL" },
+  ];
+  return ["set -eu", ...tables.map(table => {
+    const relationQuery = shellQuote(`SELECT coalesce(to_regclass('public.${table.name}')::text, '');`);
+    const evidenceQuery = shellQuote(`SELECT json_build_object('rowCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id), '[]'::json))::text FROM (${table.keys}) AS custody;`);
+    return `relation="$(${psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${relationQuery})"; if [ -z "$relation" ]; then printf '%s\\n' ${shellQuote(TABLE_ABSENT_SENTINEL)}; else ${psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${evidenceQuery}; fi`;
+  })].join("; ");
 }
 
 export function parseConnectedPersonalProviderCredentialEvidence(
   stdout: string,
 ): PersonalProviderCredentialDbEvidence {
-  const line = stdout.split(/\r?\n/).find((candidate) => candidate !== "");
+  const lines = stdout.split(/\r?\n/).filter(candidate => candidate !== "");
+  if (lines.length > 1) {
+    const evidence = lines.map(line => parseConnectedPersonalProviderCredentialEvidence(line));
+    const rows = evidence.filter(item => item.state === "rows");
+    if (rows.length) return { state: "rows", keyIds: [...new Set(rows.flatMap(item => item.keyIds))].sort() };
+    return { state: evidence.some(item => item.state === "empty") ? "empty" : "table-absent" };
+  }
+  const line = lines[0];
   if (line === TABLE_ABSENT_SENTINEL) return { state: "table-absent" };
   if (line === undefined) {
     throw new Error("personal provider credential database probe returned no evidence");
@@ -138,6 +142,8 @@ export function buildEnsureRemotePersonalProviderCustodyScript(args: {
   const rowCountQuery = shellQuote(
     "SELECT count(*)::text FROM public.personal_provider_credentials;",
   );
+  const subscriptionRelationQuery = shellQuote("SELECT coalesce(to_regclass('public.chatgpt_registrations')::text, '');");
+  const subscriptionCountQuery = shellQuote("SELECT count(*)::text FROM public.chatgpt_registrations;");
   const key = PERSONAL_PROVIDER_CUSTODY_ENV;
   const canonical = shellQuote(args.canonicalInstanceEnvPath);
   const serverEnv = shellQuote(args.serverEnvPath);
@@ -168,7 +174,11 @@ export function buildEnsureRemotePersonalProviderCustodyScript(args: {
       `${args.psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${relationQuery}` +
       ')"; if [ -n "$relation" ]; then row_count="$(' +
       `${args.psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${rowCountQuery}` +
-      ')"; if [ "$row_count" != "0" ]; then exit 67; fi; fi; uuid="$(cat /proc/sys/kernel/random/uuid)"; key_hex="$(od -An -N32 -tx1 /dev/urandom | tr -d " \\n")"; custody="{\\"formatVersion\\":1,\\"keyId\\":\\"${uuid}\\",\\"keyHex\\":\\"${key_hex}\\"}"; config_tmp="${canonical}.tmp.$$"; strip_custody "$canonical" > "$config_tmp"; printf "%s=%s\\n" "$custody_key" "$custody" >> "$config_tmp"; chmod 600 "$config_tmp"; sync "$config_tmp"; mv -f -- "$config_tmp" "$canonical"; sync "$(dirname -- "$canonical")"; fi',
+      ')"; if [ "$row_count" != "0" ]; then exit 67; fi; fi; subscription_relation="$(' +
+      `${args.psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${subscriptionRelationQuery}` +
+      ')"; if [ -n "$subscription_relation" ]; then subscription_count="$(' +
+      `${args.psqlCommand} -X -A -t -q -v ON_ERROR_STOP=1 -c ${subscriptionCountQuery}` +
+      ')"; if [ "$subscription_count" != "0" ]; then exit 67; fi; fi; uuid="$(cat /proc/sys/kernel/random/uuid)"; key_hex="$(od -An -N32 -tx1 /dev/urandom | tr -d " \\n")"; custody="{\\"formatVersion\\":1,\\"keyId\\":\\"${uuid}\\",\\"keyHex\\":\\"${key_hex}\\"}"; config_tmp="${canonical}.tmp.$$"; strip_custody "$canonical" > "$config_tmp"; printf "%s=%s\\n" "$custody_key" "$custody" >> "$config_tmp"; chmod 600 "$config_tmp"; sync "$config_tmp"; mv -f -- "$config_tmp" "$canonical"; sync "$(dirname -- "$canonical")"; fi',
     'server_tmp="${server_env}.tmp.$$"; if [ -f "$server_env" ]; then [ -r "$server_env" ] || exit 72; strip_custody "$server_env" > "$server_tmp"; else : > "$server_tmp"; fi; printf "%s=%s\\n" "$custody_key" "$custody" >> "$server_tmp"; chmod 600 "$server_tmp"; sync "$server_tmp"; mv -f -- "$server_tmp" "$server_env"',
   ].join("; ");
 }

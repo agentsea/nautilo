@@ -72,6 +72,7 @@ describe("personal provider credential database contract", () => {
       "unknown",
     ]);
     expect(SENSITIVE_TABLES).toContain("personal_provider_credentials");
+    expect(SENSITIVE_TABLES).toContain("chatgpt_registrations");
   });
 
   test("allocates a fresh UUID identity at initial revision", () => {
@@ -109,7 +110,7 @@ describe("personal provider credential database contract", () => {
     expect(
       await clearPersonalProviderCredentialsForClone(matching.db, expected),
     ).toEqual({ deletedCount: 1 });
-    expect(matching.deleteCalls.value).toBe(1);
+    expect(matching.deleteCalls.value).toBe(2);
 
     for (const identities of [
       [],

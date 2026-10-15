@@ -6,7 +6,7 @@ import { apiClient } from "../../../lib/api";
 import { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT } from "../../../lib/caller-model-availability";
 import { useAuth } from "../../../hooks/use-auth";
 import { CostsCompactSummary } from "../../costs/costs-dashboard";
-import { normalizePersonalCosts } from "../../costs/costs-view-model";
+import { formatInt, normalizePersonalCosts } from "../../costs/costs-view-model";
 import { SectionCard } from "../ui";
 
 export function PersonalCostsSection() {
@@ -57,7 +57,7 @@ export function PersonalCostsSection() {
     <SectionCard
       id="personal-costs"
       title="Your costs"
-      description="Personal provider-key spend and usage from the last 30 days."
+      description="API-key spending and ChatGPT plan usage from the last 30 days."
     >
       {loading ? (
         <p className="py-3 text-sm text-foreground-muted">
@@ -77,16 +77,15 @@ export function PersonalCostsSection() {
       {!loading && !error && data && !data.entry.available ? (
         <div className="flex flex-col gap-3">
           <p className="text-sm text-foreground-muted">
-            Add a personal API key to pay for eligible work from your own
-            provider account. Past cost history will remain here if you later
-            remove or replace a key.
+            Connect your ChatGPT plan or add a personal API key to fund eligible work.
+            Usage history remains here after you disconnect.
           </p>
           <div>
             <Link
               className="text-sm text-primary hover:underline"
               to="/settings#personal-provider-keys"
             >
-              Manage personal API keys
+              Manage personal API keys and subscriptions
             </Link>
           </div>
         </div>
@@ -95,14 +94,18 @@ export function PersonalCostsSection() {
         <CostsCompactSummary
           data={normalizePersonalCosts(data)}
           periodLabel="30d"
-          footer={
-            !data.entry.hasPersonalCredentials && data.entry.hasHistory ? (
+          footer={<>
+            {(data.subscriptions?.length ?? 0) > 0 ? <p className="text-xs text-foreground-muted">
+              ChatGPT plan: {formatInt(data.subscriptions!.reduce((total, row) => total + row.totalTokens, 0))} reported tokens.
+              Subscription usage is separate from spending; view it in the full dashboard.
+            </p> : null}
+            {!data.entry.hasPersonalCredentials && data.entry.hasHistory ? (
               <p className="text-xs text-foreground-muted">
-                This history remains available even though no personal API key
-                is currently saved.
+                This history remains available even though no personal funding
+                connection is currently saved.
               </p>
-            ) : null
-          }
+            ) : null}
+          </>}
           action={
             <Link
               className="inline-flex items-center gap-1 text-sm text-primary hover:underline"

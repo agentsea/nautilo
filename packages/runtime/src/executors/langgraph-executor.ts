@@ -1221,6 +1221,7 @@ export async function* langgraphExecutor(
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
     jobId: _jobId, turnId: turnId || _jobId,
     inputDigest: imageAssistanceInputDigest({ turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
+    ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
     humanUserId: causalHumanUserId ?? "", mainModelId: modelId,

@@ -150,6 +150,11 @@ export async function createTask(
   const row = await dbCreateTask(deps.db, {
     ...candidate,
     localExecutionDelegation,
+    // The funding owner, never a model argument, records a subscription pin.
+    // Each dispatch still rechecks the requestor's current policy and custody.
+    ...(typeof callerFunded === "object" ? {
+      metadata: { ...candidate.metadata, subscriptionFunding: callerFunded.binding },
+    } : {}),
     // Only the trusted funding port may author this definition discriminator.
     fundingMode: callerFunded ? "caller" : "legacy_server",
     nextFireAt,

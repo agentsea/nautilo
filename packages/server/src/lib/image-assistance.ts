@@ -18,7 +18,8 @@ import type {
 } from "@nautilo/types";
 import { assertForegroundRoomAuthority, usageFundingFor } from "./foreground-chat-funding";
 import {
-  ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey,
+  ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential,
+  withAdmittedPersonalProviderKey,
   type ModelFundingDecision,
 } from "./model-funding";
 import { imageAssistanceInputCommitment } from "./image-assistance-input-commitment";
@@ -91,6 +92,7 @@ export async function resolveCallerImageInput(
     return input.funding.providerRoute !== "surplus"
       || resolveQualifiedSurplusChatRoute(input.modelId)?.supportsVision === true ? "direct" : "unavailable";
   }
+  if (input.funding.providerRoute === "openai-chatgpt") return "unavailable";
   try {
     return await selectCallerImageAssistance({ humanUserId: input.humanUserId,
       fundingKind: input.funding.kind, mainModelId: input.modelId }, deps) ? "assisted" : "unavailable";
@@ -191,8 +193,12 @@ export async function openImageAssistance(
         lastAttempt = decision;
         const usageFunding = usageFundingFor(decision);
         if (decision.kind === "server") return run({ usageFunding });
-        return (deps.withCredential ?? withAdmittedPersonalProviderKey)(decision,
-          (apiKey) => run({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+        if (deps.withCredential) {
+          return deps.withCredential(decision,
+            (apiKey) => run({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+        }
+        return withAdmittedPersonalCredential(decision,
+          (personalCredential) => run({ usageFunding, personalCredential }), undefined, admitted);
       },
     },
   };

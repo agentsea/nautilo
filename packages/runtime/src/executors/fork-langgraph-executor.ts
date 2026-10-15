@@ -554,6 +554,7 @@ export async function* forkLanggraphExecutor(
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
     jobId: jobId, turnId: turnId || jobId,
     inputDigest: imageAssistanceInputDigest({ turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
+    ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
     humanUserId: causalHumanUserId ?? "", mainModelId: modelId,

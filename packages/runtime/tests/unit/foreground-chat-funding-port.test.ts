@@ -194,10 +194,22 @@ describe("foreground chat funding port", () => {
       causalHumanUserId: "human-1", entrypoint, modelId: "text-a", roomId: "room-1", agentId: "agent-1", fundingKind: "personal" as const,
       jobId: "job-image", turnId: "turn-image", inputDigest: "a".repeat(64) };
     expect((await openImageAssistanceForInvocation(input))?.modelId).toBe("vision-a");
-    expect(opened[0]).toMatchObject({ humanUserId: "human-1", fundingKind: "personal", entrypoint });
+    expect(opened[0]).toMatchObject({ humanUserId: "human-1", fundingKind: "personal", entrypoint,
+      jobId: "job-image", turnId: "turn-image", inputDigest: "a".repeat(64) });
     expect(openImageAssistanceForInvocation({ ...input, causalHumanUserId: "other" })).rejects.toBeInstanceOf(ForegroundChatFundingAuthorityError);
     expect(opened).toHaveLength(1);
     expect(await openImageAssistanceForInvocation({ ...input, authority: undefined })).toBeNull();
+
+    const chatgptFunding: ForegroundChatFundingSession = {
+      ...personalSession,
+      admission: {
+        modelId: "openai:gpt-6.1-sol",
+        binding: { kind: "personal", providerRoute: "openai-chatgpt",
+          credentialId: "88888888-8888-4888-8888-888888888888", credentialRevision: 7 },
+      },
+    };
+    expect(await openImageAssistanceForInvocation({ ...input, parentFunding: chatgptFunding })).toBeNull();
+    expect(opened).toHaveLength(1);
   });
 
   test("resource payloads do not nominate a caller or bypass accepted authority", async () => {

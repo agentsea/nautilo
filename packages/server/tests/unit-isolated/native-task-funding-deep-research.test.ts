@@ -124,7 +124,7 @@ mock.module("../../src/lib/model-funding", () => ({
     workload: "native_text_task" as const,
     providerRoute: "openrouter",
   }),
-  withAdmittedPersonalProviderKey: async () => {
+  withAdmittedPersonalCredential: async () => {
     throw new Error("personal funding must not be used");
   },
 }));
@@ -133,6 +133,8 @@ mock.module("../../src/lib/caller-task-model-context", () => ({
   callerTaskModelIds: async () => [CHAT_MODEL],
   personalOnlyTaskModelIds: async () => [],
 }));
+
+mock.module("../../src/lib/chatgpt-plan/runtime", () => ({ chatGPTFundingRegistration: async () => null }));
 
 const { nativeTaskFundingPort } = await import("../../src/lib/native-task-funding");
 const { createAgentTurnTaskCreationProvenance } = await import("@nautilo/runtime");

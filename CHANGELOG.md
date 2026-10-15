@@ -23,6 +23,15 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Word without generated scripts. Text conversion preserves neither layout nor
   annotations and refuses to silently produce an incomplete document.
 
+- Add ChatGPT plan connection settings, encrypted account custody,
+  account-specific model discovery and a separate subscription Responses adapter.
+  Selecting a subscription prevents automatic API-key/server fallback. Plan usage
+  appears separately from API spending, with comparison estimates clearly labeled.
+  Desktop can connect a user-owned remote Server through the system browser.
+  Unfinished sign-ins retain their registration for retry; restores require
+  reconnect before using subscription tokens. Settings identify the active
+  subscription and ask for confirmation before switching to API-key/server funding.
+
 - Personal Memory review, reflection and summarization models can be selected
   independently. Memory processing uses a member's admitted funding only when
   current input evidence proves that member's exclusive authorship and audience;

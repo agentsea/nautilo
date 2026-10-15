@@ -159,12 +159,24 @@ auth, shellStateOnBoot, coldBoot, platform, electronVersion, getVersion,
 workbench, openFolder, pickFiles, currentFolder, genieWorkspace,
 workspace,                       // DEPRECATED alias for currentFolder
 servers, activeSession, updates, notifications, browserControl, browserResearch, passwords,
-toolRuntimes, googleWorkspace, terminal, desktopFilesystemGrants,
+toolRuntimes, googleWorkspace, chatGPT, terminal, desktopFilesystemGrants,
 workstationProfiles, uncontainedHostCommands, githubCli, structuredSsh, computerUse, workstationShell, codexConnection, hermesConnection, readyToWork, remoteControl,
 ordinaryChat, foregroundShadow, encryptionRecovery,
 relayStatus, relayIdentity, binaryRead, mediaProxy, mediaExport, fs, media, systemPermissions, menu, logger, onboarding,
 deepLink
 ```
+
+**`window.nautiloDesktop.chatGPT`** (authenticated Workbench enrollment):
+
+```
+prepare, receive, cancel
+```
+
+These methods prepare, receive or cancel a one-use browser callback. The listener
+belongs to the initiating authenticated session and sender; navigation, a changed
+server authority or authentication generation cancels it. Remote enrollment
+requires HTTPS. The server owns token exchange and custody; this bridge returns
+the callback and does not expose saved subscription tokens.
 
 **`window.nautiloDesktop.companion`** (authenticated Workbench owner):
 

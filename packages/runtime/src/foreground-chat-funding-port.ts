@@ -236,8 +236,10 @@ export async function openImageAssistanceForInvocation(
   input: Parameters<typeof openForegroundChatFundingSessionForInvocation>[0] & {
     fundingKind?: "server" | "personal";
     jobId: string; turnId: string; inputDigest: string;
+    parentFunding?: ForegroundChatFundingSession;
   },
 ): Promise<ImageAssistanceSession | null> {
+  if (input.parentFunding?.admission?.binding.providerRoute === "openai-chatgpt") return null;
   if (!installedPort?.openImageAssistance || !input.authority
     || (input.entrypoint !== "foreground.main" && input.entrypoint !== "foreground.fork")
     || hasUnsupportedForegroundFundingShape(input.jobInput)) return null;

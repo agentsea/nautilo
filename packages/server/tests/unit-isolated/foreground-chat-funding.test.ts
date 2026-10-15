@@ -69,10 +69,7 @@ const assertInvoke = mock(async (input: AgentInvocationAdmissionInput) => {
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
   resolveRetainedModels: actualAgent.resolveRetainedModels,
-  getEligibleModels: ({ env }: { env: NodeJS.ProcessEnv }) =>
-    env["OPENROUTER_API_KEY"]
-      ? [MODEL, FALLBACK].map((id) => ({ id, availability: "selectable" }))
-      : [],
+  getEligibleModels: () => [MODEL, FALLBACK].map((id) => ({ id, availability: "missing-key" })),
   modelHasRunnableCredentials: (modelId: string, env: NodeJS.ProcessEnv) =>
     modelId.startsWith("openrouter:") && Boolean(env["OPENROUTER_API_KEY"]),
 }));
@@ -113,9 +110,16 @@ mock.module("../../src/lib/model-funding", () => ({
     constructor(readonly code: string) { super(code); }
   },
   resolveModelFunding: resolveFunding,
+  createModelFundingSnapshot: async () => ({ deps: {} }),
   resolveServerFundingRoute: (modelId: string) => actualAgent.modelHasRunnableCredentials(modelId, process.env)
     ? modelId.split(":", 1)[0] : null,
+  withAdmittedPersonalCredential: (decision: Record<string, unknown>, run: (credential: { apiKey: string }) => Promise<unknown>, deps: unknown, initial: Record<string, unknown>) => withKey(decision, key => run({ apiKey: key }), deps, initial),
   withAdmittedPersonalProviderKey: withKey,
+}));
+
+mock.module("../../src/lib/caller-task-model-context", () => ({
+  callerTaskModelIds: async () => [MODEL, FALLBACK],
+  personalOnlyTaskModelIds: async (_human: string, ids: string[]) => ids.filter(id => !actualAgent.modelHasRunnableCredentials(id, process.env)),
 }));
 
 mock.module("../../src/lib/capability-funding", () => ({
@@ -132,6 +136,7 @@ const {
   isOwnPrivateGenieRoom,
 } =
   await import("../../src/lib/foreground-chat-funding");
+const { resolveCallerImageInput } = await import("../../src/lib/image-assistance");
 
 const input = {
   humanUserId: HUMAN,
@@ -176,6 +181,28 @@ describe("foreground chat funding admission", () => {
     expect(openForegroundChatFundingSession({ ...input, modelId: "openai:gpt-image-2" }))
       .rejects.toMatchObject({ code: "unsupported_workload" });
     expect(resolveFunding).not.toHaveBeenCalled();
+  });
+  test("subscription funding keeps native vision but cannot borrow a separately funded helper", async () => {
+    const modelId = "openai:gpt-5.6-luna";
+    const catalog = actualAgent.resolveCatalogModel(modelId, { env: {} });
+    const funding = {
+      kind: "personal" as const,
+      humanUserId: HUMAN,
+      payerHumanId: HUMAN,
+      modelId,
+      workload: "foreground_text_chat" as const,
+      providerRoute: "openai-chatgpt",
+      credentialId: "synthetic-subscription",
+      credentialRevision: 3,
+    };
+
+    expect(await resolveCallerImageInput({ humanUserId: HUMAN, modelId, funding })).toBe("direct");
+    expect(await resolveCallerImageInput({ humanUserId: HUMAN, modelId, funding }, {
+      resolveCatalog: () => ({ ...catalog, input: ["text"] }),
+      readPreferences: async () => {
+        throw new Error("subscription helper exclusion must precede preference projection");
+      },
+    })).toBe("unavailable");
   });
   test("enforces current operator consent for a signed China-routed foreground model", async () => {
     const previous = process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"];
