@@ -11,6 +11,7 @@ export const SENSITIVE_TABLES = [
   // Server-wide provider admission is owned by the product control plane.
   "server_provider_policy",
   "personal_provider_credentials",
+  "chatgpt_registrations",
   "personal_capability_preferences",
   // Exact-account paid conversion recovery belongs to the server control plane.
   "conversion_operations",
@@ -18,13 +19,13 @@ export const SENSITIVE_TABLES = [
   "recovery_codes",
   "logto_account_security",
   "channel_identities",
-  // M297 — caller-owned Human safety policy. Agent runtime must neither
+  // caller-owned Human safety policy. Agent runtime must neither
   // inspect relationship state nor create/remove blocks.
   "human_blocks",
-  // M297 — the Agent runtime must never inspect or alter Human agreement
+  // the Agent runtime must never inspect or alter Human agreement
   // acceptance history.
   "mobile_user_agreement_acceptances",
-  // M322 — ordinary content-access operation receipts are product-owned
+  // ordinary content-access operation receipts are product-owned
   // replay history, not Agent runtime authority. Keep them denied after the
   // broad legacy/default grants are reconciled.
   "content_access_operations",
@@ -41,7 +42,7 @@ export const SENSITIVE_TABLES = [
   "invite_redemptions",
   ...CRYPTO_STORAGE_TABLE_NAMES,
   ...DOMAIN_KEY_AUTHORITY_TABLE_NAMES,
-  // M257 — durable Reflection state is product-owned. Organizer/Sleep reach
+  // durable Reflection state is product-owned. Organizer/Sleep reach
   // it through the narrow bridge; the agent runtime role never scans or
   // mutates these tables directly. Keep this denial in the role reconciler so
   // its broad legacy grant does not undo the migration finalizer.
@@ -51,34 +52,34 @@ export const SENSITIVE_TABLES = [
   "reflection_record_payload_representations",
   "reflection_record_payload_representation_heads",
   "reflection_record_publications",
-  // M258 — rebuildable authority projections are likewise product-owned.
+  // rebuildable authority projections are likewise product-owned.
   "reflection_record_authority_closure",
   "reflection_record_authority_projections",
   "reflection_record_authority_alternatives",
   "reflection_record_authority_changes",
   "reflection_record_authority_reconciliations",
   "reflection_record_authority_blocks",
-  // M264 — semantic-search projections are product-owned rebuildable state.
+  // semantic-search projections are product-owned rebuildable state.
   // The runtime searches them only through the authority-filtering bridge.
   "reflection_record_search_projections",
-  // M274 — aggregate transition observations are product control-plane state,
+  // aggregate transition observations are product control-plane state,
   // never Agent runtime authority. The structural policy row is separately
   // SELECT-only so runtime publication transactions can fence their revision.
   "encryption_transition_observation_buckets",
   "encryption_transition_outcome_totals",
   "encryption_transition_observation_admissions",
   "encryption_transition_history_read_admissions",
-  // M313 — device backlog discovery is product-owned, never an Agent task source.
+  // device backlog discovery is product-owned, never an Agent task source.
   "message_backfill_scans",
   "message_backfill_failures",
   "message_backfill_tool_contexts",
   "message_backfill_tool_pending_calls",
-  // M295 — Human-peer protected lifecycle and device acknowledgements are
+  // Human-peer protected lifecycle and device acknowledgements are
   // product-owned. The Agent role has no part in a zero-Agent Room.
   "conversation_human_peer_shadow_operations",
   "conversation_human_peer_shadow_acknowledgements",
   "conversation_human_peer_shadow_plan_attempts",
-  // M271 — semantic scheduling, replay receipts, and source-dependency
+  // semantic scheduling, replay receipts, and source-dependency
   // commitments are product-owned control state. Broad legacy role repair
   // must not undo the migration's product-only boundary.
   "reflection_record_semantic_work",
@@ -86,7 +87,7 @@ export const SENSITIVE_TABLES = [
   "reflection_record_dependency_change_repairs",
   "reflection_record_source_change_repairs",
   "reflection_record_source_dependency_index",
-  // M267 — cutover/rebuild coordinates are product-owned control state. The
+  // cutover/rebuild coordinates are product-owned control state. The
   // Runtime reaches them through the Stenographer bridge, never by scanning.
   "room_journal_record_cutover",
   "room_journal_record_rebuild_retirements",
@@ -96,14 +97,14 @@ export const AGENT_SELECT_ONLY_TABLES = [
   "encryption_transition_policy",
 ] as const;
 
-/** M233 — Human-owned policy is never visible through the agent runtime role. */
+/** Human-owned policy is never visible through the agent runtime role. */
 export const AGENT_DENIED_NOTIFICATION_TABLES = [
   "user_notification_settings",
   "room_notification_settings",
 ] as const;
 
 /**
- * M233 — immutable append facts need only conflict-aware reads and inserts.
+ * immutable append facts need only conflict-aware reads and inserts.
  * Cleanup is FK-owned; historical materialization uses the application role.
  */
 export const AGENT_APPEND_NOTIFICATION_TABLES = [
@@ -130,7 +131,7 @@ export const USERS_PUBLIC_VIEW_COLUMNS = [
  * DML on the tables, runtime integration fails with
  * `permission denied for schema langchain`.
  *
- * Stack 198 — `checkpoint_migrations` is INTENTIONALLY ABSENT from this
+ * `checkpoint_migrations` is INTENTIONALLY ABSENT from this
  * list. That table is DDL bookkeeping owned by whichever role ran
  * `setup()` (commonly `postgres` via `DB_DIRECT_CONNECTION`). Granting
  * the agent runtime DML on it would be an unnecessary privilege
@@ -167,7 +168,7 @@ export const LANGCHAIN_CHECKPOINT_TABLES = [
  * gated on existence with skip notices. No `DROP`/`CREATE SCHEMA` —
  * this block never mutates structure, only privileges.
  *
- * Stack 198 — no `ALTER DEFAULT PRIVILEGES FOR ROLE nautilo` here. The
+ * no `ALTER DEFAULT PRIVILEGES FOR ROLE nautilo` here. The
  * setup owner may be `postgres` (when `DB_DIRECT_CONNECTION` points at
  * the superuser), in which case `FOR ROLE nautilo` defaults would not
  * cover objects `setup()` creates. Explicit post-setup grants on the
@@ -226,7 +227,7 @@ END $$;
 }
 
 /**
- * Reconcile the exact M233 notification privilege boundary after the broad
+ * Reconcile the exact notification privilege boundary after the broad
  * public-table defaults have run. Conditional table probes keep first boot and
  * pre-migration repair idempotent.
  */
@@ -239,7 +240,7 @@ export function buildNotificationIntelligenceRoleGrantsSql(): string {
   ).join(",");
 
   return `
--- M233 notification intelligence. Preference tables are Human-owned policy;
+-- Notification intelligence. Preference tables are Human-owned policy;
 -- append facts expose only the SELECT/INSERT needed by canonical persistence.
 DO $$
 DECLARE
@@ -266,14 +267,14 @@ END $$;
 }
 
 /**
- * Reconcile the M243 Memory crypto lifecycle tables after the broad legacy
+ * Reconcile the Memory crypto lifecycle tables after the broad legacy
  * public-schema grant. These tables intentionally expose only append access
  * plus the bounded lifecycle columns used by the coordinator. In particular,
  * DELETE and immutable identity updates must remain unavailable.
  */
 export function buildMemoryCryptoLifecycleRoleGrantsSql(): string {
   return `
--- M243/M320 Memory crypto lifecycle. Remove both table-level and historical
+-- Memory crypto lifecycle. Remove both table-level and historical
 -- column-level UPDATE grants before restoring the exact coordinator contract.
 DO $$
 DECLARE
@@ -481,7 +482,7 @@ ${buildNotificationIntelligenceRoleGrantsSql()}
 
 ${buildMemoryCryptoLifecycleRoleGrantsSql()}
 
--- M319: role repair must not broaden Memory coverage or receipt mutation.
+-- Role repair must not broaden Memory coverage or receipt mutation.
 DO $$
 BEGIN
   IF to_regclass('public.memory_review_turns') IS NOT NULL THEN

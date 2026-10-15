@@ -163,6 +163,19 @@ describe("capability funding projection", () => {
   });
 });
 
+test("subscription parent cannot fund auxiliary work through another credential", async () => {
+  const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverProjectionDeps(), {
+    parentBinding: { kind: "personal", providerRoute: "openai-chatgpt", credentialId: CREDENTIAL_ID, credentialRevision: 1 },
+    readPreferences: async () => ({ revision: 1, overrides: {} }),
+  });
+  expect(await errorCode(session.openModel(RESEARCH_MODEL, "research"))).toBe("personal_credentials_forbidden");
+  expect(await errorCode(session.openModel(DECISION_MODEL, "decision"))).toBe("unsupported_workload");
+  expect(await errorCode(session.openModel(RESEARCH_MODEL, "memory"))).toBe("unsupported_workload");
+  expect(await errorCode(session.resolveModel("memoryReview"))).toBe("unsupported_workload");
+  expect(await errorCode(session.openService("tavily"))).toBe("unsupported_workload");
+  expect(await errorCode(session.openMedia!("openai:gpt-image-2", "image"))).toBe("unsupported_workload");
+  expect(await errorCode(session.projectMediaFunding!("openai:gpt-image-2", "imageGeneration"))).toBe("unsupported_workload");
+});
 
 describe("personal Memory funding projection", () => {
   test("admitted Memory uses an optional sparse exact model without changing payer priority", async () => {

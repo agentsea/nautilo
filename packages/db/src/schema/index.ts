@@ -98,3 +98,4 @@ export * from "./protected-task-continuation-receipts";
 export * from "./bolter-bridge";
 
 export * from "./external-room-execution-claims";
+export * from "./chatgpt-registrations";

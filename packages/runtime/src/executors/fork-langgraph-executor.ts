@@ -552,6 +552,7 @@ export async function* forkLanggraphExecutor(
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
     causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork" ? "foreground.fork" : null,
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+    ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
     humanUserId: causalHumanUserId ?? "", mainModelId: modelId,

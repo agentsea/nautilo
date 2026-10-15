@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import type { CredentialMetadata } from "@nautilo/api-client/browser";
 
+import { ChatGPTAccountsSection } from "@/features/settings/chatgpt-accounts-section";
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
 import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
@@ -118,8 +119,9 @@ export default function PersonalProviderKeysScreen() {
   const goBack = (): void => router.canGoBack() ? router.back() : router.replace("/(drawer)/(tabs)/settings");
 
   return <View style={styles.container}>
-    <Stack.Screen options={{ header: () => <AppBar title="Personal API keys" left={<AppBarBackButton onPress={goBack} />} /> }} />
+    <Stack.Screen options={{ header: () => <AppBar title="API keys and subscriptions" left={<AppBarBackButton onPress={goBack} />} /> }} />
     <Screen edgeTop={false} contentStyle={styles.content}>
+      <ChatGPTAccountsSection />
       {!policyDisabled ? <Text style={styles.intro}>Add your own key for eligible personal chat, native text Tasks, Research, Decisions, browsing and file conversion. Available key checks do not make a paid request. Embeddings stay server-managed.</Text> : null}
       {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before managing personal keys.</SettingsStatus> : null}
       {state.loading ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading personal API keys" /> : null}

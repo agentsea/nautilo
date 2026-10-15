@@ -1,3 +1,4 @@
+import { CHATGPT_RESTORE_FENCE_SQL } from "@nautilo/operator-secrets";
 import { readArtifactRelocationBackup } from "./artifact-relocation-backup.ts";
 import { ARTIFACT_RELOCATION_FILE_PROBE, planArtifactRelocation, applyArtifactRelocation, type ArtifactRelocationPlan, type ArtifactRelocationDeps, type RelocationTarget, type RelocationFile } from "./artifact-relocation.ts";
 import { createHash, randomBytes } from "node:crypto";
@@ -12,7 +13,7 @@ import {
   resolveInstance,
   type ResolvedInstance,
 } from "@nautilo/config";
-// D427 (Wave 4 task 4.1.1) — shared pure recovery/acceptance helpers. The
+// Shared pure recovery/acceptance helpers. The
 // Compose restore/upgrade path and the `nautilo-dev` restore/upgrade/verify
 // path share credential reconciliation + runtime acceptance semantics through
 // this module.
@@ -260,7 +261,7 @@ function resolveRemoteBundleRestoreImage(
     };
   }
 
-  // Pre-D427 source stacks can report a Docker-synthesized local RepoDigest
+  // Older source stacks can report a Docker-synthesized local RepoDigest
   // even though their rollback image is not pullable. Prefer the retained
   // backup tag, then the configured local tag/image ID, and keep source mode.
   const reference = image.backupTag ?? image.tag ?? image.imageId;
@@ -276,7 +277,7 @@ function resolveRemoteBundleRestoreImage(
 }
 
 /**
- * D420 (Wave 2 task 2.2.2) — default maintenance-drain deadline when an
+ * Default maintenance-drain deadline when an
  * `upgrade` caller omits `waitForMs`. Matches the CLI's
  * `DEFAULT_WAIT_FOR_MS` (5m) so a direct driver caller gets the same bounded
  * drain ceiling as `nautilo upgrade`.
@@ -284,7 +285,7 @@ function resolveRemoteBundleRestoreImage(
 const DEFAULT_UPGRADE_WAIT_FOR_MS = 5 * 60_000;
 
 /**
- * D420 1.2.2 — typed strategy selection over the locked
+ * Typed strategy selection over the locked
  * local/LAN/remote × image/source × server-only/full matrix. The three
  * product locations map onto the two existing adapters: `local` uses the
  * local adapter; `lan` and `remote` both use the remote adapter and are
@@ -567,11 +568,11 @@ export interface ComposeDriverDeps {
   ensureForgotPasswordWebhookSecret?: (
     args: EnsureWebhookSecretArgs,
   ) => Promise<string>;
-  /** D458 — resolve/generate the stable remote-controller pairing pepper. */
+  /** Resolve or generate the stable remote-controller pairing pepper. */
   ensureRemotePairingPepper?: (
     args: EnsureRemotePairingPepperArgs,
   ) => Promise<string>;
-  /** D468 — resolve/generate the stable per-instance push-token encryption key. */
+  /** Resolve or generate the stable per-instance push-token encryption key. */
   ensurePushTokenEncryptionKey?: (
     args: EnsurePushTokenEncryptionKeyArgs,
   ) => Promise<string>;
@@ -626,7 +627,7 @@ export interface ComposeDriverDeps {
    */
   assertReleaseActiveWorkReady?: (profile: ComposeDriverProfile) => Promise<void>;
   /**
-   * D420 (Wave 2 task 2.2.5) — CLI-owned maintenance drain preflight for
+   * CLI-owned maintenance drain preflight for
    * `upgrade`. Enters the durable drain lease, polls operator-maintained
    * aggregate work counts to zero (or cancels + reconciles at the deadline),
    * and RETAINS the owning lease by returning a {@link MaintenanceDrainHandle}
@@ -652,7 +653,7 @@ export interface ComposeDriverDeps {
    */
   resolveAcmeEmail?: (profile: ComposeDriverProfile) => string | undefined;
   /**
-   * D427 (Wave 3 task 3.1.2) — when true, `deploy()` deterministically
+   * When true, `deploy()` deterministically
    * force-recreates Caddy after the main `up -d` when nautilo-server or
    * logto changed, so a changed upstream cannot leave a stale proxy IP.
    * A failed recreate throws and drives the existing rollback behavior
@@ -756,7 +757,7 @@ function dockerEnvForProfile(
   return dockerTransportEnvForProfile(profile);
 }
 
-// D427 (Wave 4 task 4.1.1) — `parseDotenv` is now imported from @nautilo/db
+// `parseDotenv` is imported from @nautilo/db
 // (shared with the `nautilo-dev` restore/verify path). The local definition
 // was removed; the shared helper is byte-for-byte identical.
 
@@ -822,7 +823,7 @@ const LOGTO_TENANT_REGRANT_SQL =
   "END LOOP; END $$;";
 
 // ---------------------------------------------------------------------------
-// D420 (Wave 3 task 3.3.2) — restore-time role password reconciliation.
+// Restore-time role password reconciliation.
 //
 // A `pg_dump` of `nautilo` or `logto_nautilo` carries grants for the
 // `nautilo` / `nautilo_agent` (app cluster) and `logto_tenant_*` (logto
@@ -868,7 +869,7 @@ function remoteVolumesOverlayYaml(remoteRoot: string): string {
   ].join("\n");
 }
 
-// D445 Phase 0 — the in-container path of the dedicated runtime-config
+// The in-container path of the dedicated runtime-config
 // directory mounted from the host, and the canonical instance.env inside it.
 // config-guard mutations (Google OAuth set/clear, provider keys) write this
 // file; compose reads the SAME host file via `env_file` below, so mutations
@@ -961,7 +962,7 @@ export function serverOverlayYaml(
   //      and LOGTO_ENDPOINT_INTERNAL sibling). Must come AFTER
   //      instance.env so the rewrites win.
   //
-  // D445 Phase 0 — `env_file` paths are parsed CLIENT-side (docker CLI loads
+  // `env_file` paths are parsed client-side (the Docker CLI loads
   // the file and injects vars as `environment`), so they take the
   // operator/client-side `instanceEnvPath`. The `volumes:` source is sent to
   // the daemon as-is and resolved on the daemon host, so it takes the
@@ -1000,7 +1001,7 @@ function firstInteger(stdout: string): number | undefined {
 }
 
 /**
- * D420 2.2.4 / R9A — wrap a DB dump producer (`pg_dump ...`) in a portable
+ * Wrap a DB dump producer (`pg_dump ...`) in a portable
  * POSIX-sh pipeline that cannot mask a producer failure behind a successful
  * `gzip`. Plain `sh` (the local and remote execution model) has no
  * `pipefail` / `PIPESTATUS`, so a naive `pg_dump | gzip > file` returns
@@ -1032,7 +1033,7 @@ export function failClosedDumpScript(dumpProducer: string, target: string): stri
 }
 
 /**
- * D420 2.2.4 / R9A — integrity gate run after each DB dump and before the
+ * Integrity gate run after each DB dump and before the
  * bundle manifest is accepted. Rejects a missing, empty, or non-decompressible
  * artifact. The caller's `label` (e.g. "nautilo DB dump validation") names
  * which dump failed; the stderr reason carries no credentials or paths.
@@ -1048,7 +1049,7 @@ export function validateDumpScript(target: string): string {
 }
 
 /**
- * D420 3.1.1 / R9A — restore-side integrity gate. Validates a required
+ * Restore-side integrity gate. Validates a required
  * compressed DB dump is a regular, nonempty, `gzip -t`-valid file BEFORE any
  * destructive schema reset/DROP. Rejects missing (2), empty (3), or corrupt
  * (4) artifacts. The caller's `label` names which dump failed; the stderr
@@ -1074,7 +1075,7 @@ export function validateRestoreDumpScript(target: string): string {
 
 /**
  * Full non-system schema wipe for `nautilo` before applying a pg_dump. The
- * `nautilo.allow_destructive` session GUC is the D374 seatbelt escape hatch.
+ * `nautilo.allow_destructive` session GUC is the seatbelt escape hatch.
  * Exported for unit tests that assert reset SQL is prepended atomically.
  */
 export const NAUTILO_SCHEMA_RESET_SQL =
@@ -1089,7 +1090,7 @@ export const NAUTILO_SCHEMA_RESET_SQL =
 /**
  * Full non-system schema wipe for `logto_nautilo` before applying a pg_dump.
  * Same all-schemas rationale as {@link NAUTILO_SCHEMA_RESET_SQL} without the
- * D374 seatbelt (Logto DB has no nautilo identity marker).
+ * seatbelt (the Logto DB has no Nautilo identity marker).
  */
 export const LOGTO_SCHEMA_RESET_SQL =
   "DROP SCHEMA IF EXISTS public CASCADE; " +
@@ -1100,7 +1101,7 @@ export const LOGTO_SCHEMA_RESET_SQL =
   "CREATE SCHEMA public; ALTER SCHEMA public OWNER TO pg_database_owner;";
 
 /**
- * D420 atomic restore — run schema reset + compressed dump load in ONE `psql`
+ * Atomic restore: run schema reset and compressed dump load in one `psql`
  * invocation with `-X -v ON_ERROR_STOP=1 --single-transaction`, so any
  * dump/reset error rolls back the reset and the DB is never left empty by its
  * own failed import. Gzip integrity MUST be checked via
@@ -1113,12 +1114,13 @@ export function atomicDbRestoreScript(
   source: string,
   psqlCommand: string,
   resetSql: string,
+  afterRestoreSql = "",
 ): string {
   const sourceQuoted = shellQuote(source);
   const statusAssign = `status=${shellQuote(source)}.restorerc.$$`;
   return [
     statusAssign,
-    `{ printf '%s\\n' ${shellQuote(resetSql)}; gunzip -c ${sourceQuoted} 2>&3; printf '%s' "$?" >"$status"; } 3>&2 | ${psqlCommand} -X -v ON_ERROR_STOP=1 --single-transaction`,
+    `{ printf '%s\\n' ${shellQuote(resetSql)}; gunzip -c ${sourceQuoted} 2>&3; printf '%s' "$?" >"$status"; ${afterRestoreSql ? `printf '%s\\n' ${shellQuote(afterRestoreSql)}; ` : ""}} 3>&2 | ${psqlCommand} -X -v ON_ERROR_STOP=1 --single-transaction`,
     `psql_rc=$?`,
     `gunzip_rc=$(cat "$status" 2>/dev/null || printf 0)`,
     `rm -f "$status"`,
@@ -1128,7 +1130,7 @@ export function atomicDbRestoreScript(
 }
 
 /**
- * D420 3.1.1 / R9A — wrap a DB restore pipeline (`gunzip -c dump | psql ...`)
+ * Wrap a DB restore pipeline (`gunzip -c dump | psql ...`)
  * in a portable POSIX-sh form that cannot mask a decompression failure behind
  * a successful `psql`. Plain `sh` (the local and remote execution model) has
  * no `pipefail` / `PIPESTATUS`, so a naive `gunzip | psql` returns psql's exit
@@ -1151,7 +1153,7 @@ export function atomicDbRestoreScript(
  * (with stub `psql`/gzip fixtures) to prove decompression and SQL errors are
  * not masked.
  */
-export function failClosedRestoreScript(source: string, psqlCommand: string): string {
+export function failClosedRestoreScript(source: string, psqlCommand: string, afterRestoreSql = ""): string {
   const sourceQuoted = shellQuote(source);
   // `'<source>'.restorerc.$$` keeps the path quoted while letting the shell
   // expand `$$` for per-process uniqueness.
@@ -1160,7 +1162,7 @@ export function failClosedRestoreScript(source: string, psqlCommand: string): st
     statusAssign,
     // fd 3 carries gunzip's stderr (decompression errors) to the shell's
     // stderr so the reason surfaces in the captured error; stdout feeds psql.
-    `{ gunzip -c ${sourceQuoted} 2>&3; printf '%s' "$?" >"$status"; } 3>&2 | ${psqlCommand} -v ON_ERROR_STOP=1`,
+    `{ gunzip -c ${sourceQuoted} 2>&3; printf '%s' "$?" >"$status"; ${afterRestoreSql ? `printf '%s\\n' ${shellQuote(afterRestoreSql)}; ` : ""}} 3>&2 | ${psqlCommand} -v ON_ERROR_STOP=1`,
     `psql_rc=$?`,
     `gunzip_rc=$(cat "$status" 2>/dev/null || printf 0)`,
     `rm -f "$status"`,
@@ -1189,7 +1191,7 @@ function errorMessage(err: unknown): string {
 }
 
 /**
- * D420 (Wave 3 task 3.1.3) — owning-operation completion of the maintenance
+ * Owning-operation completion of the maintenance
  * lease (`applying → normal`), called ONLY after a healthy new deployment or
  * a healthy full-bundle rollback. Completion is authenticated + ownership-
  * checked and fail-closed: on any transition / network / auth / malformed /
@@ -1319,13 +1321,13 @@ export interface AuthReconcileResult {
 export interface UpgradeOptions {
   noRollback?: boolean;
   allowArtifactLoss?: boolean;
-  /** D420 — source build or the configured/default/overridden ready image. */
+  /** Source build or the configured, default, or overridden ready image. */
   artifact?: "source" | "image";
-  /** D420 — full registry reference supplied by `nautilo upgrade --image`. */
+  /** Full registry reference supplied by `nautilo upgrade --image`. */
   imageRef?: string;
-  /** D420 — default server-only replacement; `full` retains broad deploy behavior. */
+  /** Default server-only replacement; `full` retains broad deploy behavior. */
   scope?: "server-only" | "full";
-  /** D420 — maintenance-drain deadline (Wave 2 consumes it). */
+  /** Maintenance-drain deadline. */
   waitForMs?: number;
   /**
    * M139 — parent directory for the auto pre-upgrade backup bundle. The
@@ -1353,7 +1355,7 @@ export interface AdoptOptions {
   dryRun?: boolean;
   confirm?: boolean;
   /**
-   * D427 Wave 1 (task 1.2.1) — path to a recovery bundle that
+   * Path to a recovery bundle that
    * `nautilo backup verify` has (or will) prove intact. Required for
    * `confirm`: a confirmed adoption persists the bundle's verified
    * provenance in the deployment manifest so a resumed bootstrap has a
@@ -1546,7 +1548,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D420 (Wave 2 task 2.2.5) — CLI composition seam for the maintenance drain
+   * CLI composition seam for the maintenance drain
    * preflight. The CLI factory wires the operator-endpoint-backed drain; tests
    * inject a stub or leave it undefined to preserve legacy no-drain behavior.
    * The wired drain returns a {@link MaintenanceDrainHandle} that retains the
@@ -1557,7 +1559,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D427 (Wave 4 task 4.x) — CLI composition seam for the remote
+   * CLI composition seam for the remote
    * runtime-acceptance + health-poll transport. When wired, remote-profile
    * runtime acceptance (`checkRuntimeAcceptance`) and the deploy/restore/
    * releaseApply health polls route HTTP through SSH authority on the target
@@ -1919,7 +1921,7 @@ export class ComposeDriver {
 
       if (registryMode) {
         log("deploy: docker compose pull nautilo-server (registry mode)...");
-        // D248 — include `--profile auth` so `logto` is in the active
+        // Include `--profile auth` so `logto` is in the active
         // project graph. The caddy overlay's `caddy` service declares
         // `depends_on: logto`, and compose validates that dependency
         // against the enabled profiles BEFORE running the named pull.
@@ -2052,7 +2054,7 @@ export class ComposeDriver {
         registryMode,
       });
 
-      // D427 (Wave 3 task 3.1.2) — deterministically refresh Caddy when
+      // Deterministically refresh Caddy when
       // nautilo-server or logto changed so a changed upstream cannot leave
       // a stale reverse-proxy IP. A failed recreate throws and drives the
       // existing rollback behavior (fail closed).
@@ -2197,7 +2199,7 @@ export class ComposeDriver {
       // not the remote path. Same gotcha as `--env-file`. The
       // `volumes:` source, by contrast, is resolved daemon-side, so
       // the config-dir mount takes the daemon-side parent of
-      // instance.env (D445 Phase 0).
+      // instance.env.
       await this.deps.fs.writeFile(
         overlayYmlPath,
         serverOverlayYaml(
@@ -2340,7 +2342,7 @@ export class ComposeDriver {
     if (opts.confirm === true && opts.dryRun === true) {
       throw new Error("--dry-run and --confirm cannot be used together.");
     }
-    // D427 Wave 1 (task 1.2.1) — confirmed adoption requires a verified
+    // Confirmed adoption requires a verified
     // recovery bundle so a resumed bootstrap has a proven rollback target.
     // Dry-run is mutation-free and never verifies or reads the bundle.
     let verifiedProvenance: BundleProvenance | undefined;
@@ -2552,7 +2554,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D427 Wave 2 — the deliberately narrow legacy conversion transaction.
+   * The deliberately narrow legacy conversion transaction.
    * Its cursor is stored beside the adopted manifest, so an operator with
    * SSH/Docker access can resume without an operator-laptop secret mirror.
    */
@@ -3252,7 +3254,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D420 (Wave 3 task 3.1.2 / 3.1.3) — unified full-bundle rollback for every
+   * Unified full-bundle rollback for every
    * strategy. After a recovery bundle exists, any deploy/startup/health
    * failure (server-only or full, image or source, local/LAN/remote)
    * restores DB/config/volumes plus the prior immutable image, then
@@ -3265,7 +3267,7 @@ export class ComposeDriver {
    * after possible migrations uses full-bundle restore, not a prior-image
    * restart.
    *
-   * D420 (Wave 3 task 3.1.3) — maintenance completion fencing. A healthy
+   * Maintenance completion fencing. A healthy
    * rollback completes the owning lease AFTER the rollback health check
    * passes (fail-closed: a completion failure is reported honestly and the
    * lease is left in `applying` for hard-expiry to reclaim; it is never
@@ -3491,7 +3493,7 @@ export class ComposeDriver {
       await this.materializeHostCanonicalRemoteComposeInputs(profile, remoteManifest);
     }
 
-    // D420 (Wave 2 task 2.2.5) — stop-before-backup ordering. Transition the
+    // Stop-before-backup ordering. Transition the
     // owning maintenance operation `draining → applying` IMMEDIATELY before
     // stopping nautilo-server. The transition fails closed (throws) on any
     // transition / network / auth / malformed error, so the server is never
@@ -3542,7 +3544,7 @@ export class ComposeDriver {
     try {
       await this.releaseServerUp(profile, plan.artifact);
     } catch (error) {
-      // D420 (Wave 3 task 3.1.2) — a deploy/startup failure AFTER a recovery
+      // A deploy/startup failure after a recovery
       // bundle exists uses the SAME full-bundle rollback semantics as a
       // post-migration health failure (and as the full upgrade path): restore
       // DB/config/volumes + the prior immutable image, then health-check the
@@ -3571,7 +3573,7 @@ export class ComposeDriver {
         await this.commitRemoteDeploymentManifestArtifact(profile, plan.artifact);
       }
     } catch (error) {
-      // D420 (Wave 3 task 3.1.2) — a post-migration health failure MUST use
+      // A post-migration health failure must use
       // full-bundle restore (not a prior-image restart), because the incoming
       // server may have already applied forward schema migrations that an old
       // binary cannot run against. The unified rollback restores the snapshot
@@ -3582,7 +3584,7 @@ export class ComposeDriver {
       }, maintenanceHandle);
     }
     this.deps.log(`release: success. Pre-release bundle: ${bundleDir}`);
-    // D420 (Wave 3 task 3.1.3) — complete the owning maintenance lease AFTER
+    // Complete the owning maintenance lease after
     // the healthy new deployment is proven (checkServerHealth above
     // succeeded). Completion is authenticated + ownership-checked and
     // fail-closed: a completion failure is reported honestly (the lease is
@@ -4382,7 +4384,7 @@ export class ComposeDriver {
         projectName,
       );
     }
-    // D420 (Wave 2 task 2.2.5) — bounded maintenance drain preflight. Runs
+    // Bounded maintenance drain preflight. Runs
     // BEFORE the server-only/full split so both paths settle executable work
     // before any stop/backup/deploy mutation. The drain RETAINS the owning
     // lease and returns a {@link MaintenanceDrainHandle}; each branch
@@ -4457,7 +4459,7 @@ export class ComposeDriver {
       const bundleDir = join(backupParentDir, `auto-pre-upgrade-${stamp}`);
       log(`upgrade: pre-upgrade bundle will be written to ${bundleDir}`);
 
-      // D420 (Wave 2 task 2.2.5) — stop-before-backup ordering. Transition
+      // Stop-before-backup ordering. Transition
       // the owning maintenance operation `draining → applying` IMMEDIATELY
       // before stopping nautilo-server. The transition fails closed (throws)
       // on any transition / network / auth / malformed error, so the server is
@@ -4517,7 +4519,7 @@ export class ComposeDriver {
       }
 
       if (deployFailed === undefined) {
-        // D420 (Wave 3 task 3.1.3) — complete the owning maintenance lease
+        // Complete the owning maintenance lease
         // AFTER the healthy new deployment is proven (deploy + checkServerHealth
         // above succeeded). Completion is authenticated + ownership-checked and
         // fail-closed: a completion failure is reported honestly (the lease is
@@ -4538,7 +4540,7 @@ export class ComposeDriver {
       }
 
       log(`upgrade: FAILED during deploy/health: ${errorMessage(deployFailed)}`);
-      // D420 (Wave 3 task 3.1.2) — the full upgrade path shares the same
+      // The full upgrade path shares the same
       // unified full-bundle rollback as the server-only releaseApply lane:
       // restore DB/config/volumes + the prior immutable image, then prove the
       // restored server is healthy. `--no-rollback` is the only opt-out.
@@ -4564,7 +4566,7 @@ export class ComposeDriver {
   }
 
   async checkServerHealth(profile: ComposeDriverProfile): Promise<void> {
-    // D420 (Wave 3 task 3.3.2) — the deploy/rollback health gate now runs
+    // The deploy/rollback health gate runs
     // full runtime acceptance instead of `/health` alone. Callers that stub
     // `checkServerHealth` (the upgrade/rollback orchestration tests) still
     // intercept the whole gate; the real path adds target/profile identity,
@@ -4575,7 +4577,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D420 (Wave 3 task 3.3.2) — runtime acceptance gate run after a new
+   * Runtime acceptance gate run after a new
    * deploy proves healthy and after a rollback proves healthy. It retains
    * the normal `/health` poll and adds, without requiring a browser or
    * end-user session:
@@ -4634,14 +4636,14 @@ export class ComposeDriver {
       projectName,
     });
 
-    // D427 (Wave 4 task 4.1.1) — the gate (check catalog, ordering, fail-closed
+    // The gate (check catalog, ordering, fail-closed
     // semantics, canonical error messages) is the shared @nautilo/db helper.
     // The Compose-specific probe command construction and Docker routing stay
     // here; the helper runs them via the injected transport. `throwOnFirstFailure`
     // preserves the Wave 3 contract: a single failing check throws
     // `runtime acceptance failed: ...` so the upgrade/rollback orchestration
     // never reports success on a partially restored target.
-    // D427 (Wave 4 task 4.x) — for remote profiles, route the gate's HTTP
+    // For remote profiles, route the gate's HTTP
     // (health poll, /api/setup/status identity, SPA, OIDC discovery) through
     // the SSH-local remote transport when the CLI factory has wired it. This
     // avoids the operator's public DNS: a split-DNS upgrade where public DNS
@@ -4712,7 +4714,7 @@ export class ComposeDriver {
           `${this.deps.composeBin} ${this.deps.composeArgs.join(" ")} ` +
           `--project-name ${shellQuote(projectName)} -f ${shellQuote(baseYml)} ${caddyFlag}${envFileFlag}` +
           `exec -T app-postgres pg_dump -U postgres nautilo`;
-        // D420 2.2.4 / R9A — fail-closed pipeline: a pg_dump failure cannot
+        // Fail-closed pipeline: a pg_dump failure cannot
         // be masked by gzip exiting 0 on an empty/truncated stream.
         const res = await this.deps.localExec(
           "sh",
@@ -4827,7 +4829,7 @@ export class ComposeDriver {
         throw new Error(`backup: ${label} failed (exit ${res.code}): ${res.stderr.trim()}`);
       };
 
-      // D420 2.2.4 / R9A — mandatory, fail-closed DB dump + integrity gate.
+      // Mandatory, fail-closed DB dump and integrity gate.
       // Both Nautilo and Logto dumps must succeed and validate before the
       // bundle manifest is accepted; a missing or corrupt dump aborts the
       // upgrade. The dump pipeline cannot mask a `pg_dump` failure behind a
@@ -4985,7 +4987,7 @@ export class ComposeDriver {
         contents.composeTemplate = true;
       }
 
-      // D420 2.2.4 / R9A — both DB dumps are mandatory and fail-closed; each
+      // Both DB dumps are mandatory and fail-closed; each
       // is validated (regular, non-empty, decompressible) before the bundle
       // manifest is accepted. A missing or corrupt Nautilo or Logto dump
       // aborts the upgrade before bundle acceptance.
@@ -5194,7 +5196,7 @@ export class ComposeDriver {
           };
         })();
 
-      // D427 Wave 1 (task 1.1.1) — compute per-file integrity for every
+      // Compute per-file integrity for every
       // captured bundle member so `nautilo backup verify` and `adopt
       // --confirm` can prove the recovery bundle is intact before any
       // mutation. Files are read from the local bundlePath (after rsync for
@@ -5272,7 +5274,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D427 Wave 1 (task 1.1.1) — compute the per-file integrity inventory for
+   * Compute the per-file integrity inventory for
    * every bundle member that was actually captured and is present on disk.
    *
    * The strict fail-closed gate lives in `nautilo backup verify`: a missing
@@ -5315,7 +5317,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D427 Wave 1 (task 1.1.2) — read-only recovery-bundle verification. Thin
+   * Read-only recovery-bundle verification. Thin
    * method wrapper over the standalone verifier so the CLI verb can route
    * through the driver and tests can inject `deps`. The profile is accepted
    * for CLI-verb symmetry but is not used: verification is bundle-local and
@@ -6057,7 +6059,7 @@ export class ComposeDriver {
           // the closures above). This is the fix for the rollback identity/auth
           // regression: the image-pin restore overlay alone recreated
           // nautilo-server WITHOUT NAUTILO_INSTANCE_ID (→ default-instance
-          // self-identity + D374 marker oscillation) and WITHOUT any LOGTO_*
+          // self-identity and identity-marker oscillation) and without any LOGTO_*
           // env (→ auth dead behind a green /health). We rebuild the same
           // overlay deploy() writes so a rolled-back server's runtime env is
           // identical to a freshly deployed one. Regenerated (not reused) so
@@ -6332,7 +6334,7 @@ export class ComposeDriver {
           composePrefix,
         });
 
-        // D420 3.1.1 / R9A — validate EVERY required compressed DB dump BEFORE
+        // Validate every required compressed DB dump before
         // any destructive schema reset. A corrupt/truncated gzip must fail
         // before either DB schema is destroyed, so both dumps are gated up
         // front rather than each just before its own DROP. `validateDumpScript`
@@ -6371,6 +6373,7 @@ export class ComposeDriver {
               join(stageDir, "nautilo.sql.gz"),
               `${appPgExec}psql -U postgres -d nautilo`,
               NAUTILO_SCHEMA_RESET_SQL,
+              CHATGPT_RESTORE_FENCE_SQL,
             ),
           );
           const restoredIdentity = await this.readConnectedRestoreIdentity(
@@ -6431,7 +6434,7 @@ export class ComposeDriver {
           }
         }
 
-        // D420 (Wave 3 task 3.3.2) — re-pin app + Logto tenant role passwords
+        // Re-pin app and Logto tenant role passwords
         // to the restored instance.env / tenants table BEFORE application
         // startup so a rolled-back server does not boot green behind a
         // password desync. Idempotent; fail-closed with private SQL input.
@@ -6588,7 +6591,7 @@ export class ComposeDriver {
       const volumesFlag = volumesOverlayPath ? `-f ${volumesOverlayPath} ` : "";
       const caddyFlag = caddyOverlayPath ? `-f ${caddyOverlayPath} ` : "";
       const dockerEnv = dockerEnvForProfile(profile);
-      // D420 3.1.1 / R9A — validate the compressed SQL dump before piping it
+      // Validate the compressed SQL dump before piping it
       // into the DB, and run the restore as a fail-closed pipeline: a gunzip
       // failure cannot be masked by psql exiting 0 on empty/partial input, and
       // `psql -v ON_ERROR_STOP=1` aborts on the first SQL error. The previous
@@ -6618,7 +6621,7 @@ export class ComposeDriver {
         legacyRepairPrefix,
         this.sqlPipelineExec(profile),
       );
-      const restoreCmd = failClosedRestoreScript(opts.fromPath, psqlPrefix);
+      const restoreCmd = failClosedRestoreScript(opts.fromPath, psqlPrefix, CHATGPT_RESTORE_FENCE_SQL);
       this.deps.log(`restore:   $ ${restoreCmd}`);
       const restoreRes = await this.deps.localExec("sh", ["-c", restoreCmd], {
         stdio: "inherit",
@@ -7322,7 +7325,7 @@ export class ComposeDriver {
     });
     const shouldLoadArtifacts = mode === "full" || mode === "artifacts-only";
 
-    // D420 3.1.1 / R9A — validate EVERY required compressed DB dump BEFORE any
+    // Validate every required compressed DB dump before any
     // destructive schema reset. A corrupt/truncated gzip must fail before
     // either DB schema is destroyed, so both dumps are gated up front. The
     // dumps already live on the remote staging dir after the rsync above.
@@ -7353,6 +7356,7 @@ export class ComposeDriver {
           posix.join(stageDir, "nautilo.sql.gz"),
           `${appPgExec}psql -U postgres -d nautilo`,
           NAUTILO_SCHEMA_RESET_SQL,
+          CHATGPT_RESTORE_FENCE_SQL,
         ),
       );
       const restoredIdentity = await this.readConnectedRestoreIdentity(
@@ -7389,7 +7393,7 @@ export class ComposeDriver {
       }
     }
 
-    // D420 (Wave 3 task 3.3.2) — re-pin app + Logto tenant role passwords
+    // Re-pin app and Logto tenant role passwords
     // before application startup. The remote registry path re-reads the
     // bundle's instance.env from the operator side (the same content
     // written to the remote root above); a bundle without instance.env
@@ -8624,7 +8628,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D458/D468 — upgrade a remote host in place without copying its pairing
+   * Upgrade a remote host in place without copying its pairing
    * pepper or push-token encryption key through operator memory or creating an
    * operator-side authority. A bounded host lock serializes concurrent
    * upgrades; canonical instance.env wins and the server overlay is regenerated
@@ -9294,7 +9298,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D420 (Wave 3 task 3.3.2) — re-pin the `nautilo` / `nautilo_agent`
+   * Re-pin the `nautilo` and `nautilo_agent`
    * app-cluster role passwords to the restored `instance.env` and resync
    * the Logto per-tenant role passwords to the restored `tenants` table,
    * BEFORE application startup. Idempotent (no-op when passwords already
@@ -9310,7 +9314,7 @@ export class ComposeDriver {
     reconcileLogto: boolean;
     exec: ExecFn;
   }): Promise<void> {
-    // D427 (Wave 4 task 4.1.1) — the reconciliation plan (which SQL to emit,
+    // The reconciliation plan (which SQL to emit,
     // in which order, gated on which scopes) is built by the shared
     // @nautilo/db helper so the Compose path and the `nautilo-dev` path
     // share the exact contract. The transport-specific psql invocation
@@ -9428,7 +9432,7 @@ export class ComposeDriver {
   }
 
   /**
-   * D427 (Wave 4 task 4.x) — profile-aware health poll used by the deploy/
+   * Profile-aware health poll used by the deploy/
    * restore/releaseApply/bootstrap paths that determine deployment success or
    * rollback success. For remote profiles with the SSH-local transport wired,
    * `/health` is polled over container loopback on the target
@@ -9514,7 +9518,7 @@ export interface CreateComposeDriverOptions {
   /** M139 — see `ComposeDriverDeps.doctor`. */
   doctor?: ComposeDriverDeps["doctor"];
   /**
-   * D427 (Wave 3 task 3.1.2) — opt in to deterministic dependency proxy
+   * Opt in to deterministic dependency proxy
    * refresh in `deploy()`. Defaults to true when unset (production). Tests
    * that assert the exact deploy command sequence pass `false` explicitly.
    */

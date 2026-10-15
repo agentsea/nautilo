@@ -6,6 +6,7 @@ import {
   getPersonalProviderCredential,
   getPersonalProviderCredentialCustodyEvidence,
   listPersonalProviderCredentialsForCustody,
+  listChatGPTRegistrationsForCustody,
   type PersonalProviderCredentialReceiptReadStatus,
 } from "@nautilo/db";
 import {
@@ -14,6 +15,7 @@ import {
   parsePersonalProviderCustody, personalProviderCustodyFromEnvFile,
   readInjectedPersonalProviderCustody, type PersonalProviderCustody,
 } from "@nautilo/operator-secrets";
+import { chatGPTCredentialContext } from "./chatgpt-plan/session-store";
 import { getServerDirectDb } from "./server-direct-db";
 
 function canonicalPath(): string {
@@ -160,6 +162,20 @@ export async function inspectPersonalProviderCustody(): Promise<PersonalProvider
           continue;
         }
         decryptPersonalProviderCredential(custody, row.envelope, row);
+      }
+      if (rows.length < pageSize) break;
+      afterId = rows.at(-1)!.id;
+    }
+    afterId = undefined;
+    for (;;) {
+      const rows = await listChatGPTRegistrationsForCustody(db, { limit: pageSize, ...(afterId === undefined ? {} : { afterId }) });
+      for (const row of rows) {
+        for (const kind of ["identity", "tokens"] as const) {
+          const envelope = kind === "identity" ? row.identityEnvelope : row.envelope;
+          if (!envelope) continue;
+          if (envelope.keyId === custody.resetFromKeyId) { retainedLostKeyRows = true; continue; }
+          decryptPersonalProviderCredential(custody, envelope, chatGPTCredentialContext(row, kind));
+        }
       }
       if (rows.length < pageSize) break;
       afterId = rows.at(-1)!.id;

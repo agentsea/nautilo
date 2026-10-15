@@ -19,6 +19,7 @@ import {
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
 import {
+  CHATGPT_RESTORE_FENCE_SQL,
   assertPersonalProviderRestoreCustody,
   PERSONAL_PROVIDER_CUSTODY_ENV,
   parsePersonalProviderCustody,
@@ -46,7 +47,13 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_SOURCE_RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_TEXT_LENGTH = "00000000-0000-4000-8000-000000000000".length;
+const SUBSCRIPTION_ENVELOPE_KEY_ID = "keyId";
 const PERSONAL_PROVIDER_TABLE = "personal_provider_credentials";
+// Restore-list metadata is bounded independently of encrypted row contents.
+const CREDENTIAL_METADATA_CHAR_BUDGET = 65_536;
+const SUBSCRIPTION_TABLE = "chatgpt_registrations";
+const CREDENTIAL_TABLES = [PERSONAL_PROVIDER_TABLE, SUBSCRIPTION_TABLE] as const;
 const LOGTO_TENANT_REGRANT_SQL =
   "DO $$ DECLARE r record; BEGIN " +
   "FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'logto_tenant_%' LOOP " +
@@ -268,18 +275,33 @@ async function readSourcePersonalProviderCredentialEvidence(input: {
   readonly runner: PortableRecoveryProcessRunner;
   readonly databaseUrl: string;
 }): Promise<PersonalProviderCredentialDbEvidence> {
-  const table = await readDatabaseText({
-    ...input,
-    sql: `SELECT coalesce(to_regclass('public.${PERSONAL_PROVIDER_TABLE}')::text, '')`,
-  });
-  if (table === "") return { state: "table-absent" };
-  if (table !== PERSONAL_PROVIDER_TABLE && table !== `public.${PERSONAL_PROVIDER_TABLE}`) {
-    fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+  const evidence: PersonalProviderCredentialDbEvidence[] = [];
+  for (const tableName of CREDENTIAL_TABLES) {
+    const table = await readDatabaseText({ ...input,
+      sql: `SELECT coalesce(to_regclass('public.${tableName}')::text, '')`,
+    });
+    if (table === "") { evidence.push({ state: "table-absent" }); continue; }
+    if (table !== tableName && table !== `public.${tableName}`) {
+      fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+    }
+    const source = tableName === PERSONAL_PROVIDER_TABLE
+      ? `SELECT key_id::text AS key_id FROM public.${tableName}`
+      : `SELECT identity_envelope->>'keyId' AS key_id FROM public.${tableName} UNION ALL SELECT envelope->>'keyId' FROM public.${tableName} WHERE envelope IS NOT NULL`;
+    const raw = await readDatabaseText({ ...input,
+      sql: `SELECT json_build_object('recordCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id ORDER BY key_id), '[]'::json))::text FROM (${source}) AS custody_keys`,
+    });
+    evidence.push(parseCredentialEvidence(raw));
   }
-  const raw = await readDatabaseText({
-    ...input,
-    sql: `SELECT json_build_object('recordCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id::text ORDER BY key_id::text), '[]'::json))::text FROM public.${PERSONAL_PROVIDER_TABLE}`,
-  });
+  return combineCredentialEvidence(evidence);
+}
+
+function combineCredentialEvidence(evidence: readonly PersonalProviderCredentialDbEvidence[]): PersonalProviderCredentialDbEvidence {
+  const rows = evidence.filter(item => item.state === "rows");
+  if (rows.length) return { state: "rows", keyIds: [...new Set(rows.flatMap(item => item.keyIds))].sort() };
+  return { state: evidence.every(item => item.state === "table-absent") ? "table-absent" : "empty" };
+}
+
+function parseCredentialEvidence(raw: string): PersonalProviderCredentialDbEvidence {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid"); }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -615,8 +637,8 @@ async function prepareAppRestoreList(input: {
   try { await child.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery restore list failed"); }
   const retained: string[] = [];
   const observed = new Set<string>();
-  let personalProviderTable = false;
-  let personalProviderTableData = false;
+  const tables = new Set<string>();
+  const tableData = new Set<string>();
   for (const rawLine of new TextDecoder().decode(concat(chunks)).split("\n")) {
     const line = rawLine.trimEnd();
     const extension = /(?: EXTENSION - | COMMENT - EXTENSION )([^ ]+)$/.exec(line)?.[1];
@@ -626,8 +648,10 @@ async function prepareAppRestoreList(input: {
       continue;
     }
     if (line.includes(" EXTENSION ")) fail("VERIFICATION_FAILED", "portable recovery app extension entry is invalid");
-    if (/ TABLE public personal_provider_credentials(?: |$)/.test(line)) personalProviderTable = true;
-    if (/ TABLE DATA public personal_provider_credentials(?: |$)/.test(line)) personalProviderTableData = true;
+    for (const table of CREDENTIAL_TABLES) {
+      if (line.includes(` TABLE public ${table} `)) tables.add(table);
+      if (line.includes(` TABLE DATA public ${table} `)) tableData.add(table);
+    }
     retained.push(rawLine);
   }
   if ([...APP_RETAINED_EXTENSIONS].some((extension) => !observed.has(extension))) {
@@ -636,22 +660,220 @@ async function prepareAppRestoreList(input: {
   await input.fs.writeFile(input.listPath, new TextEncoder().encode(retained.join("\n")), 0o600);
   await input.fs.chmod(input.listPath, 0o600);
   await input.fs.syncFile(input.listPath);
-  if (!personalProviderTable) return { state: "table-absent" };
-  if (!personalProviderTableData) {
-    fail("VERIFICATION_FAILED", "portable recovery personal credential contents cannot be established from the backup");
+  const evidence: PersonalProviderCredentialDbEvidence[] = [];
+  for (const table of CREDENTIAL_TABLES) {
+    if (!tables.has(table)) { evidence.push({ state: "table-absent" }); continue; }
+    if (!tableData.has(table)) {
+      fail("VERIFICATION_FAILED", "portable recovery personal credential contents cannot be established from the backup");
+    }
+    const extracted = await input.runner.start({ command: "pg_restore",
+      args: ["--data-only", `--table=public.${table}`, input.dumpPath], env: { PATH: CHILD_PATH, LANG: "C" },
+    });
+    evidence.push(await readPersonalProviderCredentialEvidenceFromRestoreSql(extracted.stdout, table));
+    try { await extracted.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery personal credential evidence extraction failed"); }
   }
-  const extracted = await input.runner.start({
-    command: "pg_restore",
-    args: ["--data-only", `--table=public.${PERSONAL_PROVIDER_TABLE}`, input.dumpPath],
-    env: { PATH: CHILD_PATH, LANG: "C" },
-  });
-  const evidence = await readPersonalProviderCredentialEvidenceFromRestoreSql(extracted.stdout);
-  try { await extracted.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery personal credential evidence extraction failed"); }
-  return evidence;
+  return combineCredentialEvidence(evidence);
+}
+
+type JsonContainer =
+  | { kind: "object"; state: "key-or-end" | "key" | "colon" | "value" | "comma-or-end"; key?: string }
+  | { kind: "array"; state: "value-or-end" | "value" | "comma-or-end" };
+
+/**
+ * Validates one PostgreSQL COPY text JSON field while retaining only its
+ * top-level keyId. Subscription token envelopes can legitimately be large, so
+ * recovery evidence must not buffer or impose a separate size policy on them.
+ */
+class SubscriptionEnvelopeKeyIdReader {
+  private readonly containers: JsonContainer[] = [];
+  private rootState: "value" | "end" = "value";
+  private lexical: "normal" | "string" | "escape" | "unicode" | "number" | "literal" = "normal";
+  private capture: "none" | "property" | "key-id" = "none";
+  private captured = "";
+  private captureOverflow = false;
+  private unicode = "";
+  private numberState: "minus" | "zero" | "integer" | "dot" | "fraction" | "exponent" | "exponent-sign" | "exponent-digits" = "minus";
+  private literal = "";
+  private literalIndex = 0;
+  private copyEscape = false;
+  private copyNullCandidate = "";
+  private keyId: string | undefined;
+  private invalid = false;
+
+  pushCopyCharacter(character: string): void {
+    if (this.copyNullCandidate.length < 3) this.copyNullCandidate += character;
+    else this.copyNullCandidate = "not-null";
+    if (this.copyEscape) {
+      this.copyEscape = false;
+      const decoded = ({ b: "\b", t: "\t", n: "\n", r: "\r", "\\": "\\" } as Record<string, string>)[character];
+      if (decoded === undefined) {
+        this.pushJsonCharacter("\\");
+        this.pushJsonCharacter(character);
+      } else this.pushJsonCharacter(decoded);
+      return;
+    }
+    if (character === "\\") this.copyEscape = true;
+    else this.pushJsonCharacter(character);
+  }
+
+  finish(): string | undefined {
+    if (this.isCopyNull()) return undefined;
+    if (this.copyEscape) this.pushJsonCharacter("\\");
+    if (this.lexical === "number") this.finishNumber();
+    if (this.lexical !== "normal" || this.rootState !== "end" || this.containers.length !== 0 || this.invalid) return undefined;
+    return this.keyId;
+  }
+
+  isCopyNull(): boolean { return this.copyNullCandidate === String.raw`\N` || this.copyNullCandidate === `${String.raw`\N`}\r`; }
+
+  private expectsValue(): boolean {
+    const parent = this.containers.at(-1);
+    return parent === undefined ? this.rootState === "value" : parent.kind === "object" ? parent.state === "value" : parent.state === "value-or-end" || parent.state === "value";
+  }
+
+  private completeValue(): void {
+    const parent = this.containers.at(-1);
+    if (parent === undefined) this.rootState = "end";
+    else parent.state = "comma-or-end";
+  }
+
+  private startValue(character: string): void {
+    if (!this.expectsValue()) { this.invalid = true; return; }
+    const parent = this.containers.at(-1);
+    if (parent?.kind === "object" && this.containers.length === 1 && parent.key === SUBSCRIPTION_ENVELOPE_KEY_ID) this.keyId = undefined;
+    if (character === "{") this.containers.push({ kind: "object", state: "key-or-end" });
+    else if (character === "[") this.containers.push({ kind: "array", state: "value-or-end" });
+    else if (character === '"') this.startString();
+    else if (character === "-" || /[0-9]/.test(character)) {
+      this.lexical = "number";
+      this.numberState = character === "-" ? "minus" : character === "0" ? "zero" : "integer";
+    } else if (character === "t" || character === "f" || character === "n") {
+      this.lexical = "literal";
+      this.literal = character === "t" ? "true" : character === "f" ? "false" : "null";
+      this.literalIndex = 1;
+    } else this.invalid = true;
+  }
+
+  private startString(): void {
+    this.lexical = "string";
+    this.captured = "";
+    this.captureOverflow = false;
+    const parent = this.containers.at(-1);
+    if (parent?.kind === "object" && (parent.state === "key-or-end" || parent.state === "key")) this.capture = "property";
+    else if (parent?.kind === "object" && this.containers.length === 1 && parent.state === "value" && parent.key === SUBSCRIPTION_ENVELOPE_KEY_ID) this.capture = "key-id";
+    else this.capture = "none";
+  }
+
+  private appendStringCharacter(character: string): void {
+    if (this.capture === "none") return;
+    const formatLength = this.capture === "property" ? SUBSCRIPTION_ENVELOPE_KEY_ID.length : UUID_TEXT_LENGTH;
+    if (this.captured.length >= formatLength) this.captureOverflow = true;
+    else this.captured += character;
+  }
+
+  private finishString(): void {
+    const parent = this.containers.at(-1);
+    if (this.capture === "property") {
+      if (parent?.kind !== "object" || (parent.state !== "key-or-end" && parent.state !== "key")) { this.invalid = true; return; }
+      if (this.captureOverflow) delete parent.key;
+      else parent.key = this.captured;
+      parent.state = "colon";
+    } else {
+      if (!this.expectsValue()) { this.invalid = true; return; }
+      if (this.capture === "key-id") this.keyId = this.captureOverflow ? undefined : this.captured;
+      this.completeValue();
+    }
+    this.lexical = "normal";
+    this.capture = "none";
+  }
+
+  private finishNumber(): void {
+    if (!["zero", "integer", "fraction", "exponent-digits"].includes(this.numberState)) this.invalid = true;
+    this.lexical = "normal";
+    this.completeValue();
+  }
+
+  private pushJsonCharacter(character: string): void {
+    if (this.invalid) return;
+    if (this.lexical === "string") {
+      if (character === '"') this.finishString();
+      else if (character === "\\") this.lexical = "escape";
+      else if (character.charCodeAt(0) < 0x20) this.invalid = true;
+      else this.appendStringCharacter(character);
+      return;
+    }
+    if (this.lexical === "escape") {
+      if ('"\\/bfnrt'.includes(character)) {
+        this.appendStringCharacter(({ b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" } as Record<string, string>)[character] ?? character);
+        this.lexical = "string";
+      } else if (character === "u") { this.unicode = ""; this.lexical = "unicode"; }
+      else this.invalid = true;
+      return;
+    }
+    if (this.lexical === "unicode") {
+      if (!/[0-9a-f]/i.test(character)) { this.invalid = true; return; }
+      this.unicode += character;
+      if (this.unicode.length === 4) {
+        this.appendStringCharacter(String.fromCharCode(Number.parseInt(this.unicode, 16)));
+        this.lexical = "string";
+      }
+      return;
+    }
+    if (this.lexical === "literal") {
+      if (character !== this.literal[this.literalIndex]) { this.invalid = true; return; }
+      this.literalIndex += 1;
+      if (this.literalIndex === this.literal.length) { this.lexical = "normal"; this.completeValue(); }
+      return;
+    }
+    if (this.lexical === "number") {
+      const digit = /[0-9]/.test(character);
+      if (this.numberState === "minus" && digit) this.numberState = character === "0" ? "zero" : "integer";
+      else if (this.numberState === "zero" && character === ".") this.numberState = "dot";
+      else if ((this.numberState === "zero" || this.numberState === "integer" || this.numberState === "fraction") && /[eE]/.test(character)) this.numberState = "exponent";
+      else if (this.numberState === "integer" && digit) { /* continue */ }
+      else if (this.numberState === "integer" && character === ".") this.numberState = "dot";
+      else if (this.numberState === "dot" && digit) this.numberState = "fraction";
+      else if (this.numberState === "fraction" && digit) { /* continue */ }
+      else if (this.numberState === "exponent" && /[+-]/.test(character)) this.numberState = "exponent-sign";
+      else if ((this.numberState === "exponent" || this.numberState === "exponent-sign") && digit) this.numberState = "exponent-digits";
+      else if (this.numberState === "exponent-digits" && digit) { /* continue */ }
+      else { this.finishNumber(); this.pushJsonCharacter(character); }
+      return;
+    }
+    if (character === " " || character === "\t" || character === "\r" || character === "\n") return;
+    const parent = this.containers.at(-1);
+    if (parent?.kind === "object") {
+      if (parent.state === "key-or-end" || parent.state === "key") {
+        if (character === "}") { this.containers.pop(); this.completeValue(); }
+        else if (character === '"') this.startString();
+        else this.invalid = true;
+        if (parent.state === "key" && character === "}") this.invalid = true;
+      } else if (parent.state === "colon") {
+        if (character === ":") parent.state = "value";
+        else this.invalid = true;
+      } else if (parent.state === "comma-or-end") {
+        if (character === ",") parent.state = "key";
+        else if (character === "}") { this.containers.pop(); this.completeValue(); }
+        else this.invalid = true;
+      } else this.startValue(character);
+      return;
+    }
+    if (parent?.kind === "array") {
+      if (parent.state === "value-or-end" && character === "]") { this.containers.pop(); this.completeValue(); }
+      else if (parent.state === "comma-or-end") {
+        if (character === ",") parent.state = "value";
+        else if (character === "]") { this.containers.pop(); this.completeValue(); }
+        else this.invalid = true;
+      } else this.startValue(character);
+      return;
+    }
+    this.startValue(character);
+  }
 }
 
 async function readPersonalProviderCredentialEvidenceFromRestoreSql(
   source: AsyncIterable<Uint8Array>,
+  table: typeof CREDENTIAL_TABLES[number],
 ): Promise<PersonalProviderCredentialDbEvidence> {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let mode: "header" | "copy" | "done" | "invalid" = "header";
@@ -659,6 +881,9 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
   let header = "";
   let columnCount = 0;
   let keyIndex = -1;
+  let tokenIndex = -1;
+  let identityEnvelope: SubscriptionEnvelopeKeyIdReader | undefined;
+  let tokenEnvelope: SubscriptionEnvelopeKeyIdReader | undefined;
   let fieldIndex = 0;
   let firstFieldPrefix = "";
   let currentKeyId = "";
@@ -673,11 +898,12 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
   const consumeHeaderLine = (): void => {
     const line = header.endsWith("\r") ? header.slice(0, -1) : header;
     header = "";
-    const match = /^COPY (?:(?:"public"|public)\.)?(?:"personal_provider_credentials"|personal_provider_credentials) \(([^)]+)\) FROM stdin;$/.exec(line);
-    if (match === null) return;
-    const columns = match[1]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""));
-    keyIndex = columns.indexOf("key_id");
-    if (keyIndex < 0) {
+    const match = /^COPY (?:(?:"public"|public)\.)?(?:"?(personal_provider_credentials|chatgpt_registrations)"?) \(([^)]+)\) FROM stdin;$/.exec(line);
+    if (match === null || match[1] !== table) return;
+    const columns = match[2]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""));
+    keyIndex = columns.indexOf(table === PERSONAL_PROVIDER_TABLE ? "key_id" : "identity_envelope");
+    tokenIndex = table === SUBSCRIPTION_TABLE ? columns.indexOf("envelope") : -1;
+    if (keyIndex < 0 || (table === SUBSCRIPTION_TABLE && tokenIndex < 0)) {
       invalidate("portable recovery personal credential dump is missing custody identity");
       return;
     }
@@ -697,15 +923,22 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       return;
     }
     const keyId = currentKeyId.endsWith("\r") ? currentKeyId.slice(0, -1) : currentKeyId;
-    if (!UUID.test(keyId)) {
+    const rowKeys: unknown[] = [];
+    if (table === SUBSCRIPTION_TABLE) {
+      rowKeys.push(identityEnvelope?.finish());
+      if (!tokenEnvelope?.isCopyNull()) rowKeys.push(tokenEnvelope?.finish());
+    } else rowKeys.push(keyId);
+    if (rowKeys.some(value => typeof value !== "string" || !UUID.test(value))) {
       invalidate("portable recovery personal credential row has invalid custody identity");
       return;
     }
-    keyIds.add(keyId.toLowerCase());
+    for (const value of rowKeys) keyIds.add((value as string).toLowerCase());
     rowCount += 1;
     fieldIndex = 0;
     firstFieldPrefix = "";
     currentKeyId = "";
+    identityEnvelope = undefined;
+    tokenEnvelope = undefined;
   };
   const consumeText = (text: string): void => {
     for (const character of text) {
@@ -713,7 +946,7 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       if (mode === "header") {
         if (character === "\n") {
           consumeHeaderLine();
-        } else if (header.length >= 65_536) {
+        } else if (header.length >= CREDENTIAL_METADATA_CHAR_BUDGET) {
           invalidate("portable recovery personal credential dump is malformed");
         } else {
           header += character;
@@ -731,8 +964,21 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       }
       if (fieldIndex === 0 && firstFieldPrefix.length < 3) firstFieldPrefix += character;
       if (fieldIndex === keyIndex) {
-        if (currentKeyId.length >= 64) invalidate("portable recovery personal credential row has invalid custody identity");
-        else currentKeyId += character;
+        if (table === PERSONAL_PROVIDER_TABLE) {
+          // Permit the final CRLF framing byte after a complete UUID; retain
+          // other carriage returns so malformed field content fails validation.
+          const finalCarriageReturn = character === "\r" && fieldIndex === columnCount - 1
+            && currentKeyId.length === UUID_TEXT_LENGTH;
+          if (currentKeyId.length >= UUID_TEXT_LENGTH && !finalCarriageReturn) invalidate("portable recovery personal credential row has invalid custody identity");
+          else currentKeyId += character;
+        } else {
+          identityEnvelope ??= new SubscriptionEnvelopeKeyIdReader();
+          identityEnvelope.pushCopyCharacter(character);
+        }
+      }
+      if (fieldIndex === tokenIndex) {
+        tokenEnvelope ??= new SubscriptionEnvelopeKeyIdReader();
+        tokenEnvelope.pushCopyCharacter(character);
       }
     }
   };
@@ -761,6 +1007,7 @@ async function runSqlRepair(input: { readonly fs: PortableRecoveryFilesystem; re
 }
 
 const APP_REPAIR_SQL = [
+  CHATGPT_RESTORE_FENCE_SQL,
   buildAppRoleOwnershipRepairSql(),
   buildAgentRoleGrantsSql(),
   buildFullCryptoTablePrivilegeReconcileSql(),

@@ -68,10 +68,7 @@ const assertInvoke = mock(async (input: AgentInvocationAdmissionInput) => {
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
   resolveRetainedModels: (ids: string[]) => ids.map((id) => ({ id, availability: "missing-key" })),
-  getEligibleModels: ({ env }: { env: NodeJS.ProcessEnv }) =>
-    env["OPENROUTER_API_KEY"]
-      ? [MODEL, FALLBACK].map((id) => ({ id, availability: "selectable" }))
-      : [],
+  getEligibleModels: () => [MODEL, FALLBACK].map((id) => ({ id, availability: "missing-key" })),
   modelHasRunnableCredentials: (modelId: string, env: NodeJS.ProcessEnv) =>
     modelId.startsWith("openrouter:") && Boolean(env["OPENROUTER_API_KEY"]),
 }));
@@ -112,9 +109,15 @@ mock.module("../../src/lib/model-funding", () => ({
     constructor(readonly code: string) { super(code); }
   },
   resolveModelFunding: resolveFunding,
+  createModelFundingSnapshot: async () => ({ deps: {} }),
   resolveServerFundingRoute: (modelId: string) => actualAgent.modelHasRunnableCredentials(modelId, process.env)
     ? modelId.split(":", 1)[0] : null,
-  withAdmittedPersonalProviderKey: withKey,
+  withAdmittedPersonalCredential: (decision: Record<string, unknown>, run: (credential: { apiKey: string }) => Promise<unknown>, deps: unknown, initial: Record<string, unknown>) => withKey(decision, key => run({ apiKey: key }), deps, initial),
+}));
+
+mock.module("../../src/lib/caller-task-model-context", () => ({
+  callerTaskModelIds: async () => [MODEL, FALLBACK],
+  personalOnlyTaskModelIds: async (_human: string, ids: string[]) => ids.filter(id => !actualAgent.modelHasRunnableCredentials(id, process.env)),
 }));
 
 mock.module("../../src/lib/capability-funding", () => ({

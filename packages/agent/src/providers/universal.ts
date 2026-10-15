@@ -1,3 +1,4 @@
+import { createChatGPTPlanModel } from "./chatgpt-plan";
 import {
   isReasoningEffort,
   type ChatModel,
@@ -95,8 +96,7 @@ function readAllowChinaUpstreamFlag(cleanOptions: Record<string, unknown>): bool
 }
 
 /**
- * Runtime enforcement of the picker's China-routing gate (D086 Phase 4 review
- * blocker #1). `getEligibleModels()` hides china-routed Venice catalog SKUs
+ * Runtime enforcement of the picker's China-routing gate . `getEligibleModels()` hides china-routed Venice catalog SKUs
  * unless `allowChinaUpstream` is true, but a custom `venice:*` id can still be
  * saved as a profile defaultModel and invoked directly through
  * `createUniversalModel`. This gate fires before any wire request goes out:
@@ -139,6 +139,12 @@ function readPersonalCredential(
     return undefined;
   }
   const candidate: unknown = options.personalCredential;
+  if (candidate && typeof candidate === "object" && "kind" in candidate && candidate.kind === "chatgpt_plan") {
+    if (!("accessToken" in candidate) || typeof candidate.accessToken !== "string" || !candidate.accessToken.trim()) {
+      throw new Error("A valid ChatGPT subscription credential is required.");
+    }
+    return { kind: "chatgpt_plan", accessToken: candidate.accessToken };
+  }
   if (
     !candidate
     || typeof candidate !== "object"
@@ -505,6 +511,11 @@ async function createUniversalModelInternal(
     factoryOpts.fireworksServingProfileId = servingProfileRaw;
   }
 
+  if (personalCredential?.kind === "chatgpt_plan") {
+    if (provider !== "openai") throw new Error("ChatGPT subscriptions support only direct OpenAI models.");
+    return createChatGPTPlanModel(factoryOpts, personalCredential.accessToken);
+  }
+
   switch (provider) {
     case "anthropic":
       if (anthropicLongContext) return createAnthropicWithLongContext(factoryOpts);
@@ -550,7 +561,7 @@ async function createUniversalModelInternal(
     case "together":
       return createTogether(factoryOpts);
     case "venice": {
-      // Routing gate (D086 Phase 4 review blocker #1) — fires before key
+      // Routing gate — fires before key
       // resolution / network access. Curated china-anonymized SKUs and any
       // custom (non-curated) `venice:*` id require explicit opt-in via
       // `options.allowChinaUpstream` or `NAUTILO_ALLOW_CHINA_UPSTREAM` env.

@@ -1,3 +1,4 @@
+import { CHATGPT_RESTORE_FENCE_SQL } from "@nautilo/operator-secrets";
 import { assertBolterRestoreDumpAllowed, BOLTER_RESTORE_AUTHORITY_TABLES } from "./bolter-restore-authority";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
 import { execSync, spawnSync } from "node:child_process";
@@ -157,11 +158,11 @@ export const DATA_TABLES = [
   "public.users",
   // Owner-scoped Claude harness enablement and safe runtime observations.
   "public.claude_connections",
-  // M297 — directional Human safety policy. References users in both directions.
+  // directional Human safety policy. References users in both directions.
   "public.human_blocks",
   "public.agents",
   "public.agent_scopes",
-  // M251 — content-free protected AgentScope close receipt + captured items.
+  // content-free protected AgentScope close receipt + captured items.
   // The operation references users/agents and the items reference it, so keep
   // this exact parent-before-child order. Both must survive an instance move
   // or a partially completed close could be mistaken for a fresh scope.
@@ -197,12 +198,12 @@ export const DATA_TABLES = [
   "public.soul_generation_attempts",
   "public.recovery_codes",
   "public.channel_identities",
-  // M233 — Human-owned notification default. References users only.
+  // Human-owned notification default. References users only.
   "public.user_notification_settings",
   // Persistent feed references actors/users; recipient state follows its event.
   "public.feed_events",
   "public.feed_recipients",
-  // M297 — append-only Mobile agreement history. References users only.
+  // append-only Mobile agreement history. References users only.
   "public.mobile_user_agreement_acceptances",
 
   // Trust/catalog seed state. Roles and their joins are restored via
@@ -248,9 +249,9 @@ export const DATA_TABLES = [
   "public.room_silence_state",
   // Room-scoped bindings reference users, rooms, and Codex profiles.
   "public.codex_thread_bindings",
-  // M233 — optional Human policy override. References users + rooms.
+  // optional Human policy override. References users + rooms.
   "public.room_notification_settings",
-  // M297 — bounded report snapshots reference the reporter and Room only;
+  // bounded report snapshots reference the reporter and Room only;
   // message/person targets deliberately remain stable identifiers without FKs.
   "public.content_reports",
 
@@ -265,7 +266,7 @@ export const DATA_TABLES = [
   "public.memory_namespaces",
   "public.message_attachments",
   "public.memory_scopes",
-  // M243 — content-free protected Memory revision and operation receipts.
+  // content-free protected Memory revision and operation receipts.
   // Neither table owns product/crypto FKs, but both must survive restore so
   // publication and deletion retries remain exact after an instance move.
   "public.memory_crypto_revisions",
@@ -281,7 +282,7 @@ export const DATA_TABLES = [
   // Content-free deletion receipts have no foreign-key parents and survive the
   // message they record; keep them in every full backup and restore.
   "public.message_deletion_receipts",
-  // M313 — durable Message backfill sweep, sparse failure, and resumable Tool
+  // durable Message backfill sweep, sparse failure, and resumable Tool
   // correlation state. Actor and Message parents are restored above; the Tool
   // pending rows share Human custody with their parser context.
   "public.message_backfill_scans",
@@ -290,22 +291,22 @@ export const DATA_TABLES = [
   "public.message_backfill_tool_pending_calls",
   "public.memory_review_turns",
   "public.memory_review_receipts",
-  // M282 — content-free live Shadow turn receipt. It references Session and
+  // content-free live Shadow turn receipt. It references Session and
   // Room, and message crypto revisions may reference it, so restore it after
   // the product parents and before the per-Message crypto lifecycle.
   "public.conversation_shadow_turn_operations",
-  // M282 follow-up receipts are children of the reserved turn (or bind to the
+  // Follow-up receipts are children of the reserved turn (or bind to the
   // same Session/Room before the turn exists), so restore them after the turn
   // parent and before any linked per-Message crypto rows.
   "public.conversation_shadow_turn_agent_signers",
   "public.conversation_shadow_turn_plan_attempts",
-  // M295 — Human-only protected sibling operations are a distinct parent for
+  // Human-only protected sibling operations are a distinct parent for
   // per-Message lifecycle rows. Device acknowledgements and retry attempts
   // are children of that operation and follow it during restore.
   "public.conversation_human_peer_shadow_operations",
   "public.conversation_human_peer_shadow_acknowledgements",
   "public.conversation_human_peer_shadow_plan_attempts",
-  // M296/M298 — shared-Room Human writes and Runtime invocations parent
+  // shared-Room Human writes and Runtime invocations parent
   // optional Agent executions; ordered execution inputs reference both the
   // Human operation and execution, while plan attempts may link to the Human
   // operation. Message lifecycle rows follow the entire family.
@@ -328,21 +329,21 @@ export const DATA_TABLES = [
   "public.session_message_ordinary_repairs",
   "public.session_message_recipient_state",
   "public.session_message_artifacts",
-  // M233 — immutable classification facts. Both reference session_messages;
+  // immutable classification facts. Both reference session_messages;
   // Subthread participation also references rooms + users.
   "public.session_message_directed_recipients",
   "public.subthread_notification_participants",
   "public.message_reactions",
-  // M219 — Room-owned derived journal. Restore batches before events because
+  // Room-owned derived journal. Restore batches before events because
   // room_events.source_batch_id is a required FK.
   "public.room_journal_state",
   "public.room_journal_batches",
   "public.room_events",
   "public.room_event_rollups",
-  // M241 — content-free crypto-first journal publication receipts. Restored
+  // content-free crypto-first journal publication receipts. Restored
   // after their Room and source-batch parents.
   "public.room_journal_crypto_publications",
-  // M257 — dormant Reflection Record graph, immutable representations, and
+  // dormant Reflection Record graph, immutable representations, and
   // content-free protected publication receipts. Restore FK parents first;
   // publications remain last so exact replay/recovery state survives moves.
   "public.reflection_records",
@@ -352,12 +353,12 @@ export const DATA_TABLES = [
   "public.reflection_record_payload_representations",
   "public.reflection_record_payload_representation_heads",
   "public.reflection_record_publications",
-  // M267 — content-free native Stenographer cutover and edit-rebuild state.
+  // content-free native Stenographer cutover and edit-rebuild state.
   // Both tables reference canonical Records; rebuild retirements also refer
   // to Rooms, whose rows are restored earlier.
   "public.room_journal_record_cutover",
   "public.room_journal_record_rebuild_retirements",
-  // M258 — rebuildable authority closure/projection and content-free work.
+  // rebuildable authority closure/projection and content-free work.
   // Alternatives follow their projection parent; no row stores semantic data.
   "public.reflection_record_authority_closure",
   "public.reflection_record_authority_projections",
@@ -365,14 +366,14 @@ export const DATA_TABLES = [
   "public.reflection_record_authority_changes",
   "public.reflection_record_authority_reconciliations",
   "public.reflection_record_authority_blocks",
-  // M264 — rebuildable plaintext semantic-search projection. It references
+  // rebuildable plaintext semantic-search projection. It references
   // only the canonical Record parent and remains safe to restore verbatim;
   // compatibility is checked by its explicit embedding provenance.
   "public.reflection_record_search_projections",
-  // M271 — content-free semantic source index, durable repair cursor, replay
+  // content-free semantic source index, durable repair cursor, replay
   // receipts, and coalesced work. Record-referencing rows follow their parent.
   "public.reflection_record_source_change_repairs",
-  // M287 — content-free direct-parent repair cursor. Its changed Record parent
+  // content-free direct-parent repair cursor. Its changed Record parent
   // is restored above; dependent edges already exist before the worker resumes.
   "public.reflection_record_dependency_change_repairs",
   "public.reflection_record_source_dependency_index",
@@ -387,7 +388,7 @@ export const DATA_TABLES = [
   "public.invites",
   // The public shortcut references an ordinary Invite and its updating Human.
   "public.server_public_join",
-  // M260 — per-Human Invite state; both Invite and User parents are earlier.
+  // per-Human Invite state; both Invite and User parents are earlier.
   "public.invite_redemptions",
 
   // Files, focus, notifications, artifacts.
@@ -398,8 +399,9 @@ export const DATA_TABLES = [
   "public.server_model_config",
   "public.server_provider_policy",
   "public.personal_provider_credentials",
+  "public.chatgpt_registrations",
   "public.server_profile",
-  // M274 — server transition policy, bounded aggregate telemetry, cumulative
+  // server transition policy, bounded aggregate telemetry, cumulative
   // epoch totals, and unconsumed one-shot observation admissions. These rows
   // are content-free but must survive instance backup and restore.
   "public.encryption_transition_policy",
@@ -407,16 +409,16 @@ export const DATA_TABLES = [
   "public.encryption_transition_observation_buckets",
   "public.encryption_transition_outcome_totals",
   "public.encryption_transition_observation_admissions",
-  // M275 — signed, content-free Browser Room-history read receipts and their
+  // signed, content-free Browser Room-history read receipts and their
   // exactly-once terminal outcome counts.
   "public.encryption_transition_history_read_admissions",
-  // M261 — protected Artifact rows reference their encrypted control object.
+  // protected Artifact rows reference their encrypted control object.
   // The object table has no foreign-key parents, so restore it before the
   // mixed legacy/protected Artifact table and omit it from the later crypto
   // block. Blob rows precede revision rows for the exact retained-blob FK.
   "public.crypto_objects",
   "public.artifacts",
-  // M322 — immutable exact-operation receipts must survive restore so a retry
+  // immutable exact-operation receipts must survive restore so a retry
   // cannot regrant access. COPY inserts unchanged receipts after all four FK
   // parents (users, actors, memories, artifacts); no trigger bypass is needed.
   "public.content_access_operations",
@@ -466,7 +468,7 @@ export const DATA_TABLES = [
   // Agent slash-commands. FKs agents + users (both earlier), safe at the tail.
   "public.commands",
 
-  // M231 — dormant lattice persistence. Public metadata and opaque
+  // dormant lattice persistence. Public metadata and opaque
   // ciphertext remain restorable even though no product path can write them
   // while encryption activation is disabled. Parent/head ordering mirrors
   // the generated internal crypto foreign keys.
@@ -484,22 +486,22 @@ export const DATA_TABLES = [
   "public.agent_crypto_runtime_challenges",
   "public.crypto_grants",
   "public.human_crypto_recovery_archives",
-  // M241 — content-free background authorization lifecycle and append-only
+  // content-free background authorization lifecycle and append-only
   // public processor signer verification evidence.
   "public.background_crypto_authorization_requests",
-  // M244 — immutable exact Domain/Namespace authority inventory. Domains must
+  // immutable exact Domain/Namespace authority inventory. Domains must
   // precede Namespaces because the latter bind to the former within a request.
   "public.background_crypto_authorization_domain_requirements",
   "public.background_crypto_authorization_namespace_requirements",
   "public.processor_crypto_signer_authorizations",
-  // M232 — durable device custody, recovery, and Delivery Service state.
+  // durable device custody, recovery, and Delivery Service state.
   // Keep the generated schema's parent-before-child order so COPY restores
   // satisfy every crypto foreign key.
   "public.human_crypto_custodies",
   "public.human_crypto_devices",
   "public.human_crypto_device_challenges",
   "public.human_crypto_recovery_keys",
-  // M304 — one MLS-authenticated device group per Human. Heads and pending
+  // one MLS-authenticated device group per Human. Heads and pending
   // join requests depend only on custody/device parents; commits depend on the
   // head coordinates; target-only Welcomes depend on commits; acknowledgements
   // depend on current devices. Keep this exact FK-safe restore order.
@@ -508,12 +510,12 @@ export const DATA_TABLES = [
   "public.human_crypto_device_group_commits",
   "public.human_crypto_device_group_welcomes",
   "public.human_crypto_device_group_acknowledgements",
-  // M303 — credential-bound device-possession challenges and admissions.
+  // credential-bound device-possession challenges and admissions.
   // Both reference the canonical device generation and Server identity, so
   // they follow those parents; neither is content or Domain-key authority.
   "public.human_crypto_device_admission_challenges",
   "public.human_crypto_device_admissions",
-  // M301 — class-bound V2 Domain authority. Operations and heads depend on
+  // class-bound V2 Domain authority. Operations and heads depend on
   // canonical Domains plus device custody; requests precede the immutable
   // envelopes they may source, and bindings precede their current heads.
   "public.domain_key_publication_operations",
@@ -591,7 +593,7 @@ export const SERIAL_PK_TABLES: ReadonlyArray<{
     seq: "agent_scope_close_operations_sequence_seq",
     pkCol: "sequence",
   },
-  // M134 — focus_events.id is serial; reset its sequence after COPY restore.
+  // focus_events.id is serial; reset its sequence after COPY restore.
   { table: "focus_events", seq: "focus_events_id_seq", pkCol: "id" },
 ];
 
@@ -636,6 +638,7 @@ export async function restoreFromGzip(
     assertImportedRestoreLineage(ledger, options.fullArchive.expectedMigrationLineage);
     repairOwnershipAndGrants(legacyPostgresContainer(), log);
     runRestoreMigrations(log, undefined, migrationEnv);
+    queryPostgresContainer({ container: legacyPostgresContainer(), database: DB_NAME, sql: CHATGPT_RESTORE_FENCE_SQL });
     rebindRestoredInstanceIdentity(log);
     repairOwnershipAndGrants(legacyPostgresContainer(), log);
     assertRestoreIntegrity(legacyPostgresContainer(), log);
@@ -649,7 +652,7 @@ export async function restoreFromGzip(
   // CRITICAL: invoke the `packages/db` migration script DIRECTLY (cwd =
   // packages/db) with DB_CONNECTION_STRING in the spawned env — never
   // `bun run db:migrate` from the repo root, which routes through Turbo.
-  // The M212 direct-Postgres migration env supplies both DB_DIRECT_CONNECTION
+  // The direct-Postgres migration env supplies both DB_DIRECT_CONNECTION
   // and DB_CONNECTION_STRING, so Drizzle targets the named restore DB.
   // Without it, a named source instance using a different port would
   // migrate the WRONG database, leaving the target DB with zero public
@@ -786,6 +789,8 @@ export async function restoreFromGzip(
     }
   }
 
+  psqlExec(CHATGPT_RESTORE_FENCE_SQL);
+
   // Reset serial sequences so INSERT doesn't collide with existing row IDs.
   log("  Resetting serial sequences...");
   for (const { table, seq, pkCol } of SERIAL_PK_TABLES) {
@@ -825,7 +830,7 @@ function resolveNautiloOwnerConnectionString(
 }
 
 /**
- * Env for `bun run db:migrate` during restore. Drizzle (M212 D5) reads
+ * Env for `bun run db:migrate` during restore. Drizzle reads
  * `DB_DIRECT_CONNECTION` first; legacy installs may only supply
  * `DB_CONNECTION_STRING`, so both are set to the operator/admin URL.
  * Inherited runtime direct URLs are always overridden.
@@ -881,7 +886,7 @@ export type RestoreMigrationSpawnFn = (
 /**
  * Apply Drizzle migrations to the restore target DB.
  *
- * Runs `bun run db:migrate` with cwd pinned to `packages/db` and M212's
+ * Runs `bun run db:migrate` with cwd pinned to `packages/db` and the
  * explicit direct/admin migration env. Bypasses the repo-root Turbo wrapper,
  * which does not forward the restore target connection to packages/db.
  */
