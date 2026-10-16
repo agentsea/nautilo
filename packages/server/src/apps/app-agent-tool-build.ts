@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import {
   generateMiniAppAgentToolName,
@@ -64,10 +64,8 @@ function resolveUnderAppRoot(appRoot: string, relPath: string): string | null {
   const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
   const resolved = resolve(appRoot, normalized);
   const rootResolved = resolve(appRoot);
-  if (resolved !== rootResolved && !resolved.startsWith(`${rootResolved}/`)) {
-    return null;
-  }
-  if (isAbsolute(relPath) && !resolved.startsWith(`${rootResolved}/`)) {
+  const suffix = relative(rootResolved, resolved);
+  if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
     return null;
   }
   return resolved;
@@ -238,7 +236,8 @@ async function validateAgentToolModuleGraph(params: {
     if (!localAbs) continue;
 
     const rootResolved = resolve(appRoot);
-    if (localAbs !== rootResolved && !localAbs.startsWith(`${rootResolved}/`)) {
+    const suffix = relative(rootResolved, localAbs);
+    if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
       return `local import in ${modulePath} escapes app root: ${specifier}`;
     }
 

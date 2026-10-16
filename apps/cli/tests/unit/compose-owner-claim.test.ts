@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { composeProjectName, type ComposeDriverProfile } from "@nautilo/compose-driver";
 import { OwnerClaimAmbiguousWriteError, OwnerClaimApiError } from "@nautilo/api-client";
@@ -22,6 +24,21 @@ import {
 import { OwnerClaimControllerError, hashOwnerClaim, type OwnerClaimTarget } from "../../src/lib/owner-claim-target.ts";
 
 const claim = `inv_${"a".repeat(32)}`;
+let testHome: string;
+let savedHome: string | undefined;
+let savedUserProfile: string | undefined;
+beforeEach(() => {
+  testHome = mkdtempSync(join(tmpdir(), "nautilo-owner-claim-"));
+  savedHome = process.env["HOME"];
+  savedUserProfile = process.env["USERPROFILE"];
+  process.env["HOME"] = testHome;
+  process.env["USERPROFILE"] = testHome;
+});
+afterEach(() => {
+  if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome;
+  if (savedUserProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = savedUserProfile;
+  rmSync(testHome, { recursive: true, force: true });
+});
 const profile: ComposeDriverProfile = {
   name: "test-profile",
   transport: "local",
@@ -69,6 +86,11 @@ function dependencies(target: OwnerClaimTarget) {
 }
 
 describe("Compose owner claim continuation", () => {
+  test("prepares owner custody when HOME is absent", async () => {
+    delete process.env["HOME"];
+    expect((await prepared()).profileName).toBe(profile.name);
+  });
+
   test("fresh deploy installs the exact capability persisted before Docker", async () => {
     const beforeDocker = await prepared();
     let installedHash = "";
@@ -324,7 +346,7 @@ describe("Compose owner claim continuation", () => {
 });
 
 describe("Compose protected owner config continuation", () => {
-  const resultPath = "/tmp/operator-owned-result.json";
+  const resultPath = join(tmpdir(), "operator-owned-result.json");
   const owner = {
     handle: "operator",
     displayName: "Server Operator",

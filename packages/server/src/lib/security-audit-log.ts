@@ -1059,7 +1059,7 @@ export function writeModerationAuditEventOnce(path: string, event: ModerationAct
   }
   if (matchedPath !== null) {
     // A previous write may have reached the page cache before fsync failed.
-    const fd = openSync(matchedPath, "r");
+    const fd = openSync(matchedPath, process.platform === "win32" ? "r+" : "r");
     try { fsyncSync(fd); } finally { closeSync(fd); }
     return;
   }

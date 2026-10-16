@@ -392,7 +392,7 @@ describe("Desktop Relay sidecar client", () => {
       const runtimeRoot = join(root, "bun", "arm64");
       mkdirSync(hostRoot, { recursive: true });
       mkdirSync(runtimeRoot, { recursive: true });
-      const runtime = join(runtimeRoot, "bun");
+      const runtime = join(runtimeRoot, process.platform === "win32" ? "bun.exe" : "bun");
       const script = join(hostRoot, "nautilo-relay-host.js");
       writeFileSync(runtime, "runtime");
       chmodSync(runtime, 0o755);

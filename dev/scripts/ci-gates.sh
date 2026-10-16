@@ -72,6 +72,8 @@ run_gate() {
       # Invoke Turbo directly and exclude that non-test root exactly once. The
       # transit dependency in turbo.json makes upstream source part of each
       # package's test hash, so cache reuse remains cross-package correct.
+      # Git Bash must pass Turbo's root-workspace filter literally on Windows.
+      export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}--filter="
       run_cmd unit bunx turbo run test:unit --affected --filter='!//'
       run_cmd slides-prepare bun run slides:prepare
       run_cmd unit-slides bun test packages/first-party-apps/presentation/src

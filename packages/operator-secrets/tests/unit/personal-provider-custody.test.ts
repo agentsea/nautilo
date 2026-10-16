@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   createPersonalProviderCustody, decryptPersonalProviderCredential,
   encryptPersonalProviderCredential, parsePersonalProviderCustody,
@@ -112,7 +113,8 @@ describe("durable instance custody", () => {
     expect(a).toEqual(b); expect(probes).toBe(1);
     expect(await ensurePersonalProviderCustodyFile(options)).toEqual(a);
     expect(await readFile(join(instanceRootDir, "instance.env"), "utf8")).toContain("OTHER=kept");
-    expect((await stat(join(instanceRootDir, "instance.env"))).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(join(instanceRootDir, "instance.env"))).toBe(true);
+    if (process.platform !== "win32") expect((await stat(join(instanceRootDir, "instance.env"))).mode & 0o777).toBe(0o600);
   });
   test("missing custody with records or unavailable DB never writes", async () => {
     const instanceRootDir = await root();

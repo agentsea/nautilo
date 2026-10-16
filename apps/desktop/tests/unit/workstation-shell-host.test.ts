@@ -25,8 +25,12 @@ function workspace(): string {
   return root;
 }
 
+// Historical receipts carry safe-integer folder identities. NTFS file IDs can
+// exceed that range, and no historical receipt exists on Windows.
+const historicalReceiptTest = process.platform === "win32" ? test.skip : test;
+
 describe("workstation shell consent compatibility", () => {
-  test("reads and revokes a historical durable receipt", async () => {
+  historicalReceiptTest("reads and revokes a historical durable receipt", async () => {
     const root = workspace();
     const store = new WorkstationShellConsentStore({
       instanceId: subject.instanceId,
@@ -35,7 +39,7 @@ describe("workstation shell consent compatibility", () => {
     const identity = await stat(root);
     expect((await store.grant({
       subject,
-      identity: { canonicalRoot: realpathSync(root), device: identity.dev, inode: identity.ino },
+      identity: { canonicalRoot: realpathSync.native(root), device: identity.dev, inode: identity.ino },
     })).ok).toBeTrue();
     const host = createWorkstationShellHost({ consentStore: store, resolveSubject: async () => subject });
 
@@ -59,7 +63,7 @@ describe("workstation shell consent compatibility", () => {
     expect(await unavailable.consentStatus(root)).toBe("none");
   });
 
-  test("replacement folders do not inherit a historical receipt", async () => {
+  historicalReceiptTest("replacement folders do not inherit a historical receipt", async () => {
     const parent = workspace();
     const root = join(parent, "project");
     mkdirSync(root);
@@ -70,7 +74,7 @@ describe("workstation shell consent compatibility", () => {
     });
     expect((await store.grant({
       subject,
-      identity: { canonicalRoot: realpathSync(root), device: identity.dev, inode: identity.ino },
+      identity: { canonicalRoot: realpathSync.native(root), device: identity.dev, inode: identity.ino },
     })).ok).toBeTrue();
     const host = createWorkstationShellHost({ consentStore: store, resolveSubject: async () => subject });
     expect(await host.consentStatus(root)).toBe("durable");

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   BROWSER_VISUAL_GROUNDING_OUTPUT_MAX_BYTES,
   parseBrowserVisualTargetBinding,
@@ -32,12 +33,12 @@ describe("browser visual observation helper boundary", () => {
     expect(resolveBrowserVisualGroundingHelper({
       platform: "darwin", isPackaged: false, resourcesPath: null,
       devVendorRoot: "/repo/apps/desktop/vendor", exists,
-    })).toBe("/repo/apps/desktop/vendor/browser-visual-grounding/nautilo-browser-visual-grounding");
+    })).toBe(join("/repo/apps/desktop/vendor", "browser-visual-grounding", "nautilo-browser-visual-grounding"));
     expect(resolveBrowserVisualGroundingHelper({
       platform: "darwin", isPackaged: true,
       resourcesPath: "/Applications/Nautilo.app/Contents/Resources",
       devVendorRoot: "/repo/apps/desktop/vendor", exists,
-    })).toBe("/Applications/Nautilo.app/Contents/Resources/tools-browser-vision/nautilo-browser-visual-grounding");
+    })).toBe(join("/Applications/Nautilo.app/Contents/Resources", "tools-browser-vision", "nautilo-browser-visual-grounding"));
     expect(resolveBrowserVisualGroundingHelper({
       platform: "linux", isPackaged: false, resourcesPath: null,
       devVendorRoot: "/repo/apps/desktop/vendor", exists,

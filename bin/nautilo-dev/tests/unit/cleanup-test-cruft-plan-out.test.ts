@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   atomicWritePlanFile,
@@ -159,7 +160,7 @@ describe("cleanup-test-cruft --plan-out (pre-DB validation, no DB)", () => {
 });
 
 describe("atomicWritePlanFile (JSON plan file semantics, no DB)", () => {
-  test("writes exact content with mode 0600 and leaves no temp behind", () => {
+  test("writes exact content with private owner permissions and leaves no temp behind", () => {
     const dest = join(worktree, "plan.json");
     const content = JSON.stringify(
       { command: "dev:cleanup-test-cruft", mode: "plan-json", readOnly: true, planFingerprint: "a".repeat(64) },
@@ -168,7 +169,8 @@ describe("atomicWritePlanFile (JSON plan file semantics, no DB)", () => {
     );
     atomicWritePlanFile(dest, content);
     const st = statSync(dest);
-    expect(st.mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(dest)).toBe(true);
+    if (process.platform !== "win32") expect(st.mode & 0o777).toBe(0o600);
     expect(readFileSync(dest, "utf8")).toBe(content);
     const leftovers = readdirSync(worktree).filter((n) =>
       n.startsWith(".nautilo-cleanup-plan."),

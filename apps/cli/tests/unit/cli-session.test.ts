@@ -2,6 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { rejects } from "node:assert/strict";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   clearCliSession,
   loadCliSession,
@@ -15,14 +18,17 @@ import {
 describe("cli-session store", () => {
   let dir: string;
   let prevInstance: string | undefined;
+  let prevOverride: string | undefined;
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "nautilo-cli-session-"));
+    prevOverride = process.env["NAUTILO_HOME_OVERRIDE"];
     process.env["NAUTILO_HOME_OVERRIDE"] = dir;
     prevInstance = process.env["NAUTILO_INSTANCE_ID"];
     delete process.env["NAUTILO_INSTANCE_ID"];
   });
   afterEach(() => {
-    delete process.env["NAUTILO_HOME_OVERRIDE"];
+    if (prevOverride === undefined) delete process.env["NAUTILO_HOME_OVERRIDE"];
+    else process.env["NAUTILO_HOME_OVERRIDE"] = prevOverride;
     if (prevInstance !== undefined) {
       process.env["NAUTILO_INSTANCE_ID"] = prevInstance;
     } else {
@@ -35,7 +41,7 @@ describe("cli-session store", () => {
     expect(await loadCliSession()).toBeNull();
   });
 
-  test("atomic write + chmod 0600", async () => {
+  test("atomic write with private permissions", async () => {
     const row = {
       schemaVersion: 1 as const,
       instanceId: "i1",
@@ -51,8 +57,7 @@ describe("cli-session store", () => {
       obtainedAt: Date.now(),
     };
     await saveCliSession(row);
-    const st = await import("node:fs/promises").then((fs) => fs.stat(join(dir, ".nautilo", "cli-session.json")));
-    expect(st.mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(join(dir, ".nautilo", "cli-session.json"))).toBe(true);
     const loaded = await loadCliSession();
     expect(loaded?.handle).toBe("alice");
   });
@@ -92,14 +97,18 @@ describe("cli-session store", () => {
     expect(loaded?.handle.startsWith("alice-")).toBe(true);
   });
 
-  test("refuse overwrite when mode !== 0600", async () => {
+  test("refuses to overwrite a non-private credential file", async () => {
     const base = join(dir, ".nautilo");
     const path = join(base, "cli-session.json");
     const { mkdirSync } = await import("node:fs");
     mkdirSync(base, { recursive: true });
     writeFileSync(path, "{}", "utf-8");
-    chmodSync(path, 0o644);
-    expect(
+    if (process.platform === "win32") {
+      const icacls = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "icacls.exe");
+      const result = spawnSync(icacls, [path, "/grant", "*S-1-1-0:R"], { encoding: "utf8", windowsHide: true });
+      expect(result.status, result.stderr).toBe(0);
+    } else chmodSync(path, 0o644);
+    await rejects(
       saveCliSession({
         schemaVersion: 1,
         instanceId: "i1",
@@ -114,7 +123,8 @@ describe("cli-session store", () => {
         source: "password",
         obtainedAt: Date.now(),
       }),
-    ).rejects.toBeInstanceOf(CliSessionFileModeError);
+      CliSessionFileModeError,
+    );
   });
 
   test("requireSession throws when expired", async () => {
@@ -132,11 +142,11 @@ describe("cli-session store", () => {
       source: "password",
       obtainedAt: Date.now(),
     });
-    expect(requireSession()).rejects.toBeInstanceOf(CliSessionExpiredError);
+    await rejects(requireSession(), CliSessionExpiredError);
   });
 
   test("requireSession throws when absent", async () => {
-    expect(requireSession()).rejects.toBeInstanceOf(CliSessionMissingError);
+    await rejects(requireSession(), CliSessionMissingError);
   });
 
   test("clearCliSession is idempotent", async () => {

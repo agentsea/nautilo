@@ -87,12 +87,15 @@ describe("OpenSSH finite-alias index", () => {
     source(join(depth.ssh, "config"), "Include 0.conf\n");
     await expect(resolveOpenSshFiniteAlias("alpha", { homeDirectory: depth.home })).resolves.toMatchObject({ ok: false, code: "openssh_connection_catalog_overflow", configuredBound: { includeDepth: OPEN_SSH_CONNECTION_INDEX_MAX_DEPTH } });
 
-    const linked = fixture(); const outside = join(linked.home, "outside.conf"); source(outside, "Host alpha\n"); symlinkSync(outside, join(linked.ssh, "config"));
+    const linked = fixture(); const outside = join(linked.home, "outside.conf");
+    if (process.platform === "win32") mkdirSync(outside);
+    else source(outside, "Host alpha\n");
+    symlinkSync(outside, join(linked.ssh, "config"), process.platform === "win32" ? "junction" : "file");
     const linkedResult = await resolveOpenSshFiniteAlias("alpha", { homeDirectory: linked.home });
     expect(linkedResult).toMatchObject({ ok: false, code: "openssh_connection_catalog_unreadable", complete: false });
     expect(JSON.stringify(linkedResult)).not.toContain("outside.conf");
 
-    const component = fixture(); const realDirectory = join(component.ssh, "real"); mkdirSync(realDirectory); source(join(realDirectory, "alpha.conf"), "Host alpha\n"); symlinkSync(realDirectory, join(component.ssh, "linked")); source(join(component.ssh, "config"), "Include linked/alpha.conf\n");
+    const component = fixture(); const realDirectory = join(component.ssh, "real"); mkdirSync(realDirectory); source(join(realDirectory, "alpha.conf"), "Host alpha\n"); symlinkSync(realDirectory, join(component.ssh, "linked"), process.platform === "win32" ? "junction" : "dir"); source(join(component.ssh, "config"), "Include linked/alpha.conf\n");
     await expect(resolveOpenSshFiniteAlias("alpha", { homeDirectory: component.home })).resolves.toMatchObject({ ok: false, code: "openssh_connection_catalog_unreadable", complete: false });
 
     const unreadable = fixture(); mkdirSync(join(unreadable.ssh, "config"));

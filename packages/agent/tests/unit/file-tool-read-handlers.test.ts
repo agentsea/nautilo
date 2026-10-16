@@ -381,7 +381,7 @@ describe("D580 directory discovery continuation", () => {
     const dir = await fsp.mkdtemp(path.join(TMP_ROOT, "depth-"));
     await fsp.mkdir(path.join(dir, "nested"));
     await fsp.writeFile(path.join(dir, "nested", "source.ts"), "source");
-    await fsp.symlink(path.join(dir, "nested"), path.join(dir, "link"));
+    await fsp.symlink(path.join(dir, "nested"), path.join(dir, "link"), process.platform === "win32" ? "junction" : "dir");
     const result = parseJson<Record<string, unknown>>(await handleList({ command: "list", path: ".", zone: "absolute", recursive: true, depth: 0 }, { resolved: dir, resolvedZone: "absolute" }, FAKE_CTX));
     expect(result).toMatchObject({ complete: false, nextCursor: null,
       entries: [{ name: "link", descendants: "symlink" }, { name: "nested", descendants: "depth_limit" }],

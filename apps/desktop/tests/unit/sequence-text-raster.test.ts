@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import { rasterizeSequenceText, type SequenceTextRasterDependencies } from "../../electron/sequence-text-raster.ts";
 
 const roots: string[] = [];
@@ -89,7 +90,7 @@ describe("sequence text raster", () => {
     expect(window.handlers.has("will-attach-webview")).toBe(true);
     expect(window.destroyed).toBe(true);
     expect(await fsp.readFile(destination, "utf8")).toBe("png");
-    expect((await fsp.stat(destination)).mode & 0o777).toBe(0o600);
+    expect(await isPrivateFilesystemPathAsync(destination)).toBe(true);
   });
 
   test("waits for fonts, refuses overflow, and publishes no file", async () => {

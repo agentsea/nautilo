@@ -2054,7 +2054,8 @@ function Composer({
   const focus = useRoomFocusContext();
   const activeRoomId = roomNav.activeRoomId;
   const roomComposerSendPending = useRoomComposerSendPending(activeRoomId);
-  useEffect(() => () => speech.cancelListening(), [activeRoomId, speech.cancelListening]);
+  const cancelListening = speech.cancelListening;
+  useEffect(() => () => cancelListening(), [activeRoomId, cancelListening]);
   const workspaceArtifacts = useWorkspaceArtifacts();
   const resolveContextualFocusedResources = useCallback(
     async (): Promise<readonly ChatFocusedResourceRef[]> => {

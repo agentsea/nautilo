@@ -10,6 +10,14 @@
  */
 
 import { realpathSync } from "node:fs";
+import { isAbsolute, relative, sep } from "node:path";
+
+/** Compare canonical local paths at directory boundaries using native syntax. */
+export function isUnderRoot(candidate: string, root: string): boolean {
+  if (!isAbsolute(candidate) || !isAbsolute(root)) return false;
+  const child = relative(root, candidate);
+  return child === "" || (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child));
+}
 
 /**
  * Realpath a path. Returns the same string if realpath fails (non-

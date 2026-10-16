@@ -320,7 +320,8 @@ test("probe completion and spawn failure close output handles and detach cancell
   const root = await mkdtemp(join(tmpdir(), "nautilo-probe-cleanup-"));
   const originalOpen = fsPromises.open;
   try {
-    for (const executablePath of ["/usr/bin/true", join(root, "missing-executable")]) {
+    for (const succeeds of [true, false]) {
+      const executablePath = succeeds ? process.execPath : join(root, "missing-executable");
       const controller = new AbortController();
       const remove = spyOn(controller.signal, "removeEventListener");
       let close: { mockRestore(): void } | undefined;
@@ -330,8 +331,8 @@ test("probe completion and spawn failure close output handles and detach cancell
         return handle;
       });
       try {
-        const outcome = runSecurityProbeProcess({ executablePath, argv: [], cwd: root, signal: controller.signal, stdoutPath: join(root, executablePath === "/usr/bin/true" ? "success" : "error") });
-        if (executablePath === "/usr/bin/true") expect(await outcome).toMatchObject({ exitCode: 0, cancelled: false });
+        const outcome = runSecurityProbeProcess({ executablePath, argv: succeeds ? ["-e", ""] : [], cwd: root, signal: controller.signal, stdoutPath: join(root, succeeds ? "success" : "error") });
+        if (succeeds) expect(await outcome).toMatchObject({ exitCode: 0, cancelled: false });
         else expect(await outcome.catch((error: unknown) => error)).toBeInstanceOf(Error);
         expect(close).toHaveBeenCalledTimes(1);
         expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));

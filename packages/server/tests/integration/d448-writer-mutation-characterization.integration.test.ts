@@ -10,6 +10,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -184,7 +185,7 @@ afterAll(async () => {
       .select({ storageUri: artifacts.storageUri })
       .from(artifacts)
       .where(inArray(artifacts.id, createdArtifactIds));
-    const paths = rows.map((row) => new URL(row.storageUri!).pathname);
+    const paths = rows.map((row) => fileURLToPath(row.storageUri!));
     if (paths.length > 0) {
       await fx.db.delete(fileRevisions).where(inArray(fileRevisions.absolutePath, paths));
     }

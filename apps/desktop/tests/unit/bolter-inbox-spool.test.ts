@@ -1,10 +1,14 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test as bunTest } from "bun:test";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { mkdirSync, readdirSync, renameSync } from "node:fs";
 import { chmod, copyFile, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BolterInboxSpool, createBolterSpoolDirectory, type BolterSpoolCipher, type BolterSpoolScope } from "../../electron/bolter-bridge/inbox-spool";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); the spool
+// relies on POSIX permission bits and O_NOFOLLOW.
+const test = bunTest.skipIf(process.platform === "win32");
 
 const temporary: string[] = [];
 afterEach(async () => { await Promise.all(temporary.splice(0).map(path => rm(path, { recursive: true, force: true }))); });

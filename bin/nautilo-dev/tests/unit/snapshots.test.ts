@@ -18,11 +18,12 @@ import { formatBytes } from "../../src/lib/format-bytes";
 
 describe("snapshots — inspect and list", () => {
   const tmpRoot = mkdtempSync(join(tmpdir(), "nautilo-snapshots-test-"));
-  const envBeforeHome = process.env["HOME"];
-  const envBeforeInstance = process.env["NAUTILO_INSTANCE_ID"];
+  const environmentBefore = new Map<string, string | undefined>();
 
   beforeAll(() => {
+    for (const key of ["HOME", "USERPROFILE", "NAUTILO_HOME", "NAUTILO_INSTANCE_ID"]) environmentBefore.set(key, process.env[key]);
     process.env["HOME"] = tmpRoot;
+    process.env["USERPROFILE"] = tmpRoot;
     delete process.env["NAUTILO_HOME"];
     delete process.env["NAUTILO_INSTANCE_ID"];
 
@@ -76,10 +77,9 @@ describe("snapshots — inspect and list", () => {
   });
 
   afterAll(() => {
-    if (envBeforeHome === undefined) delete process.env["HOME"];
-    else process.env["HOME"] = envBeforeHome;
-    if (envBeforeInstance === undefined) delete process.env["NAUTILO_INSTANCE_ID"];
-    else process.env["NAUTILO_INSTANCE_ID"] = envBeforeInstance;
+    for (const [key, value] of environmentBefore) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 

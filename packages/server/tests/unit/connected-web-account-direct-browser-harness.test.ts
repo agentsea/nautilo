@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { join } from "node:path";
 import { agentBrowserCdpArgv } from "@nautilo/relay";
 import {
   createServerDirectBrowserHarness,
@@ -15,7 +16,7 @@ const manifest = {
     version: "0.35.2",
     binaryName: "agent-browser",
     artifacts: Object.fromEntries(
-      ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"].map((key) => [
+      ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"].map((key) => [
         key,
         { sha256: "a".repeat(64), sizeMin: 10_000_000 },
       ]),
@@ -73,9 +74,20 @@ test("resolves the exact checksum-pinned server artifact for the runtime platfor
     arch: "x64",
     vendorRoot: "/srv/agent-browser",
     manifest,
-    binaryExists: async (path) => path === "/srv/agent-browser/linux-x64/agent-browser",
+    binaryExists: async (path) => path === join("/srv/agent-browser", "linux-x64", "agent-browser"),
   });
-  expect(binary).toBe("/srv/agent-browser/linux-x64/agent-browser");
+  expect(binary).toBe(join("/srv/agent-browser", "linux-x64", "agent-browser"));
+});
+
+test("resolves the pinned Windows executable", async () => {
+  const binary = await resolveServerVendoredAgentBrowserBinary({
+    platform: "win32",
+    arch: "x64",
+    vendorRoot: "C:\\server\\agent-browser",
+    manifest,
+    binaryExists: async (path) => path.endsWith("agent-browser.exe"),
+  });
+  expect(binary.endsWith("agent-browser.exe")).toBe(true);
 });
 
 test("harness starts an exact argv with only private CDP, socket, and HOME environment", async () => {
@@ -92,7 +104,7 @@ test("harness starts an exact argv with only private CDP, socket, and HOME envir
   const result = await harness.invoke(harnessInput());
   expect(result).toEqual({ text: "- button Continue", truncated: false });
   expect(calls).toEqual([{
-    command: ["/srv/agent-browser/linux-x64/agent-browser", "--session", "operation-1-account-1-epoch-1", "snapshot"],
+    command: [join("/srv/agent-browser", "linux-x64", "agent-browser"), "--session", "operation-1-account-1-epoch-1", "snapshot"],
     environment: {
       HOME: "/var/lib/nautilo/direct/op-1",
       AGENT_BROWSER_CDP: CDP_URL,

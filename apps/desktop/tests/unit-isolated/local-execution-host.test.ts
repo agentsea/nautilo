@@ -3,6 +3,9 @@ import { rejects } from "node:assert/strict";
 import { LocalExecutionHost, type LocalExecutionStart } from "../../electron/local-execution-host";
 import { spawnLocalExecutionProcess, type LocalExecutionProcess, type LocalProcessExit, type PreparedLocalExecution } from "../../electron/local-execution-process";
 
+// These cases start real POSIX process groups; injected lifecycle cases remain active everywhere.
+const posixProcessTest = process.platform === "win32" ? test.skip : test;
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -564,7 +567,7 @@ describe("managed local execution receipts", () => {
 });
 
 describe("owned pipe process adapter", () => {
-  test("immediate real nonzero exit drains final stdout/stderr using an exact environment", async () => {
+  posixProcessTest("immediate real nonzero exit drains final stdout/stderr using an exact environment", async () => {
     const output: string[] = [];
     const process = spawnLocalExecutionProcess({
       program: "/bin/sh", args: ["-c", "printf 'out\\n'; printf 'err\\n' >&2; exit 7"],
@@ -575,14 +578,14 @@ describe("owned pipe process adapter", () => {
     expect(output.join("")).toContain("err\n");
   });
 
-  test("missing executable yields a failed-start receipt after stream close", async () => {
+  posixProcessTest("missing executable yields a failed-start receipt after stream close", async () => {
     const process = spawnLocalExecutionProcess({
       program: "/nonexistent-local-execution-command", args: [], cwd: "/tmp", env: {}, dispose() {},
     }, false, () => {});
     expect((await process.exited).failureCode).toBe("LOCAL_EXECUTION_SPAWN_FAILED");
   });
 
-  test("cancellation reaches the detached pipe group and waits for close", async () => {
+  posixProcessTest("cancellation reaches the detached pipe group and waits for close", async () => {
     const ready = deferred<void>();
     const process = spawnLocalExecutionProcess({
       program: "/bin/sh", args: ["-c", "printf 'ready\\n'; sleep 30 & wait"],
@@ -595,7 +598,7 @@ describe("owned pipe process adapter", () => {
     expect(result.failureCode).toBeUndefined();
   });
 
-  test("locally prepared credentials reach the child without being printed", async () => {
+  posixProcessTest("locally prepared credentials reach the child without being printed", async () => {
     const output: string[] = [];
     const process = spawnLocalExecutionProcess({
       program: "/bin/sh", args: ["-c", 'test "$GH_TOKEN" = test-only'], cwd: "/tmp",

@@ -1,9 +1,10 @@
 import { reviewUnitCompletionIssue, latestResearchCheckpoint, researchProgress, researchSectionCoverage, terminalEvidenceOwners, unfinishedScannerTriage } from "./review-work";
 import { securityInventoryFingerprint } from "./inventory";
 import { unfinishedResearch } from "./research-completion";
-import { createHash, randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { lstat, mkdir, open, readFile, readdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
+import { publishPrivateFileAtomically, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 import {
   SECURITY_SCAN_INITIAL_LANES,
@@ -36,7 +37,6 @@ import {
 
 const LEDGER_VERSION = 1 as const;
 const DIRECTORY_MODE = 0o700;
-const FILE_MODE = 0o600;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const ROOT_MARKER = "nautilo-security-research-v1\n";
 
@@ -456,13 +456,13 @@ function recordIdForToolCall(toolCallId: string): string {
   return `record_${createHash("sha256").update(toolCallId).digest("hex").slice(0, 24)}`;
 }
 
-async function fsync(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try { await handle.sync(); } finally { await handle.close(); }
-}
-
 async function fsyncDirectory(path: string): Promise<void> {
-  try { await fsync(path); } catch { /* Filesystem-specific directory fsync is best effort. */ }
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(path, "r");
+    await handle.sync();
+  } catch { /* Filesystem-specific directory fsync is best effort. */ }
+  finally { await handle?.close().catch(() => undefined); }
 }
 
 /**
@@ -1284,21 +1284,16 @@ export class DesktopSecurityScanLedger {
     if (!directoryMeta.isDirectory() || directoryMeta.isSymbolicLink()) {
       throw safeError("artifact_corrupt", "Security research ledger directory is invalid.");
     }
-    await chmod(directory, DIRECTORY_MODE);
-    const temporary = join(directory, `.ledger-${randomUUID()}.tmp`);
+    await secureFilesystemPath(directory);
     try {
-      const serialized = JSON.stringify(ledger);
-      await writeFile(temporary, serialized, { encoding: "utf8", mode: FILE_MODE, flag: "wx" });
-      await chmod(temporary, FILE_MODE);
-      await fsync(temporary);
-      await beforeCommit?.();
-      await this.#assertLiveRoot(ledger.rootIdentity);
-      await rename(temporary, file);
-      await chmod(file, FILE_MODE);
-      await fsync(file);
+      await publishPrivateFileAtomically(file, new TextEncoder().encode(JSON.stringify(ledger)), {
+        beforePublish: async () => {
+          await beforeCommit?.();
+          await this.#assertLiveRoot(ledger.rootIdentity);
+        },
+      });
       await fsyncDirectory(directory);
     } catch (error) {
-      await rm(temporary, { force: true }).catch(() => undefined);
       if (error instanceof SecurityScanLedgerError) throw error;
       throw safeError("internal", "Security research ledger could not be persisted.");
     }
@@ -1316,7 +1311,7 @@ export class DesktopSecurityScanLedger {
     if (!rootMeta.isDirectory() || rootMeta.isSymbolicLink()) {
       throw safeError("artifact_corrupt", "Security research storage root is invalid.");
     }
-    await chmod(root, DIRECTORY_MODE);
+    await secureFilesystemPath(root);
     const marker = join(root, ".nautilo-security-research-root");
     try {
       const markerMeta = await lstat(marker);
@@ -1330,7 +1325,7 @@ export class DesktopSecurityScanLedger {
         throw safeError("artifact_corrupt", "Security research storage root is unowned.");
       }
       try {
-        await writeFile(marker, ROOT_MARKER, { encoding: "utf8", mode: FILE_MODE, flag: "wx" });
+        await writePrivateFileExclusive(marker, new TextEncoder().encode(ROOT_MARKER));
       } catch (writeError) {
         if (!isNodeError(writeError, "EEXIST")) throw writeError;
         const markerMeta = await lstat(marker);
@@ -1340,13 +1335,13 @@ export class DesktopSecurityScanLedger {
         }
       }
     }
-    await chmod(marker, FILE_MODE);
+    await secureFilesystemPath(marker);
     await mkdir(versionRoot, { recursive: true, mode: DIRECTORY_MODE });
     const versionMeta = await lstat(versionRoot);
     if (!versionMeta.isDirectory() || versionMeta.isSymbolicLink()) {
       throw safeError("artifact_corrupt", "Security research storage root is invalid.");
     }
-    await chmod(versionRoot, DIRECTORY_MODE);
+    await secureFilesystemPath(versionRoot);
     return versionRoot;
   }
 

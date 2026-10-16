@@ -73,12 +73,18 @@ function heading3(text = 'Details'): Block {
   return b;
 }
 
+// Disposed after each test: a live editor keeps its cursor blink interval
+// running past the jsdom teardown, where it fails on the missing `window`.
+const liveEditors: EditorAPI[] = [];
+
 function setupEditor(blocks: Block[]): { editor: EditorAPI; store: MemDocStore } {
   const store = new MemDocStore();
   store.setDocument({ blocks });
   const container = document.createElement('div');
   document.body.appendChild(container);
-  return { editor: initialize(container, store), store };
+  const editor = initialize(container, store);
+  liveEditors.push(editor);
+  return { editor, store };
 }
 
 function selectWholeFirstRun(editor: EditorAPI, block: Block): void {
@@ -95,6 +101,7 @@ describe('updateStyleToMatch stores only what the document redefined', () => {
   });
 
   afterEach(() => {
+    for (const editor of liveEditors.splice(0)) editor.dispose();
     document.body.innerHTML = '';
     // `setThemeMode` is a module-level global shared with every other view
     // suite — leaving it dark corrupts unrelated files.

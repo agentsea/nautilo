@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { posix } from "node:path";
+import { join, posix } from "node:path";
 import {
   canonicalInstanceEnvPath,
   CONFIG_CONTAINER_DIR,
@@ -127,20 +127,20 @@ describe("serverOverlayYaml D445 Phase 0 canonical config wiring", () => {
   });
 
   test("migrates a legacy file into one authority and re-establishes the compatibility symlink", async () => {
-    const root = await mkdtemp(posix.join(tmpdir(), "d445-layout-"));
+    const root = await mkdtemp(join(tmpdir(), "d445-layout-"));
     try {
-      await writeFile(posix.join(root, "instance.env"), "OPENAI_API_KEY=legacy\n");
+      await writeFile(join(root, "instance.env"), "OPENAI_API_KEY=legacy\n");
 
       await ensureCanonicalConfigLayout(root);
 
       expect(await readFile(canonicalInstanceEnvPath(root), "utf8")).toBe(
         "OPENAI_API_KEY=legacy\n",
       );
-      expect(await readlink(posix.join(root, "instance.env"))).toBe(
-        `${RUNTIME_CONFIG_DIR_NAME}/instance.env`,
+      expect(await readlink(join(root, "instance.env"))).toBe(
+        join(RUNTIME_CONFIG_DIR_NAME, "instance.env"),
       );
       expect(runtimeConfigDir(root)).toBe(
-        posix.join(root, RUNTIME_CONFIG_DIR_NAME),
+        join(root, RUNTIME_CONFIG_DIR_NAME),
       );
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -148,21 +148,21 @@ describe("serverOverlayYaml D445 Phase 0 canonical config wiring", () => {
   });
 
   test("adopts a compatibility writer that atomically replaced the symlink", async () => {
-    const root = await mkdtemp(posix.join(tmpdir(), "d445-relink-"));
+    const root = await mkdtemp(join(tmpdir(), "d445-relink-"));
     try {
       await ensureCanonicalConfigLayout(root);
       // Atomic rename through the legacy path replaces the symlink itself.
-      const temporary = posix.join(root, "instance.env.tmp");
+      const temporary = join(root, "instance.env.tmp");
       await writeFile(temporary, "TAVILY_API_KEY=newest\n");
-      await rename(temporary, posix.join(root, "instance.env"));
+      await rename(temporary, join(root, "instance.env"));
 
       await ensureCanonicalConfigLayout(root);
 
       expect(await readFile(canonicalInstanceEnvPath(root), "utf8")).toBe(
         "TAVILY_API_KEY=newest\n",
       );
-      expect(await readlink(posix.join(root, "instance.env"))).toBe(
-        `${RUNTIME_CONFIG_DIR_NAME}/instance.env`,
+      expect(await readlink(join(root, "instance.env"))).toBe(
+        join(RUNTIME_CONFIG_DIR_NAME, "instance.env"),
       );
     } finally {
       await rm(root, { recursive: true, force: true });

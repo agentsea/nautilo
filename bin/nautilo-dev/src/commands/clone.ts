@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, statfs } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import {
   resolveInstanceUncached,
@@ -305,7 +305,8 @@ const CLONE_FILE_URI_COLUMNS = PHYSICAL_FILE_URI_COLUMNS;
 const cloneFileUriBase = physicalFileUriBase;
 
 function sqlLiteral(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+  const escaped = value.replaceAll("'", "''");
+  return value.includes("\\") ? `E'${escaped.replaceAll("\\", "\\\\")}'` : `'${escaped}'`;
 }
 
 export const rebindCloneFileUriValue = rebindPhysicalFileUri;
@@ -320,7 +321,7 @@ export function buildCloneFileUriRebindSql(
   const within = (expression: string, base: string): string => `(
     ${expression} = ${base} OR (
       left(${expression}, char_length(${base})) = ${base}
-      AND substr(${expression}, char_length(${base}) + 1, 1) = '/'
+      AND substr(${expression}, char_length(${base}) + 1, 1) = ${sqlLiteral(sep)}
     )
   )`;
   const updates = CLONE_FILE_URI_COLUMNS.map(([table, column]) => `
@@ -1855,10 +1856,10 @@ export async function materializeClone(
           "--exclude=deploy.server-overlay.yml",
           "--exclude=.personal-provider-custody*",
           "-xzf",
-          join(backup.dir, backup.manifest.artifacts.nautiloHome.file),
+          backup.manifest.artifacts.nautiloHome.file,
           "-C",
           targetRoot,
-        ]);
+        ], { cwd: backup.dir });
         await writeReboundCloneEnv(targetEnvPath, reboundEnv);
         const credentialPlan = ensureClonedInfraCredentialAuthorityBeforeVolume(
           target,

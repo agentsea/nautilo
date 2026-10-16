@@ -1,11 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { resolveRailwayProviderConfig } from "../../src/lib/host-provider-config.ts";
 import { KEY_REGISTRY } from "@nautilo/config-guard";
 import { HOSTING_PROVIDER_ENV_VARS, resolveProviderCapabilities } from "@nautilo/hosting";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 
 const HOSTING_KEY_REGISTRY = KEY_REGISTRY;
 
@@ -13,6 +15,7 @@ let root: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "nautilo-provider-config-"));
+  await secureFilesystemPath(root);
 });
 
 afterEach(async () => {
@@ -233,7 +236,7 @@ describe("Railway provider-only TOML", () => {
       "",
     ].join("\n"));
     await writeFile(unsafeCompatibility, "TAVILY_API_KEY=not-read\n", { mode: 0o644 });
-    await chmod(unsafeCompatibility, 0o644);
+    await allowOtherReaders(unsafeCompatibility);
     const cloudConvert = `${"a".repeat(70)}.${"b".repeat(70)}.${"c".repeat(70)}`;
 
     const result = await resolveRailwayProviderConfig({
@@ -317,7 +320,8 @@ describe("Railway provider-only TOML", () => {
     const actual = join(root, "actual.toml");
     const linked = join(root, "linked.toml");
     await writeProviderConfig(actual, "schemaVersion = 1\n[providers]\n");
-    await symlink(actual, linked);
+    await symlink(process.platform === "win32" ? root : actual, linked,
+      process.platform === "win32" ? "junction" : "file");
     expect(await resolveRailwayProviderConfig({
       environment: { HOME: root },
       providerConfigPath: linked,
@@ -325,7 +329,7 @@ describe("Railway provider-only TOML", () => {
 
     const shared = join(root, "shared.toml");
     await writeProviderConfig(shared, "schemaVersion = 1\n[providers]\n");
-    await chmod(shared, 0o644);
+    await allowOtherReaders(shared);
     expect(await resolveRailwayProviderConfig({
       environment: { HOME: root },
       providerConfigPath: shared,

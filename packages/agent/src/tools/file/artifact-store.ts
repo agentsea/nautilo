@@ -32,6 +32,7 @@ import {
   findArtifactByInternalIdForNamespacesIncludingDeleted,
   insertArtifact,
   listArtifactsForNamespaces,
+  physicalPathFromStorageUri,
   type Artifact,
 } from "@nautilo/db";
 import { withAgentTrustContext } from "../../store/trust-agent-db";
@@ -300,12 +301,7 @@ function storageUriFromPhysicalPath(absolute: string): string {
   return `${STORAGE_URI_PREFIX}${absolute}`;
 }
 
-export function physicalPathFromStorageUri(storageUri: string): string | null {
-  if (!storageUri.startsWith(STORAGE_URI_PREFIX)) return null;
-  const rest = storageUri.slice(STORAGE_URI_PREFIX.length);
-  if (!path.isAbsolute(rest)) return null;
-  return rest;
-}
+export { physicalPathFromStorageUri };
 
 export interface EnvelopeFacts {
   userId: string;

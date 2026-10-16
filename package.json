@@ -7,12 +7,12 @@
     "dev": "turbo run dev",
     "lint": "turbo run lint",
     "lint:fix": "turbo run lint:fix",
-    "typecheck": "TURBO_CONCURRENCY=${TURBO_CONCURRENCY:-1} NODE_OPTIONS=--max-old-space-size=5120 turbo run typecheck",
+    "typecheck": "bun dev/scripts/typecheck.ts",
     "test": "turbo run test --concurrency=1",
     "test:unit": "turbo run test:unit",
     "test:moderation": "bun dev/scripts/test-community-moderation.ts",
     "test:integration": "turbo run test:integration --concurrency=1",
-    "test:invariants": "bun test --timeout 60000 ./dev/tests/repo-invariants/",
+    "test:invariants": "bun dev/scripts/test-repo-invariants.ts --timeout 60000",
     "encryption:inventory": "bun run --cwd packages/encryption-invariants inventory",
     "encryption:check": "bun run --cwd packages/encryption-invariants check",
     "encryption:indicators": "bash dev/scripts/ci-gates.sh encryption-indicators",
@@ -176,6 +176,7 @@
     "@oomol-lab/connector@1.1.0": "patches/@oomol-lab%2Fconnector@1.1.0.patch",
     "@expo/plist@0.8.1": "patches/@expo%2Fplist@0.8.1.patch",
     "@assistant-ui/react-lexical@0.2.4": "patches/@assistant-ui%2Freact-lexical@0.2.4.patch",
-    "@langchain/langgraph@1.2.9": "patches/@langchain%2Flanggraph@1.2.9.patch"
+    "@langchain/langgraph@1.2.9": "patches/@langchain%2Flanggraph@1.2.9.patch",
+    "knip@5.88.1": "patches/knip@5.88.1.patch"
   }
 }

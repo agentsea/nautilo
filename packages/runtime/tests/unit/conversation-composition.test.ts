@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, test } from "bun:test";
 
@@ -268,7 +269,7 @@ describe("conversation composition", () => {
   });
 
   test("production runtime and server sources cannot import the test-authority mint", () => {
-    const workspaceRoot = new URL("../../../../", import.meta.url).pathname;
+    const workspaceRoot = fileURLToPath(new URL("../../../../", import.meta.url));
     const sourceFiles = [
       ...new Bun.Glob("packages/runtime/src/**/*.ts").scanSync({
         cwd: workspaceRoot,
@@ -276,7 +277,7 @@ describe("conversation composition", () => {
       ...new Bun.Glob("packages/server/src/**/*.ts").scanSync({
         cwd: workspaceRoot,
       }),
-    ];
+    ].map((path) => path.replaceAll("\\", "/"));
     const allowedDefinitions = new Set([
       "packages/runtime/src/conversation/conversation-composition.ts",
       "packages/runtime/src/conversation/testing/protected-test-shadow-authority.ts",

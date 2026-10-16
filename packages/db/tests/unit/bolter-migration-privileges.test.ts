@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 import { repairBolterMigration, withMigrationPrivilegeCompat } from "../../src/utils/migration-privilege-compat";
 
@@ -63,7 +64,7 @@ describe("Bolter least-privilege migration compatibility", () => {
     let temporary = "";
     let failure: unknown;
     try {
-      await withMigrationPrivilegeCompat(directory.pathname, async (folder) => {
+      await withMigrationPrivilegeCompat(fileURLToPath(directory), async (folder) => {
       temporary = folder;
       for (const [file] of cases) {
         expect(readFileSync(`${folder}/${file}`, "utf8"))

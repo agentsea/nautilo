@@ -19,13 +19,10 @@
  */
 
 import { afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import {
-  Sandbox,
-  canonicalize,
-} from "@nautilo/sandbox";
+import { Sandbox } from "@nautilo/sandbox";
 import {
   createWorkspaceGuard,
   RELAY_WORKSTATION_SHELL_BINDING_VERSION,
@@ -249,7 +246,8 @@ function mkRequest(overrides: Partial<RelayDispatchRequest> = {}): RelayDispatch
 }
 
 function mkTmp(prefix: string): string {
-  return canonicalize(mkdtempSync(join(tmpdir(), prefix)));
+  // Grants record the native realpath, which expands Windows 8.3 names.
+  return realpathSync.native(mkdtempSync(join(tmpdir(), prefix)));
 }
 
 describe("request-local dispatch policy cleanup", () => {
@@ -1007,7 +1005,8 @@ describe("retired Desktop agent shell dispatch", () => {
 
 
 describe("trusted user environment command policy", () => {
-  test("HOME credentials are admitted only by local Development authority while internal state stays masked", () => {
+  // The Darwin policy needs a POSIX home; a Windows temporary directory cannot express one.
+  test.skipIf(process.platform === "win32")("HOME credentials are admitted only by local Development authority while internal state stays masked", () => {
     const home = mkTmp("trusted-user-home-");
     const policy = buildProtectedPathPolicy({ homeDir: home, platform: "darwin", nautiloRoots: {
       privateRoot: join(home, ".nautilo", "private"), dataRoot: join(home, ".nautilo", "data"),

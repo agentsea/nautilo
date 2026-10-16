@@ -1606,7 +1606,7 @@ describe("restore full bundle", () => {
   });
 
   test("remote full restore from a source-current target reconciles registry bundle identity", async () => {
-    const remoteRoot = mktmp("remote-source-current-");
+    const remoteRoot = "/opt/nautilo-prod";
     const repoDigest = `ghcr.io/agentsea/nautilo-server@sha256:${"f".repeat(64)}`;
     const remoteProfile: ComposeDriverProfile = {
       name: "remote-droplet",
@@ -2198,11 +2198,11 @@ describe("restore full bundle", () => {
       call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader"),
     );
     const restoreIndex = localExecCalls.findIndex((call) =>
-      commandText(call).includes(`gunzip -c ${legacyPath}`),
+      commandText(call).includes(`gunzip -c ${shellQuoteLit(legacyPath)}`),
     );
     expect(rolePreparationIndex).toBeGreaterThan(-1);
     expect(restoreIndex).toBeGreaterThan(rolePreparationIndex);
-    expect(shell).toContain(`gunzip -c ${legacyPath}`);
+    expect(shell).toContain(`gunzip -c ${shellQuoteLit(legacyPath)}`);
     expect(shell).toContain("exec -T app-postgres psql -U postgres nautilo");
     expect(shell).not.toContain("manifest");
   });
@@ -2396,7 +2396,7 @@ async function shExit(script: string): Promise<number> {
     stdout: "ignore",
     stderr: "pipe",
   });
-  await proc.exited;
+  await Promise.all([proc.exited, new Response(proc.stderr).text()]);
   // exitCode is null when the process was killed by a signal; map that to a
   // nonzero sentinel so failure assertions still hold and success (0) is not
   // falsely reported.
@@ -2493,8 +2493,8 @@ describe("restore fail-closed pipeline (real shell)", () => {
     const sql = "CREATE TABLE t (x int);\nINSERT INTO t VALUES (42);\n";
     const dump = join(dir, "nautilo.sql.gz");
     writeValidGzip(dump, sql);
-    const captured = join(dir, "captured.sql");
-    const capturePsql = `sh -c 'cat >${shellQuoteLit(captured)}'`;
+    const captured = join(dir, "captured space's $.sql");
+    const capturePsql = `sh -c 'cat > "$1"' capture-fixture ${shellQuoteLit(captured)}`;
     const script = failClosedRestoreScript(dump, capturePsql);
     expect(await shExit(script)).toBe(0);
     expect(readFileSync(captured, "utf8")).toBe(sql);
@@ -2527,8 +2527,8 @@ describe("atomic DB restore (real shell)", () => {
     const dumpSql = "CREATE TABLE restored (x int);\n";
     const dump = join(dir, "nautilo.sql.gz");
     writeValidGzip(dump, dumpSql);
-    const captured = join(dir, "stdin-capture.sql");
-    const capturePsql = `sh -c 'cat >${shellQuoteLit(captured)}'`;
+    const captured = join(dir, "stdin space's $.sql");
+    const capturePsql = `sh -c 'cat > "$1"' capture-fixture ${shellQuoteLit(captured)}`;
     const script = atomicDbRestoreScript(dump, capturePsql, NAUTILO_SCHEMA_RESET_SQL);
     expect(await shExit(script)).toBe(0);
     const capturedText = readFileSync(captured, "utf8");

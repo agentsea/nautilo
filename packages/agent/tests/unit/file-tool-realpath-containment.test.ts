@@ -21,6 +21,15 @@ let WORKSPACE_ROOT: string;
 let CURRENT_FOLDER: string;
 let HONEYPOT_DIR: string;
 let HONEYPOT_FILE: string;
+let WORKSPACE_HIJACK_FILE: string;
+let CURRENT_HIJACK_FILE: string;
+
+// Windows directory junctions exercise real file traversal without symlink privileges.
+async function createFileLink(target: string, link: string): Promise<string> {
+  const windows = process.platform === "win32";
+  await fsp.symlink(windows ? path.dirname(target) : target, link, windows ? "junction" : "file");
+  return windows ? path.join(link, path.basename(target)) : link;
+}
 
 const CTX = () => ({
   workspaceRoot: WORKSPACE_ROOT,
@@ -50,7 +59,7 @@ beforeAll(async () => {
   await fsp.writeFile(path.join(CURRENT_FOLDER, "draft.md"), "legit");
 
   // Symlink inside workspace → honeypot file (B-2 attack shape)
-  await fsp.symlink(
+  WORKSPACE_HIJACK_FILE = await createFileLink(
     HONEYPOT_FILE,
     path.join(WORKSPACE_ROOT, "hijack-file.md"),
   );
@@ -58,9 +67,10 @@ beforeAll(async () => {
   await fsp.symlink(
     HONEYPOT_DIR,
     path.join(WORKSPACE_ROOT, "hijack-dir"),
+    process.platform === "win32" ? "junction" : "dir",
   );
   // Symlink inside current folder → honeypot file
-  await fsp.symlink(
+  CURRENT_HIJACK_FILE = await createFileLink(
     HONEYPOT_FILE,
     path.join(CURRENT_FOLDER, "hijack-file.md"),
   );
@@ -97,7 +107,7 @@ describe("assertRealpathContained — workspace zone", () => {
   test("symlink inside workspace pointing OUTSIDE → rejected (B-2 attack)", async () => {
     const result = await assertRealpathContained(
       {
-        resolved: path.join(WORKSPACE_ROOT, "hijack-file.md"),
+        resolved: WORKSPACE_HIJACK_FILE,
         resolvedZone: "workspace",
       },
       CTX(),
@@ -181,7 +191,7 @@ describe("assertRealpathContained — current zone", () => {
   test("symlink inside current pointing OUTSIDE → rejected", async () => {
     const result = await assertRealpathContained(
       {
-        resolved: path.join(CURRENT_FOLDER, "hijack-file.md"),
+        resolved: CURRENT_HIJACK_FILE,
         resolvedZone: "current",
       },
       CTX(),
@@ -236,6 +246,8 @@ describe("assertRealpathContained — D136-P2 dual-root coexistence & cross-root
   let ARTIFACTS_ROOT: string;
   let LEGACY_ARTIFACT_PATH: string; // M088A-shape: <workspaceRoot>/.artifacts/<uuid>
   let NEW_ARTIFACT_PATH: string;    // M088B-shape: <artifactsRoot>/<uuid>
+  let ARTIFACT_LINK: string;
+  let WORKSPACE_LINK: string;
   let prevEnv: string | undefined;
 
   beforeAll(async () => {
@@ -266,11 +278,11 @@ describe("assertRealpathContained — D136-P2 dual-root coexistence & cross-root
 
     // Cross-root symlinks (D136-P2 audit cases). Both directions: a
     // symlink under one root pointing into the other.
-    await fsp.symlink(
+    ARTIFACT_LINK = await createFileLink(
       NEW_ARTIFACT_PATH,
       path.join(WORKSPACE_ROOT, "cross-symlink-into-artifacts"),
     );
-    await fsp.symlink(
+    WORKSPACE_LINK = await createFileLink(
       path.join(WORKSPACE_ROOT, "notes.md"),
       path.join(ARTIFACTS_ROOT, "cross-symlink-into-workspace"),
     );
@@ -287,6 +299,7 @@ describe("assertRealpathContained — D136-P2 dual-root coexistence & cross-root
     // Clean the symlinks; rm-rf above doesn't catch them because they
     // live at the top of WORKSPACE_ROOT / ARTIFACTS_ROOT.
     await fsp.rm(path.join(WORKSPACE_ROOT, "cross-symlink-into-artifacts"), {
+      recursive: true,
       force: true,
     });
   });
@@ -312,7 +325,7 @@ describe("assertRealpathContained — D136-P2 dual-root coexistence & cross-root
     // reject this — tracked as follow-up.
     const result = await assertRealpathContained(
       {
-        resolved: path.join(WORKSPACE_ROOT, "cross-symlink-into-artifacts"),
+        resolved: ARTIFACT_LINK,
         resolvedZone: "workspace",
       },
       CTX(),
@@ -325,7 +338,7 @@ describe("assertRealpathContained — D136-P2 dual-root coexistence & cross-root
     // Symmetric with Test A; pins the dual-root accept-either invariant.
     const result = await assertRealpathContained(
       {
-        resolved: path.join(ARTIFACTS_ROOT, "cross-symlink-into-workspace"),
+        resolved: WORKSPACE_LINK,
         resolvedZone: "workspace",
       },
       CTX(),

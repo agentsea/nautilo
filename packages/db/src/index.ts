@@ -1002,7 +1002,7 @@ export { shareWorkspaceArtifact, listWorkspaceSharesForHuman } from "./queries/w
 export { createEventFeedStorage, listArtifactFeedRecipientUserIds } from "./queries/event-feed";
 
 export { memoryEmbeddingValues, memoryEmbeddingCompatibilityCondition } from "./utils/memory-embedding";
-export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
+export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, physicalPathFromStorageUri, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
 
 export * from "./queries/task-run-message-associations";
 export * from "./queries/protected-task-execution-receipts";

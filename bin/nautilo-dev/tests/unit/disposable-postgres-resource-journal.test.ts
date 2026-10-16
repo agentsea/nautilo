@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { ensurePrivateDirectorySync, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
 import {
   advanceDisposablePostgresStableReadiness,
   expectedDisposablePostgresResourcePaths,
@@ -84,9 +85,8 @@ describe("Disposable PostgreSQL exact-resource journal (Docker-free)", () => {
   });
 
   test("rejects a journal whose recursive target is not bound to the run ID", () => {
-    mkdirSync(dirname(expected.journalPath), { recursive: true, mode: 0o700 });
-    chmodSync(dirname(expected.journalPath), 0o700);
-    writeFileSync(expected.journalPath, JSON.stringify({ ...journal, resources: { ...journal.resources, filesRoot: "/" } }), { mode: 0o600 });
+    ensurePrivateDirectorySync(dirname(expected.journalPath));
+    writePrivateFileExclusiveSync(expected.journalPath, new TextEncoder().encode(JSON.stringify({ ...journal, resources: { ...journal.resources, filesRoot: "/" } })));
     expect(() => readDisposablePostgresResourceJournal(expected.journalPath)).toThrow("not bound to its run ID");
   });
 });

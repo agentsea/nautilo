@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 
 const SRC_ROOT = resolve(import.meta.dir, "..");
 const POLICY_ROOTS = [resolve(SRC_ROOT, "app"), resolve(SRC_ROOT, "providers")];
@@ -18,7 +18,7 @@ function matchingFiles(pattern: RegExp): string[] {
   return POLICY_ROOTS.flatMap(productionSources)
     .filter((path) => !/\.(?:native|web)\.(ts|tsx)$/.test(path))
     .filter((path) => pattern.test(readFileSync(path, "utf8")))
-    .map((path) => relative(SRC_ROOT, path))
+    .map((path) => relative(SRC_ROOT, path).split(sep).join("/"))
     .sort();
 }
 
@@ -49,7 +49,7 @@ test("D515 root navigation consumes the canonical capability context", () => {
 test("D515 platform definitions stay confined to the platform projection files", () => {
   const definitionOwners = productionSources(resolve(SRC_ROOT, "platform"))
     .filter((path) => readFileSync(path, "utf8").includes("definePlatformCapabilities("))
-    .map((path) => relative(SRC_ROOT, path))
+    .map((path) => relative(SRC_ROOT, path).split(sep).join("/"))
     .sort();
   expect(definitionOwners).toEqual([
     "platform/capabilities.native.ts",

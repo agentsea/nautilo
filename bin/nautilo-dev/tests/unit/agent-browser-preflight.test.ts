@@ -14,7 +14,7 @@ function fixture(target = "darwin-arm64") {
   const vendor = join(root, "packages/server/vendor/agent-browser");
   mkdirSync(join(vendor, target), { recursive: true });
   const bytes = Buffer.from("test executable bytes");
-  const binary = join(vendor, target, "agent-browser");
+  const binary = join(vendor, target, target === "win32-x64" ? "agent-browser.exe" : "agent-browser");
   writeFileSync(join(vendor, "manifest.json"), JSON.stringify({ "agent-browser": {
     version: "0.35.2", binaryName: "agent-browser", artifacts: { [target]: { sha256: sha256HexOfBytes(bytes) } },
   } }));
@@ -44,7 +44,8 @@ describe("server browser provisioning", () => {
     expect(spawned).toBe(false);
   });
 
-  test.each(["corrupt", "non-executable"])("repairs a %s cached executable", async (condition) => {
+  const invalidCacheCases = process.platform === "win32" ? ["corrupt"] : ["corrupt", "non-executable"];
+  test.each(invalidCacheCases)("repairs a %s cached executable", async (condition) => {
     const f = fixture(); f.install();
     if (condition === "corrupt") writeFileSync(f.binary, "bad bytes");
     else chmodSync(f.binary, 0o644);
@@ -67,8 +68,17 @@ describe("server browser provisioning", () => {
     expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "darwin", arch: "arm64",
       spawn: () => { throw new Error("spawn failed"); },
     })).toBe(false);
-    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "win32", arch: "x64",
+    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "freebsd", arch: "arm64",
       spawn: () => { throw new Error("must not spawn"); },
     })).toBe(false);
+  });
+
+  test.each(["x64", "arm64"])("Windows %s startup skips the unavailable optional browser driver", async (arch) => {
+    const f = fixture();
+    let spawned = false;
+    expect(await ensureServerAgentBrowserProvisioned(f.root, { platform: "win32", arch,
+      spawn: () => { spawned = true; throw new Error("must not download an unusable driver"); },
+    })).toBe(true);
+    expect(spawned).toBe(false);
   });
 });

@@ -6,7 +6,7 @@ const repoRoot = resolve(import.meta.dir, "../../../..");
 const manifestPath = join(repoRoot, "packages/server/vendor/agent-browser/manifest.json");
 const vendorScriptPath = join(repoRoot, "dev/scripts/vendor-agent-browser.ts");
 
-test("D568 server agent-browser manifest pins official v0.35.2 local and Linux artifacts", () => {
+test("D568 server agent-browser manifest pins official v0.35.2 desktop and Linux artifacts", () => {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
     "agent-browser": {
       version: string;
@@ -44,6 +44,11 @@ test("D568 server agent-browser manifest pins official v0.35.2 local and Linux a
       sha256: "b699f24eebdb7fde91a34a9d697a1b84c3145f54327b60694b46f06b2972ce4d",
       sizeMin: 14_021_032,
     },
+    "win32-x64": {
+      url: "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-win32-x64.exe",
+      sha256: "5ffcad90cda06114730e8b202285c45ec0866d1b8d7876b561329e4a8cfbb126",
+      sizeMin: 13_000_000,
+    },
   });
 });
 
@@ -57,7 +62,7 @@ test("D568 server vendor path is explicit, checksum-verified, and not Desktop ve
   expect(rootPackage.scripts["agent-browser:vendor"]).toBe("bun dev/scripts/vendor-agent-browser.ts");
   expect(script).toContain("fetchAndVerifyVendoredBinary");
   expect(script).toContain('join(repoRoot, "packages", "server", "vendor", "agent-browser")');
-  expect(script).toContain('const PLATFORM_KEYS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]');
+  expect(script).toContain('const PLATFORM_KEYS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"]');
   expect(script).not.toContain("apps/desktop");
   expect(gitignore).toContain("*/agent-browser");
   expect(dockerignore).toContain("packages/server/vendor/agent-browser/");

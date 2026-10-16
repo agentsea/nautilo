@@ -195,5 +195,5 @@ describe("transaction integration", () => {
         actor: "test",
       }),
     ).rejects.toMatchObject({ code: "RATE_LIMIT" });
-  });
+  }, 60_000); // Includes real Windows ACL persistence for all ten transactions.
 });

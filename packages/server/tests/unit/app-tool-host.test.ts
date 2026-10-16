@@ -883,16 +883,17 @@ describe("createAppToolHost live-review document gate", () => {
     }
   });
 
-  test("blocks the exact current file on the selected relay and carries a path-free structured failure", async () => {
+  test.each(["/tmp/project", "C:\\project", "\\\\server\\share\\project"])("blocks the exact current file on the selected relay for path syntax %s", async (currentFolder) => {
     let writeCalls = 0;
+    const canonicalPath = currentFolder.startsWith("/") ? `${currentFolder}/notes.html` : `${currentFolder}\\notes.html`;
     const session = liveMiniAppSessionRegistry.issue({
       targetKind: "currentFile",
       appId: registeredLiveReviewExtension.appId,
       userId: "user-1",
       localTargetId: "opaque-current-target",
       relayId: "relay-desktop",
-      canonicalPath: "/tmp/project/notes.html",
-      currentFolderRoot: "/tmp/project",
+      canonicalPath,
+      currentFolderRoot: currentFolder,
       relativePath: "notes.html",
       documentVersion: { kind: "local_sha", sha256: "a".repeat(64) },
     });
@@ -903,7 +904,7 @@ describe("createAppToolHost live-review document gate", () => {
         canReadWorkspace: true,
         canWriteWorkspace: true,
         localFileExecution: true,
-        allowedRoots: ["/tmp/project"],
+        allowedRoots: [currentFolder],
       }),
       getProtocolVersion: () => 7,
       dispatch: async () => ({ status: "error" as const, error: "unexpected" }),
@@ -921,7 +922,7 @@ describe("createAppToolHost live-review document gate", () => {
         appId: registeredLiveReviewExtension.appId,
         appsRoot: "/apps",
         manifest,
-        context: context(),
+        context: { ...context(), currentFolder },
         relayRegistry,
         documentOps: {
           ...mockDocumentOps(),
@@ -934,7 +935,7 @@ describe("createAppToolHost live-review document gate", () => {
           expect(input).toEqual({
             ownerId: "user-1",
             relayId: "relay-desktop",
-            candidatePath: "/tmp/project/notes.html",
+            candidatePath: canonicalPath,
           });
           return input.candidatePath;
         },
@@ -953,7 +954,7 @@ describe("createAppToolHost live-review document gate", () => {
         code: "use_edit_open_writer",
         message: "This document has an active mini-app editing session. Use that app’s live editing tools in the tab where it is open, or close that editor before editing the saved file.",
       });
-      expect(error.message).not.toContain("/tmp/project");
+      expect(error.message).not.toContain(currentFolder);
       expect(error.message).not.toContain("notes.html");
       expect(writeCalls).toBe(0);
     } finally {

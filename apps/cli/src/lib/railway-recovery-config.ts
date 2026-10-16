@@ -1,9 +1,10 @@
 import { createHmac } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type BigIntStats } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 
 import { parse as parseToml } from "smol-toml";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 /**
  * Request-memory-only recovery authority. Callers must pass this directly to
@@ -62,11 +63,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isExactCurrentUser0600File(status: Awaited<ReturnType<typeof lstat>>): boolean {
+async function isExactCurrentUser0600File(path: string, status: BigIntStats): Promise<boolean> {
   return !status.isSymbolicLink()
     && status.isFile()
-    && (typeof process.getuid !== "function" || status.uid === process.getuid())
-    && (process.platform === "win32" || (Number(status.mode) & 0o777) === 0o600);
+    && (process.platform === "win32"
+      ? await isPrivateFilesystemPathAsync(path)
+      : typeof process.getuid === "function" && status.uid === BigInt(process.getuid())
+        && (status.mode & 0o777n) === 0o600n);
 }
 
 function validExplicitPath(path: string | undefined): path is string {
@@ -79,14 +82,14 @@ function validExplicitPath(path: string | undefined): path is string {
  * file-system errors are deliberately collapsed into stable redacted codes.
  */
 async function readProtectedRecoveryConfig(path: string): Promise<SafeFileRead> {
-  let initial: Awaited<ReturnType<typeof lstat>>;
+  let initial: BigIntStats;
   try {
-    initial = await lstat(path);
+    initial = await lstat(path, { bigint: true });
+    if (!await isExactCurrentUser0600File(path, initial)) {
+      return { outcome: "failure", code: "railway.maintenance.recovery-config-unsafe" };
+    }
   } catch {
     return { outcome: "failure", code: "railway.maintenance.recovery-config-unreadable" };
-  }
-  if (!isExactCurrentUser0600File(initial)) {
-    return { outcome: "failure", code: "railway.maintenance.recovery-config-unsafe" };
   }
   if (initial.size > MAX_RECOVERY_CONFIG_BYTES) {
     return { outcome: "failure", code: "railway.maintenance.recovery-config-too-large" };
@@ -96,8 +99,8 @@ async function readProtectedRecoveryConfig(path: string): Promise<SafeFileRead> 
   try {
     const flags = constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
     handle = await open(path, flags);
-    const opened = await handle.stat();
-    if (!isExactCurrentUser0600File(opened) || opened.dev !== initial.dev || opened.ino !== initial.ino) {
+    const opened = await handle.stat({ bigint: true });
+    if (!await isExactCurrentUser0600File(path, opened) || opened.dev !== initial.dev || opened.ino !== initial.ino) {
       return { outcome: "failure", code: "railway.maintenance.recovery-config-unsafe" };
     }
     if (opened.size > MAX_RECOVERY_CONFIG_BYTES) {

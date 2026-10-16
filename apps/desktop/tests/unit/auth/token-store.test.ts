@@ -3,6 +3,7 @@
  * scriptable SafeStorageLike. No Electron, no real disk.
  */
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   appendAuthBundleClearedAudit,
   defaultLocalAuthAuditLogPath,
@@ -146,7 +147,7 @@ describe("authFilePath — per-server keyed filename", () => {
   test("uses desktop-auth-<scope>.json for default profile", () => {
     const deps = makeDeps({ encryptionAvailable: true });
     expect(authFilePath(deps, ID_A)).toBe(
-      `/nautilo-root/desktop-auth-${SCOPE_A}.json`,
+      join("/nautilo-root", `desktop-auth-${SCOPE_A}.json`),
     );
     expect(SCOPE_A).toBe("f1de9e489ba88cb1");
   });
@@ -154,7 +155,7 @@ describe("authFilePath — per-server keyed filename", () => {
   test("uses desktop-auth-<profile>-<scope>.json when profile is bob", () => {
     const deps = makeDeps({ encryptionAvailable: true, profile: "bob" });
     expect(authFilePath(deps, ID_A)).toBe(
-      `/nautilo-root/desktop-auth-bob-${SCOPE_A}.json`,
+      join("/nautilo-root", `desktop-auth-bob-${SCOPE_A}.json`),
     );
   });
 

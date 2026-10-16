@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yargs from "yargs";
 import { parsePersonalProviderCustody } from "@nautilo/operator-secrets";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 
 import {
   compileRailwayHeldTemplateScaffold,
@@ -337,6 +339,7 @@ let root: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "nautilo-host-cli-"));
+  await secureFilesystemPath(root);
   process.exitCode = 0;
 });
 
@@ -630,7 +633,8 @@ describe("host plan provider discovery", () => {
     const actual = join(root, "actual.env");
     const linked = join(root, "linked.env");
     await writeFile(actual, "TAVILY_API_KEY=redacted\n", { mode: 0o600 });
-    await symlink(actual, linked);
+    await symlink(process.platform === "win32" ? root : actual, linked,
+      process.platform === "win32" ? "junction" : "file");
     expect(await discoverProviderReferences({ NAUTILO_DOTENV_PATH: linked })).toEqual({
       outcome: "failure",
       code: "railway.plan.provider-config-unsafe",
@@ -645,7 +649,7 @@ describe("host plan provider discovery", () => {
 
     const shared = join(root, "shared.env");
     await writeFile(shared, "TAVILY_API_KEY=redacted\n", { mode: 0o644 });
-    await chmod(shared, 0o644);
+    await allowOtherReaders(shared);
     expect(await discoverProviderReferences({ NAUTILO_DOTENV_PATH: shared })).toEqual({
       outcome: "failure",
       code: "railway.plan.provider-config-unsafe",
@@ -1093,7 +1097,7 @@ describe("nautilo host plan", () => {
   test("local config and release failures are redacted and prevent authorization", async () => {
     const unsafe = join(root, "unsafe.env");
     await writeFile(unsafe, "OPENROUTER_API_KEY=super-secret\n", { mode: 0o644 });
-    await chmod(unsafe, 0o644);
+    await allowOtherReaders(unsafe);
     const fixture = harness({ HOME: root, NAUTILO_DOTENV_PATH: unsafe });
     await runHost([
       "host",

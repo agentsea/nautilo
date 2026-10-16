@@ -1,4 +1,5 @@
-import { join } from "node:path";
+// This adapter admits only POSIX hosts; use their path rules on every test host.
+import { posix } from "node:path";
 import {
   CompatibilityCache,
   CodexRpcClient,
@@ -236,7 +237,7 @@ export class ExternalCodexRuntimeManager {
     let emitted = 0;
     for (const entry of this.host.pathEntries) {
       if (emitted >= MAX_CANDIDATES) return;
-      const path = join(entry, `codex${suffix}`);
+      const path = posix.join(entry, `codex${suffix}`);
       if (path.length <= MAX_PATH_LENGTH) {
         emitted += 1;
         yield { path, source: "path" };
@@ -464,12 +465,12 @@ export class ExternalCodexRuntimeManager {
     try {
       process = await this.host.run(evidence.identity, argv, {
         timeoutMs: TIMEOUT,
-        cwd: join(root, "cwd"),
+        cwd: posix.join(root, "cwd"),
         env: {
           ...this.host.probeEnv,
-          HOME: join(root, "home"),
-          USERPROFILE: join(root, "home"),
-          CODEX_HOME: join(root, "home"),
+          HOME: posix.join(root, "home"),
+          USERPROFILE: posix.join(root, "home"),
+          CODEX_HOME: posix.join(root, "home"),
           TMPDIR: root,
           TEMP: root,
           TMP: root,
@@ -560,7 +561,7 @@ export class ExternalCodexRuntimeManager {
           },
           signal ? { timeoutMs: TIMEOUT, signal } : { timeoutMs: TIMEOUT },
         );
-        if (initialized.codexHome !== join(root, "home"))
+        if (initialized.codexHome !== posix.join(root, "home"))
           throw new Error("initialize_home");
         await client.close();
         await process.terminate(100);
@@ -599,17 +600,17 @@ export class ExternalCodexRuntimeManager {
             "app-server",
             "generate-json-schema",
             "--out",
-            join(root, experimental ? "experimental" : "stable"),
+            posix.join(root, experimental ? "experimental" : "stable"),
             ...(experimental ? ["--experimental"] : []),
           ],
           {
             timeoutMs: TIMEOUT,
-            cwd: join(root, "cwd"),
+            cwd: posix.join(root, "cwd"),
             env: {
               ...this.host.probeEnv,
-              HOME: join(root, "home"),
-              USERPROFILE: join(root, "home"),
-              CODEX_HOME: join(root, "home"),
+              HOME: posix.join(root, "home"),
+              USERPROFILE: posix.join(root, "home"),
+              CODEX_HOME: posix.join(root, "home"),
               TMPDIR: root,
               TEMP: root,
               TMP: root,
@@ -647,14 +648,14 @@ export class ExternalCodexRuntimeManager {
           return "CODEX_RUNTIME_IDENTITY_CHANGED";
       }
       const stable = observeProtocolSchemas(
-        await this.host.listSchemaFiles(join(root, "stable")),
+        await this.host.listSchemaFiles(posix.join(root, "stable")),
         undefined,
         evidence.executable,
       );
       if (!evaluateStableCompatibility(stable).compatible)
         return "CODEX_RUNTIME_SCHEMA_INVALID";
       const full = observeProtocolSchemas(
-        await this.host.listSchemaFiles(join(root, "experimental")),
+        await this.host.listSchemaFiles(posix.join(root, "experimental")),
         undefined,
         evidence.executable,
       );

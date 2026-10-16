@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { buildAgentToolBundle, type AgentToolsBuildStatus } from "./app-agent-tool-build";
 import type { MiniAppManifest } from "./app-manifest";
 import {
@@ -99,10 +99,8 @@ function resolveUnderAppRoot(appRoot: string, relPath: string): string | null {
   const normalized = relPath.replace(/\\/g, "/").replace(/^\.\//, "");
   const resolved = resolve(appRoot, normalized);
   const rootResolved = resolve(appRoot);
-  if (resolved !== rootResolved && !resolved.startsWith(`${rootResolved}/`)) {
-    return null;
-  }
-  if (isAbsolute(relPath) && !resolved.startsWith(`${rootResolved}/`)) {
+  const suffix = relative(rootResolved, resolved);
+  if (suffix === ".." || suffix.startsWith(`..${sep}`) || isAbsolute(suffix)) {
     return null;
   }
   return resolved;

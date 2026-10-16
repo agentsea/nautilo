@@ -1,10 +1,14 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, spyOn, test as bunTest } from "bun:test";
 import { chmod, mkdtemp, readdir, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { BolterConnectionOwner, type BolterNativeConnectionState } from "../../electron/bolter-bridge/connection-owner";
 import { createManagedBolterConnectionFactory } from "../../electron/bolter-bridge/managed-connection";
 import * as runtime from "../../electron/bolter-bridge/runtime";
 import type { BolterInstalledRuntime } from "../../electron/bolter-bridge/runtime";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); managed
+// connections rely on POSIX permission bits and the macOS runtime.
+const test = bunTest.skipIf(process.platform === "win32");
 
 const VERSION_A = "a".repeat(40);
 const VERSION_B = "b".repeat(40);

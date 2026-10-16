@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
-import * as path from "node:path";
+// The reviewed OpenSSH plan uses POSIX paths and a POSIX process adapter.
+import { posix as path } from "node:path";
 
 import {
   RELAY_SSH_DEFAULT_TIMEOUT_SECONDS,

@@ -1,5 +1,5 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { isAbsolute, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
@@ -25,6 +25,20 @@ describe("env-writer", () => {
     await writeFileAtomic(path, "hello\n");
     const content = await readFile(path, "utf-8");
     expect(content).toBe("hello\n");
+  });
+
+  test("writeFileAtomic accepts a relative target and publishes beside it", async () => {
+    const local = await mkdtemp(join(process.cwd(), ".cg-ew-relative-"));
+    try {
+      const path = relative(process.cwd(), join(local, "nested", "out.txt"));
+      expect(isAbsolute(path)).toBe(false);
+      await writeFileAtomic(path, "first\n");
+      await writeFileAtomic(path, "second\n");
+      expect(await readFile(join(local, "nested", "out.txt"), "utf-8")).toBe("second\n");
+      expect(await readdir(join(local, "nested"))).toEqual(["out.txt"]);
+    } finally {
+      await rm(local, { recursive: true, force: true });
+    }
   });
 
   test("writeFileAtomic creates secret files with mode 0600", async () => {

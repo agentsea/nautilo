@@ -993,13 +993,14 @@ describe("D420 1.2.2 upgrade strategy matrix", () => {
 
   test("scope drives the upgrade branch: server-only delegates to releaseApply, full runs deploy", async () => {
     const localRoot = mktmp("upgrade-orchestrator-lan-home-");
+    const remoteRoot = "/opt/nautilo";
     const lanManifest = {
       version: 1,
       instanceId: "",
       composeProjectName: "nautilo",
       lifecycle: "compose" as const,
       image: { mode: "registry" as const, reference: "ghcr.io/example/nautilo-server:stable" },
-      remoteRoot: localRoot,
+      remoteRoot,
       https: "off" as const,
       createdAt: "2026-05-19T12:00:00.000Z",
       updatedAt: "2026-05-19T12:30:00.000Z",
@@ -1014,7 +1015,8 @@ describe("D420 1.2.2 upgrade strategy matrix", () => {
       makeDeps({
         exec: lanExec,
         localExec: lanExec,
-        resolveInstanceRootDir: () => localRoot,
+        resolveInstanceRootDir: () => remoteRoot,
+        resolveLocalInstanceRootDir: () => localRoot,
       }),
     );
     const routed: string[] = [];

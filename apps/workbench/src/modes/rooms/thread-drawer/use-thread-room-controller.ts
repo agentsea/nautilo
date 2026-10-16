@@ -323,14 +323,16 @@ export function useThreadRoomController({
     [],
   );
 
+  const registeredAnchorMessageId = state.anchor?.id;
+  const registeredAnchorLogicalMessageKey = state.anchor?.logicalMessageKey;
   useEffect(() => {
     if (!roomId) return;
     return registerThreadRoom({
       roomId,
       ...(state.parentRoomId ? { parentRoomId: state.parentRoomId } : {}),
-      ...(state.anchor ? { anchorMessageId: state.anchor.id } : {}),
-      ...(state.anchor?.logicalMessageKey
-        ? { anchorLogicalMessageKey: state.anchor.logicalMessageKey }
+      ...(registeredAnchorMessageId !== undefined ? { anchorMessageId: registeredAnchorMessageId } : {}),
+      ...(registeredAnchorLogicalMessageKey
+        ? { anchorLogicalMessageKey: registeredAnchorLogicalMessageKey }
         : {}),
       ingestEvent,
       ownsJobId,
@@ -340,8 +342,8 @@ export function useThreadRoomController({
     ownsJobId,
     registerThreadRoom,
     roomId,
-    state.anchor?.logicalMessageKey,
-    state.anchor?.id,
+    registeredAnchorLogicalMessageKey,
+    registeredAnchorMessageId,
     state.parentRoomId,
   ]);
 

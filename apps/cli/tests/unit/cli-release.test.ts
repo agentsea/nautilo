@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rejects } from "node:assert/strict";
 
 import { canonicalCliReleaseBytes, installStableCliRelease, parseAndVerifyCliReleaseManifest, rollbackCliRelease, type CliInstallRoots, type CliReleaseManifestBody, type SignedCliReleaseManifest } from "../../src/lib/cli-release.ts";
 
@@ -52,7 +53,7 @@ function archive(root: string, version: string): Buffer {
   chmodSync(join(bundleRoot, "bin", "nautilo"), 0o755);
   writeFileSync(join(bundleRoot, "artifact-manifest.json"), "{}\n");
   const path = join(root, `${bundle}.tar.gz`);
-  const result = Bun.spawnSync(["tar", "-czf", path, "-C", root, bundle], { stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawnSync(["tar", "-czf", `${bundle}.tar.gz`, bundle], { cwd: root, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error("fixture archive failed");
   return readFileSync(path);
 }
@@ -63,7 +64,7 @@ function installManifest(bytes: Buffer, version: string): SignedCliReleaseManife
 }
 
 describe("CLI install transaction", () => {
-  test("activates verified bytes atomically, preserves one prior version, and rolls back", async () => {
+  test.skipIf(process.platform === "win32")("activates verified POSIX executables atomically, preserves one prior version, and rolls back", async () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-cli-release-test-"));
     const roots: CliInstallRoots = { share: join(root, "share"), bin: join(root, "bin") };
     try {
@@ -76,6 +77,21 @@ describe("CLI install transaction", () => {
       expect(rollbackCliRelease(roots).version).toBe("0.1.0");
       expect(readlinkSync(join(roots.share, "previous"))).toContain("0.1.1");
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test.skipIf(process.platform === "darwin")("rejects an unsupported release host before network or install changes", async () => {
+    const root = mkdtempSync(join(tmpdir(), "nautilo-cli-unsupported-"));
+    const roots: CliInstallRoots = { share: join(root, "share"), bin: join(root, "bin") };
+    const request = spyOn(globalThis, "fetch").mockRejectedValue(new Error("unexpected network request"));
+    try {
+      await rejects(installStableCliRelease({ roots }), /support macOS/);
+      expect(request).not.toHaveBeenCalled();
+      expect(existsSync(roots.share)).toBe(false);
+      expect(existsSync(roots.bin)).toBe(false);
+    } finally {
+      request.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("rejects digest drift without changing an installed version", async () => {

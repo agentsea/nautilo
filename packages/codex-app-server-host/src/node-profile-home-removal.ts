@@ -1,7 +1,8 @@
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { lstat, open, opendir, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve, relative } from "node:path";
+import { containsHostPath } from "./host-paths";
 import { CodexHostError, type ProfileHomeRemovalFilesystem, type ProfileHomeRemovalSpec } from "./contracts";
 
 const MAX_TREE_ENTRIES = 1_024;
@@ -190,6 +191,6 @@ async function readExactMarker(path: string): Promise<unknown> {
     throw invalid();
   } finally { await handle?.close().catch(() => undefined); }
 }
-function within(root: string, path: string): boolean { return root === sep ? path.startsWith(sep) : path.startsWith(`${root}${sep}`); }
+function within(root: string, path: string): boolean { return relative(root, path) !== "" && containsHostPath(root, path); }
 function isMissing(error: unknown): boolean { return typeof error === "object" && error !== null && "code" in error && (error as { readonly code?: unknown }).code === "ENOENT"; }
 function invalid(): CodexHostError { return new CodexHostError("PROFILE_HOME_INVALID", "Profile home deletion revalidation failed"); }

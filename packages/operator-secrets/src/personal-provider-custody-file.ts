@@ -1,6 +1,6 @@
-import { chmod, mkdir, open, readFile, rename, rmdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { readFile, rmdir } from "node:fs/promises";
+import { createPrivateDirectory, publishPrivateFileAtomically, syncDirectory } from "@nautilo/config/private-filesystem";
+import { join, resolve } from "node:path";
 import {
   PERSONAL_PROVIDER_CUSTODY_ENV, PersonalProviderCustodyError,
   createPersonalProviderCustody, parsePersonalProviderCustody,
@@ -28,7 +28,7 @@ async function withCustodyLock<T>(root: string, operation: () => Promise<T>): Pr
   const previous = locks.get(root) ?? Promise.resolve();
   const current = previous.catch(() => undefined).then(async () => {
     const lockPath = join(root, ".personal-provider-custody.lock");
-    try { await mkdir(lockPath, { mode: 0o700 }); } catch {
+    try { await createPrivateDirectory(lockPath); } catch {
       // Never steal an interrupted or another process's lock. The operator can
       // remove a stale lock after proving every writer is stopped.
       throw new PersonalProviderCustodyError("custody_unavailable");
@@ -40,36 +40,38 @@ async function withCustodyLock<T>(root: string, operation: () => Promise<T>): Pr
 }
 
 async function persist(root: string, path: string, before: string, custody: PersonalProviderCustody): Promise<void> {
-  const temp = join(root, `.personal-provider-custody.${randomUUID()}.tmp`);
   const line = `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}`;
   const body = before.split(/\r?\n/).filter((item) => !/^\s*(?:export\s+)?NAUTILO_PERSONAL_PROVIDER_CUSTODY\s*=/.test(item));
   body.push(line, "");
   try {
-    const file = await open(temp, "wx", 0o600);
-    try { await file.writeFile(body.join("\n"), "utf8"); await file.sync(); } finally { await file.close(); }
-    if (await readCanonical(path) !== before) throw new PersonalProviderCustodyError("custody_unavailable");
-    await rename(temp, path);
-    if (process.platform !== "win32") await chmod(path, 0o600);
+    await publishPrivateFileAtomically(path, Buffer.from(body.join("\n")), {
+      beforePublish: async () => {
+        if (await readCanonical(path) !== before) throw new PersonalProviderCustodyError("custody_unavailable");
+      },
+    });
     // Persist the directory entry as well as the file before reporting success.
-    if (process.platform !== "win32") {
-      const directory = await open(root, "r");
-      try { await directory.sync(); } finally { await directory.close(); }
-    }
+    await syncDirectory(root);
   } catch {
     throw new PersonalProviderCustodyError("custody_unavailable");
-  } finally { await unlink(temp).catch(() => undefined); }
+  }
+}
+
+/** Relative locations are anchored once; the private-filesystem primitives require absolute paths. */
+function custodyPaths(instanceRootDir: string, instanceEnvPath: string | undefined): { root: string; path: string } {
+  const root = resolve(instanceRootDir);
+  return { root, path: resolve(instanceEnvPath ?? join(root, "instance.env")) };
 }
 
 /** Source/local canonical custody; deployment controllers own injected environments. */
 export async function ensurePersonalProviderCustodyFile(options: PersonalProviderCustodyFileOptions): Promise<PersonalProviderCustody> {
-  return withCustodyLock(options.instanceRootDir, async () => {
-    const path = options.instanceEnvPath ?? join(options.instanceRootDir, "instance.env");
+  const { root, path } = custodyPaths(options.instanceRootDir, options.instanceEnvPath);
+  return withCustodyLock(root, async () => {
     const before = await readCanonical(path);
     const raw = personalProviderCustodyFromEnvFile(before);
     if (raw !== undefined) return parsePersonalProviderCustody(raw);
     if (await options.hasCredentialRecords()) throw new PersonalProviderCustodyError("custody_missing");
     const custody = createPersonalProviderCustody();
-    await persist(options.instanceRootDir, path, before, custody);
+    await persist(root, path, before, custody);
     return custody;
   });
 }
@@ -86,11 +88,11 @@ export async function resetPersonalProviderCustodyFile(options: {
   readonly confirmReset: true;
   readonly hasLostKeyRecords: (keyId: string) => Promise<boolean>;
 }): Promise<PersonalProviderCustody> {
-  return withCustodyLock(options.instanceRootDir, async () => {
+  const { root, path } = custodyPaths(options.instanceRootDir, options.instanceEnvPath);
+  return withCustodyLock(root, async () => {
     if (options.confirmReset !== true || !options.lostKeyId || !await options.hasLostKeyRecords(options.lostKeyId)) {
       throw new PersonalProviderCustodyError("custody_unavailable");
     }
-    const path = options.instanceEnvPath ?? join(options.instanceRootDir, "instance.env");
     const before = await readCanonical(path);
     const raw = personalProviderCustodyFromEnvFile(before);
     let current: PersonalProviderCustody | undefined;
@@ -104,7 +106,7 @@ export async function resetPersonalProviderCustodyFile(options: {
       throw new PersonalProviderCustodyError("custody_unavailable");
     }
     const replacement = { ...createPersonalProviderCustody(), resetFromKeyId: options.lostKeyId };
-    await persist(options.instanceRootDir, path, before, replacement);
+    await persist(root, path, before, replacement);
     return replacement;
   });
 }

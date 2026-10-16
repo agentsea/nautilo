@@ -3,6 +3,7 @@ import { createAnchorSchemaFixtureFiles } from "@nautilo/codex-app-server/testki
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import { PassThrough, Writable } from "node:stream";
 import { ExternalCodexRuntimeManager as CodexRuntimeManager } from "../../electron/codex-runtime/external-manager.ts";
 import { CodexRuntimeMetadataStore } from "../../electron/codex-runtime/metadata-store.ts";
@@ -574,7 +575,8 @@ describe("CodexRuntimeManager external discovery", () => {
     });
     const serialized = await readFile(file, "utf8");
     expect(serialized).not.toContain("secret-handle");
-    expect((await stat(file)).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(file)).toBe(true);
+    if (process.platform !== "win32") expect((await stat(file)).mode & 0o777).toBe(0o600);
     expect(await store.load()).toMatchObject({
       schemaVersion: 1,
       state: "ready",

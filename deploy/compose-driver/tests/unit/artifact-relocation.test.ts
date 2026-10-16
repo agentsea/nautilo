@@ -89,7 +89,8 @@ describe("physical artifact relocation", () => {
     expect(sql).toContain("DO 'BEGIN"); expect(sql).not.toContain("DO $relocation$");
     expect(sql).not.toContain('SET "revision"'); expect(sql).not.toContain('SET "after_sha256"');
   });
-  test("real unprivileged byte probe hashes nested files and rejects symlinks/outside/config drift without changing bytes", async () => {
+  // The probe executes inside the Linux server, with POSIX paths and O_NOFOLLOW.
+  test.skipIf(process.platform === "win32")("real unprivileged byte probe hashes nested files and rejects symlinks/outside/config drift without changing bytes", async () => {
     const directory = await mkdtemp(join(tmpdir(), "artifact-relocation-"));
     try {
       const root = join(await realpath(directory), "artifacts"); await mkdir(join(root, "history"), { recursive: true });

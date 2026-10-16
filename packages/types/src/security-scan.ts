@@ -704,7 +704,9 @@ export const securityScanRelayRequestSchema = z.strictObject({
   /** Server-authored stale assertion; Desktop remains the path authority. */
   expectedCurrentFolder: z.string()
     .min(1)
-    .refine((value) => value.startsWith("/") && !/\p{Cc}/u.test(value), {
+    .refine((value) => !/\p{Cc}/u.test(value) && (
+      value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\[^\\/]+[\\/][^\\/]+/.test(value)
+    ), {
       message: "expectedCurrentFolder must be an absolute control-free path",
     }),
 });

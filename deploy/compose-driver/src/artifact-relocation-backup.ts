@@ -18,8 +18,8 @@ async function digestFile(path: string): Promise<string> {
   for await (const chunk of createReadStream(path)) hash.update(chunk as Uint8Array);
   return hash.digest("hex");
 }
-async function tar(args: string[], hashOnly = false): Promise<{ text: string; size: number; sha256: string }> {
-  const child = spawn("tar", args, { stdio: ["ignore", "pipe", "pipe"] });
+async function tar(directory: string, args: string[], hashOnly = false): Promise<{ text: string; size: number; sha256: string }> {
+  const child = spawn("tar", args, { cwd: directory, stdio: ["ignore", "pipe", "pipe"] });
   child.stderr.resume();
   const closed = new Promise<number>((resolve, reject) => {
     child.once("error", reject);
@@ -54,11 +54,12 @@ export async function readArtifactRelocationBackup(input: {
   if (createHash("sha256").update(manifestBytes).digest("hex") !== report.provenance.manifestSha256) throw new Error("Artifact relocation backup manifest changed after verification");
   const manifest = backupManifestV2Schema.parse(JSON.parse(manifestBytes.toString("utf8")));
   if (!manifest.contents.artifacts || !manifest.integrity.artifacts) throw new Error("Artifact relocation backup has no verified artifact archive");
-  const archive = join(bundlePath, "artifacts.tgz");
+  const archiveName = "artifacts.tgz";
+  const archive = join(bundlePath, archiveName);
   const expectedHash = manifest.integrity.artifacts.sha256;
   if (await digestFile(archive) !== expectedHash) throw new Error("Artifact relocation original archive differs");
-  const names = (await tar(["-tzf", archive])).text.trimEnd().split("\n");
-  const descriptions = (await tar(["-tvzf", archive])).text.trimEnd().split("\n");
+  const names = (await tar(bundlePath, ["-tzf", archiveName])).text.trimEnd().split(/\r?\n/);
+  const descriptions = (await tar(bundlePath, ["-tvzf", archiveName])).text.trimEnd().split(/\r?\n/);
   if (names.length !== descriptions.length) throw new Error("Artifact relocation archive listing is ambiguous");
   const members = new Map<string, { name: string; regular: boolean }>();
   for (let index = 0; index < names.length; index++) {
@@ -72,7 +73,7 @@ export async function readArtifactRelocationBackup(input: {
     if (!path.startsWith(input.root + "/")) throw new Error("Artifact relocation source selection escaped root");
     const relative = path.slice(input.root.length + 1); const member = members.get(relative);
     if (!member?.regular || /[?*[\]]/.test(member.name)) throw new Error("Artifact relocation needs one exact regular original archive member");
-    const bytes = await tar(["-xOzf", archive, "--", member.name], true);
+    const bytes = await tar(bundlePath, ["-xOzf", archiveName, "--", member.name], true);
     files.push({ path, size: bytes.size, sha256: bytes.sha256 });
   }
   if (await digestFile(archive) !== expectedHash) throw new Error("Artifact relocation original archive changed during verification");

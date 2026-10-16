@@ -203,7 +203,7 @@ function hasFlag(argv: string[], flag: string): boolean {
 
 function normalizeFsPath(p: string): string {
   try {
-    return realpathSync(p);
+    return realpathSync.native(p);
   } catch {
     return p;
   }

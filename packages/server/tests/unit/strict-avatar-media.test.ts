@@ -46,7 +46,7 @@ async function writeUploaded(bytes: Buffer): Promise<string> {
 }
 
 afterAll(async () => {
-  await Promise.all(blobs.map((blobId) => rm(join(getAvatarBlobDir("uploaded"), `${blobId}.png`), { force: true })));
+  await Promise.all(blobs.map((blobId) => rm(join(getAvatarBlobDir("uploaded"), `${blobId}.png`), { force: true, recursive: true })));
 });
 
 describe("strict owned avatar media", () => {
@@ -301,7 +301,8 @@ describe("strict owned avatar media", () => {
     const target = await writeUploaded(bytes);
     const link = `strict-link-${randomUUID()}`;
     blobs.push(link);
-    await symlink(join(getAvatarBlobDir("uploaded"), `${target}.png`), join(getAvatarBlobDir("uploaded"), `${link}.png`));
+    await symlink(process.platform === "win32" ? getAvatarBlobDir("uploaded") : join(getAvatarBlobDir("uploaded"), `${target}.png`),
+      join(getAvatarBlobDir("uploaded"), `${link}.png`), process.platform === "win32" ? "junction" : "file");
     const linked = await readStrictOwnedAvatarMedia({
       kind: "uploaded", entryId: randomUUID(), blobId: link, variant: "full", mediaByteSize: bytes.length, mediaSha256: digest(bytes), mediaMimeType: "image/png",
     });

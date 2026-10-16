@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test as bunTest } from "bun:test";
 import { createHash } from "node:crypto";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -9,6 +9,10 @@ import {
   provisionLatestBolterRuntime,
   type BolterInstalledRuntime,
 } from "../../electron/bolter-bridge/runtime";
+
+// Bolter is unsupported on Windows (the CLI contract refuses win32); runtime
+// provisioning relies on POSIX permission bits.
+const test = bunTest.skipIf(process.platform === "win32");
 
 const currentVersion = "0c6d0991397a532bfb5ab97096a00c6cc9710f1d";
 const newerVersion = "1".repeat(40);

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 import type { ExecFn } from "../../src/ComposeDriver.ts";
 import { createRemoteFs } from "../../src/remote-fs.ts";
@@ -51,7 +51,7 @@ function makeFs() {
 describe("createRemoteFs", () => {
   test("writeFile lands under stagingRoot with parent dirs", async () => {
     const fs = makeFs();
-    const abs = join(remoteRoot, "instance.env");
+    const abs = posix.join(remoteRoot, "instance.env");
     await fs.writeFile(abs, "KEY=val\n");
     const staged = join(stagingRoot, "instance.env");
     expect(existsSync(staged)).toBe(true);
@@ -61,7 +61,7 @@ describe("createRemoteFs", () => {
   test("toLocalStagingPath maps remote-root paths to local staging", () => {
     const fs = makeFs();
     expect(fs.toLocalStagingPath(remoteRoot)).toBe(stagingRoot);
-    expect(fs.toLocalStagingPath(join(remoteRoot, "deploy.compose.env"))).toBe(
+    expect(fs.toLocalStagingPath(posix.join(remoteRoot, "deploy.compose.env"))).toBe(
       join(stagingRoot, "deploy.compose.env"),
     );
     expect(fs.toLocalStagingPath("/etc/foo")).toBe(join(stagingRoot, "__abs__", "etc/foo"));
@@ -69,14 +69,14 @@ describe("createRemoteFs", () => {
 
   test("mkdir creates staged directory", async () => {
     const fs = makeFs();
-    const abs = join(remoteRoot, "data", "subdir");
+    const abs = posix.join(remoteRoot, "data", "subdir");
     await fs.mkdir(abs, { recursive: true });
     expect(existsSync(join(stagingRoot, "data", "subdir"))).toBe(true);
   });
 
   test("readFile reads staged file when present", async () => {
     const fs = makeFs();
-    const abs = join(remoteRoot, "cached.txt");
+    const abs = posix.join(remoteRoot, "cached.txt");
     const staged = join(stagingRoot, "cached.txt");
     await writeFile(staged, "cached", "utf8");
     const data = await fs.readFile(abs, "utf8");
@@ -86,7 +86,7 @@ describe("createRemoteFs", () => {
 
   test("readFile falls back to ssh cat when not staged", async () => {
     makeFs();
-    const abs = join(remoteRoot, "instance.env");
+    const abs = posix.join(remoteRoot, "instance.env");
     calls.length = 0;
     exec = async (cmd, args) => {
       calls.push({ cmd, args });
@@ -108,7 +108,7 @@ describe("createRemoteFs", () => {
 
   test("rm calls ssh rm -rf and does not touch staging", async () => {
     const fs = makeFs();
-    const abs = join(remoteRoot, "to-delete");
+    const abs = posix.join(remoteRoot, "to-delete");
     const staged = join(stagingRoot, "to-delete");
     await writeFile(staged, "x", "utf8");
     await fs.rm(abs);
@@ -120,7 +120,7 @@ describe("createRemoteFs", () => {
 
   test("writeFileAtomically writes remotely then excludes the path from rsync", async () => {
     const fs = makeFs();
-    const manifest = join(remoteRoot, "deployment-manifest.json");
+    const manifest = posix.join(remoteRoot, "deployment-manifest.json");
     await fs.writeFileAtomically(manifest, '{"version":2}\n', 0o600);
 
     expect(calls).toHaveLength(1);

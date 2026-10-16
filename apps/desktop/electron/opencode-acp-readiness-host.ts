@@ -39,6 +39,8 @@ export interface OpenCodeAcpNativeProbe {
 export function createElectronOpenCodeAcpNativeProbe(): OpenCodeAcpNativeProbe {
   return {
     async run(input): Promise<OpenCodeAcpNativeProbeResult> {
+      // Readiness probes need the same process-tree containment as execution.
+      if (process.platform === "win32") return { state: "unavailable" };
       if (input.executableBasename !== "opencode" || input.args !== OPENCODE_ACP_VERSION_ARGS
         || input.timeoutMs !== 3_000 || input.maxOutputBytes !== 4_096 || input.shell !== false) {
         return { state: "unavailable" };
@@ -154,6 +156,7 @@ export async function resolveReviewedOpenCodeLaunchAdmission(): Promise<Readonly
   executable: string;
   pathEntries: readonly string[];
 }> | null> {
+  if (process.platform === "win32") return null;
   const resolved = await resolveOpenCodeExecutable();
   if (!resolved) return null;
   const result = await runVersionProbe(

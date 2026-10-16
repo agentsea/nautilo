@@ -1,9 +1,8 @@
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, readdir, rename, rm } from "node:fs/promises";
-import { dirname, resolve, sep } from "node:path";
+import { lstat, open, readdir } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, publishPrivateFileAtomically } from "@nautilo/config/private-filesystem";
 
-const OWNER_DIRECTORY_MODE = 0o700;
-const OWNER_FILE_MODE = 0o600;
 const MAX_CHECKPOINT_BYTES = 1024 * 1024;
 
 function missing(error: unknown): boolean {
@@ -13,17 +12,41 @@ function missing(error: unknown): boolean {
 function within(root: string, path: string): boolean {
   const canonicalRoot = resolve(root);
   const canonicalPath = resolve(path);
-  return canonicalPath.startsWith(`${canonicalRoot}${sep}`);
+  const descendant = relative(canonicalRoot, canonicalPath);
+  return descendant !== "" && descendant !== ".." && !descendant.startsWith(`..${sep}`) && !isAbsolute(descendant);
 }
 
 async function ensureDirectory(root: string, directory: string): Promise<void> {
-  if (!within(root, directory) && resolve(root) !== resolve(directory)) throw new Error("Unsafe Railway state path");
-  await mkdir(directory, { recursive: true, mode: OWNER_DIRECTORY_MODE });
+  if (!within(root, directory) && relative(resolve(root), resolve(directory)) !== "") throw new Error("Unsafe Railway state path");
+  await assertDirectoryChain(root, directory, true);
+  try { await lstat(directory); }
+  catch (error) {
+    if (!missing(error)) throw error;
+    await ensurePrivateDirectory(directory);
+  }
+  await assertDirectoryChain(root, directory, false);
   const status = await lstat(directory);
   if (status.isSymbolicLink() || !status.isDirectory()
-    || (typeof process.getuid === "function" && status.uid !== process.getuid())
-    || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) {
+    || !await isPrivateFilesystemPathAsync(directory)) {
     throw new Error("Unsafe Railway state path");
+  }
+}
+
+async function assertDirectoryChain(root: string, directory: string, allowMissing: boolean): Promise<void> {
+  const boundary = resolve(root);
+  let current = resolve(directory);
+  if (!within(boundary, current) && relative(boundary, current) !== "") throw new Error("Unsafe Railway state path");
+  for (;;) {
+    try {
+      const entry = await lstat(current);
+      if (entry.isSymbolicLink() || !entry.isDirectory()) throw new Error("Unsafe Railway state path");
+    } catch (error) {
+      if (!allowMissing || !missing(error)) throw new Error("Unsafe Railway state path");
+    }
+    if (relative(boundary, current) === "") return;
+    const parent = dirname(current);
+    if (parent === current) throw new Error("Unsafe Railway state path");
+    current = parent;
   }
 }
 
@@ -47,19 +70,21 @@ export class RailwayLaunchStateStore<T> {
   async read(): Promise<T | undefined> {
     let status;
     try {
-      status = await lstat(this.#path);
+      status = await lstat(this.#path, { bigint: true });
     } catch (error) {
       if (missing(error)) return undefined;
       throw new Error("Railway state read failed");
     }
+    await assertDirectoryChain(this.#root, dirname(this.#path), false);
     if (status.isSymbolicLink() || !status.isFile() || status.size > MAX_CHECKPOINT_BYTES
-      || (typeof process.getuid === "function" && status.uid !== process.getuid())
-      || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) {
+      || !await isPrivateFilesystemPathAsync(this.#path)) {
       throw new Error("Unsafe Railway state path");
     }
     const flags = process.platform === "win32" ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW;
     const handle = await open(this.#path, flags);
     try {
+      const opened = await handle.stat({ bigint: true });
+      if (!opened.isFile() || opened.dev !== status.dev || opened.ino !== status.ino) throw new Error("Railway state read failed");
       const body = await handle.readFile();
       if (body.byteLength > MAX_CHECKPOINT_BYTES) throw new Error("Railway state read failed");
       return this.#validate(JSON.parse(body.toString("utf8")) as unknown);
@@ -76,22 +101,9 @@ export class RailwayLaunchStateStore<T> {
     if (Buffer.byteLength(body, "utf8") > MAX_CHECKPOINT_BYTES) throw new Error("Railway state write failed");
     const directory = dirname(this.#path);
     await ensureDirectory(this.#root, directory);
-    const temporary = `${this.#path}.tmp-${process.pid}-${Date.now()}`;
     try {
-      const flags = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
-        | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW);
-      const handle = await open(temporary, flags, OWNER_FILE_MODE);
-      try {
-        await handle.writeFile(body, "utf8");
-        await handle.chmod(OWNER_FILE_MODE);
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await rename(temporary, this.#path);
-      await chmod(this.#path, OWNER_FILE_MODE);
+      await publishPrivateFileAtomically(this.#path, Buffer.from(body, "utf8"));
     } catch {
-      await rm(temporary, { force: true }).catch(() => undefined);
       throw new Error("Railway state write failed");
     }
   }
@@ -109,9 +121,9 @@ export async function discoverRailwayLaunchStates<T>(input: {
   let entries;
   try {
     const status = await lstat(launches);
+    await assertDirectoryChain(input.root, launches, false);
     if (status.isSymbolicLink() || !status.isDirectory()
-      || (typeof process.getuid === "function" && status.uid !== process.getuid())
-      || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) throw new Error("Railway state discovery failed");
+      || !await isPrivateFilesystemPathAsync(launches)) throw new Error("Railway state discovery failed");
     entries = await readdir(launches, { withFileTypes: true });
   } catch (error) {
     if (missing(error)) return [];
@@ -121,10 +133,10 @@ export async function discoverRailwayLaunchStates<T>(input: {
   const result: { launchId: string; state: T }[] = [];
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !SAFE_LAUNCH_DIRECTORY.test(entry.name)) throw new Error("Railway state discovery failed");
-    const directory = await lstat(resolve(launches, entry.name));
+    const directoryPath = resolve(launches, entry.name);
+    const directory = await lstat(directoryPath);
     if (directory.isSymbolicLink() || !directory.isDirectory()
-      || (typeof process.getuid === "function" && directory.uid !== process.getuid())
-      || (process.platform !== "win32" && (directory.mode & 0o077) !== 0)) throw new Error("Railway state discovery failed");
+      || !await isPrivateFilesystemPathAsync(directoryPath)) throw new Error("Railway state discovery failed");
     const store = new RailwayLaunchStateStore({ root: input.root, path: resolve(launches, entry.name, "state.json"), validate: input.validate });
     const state = await store.read();
     if (state !== undefined) {

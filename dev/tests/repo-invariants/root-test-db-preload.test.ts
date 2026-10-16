@@ -10,16 +10,18 @@ const repoRoot = resolve(import.meta.dir, "../../..");
 
 describe("repository-root test DB preload", () => {
   test("root and DB-owning packages preload the canonical guard in test scope only", () => {
-    expect(readFileSync(resolve(repoRoot, "bunfig.toml"), "utf8")).toBe(
-      '[test]\npreload = ["./packages/db/tests/test-env-preload.ts"]\n',
-    );
+    expect(Bun.TOML.parse(readFileSync(resolve(repoRoot, "bunfig.toml"), "utf8"))).toEqual({
+      test: { preload: ["./dev/tests/test-lifecycle-preload.ts", "./packages/db/tests/test-env-preload.ts"] },
+    });
 
     for (const packageName of ["agent", "db", "runtime", "server", "trust"]) {
       const bunfig = readFileSync(
         resolve(repoRoot, "packages", packageName, "bunfig.toml"),
         "utf8",
       );
-      expect(bunfig).toBe('[test]\npreload = ["./tests/test-env-preload.ts"]\n');
+      expect(Bun.TOML.parse(bunfig)).toEqual({
+        test: { preload: ["../../dev/tests/test-lifecycle-preload.ts", "./tests/test-env-preload.ts"] },
+      });
     }
 
     for (const packageName of ["agent", "runtime", "server", "trust"]) {

@@ -12,7 +12,7 @@ const migrationTag = "0142_dark_dreadnoughts";
 const migration = readFileSync(
   resolve(migrations, `${migrationTag}.sql`),
   "utf8",
-);
+).replaceAll("\r\n", "\n");
 const journal = JSON.parse(
   readFileSync(resolve(migrations, "meta/_journal.json"), "utf8"),
 ) as {

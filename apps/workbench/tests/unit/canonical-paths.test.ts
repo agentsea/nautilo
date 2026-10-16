@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 const WORKBENCH_ROOT = join(import.meta.dirname, "../..");
@@ -24,7 +24,7 @@ function walkSourceFiles(dir: string): string[] {
 }
 
 function rel(path: string): string {
-  return relative(WORKBENCH_ROOT, path);
+  return relative(WORKBENCH_ROOT, path).split(sep).join("/");
 }
 
 function filesMatching(pattern: RegExp): string[] {

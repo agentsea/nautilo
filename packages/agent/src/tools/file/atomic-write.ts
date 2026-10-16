@@ -29,6 +29,7 @@
  */
 
 import writeFileAtomic from "write-file-atomic";
+import { secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
 import { randomUUID } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
@@ -98,6 +99,8 @@ export async function writeAtomic(
   // `encoding` field is ignored by the library.
   await writeFileAtomic(absPath, data, {
     mode,
+    // The library invokes this after open and before writing any bytes.
+    tmpfileCreated: process.platform === "win32" && (mode & 0o077) === 0 ? secureFilesystemPathSync : undefined,
     encoding: options.encoding ?? "utf8",
     // chown is deliberately NOT passed. With `mode` explicit, the
     // library skips the explicit-chown branch and either inherits uid/

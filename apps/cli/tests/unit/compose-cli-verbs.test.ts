@@ -1,7 +1,9 @@
 import { artifactsRelocateModule } from "../../src/commands/artifacts-relocate.ts";
 import { relocationPlanSha256, type ArtifactRelocationPlan } from "@nautilo/compose-driver";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import yargs from "yargs";
@@ -386,6 +388,7 @@ ${forceLine}`, { mode: 0o600 });
   test("omitted force-password policy reaches direct seed with a permanent owner password", async () => {
     const configRoot = trackTmp();
     const resultRoot = trackTmp();
+    await secureFilesystemPath(resultRoot);
     const configPath = join(configRoot, "owner.toml");
     const resultPath = join(resultRoot, "owner-result.json");
     writeFileSync(configPath, `schemaVersion = 1
@@ -856,7 +859,7 @@ user = "root"
     fake.relocateArtifacts = async (_profile, options) => { operations.push(options); return "sourceRoot" in options ? plan : { outcome: "applied", planSha256: options.planSha256 }; };
     const planPath = join(home, "relocation.json");
     await runHandler(artifactsRelocateModule, { profile: "local-default", mode: "plan", plan: planPath, "from-root": "/old/artifacts", backup: "/backup" });
-    expect(process.exitCode).toBe(0); expect(statSync(planPath).mode & 0o777).toBe(0o600);
+    expect(process.exitCode).toBe(0); expect(await isPrivateFilesystemPathAsync(planPath)).toBe(true);
     expect(JSON.parse(readFileSync(planPath, "utf8"))).toEqual(plan);
     await runHandler(artifactsRelocateModule, { profile: "local-default", mode: "plan", plan: planPath, "from-root": "/old/artifacts", backup: "/backup" });
     expect(process.exitCode).toBe(2); expect(JSON.parse(readFileSync(planPath, "utf8"))).toEqual(plan);
@@ -866,7 +869,7 @@ user = "root"
     const sha256 = relocationPlanSha256(plan);
     await runHandler(artifactsRelocateModule, { profile: "local-default", mode: "apply", plan: planPath, sha256 });
     expect(process.exitCode).toBe(0); expect(operations.at(-1)).toEqual({ plan, planSha256: sha256, rollback: false });
-    chmodSync(planPath, 0o644);
+    await allowOtherReaders(planPath);
     await runHandler(artifactsRelocateModule, { profile: "local-default", mode: "apply", plan: planPath, sha256 });
     expect(process.exitCode).toBe(2); expect(operations).toHaveLength(count + 1);
   });

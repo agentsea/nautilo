@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import {
   probeDesktopFfmpeg,
@@ -130,7 +130,7 @@ describe("probeDesktopFfmpeg", () => {
       isPackaged: true,
       environment: {},
       verifyFile: async (file, sha) => {
-        if (file.endsWith("/bin/ffmpeg")) expect(sha).toBe(PINNED_SHA256);
+        if (file.endsWith(join("bin", "ffmpeg"))) expect(sha).toBe(PINNED_SHA256);
         return true;
       },
     });
@@ -153,7 +153,7 @@ describe("probeDesktopFfmpeg", () => {
       isPackaged: false,
       environment: {},
       verifyFile: async (file, sha) => {
-        if (file.endsWith("/bin/ffmpeg")) expect(sha).toBe(PINNED_SHA256);
+        if (file.endsWith(join("bin", "ffmpeg"))) expect(sha).toBe(PINNED_SHA256);
         return true;
       },
     });
@@ -166,7 +166,7 @@ describe("probeDesktopFfmpeg", () => {
     mkdirSync(join(binary, ".."), { recursive: true }); writeFileSync(binary, "fixture");
     writeRuntimeManifest(join(resourcesPath, "tools-ffmpeg", "manifest.json"), "darwin-arm64");
     const result = await probeDesktopFfmpeg({ isPackaged: true, resourcesPath, platformKey: "darwin-arm64", environment: {},
-      verifyFile: async file => !file.includes("/lib/"),
+      verifyFile: async file => !file.includes(`${sep}lib${sep}`),
     });
     expect(result).toMatchObject({ ok: false, code: "FFMPEG_UNAVAILABLE" });
   });

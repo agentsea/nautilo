@@ -14,6 +14,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { ensurePrivateStoreDirectorySync } from "./private-store-directory";
 import { isServerFingerprint } from "./config-schema";
 import { planServerTarget } from "./server-target";
 
@@ -478,7 +479,10 @@ export function createPendingConnectionStore(options: PendingConnectionStoreOpti
   if (!path.isAbsolute(options.filePath) || options.filePath.includes("\0")) {
     throw new Error("pending connection path must be absolute");
   }
-  const fileSystem = options.fs ?? fs;
+  const fileSystem: PendingConnectionFs = options.fs ?? {
+    ...fs,
+    mkdirSync: ensurePrivateStoreDirectorySync,
+  };
   const temporaryId = options.temporaryId ?? randomUUID;
 
   const sameAcceptedCandidate = (next: PendingConnection): boolean => {

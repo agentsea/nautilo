@@ -85,11 +85,11 @@ describe("app-source-store path resolver", () => {
     const outside = join(tmpdir(), `nautilo-outside-${Date.now()}`);
     await mkdir(outside, { recursive: true });
     await writeFile(join(outside, "secret.txt"), "secret\n");
-    await symlink(outside, join(appsRoot, "test-canvas", "escape-link"));
+    await symlink(outside, join(appsRoot, "test-canvas", "escape-link"), process.platform === "win32" ? "junction" : "dir");
     try {
-      expect(
-        resolveAppSourcePath(appsRoot, "test-canvas", "escape-link/secret.txt"),
-      ).rejects.toBeInstanceOf(AppSourcePathError);
+      const rejected = await resolveAppSourcePath(appsRoot, "test-canvas", "escape-link/secret.txt")
+        .catch((error: unknown) => error);
+      expect(rejected).toBeInstanceOf(AppSourcePathError);
     } finally {
       await rm(outside, { recursive: true, force: true });
     }

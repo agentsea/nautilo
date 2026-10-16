@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
+import { secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -15,7 +16,7 @@ const FILE_MODE = 0o600;
 export interface DesktopFilesystemGrantFileSystem {
   mkdir(path: string, options: { recursive: true; mode: number }): Promise<unknown>;
   readFile(path: string, encoding: "utf8"): Promise<string>;
-  writeFile(path: string, data: string, options: { mode: number }): Promise<void>;
+  writeFile(path: string, data: string, options: { mode: number; flag: "wx" }): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   chmod(path: string, mode: number): Promise<void>;
   rm(path: string, options: { force: true }): Promise<void>;
@@ -41,12 +42,18 @@ function isNotFound(error: unknown): boolean {
   return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT";
 }
 
+const nativeFileSystem: DesktopFilesystemGrantFileSystem = {
+  ...nodeFs,
+  chmod: (path) => secureFilesystemPath(nodePath.resolve(path)),
+  writeFile: (path, data) => writePrivateFileExclusive(nodePath.resolve(path), new TextEncoder().encode(data)),
+};
+
 export function createDesktopFilesystemGrantStorage(
   filePath: string,
   legacyFilePath: string | undefined,
   dependencies: DesktopFilesystemGrantStorageDependencies = {},
 ): DesktopFilesystemGrantStorage {
-  const fs = dependencies.fs ?? nodeFs;
+  const fs = dependencies.fs ?? nativeFileSystem;
   const dirname = dependencies.dirname ?? ((targetPath: string) => nodePath.dirname(targetPath));
   const basename = dependencies.basename ?? ((targetPath: string) => nodePath.basename(targetPath));
   const randomHex = dependencies.randomHex ?? (() => randomBytes(12).toString("hex"));
@@ -85,14 +92,16 @@ export function createDesktopFilesystemGrantStorage(
         parentDir,
         `.${basename(filePath)}.${randomHex()}.tmp`,
       );
+      // The exclusive private write already fixes the file's mode or ACL, and
+      // rename carries it to the published name; no later chmod is needed.
+      let created = false;
       try {
-        await fs.writeFile(temporaryPath, bytes, { mode: FILE_MODE });
-        await fs.chmod(temporaryPath, FILE_MODE);
+        await fs.writeFile(temporaryPath, bytes, { mode: FILE_MODE, flag: "wx" });
+        created = true;
         await fs.rename(temporaryPath, filePath);
-        await fs.chmod(filePath, FILE_MODE);
       } catch (error) {
         try {
-          await fs.rm(temporaryPath, { force: true });
+          if (created) await fs.rm(temporaryPath, { force: true });
         } catch {
           // Original bytes remain at filePath; best-effort temporary cleanup only.
         }

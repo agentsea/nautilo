@@ -7,7 +7,7 @@ import type {
 
 function folderIdentity(workspacePath: string): WorkstationShellFolderIdentity | null {
   try {
-    const canonicalRoot = fs.realpathSync(workspacePath);
+    const canonicalRoot = fs.realpathSync.native(workspacePath);
     const stat = fs.statSync(canonicalRoot);
     if (!stat.isDirectory()) return null;
     return {

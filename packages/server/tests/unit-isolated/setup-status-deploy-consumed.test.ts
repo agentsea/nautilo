@@ -90,6 +90,8 @@ describe("GET /api/setup/status deployConfigConsumedAt (M091)", () => {
   let home: string;
   let root: string;
   const prevHome = process.env["HOME"];
+  const prevUserProfile = process.env["USERPROFILE"];
+  const prevNautiloHome = process.env["NAUTILO_HOME"];
   const prevInstance = process.env["NAUTILO_INSTANCE_ID"];
   const prevOpenai = process.env["OPENAI_API_KEY"];
   const prevPublicBaseUrl = process.env["NAUTILO_PUBLIC_BASE_URL"];
@@ -103,6 +105,7 @@ describe("GET /api/setup/status deployConfigConsumedAt (M091)", () => {
     root = join(home, ".nautilo");
     mkdirSync(root, { recursive: true });
     process.env["HOME"] = home;
+    process.env["USERPROFILE"] = home;
     delete process.env["NAUTILO_HOME"];
     delete process.env["NAUTILO_INSTANCE_ID"];
     delete process.env["NAUTILO_PUBLIC_BASE_URL"];
@@ -117,6 +120,10 @@ describe("GET /api/setup/status deployConfigConsumedAt (M091)", () => {
     __resetResolvedInstanceForTests();
     if (prevHome !== undefined) process.env["HOME"] = prevHome;
     else delete process.env["HOME"];
+    if (prevUserProfile !== undefined) process.env["USERPROFILE"] = prevUserProfile;
+    else delete process.env["USERPROFILE"];
+    if (prevNautiloHome !== undefined) process.env["NAUTILO_HOME"] = prevNautiloHome;
+    else delete process.env["NAUTILO_HOME"];
     if (prevInstance !== undefined) process.env["NAUTILO_INSTANCE_ID"] = prevInstance;
     else delete process.env["NAUTILO_INSTANCE_ID"];
     if (prevOpenai !== undefined) process.env["OPENAI_API_KEY"] = prevOpenai;

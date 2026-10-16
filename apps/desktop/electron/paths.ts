@@ -72,6 +72,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import { app } from "electron";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 // ===========================================================================
 // File basenames (module-internal — promote to export when consumed elsewhere)
@@ -168,12 +169,13 @@ function d514SmokeOperatorRoot(): string | null {
   if (!candidate || !path.isAbsolute(candidate) || candidate.includes("\0")) {
     return null;
   }
-  // The D514 harness creates this exact mkdtemp prefix and locks it to 0700.
+  // The harness creates this exact prefix with private native permissions.
   // Requiring both properties makes an incidental environment setting inert.
   if (!path.basename(candidate).startsWith("nautilo-d514-smoke-")) return null;
   try {
     const stat = fs.lstatSync(candidate);
-    if (stat.isSymbolicLink() || !stat.isDirectory() || (stat.mode & 0o777) !== 0o700) {
+    if (stat.isSymbolicLink() || !stat.isDirectory() ||
+      (process.platform === "win32" ? !isPrivateFilesystemPath(candidate) : (stat.mode & 0o777) !== 0o700)) {
       return null;
     }
   } catch {

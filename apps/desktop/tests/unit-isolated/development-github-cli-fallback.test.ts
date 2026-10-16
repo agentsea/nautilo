@@ -13,6 +13,10 @@ const originalPath = process.env["PATH"];
 const userBin = realpathSync(mkdtempSync(join(tmpdir(), "development-user-bin-")));
 process.env["PATH"] = [userBin, originalPath].filter(Boolean).join(path.delimiter);
 
+// The Development environment runs POSIX login shells and `#!/bin/sh`
+// executables through the POSIX process adapter; Windows refuses it.
+const posixDevelopmentTest = process.platform === "win32" ? test.skip : test;
+
 let makeDispatchHandler: typeof import("../../electron/relay").makeDispatchHandler;
 beforeAll(async () => { ({ makeDispatchHandler } = await import("../../electron/relay")); });
 
@@ -93,7 +97,7 @@ function fixture(kind: "foreground" | "delegated", bundled: boolean) {
 }
 
 for (const kind of ["foreground", "delegated"] as const) {
-  test(`${kind} Development derives the same native PATH fallback and ignores wire sandbox authority`, async () => {
+  posixDevelopmentTest(`${kind} Development derives the same native PATH fallback and ignores wire sandbox authority`, async () => {
     const f = fixture(kind, true);
     expect((await f.handler(f.request)).status).toBe("ok");
     const captured = f.captured(); expect(captured).toBeDefined();
@@ -106,7 +110,7 @@ for (const kind of ["foreground", "delegated"] as const) {
   });
 }
 
-test("Development still runs when no verified bundled GitHub CLI fallback is available", async () => {
+posixDevelopmentTest("Development still runs when no verified bundled GitHub CLI fallback is available", async () => {
   const f = fixture("foreground", false);
   expect((await f.handler(f.request)).status).toBe("ok");
   expect(f.captured()?.environment?.["PATH"]?.split(path.delimiter)).toContain(userBin);

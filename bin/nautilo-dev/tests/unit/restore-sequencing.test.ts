@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { clearHomeForRestore, extractHomeArchivePreservingProtection } from "../../src/commands/restore";
+import { archiveNautiloHome } from "../../src/commands/save";
 
 /**
  * Regression test for the restore.ts sequencing bug that was discovered
@@ -22,6 +23,27 @@ import { clearHomeForRestore, extractHomeArchivePreservingProtection } from "../
  * would require a Postgres container.
  */
 describe("restore.ts — sequencing guard (regression)", () => {
+  test("archives native home paths while preserving secret and runtime exclusions", () => {
+    const root = mkdtempSync(join(tmpdir(), "nautilo-home-archive-"));
+    try {
+      const source = join(root, "source home");
+      const target = join(root, "target home");
+      mkdirSync(source);
+      mkdirSync(target);
+      writeFileSync(join(source, "payload"), "saved content");
+      writeFileSync(join(source, "instance.env"), "excluded secret");
+      writeFileSync(join(source, "server.pid"), "excluded runtime state");
+      const archive = join(root, "home archive.tgz");
+      archiveNautiloHome(source, archive);
+      extractHomeArchivePreservingProtection(archive, target);
+      expect(readFileSync(join(target, "payload"), "utf8")).toBe("saved content");
+      expect(existsSync(join(target, "instance.env"))).toBe(false);
+      expect(existsSync(join(target, "server.pid"))).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   const src = readFileSync(
     join(import.meta.dir, "..", "..", "src", "commands", "restore.ts"),
     "utf8",
@@ -75,7 +97,7 @@ describe("restore.ts — sequencing guard (regression)", () => {
       writeFileSync(join(archiveRoot, "profiles", "kept.toml"), 'retention = "disposable"\n');
       writeFileSync(join(archiveRoot, "restored"), "payload\n");
       const archive = join(home, "source.tgz");
-      expect(spawnSync("tar", ["czf", archive, "-C", archiveRoot, "."]).status).toBe(0);
+      expect(spawnSync("tar", ["czf", "source.tgz", "-C", archiveRoot, "."], { cwd: home }).status).toBe(0);
       extractHomeArchivePreservingProtection(archive, home);
       expect(statSync(marker).ino).toBe(inode);
       expect(readFileSync(marker, "utf8")).toBe("protected-by=operator\n");
@@ -92,7 +114,8 @@ describe("restore.ts — sequencing guard (regression)", () => {
     try {
       const outside = join(home, "outside");
       writeFileSync(outside, "protected-by=operator\n");
-      symlinkSync(outside, join(home, ".protected-instance"));
+      symlinkSync(process.platform === "win32" ? home : outside, join(home, ".protected-instance"),
+        process.platform === "win32" ? "junction" : "file");
       mkdirSync(join(home, "kept"));
       let error: unknown;
       try {

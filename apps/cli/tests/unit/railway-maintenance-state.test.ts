@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import * as filesystem from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import { createMaintenanceReceipt, parseMaintenanceReceipt, type MaintenanceReceipt } from "@nautilo/hosting";
 import {
@@ -32,6 +34,7 @@ import {
   discoverRailwayMaintenanceStates,
   railwayFailedMaintenanceCleanupComplete,
 } from "../../src/lib/railway-host-maintenance";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 
 const roots: string[] = [];
 const t0 = "2026-08-11T08:00:00.000Z";
@@ -47,7 +50,14 @@ test("maintenance discovery binds each directory to its internal maintenance ide
   const place = await location();
   await writeRailwayMaintenanceState(place.root, place.path, state());
   await rename(place.path, join(place.root, "forged-maintenance"));
-  expect(discoverRailwayMaintenanceStates(place.root)).rejects.toThrow("Railway maintenance discovery failed");
+  await expectRejected(discoverRailwayMaintenanceStates(place.root), { message: "Railway maintenance discovery failed" });
+});
+
+test("maintenance discovery distinguishes a missing root from an invalid filesystem entry", async () => {
+  const place = await location();
+  expect(await discoverRailwayMaintenanceStates(place.root)).toEqual([]);
+  await writeFile(place.root, "not a directory");
+  await expectRejected(discoverRailwayMaintenanceStates(place.root), { message: "Railway maintenance discovery failed" });
 });
 
 test("maintenance state freezes the target topology under its exact digest", async () => {
@@ -65,24 +75,24 @@ test("maintenance state freezes the target topology under its exact digest", asy
   expect((await readRailwayMaintenanceState(place.root, place.path))?.targetTopologySha256).toBe(targetTopologySha256);
   const secretTopology = { ...targetTopology, railwayReferences: [{ variable: "railway_definitely-secret-credential" }] } as never;
   const secretTopologySha256 = createHash("sha256").update(JSON.stringify(secretTopology), "utf8").digest("hex");
-  expect(writeRailwayMaintenanceState(place.root, join(place.root, "maintenance-secret"), {
+  await expectRejected(writeRailwayMaintenanceState(place.root, join(place.root, "maintenance-secret"), {
     ...state(), maintenanceId: "maintenance-secret", maintenanceReceipt: { ...initialReceipt(), maintenanceId: "maintenance-secret" },
     targetTopology: secretTopology, targetTopologySha256: secretTopologySha256, targetTopologyMac,
-  })).rejects.toThrow();
+  }), { code: "invalid-state" });
   const privatePathTopology = { ...targetTopology,
     finalServices: targetTopology.finalServices.map((service) => service.name === "nautilo-server"
       ? { ...service, healthcheck: { path: "/private/config" } } : service) } as never;
   const privatePathSha256 = createHash("sha256").update(JSON.stringify(privatePathTopology), "utf8").digest("hex");
-  expect(writeRailwayMaintenanceState(place.root, join(place.root, "maintenance-private-path"), {
+  await expectRejected(writeRailwayMaintenanceState(place.root, join(place.root, "maintenance-private-path"), {
     ...state(), maintenanceId: "maintenance-private-path",
     maintenanceReceipt: { ...initialReceipt(), maintenanceId: "maintenance-private-path" },
     targetTopology: privatePathTopology, targetTopologySha256: privatePathSha256, targetTopologyMac,
-  })).rejects.toThrow();
+  }), { code: "invalid-state" });
   const forged = { ...targetTopology, qualifications: [{ code: "forged", disposition: "blocking" }] } as never;
-  expect(writeRailwayMaintenanceState(place.root, join(place.root, "maintenance-2"), {
+  await expectRejected(writeRailwayMaintenanceState(place.root, join(place.root, "maintenance-2"), {
     ...state(), maintenanceId: "maintenance-2", maintenanceReceipt: { ...initialReceipt(), maintenanceId: "maintenance-2" },
     targetTopology: forged, targetTopologySha256, targetTopologyMac,
-  })).rejects.toThrow();
+  }), { code: "invalid-state" });
 });
 
 async function location() {
@@ -661,10 +671,8 @@ describe("Railway maintenance composite state", () => {
     expect(next.portableExport).toEqual(initial.portableExport);
     expect(next.portableRestore).toEqual(initial.portableRestore);
     expect(await readRailwayMaintenanceState(place.root, place.path)).toEqual(next);
-    if (process.platform !== "win32") {
-      expect((await lstat(place.root)).mode & 0o777).toBe(0o700);
-      expect((await lstat(join(place.path, "revision-0000000001.json"))).mode & 0o777).toBe(0o600);
-    }
+    expect(await isPrivateFilesystemPathAsync(place.root)).toBe(true);
+    expect(await isPrivateFilesystemPathAsync(join(place.path, "revision-0000000001.json"))).toBe(true);
   });
 
   test("allows one concurrent writer for the same immutable revision", async () => {
@@ -694,6 +702,32 @@ describe("Railway maintenance composite state", () => {
     expect((await readRailwayMaintenanceState(after.root, after.path))?.revision).toBe(0);
   });
 
+  test.each(["open-EPERM", "sync-EIO", "sync-EPERM"] as const)("preserves directory failure semantics: %s", async (failure) => {
+    const place = await location();
+    const realOpen = filesystem.open;
+    let closed = 0;
+    const opening = spyOn(filesystem, "open").mockImplementation(async (...args: Parameters<typeof filesystem.open>) => {
+      if (String(args[0]) !== place.path) return realOpen(...args);
+      const error = Object.assign(new Error("directory fault"), { code: failure.endsWith("EPERM") ? "EPERM" : "EIO" });
+      if (failure.startsWith("open")) throw error;
+      const handle = await realOpen(...args);
+      const close = handle.close.bind(handle);
+      handle.sync = async () => { throw error; };
+      handle.close = async () => { closed += 1; await close(); };
+      return handle;
+    });
+    try {
+      if (process.platform === "win32" && failure === "sync-EPERM") {
+        await writeRailwayMaintenanceState(place.root, place.path, state());
+        expect(closed).toBe(2);
+      } else {
+        await expectRejected(writeRailwayMaintenanceState(place.root, place.path, state()), { code: "publish-unknown" });
+        expect(closed).toBe(failure.startsWith("open") ? 0 : 1);
+      }
+    } finally { opening.mockRestore(); }
+    expect((await readRailwayMaintenanceState(place.root, place.path))?.revision).toBe(0);
+  });
+
   test("rejects gaps, tampering, unknown fields, secrets, symlinks, and unsafe modes without reflection", async () => {
     const gap = await location(); await writeRailwayMaintenanceState(gap.root, gap.path, state());
     await rename(join(gap.path, "revision-0000000000.json"), join(gap.path, "revision-0000000001.json"));
@@ -710,10 +744,10 @@ describe("Railway maintenance composite state", () => {
       expectCode(failure, "invalid-state"); expect(JSON.stringify(failure)).not.toContain("never-leak");
     }
 
-    const unsafe = await location(); await mkdir(unsafe.root, { mode: 0o700 }); await chmod(unsafe.root, 0o755);
+    const unsafe = await location(); await mkdir(unsafe.root, { mode: 0o700 }); await allowOtherReaders(unsafe.root);
     await expectRejected(writeRailwayMaintenanceState(unsafe.root, unsafe.path, state()), { code: "unsafe-permissions" });
     const linked = await location(); const actualRoot = join(linked.parent, "actual"); await mkdir(actualRoot, { mode: 0o700 });
-    await symlink(actualRoot, linked.root);
+    await symlink(actualRoot, linked.root, process.platform === "win32" ? "junction" : "dir");
     await expectRejected(writeRailwayMaintenanceState(linked.root, linked.path, state()), { code: "unsafe-path" });
     await expectRejected(writeRailwayMaintenanceState(actualRoot, join(linked.parent, "escape"), state()), { code: "unsafe-path" });
   });

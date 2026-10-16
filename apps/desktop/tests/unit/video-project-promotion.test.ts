@@ -84,7 +84,8 @@ describe("native Current Folder video project promotion", () => {
   test("rejects a symlinked or outside-root ref before upload", async () => {
     const fixture = await projectFixture(); const outside = await mkdtemp(path.join(tmpdir(), "nautilo-promote-outside-")); roots.push(outside);
     await writeFile(path.join(outside, "outside.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-    await symlink(path.join(outside, "outside.png"), path.join(fixture.root, "media", "picture.png-link"));
+    await symlink(process.platform === "win32" ? outside : path.join(outside, "outside.png"),
+      path.join(fixture.root, "media", "picture.png-link"), process.platform === "win32" ? "junction" : "file");
     const parsed = parseVideoHtml(fixture.content); if (!parsed.ok) throw new Error("fixture");
     parsed.document.project.media[0]!.ref = "media/picture.png-link";
     const content = serializeVideoHtml(parsed.document.manifest, parsed.document.project); await writeFile(fixture.documentPath, content);
@@ -97,7 +98,8 @@ describe("native Current Folder video project promotion", () => {
   });
 
   test("rejects an ancestor-directory symlink before any upload", async () => {
-    const fixture = await projectFixture(); await symlink(path.join(fixture.root, "media"), path.join(fixture.root, "linked-media"));
+    const fixture = await projectFixture(); await symlink(path.join(fixture.root, "media"), path.join(fixture.root, "linked-media"),
+      process.platform === "win32" ? "junction" : "dir");
     const parsed = parseVideoHtml(fixture.content); if (!parsed.ok) throw new Error("fixture");
     for (const asset of parsed.document.project.media) {
       if (asset.ref.startsWith("media/")) asset.ref = asset.ref.replace("media/", "linked-media/");

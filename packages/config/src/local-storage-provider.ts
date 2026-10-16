@@ -77,7 +77,9 @@ export class LocalStorageProvider implements StorageProvider {
     const absolute = normalize(resolve(rootPath));
     let canonical: string;
     try {
-      canonical = realpathSync(absolute);
+      // The native resolver expands Windows 8.3 short names, matching the
+      // async `realpath` used by the per-operation zone checks.
+      canonical = realpathSync.native(absolute);
     } catch {
       // Root doesn't exist yet. `ensureDirectoryTree` runs BEFORE any
       // provider is constructed so this shouldn't happen in practice,

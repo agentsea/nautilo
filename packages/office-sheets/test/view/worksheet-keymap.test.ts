@@ -109,21 +109,20 @@ describe('Worksheet grid keymap', () => {
       kind: 'checkbox',
       ranges: [],
     });
-    ctx.sheet.toggleCheckboxesInRange.mockRejectedValue(
-      new RangeOperationError(
+    const failure = new RangeOperationError(
         'toggle-checkboxes',
         'selection-too-large',
         60000,
         50000,
-      ),
     );
+    ctx.sheet.toggleCheckboxesInRange.mockRejectedValue(failure);
     const { event, preventDefault } = createEvent(' ', {});
 
     await handleGridKeydown.call(ctx, event);
 
     expect(preventDefault).toHaveBeenCalled();
     expect(onValidationError).toHaveBeenCalledWith(
-      'This checkbox selection has 60,000 cells. Select a smaller range while large checkbox operations are being improved.',
+      failure.message,
     );
     expect(ctx.render).not.toHaveBeenCalled();
   });

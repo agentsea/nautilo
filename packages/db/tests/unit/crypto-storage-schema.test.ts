@@ -42,14 +42,14 @@ const migration = readFileSync(
     "../../src/migrations/0125_purple_cerise.sql",
   ),
   "utf8",
-);
+).replaceAll("\r\n", "\n");
 const m315Migration = readFileSync(
   resolve(
     import.meta.dir,
     "../../src/migrations/0231_majestic_texas_twister.sql",
   ),
   "utf8",
-);
+).replaceAll("\r\n", "\n");
 
 describe("Wave 6 crypto storage schema", () => {
   test("M315 widens only generated constraints for the 16K Agent-grant envelope", () => {

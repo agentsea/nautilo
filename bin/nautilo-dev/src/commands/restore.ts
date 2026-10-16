@@ -2,7 +2,7 @@ import { assertBolterRestoreDumpAllowed } from "../lib/bolter-restore-authority"
 import { existsSync } from "node:fs";
 import { copyFile, lstat, readFile, rm, mkdir, readdir, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { join } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { resolveInstance } from "@nautilo/config";
 import {
   assertPersonalProviderRestoreCustody, assertPersonalProviderCustodyHealth,
@@ -74,7 +74,9 @@ export async function clearHomeForRestore(
 }
 
 export function extractHomeArchivePreservingProtection(tarPath: string, nautiloHome: string): void {
-  execFileSync("tar", ["--exclude=.protected-instance", "--exclude=profiles", "-xzf", tarPath, "-C", nautiloHome], { stdio: "pipe" });
+  execFileSync("tar", ["--exclude=.protected-instance", "--exclude=profiles", "-xzf", basename(tarPath), "-C", resolve(nautiloHome).split(sep).join("/")], {
+    cwd: dirname(tarPath), stdio: "pipe",
+  });
 }
 
 /**

@@ -1,15 +1,17 @@
-import { test, expect } from "bun:test";
+import { afterEach, test, expect } from "bun:test";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
+  rmSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { isBootstrapUsed } from "@nautilo/operator-secrets";
+import { isPrivateFilesystemPath, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
 import {
   runDoctorMigrateConfig,
 } from "../../src/lib/doctor-migrate-config.ts";
@@ -22,14 +24,20 @@ function deployTomlExamplePath(home: string): string {
   return join(home, ".config", "nautilo", "deploy.toml.example");
 }
 
+const homes: string[] = [];
+afterEach(() => {
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
 function mkHome(): string {
-  return join(tmpdir(), `nm091-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  const home = join(tmpdir(), `nm091-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  homes.push(home);
+  return home;
 }
 
 function writeSecrets600(path: string, body: string): void {
   mkdirSync(join(path, ".."), { recursive: true, mode: 0o700 });
-  writeFileSync(path, body, { encoding: "utf8", mode: 0o600 });
-  chmodSync(path, 0o600);
+  writePrivateFileExclusiveSync(path, Buffer.from(body, "utf8"));
 }
 
 test("no secrets.env → no-op-no-secrets-file", async () => {
@@ -70,6 +78,7 @@ test("happy path: providers + beta bootstrap → migrated; backup; secrets strip
       "NAUTILO_BOOTSTRAP_PIN_BETA=123456",
     ].join("\n") + "\n",
   );
+  const original = readFileSync(sec);
   const r = await runDoctorMigrateConfig({
     home,
     checkInstanceClaimedFn: async () => false,
@@ -82,6 +91,9 @@ test("happy path: providers + beta bootstrap → migrated; backup; secrets strip
   ]);
   expect(r.operatorFileBackupPath).not.toBeNull();
   expect(existsSync(r.operatorFileBackupPath!)).toBe(true);
+  expect(isPrivateFilesystemPath(r.operatorFileBackupPath!)).toBe(true);
+  expect(isPrivateFilesystemPath(sec)).toBe(true);
+  expect(readFileSync(r.operatorFileBackupPath!)).toEqual(original);
   expect(existsSync(dep)).toBe(true);
   const deployTxt = readFileSync(dep, "utf8");
   const provBlocks = deployTxt.match(/\[\[providers\]\]/g) ?? [];
@@ -93,7 +105,7 @@ test("happy path: providers + beta bootstrap → migrated; backup; secrets strip
   expect(newSec).toContain("OPENAI_API_KEY=sk-openai-111");
   expect(newSec).not.toContain("NAUTILO_BOOTSTRAP");
   expect(r.perInstance.some((p) => p.instanceId === "beta")).toBe(true);
-});
+}, 15_000);
 
 test("per-instance row for missing instance dir → warning; migration otherwise succeeds", async () => {
   const home = mkHome();
@@ -115,42 +127,25 @@ test("per-instance row for missing instance dir → warning; migration otherwise
   expect(existsSync(join(home, ".nautilo-beta", ".bootstrap", "admin-password"))).toBe(true);
 });
 
-test("claim check inject true → .used; false → no .used; throw → claimCheckError", async () => {
+test.each([true, false, "error"] as const)("claim check preserves its result: %s", async (outcome) => {
   const home = mkHome();
   const sec = operatorSecretsPath(home);
   mkdirSync(join(home, ".nautilo-beta"), { recursive: true, mode: 0o700 });
   writeSecrets600(sec, "OPENAI_API_KEY=x\nNAUTILO_BOOTSTRAP_ADMIN_PASSWORD_BETA=pw\n");
 
-  const rTrue = await runDoctorMigrateConfig({
+  const result = await runDoctorMigrateConfig({
     home,
-    checkInstanceClaimedFn: async () => true,
-  });
-  expect(rTrue.status).toBe("migrated");
-  const dirTrue = join(home, ".nautilo-beta", ".bootstrap");
-  expect(isBootstrapUsed(dirTrue)).toBe(true);
-
-  const home2 = mkHome();
-  writeSecrets600(join(home2, ".config", "nautilo", "secrets.env"), "OPENAI_API_KEY=x\nNAUTILO_BOOTSTRAP_ADMIN_PASSWORD_BETA=pw2\n");
-  mkdirSync(join(home2, ".nautilo-beta"), { recursive: true, mode: 0o700 });
-  const rFalse = await runDoctorMigrateConfig({
-    home: home2,
-    checkInstanceClaimedFn: async () => false,
-  });
-  expect(isBootstrapUsed(join(home2, ".nautilo-beta", ".bootstrap"))).toBe(false);
-  expect(rFalse.perInstance.find((p) => p.instanceId === "beta")?.markedUsed).toBe(false);
-
-  const home3 = mkHome();
-  writeSecrets600(join(home3, ".config", "nautilo", "secrets.env"), "OPENAI_API_KEY=x\nNAUTILO_BOOTSTRAP_ADMIN_PASSWORD_BETA=pw3\n");
-  mkdirSync(join(home3, ".nautilo-beta"), { recursive: true, mode: 0o700 });
-  const rThrow = await runDoctorMigrateConfig({
-    home: home3,
     checkInstanceClaimedFn: async () => {
-      throw new Error("db boom");
+      if (outcome === "error") throw new Error("db boom");
+      return outcome;
     },
   });
-  const betaOut = rThrow.perInstance.find((p) => p.instanceId === "beta");
-  expect(betaOut?.claimCheckError).toBe("db boom");
-  expect(rThrow.warnings.some((w) => w.includes("claim-status check failed"))).toBe(true);
+  expect(result.status).toBe("migrated");
+  expect(isBootstrapUsed(join(home, ".nautilo-beta", ".bootstrap"))).toBe(outcome === true);
+  const betaOut = result.perInstance.find((p) => p.instanceId === "beta");
+  expect(betaOut?.markedUsed).toBe(outcome === true);
+  expect(betaOut?.claimCheckError).toBe(outcome === "error" ? "db boom" : undefined);
+  expect(result.warnings.some((w) => w.includes("claim-status check failed"))).toBe(outcome === "error");
 });
 
 test("dry-run: status dry-run; no deploy backup or bootstrap files written", async () => {

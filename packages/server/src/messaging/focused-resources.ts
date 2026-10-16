@@ -26,7 +26,7 @@
  * On any validation failure it FAILS CLOSED: no manifest entry, no read, no
  * upload, no fallback. Relay IDs and API transport never reach prompt output.
  */
-import path from "node:path";
+import { isRelayPathWithinRoot, pathApiForRelayPath } from "@nautilo/relay";
 import { log } from "@nautilo/logger";
 import type {
   ChatArtifactRef,
@@ -425,17 +425,12 @@ function deriveLocalFileTarget(
   rawPath: string,
   currentFolder: string | null,
 ): { zone: "current" | "absolute"; modelPath: string } {
+  const path = pathApiForRelayPath(rawPath);
   const resolvedPath = path.normalize(rawPath);
-  if (currentFolder && path.isAbsolute(currentFolder)) {
+  if (currentFolder && isRelayPathWithinRoot(currentFolder, resolvedPath)) {
     const folder = path.normalize(currentFolder);
-    const folderWithSep = folder.endsWith(path.sep) ? folder : folder + path.sep;
-    if (resolvedPath === folder || resolvedPath.startsWith(folderWithSep)) {
-      const rel = path.relative(folder, resolvedPath);
-      // `path.relative` of a contained path is forward (no leading `..`).
-      // Guard against an empty result (the folder itself) by falling back
-      // to "." so the model-facing path is always well-formed.
-      return { zone: "current", modelPath: rel === "" ? "." : rel };
-    }
+    const rel = path.relative(folder, resolvedPath);
+    return { zone: "current", modelPath: rel === "" ? "." : rel };
   }
   return { zone: "absolute", modelPath: resolvedPath };
 }

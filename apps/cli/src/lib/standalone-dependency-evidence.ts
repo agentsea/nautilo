@@ -5,7 +5,7 @@ import {
   readFileSync,
   realpathSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 type BuildMetafile = {
   readonly inputs: Readonly<Record<string, unknown>>;
@@ -72,6 +72,11 @@ function packagePurl(name: string, version: string): string {
   return `pkg:npm/${name.startsWith("@") ? name.replace("/", "%2F") : name}@${version}`;
 }
 
+function insideRoot(root: string, path: string): boolean {
+  const child = relative(root, path);
+  return child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child);
+}
+
 function packageRootForInput(monorepoRoot: string, compilerWorkingDirectory: string, inputPath: string): string | undefined {
   const absolute = resolve(compilerWorkingDirectory, inputPath);
   let canonical: string;
@@ -81,11 +86,11 @@ function packageRootForInput(monorepoRoot: string, compilerWorkingDirectory: str
     throw new Error(`Standalone compiler metafile references a missing input: ${inputPath}.`);
   }
   const root = realpathSync(monorepoRoot);
-  if (canonical !== root && !canonical.startsWith(`${root}/`)) {
+  if (!insideRoot(root, canonical)) {
     throw new Error("Standalone compiler metafile input escaped the monorepo.");
   }
   let current = dirname(canonical);
-  while (current !== root && current.startsWith(`${root}/`)) {
+  while (relative(root, current) !== "" && insideRoot(root, current)) {
     const manifest = join(current, "package.json");
     if (existsSync(manifest)) {
       const value = JSON.parse(readFileSync(manifest, "utf8")) as { name?: unknown; version?: unknown };
@@ -106,7 +111,7 @@ function compilerInputIdentity(monorepoRoot: string, compilerWorkingDirectory: s
   } catch {
     throw new Error(`Standalone compiler metafile references a missing input: ${inputPath}.`);
   }
-  if (canonical !== monorepoRoot && !canonical.startsWith(`${monorepoRoot}/`)) {
+  if (!insideRoot(monorepoRoot, canonical)) {
     throw new Error("Standalone compiler metafile input escaped the monorepo.");
   }
   return {
@@ -142,7 +147,7 @@ function componentForRoot(monorepoRoot: string, packageRoot: string): Standalone
   if (typeof manifest.version !== "string" || manifest.version.trim() === "") {
     throw new Error(`Standalone dependency package has no version: ${manifestPath}.`);
   }
-  const workspace = !relative(monorepoRoot, packageRoot).startsWith("node_modules/");
+  const workspace = !relative(monorepoRoot, packageRoot).split(sep).includes("node_modules");
   const declaredLicense = typeof manifest.license === "string" && manifest.license.trim() !== ""
     ? manifest.license.trim()
     : workspace
@@ -179,7 +184,7 @@ export function createStandaloneDependencyEvidence(input: {
 }): { sbom: StandaloneCycloneDxV1; licenses: StandaloneLicenseInventoryV1 } {
   const monorepoRoot = realpathSync(input.monorepoRoot);
   const compilerWorkingDirectory = realpathSync(input.compilerWorkingDirectory ?? monorepoRoot);
-  if (compilerWorkingDirectory !== monorepoRoot && !compilerWorkingDirectory.startsWith(`${monorepoRoot}/`)) {
+  if (!insideRoot(monorepoRoot, compilerWorkingDirectory)) {
     throw new Error("Standalone compiler working directory must be inside the monorepo.");
   }
   const source = requireSource(input.source);

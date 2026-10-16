@@ -12,7 +12,8 @@ import * as nodeFs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
 
 import {
   ComposeDriver,
@@ -69,6 +70,7 @@ function makeFakeExec(
  */
 function buildVerifiedBundle(root: string): string {
   mkdirSync(root, { recursive: true });
+  secureFilesystemPathSync(root);
   const contents = {
     nautiloDb: true,
     logtoDb: true,
@@ -347,6 +349,15 @@ function mktmp(prefix: string): string {
   const d = mkdtempSync(join(tmpdir(), prefix));
   tmpDirs.push(d);
   return d;
+}
+
+function shellFixturePath(path: string): string {
+  if (process.platform !== "win32") return path;
+  const result = spawnSync("sh", ["-lc", 'cygpath -u "$1"', "fixture-path", path], {
+    encoding: "utf8", windowsHide: true,
+  });
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout.trim();
 }
 
 function cleanupTmp() {
@@ -638,6 +649,7 @@ describe("ComposeDriver", () => {
 
   test("authReconcile backs up and stamps a known legacy-adopted remote manifest", async () => {
     const incoming = buildAuthContract();
+    const localRoot = mktmp("auth-reconcile-operator-");
     const manifest: RemoteDeploymentManifest = {
       ...validRemoteManifest(),
       version: 2,
@@ -676,7 +688,7 @@ describe("ComposeDriver", () => {
       makeDeps({
         exec,
         resolveInstanceRootDir: () => "/opt/nautilo",
-        resolveLocalInstanceRootDir: () => "/tmp/nautilo",
+        resolveLocalInstanceRootDir: () => localRoot,
         log: (message) => logs.push(message),
         ensureDbPasswords: async () => {
           throw new Error("operator-local passwords must not be used");
@@ -707,7 +719,7 @@ describe("ComposeDriver", () => {
     );
     driver.backup = async () => {
       order.push("backup");
-      return "/tmp/nautilo/backups/pre-reconcile";
+      return join(localRoot, "backups", "pre-reconcile");
     };
 
     const result = await driver.authReconcile(remoteComposeProfile, {
@@ -1884,16 +1896,17 @@ describe("ComposeDriver", () => {
   });
 
   test("deploy: remote registry day-two adds stable host-canonical push secrets", async () => {
-    const remoteRoot = mktmp("remote-day-two-pepper-");
+    const localRemoteRoot = mktmp("remote-day-two-pepper-");
+    const remoteRoot = shellFixturePath(localRemoteRoot);
     const operatorRoot = mktmp("remote-day-two-operator-");
-    const runtimeConfig = join(remoteRoot, "runtime-config");
+    const runtimeConfig = join(localRemoteRoot, "runtime-config");
     mkdirSync(runtimeConfig, { recursive: true });
     writeFileSync(
       join(runtimeConfig, "instance.env"),
       "LOGTO_DB_PASSWORD=remote_logto_pw\n",
       { mode: 0o600 },
     );
-    writeFileSync(join(remoteRoot, "deploy.server.env"), "LOGTO_ENDPOINT=x\n", {
+    writeFileSync(join(localRemoteRoot, "deploy.server.env"), "LOGTO_ENDPOINT=x\n", {
       mode: 0o600,
     });
     const profile = { ...remoteComposeProfile, from_source: false, tag: "main" };
@@ -1925,14 +1938,14 @@ describe("ComposeDriver", () => {
       firstCanonical,
     )?.[1];
     expect(firstPepper).toBeDefined();
-    expect(readFileSync(join(remoteRoot, "deploy.server.env"), "utf8")).toContain(
+    expect(readFileSync(join(localRemoteRoot, "deploy.server.env"), "utf8")).toContain(
       `NAUTILO_REMOTE_PAIRING_PEPPER=${firstPepper}`,
     );
     const firstPushTokenKey = /^NAUTILO_PUSH_TOKEN_ENCRYPTION_KEY=([a-f0-9]{64})$/m.exec(
       firstCanonical,
     )?.[1];
     expect(firstPushTokenKey).toBeDefined();
-    expect(readFileSync(join(remoteRoot, "deploy.server.env"), "utf8")).toContain(
+    expect(readFileSync(join(localRemoteRoot, "deploy.server.env"), "utf8")).toContain(
       `NAUTILO_PUSH_TOKEN_ENCRYPTION_KEY=${firstPushTokenKey}`,
     );
 
@@ -3824,7 +3837,7 @@ describe("ComposeDriver", () => {
     expect(artifact).toMatchObject({ mode: "source", immutableId: "sha256:source" });
     expect(calls).toHaveLength(2);
     expect(calls[0]?.slice(-2)).toEqual(["build", "nautilo-server"]);
-    expect(calls[0]?.some((arg) => arg.endsWith("/docker-compose.source.yml"))).toBe(true);
+    expect(calls[0]?.some((arg) => basename(arg) === "docker-compose.source.yml")).toBe(true);
     expect(calls[1]).toContain("--profile");
     expect(calls[1]).toContain("auth");
     expect(calls[1]).toContain("app");

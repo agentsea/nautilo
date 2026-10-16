@@ -1,0 +1,5 @@
+# Check out every text file with LF on all platforms. Parsers, digests, and
+# byte comparisons across the repository expect the LF bytes stored in Git.
+* text=auto eol=lf
+# Stored with CRLF bytes; keep them unchanged.
+packages/office-slides/scripts/presetShapeDefinitions.xml -text

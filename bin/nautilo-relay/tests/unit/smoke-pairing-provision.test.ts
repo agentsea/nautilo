@@ -13,7 +13,8 @@ async function rejection(promise: Promise<void>): Promise<Error> {
   return error;
 }
 
-describe("smoke pairing provisions the regular credential store", () => {
+// This guest-only fixture provisions the Linux/macOS smoke VMs with POSIX modes.
+describe.skipIf(process.platform === "win32")("smoke pairing provisions the regular credential store", () => {
   let root: string;
   let keyringValue: string | null;
   let store: KeyringRelayCredentialStore;

@@ -6,6 +6,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensurePrivateDirectory } from "@nautilo/config/private-filesystem";
 import {
   ConcurrentCloneHarnessScenarioError,
   runConcurrentCloneHarness,
@@ -181,7 +182,7 @@ const LINEAGE: readonly MigrationLineageEntry[] = [
 
 async function makeVerifiedFixtureBackup(fixture: Awaited<ReturnType<typeof createPopulatedFixture>>): Promise<VerifiedFullBackup> {
   const dir = join(fixture.root, "verified-full-backup");
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(dir);
   await Promise.all([
     cp(join(fixture.source, "database.json"), join(dir, "database.sql.gz")),
     writeFile(join(dir, "logto.sql.gz"), JSON.stringify({ users: 2, projection: "source" }), { mode: 0o600 }),

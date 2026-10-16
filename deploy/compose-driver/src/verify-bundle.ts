@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createReadStream, statSync as nodeStatSync, type Stats } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 
 import {
   backupManifestSchema,
@@ -194,7 +195,7 @@ export async function verifyBundle(
   passCheck(checks, "manifest", `v${manifest.version}`);
 
   // Local permission checks (fail-closed: bundle carries plaintext secrets).
-  permissionChecks(bundlePath, manifestPath, statSync, checks, manifest);
+  await permissionChecks(bundlePath, manifestPath, statSync, checks, manifest);
 
   // Mandatory dump members exist.
   let mandatoryOk = true;
@@ -309,58 +310,65 @@ function negativeReport(
   };
 }
 
-function permissionChecks(
+async function permissionChecks(
   bundlePath: string,
   manifestPath: string,
   statSync: (path: string) => Stats,
   checks: BundleVerificationCheck[],
   manifest: BackupManifest,
-): void {
-  try {
-    const mode = statSync(bundlePath).mode & 0o777;
-    if (modeIsRestrictive(mode)) {
-      passCheck(checks, "bundle permissions", `dir ${mode.toString(8)}`);
-    } else {
-      failCheck(
-        checks,
-        "bundle permissions",
-        `bundle dir mode ${mode.toString(8)} grants group/other access (expected 0700)`,
-      );
-    }
-  } catch {
-    failCheck(checks, "bundle permissions", "bundle dir not statable");
-  }
-  try {
-    const mode = statSync(manifestPath).mode & 0o777;
-    if (modeIsRestrictive(mode)) {
-      passCheck(checks, "manifest permissions", `manifest ${mode.toString(8)}`);
-    } else {
-      failCheck(
-        checks,
-        "manifest permissions",
-        `manifest mode ${mode.toString(8)} grants group/other access (expected 0600)`,
-      );
-    }
-  } catch {
-    failCheck(checks, "manifest permissions", "manifest not statable");
-  }
+): Promise<void> {
+  const targets = [
+    { path: bundlePath, name: "bundle permissions", expected: "0700" },
+    { path: manifestPath, name: "manifest permissions", expected: "0600" },
+  ];
   if (manifest.contents.instanceEnv) {
+    targets.push({ path: join(bundlePath, "instance.env"), name: "instance.env permissions", expected: "0600" });
+  }
+  for (const target of targets) {
     try {
-      const envPath = join(bundlePath, "instance.env");
-      const mode = statSync(envPath).mode & 0o777;
-      if (modeIsRestrictive(mode)) {
-        passCheck(checks, "instance.env permissions", `env ${mode.toString(8)}`);
+      const mode = statSync(target.path).mode & 0o777;
+      const windows = process.platform === "win32";
+      const privatePath = windows
+        ? await isPrivateFilesystemPathAsync(target.path)
+        : modeIsRestrictive(mode);
+      if (privatePath) {
+        passCheck(checks, target.name, windows ? "private Windows ACL" : `mode ${mode.toString(8)}`);
       } else {
         failCheck(
-          checks,
-          "instance.env permissions",
-          `instance.env mode ${mode.toString(8)} grants group/other access (expected 0600)`,
+          checks, target.name,
+          windows ? "path requires a private Windows ACL"
+            : `mode ${mode.toString(8)} grants group/other access (expected ${target.expected})`,
         );
       }
     } catch {
-      failCheck(checks, "instance.env permissions", "instance.env not statable");
+      failCheck(checks, target.name, "cannot inspect permissions");
     }
   }
+  if (process.platform === "win32") {
+    try {
+      if (await windowsBundleMembersArePrivate(bundlePath)) {
+        passCheck(checks, "bundle member permissions", "private Windows ACLs");
+      } else {
+        failCheck(checks, "bundle member permissions", "a bundle member lacks a private Windows ACL");
+      }
+    } catch {
+      failCheck(checks, "bundle member permissions", "cannot inspect bundle member permissions");
+    }
+  }
+}
+
+async function windowsBundleMembersArePrivate(root: string): Promise<boolean> {
+  // Windows directory traversal rights do not make a permissive child private.
+  const directories = [root];
+  while (directories.length > 0) {
+    const directory = directories.pop()!;
+    for (const entry of await nodeFs.readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (!await isPrivateFilesystemPathAsync(path)) return false;
+      if (entry.isDirectory()) directories.push(path);
+    }
+  }
+  return true;
 }
 
 async function verifyIntegrity(

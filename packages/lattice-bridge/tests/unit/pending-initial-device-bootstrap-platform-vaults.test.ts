@@ -9,6 +9,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import {
   createElectronPendingInitialDeviceBootstrapVault,
@@ -141,8 +142,11 @@ describe("Electron sealed pending initial-device bootstrap vault", () => {
       const persisted = await readFile(join(directory, DOCUMENT_FILE), "utf8");
       expect(persisted).not.toContain("ISIj");
       expect(persisted).not.toContain("MTIz");
-      expect((await stat(join(directory, DOCUMENT_FILE))).mode & 0o777).toBe(0o600);
-      expect((await stat(join(directory, KEY_FILE))).mode & 0o777).toBe(0o600);
+      for (const name of [DOCUMENT_FILE, KEY_FILE]) {
+        const path = join(directory, name);
+        expect(isPrivateFilesystemPath(path)).toBe(true);
+        if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
+      }
 
       const restarted = createElectronPendingInitialDeviceBootstrapVault({
         directory,

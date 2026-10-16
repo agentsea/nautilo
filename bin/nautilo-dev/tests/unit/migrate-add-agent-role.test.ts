@@ -5,7 +5,8 @@
  * Uses the `ClusterExec` dependency injection to drive the command
  * without docker. No live Postgres required.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as childProcess from "node:child_process";
 import { LANGCHAIN_CHECKPOINT_TABLES, NAUTILO_ESSENTIAL_SELECT_TABLE } from "@nautilo/db";
 import {
   migrateAddAgentRole,
@@ -53,6 +54,44 @@ function makeExec(opts: {
   };
   return { exec, calls };
 }
+
+describe("default Docker SQL transport", () => {
+  test("uses one error-stopping transaction for each SQL batch read from stdin", () => {
+    const execute = spyOn(childProcess, "execFileSync").mockReturnValue(Buffer.from("true\n"));
+    try {
+      const result = probeAgentRoleState({ container: "role-repair-fixture", superuser: "fixture-owner" });
+      expect(result.containerRunning).toBe(true);
+      const calls: readonly (readonly unknown[])[] = execute.mock.calls;
+      const queries = calls.filter((call) => Array.isArray(call[1]) && call[1].includes("psql"));
+      expect(queries.length).toBeGreaterThan(0);
+      for (const [command, args, options] of queries) {
+        expect(command).toBe("docker");
+        expect(args).toEqual(expect.arrayContaining([
+          "exec", "-i", "role-repair-fixture", "psql", "-U", "fixture-owner",
+          "--single-transaction", "--file=-", "-v", "ON_ERROR_STOP=1",
+        ]));
+        expect(args).not.toContain("-c");
+        expect(options).toHaveProperty("input", expect.stringMatching(/\S\n$/));
+        expect(options).toMatchObject({ stdio: ["pipe", "pipe", "pipe"] });
+      }
+    } finally {
+      execute.mockRestore();
+    }
+  });
+
+  test("propagates a failed SQL batch instead of reporting a successful probe", () => {
+    const failure = new Error("psql exited after a failed SQL statement");
+    const execute = spyOn(childProcess, "execFileSync")
+      .mockImplementation(() => { throw failure; })
+      .mockReturnValueOnce(Buffer.from("true\n"));
+    try {
+      expect(() => probeAgentRoleState({ container: "role-repair-fixture", superuser: "fixture-owner" }))
+        .toThrow(failure);
+    } finally {
+      execute.mockRestore();
+    }
+  });
+});
 
 describe("probeAgentRoleState", () => {
   test("reports no-container when docker container is not running", () => {

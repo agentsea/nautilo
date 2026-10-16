@@ -14,11 +14,19 @@ import {
 import { createJournalStorage } from "../../electron/local-file-history/storage.ts";
 
 const roots: string[] = [];
+const runtimes: DesktopDocumentMutationRuntime[] = [];
 afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map((runtime) => runtime.stopOutboxPump()));
   await Promise.all(roots.splice(0).map((root) =>
     fs.rm(root, { recursive: true, force: true })
   ));
 });
+
+function createRuntime(deps: ConstructorParameters<typeof DesktopDocumentMutationRuntime>[0]) {
+  const runtime = new DesktopDocumentMutationRuntime(deps);
+  runtimes.push(runtime);
+  return runtime;
+}
 
 async function fixture() {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "authored-recovery-workspace-"));
@@ -33,7 +41,7 @@ async function fixture() {
     fileAdapter: adapter,
   });
   let id = 0;
-  const runtime = new DesktopDocumentMutationRuntime({
+  const runtime = createRuntime({
     getTrustedRelayId: () => "relay-recovery",
     getTrustedHumanId: () => "human-recovery",
     fileAdapter: adapter,
@@ -61,7 +69,7 @@ async function agentUpdate(
     command: "write",
     reauthorize: async () => undefined,
   });
-  expect(result.ok).toBe(true);
+  expect(result).toMatchObject({ ok: true });
   return result;
 }
 
@@ -147,7 +155,7 @@ test("fails closed on expected SHA mismatch, external replacement, and stale aut
     expectedSha256: sha256Hex(Buffer.from("external\n")),
   })).toEqual({ kind: "unavailable", code: "history_drift" });
 
-  fx.runtime.stopOutboxPump();
+  await fx.runtime.stopOutboxPump();
   expect(await fx.runtime.readAuthoredChange({
     path: fx.file,
     expectedSha256: sha256Hex(Buffer.from("external\n")),
@@ -223,7 +231,7 @@ test("missing undo lineage fails closed instead of resurrecting its source", asy
     authorizedRoots: [fx.workspace],
     reauthorize: async () => undefined,
   })).ok).toBe(true);
-  fx.runtime.stopOutboxPump();
+  await fx.runtime.stopOutboxPump();
   const storage = createJournalStorage(fx.journalRoot);
   // Stopping blocks future pump requests; the canonical journal lock also
   // serializes this corruption behind any outbox write already in flight.
@@ -252,7 +260,7 @@ test("missing undo lineage fails closed instead of resurrecting its source", asy
       });
     },
   );
-  const reader = new DesktopDocumentMutationRuntime({
+  const reader = createRuntime({
     getTrustedRelayId: () => "relay-recovery",
     getTrustedHumanId: () => "human-recovery",
     fileAdapter: createGuardedNodeAdapter({ allowedRoots: [fx.workspace] }),
@@ -273,7 +281,7 @@ test("revalidates trusted human and relay identities after awaited reads", async
   const fx = await fixture();
   await agentUpdate(fx, "before\n", "agent\n");
   let humanCalls = 0;
-  const changedHumanRuntime = new DesktopDocumentMutationRuntime({
+  const changedHumanRuntime = createRuntime({
     getTrustedRelayId: () => "relay-recovery",
     getTrustedHumanId: () => ++humanCalls === 1 ? "human-recovery" : "human-replacement",
     fileAdapter: createGuardedNodeAdapter({ allowedRoots: [fx.workspace] }),
@@ -290,7 +298,7 @@ test("revalidates trusted human and relay identities after awaited reads", async
   })).toEqual({ kind: "unavailable", code: "history_unavailable" });
 
   let relayCalls = 0;
-  const changedRelayRuntime = new DesktopDocumentMutationRuntime({
+  const changedRelayRuntime = createRuntime({
     getTrustedRelayId: () => ++relayCalls === 1 ? "relay-recovery" : "relay-replacement",
     getTrustedHumanId: () => "human-recovery",
     fileAdapter: createGuardedNodeAdapter({ allowedRoots: [fx.workspace] }),
@@ -343,7 +351,7 @@ test("many-row recovery reads only the selected candidate payload pair", async (
     before = after;
   }
   await new Promise<void>((resolve) => setTimeout(resolve, 20));
-  fx.runtime.stopOutboxPump();
+  await fx.runtime.stopOutboxPump();
   const base = createJournalStorage(fx.journalRoot);
   let payloadReads = 0;
   const journal = new LocalDurableMutationJournal({

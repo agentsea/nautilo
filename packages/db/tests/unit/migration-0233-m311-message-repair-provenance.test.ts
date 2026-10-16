@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 const migrations = resolve(import.meta.dir, "../../src/migrations");
 const tag = "0235_misty_garia";
-const migration = readFileSync(resolve(migrations, `${tag}.sql`), "utf8");
+const migration = readFileSync(resolve(migrations, `${tag}.sql`), "utf8").replaceAll("\r\n", "\n");
 const journal = JSON.parse(
   readFileSync(resolve(migrations, "meta/_journal.json"), "utf8"),
 ) as { entries: readonly { idx: number; tag: string }[] };

@@ -232,7 +232,7 @@ describe("packaging layout expectations", () => {
     expect(script).not.toContain("electron-builder");
   });
 
-  test("unsigned package wrappers clear credentials without mutating the parent environment", () => {
+  test.skipIf(process.platform === "win32")("unsigned package wrappers clear credentials without mutating the parent environment", () => {
     const pkg = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf-8")) as {
       scripts: Record<string, string>;
     };

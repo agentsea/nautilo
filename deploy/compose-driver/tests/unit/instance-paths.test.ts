@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join, resolve } from "node:path";
 
 import {
   defaultStagingRoot,
@@ -30,18 +31,21 @@ describe("remoteInstanceRootDir", () => {
 
 describe("localInstanceRootDir", () => {
   test("default instance", () => {
-    expect(localInstanceRootDir("/home/me", "")).toBe("/home/me/.nautilo");
+    const home = resolve("home", "me");
+    expect(localInstanceRootDir(home, "")).toBe(join(home, ".nautilo"));
   });
 
   test("suffixed instance", () => {
-    expect(localInstanceRootDir("/home/me", "prod")).toBe("/home/me/.nautilo-prod");
+    const home = resolve("home", "me");
+    expect(localInstanceRootDir(home, "prod")).toBe(join(home, ".nautilo-prod"));
   });
 });
 
 describe("defaultStagingRoot", () => {
   test("under local instance root", () => {
-    expect(defaultStagingRoot({ home: "/home/me", instance_id: "prod" })).toBe(
-      "/home/me/.nautilo-prod/.remote-staging",
+    const home = resolve("home", "me");
+    expect(defaultStagingRoot({ home, instance_id: "prod" })).toBe(
+      join(home, ".nautilo-prod", ".remote-staging"),
     );
   });
 });

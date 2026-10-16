@@ -3,7 +3,6 @@
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
-  mkdirSync,
   openSync,
   readFileSync,
   renameSync,
@@ -11,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { ensurePrivateStoreDirectorySync } from "./private-store-directory";
 import {
   hasReadyToWorkExactBinding,
   createReadyToWorkDesiredState,
@@ -41,7 +41,7 @@ export type ReadyToWorkStoreFs = Readonly<{
 }>;
 
 const productionFs: ReadyToWorkStoreFs = {
-  mkdirSync,
+  mkdirSync: ensurePrivateStoreDirectorySync,
   openSync,
   writeFileSync,
   closeSync,

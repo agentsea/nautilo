@@ -10,9 +10,9 @@
  * matrix (FILE-01..06) will run the same scenarios end-to-end.
  */
 
-import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, beforeEach, afterEach, spyOn } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
-import { mkdtemp, writeFile, symlink, rm, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, symlink, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -22,6 +22,7 @@ import {
   resolveNautiloRuntimePaths,
 } from "@nautilo/config";
 import { resetArtifactStorage, setArtifactStorage } from "@nautilo/agent";
+import * as sandbox from "@nautilo/sandbox";
 import { testModeRoutes } from "../../src/routes/test-mode";
 import {
   validateInvocationRequest,
@@ -391,18 +392,21 @@ describe("POST /api/test/tool-invoke", () => {
     });
     const sentinel = "COMPLETE-CLOUD-RESULT-SENTINEL";
     const longOutput = `${"x".repeat(10_000)}${sentinel}`;
-    const priorBudget = process.env["NAUTILO_SANDBOX_INLINE_OUTPUT_BYTES"];
-
+    const priorHome = process.env["HOME"];
+    const priorUserProfile = process.env["USERPROFILE"];
     await ensureDirectoryTree(paths);
     setArtifactStorage(createStorageZones(paths));
     await writeFile(join(paths.rootDir, "home", "long-output.txt"), longOutput);
-    await writeFile(
-      join(paths.rootDir, "home", "long-output.sh"),
-      "#!/bin/sh\ncat long-output.txt\n",
-    );
-    process.env["NAUTILO_SANDBOX_INLINE_OUTPUT_BYTES"] = String(
-      Buffer.byteLength(longOutput, "utf8") + 1024,
-    );
+    await writeFile(join(paths.rootDir, "home", "long-output.sh"), "#!/bin/sh\ncat long-output.txt\n");
+    // Control only subprocess output; retain artifact admission, output
+    // formatting, and the actual HTTP response path under test.
+    const processResult = spyOn(sandbox, "spawnSandboxed").mockResolvedValue({
+      stdout: longOutput, stderr: "", exitCode: 0, timedOut: false, signal: null,
+      stdoutTruncated: false, stderrTruncated: false, aborted: false,
+      stoppedEarly: false, durationMs: 0,
+    });
+    process.env["HOME"] = root;
+    process.env["USERPROFILE"] = root;
     try {
       const r = await app.inject({
         method: "POST",
@@ -420,12 +424,10 @@ describe("POST /api/test/tool-invoke", () => {
       expect(body).toMatchObject({ blocked: false, layerHit: "handler" });
       expect(body.result).toContain(sentinel);
     } finally {
+      processResult.mockRestore();
       resetArtifactStorage();
-      if (priorBudget === undefined) {
-        delete process.env["NAUTILO_SANDBOX_INLINE_OUTPUT_BYTES"];
-      } else {
-        process.env["NAUTILO_SANDBOX_INLINE_OUTPUT_BYTES"] = priorBudget;
-      }
+      if (priorHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = priorHome;
+      if (priorUserProfile === undefined) delete process.env["USERPROFILE"]; else process.env["USERPROFILE"] = priorUserProfile;
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -481,8 +483,10 @@ describe("POST /api/test/tool-invoke", () => {
   test("M174: file({read, current, <symlink-out>}) fails closed without relay", async () => {
     const outsideFile = join(outsideDir, "secret.txt");
     await writeFile(outsideFile, "SECRET SENTINEL");
-    const symlinkInside = join(workspace, "innocent.txt");
-    await symlink(outsideFile, symlinkInside);
+    const alias = process.platform === "win32" ? "read-link" : "innocent.txt";
+    const relativePath = process.platform === "win32" ? `${alias}/secret.txt` : alias;
+    await symlink(process.platform === "win32" ? outsideDir : outsideFile, join(workspace, alias),
+      process.platform === "win32" ? "junction" : "file");
 
     const r = await app.inject({
       method: "POST",
@@ -490,7 +494,7 @@ describe("POST /api/test/tool-invoke", () => {
       headers: auth(),
       payload: {
         tool: "file",
-        args: { command: "read", zone: "current", path: "innocent.txt" },
+        args: { command: "read", zone: "current", path: relativePath },
         securityLevel: "standard",
         currentFolder: workspace,
       },
@@ -507,8 +511,10 @@ describe("POST /api/test/tool-invoke", () => {
   test("M174: file({write, current, <symlink-out>}) fails closed without relay", async () => {
     const outsideFile = join(outsideDir, "target.txt");
     await writeFile(outsideFile, "original content");
-    const symlinkInside = join(workspace, "trap.txt");
-    await symlink(outsideFile, symlinkInside);
+    const alias = process.platform === "win32" ? "write-link" : "trap.txt";
+    const relativePath = process.platform === "win32" ? `${alias}/target.txt` : alias;
+    await symlink(process.platform === "win32" ? outsideDir : outsideFile, join(workspace, alias),
+      process.platform === "win32" ? "junction" : "file");
 
     const r = await app.inject({
       method: "POST",
@@ -519,7 +525,7 @@ describe("POST /api/test/tool-invoke", () => {
         args: {
           command: "write",
           zone: "current",
-          path: "trap.txt",
+          path: relativePath,
           content: "PWNED",
           mode: "overwrite",
         },
@@ -533,6 +539,7 @@ describe("POST /api/test/tool-invoke", () => {
     expect(body.layerHit).toBe("zone-resolver");
     expect(body.reason).toContain("LOCAL_FILE_EXECUTION_UNSUPPORTED");
     expect(body.reason).toContain("Nautilo desktop app");
+    expect(await readFile(outsideFile, "utf8")).toBe("original content");
   });
 
   // ---------------------------------------------------------------------

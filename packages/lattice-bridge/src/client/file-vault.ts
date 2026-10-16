@@ -3,17 +3,10 @@ import {
   createDecipheriv,
   createHash,
   randomBytes,
-  randomUUID,
 } from "node:crypto";
-import {
-  chmod,
-  mkdir,
-  readFile,
-  rename,
-  unlink,
-  writeFile,
-} from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { ensurePrivateDirectory, publishPrivateFileAtomically } from "@nautilo/config/private-filesystem";
 import {
   CLIENT_PROFILE_VAULT_FORMAT_VERSION,
   CLIENT_PROFILE_VAULT_MAX_PROFILES,
@@ -200,19 +193,9 @@ export async function atomicWritePrivateFile(
   path: string,
   contents: string | Uint8Array,
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = join(
-    dirname(path),
-    `.${randomUUID()}.client-profile-vault.tmp`,
-  );
-  try {
-    await writeFile(temporary, contents, { mode: 0o600, flag: "wx" });
-    await chmod(temporary, 0o600);
-    await rename(temporary, path);
-    await chmod(path, 0o600);
-  } finally {
-    await unlink(temporary).catch(() => undefined);
-  }
+  const target = resolve(path);
+  await ensurePrivateDirectory(dirname(target));
+  await publishPrivateFileAtomically(target, typeof contents === "string" ? new TextEncoder().encode(contents) : contents);
 }
 
 async function writeDocument(
@@ -250,7 +233,7 @@ export class EncryptedFileClientProfileVault implements ClientProfileVault {
   #terminalStatus: ClientProfileVaultAvailability | undefined;
 
   constructor(directory: string, keyStore: WrappingKeyStore) {
-    this.#path = join(directory, VAULT_FILE_NAME);
+    this.#path = resolve(directory, VAULT_FILE_NAME);
     this.#keyStore = keyStore;
   }
 

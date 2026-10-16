@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
+import { containsHostPath as within } from "./host-paths";
 import {
   CodexHostError,
   type HostFilesystem,
@@ -132,7 +133,6 @@ function overlaps(left: string, right: string): boolean {
   const relativeRight = resolve(right);
   return within(relativeLeft, relativeRight) || within(relativeRight, relativeLeft);
 }
-function within(root: string, candidate: string): boolean { return root === sep ? candidate.startsWith(sep) : candidate === root || candidate.startsWith(`${root}${sep}`); }
 function isMissing(error: unknown): boolean { return code(error) === "ENOENT"; }
 function isAlreadyExists(error: unknown): boolean { return code(error) === "EEXIST"; }
 function code(error: unknown): string | undefined { return typeof error === "object" && error !== null && "code" in error && typeof (error as { readonly code?: unknown }).code === "string" ? (error as { readonly code: string }).code : undefined; }

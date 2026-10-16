@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import {
   assertCompleteMutationCoverage,
   assertNoMutationSuppression,
@@ -11,7 +12,7 @@ import {
   derivePackageTypeScriptSourceInventory,
 } from "./mutation-source-inventory.ts";
 
-const packageRoot = new URL("..", import.meta.url);
+const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 const resolvePackagePath = (path: string): URL =>
   new URL(`../${path}`, import.meta.url);
 const manifestValue: unknown = await Bun.file(
@@ -22,10 +23,10 @@ const manifest = parseMutationManifest(manifestValue, {
 });
 assertCompleteMutationCoverage(
   manifest,
-  deriveMutationSourceInventory(packageRoot.pathname),
+  deriveMutationSourceInventory(packageRoot),
 );
 assertNoMutationSuppression(
-  derivePackageTypeScriptSourceInventory(packageRoot.pathname).map((path) => ({
+  derivePackageTypeScriptSourceInventory(packageRoot).map((path) => ({
     path,
     source: readFileSync(resolvePackagePath(path), "utf8"),
   })),
@@ -49,7 +50,7 @@ process.stdout.write(
 const child = Bun.spawn(
   ["bunx", "stryker", "run", "stryker.config.mjs"],
   {
-    cwd: packageRoot.pathname,
+    cwd: packageRoot,
     env: {
       ...process.env,
       LATTICE_MUTATION_SCOPE: developmentScope,

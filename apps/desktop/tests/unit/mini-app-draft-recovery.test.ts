@@ -172,11 +172,12 @@ describe("MiniAppDraftRecoveryStore", () => {
     const original = path.join(root, "deck.presentation.html");
     const replacement = path.join(root, "replacement.html");
     fs.writeFileSync(replacement, "unrelated document");
-    fs.symlinkSync(replacement, original);
+    fs.symlinkSync(process.platform === "win32" ? root : replacement, original,
+      process.platform === "win32" ? "junction" : "file");
     await expect(resolveMiniAppRecoveryFilePath(files, original)).rejects.toThrow();
-    fs.unlinkSync(original);
-    fs.mkdirSync(original);
-    await expect(resolveMiniAppRecoveryFilePath(files, original)).rejects.toThrow();
+    const directoryReplacement = path.join(root, "directory.presentation.html");
+    fs.mkdirSync(directoryReplacement);
+    await expect(resolveMiniAppRecoveryFilePath(files, directoryReplacement)).rejects.toThrow();
   });
 
   test("persists protected bytes atomically and restores them in a new store", async () => {

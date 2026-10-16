@@ -237,16 +237,16 @@ describe("infra:start PostgreSQL bootstrap-role readiness (D475)", () => {
       .toEqual({ operatorHomeDir: "/tmp/d489-home" });
     expect(bootstrapClaimInviteDepsForInfra({ operatorHomeDir: "   " }, {})).toEqual({});
     expect(resolveInfraClaimInvitePaths({ operatorHomeDir: "/tmp/d489-home" }, "", {})).toEqual({
-      legacy: "/tmp/d489-home/.nautilo/claim-invite.txt",
-      bootstrap: "/tmp/d489-home/.nautilo/.bootstrap/claim-invite",
+      legacy: join("/tmp/d489-home", ".nautilo", "claim-invite.txt"),
+      bootstrap: join("/tmp/d489-home", ".nautilo", ".bootstrap", "claim-invite"),
     });
     expect(resolveInfraClaimInvitePaths({ operatorHomeDir: "/tmp/d489-home" }, "alpha", {})).toEqual({
-      legacy: "/tmp/d489-home/.nautilo-alpha/claim-invite.txt",
-      bootstrap: "/tmp/d489-home/.nautilo-alpha/.bootstrap/claim-invite",
+      legacy: join("/tmp/d489-home", ".nautilo-alpha", "claim-invite.txt"),
+      bootstrap: join("/tmp/d489-home", ".nautilo-alpha", ".bootstrap", "claim-invite"),
     });
     expect(resolveInfraClaimInvitePaths({}, "beta", { HOME: "/tmp/env-home" })).toEqual({
-      legacy: "/tmp/env-home/.nautilo-beta/claim-invite.txt",
-      bootstrap: "/tmp/env-home/.nautilo-beta/.bootstrap/claim-invite",
+      legacy: join("/tmp/env-home", ".nautilo-beta", "claim-invite.txt"),
+      bootstrap: join("/tmp/env-home", ".nautilo-beta", ".bootstrap", "claim-invite"),
     });
   });
 

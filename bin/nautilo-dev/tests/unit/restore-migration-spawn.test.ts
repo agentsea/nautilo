@@ -31,7 +31,8 @@ const src = readFileSync(
 );
 
 function isolatedEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, HOME: mkdtempSync(join(tmpdir(), "restore-spawn-")), NAUTILO_INSTANCE_ID: "restore-fixture" };
+  const home = mkdtempSync(join(tmpdir(), "restore-spawn-"));
+  return { ...process.env, HOME: home, USERPROFILE: home, NAUTILO_INSTANCE_ID: "restore-fixture" };
 }
 
 describe("runRestoreMigrations — spawns packages/db migration directly (regression)", () => {

@@ -2067,7 +2067,7 @@ function isPathWithinAllowedRoot(targetPath: string): boolean {
 function resolveReal(input: string): string {
   const resolved = path.resolve(input);
   try {
-    return fs.realpathSync(resolved);
+    return fs.realpathSync.native(resolved);
   } catch {
     return resolved;
   }
@@ -2290,7 +2290,7 @@ function getDesktopDocumentMutationRuntime():
   if (!relayId) {
     if (desktopDocumentMutationRuntime) {
       desktopDocumentMutationRuntimeGeneration += 1;
-      desktopDocumentMutationRuntime.stopOutboxPump();
+      void desktopDocumentMutationRuntime.stopOutboxPump();
       desktopDocumentMutationRuntime = undefined;
       desktopDocumentMutationRuntimeRelayId = undefined;
       invalidatePendingDocumentMutationAcks();
@@ -2306,7 +2306,7 @@ function getDesktopDocumentMutationRuntime():
       desktopDocumentMutationRuntime !== undefined
     ) {
       desktopDocumentMutationRuntimeGeneration += 1;
-      desktopDocumentMutationRuntime?.stopOutboxPump();
+      void desktopDocumentMutationRuntime?.stopOutboxPump();
       desktopDocumentMutationRuntime = undefined;
       desktopDocumentMutationRuntimeRelayId = undefined;
       invalidatePendingDocumentMutationAcks();
@@ -2328,7 +2328,7 @@ function getDesktopDocumentMutationRuntime():
   // new journal; permanently stop the old unref'd pump so it cannot publish
   // or contend with batches under a stale relay identity.
   const generation = ++desktopDocumentMutationRuntimeGeneration;
-  desktopDocumentMutationRuntime?.stopOutboxPump();
+  void desktopDocumentMutationRuntime?.stopOutboxPump();
   invalidatePendingDocumentMutationAcks();
   const journal = new LocalDurableMutationJournal({
     rootDir: localFileHistoryDirPath(),
@@ -2436,7 +2436,7 @@ function queueFsWatchEvent(rootPath: string, changedPath: string): void {
 
 function ensureFsWatchRoot(rootPath: string): void {
   assertPathInAllowedRoot(rootPath);
-  const resolvedRoot = fs.realpathSync(rootPath);
+  const resolvedRoot = fs.realpathSync.native(rootPath);
   if (fsWatchers.has(resolvedRoot)) return;
   const watcher = fs.watch(
     resolvedRoot,
@@ -2478,7 +2478,7 @@ function workingFolderBootstrapOptions(): WorkingFolderBootstrapOptions {
       access: (directory) => {
         fs.accessSync(directory, fs.constants.R_OK | fs.constants.W_OK);
       },
-      realpath: (directory) => fs.realpathSync(directory),
+      realpath: (directory) => fs.realpathSync.native(directory),
       writeFileExclusive: (filePath, contents) => {
         fs.writeFileSync(filePath, contents, {
           encoding: "utf-8",
@@ -5466,28 +5466,30 @@ const hermesAcpReadinessHost = new ElectronHermesAcpReadinessHost(
 const opencodeAcpReadinessHost = new ElectronOpenCodeAcpReadinessHost(
   createElectronOpenCodeAcpNativeProbe(),
 );
-const hermesAcpExecutionHost = new ElectronHermesAcpExecutionHost({
+const acpProcessTreeAvailable = process.platform !== "win32";
+const unavailableAcpExecutionHost = { isReady: () => false };
+const hermesAcpExecutionHost = acpProcessTreeAvailable ? new ElectronHermesAcpExecutionHost({
   currentFolder: () => currentFolderPath === null
     ? null
     : Object.freeze({ path: currentFolderPath, revision: currentFolderRevision }),
 }, {
   readiness: hermesAcpReadinessHost,
   onAvailabilityChanged: () => { void refreshDesktopRelayCapabilities("ACP cleanup settled"); },
-});
-const opencodeAcpExecutionHost = new ElectronOpenCodeAcpExecutionHost({
+}) : unavailableAcpExecutionHost;
+const opencodeAcpExecutionHost = acpProcessTreeAvailable ? new ElectronOpenCodeAcpExecutionHost({
   currentFolder: () => currentFolderPath === null
     ? null
     : Object.freeze({ path: currentFolderPath, revision: currentFolderRevision }),
 }, {
   readiness: opencodeAcpReadinessHost,
   onAvailabilityChanged: () => { void refreshDesktopRelayCapabilities("ACP cleanup settled"); },
-});
+}) : unavailableAcpExecutionHost;
 const acpExecutionRouter = new ElectronAcpExecutionRouter({
   "hermes-acp": hermesAcpExecutionHost,
   "opencode-acp": opencodeAcpExecutionHost,
 }, {
-  isEnabled: (registrationId) => registrationId === "opencode-acp" ||
-    loadConfig()?.hermesConnectionEnabled === true,
+  isEnabled: (registrationId) => acpProcessTreeAvailable &&
+    (registrationId === "opencode-acp" || loadConfig()?.hermesConnectionEnabled === true),
 });
 
 function codexProductionHostFactory(actorId: string) {
@@ -10344,7 +10346,7 @@ ipcMain.handle("fs:watchRoot", (e, args: { path: string }) => {
 ipcMain.handle("fs:unwatchRoot", (e, args: { path: string }) => {
   assertMainWindowSender(e);
   try {
-    cleanupFsWatchRoot(fs.realpathSync(args.path));
+    cleanupFsWatchRoot(fs.realpathSync.native(args.path));
   } catch {
     cleanupFsWatchRoot(path.resolve(args.path));
   }
@@ -15724,7 +15726,7 @@ app.on("before-quit", (event) => {
   isQuitting = true;
   if (quitTeardownStarted) return;
   quitTeardownStarted = true;
-  desktopDocumentMutationRuntime?.stopOutboxPump();
+  void desktopDocumentMutationRuntime?.stopOutboxPump();
   invalidatePendingDocumentMutationAcks();
   clearInterval(binaryReadSessionExpiryTimer);
   disposeBinaryReadSenderBindings();

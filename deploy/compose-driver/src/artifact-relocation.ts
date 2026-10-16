@@ -81,7 +81,7 @@ function validateSnapshot(value: unknown, instanceId: string): asserts value is 
 }
 
 export function relocationReferences(plan: Pick<ArtifactRelocationPlan, "sourceRoot" | "targetRoot" | "before">): Array<{ table: StorageTable; row: StorageRow; column: string; oldUri: string; newUri: string; path: string; size: number; sha256?: string }> {
-  physicalFileUriBase(plan.sourceRoot); physicalFileUriBase(plan.targetRoot);
+  physicalFileUriBase(plan.sourceRoot, "posix"); physicalFileUriBase(plan.targetRoot, "posix");
   requireCondition(plan.sourceRoot !== plan.targetRoot, "roots must differ");
   const references = [];
   for (const [table, column] of PHYSICAL_FILE_URI_COLUMNS) {
@@ -89,9 +89,9 @@ export function relocationReferences(plan: Pick<ArtifactRelocationPlan, "sourceR
       const uri = row[column];
       if (uri === null) continue;
       requireCondition(typeof uri === "string", "invalid stored file URI");
-      const newUri = rebindPhysicalFileUri(uri, plan.sourceRoot, plan.targetRoot);
+      const newUri = rebindPhysicalFileUri(uri, plan.sourceRoot, plan.targetRoot, "posix");
       if (newUri === uri) continue;
-      const suffix = uri.slice(physicalFileUriBase(plan.sourceRoot).length + 1);
+      const suffix = uri.slice(physicalFileUriBase(plan.sourceRoot, "posix").length + 1);
       requireCondition(suffix !== "" && !suffix.split("/").some(part => !part || part === "." || part === "..") && !/[\0\r\n%\\]/.test(suffix), "non-canonical descendant path");
       const path = posix.join(plan.targetRoot, suffix);
       requireCondition(path.startsWith(plan.targetRoot + "/") && newUri === `file://${path}`, "path escaped destination");
@@ -132,7 +132,7 @@ function validateFiles(plan: Pick<ArtifactRelocationPlan, "sourceRoot" | "target
 
 export async function planArtifactRelocation(sourceRoot: string, deps: ArtifactRelocationDeps): Promise<ArtifactRelocationPlan> {
   const target = await deps.target();
-  physicalFileUriBase(target.artifactsRoot);
+  physicalFileUriBase(target.artifactsRoot, "posix");
   const before: unknown = JSON.parse(await deps.sql(`BEGIN TRANSACTION READ ONLY; SELECT ${ARTIFACT_STORAGE_SNAPSHOT_SQL}; COMMIT;`));
   validateSnapshot(before, target.instanceId);
   const base = { schemaVersion: 1 as const, target: structuredClone(target), sourceRoot, targetRoot: target.artifactsRoot, before };

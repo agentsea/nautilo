@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
+import { secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
+import { createDesktopSmokeOperatorRoot } from "../../scripts/desktop-connection-smoke";
 
 mock.module("electron", () => ({
   app: { getPath: () => os.tmpdir() },
@@ -22,9 +26,8 @@ async function recentServersFilePath(): Promise<string> {
 }
 
 describe("D514 smoke-only Family-C boot-state isolation", () => {
-  test("uses a harness-private 0700 root for every boot-reachable Family-C path", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "nautilo-d514-smoke-"));
-    fs.chmodSync(root, 0o700);
+  test("uses the harness-created private root for every boot-reachable Family-C path", async () => {
+    const root = createDesktopSmokeOperatorRoot();
     process.env["NAUTILO_SMOKE_HIDDEN"] = "1";
     process.env["NAUTILO_DESKTOP_SMOKE_OPERATOR_ROOT"] = root;
     try {
@@ -42,7 +45,7 @@ describe("D514 smoke-only Family-C boot-state isolation", () => {
 
   test("cannot activate from the operator-root variable alone", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "nautilo-d514-smoke-"));
-    fs.chmodSync(root, 0o700);
+    secureFilesystemPathSync(root);
     delete process.env["NAUTILO_SMOKE_HIDDEN"];
     process.env["NAUTILO_DESKTOP_SMOKE_OPERATOR_ROOT"] = root;
     try {
@@ -67,15 +70,27 @@ describe("D514 smoke-only Family-C boot-state isolation", () => {
   test("rejects a symlink even when its destination is a private harness root", async () => {
     const target = fs.mkdtempSync(path.join(os.tmpdir(), "nautilo-d514-smoke-"));
     const link = path.join(os.tmpdir(), `nautilo-d514-smoke-link-${crypto.randomUUID()}`);
-    fs.chmodSync(target, 0o700);
-    fs.symlinkSync(target, link);
+    secureFilesystemPathSync(target);
+    fs.symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
     process.env["NAUTILO_SMOKE_HIDDEN"] = "1";
     process.env["NAUTILO_DESKTOP_SMOKE_OPERATOR_ROOT"] = link;
     try {
       expect(await recentServersFilePath()).not.toBe(path.join(link, "recent-servers.json"));
     } finally {
-      fs.rmSync(link, { force: true });
+      fs.rmSync(link, { recursive: true, force: true });
       fs.rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a public directory even with the correct harness prefix", async () => {
+    const root = createDesktopSmokeOperatorRoot();
+    process.env["NAUTILO_SMOKE_HIDDEN"] = "1";
+    process.env["NAUTILO_DESKTOP_SMOKE_OPERATOR_ROOT"] = root;
+    try {
+      allowOtherReadersSync(root);
+      expect(await recentServersFilePath()).not.toBe(path.join(root, "recent-servers.json"));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

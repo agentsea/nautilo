@@ -16,7 +16,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -25,6 +24,7 @@ import { gunzipSync } from "node:zlib";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 
 /**
  * D516 qualified this exact signed release against Nautilo's admitted schemas,
@@ -307,14 +307,14 @@ export function replaceAtomically(stageDirectory: string, vendorDirectory: strin
   let movedExisting = false;
   try {
     if (existsSync(vendorDirectory)) {
-      renameSync(vendorDirectory, backupDirectory);
+      renameWithWindowsRetrySync(vendorDirectory, backupDirectory);
       movedExisting = true;
     }
-    renameSync(stageDirectory, vendorDirectory);
+    renameWithWindowsRetrySync(stageDirectory, vendorDirectory);
     if (movedExisting) rmSync(backupDirectory, { recursive: true, force: true });
   } catch (error) {
     if (!existsSync(vendorDirectory) && movedExisting && existsSync(backupDirectory)) {
-      renameSync(backupDirectory, vendorDirectory);
+      renameWithWindowsRetrySync(backupDirectory, vendorDirectory);
     }
     throw error;
   }

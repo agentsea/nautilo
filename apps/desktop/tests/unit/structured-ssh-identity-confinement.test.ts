@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
+import { basename, join, resolve, sep } from "node:path";
 
 import { createStructuredSshHostTrustBundle, type StructuredSshHostTrustFileSystem } from "../../electron/structured-ssh/identity-confinement.ts";
+
+const APP_DATA = resolve("/app-data");
+const APP_DATA_WITH_SPACES = resolve("/app data");
 
 function sshString(value: Buffer | string): Buffer {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value, "ascii");
@@ -37,13 +41,13 @@ function fakeFileSystem(): FakeFileSystem {
   const removes: { path: string; recursive: boolean | undefined }[] = [];
   let nextIno = 1;
   const add = (path: string, kind: NodeKind) => nodes.set(path, { kind, dev: 1, ino: nextIno++ });
-  add("/app-data", "directory"); add("/app data", "directory");
+  add(APP_DATA, "directory"); add(APP_DATA_WITH_SPACES, "directory");
   const stat = (node: FakeNode) => ({ isDirectory: () => node.kind === "directory", isFile: () => node.kind === "file", isSymbolicLink: () => node.kind === "symlink", dev: node.dev, ino: node.ino });
   return {
     writes, opens, removes,
     file: (path) => add(path, "file"),
     replaceRunDirectory: () => { for (const path of nodes.keys()) if (path.includes("structured-ssh-run-")) add(path, "directory"); },
-    replaceKnownHostsFile: () => { for (const path of nodes.keys()) if (path.endsWith("/known_hosts")) add(path, "file"); },
+    replaceKnownHostsFile: () => { for (const path of nodes.keys()) if (basename(path) === "known_hosts") add(path, "file"); },
     async mkdir(path, options) { if (!options.recursive && nodes.has(path)) throw errno("EEXIST"); add(path, "directory"); },
     async lstat(path) { const node = nodes.get(path); if (!node) throw errno("ENOENT"); return stat(node); },
     async realpath(path) { const node = nodes.get(path); if (!node) throw errno("ENOENT"); return node.kind === "symlink" ? `${path}-target` : path; },
@@ -54,7 +58,7 @@ function fakeFileSystem(): FakeFileSystem {
     async chmod() {},
     async rm(path, options) {
       removes.push({ path, recursive: options.recursive });
-      const descendants = [...nodes.keys()].filter((candidate) => candidate.startsWith(`${path}/`));
+      const descendants = [...nodes.keys()].filter((candidate) => candidate.startsWith(`${path}${sep}`));
       if (options.recursive !== true && descendants.length > 0) throw errno("ENOTEMPTY");
       nodes.delete(path); writes.delete(path);
       if (options.recursive === true) for (const candidate of descendants) { nodes.delete(candidate); writes.delete(candidate); }
@@ -66,37 +70,38 @@ describe("structured SSH host-trust confinement", () => {
   test("writes only an app-private pinned known_hosts file, never an identity", async () => {
     const fs = fakeFileSystem();
     const line = observedLine();
-    const bundle = await createStructuredSshHostTrustBundle({ appDataDirectory: "/app-data", target: { host: "build.example.test", port: 22 }, knownHostsLine: line }, { fs, randomHex: () => "a".repeat(32) });
-    const directory = "/app-data/structured-ssh-run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    expect(fs.opens).toEqual([{ path: `${directory}/known_hosts`, flags: "wx", mode: 0o600 }]);
-    expect(fs.writes).toEqual(new Map([[`${directory}/known_hosts`, `${line}\n`]]));
-    expect(bundle.argv).toContain(`UserKnownHostsFile=${directory}/known_hosts`);
+    const bundle = await createStructuredSshHostTrustBundle({ appDataDirectory: APP_DATA, target: { host: "build.example.test", port: 22 }, knownHostsLine: line }, { fs, randomHex: () => "a".repeat(32) });
+    const directory = join(APP_DATA, "structured-ssh-run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    const knownHosts = join(directory, "known_hosts");
+    expect(fs.opens).toEqual([{ path: knownHosts, flags: "wx", mode: 0o600 }]);
+    expect(fs.writes).toEqual(new Map([[knownHosts, `${line}\n`]]));
+    expect(bundle.argv).toContain(`UserKnownHostsFile=${process.platform === "win32" ? JSON.stringify(knownHosts) : knownHosts}`);
     expect(bundle.argv.join(" ")).not.toContain("IdentityAgent");
     expect(bundle.argv.join(" ")).not.toContain("IdentitiesOnly");
     expect(bundle.argv.join(" ")).not.toContain("-i");
     expect(bundle.argv).toContain("BatchMode=yes");
     expect(bundle.argv).toContain("ClearAllForwardings=yes");
-    const redacted = bundle.redactOutput(`ordinary ${directory}/known_hosts ${directory} /app-data`);
+    const redacted = bundle.redactOutput(`ordinary ${knownHosts} ${directory} ${APP_DATA}`);
     expect(redacted).toContain("ordinary");
     expect(redacted).not.toContain(directory);
-    expect(redacted).not.toContain("/app-data");
-    await expect(bundle.validateForLaunch()).resolves.toBeUndefined();
+    expect(redacted).not.toContain(APP_DATA);
+    await bundle.validateForLaunch();
     await bundle.cleanup();
-    expect(fs.removes).toEqual([{ path: `${directory}/known_hosts`, recursive: undefined }, { path: directory, recursive: undefined }]);
+    expect(fs.removes).toEqual([{ path: knownHosts, recursive: undefined }, { path: directory, recursive: undefined }]);
   });
 
   test("reconstructs the pin and rejects comments, wrong hosts, and malformed data before mutation", async () => {
     for (const line of [`${observedLine()} comment`, `${observedLine()}\n`, `other.example.test ${observedLine().split(" ").slice(1).join(" ")}`, `[build.example.test]:22 ${observedLine().split(" ").slice(1).join(" ")}`]) {
       const fs = fakeFileSystem();
-      await expect(createStructuredSshHostTrustBundle({ appDataDirectory: "/app-data", target: { host: "build.example.test", port: 22 }, knownHostsLine: line }, { fs })).rejects.toThrow("input is invalid");
+      await expect(createStructuredSshHostTrustBundle({ appDataDirectory: APP_DATA, target: { host: "build.example.test", port: 22 }, knownHostsLine: line }, { fs })).rejects.toThrow("input is invalid");
       expect(fs.opens).toEqual([]);
     }
-    const ipv6 = await createStructuredSshHostTrustBundle({ appDataDirectory: "/app data", target: { host: "2001:db8::8", port: 2222 }, knownHostsLine: observedLine("2001:db8::8", 2222) }, { fs: fakeFileSystem(), randomHex: () => "b".repeat(32) });
-    expect(ipv6.argv).toContain('UserKnownHostsFile="/app data/structured-ssh-run-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/known_hosts"');
+    const ipv6 = await createStructuredSshHostTrustBundle({ appDataDirectory: APP_DATA_WITH_SPACES, target: { host: "2001:db8::8", port: 2222 }, knownHostsLine: observedLine("2001:db8::8", 2222) }, { fs: fakeFileSystem(), randomHex: () => "b".repeat(32) });
+    expect(ipv6.argv).toContain(`UserKnownHostsFile=${JSON.stringify(join(APP_DATA_WITH_SPACES, "structured-ssh-run-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "known_hosts"))}`);
   });
 
   test("fails closed on scratch or known_hosts replacement and never recursively cleans a replacement", async () => {
-    const make = (fs: FakeFileSystem, suffix: string) => createStructuredSshHostTrustBundle({ appDataDirectory: "/app-data", target: { host: "build.example.test", port: 22 }, knownHostsLine: observedLine() }, { fs, randomHex: () => suffix.repeat(32) });
+    const make = (fs: FakeFileSystem, suffix: string) => createStructuredSshHostTrustBundle({ appDataDirectory: APP_DATA, target: { host: "build.example.test", port: 22 }, knownHostsLine: observedLine() }, { fs, randomHex: () => suffix.repeat(32) });
     const directoryFs = fakeFileSystem(); const directoryBundle = await make(directoryFs, "c"); directoryFs.replaceRunDirectory();
     await expect(directoryBundle.validateForLaunch()).rejects.toThrow("scratch directory changed before launch"); await directoryBundle.cleanup(); expect(directoryFs.removes).toEqual([]);
     const hostFs = fakeFileSystem(); const hostBundle = await make(hostFs, "d"); hostFs.replaceKnownHostsFile();
@@ -105,10 +110,10 @@ describe("structured SSH host-trust confinement", () => {
 
   test("refuses to recursively delete an injected scratch child", async () => {
     const fs = fakeFileSystem();
-    const bundle = await createStructuredSshHostTrustBundle({ appDataDirectory: "/app-data", target: { host: "build.example.test", port: 22 }, knownHostsLine: observedLine() }, { fs, randomHex: () => "e".repeat(32) });
-    const directory = "/app-data/structured-ssh-run-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
-    fs.file(`${directory}/unexpected`);
+    const bundle = await createStructuredSshHostTrustBundle({ appDataDirectory: APP_DATA, target: { host: "build.example.test", port: 22 }, knownHostsLine: observedLine() }, { fs, randomHex: () => "e".repeat(32) });
+    const directory = join(APP_DATA, "structured-ssh-run-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+    fs.file(join(directory, "unexpected"));
     await bundle.cleanup();
-    expect(fs.removes).toEqual([{ path: `${directory}/known_hosts`, recursive: undefined }, { path: directory, recursive: undefined }]);
+    expect(fs.removes).toEqual([{ path: join(directory, "known_hosts"), recursive: undefined }, { path: directory, recursive: undefined }]);
   });
 });

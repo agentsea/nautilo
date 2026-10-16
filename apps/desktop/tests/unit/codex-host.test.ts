@@ -1044,7 +1044,8 @@ describe("ElectronCodexHost", () => {
     await controller.close();
   });
 
-  test("per-session client callbacks stay bound to the exact supervisor and delegate faults", async () => {
+  // This integration uses the POSIX profile-home owner/mode contract.
+  test.skipIf(process.platform === "win32")("per-session client callbacks stay bound to the exact supervisor and delegate faults", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "nautilo-codex-client-callbacks-")));
     const callbacks: ElectronCodexClientCallbackBuilderInput[] = [];
     const faults: unknown[] = [];

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
+import { resolve, sep } from "node:path";
 
 import {
   ACP_DEFAULT_INITIALIZE_TIMEOUT_MS,
@@ -188,8 +189,8 @@ const baseEnvironment = Object.freeze({
 
 function admission(registrationId: "hermes-acp" | "opencode-acp"): AcpCanonicalLaunchAdmission {
   return {
-    executablePath: registrationId === "hermes-acp" ? "/approved/bin/hermes" : "/approved/bin/opencode",
-    cwd: "/approved/workspace",
+    executablePath: resolve("/approved/bin", registrationId === "hermes-acp" ? "hermes" : "opencode"),
+    cwd: resolve("/approved/workspace"),
     environment: baseEnvironment,
   };
 }
@@ -246,23 +247,23 @@ describe("AcpHostRuntime", () => {
     const h = harness();
     const hermes = await h.runtime.start({ bindingId: "binding-hermes", registrationId: "hermes-acp" });
     expect(h.processes.specs[0]).toEqual({
-      executablePath: "/approved/bin/hermes",
+      executablePath: resolve("/approved/bin/hermes"),
       args: ["-p", "nautilo-acp", "acp"],
-      cwd: "/approved/workspace",
+      cwd: resolve("/approved/workspace"),
       env: { ...baseEnvironment, HERMES_ACP_SKIP_CONFIGURED_MCP: "1" },
       shell: false,
       detached: true,
     });
-    expect(h.readiness.calls[0]?.cwd).toBe("/approved/workspace");
+    expect(h.readiness.calls[0]?.cwd).toBe(resolve("/approved/workspace"));
     expect(hermes).toEqual({ bindingId: "binding-hermes", registrationId: "hermes-acp", generation: 1, state: "ready", stderr: "none" });
     expect(JSON.stringify(hermes)).not.toContain("approved");
     await h.runtime.stop("binding-hermes", 1);
 
     await h.runtime.start({ bindingId: "binding-opencode", registrationId: "opencode-acp" });
     expect(h.processes.specs[1]).toMatchObject({
-      executablePath: "/approved/bin/opencode",
+      executablePath: resolve("/approved/bin/opencode"),
       args: ["acp"],
-      cwd: "/approved/workspace",
+      cwd: resolve("/approved/workspace"),
       env: baseEnvironment,
       shell: false,
       detached: true,
@@ -351,8 +352,8 @@ describe("AcpHostRuntime", () => {
 
   test("rejects noncanonical paths, executable substitution, and non-allowlisted environment before spawn", async () => {
     const cases: AcpCanonicalLaunchAdmission[] = [
-      { ...admission("hermes-acp"), cwd: "/approved/../different" },
-      { ...admission("hermes-acp"), executablePath: "/approved/bin/opencode" },
+      { ...admission("hermes-acp"), cwd: `${resolve("/approved")}${sep}..${sep}different` },
+      { ...admission("hermes-acp"), executablePath: resolve("/approved/bin/opencode") },
       { ...admission("hermes-acp"), environment: { ...baseEnvironment, OPENAI_API_KEY: "must-not-cross" } },
     ];
     for (const [index, value] of cases.entries()) {
@@ -710,8 +711,7 @@ describe("AcpHostRuntime", () => {
     expect(() => createNodeAcpProcessTreeAdapter("win32")).toThrow("ACP process-tree containment is unavailable");
   });
 
-  test("the built-in POSIX adapter contains independently detached descendant groups", async () => {
-    if (process.platform === "win32") return;
+  test.skipIf(process.platform === "win32")("the built-in POSIX adapter contains independently detached descendant groups", async () => {
     const detachedChildScript = [
       'const { spawn } = require("node:child_process");',
       'process.on("SIGTERM", () => undefined);',
@@ -776,8 +776,7 @@ describe("AcpHostRuntime", () => {
     }
   });
 
-  test("the built-in POSIX adapter never claims absence after ancestry was lost before capture", async () => {
-    if (process.platform === "win32") return;
+  test.skipIf(process.platform === "win32")("the built-in POSIX adapter never claims absence after ancestry was lost before capture", async () => {
     const root = spawn(process.execPath, ["-e", [
       'const { spawn } = require("node:child_process");',
       'const child = spawn("/bin/sleep", ["30"], { detached: true, stdio: "ignore" });',

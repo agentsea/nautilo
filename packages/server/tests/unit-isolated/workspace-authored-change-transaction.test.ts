@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { physicalPathFromStorageUri } from "../../../db/src/utils/physical-storage-uris.ts";
 
 const transactionHandle = { select: mock(() => undefined) };
 let transactionShouldThrow = false;
@@ -29,6 +30,7 @@ const historyMock = mock(async (tx: unknown) => {
 const reduceMock = mock(() => ({ kind: "valid", undo: [historyRecord], redo: [], current: historyRecord }));
 
 mock.module("@nautilo/db", () => ({
+  physicalPathFromStorageUri,
   lockWorkspaceArtifactForCurrentRoomAuthority: lockMock,
   listWorkspaceRoomDocumentHistory: historyMock,
   reduceWorkspaceDocumentHistoryLineage: reduceMock,

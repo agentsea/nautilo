@@ -15,8 +15,10 @@ import {
 import { LocalDurableMutationJournal } from "../../electron/local-file-history/durable-mutations.ts";
 import { LocalFileHistoryJournal } from "../../electron/local-file-history/journal.ts";
 import { createJournalStorage } from "../../electron/local-file-history/storage.ts";
+import { journalRootLockKey, withJournalRootLock } from "../../electron/local-file-history/journal-root-lock.ts";
 
 const roots: string[] = [];
+const runtimes: DesktopDocumentMutationRuntime[] = [];
 const RELAY = "relay-editor-save";
 const HUMAN = "human-editor-save";
 const agentMutation = {
@@ -24,6 +26,14 @@ const agentMutation = {
   semanticDigest: "test-semantics",
 } as const;
 const flushOutbox = async () => await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+async function rejectedLink(target: string, link: string): Promise<void> {
+  // These cases must reject the link itself or replay without inspecting it.
+  // Directory junctions exercise that boundary without Windows symlink elevation.
+  await fs.symlink(process.platform === "win32" ? path.dirname(target) : target,
+    link, process.platform === "win32" ? "junction" : "file");
+  expect((await fs.lstat(link)).isSymbolicLink()).toBe(true);
+}
 async function waitFor(
   probe: () => boolean | Promise<boolean>,
   attempts = 100,
@@ -35,9 +45,11 @@ async function waitFor(
   throw new Error("condition did not become true");
 }
 
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
-});
+function createRuntime(dependencies: ConstructorParameters<typeof DesktopDocumentMutationRuntime>[0]): DesktopDocumentMutationRuntime {
+  const runtime = new DesktopDocumentMutationRuntime(dependencies);
+  runtimes.push(runtime);
+  return runtime;
+}
 
 async function fixture(input: { publisher?: "published" | "not_published" | "unknown" } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "desktop-editor-save-"));
@@ -49,7 +61,7 @@ async function fixture(input: { publisher?: "published" | "not_published" | "unk
   const canonicalPath = await adapter.canonicalize(requestedPath);
   const journal = new LocalDurableMutationJournal({ rootDir: journalRoot, relayId: RELAY, fileAdapter: adapter });
   const batches: unknown[] = [];
-  const runtime = new DesktopDocumentMutationRuntime({
+  const runtime = createRuntime({
     getTrustedRelayId: () => RELAY,
     getTrustedHumanId: () => HUMAN,
     fileAdapter: adapter,
@@ -65,6 +77,41 @@ async function fixture(input: { publisher?: "published" | "not_published" | "unk
 }
 
 describe("DesktopDocumentMutationRuntime", () => {
+  afterEach(async () => {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.stopOutboxPump()));
+    await Promise.all(roots.splice(0).map(root => fs.rm(root, { recursive: true, force: true })));
+  });
+
+  test("shutdown waits for an in-flight outbox delivery before journal cleanup", async () => {
+    const fx = await fixture();
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const delivery = new Promise<"published">(resolve => { release = () => resolve("published"); });
+    const runtime = createRuntime({
+      getTrustedRelayId: () => RELAY, getTrustedHumanId: () => HUMAN,
+      fileAdapter: fx.adapter, journal: fx.journal,
+      publishToRenderer: async () => { entered(); return delivery; },
+    });
+    try {
+      const result = await runtime.commitAgentContent({
+        ...agentMutation, targetPath: fx.requestedPath,
+        before: Buffer.from("before\n"), after: Buffer.from("after\n"),
+        agentId: "agent-file-tool", turnId: "turn-stop", command: "write",
+        reauthorize: async () => undefined,
+      });
+      expect(result.ok).toBe(true);
+      await started;
+      let settled = false;
+      const stopped = runtime.stopOutboxPump().then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      release();
+      await stopped;
+      expect(settled).toBe(true);
+    } finally { release(); }
+  });
+
   test("ordinary agent content commits produce one V2 receipt and one exact event batch", async () => {
     const fx = await fixture();
     const before = Buffer.from("before\n");
@@ -252,7 +299,7 @@ describe("DesktopDocumentMutationRuntime", () => {
 
     const symlinkTarget = path.join(fx.root, "unrelated.md");
     await fs.writeFile(symlinkTarget, "unrelated\n");
-    await fs.symlink(symlinkTarget, fx.requestedPath);
+    await rejectedLink(symlinkTarget, fx.requestedPath);
     expect(await retry()).toMatchObject({
       ok: true,
       replayed: true,
@@ -487,7 +534,7 @@ describe("DesktopDocumentMutationRuntime", () => {
     const outsideFile = path.join(outsideRoot, "outside.md");
     const symlink = path.join(fx.root, "escape.md");
     await fs.writeFile(outsideFile, "outside\n");
-    await fs.symlink(outsideFile, symlink);
+    await rejectedLink(outsideFile, symlink);
     const escapedSymlink = await fx.runtime.registerHumanEditLease({
       sessionId: "desktop-editor-session",
       target: { kind: "local_file", relayId: RELAY, candidatePath: symlink },
@@ -496,7 +543,7 @@ describe("DesktopDocumentMutationRuntime", () => {
     expect(escapedSymlink).toMatchObject({ status: "invalid" });
 
     const insideSymlink = path.join(fx.root, "alias.md");
-    await fs.symlink(fx.requestedPath, insideSymlink);
+    await rejectedLink(fx.requestedPath, insideSymlink);
     const finalSymlink = await fx.runtime.registerHumanEditLease({
       sessionId: "desktop-editor-session",
       target: { kind: "local_file", relayId: RELAY, candidatePath: insideSymlink },
@@ -980,7 +1027,7 @@ describe("DesktopDocumentMutationRuntime", () => {
 
   test("fails closed when a trusted human actor cannot be resolved", async () => {
     const fx = await fixture();
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => null,
       fileAdapter: fx.adapter,
@@ -999,7 +1046,7 @@ describe("DesktopDocumentMutationRuntime", () => {
   test("revalidates trusted human identity at commit after prepare", async () => {
     const fx = await fixture();
     let lookups = 0;
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => {
         lookups += 1;
@@ -1030,10 +1077,10 @@ describe("DesktopDocumentMutationRuntime", () => {
       (await fx.journal.lookupOperation("editor-operation"))?.outbox.state === "pending"
     );
     expect((await fx.journal.lookupOperation("editor-operation"))?.outbox.state).toBe("pending");
-    fx.runtime.stopOutboxPump();
+    await fx.runtime.stopOutboxPump();
 
     const delivered: unknown[] = [];
-    const replay = new DesktopDocumentMutationRuntime({
+    const replay = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => HUMAN,
       fileAdapter: fx.adapter,
@@ -1054,23 +1101,29 @@ describe("DesktopDocumentMutationRuntime", () => {
 
   test("save success never waits for renderer acknowledgement", async () => {
     const fx = await fixture();
-    const runtime = new DesktopDocumentMutationRuntime({
+    let acknowledge!: () => void;
+    const acknowledgement = new Promise<"published">(resolve => { acknowledge = () => resolve("published"); });
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => HUMAN,
       fileAdapter: fx.adapter,
       journal: fx.journal,
       newOperationId: () => "nonblocking-ack-operation",
       newRevisionGroupId: () => "nonblocking-ack-group",
-      publishToRenderer: async () => await new Promise<"published">(() => {}),
+      publishToRenderer: async () => acknowledgement,
     });
-    const result = await runtime.saveExistingFile({
-      path: fx.requestedPath,
-      content: "after\n",
-      baseSha256: sha256Hex(Buffer.from("before\n")),
-    });
-    expect(result).toMatchObject({ ok: true });
-    expect(await fs.readFile(fx.requestedPath, "utf8")).toBe("after\n");
-    runtime.stopOutboxPump();
+    try {
+      const result = await runtime.saveExistingFile({
+        path: fx.requestedPath,
+        content: "after\n",
+        baseSha256: sha256Hex(Buffer.from("before\n")),
+      });
+      expect(result).toMatchObject({ ok: true });
+      expect(await fs.readFile(fx.requestedPath, "utf8")).toBe("after\n");
+    } finally {
+      acknowledge();
+      await runtime.stopOutboxPump();
+    }
   });
 
   test("delivered-only idle state does not rewrite the manifest on a timer", async () => {
@@ -1090,14 +1143,14 @@ describe("DesktopDocumentMutationRuntime", () => {
     const after = await fs.stat(manifestPath);
     expect(after.mtimeMs).toBe(before.mtimeMs);
     expect(await fs.readFile(manifestPath)).toEqual(beforeBytes);
-    fx.runtime.stopOutboxPump();
+    await fx.runtime.stopOutboxPump();
   });
 
   test("one pump drains every currently due committed batch, not one batch per wake", async () => {
     const fx = await fixture();
     let publish = false;
     let ids = 0;
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => HUMAN,
       fileAdapter: fx.adapter,
@@ -1159,7 +1212,7 @@ describe("DesktopDocumentMutationRuntime", () => {
         throw new Error("simulated canonical path drift before replacement");
       },
     };
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => HUMAN,
       fileAdapter: drifting,
@@ -1189,7 +1242,7 @@ describe("DesktopDocumentMutationRuntime", () => {
         return await originalRead(filePath);
       };
     });
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => HUMAN,
       fileAdapter: fx.adapter,
@@ -1213,7 +1266,7 @@ describe("DesktopDocumentMutationRuntime", () => {
   test("generation loss after a proven commit preserves save success and durable outbox truth", async () => {
     const fx = await fixture();
     let current = true;
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => RELAY,
       getTrustedHumanId: () => HUMAN,
       fileAdapter: fx.adapter,
@@ -1260,7 +1313,7 @@ describe("DesktopDocumentMutationRuntime", () => {
       relayId: "replacement-relay",
       fileAdapter: fx.adapter,
     });
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => "replacement-relay",
       getTrustedHumanId: () => HUMAN,
       fileAdapter: fx.adapter,
@@ -1595,14 +1648,16 @@ describe("DesktopDocumentMutationRuntime", () => {
     expect(first).toMatchObject({ ok: true });
     expect(second).toMatchObject({ ok: true });
     const storage = createJournalStorage(fx.journalRoot);
-    const manifest = await storage.readManifest();
-    if (manifest?.v !== 3) throw new Error("expected current manifest");
-    await storage.writeManifest({
-      ...manifest,
-      mutations: manifest.mutations.map((intent) => ({
-        ...intent,
-        createdAt: "2026-01-01T00:00:00.000Z",
-      })),
+    await withJournalRootLock(journalRootLockKey(await fs.realpath(fx.journalRoot)), async () => {
+      const manifest = await storage.readManifest();
+      if (manifest?.v !== 3) throw new Error("expected current manifest");
+      await storage.writeManifest({
+        ...manifest,
+        mutations: manifest.mutations.map((intent) => ({
+          ...intent,
+          createdAt: "2026-01-01T00:00:00.000Z",
+        })),
+      });
     });
     const ordered = (await fx.journal.readCanonicalHistoryRecords()).filter(
       (record) =>
@@ -1689,7 +1744,7 @@ describe("DesktopDocumentMutationRuntime", () => {
     const outside = path.join(os.tmpdir(), `d448-delete-outside-${crypto.randomUUID()}`);
     roots.push(outside);
     await fs.writeFile(outside, "outside");
-    await fs.symlink(outside, fx.requestedPath);
+    await rejectedLink(outside, fx.requestedPath);
     const retry = await fx.runtime.commitAgentStructural({
       ...identity,
       replayOnly: true,
@@ -1727,7 +1782,7 @@ describe("DesktopDocumentMutationRuntime", () => {
       const outside = path.join(os.tmpdir(), `d448-${command}-outside-${crypto.randomUUID()}`);
       roots.push(outside);
       await fs.writeFile(outside, "outside");
-      await fs.symlink(outside, destinationPath);
+      await rejectedLink(outside, destinationPath);
       const retry = await fx.runtime.commitAgentStructural({
         ...identity,
         replayOnly: true,

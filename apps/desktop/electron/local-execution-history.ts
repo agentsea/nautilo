@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { parseRelayLocalExecutionBinding, type RelayLocalExecutionOwnerV1 } from "@nautilo/relay";
+import { ensurePrivateDirectory, publishPrivateFileAtomically, syncDirectory } from "@nautilo/config/private-filesystem";
 import type { LocalExecutionSnapshot } from "./local-execution-host";
 
 export interface LocalExecutionHistoryScope {
@@ -95,26 +96,29 @@ export class LocalExecutionHistoryStore {
       if (epoch !== this.epoch) return;
       this.protectedStorage();
       if (!parseLocalExecutionHistoryRecord(captured)) throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
-      await fs.mkdir(this.options.directory, { recursive: true, mode: 0o700 });
-      if (!(await fs.lstat(this.options.directory)).isDirectory()) throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
+      try {
+        await ensurePrivateDirectory(this.options.directory);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOTDIR") throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
+        throw error;
+      }
       const existing = await this.readRecord(captured.generation, captured.snapshot.executionId);
       if (existing !== null) {
         if (JSON.stringify(existing) !== JSON.stringify(captured)) throw new Error("LOCAL_EXECUTION_HISTORY_CONFLICT");
         return;
       }
       const target = this.file(captured.generation, captured.snapshot.executionId);
-      const temporary = `${target}.${randomUUID()}.tmp`;
       const bytes = Buffer.concat([HEADER, this.options.storage.encryptString(JSON.stringify(captured))]);
-      let ownsTemporary = false;
-      try {
-        const file = await fs.open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
-        ownsTemporary = true;
-        try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
-        if (epoch !== this.epoch) return;
-        await fs.rename(temporary, target);
-        const directory = await fs.open(this.options.directory, constants.O_RDONLY | constants.O_NOFOLLOW);
-        try { await directory.sync(); } finally { await directory.close(); }
-      } finally { if (ownsTemporary) await fs.rm(temporary, { force: true }); }
+      // A newer epoch must not publish; the aborted temporary file is removed.
+      let superseded = false;
+      await publishPrivateFileAtomically(target, bytes, {
+        beforePublish: () => {
+          superseded = epoch !== this.epoch;
+          if (superseded) throw new Error("LOCAL_EXECUTION_HISTORY_SUPERSEDED");
+        },
+      }).catch((error: unknown) => { if (!superseded) throw error; });
+      if (superseded) return;
+      await syncDirectory(this.options.directory);
     });
   }
   async read(scope: LocalExecutionHistoryScope, generation: string, executionId: string): Promise<LocalExecutionHistoryRecord | null> {
@@ -127,10 +131,18 @@ export class LocalExecutionHistoryStore {
   private async readRecord(generation: string, executionId: string): Promise<LocalExecutionHistoryRecord | null> {
     try {
       if (!(await fs.lstat(this.options.directory)).isDirectory()) throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
-      const file = await fs.open(this.file(generation, executionId), constants.O_RDONLY | constants.O_NOFOLLOW);
+      const filePath = this.file(generation, executionId);
+      const entry = await fs.lstat(filePath, { bigint: true });
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
+      const file = await fs.open(filePath, constants.O_RDONLY | (process.platform === "win32" ? 0 : constants.O_NOFOLLOW));
       let bytes: Buffer;
       try {
-        if (!(await file.stat()).isFile()) throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
+        const opened = await file.stat({ bigint: true });
+        const current = await fs.lstat(filePath, { bigint: true });
+        if (!opened.isFile() || opened.dev !== entry.dev || opened.ino !== entry.ino || opened.size !== entry.size ||
+          !current.isFile() || current.isSymbolicLink() || current.dev !== opened.dev || current.ino !== opened.ino) {
+          throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");
+        }
         bytes = await file.readFile();
       } finally { await file.close(); }
       if (!bytes.subarray(0, HEADER.length).equals(HEADER)) throw new Error("LOCAL_EXECUTION_HISTORY_INVALID");

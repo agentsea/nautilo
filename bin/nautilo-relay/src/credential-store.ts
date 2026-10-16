@@ -1,20 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  chmod,
   lstat,
   mkdir,
-  open,
   readFile,
-  unlink,
-  type FileHandle,
 } from "node:fs/promises";
 import { join } from "node:path";
+import {
+  ensurePrivateDirectory,
+  isPrivateFilesystemPathAsync,
+  writePrivateFileExclusive,
+} from "@nautilo/config/private-filesystem";
 
 import { normalizeRelayServerUrl } from "./bootstrap";
 
 const FORMAT_VERSION = 1 as const;
 const OWNER_ONLY_DIRECTORY_MODE = 0o700;
-const OWNER_ONLY_FILE_MODE = 0o600;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const RELAY_TOKEN_RE = /^rty_[A-Za-z0-9_-]{32}$/;
@@ -90,42 +90,13 @@ function isMissing(error: unknown): boolean {
 }
 
 async function ensureOwnerOnlyDirectory(path: string): Promise<void> {
-  let created = false;
   try {
-    await mkdir(path, { mode: OWNER_ONLY_DIRECTORY_MODE });
-    created = true;
-  } catch (error) {
-    if (!isAlreadyExists(error)) throw new RelayCredentialStorageError();
-  }
-  let status;
-  try {
-    status = await lstat(path);
+    await ensurePrivateDirectory(path);
+    if (!(await isPrivateFilesystemPathAsync(path))) {
+      throw new RelayCredentialStorageError("Relay pairing directory is unsafe");
+    }
   } catch {
     throw new RelayCredentialStorageError();
-  }
-  const currentUid = process.getuid?.();
-  if (
-    status.isSymbolicLink() ||
-    !status.isDirectory() ||
-    (currentUid !== undefined && status.uid !== currentUid)
-  ) {
-    throw new RelayCredentialStorageError("Relay pairing directory is unsafe");
-  }
-  if (created || (process.platform !== "win32" && (status.mode & 0o077) !== 0)) {
-    try {
-      await chmod(path, OWNER_ONLY_DIRECTORY_MODE);
-    } catch {
-      throw new RelayCredentialStorageError();
-    }
-  }
-  const secured = await lstat(path);
-  if (
-    secured.isSymbolicLink() ||
-    !secured.isDirectory() ||
-    (process.platform !== "win32" && (secured.mode & 0o077) !== 0) ||
-    (currentUid !== undefined && secured.uid !== currentUid)
-  ) {
-    throw new RelayCredentialStorageError("Relay pairing directory is unsafe");
   }
 }
 
@@ -181,12 +152,10 @@ async function readPairingIdentity(path: string, serverUrl: string): Promise<Rel
     if (isMissing(error)) return null;
     throw new RelayCredentialStorageError();
   }
-  const currentUid = process.getuid?.();
   if (
     status.isSymbolicLink() ||
     !status.isFile() ||
-    (process.platform !== "win32" && (status.mode & 0o077) !== 0) ||
-    (currentUid !== undefined && status.uid !== currentUid)
+    !(await isPrivateFilesystemPathAsync(path))
   ) {
     throw new RelayCredentialStorageError("Relay pairing metadata is unsafe");
   }
@@ -199,30 +168,17 @@ async function readPairingIdentity(path: string, serverUrl: string): Promise<Rel
 }
 
 async function persistNewPairingIdentity(path: string, identity: RelayPairingIdentity): Promise<boolean> {
-  let handle: FileHandle;
+  const persisted: PersistedPairingIdentity = {
+    formatVersion: FORMAT_VERSION,
+    serverScope: relayCredentialScope(identity.serverUrl),
+    installationId: identity.installationId,
+  };
   try {
-    handle = await open(path, "wx", OWNER_ONLY_FILE_MODE);
+    await writePrivateFileExclusive(path, Buffer.from(JSON.stringify(persisted)));
+    return true;
   } catch (error) {
     if (isAlreadyExists(error)) return false;
     throw new RelayCredentialStorageError();
-  }
-  let succeeded = false;
-  try {
-    await handle.chmod(OWNER_ONLY_FILE_MODE);
-    const persisted: PersistedPairingIdentity = {
-      formatVersion: FORMAT_VERSION,
-      serverScope: relayCredentialScope(identity.serverUrl),
-      installationId: identity.installationId,
-    };
-    await handle.writeFile(JSON.stringify(persisted), "utf8");
-    await handle.sync();
-    succeeded = true;
-    return true;
-  } catch {
-    throw new RelayCredentialStorageError();
-  } finally {
-    await handle.close().catch(() => undefined);
-    if (!succeeded) await unlink(path).catch(() => undefined);
   }
 }
 
