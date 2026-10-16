@@ -198,12 +198,12 @@ missing runtime components.
 
 `.github/workflows/windows-desktop.yml` runs on the Windows 2025 image with
 Visual Studio 2026 for pull requests that touch relevant source and on manual
-dispatch. It checks the pinned toolchain, frozen install, package typechecks,
-first-party install and seeding tests, all repository invariants, Writer and
-Video builds and unit tests, `package:win`, a packaged Relay Host launch test,
-and a hidden Desktop boot
-smoke. It installs each app's
-development dependencies before its contributor checks. The smoke does not
+dispatch. Three parallel jobs each check the pinned toolchain and run a frozen
+install: one runs the Windows unit gate, including first-party install and
+seeding tests and the Writer and Video unit tests; one runs all repository
+invariants and the package typechecks; one builds Writer and Video, runs
+`package:win`, a packaged Relay Host launch test and a hidden Desktop boot
+smoke. Each job installs the apps' development dependencies before its checks. The smoke does not
 claim an owner or run a local Docker server. The Writer DOCX/OfficeCLI
 integration test remains a separate opt-in check. A local YAML check and
 packaged smoke pass do not substitute for a hosted workflow run.

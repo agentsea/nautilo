@@ -24,7 +24,7 @@ test("hosted Windows runs the complete repository invariant entry point", () => 
   const workflow = Bun.YAML.parse(readFileSync(join(repositoryRoot, ".github/workflows/windows-desktop.yml"), "utf8")) as {
     jobs: Record<string, { steps: { run?: string; if?: unknown }[] }>;
   };
-  const step = workflow.jobs["windows-x64"]!.steps.find(step => step.run === "bun run test:invariants");
+  const step = Object.values(workflow.jobs).flatMap(job => job.steps).find(step => step.run === "bun run test:invariants");
   expect(step).toBeDefined();
   expect(step!.if).toBeUndefined();
 });
