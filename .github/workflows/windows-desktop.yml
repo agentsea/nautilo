@@ -103,7 +103,7 @@ concurrency:
 
 # Three independent jobs instead of one sequential chain: each spends about
 # six minutes on its own install, and the unit gate, the type checks and the
-# packaging then run side by side (about 24 minutes in a row before).
+# packaging then run side by side (about 21 minutes in a row before).
 jobs:
   windows-unit-tests:
     name: Windows x64 unit tests
