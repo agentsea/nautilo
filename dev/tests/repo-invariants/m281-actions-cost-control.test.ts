@@ -401,7 +401,7 @@ describe("M281 GitHub Actions cost controls", () => {
 
   test("Windows validation covers its transitive workspaces and root build inputs", async () => {
     const windows = await workflow("windows-desktop.yml");
-    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
+    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "schedule", "workflow_dispatch"]);
     expect(eventConfig(windows.on.pull_request).branches).toEqual(["main"]);
     const paths = eventPaths(windows.on.pull_request);
     for (const name of [
@@ -415,6 +415,7 @@ describe("M281 GitHub Actions cost controls", () => {
       "package.json", "bun.lock", "bunfig.toml", ".bun-version", ".gitattributes", "turbo.json",
       "tsconfig.base.json", "patches/dependency.patch",
       "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
+      "dev/scripts/windows-validation-scope.ts", "native/apply-patch/Cargo.toml",
       "dev/scripts/test-repo-invariants.ts",
       "dev/tests/test-lifecycle-preload.ts",
       "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",

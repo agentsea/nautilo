@@ -19,6 +19,7 @@ on:
       - "dev/scripts/prepare-*.ts"
       - "dev/scripts/vendor-agent-browser.ts"
       - "dev/scripts/windows-unit-gate.ts"
+      - "dev/scripts/windows-validation-scope.ts"
       - "dev/scripts/test-repo-invariants.ts"
       - "dev/scripts/pre-push-gate.sh"
       - "dev/scripts/ci-gates.sh"
@@ -91,7 +92,12 @@ on:
       - "tsconfig*.json"
       - "turbo.json"
       - "patches/**"
+      - "native/apply-patch/**"
+      - "**/package.json"
+      - "**/bun.lock"
       - "scripts/stack309-ios-simulator-input-helper.test.ts"
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 permissions:
@@ -103,7 +109,7 @@ concurrency:
 
 jobs:
   windows-x64:
-    name: Windows x64 install, package, and boot
+    name: Windows x64 validation
     runs-on: windows-2025-vs2026
     timeout-minutes: 50
     defaults:
@@ -113,6 +119,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -137,6 +144,10 @@ jobs:
           $gitBash = Join-Path $gitBashDirectory 'bash.exe'
           if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw 'Native Git Bash is missing' }
           Add-Content -LiteralPath $env:GITHUB_PATH -Value $gitBashDirectory
+
+      - name: Determine Windows validation scope
+        id: validation-scope
+        run: bun dev/scripts/windows-validation-scope.ts
 
       - name: Install frozen dependencies
         run: bun install --frozen-lockfile
@@ -166,38 +177,45 @@ jobs:
         run: bun run test:invariants
 
       - name: Typecheck Desktop
+        if: steps.validation-scope.outputs.full == 'true'
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: bun run --cwd apps/desktop typecheck
 
       - name: Typecheck development tools
+        if: steps.validation-scope.outputs.full == 'true'
         env:
           # A cold check of the development-tools graph uses about 4.4 GiB.
           NODE_OPTIONS: --max-old-space-size=6144
         run: bun run --cwd bin/nautilo-dev typecheck
 
       - name: Typecheck database
+        if: steps.validation-scope.outputs.full == 'true'
         run: bun run --cwd packages/db typecheck
 
       - name: Typecheck server
+        if: steps.validation-scope.outputs.full == 'true'
         env:
           # A cold check of the server graph uses about 5.6 GiB on Windows.
           NODE_OPTIONS: --max-old-space-size=8192
         run: bun run --cwd packages/server typecheck
 
       - name: Build Windows Desktop installer
+        if: steps.validation-scope.outputs.full == 'true'
         env:
           CI: 'true'
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: bun run --cwd apps/desktop package:win
 
       - name: Verify packaged Relay Host launch
+        if: steps.validation-scope.outputs.full == 'true'
         run: |
           $appRoot = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked'
           $env:NAUTILO_PACKAGED_RESOURCES = Join-Path $appRoot 'resources'
           bun test apps/desktop/tests/unit-isolated/packaged-relay-host.test.ts
 
       - name: Smoke-test packaged Desktop boot
+        if: steps.validation-scope.outputs.full == 'true'
         run: |
           $appPath = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked\Nautilo.exe'
           if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw 'Packaged Nautilo.exe is missing' }

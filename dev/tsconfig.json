@@ -16,6 +16,7 @@
     "tests/repo-invariants/migration-hook.test.ts",
     "tests/repo-invariants/publication-boundaries.test.ts",
     "tests/repo-invariants/workflow-security-invariants.test.ts",
+    "tests/repo-invariants/windows-validation-scope.test.ts",
     "tests/repo-invariants/test-turbo-cache-guard.test.ts",
     "tests/repo-invariants/desktop-test-prerequisites.test.ts",
     "tests/repo-invariants/test-maintenance-lifecycle-guards.test.ts",
