@@ -150,14 +150,16 @@ verification, and any target adoption actually checked.
 ## Desktop FFmpeg distribution
 
 Desktop packages pin prebuilt LGPL FFmpeg 9.0.1 for both Mac
-architectures. Run `bun run --cwd apps/desktop vendor:ffmpeg` before native media
+architectures and Windows x64; each host vendors only its own platform. Run
+`bun run --cwd apps/desktop vendor:ffmpeg` before native media
 tests. `afterPack` and `afterSign` verify the staged executable, notices and exact
 FFmpeg/dependency/build-script source archives. Missing or changed sources and
 GPL/nonfree configurations fail the build. Never restore the retired `b6.1.1`
 aggregator pin as a fallback.
 
 The complete source travels inside `Contents/Resources/tools-ffmpeg/source` in
-every DMG and updater ZIP; the existing five-asset GitHub/Bunny release contract
+every DMG and updater ZIP, and inside `resources\tools-ffmpeg\source` in the
+Windows installer; the existing five-asset GitHub/Bunny release contract
 is unchanged. Preserve that directory in packaging and check it in the final
 signed download. See [FFmpeg source access](apps/desktop/FFMPEG.md) and
 [export quality settings](packages/first-party-apps/video/EXPORT_SETTINGS.md).

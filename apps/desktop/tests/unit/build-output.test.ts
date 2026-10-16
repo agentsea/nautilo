@@ -76,7 +76,7 @@ test("shared tools extraResources exclude vendor .version stamps but keep binari
   expect(openhueFilters).not.toContain("**/*");
 });
 
-test("macOS packaging vendors managed FFmpeg before universal packaging", () => {
+test("macOS and Windows packaging vendor managed FFmpeg before packaging", () => {
   expect(packageJson.scripts["vendor:ffmpeg"]).toBe("bun scripts/vendor-ffmpeg.ts");
   expect(packageJson.scripts["package:mac:build"]).toContain("bun run vendor:ffmpeg");
   expect(packageJson.scripts["package:dev:build"]).toContain("bun run vendor:ffmpeg");
@@ -88,6 +88,9 @@ test("macOS packaging vendors managed FFmpeg before universal packaging", () => 
   const devBuilderIndex = packageJson.scripts["package:dev:build"].indexOf("electron-builder");
   expect(devVendorIndex).toBeGreaterThanOrEqual(0);
   expect(devBuilderIndex).toBeGreaterThan(devVendorIndex);
+  const winVendorIndex = packageJson.scripts["package:win"].indexOf("bun run vendor:ffmpeg");
+  expect(winVendorIndex).toBeGreaterThanOrEqual(0);
+  expect(packageJson.scripts["package:win"].indexOf("electron-builder")).toBeGreaterThan(winVendorIndex);
   const vendorFfmpeg = readFileSync(join(desktopRoot, "scripts/vendor-ffmpeg.ts"), "utf-8");
   expect(vendorFfmpeg).toContain('writeFileSync(join(root, "manifest.json")');
   expect(vendorFfmpeg).toContain("JSON.stringify({ ffmpeg: ffmpegManifest }");

@@ -18,7 +18,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15, macos-15-intel]
+        # Windows exports through Media Foundation's software H.264 encoder,
+        # which the runner image must provide like every desktop Windows.
+        runner: [macos-15, macos-15-intel, windows-2025-vs2026]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

@@ -5,10 +5,13 @@
 
 import { VENDORED_SHA256_HEX_RE } from "@nautilo/config/vendored-binary";
 
-/** Desktop tool-runtimes manifest artifact keys (darwin-only today). */
-export type ToolRuntimePlatformKey = "darwin-arm64" | "darwin-x64";
+/** Desktop tool-runtimes manifest artifact keys for the macOS bundles. */
+export type DesktopDarwinPlatformKey = "darwin-arm64" | "darwin-x64";
 
-export const DESKTOP_DARWIN_PLATFORM_KEYS: readonly ToolRuntimePlatformKey[] = [
+/** Desktop tool-runtimes manifest artifact keys. Only FFmpeg pins `win-x64`. */
+export type ToolRuntimePlatformKey = DesktopDarwinPlatformKey | "win-x64";
+
+export const DESKTOP_DARWIN_PLATFORM_KEYS: readonly DesktopDarwinPlatformKey[] = [
   "darwin-arm64",
   "darwin-x64",
 ] as const;
@@ -54,7 +57,7 @@ export interface ApplyPatchDesktopManifestEntry {
   readonly binaryName: "nautilo-apply-patch";
   readonly protocol: string;
   readonly provenance: ApplyPatchRuntimeProvenance;
-  readonly artifacts: Readonly<Record<ToolRuntimePlatformKey, ApplyPatchDesktopManifestArtifact>>;
+  readonly artifacts: Readonly<Record<DesktopDarwinPlatformKey, ApplyPatchDesktopManifestArtifact>>;
 }
 
 export interface ApplyPatchDesktopManifestArtifact {
@@ -216,11 +219,11 @@ function parseEntry(value: unknown, toolName: string): ToolRuntimeManifestEntry 
     throw new ToolRuntimesManifestError(`${toolName}.artifacts must be an object`);
   }
   const artifacts: Partial<Record<ToolRuntimePlatformKey, ToolRuntimeManifestArtifact>> = {};
-  const applyPatchArtifacts: Partial<Record<ToolRuntimePlatformKey, ApplyPatchDesktopManifestArtifact>> = {};
+  const applyPatchArtifacts: Partial<Record<DesktopDarwinPlatformKey, ApplyPatchDesktopManifestArtifact>> = {};
   for (const [key, artifactValue] of Object.entries(artifactsRaw as Record<string, unknown>)) {
     validateArtifactKey(key, `${toolName}.artifacts`);
     if (isApplyPatch) {
-      applyPatchArtifacts[key as ToolRuntimePlatformKey] = parseApplyPatchArtifact(
+      applyPatchArtifacts[key as DesktopDarwinPlatformKey] = parseApplyPatchArtifact(
         artifactValue,
         `${toolName}.artifacts.${key}`,
         key === "darwin-arm64" ? "arm64" : "x64",
@@ -242,7 +245,7 @@ function parseEntry(value: unknown, toolName: string): ToolRuntimeManifestEntry 
       version,
       license,
       source,
-      artifacts: applyPatchArtifacts as Readonly<Record<ToolRuntimePlatformKey, ApplyPatchDesktopManifestArtifact>>,
+      artifacts: applyPatchArtifacts as Readonly<Record<DesktopDarwinPlatformKey, ApplyPatchDesktopManifestArtifact>>,
       binaryName: "nautilo-apply-patch",
       protocol: (protocol as string).trim(),
       provenance,

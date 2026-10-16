@@ -50,6 +50,13 @@
         "binarySha256": "b88651ac846c726e94f5b198bd7693beb42fc936d016b1795796355cf1b2785e",
         "member": "bin/ffmpeg",
         "sizeMin": 300000
+      },
+      "win-x64": {
+        "url": "https://github.com/ispysoftware/agentdvr-ffmpeg-build/releases/download/v9.0.1/ffmpeg9.0.1-lgpl-windows-x64.zip",
+        "sha256": "54189ee4e39ec2e278d4540396211217948d621df5149d77f77715a167165f40",
+        "binarySha256": "4605d6dba4b6c970c75a30a2c587b5df26abeaccdc51c98145b2ec0e9b450254",
+        "member": "ffmpeg.exe",
+        "sizeMin": 300000
       }
     }
   },
