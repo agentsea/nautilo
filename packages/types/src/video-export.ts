@@ -30,10 +30,11 @@ export function videoExportDimensions(settings: VideoExportSettings): { width: n
     : settings.resolution === "4k" ? { width: 3840, height: 2160 } : { width: 1920, height: 1080 };
 }
 
-export function videoExportCodecArgs(settings: VideoExportSettings, encoder: "libx264" | "videotoolbox" = "libx264"): string[] {
-  // Mac VideoToolbox uses target bitrate on both Intel and Apple Silicon.
-  // Presets are quality choices, not admission ceilings; custom remains exact.
-  if (encoder === "videotoolbox") {
+export function videoExportCodecArgs(settings: VideoExportSettings, encoder: "libx264" | "videotoolbox" | "mediafoundation" = "libx264"): string[] {
+  // Mac VideoToolbox and Windows Media Foundation have no CRF; both use a
+  // target bitrate. Presets are quality choices, not admission ceilings;
+  // custom remains exact.
+  if (encoder === "videotoolbox" || encoder === "mediafoundation") {
     const targets = { "720p": [2_000, 4_000, 6_000], "1080p": [4_000, 8_000, 12_000], "4k": [10_000, 20_000, 35_000] } as const;
     const kbps = settings.quality === "custom" ? settings.videoBitrateKbps!
       : targets[settings.resolution][settings.quality === "smaller" ? 0 : settings.quality === "high" ? 2 : 1];

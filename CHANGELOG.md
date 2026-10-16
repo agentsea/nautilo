@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Windows x64 Desktop bundles the same prebuilt LGPL FFmpeg 9.0.1 as the Mac,
+  with its license texts and complete corresponding source, so video export,
+  media inspection and waveforms work without a separately installed FFmpeg.
+  Exports encode H.264 with Media Foundation's software encoder at the Mac's
+  target bitrates. Unsigned builds accept user-replaced FFmpeg files, as LGPL
+  requires.
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree

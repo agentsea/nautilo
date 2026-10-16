@@ -64,6 +64,42 @@ describe("fetchAndVerifyVendoredBinary", () => {
     expect(authorization).toBeNull();
   });
 
+  test("retries a dropped connection or a server error, then verifies the same checksum", async () => {
+    const bytes = Buffer.from("flaky-host-payload");
+    const outcomes = ["drop", "503", "ok"];
+    const logs: string[] = [];
+    const fetchImpl = (async () => {
+      const outcome = outcomes.shift();
+      if (outcome === "drop") throw new TypeError("Unable to connect. Is the computer able to access the url?");
+      return outcome === "503" ? new Response("busy", { status: 503 }) : new Response(bytes, { status: 200 });
+    }) as unknown as typeof fetch;
+    const destPath = join(tmp(), "tool");
+    await fetchAndVerifyVendoredBinary({
+      url: "https://example.test/tool", sha256: sha256HexOfBytes(bytes), destPath, fetchImpl,
+      retryWaitMs: [1, 1], log: message => logs.push(message),
+    });
+    expect(outcomes).toEqual([]);
+    expect(readFileSync(destPath)).toEqual(bytes);
+    expect(logs.filter(line => line.startsWith("retrying "))).toHaveLength(2);
+  });
+
+  test("gives up after three attempts and never retries a client error", async () => {
+    let drops = 0;
+    await expectFetchError(() => fetchAndVerifyVendoredBinary({
+      url: "https://example.test/tool", sha256: "0".repeat(64), destPath: join(tmp(), "tool"),
+      fetchImpl: (async () => { drops++; throw new TypeError("Unable to connect"); }) as unknown as typeof fetch,
+      retryWaitMs: [1, 1],
+    }));
+    expect(drops).toBe(3);
+    let notFound = 0;
+    await expectFetchError(() => fetchAndVerifyVendoredBinary({
+      url: "https://example.test/tool", sha256: "0".repeat(64), destPath: join(tmp(), "tool"),
+      fetchImpl: (async () => { notFound++; return new Response("missing", { status: 404 }); }) as unknown as typeof fetch,
+      retryWaitMs: [1, 1],
+    }));
+    expect(notFound).toBe(1);
+  });
+
   test("reads a token only from its file and sends it only to the initial approved release host", async () => {
     const bytes = Buffer.from("private-payload");
     const token = "glpat-private-token-value";

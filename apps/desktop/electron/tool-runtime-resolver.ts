@@ -5,7 +5,7 @@
 
 import { join } from "node:path";
 import { existsSync } from "node:fs";
-import type { ToolRuntimePlatformKey } from "./tool-runtimes-manifest.ts";
+import type { DesktopDarwinPlatformKey, ToolRuntimePlatformKey } from "./tool-runtimes-manifest.ts";
 
 export type DesktopBundledRuntimeName =
   | "agent-browser"
@@ -93,14 +93,17 @@ const RUNTIME_LAYOUTS: Readonly<Record<DesktopBundledRuntimeName, RuntimeLayout>
 export function detectDesktopPlatformKey(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
-): ToolRuntimePlatformKey | null {
+): DesktopDarwinPlatformKey | null {
   if (platform !== "darwin") return null;
   if (arch === "arm64") return "darwin-arm64";
   if (arch === "x64") return "darwin-x64";
   return null;
 }
 
-function archDirForPlatformKey(platformKey: ToolRuntimePlatformKey): string {
+/** Directory of an arch-only bundle. Windows keeps its own tree beside the
+ * macOS `x64` one, so one distribution receipt can describe both. */
+export function desktopRuntimeArchDir(platformKey: ToolRuntimePlatformKey): string {
+  if (platformKey === "win-x64") return "win-x64";
   return platformKey === "darwin-arm64" ? "arm64" : "x64";
 }
 
@@ -108,7 +111,11 @@ function segmentForLayout(
   layout: RuntimeLayout["layout"],
   platformKey: ToolRuntimePlatformKey,
 ): string {
-  return layout === "platform-key" ? platformKey : archDirForPlatformKey(platformKey);
+  return layout === "platform-key" ? platformKey : desktopRuntimeArchDir(platformKey);
+}
+
+function binaryNameForPlatform(binaryName: string, platformKey: ToolRuntimePlatformKey): string {
+  return platformKey.startsWith("win-") ? `${binaryName}.exe` : binaryName;
 }
 
 function candidatePaths(input: ResolveDesktopRuntimePathInput): {
@@ -117,15 +124,16 @@ function candidatePaths(input: ResolveDesktopRuntimePathInput): {
 } {
   const layout = RUNTIME_LAYOUTS[input.runtime];
   const segment = segmentForLayout(layout.layout, input.platformKey);
+  const binaryName = binaryNameForPlatform(layout.binaryName, input.platformKey);
   const bundled =
     input.resourcesPath === null
       ? null
-      : join(input.resourcesPath, layout.bundledRoot, segment, layout.binaryName);
+      : join(input.resourcesPath, layout.bundledRoot, segment, binaryName);
   const devVendor = join(
     input.devVendorRoot,
     layout.vendorDir,
     segment,
-    layout.binaryName,
+    binaryName,
   );
   return { bundled, devVendor };
 }

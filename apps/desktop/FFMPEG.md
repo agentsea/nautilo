@@ -67,15 +67,52 @@ builds can also update the vendor pins and use `bun run package:mac` for an
 ad-hoc signed package. These integrity checks do not revoke the included
 components' license rights.
 
+## Windows
+
+Windows x64 Desktop includes the same supplier's LGPL FFmpeg 9.0.1 build for
+Windows (`ffmpeg9.0.1-lgpl-windows-x64.zip`), cross-compiled with MinGW-w64 from
+the same build revision. H.264 export uses Windows Media Foundation's software
+encoder; AAC uses FFmpeg's native encoder. The build also carries FFmpeg's
+NVIDIA, AMD and Intel hardware interfaces, which load a vendor driver only when
+used; Nautilo does not use them.
+
+In the installation directory, `resources\tools-ffmpeg` contains:
+
+- `win-x64\bin\ffmpeg.exe` with its DLLs beside it (`avcodec-63.dll`,
+  `avdevice-63.dll`, `avfilter-12.dll`, `avformat-63.dll`, `avutil-61.dll`,
+  `swresample-7.dll`, `swscale-10.dll`, `libvpl.dll`, `libwinpthread-1.dll`)
+  and the supplier's `win-x64\licenses\` records.
+- `source\`: the source archives listed above, plus the Windows-only inputs:
+  NVIDIA nv-codec-headers n12.2.72.0, AMD AMF 1.5.2 headers (AMD's headers-only
+  release archive, identical to the `amf/public/include` tree the build copies),
+  Intel libvpl 2.17.0 and the MinGW-w64 6.0.0 source of `libwinpthread-1.dll`.
+  The Mac executables and libraries are not included.
+- `manifest.json`, `distribution.json` and `PROVENANCE.md` as on the Mac.
+
+To rebuild, extract `source\build-source.tar.gz` and run
+`.\build.ps1 -Arch win64 -Variant lgpl` with the documented Docker and 7-Zip
+tools. The script's default is GPL: explicitly select `-Variant lgpl`.
+
+To use a modified, interface-compatible FFmpeg, replace `ffmpeg.exe` and/or the
+DLLs in `win-x64\bin`, keeping their names. Nautilo checks every file against
+its pinned hash, and accepts replaced files when `Nautilo.exe` carries no valid
+Authenticode signature: it is unsigned, as every build from source is, or was
+altered after signing. A signed
+release accepts only the pinned files; build Nautilo from source to use a
+modified FFmpeg with it. No server approval or source request is required.
+Updates can replace local modifications.
+
 ## Maintainer checks
 
 `bun run vendor:ffmpeg` verifies the upstream ZIP, every shipped executable,
 library and notice, and the corresponding-source archives. Cache hits recheck
-all files. The native executable must report the approved LGPL version and
-provide the image/audio/video decoders used by Nautilo. Packaging verifies the
-staged distribution and signing verifies it again. Missing sources, altered
-notices, missing libraries or GPL/nonfree configuration fail packaging.
-Native Intel and Apple Silicon media CI exercises the actual production pin.
+all files. Each host vendors only its own platform. The native executable must
+report the approved LGPL version and provide the image/audio/video decoders used
+by Nautilo, plus the platform's H.264 encoder (VideoToolbox or Media Foundation)
+and AAC. Packaging verifies the staged distribution and signing verifies it
+again. Missing sources, altered notices, missing libraries or GPL/nonfree
+configuration fail packaging. Native Intel, Apple Silicon and Windows x64 media
+CI exercises the actual production pin.
 
 The old `b6.1.1` aggregator pins selected a nonredistributable arm64 executable
 and a different GPL x64 executable. They are removed. Historical public

@@ -62,6 +62,30 @@
       "path": "source/dav1d-1.5.4.tar.gz",
       "url": "https://github.com/videolan/dav1d/archive/refs/tags/1.5.4.tar.gz",
       "sha256": "a1d5b63d2d38ec9bd03acf643caa51fa22edd1e89c5a109c4807717216bbec07"
+    },
+    {
+      "path": "source/nv-codec-headers-n12.2.72.0.tar.gz",
+      "url": "https://github.com/FFmpeg/nv-codec-headers/archive/refs/tags/n12.2.72.0.tar.gz",
+      "sha256": "dbeaec433d93b850714760282f1d0992b1254fc3b5a6cb7d76fc1340a1e47563",
+      "platform": "win-x64"
+    },
+    {
+      "path": "source/AMF-headers-v1.5.2.tar.gz",
+      "url": "https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v1.5.2/AMF-headers-v1.5.2.tar.gz",
+      "sha256": "d3c12eb324edf05e214608b6a395a51dd95770ed9d45520185d6c3a206811c99",
+      "platform": "win-x64"
+    },
+    {
+      "path": "source/libvpl-2.17.0.tar.gz",
+      "url": "https://github.com/intel/libvpl/archive/refs/tags/v2.17.0.tar.gz",
+      "sha256": "4de3e2faf1e8307fb282e4a43f443191810f6a6b0a484fffa7995ba1c814c6ec",
+      "platform": "win-x64"
+    },
+    {
+      "path": "source/mingw-w64_6.0.0.orig.tar.bz2",
+      "url": "https://archive.debian.org/debian/pool/main/m/mingw-w64/mingw-w64_6.0.0.orig.tar.bz2",
+      "sha256": "805e11101e26d7897fce7d49cbb140d7bac15f3e085a91e0001e80b2adaf48f0",
+      "platform": "win-x64"
     }
   ],
   "notices": [
@@ -124,6 +148,36 @@
       "path": "x64/licenses/LICENSE.txt",
       "member": "licenses/LICENSE.txt",
       "sha256": "bfa2588afb6f7fb04eeacaad7d1ee80fa9c35575bb3d89261435bcf4923cb35d"
+    },
+    {
+      "path": "win-x64/licenses/COPYING.GPLv2",
+      "member": "COPYING.GPLv2",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "path": "win-x64/licenses/COPYING.GPLv3",
+      "member": "COPYING.GPLv3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    {
+      "path": "win-x64/licenses/COPYING.LGPLv2.1",
+      "member": "COPYING.LGPLv2.1",
+      "sha256": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30"
+    },
+    {
+      "path": "win-x64/licenses/COPYING.LGPLv3",
+      "member": "COPYING.LGPLv3",
+      "sha256": "da7eabb7bafdf7d3ae5e9f223aa5bdc1eece45ac569dc21b3b037520b4464768"
+    },
+    {
+      "path": "win-x64/licenses/LICENSE.md",
+      "member": "LICENSE.md",
+      "sha256": "2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af"
+    },
+    {
+      "path": "win-x64/licenses/LICENSE.txt",
+      "member": "LICENSE.txt",
+      "sha256": "7ee6c63f62897494cc1f28f9c70e8708d13848238f265f6017cdb31c0fabbbb7"
     }
   ],
   "binaries": [
@@ -346,6 +400,56 @@
       "path": "x64/lib/libswscale.dylib",
       "member": "lib/libswscale.dylib",
       "sha256": "76ad57f1475ac13fb2dcaf686dfc5392b0a904399ca19ab77a42cc157136ccd2"
+    },
+    {
+      "path": "win-x64/bin/ffmpeg.exe",
+      "member": "ffmpeg.exe",
+      "sha256": "4605d6dba4b6c970c75a30a2c587b5df26abeaccdc51c98145b2ec0e9b450254"
+    },
+    {
+      "path": "win-x64/bin/avcodec-63.dll",
+      "member": "avcodec-63.dll",
+      "sha256": "f33cfb8e694fde60f2bc36ce9c98c352e4204d4956edcc5d8ef5a6b76f3a6c23"
+    },
+    {
+      "path": "win-x64/bin/avdevice-63.dll",
+      "member": "avdevice-63.dll",
+      "sha256": "b9ae954fb04ca53206f1afde525ced9c142b95cd6fe47620ffc4eda8624e4e5e"
+    },
+    {
+      "path": "win-x64/bin/avfilter-12.dll",
+      "member": "avfilter-12.dll",
+      "sha256": "4d80a7d3b04fcef2e886cece79adec2c3ea9651944e559dc2820fb3bd68422d0"
+    },
+    {
+      "path": "win-x64/bin/avformat-63.dll",
+      "member": "avformat-63.dll",
+      "sha256": "9787eed428f327e40a57915995f1121d3731cc6f8c56f757bfafba2bf2804058"
+    },
+    {
+      "path": "win-x64/bin/avutil-61.dll",
+      "member": "avutil-61.dll",
+      "sha256": "a96a02a366b771af3bcee540b3c963d244adec800bb6557bafda8d6060fb3c43"
+    },
+    {
+      "path": "win-x64/bin/swresample-7.dll",
+      "member": "swresample-7.dll",
+      "sha256": "5c4c4086fe84a3951798d1afef183f8e8c44b63056968a257cdb5df6615e32f6"
+    },
+    {
+      "path": "win-x64/bin/swscale-10.dll",
+      "member": "swscale-10.dll",
+      "sha256": "7858dc02036b75163e80363b910425b76bdc4d2a554c1548e85df3d363299907"
+    },
+    {
+      "path": "win-x64/bin/libvpl.dll",
+      "member": "libvpl.dll",
+      "sha256": "ebd6e33a08db11978ee94973d7b005a318c2029fdca15e0590edab06f7288ee7"
+    },
+    {
+      "path": "win-x64/bin/libwinpthread-1.dll",
+      "member": "libwinpthread-1.dll",
+      "sha256": "5b60907df42009f1ba437e7f2a6278651be97f4993869105d8a31086138e4570"
     }
   ]
 }
