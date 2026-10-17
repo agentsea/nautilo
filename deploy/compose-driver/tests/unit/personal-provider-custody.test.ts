@@ -39,6 +39,10 @@ const resetCustody: PersonalProviderCustody = {
 };
 
 const createdPaths: string[] = [];
+// These cases execute Linux-host durability operations, including sync on
+// files and directories. Other host implementations do not provide the same
+// per-path fsync semantics.
+const linuxDurabilityTest = process.platform === "linux" ? test : test.skip;
 
 afterEach(() => {
   for (const path of createdPaths.splice(0)) {
@@ -237,7 +241,7 @@ describe("Compose personal provider custody", () => {
     }
   });
 
-  test("remote ensure accepts quoted legacy custody and preserves canonical bytes", async () => {
+  linuxDurabilityTest("remote ensure accepts quoted legacy custody and preserves canonical bytes", async () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-custody-shell-"));
     createdPaths.push(root);
     const canonical = join(root, "instance.env");
@@ -260,7 +264,7 @@ describe("Compose personal provider custody", () => {
     );
   });
 
-  test("remote ensure preserves and projects canonical disaster-reset custody", async () => {
+  linuxDurabilityTest("remote ensure preserves and projects canonical disaster-reset custody", async () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-custody-reset-shell-"));
     createdPaths.push(root);
     const canonical = join(root, "instance.env");
@@ -284,7 +288,7 @@ describe("Compose personal provider custody", () => {
     );
   });
 
-  test("remote ensure preserves invalid canonical custody and blanks only its runtime projection", async () => {
+  linuxDurabilityTest("remote ensure preserves invalid canonical custody and blanks only its runtime projection", async () => {
     for (const [name, configured] of [
       ["duplicate", `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n`],
       ["malformed", `${PERSONAL_PROVIDER_CUSTODY_ENV}=broken\n`],
@@ -310,7 +314,7 @@ describe("Compose personal provider custody", () => {
     }
   });
 
-  test("remote ensure blocks a stale runtime projection when canonical custody is unreadable", async () => {
+  linuxDurabilityTest("remote ensure blocks a stale runtime projection when canonical custody is unreadable", async () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-custody-unreadable-"));
     createdPaths.push(root);
     const canonical = join(root, "instance.env");
@@ -333,7 +337,7 @@ describe("Compose personal provider custody", () => {
     );
   });
 
-  test("remote first-install merge accepts missing custody and keeps projection blocked", async () => {
+  linuxDurabilityTest("remote first-install merge accepts missing custody and keeps projection blocked", async () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-custody-merge-missing-"));
     createdPaths.push(root);
     const canonical = join(root, "instance.env");
@@ -405,7 +409,7 @@ describe("Compose personal provider custody", () => {
     expect(Bun.spawnSync({ cmd: ["sh", "-c", unrelated] }).exitCode).not.toBe(0);
   });
 
-  test("remote config merge preserves disaster-reset custody", async () => {
+  linuxDurabilityTest("remote config merge preserves disaster-reset custody", async () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-custody-reset-merge-"));
     createdPaths.push(root);
     const canonical = join(root, "instance.env");
@@ -486,4 +490,25 @@ describe("Compose personal provider custody", () => {
       );
     }
   });
+});
+
+test("subscription-only backups require matching custody and inspect both envelopes", async () => {
+  const envelope = JSON.stringify({ keyId: custody.keyId });
+  const dump = `COPY public.chatgpt_registrations (id, identity_envelope, envelope) FROM stdin;\nsynthetic\t${envelope}\t${envelope}\n\\.\n`;
+  const evidence = await readPersonalProviderCredentialEvidenceFromDump(dumpPath(dump));
+  expect(evidence).toEqual({ state: "rows", keyIds: [custody.keyId] });
+  expect(() => assertPersonalProviderRestoreCustody({ database: evidence, instanceEnvRaw: undefined })).toThrow();
+  expect(() => assertPersonalProviderRestoreCustody({ database: evidence,
+    instanceEnvRaw: `${PERSONAL_PROVIDER_CUSTODY_ENV}=${serializePersonalProviderCustody(custody)}\n` })).not.toThrow();
+  const disconnected = dump.replace(`\t${envelope}\n`, "\t\\N\n");
+  expect(await readPersonalProviderCredentialEvidenceFromDump(dumpPath(disconnected))).toEqual(evidence);
+  await expect(readPersonalProviderCredentialEvidenceFromDump(dumpPath(dump.replace(envelope, "{}")))).rejects.toThrow();
+});
+test("connected custody inspection combines API keys and subscription registrations", () => {
+  expect(parseConnectedPersonalProviderCredentialEvidence([
+    JSON.stringify({ rowCount: 0, keyIds: [] }), JSON.stringify({ rowCount: 1, keyIds: [custody.keyId] }),
+  ].join("\n"))).toEqual({ state: "rows", keyIds: [custody.keyId] });
+  expect(() => parseConnectedPersonalProviderCredentialEvidence([
+    JSON.stringify({ rowCount: 0, keyIds: [] }), JSON.stringify({ rowCount: 1, keyIds: [null] }),
+  ].join("\n"))).toThrow();
 });

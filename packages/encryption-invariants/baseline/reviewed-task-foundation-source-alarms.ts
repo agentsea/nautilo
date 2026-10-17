@@ -203,7 +203,7 @@ export const REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS: readonly SourceAlarmReview[
     owner: "packages/runtime",
     closure: "reviewed_exclusion",
     exclusionId: "exclusion.task.protected-timeout-diagnostic",
-    reason: "This exact protected Task watchdog diagnostic emits only a fixed retry code. It never inspects the caught provider/tool error; ordinary Task diagnostics retain their separate reviewed plaintext boundary.",
+    reason: "This exact protected Task watchdog diagnostic emits only the fixed settlement-pending code after the pause transition does not settle. It emits no Task content, results, identifiers, tool payloads, credentials, keys, or caught exceptions.",
   },
   {
     locator: "packages/runtime/src/tasks/task-observer.ts#log_emitter:7ef703451e44cded:3",

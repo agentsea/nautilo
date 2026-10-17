@@ -454,7 +454,7 @@ describe("checkFirstPartyAppPrerequisitesForServerStart", () => {
     });
 
     expect(ready).toBe(true);
-    expect(checked).toEqual(["/source/packages/first-party-apps/spreadsheet/engine/provenance.json"]);
+    expect(checked).toEqual([join("/source", "packages/first-party-apps/spreadsheet/engine/provenance.json")]);
     expect(warns).toEqual([]);
   });
 });

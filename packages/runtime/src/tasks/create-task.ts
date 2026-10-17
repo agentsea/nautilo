@@ -17,7 +17,10 @@ import {
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
-import { prepareTaskCreationFunding } from "../task-funding-port";
+import {
+  prepareTaskCreationFunding,
+  type TaskFundingAdmission,
+} from "../task-funding-port";
 import {
   assertTaskCreationProvenance,
   TaskCreationUnavailableError,
@@ -254,7 +257,7 @@ async function createTaskAfterGlobalChecks<Prepared>(
   input: TaskCreateInput,
   provenance: TaskCreationProvenance,
   invocationAuthority: AcceptedInvocationAuthority,
-  callerFunded: boolean,
+  callerFunded: boolean | TaskFundingAdmission,
   timing: Readonly<{
     scheduleKind: NonNullable<TaskCreateInput["scheduleKind"]>;
     nextFireAt: Date;
@@ -306,6 +309,11 @@ async function createTaskAfterGlobalChecks<Prepared>(
   const durableCandidate: ProtectedTaskCreateCandidate = {
     ...candidate,
     localExecutionDelegation,
+    // The funding owner, never a model argument, records a subscription pin.
+    // Each dispatch still rechecks the requestor's current policy and custody.
+    ...(typeof callerFunded === "object" ? {
+      metadata: { ...candidate.metadata, subscriptionFunding: callerFunded.binding },
+    } : {}),
     // Only the trusted funding port may author this definition discriminator.
     fundingMode: callerFunded ? "caller" : "legacy_server",
     nextFireAt: protectedSource === undefined ? nextFireAt : computeNextFireAt(scheduleKind,
@@ -363,8 +371,8 @@ async function assertCapturedParentLineage(
     seen.add(parentId);
     const parent = await getTaskById(db, parentId);
     const inherited = parseLocalExecutionDelegation(parent?.localExecutionDelegation);
-    if (!parent || !inherited || parent.ownerId !== child.ownerId
-      || parent.requestorId !== child.requestorId || inherited.agentId !== parent.agentId
+    if (!parent || !inherited || parent.requestorId !== child.requestorId
+      || inherited.humanUserId !== parent.requestorId || inherited.agentId !== parent.agentId
       || ["cancelled", "paused", "errored"].includes(parent.status)
       || (callingRoomId !== parent.callingRoomId && callingRoomId !== parent.targetRoomId)
       || JSON.stringify({ ...inherited, agentId: delegation.agentId }) !== JSON.stringify(delegation)) throw deny();

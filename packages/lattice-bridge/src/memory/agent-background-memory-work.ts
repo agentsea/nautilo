@@ -536,11 +536,19 @@ function snapshotOutput(
       action: value.action,
     });
   }
+  let payloadBytes: Uint8Array | null = null;
+  let payload: MemoryPayloadV1;
+  try {
+    payloadBytes = encodeMemoryPayloadV1(value.payload);
+    payload = decodeMemoryPayloadV1(payloadBytes);
+  } finally {
+    payloadBytes?.fill(0);
+  }
   return Object.freeze({
     kind: value.kind,
     publicationIdempotencyId: value.publicationIdempotencyId,
     memoryId: value.memoryId,
-    payload: Object.freeze({ ...value.payload }),
+    payload,
     embedding: Object.freeze({
       ...value.embedding,
       vector: Object.freeze([...value.embedding.vector]),

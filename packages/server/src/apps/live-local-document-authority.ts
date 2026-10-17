@@ -3,6 +3,7 @@ import * as path from "node:path";
 import {
   RELAY_FS_MAX_BYTES,
   RELAY_LOCAL_DOCUMENT_CHUNK_BYTES,
+  pathApiForRelayPath,
 } from "@nautilo/relay";
 import type {
   RelayFsRequest,
@@ -182,16 +183,25 @@ export function resolveLiveCurrentFileCanonicalPath(
   currentFolder: string,
   relativePath: string,
 ): string {
-  const folder = path.normalize(currentFolder);
-  const rel = normalizeRelPath(relativePath);
-  return path.normalize(path.join(folder, rel));
+  const pathApi = pathApiForRelayPath(currentFolder);
+  return pathApi.join(currentFolder, normalizeRelPath(relativePath));
 }
 
 export function isPathContainedInRoot(targetPath: string, rootPath: string): boolean {
-  const root = path.normalize(rootPath);
-  const target = path.normalize(targetPath);
-  const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-  return target === root || target.startsWith(rootWithSep);
+  if (isWindowsRelayIdentity(targetPath) !== isWindowsRelayIdentity(rootPath)) {
+    return false;
+  }
+  const pathApi = pathApiForRelayPath(targetPath);
+  const target = pathApi.normalize(targetPath);
+  const root = pathApi.normalize(rootPath);
+  if (!pathApi.isAbsolute(target) || !pathApi.isAbsolute(root)) return false;
+  const relative = pathApi.relative(root, target);
+  return (
+    relative === "" ||
+    (relative !== ".." &&
+      !relative.startsWith(`..${pathApi.sep}`) &&
+      !pathApi.isAbsolute(relative))
+  );
 }
 
 export function isPathContainedInAllowedRoots(
@@ -208,7 +218,7 @@ function isCanonicalIdentityAuthorizedByRoots(
   canonicalTargetIdentity: string,
   allowedRoots: readonly string[],
 ): boolean {
-  const pathApi = pathApiForRelayIdentity(canonicalTargetIdentity);
+  const pathApi = pathApiForRelayPath(canonicalTargetIdentity);
   if (
     !pathApi.isAbsolute(canonicalTargetIdentity) ||
     pathApi.normalize(canonicalTargetIdentity) !== canonicalTargetIdentity
@@ -219,32 +229,7 @@ function isCanonicalIdentityAuthorizedByRoots(
 }
 
 function isWindowsRelayIdentity(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(value);
-}
-
-/** Select path semantics from the relay identity, never from server host OS. */
-function pathApiForRelayIdentity(value: string): typeof path.posix {
-  return isWindowsRelayIdentity(value) ? path.win32 : path.posix;
-}
-
-function isRelayPathContainedInRoot(
-  targetPath: string,
-  rootPath: string,
-): boolean {
-  if (isWindowsRelayIdentity(targetPath) !== isWindowsRelayIdentity(rootPath)) {
-    return false;
-  }
-  const pathApi = pathApiForRelayIdentity(targetPath);
-  const target = pathApi.normalize(targetPath);
-  const root = pathApi.normalize(rootPath);
-  if (!pathApi.isAbsolute(target) || !pathApi.isAbsolute(root)) return false;
-  const relative = pathApi.relative(root, target);
-  return (
-    relative === "" ||
-    (relative !== ".." &&
-      !relative.startsWith(`..${pathApi.sep}`) &&
-      !pathApi.isAbsolute(relative))
-  );
+  return pathApiForRelayPath(value) === path.win32;
 }
 
 function findRelayIdentityAllowedRoot(
@@ -252,7 +237,7 @@ function findRelayIdentityAllowedRoot(
   allowedRoots: readonly string[],
 ): string | null {
   return allowedRoots.find((root) =>
-    isRelayPathContainedInRoot(canonicalTargetIdentity, root),
+    isPathContainedInRoot(canonicalTargetIdentity, root),
   ) ?? null;
 }
 
@@ -610,7 +595,7 @@ export class LiveLocalDocumentAuthority {
       input.ownerId,
     );
     if (!snapshot) return { ok: false, code: "relay_unavailable" };
-    const candidatePathApi = pathApiForRelayIdentity(input.candidatePath);
+    const candidatePathApi = pathApiForRelayPath(input.candidatePath);
     const candidatePath = candidatePathApi.normalize(input.candidatePath);
     // A Desktop grant names canonical roots; a selected folder may use a
     // filesystem alias (for example /tmp -> /private/tmp on macOS). Resolve
@@ -636,7 +621,7 @@ export class LiveLocalDocumentAuthority {
     if (resolved.realpath === null) return { ok: false, code: "not_found" };
     const resolvedPathApi =
       typeof resolved.realpath === "string"
-        ? pathApiForRelayIdentity(resolved.realpath)
+        ? pathApiForRelayPath(resolved.realpath)
         : null;
     if (
       typeof resolved.realpath !== "string" ||
@@ -681,7 +666,7 @@ export class LiveLocalDocumentAuthority {
       snapshot.allowedRoots,
     );
     if (!root) return { ok: false, code: "local_target_forbidden" };
-    const pathApi = pathApiForRelayIdentity(identity.canonicalTargetIdentity);
+    const pathApi = pathApiForRelayPath(identity.canonicalTargetIdentity);
     const relativePath = pathApi.relative(root, identity.canonicalTargetIdentity);
     if (!relativePath || validateLiveCurrentFileRelativePath(relativePath)) {
       return { ok: false, code: "local_target_forbidden" };

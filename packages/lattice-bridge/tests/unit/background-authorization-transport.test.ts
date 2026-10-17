@@ -364,7 +364,7 @@ describe("background authorization portable transport", () => {
     expect([...bundledSources.keys()]).not.toContain(join(repositoryRoot,
       "packages/lattice-crypto/src/crypto/index.ts"));
     expect([...bundledSources.keys()].some((path) =>
-      path.includes("/node_modules/@noble/"))).toBe(true);
+      path.replaceAll("\\", "/").includes("/node_modules/@noble/"))).toBe(true);
     expect(resolvedRuntimeImports.length).toBeGreaterThan(0);
     const forbiddenSpecifiers: string[] = [];
     const forbiddenGlobals: string[] = [];

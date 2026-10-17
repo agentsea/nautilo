@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { formatLocal } from "../../prompts/time-format";
+import { declareModelInputExposureProducer } from "../../memory/model-input-exposure";
 
 interface GetCurrentTimeContext {
   userTimezone: string;
@@ -25,7 +26,7 @@ function contextFromUnknown(ctx: unknown): GetCurrentTimeContext {
  */
 export function createGetCurrentTimeTool(context?: unknown) {
   const { userTimezone } = contextFromUnknown(context);
-  return tool(
+  return declareModelInputExposureProducer(tool(
     // eslint-disable-next-line @typescript-eslint/require-await -- langchain tool funcs are invoked as promises; the body is synchronous.
     async () => {
       const tz = userTimezone || "UTC";
@@ -42,5 +43,5 @@ export function createGetCurrentTimeTool(context?: unknown) {
         "Return the current time as a UTC ISO timestamp plus the user's local-formatted time and IANA timezone. Use when you need a fresh, deterministic timestamp to pass to other tools or after a long tool chain where the system-prompt clock may be stale.",
       schema: z.object({}).strict(),
     },
-  );
+  ), { status: "complete", dependencies: [] });
 }

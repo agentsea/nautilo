@@ -5,11 +5,11 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import type { ComposeDriverProfile } from "@nautilo/compose-driver";
 import { localInstanceRootDir } from "@nautilo/compose-driver";
@@ -55,8 +55,8 @@ describe("ensureBootstrapToken", () => {
     expect(first.length).toBeGreaterThan(0);
     expect(readBootstrapToken(remoteProfile.name, { home: fakeHome })).toBe(first);
     expect(readFileSync(envPath, "utf8")).toContain(`NAUTILO_BOOTSTRAP_TOKEN=${first}`);
-    expect(statSync(tokenPath).mode & 0o777).toBe(0o600);
-    expect(statSync(envPath).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(tokenPath)).toBe(true);
+    expect(isPrivateFilesystemPath(envPath)).toBe(true);
 
     const envAfterFirst = readFileSync(envPath, "utf8");
     const second = ensureBootstrapToken(remoteProfile, fakeHome);
@@ -100,6 +100,6 @@ describe("ensureBootstrapToken", () => {
       `NAUTILO_BOOTSTRAP_TOKEN=${first}`,
     );
     expect(readFileSync(envPath, "utf8").match(/NAUTILO_BOOTSTRAP_TOKEN=/g)?.length).toBe(1);
-    expect(statSync(envPath).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(envPath)).toBe(true);
   });
 });

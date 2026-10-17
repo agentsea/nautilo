@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
+import { rejects } from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   describeBackupArtifact,
   discoverVerifiedFullBackups,
@@ -26,7 +29,7 @@ async function makeBackup(
   },
 ): Promise<string> {
   const dir = join(snapshotsDir, input.name);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(dir);
   for (const file of ["database.sql.gz", "logto.sql.gz", "dot-env", "home.tar.gz"]) {
     await writeFile(join(dir, file), `${input.name}:${file}`, { mode: 0o600 });
   }
@@ -75,14 +78,16 @@ afterEach(async () => {
 
 describe("full development backup manifest", () => {
   test("canonical seed capture resolves root, env, and containers from its private default environment", () => {
+    const privateHome = join(tmpdir(), "nautilo-private-home");
     const privateEnv = {
       ...process.env,
-      HOME: "/tmp/nautilo-private-home",
+      HOME: privateHome,
+      USERPROFILE: privateHome,
       NAUTILO_INSTANCE_ID: "",
     };
     const source = resolvePrivateSaveSource(privateEnv);
-    expect(source.root).toBe("/tmp/nautilo-private-home/.nautilo");
-    expect(source.envPath).toBe("/tmp/nautilo-private-home/.nautilo/instance.env");
+    expect(source.root).toBe(join(privateHome, ".nautilo"));
+    expect(source.envPath).toBe(join(privateHome, ".nautilo", "instance.env"));
     expect(source.instance.instanceId).toBe("");
     expect(source.instance.compose.containers.legacyPostgres).toBe("nautilo-postgres");
     expect(source.instance.compose.containers.logtoPostgres).toBe("nautilo-postgres-1");
@@ -111,11 +116,11 @@ describe("full development backup manifest", () => {
       name: "good",
       createdAt: "2026-08-02T10:00:00.000Z",
     });
-    expect(verifyFullBackupDirectory(dir)).resolves.toMatchObject({
+    expect(await verifyFullBackupDirectory(dir)).toMatchObject({
       manifest: { name: "good" },
     });
     await writeFile(join(dir, "dot-env"), "bad!:dot-env");
-    expect(verifyFullBackupDirectory(dir)).rejects.toThrow("hash mismatch");
+    await rejects(verifyFullBackupDirectory(dir), /hash mismatch/);
   });
 
   test("keeps a quiesced named dump cloneable when no source writers were running", async () => {
@@ -127,6 +132,16 @@ describe("full development backup manifest", () => {
       writersRunning: false,
     });
     expect((await verifyFullBackupDirectory(dir)).manifest.name).toBe("no-server");
+  });
+
+  test.each(["dot-env", "manifest.json"])("rejects publicly readable %s without changing its permissions", async (file) => {
+    const root = await mkdtemp(join(tmpdir(), "nautilo-full-backup-permissions-"));
+    roots.push(root);
+    const dir = await makeBackup(root, { name: "private", createdAt: "2026-08-02T10:00:00.000Z" });
+    const artifact = join(dir, file);
+    await allowOtherReaders(artifact);
+    await rejects(verifyFullBackupDirectory(dir), /permissions are not owner-only/);
+    expect(await isPrivateFilesystemPathAsync(artifact)).toBe(false);
   });
 
   test("discovers only clone-eligible source backups newest first", async () => {

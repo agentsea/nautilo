@@ -1,3 +1,5 @@
+import { externalRoomStateForExecution, isExternalRoomState, settleExternalRoomToolDenials } from "../tools/external-room-policy";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { getForegroundFundingSession } from "../runtime/foreground-chat-funding";
 import { runWithCapabilityFundingSession } from "../runtime/capability-funding";
 import {
@@ -255,6 +257,8 @@ export async function visibleTextRefreshAfterAgent(
 }
 
 export interface NautiloGraphDeps extends PostModelDeps {
+  /** Trusted composition override for isolated execution-boundary tests. */
+  readonly externalRoomPolicyDependencies?: Parameters<typeof externalRoomStateForExecution>[1];
   readonly delegatedLocalExecutionPortForState?: (state: NautiloState) => import("../runtime/local-execution-delegation").DelegatedLocalExecutionPort | undefined;
   readonly humanTerminalAdmissionPortForState?: (state: NautiloState) => import("../tools/terminal/admission").HumanTerminalAdmissionPort | undefined;
   readonly localExecutionHistoryPortForState?: (state: NautiloState) => import("../tools/local-execution/history").LocalExecutionHistoryPort | undefined;
@@ -296,6 +300,14 @@ export function createNautiloGraph(
   policyResolver?: PolicyResolver | null,
   deps?: NautiloGraphDeps,
 ): CompiledGraph {
+  const externalBoundary = (node: (state: NautiloState, config?: RunnableConfig) => Promise<Partial<NautiloState>> | Partial<NautiloState>) =>
+    async (state: NautiloState, config?: RunnableConfig): Promise<Partial<NautiloState>> => {
+      // Fresh Runtime admission derives this sticky marker from canonical Room state.
+      // Ordinary pre-existing rooms cannot be converted to external rooms.
+      const current = isExternalRoomState(state) ? await externalRoomStateForExecution(state, deps?.externalRoomPolicyDependencies) : state;
+      const result = await node(current, config);
+      return current === state ? result : { ...current, ...result };
+    };
   const restoredFunding = getForegroundFundingSession();
   if (!deps?.foregroundChatFundingSession && restoredFunding) deps = { ...deps, foregroundChatFundingSession: restoredFunding };
   const withinFunding = <Args extends unknown[], Result>(run: (...args: Args) => Result) =>
@@ -420,47 +432,49 @@ export function createNautiloGraph(
     .addNode("pre_model", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "pre_model",
-      withinFunding(graphPreModelNode),
+      externalBoundary(withinFunding(graphPreModelNode)),
     ))
     .addNode("browser_decision", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "browser_decision",
-      withinFunding(browserDecisionNode),
+      externalBoundary(withinFunding(browserDecisionNode)),
     ))
     .addNode("agent", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "agent",
-      withinFunding(graphAgentNode),
+      externalBoundary(withinFunding(graphAgentNode)),
     ))
     .addNode("model_output_preflight", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "model_output_preflight",
-      modelOutputPreflightNode,
+      externalBoundary(modelOutputPreflightNode),
     ))
     .addNode("projection_preflight", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "projection_preflight",
-      graphProjectionPreflightNode,
+      externalBoundary((state) => isExternalRoomState(state) ? {} : graphProjectionPreflightNode(state)),
     ))
     .addNode("ordinary_content_access_preflight", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "ordinary_content_access_preflight",
-      ordinaryContentAccessPreflightNode,
+      externalBoundary((state) => isExternalRoomState(state) ? {} : ordinaryContentAccessPreflightNode(state)),
     ))
     .addNode("post_model", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "post_model",
-      withinFunding(postModelNode),
+      externalBoundary(withinFunding(postModelNode)),
     ))
     .addNode("tools", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "tools",
-      withinFunding(graphToolsNode),
+      externalBoundary((state, config) => isExternalRoomState(state)
+        ? settleExternalRoomToolDenials(state, state.approvedToolCalls)
+        : withinFunding(graphToolsNode)(state, config)),
     ))
     .addNode("await_reply", withProtectedTaskNodeSettlement(
       nodeSettlement,
       "await_reply",
-      awaitReplyNode,
+      externalBoundary(awaitReplyNode),
     ))
     .addNode("foreground_context_refresh", (state) => ({
       foregroundContextRefresh: state.foregroundContextRefresh == null

@@ -75,6 +75,7 @@
     },
     ".": {
       "entry": [
+        "dev/tests/repo-invariants/test-apply-patch-provenance.test.ts",
         "packaging/docker/bootstrap-entrypoint.ts",
         "packaging/docker/bootstrap-native-probe-cli.ts",
         "packaging/docker/bootstrap-release-evidence-gate.ts",

@@ -38,6 +38,7 @@ const SUPPORTED_EMBEDDING_MODEL_IDS = new Set([
 type SaveState = "idle" | "saving" | "saved" | { error: string };
 
 type MediaGenerationModel = ServerModelConfig["imageModels"][number];
+type ImageUnderstandingModel = ServerModelConfig["imageUnderstandingModels"][number];
 
 function mergeProviderAvailability(
   current: ServerModelConfig,
@@ -49,6 +50,8 @@ function mergeProviderAvailability(
     effectiveEmbeddingModel: refreshed.effectiveEmbeddingModel,
     embeddingSelectionPending: refreshed.embeddingSelectionPending,
     embeddingModels: refreshed.embeddingModels,
+    effectiveImageUnderstandingModel: refreshed.effectiveImageUnderstandingModel,
+    imageUnderstandingModels: refreshed.imageUnderstandingModels,
     effectiveImageModel: refreshed.effectiveImageModel,
     effectiveMusicModel: refreshed.effectiveMusicModel,
     effectiveVideoModel: refreshed.effectiveVideoModel,
@@ -62,6 +65,60 @@ function mergeProviderAvailability(
       policyEnabled: current.preferSurplus,
     },
   };
+}
+
+function ImageUnderstandingModelSelect(props: {
+  selection: string | null;
+  effective: string | null;
+  models: ImageUnderstandingModel[];
+  canManage: boolean;
+  onChange(value: string | null): void;
+}) {
+  const selectedModel = props.selection
+    ? props.models.find((model) => model.id === props.selection)
+    : undefined;
+  const effectiveModel = props.effective
+    ? props.models.find((model) => model.id === props.effective)
+    : undefined;
+  const explicitUnavailable = props.selection !== null
+    && (!selectedModel || !selectedModel.available);
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor="server-image-understanding-model" className="block text-xs font-semibold text-foreground">
+        Image understanding model
+      </label>
+      <p className="text-[11px] text-foreground-muted">
+        Reads and reasons about attached images. This is separate from the image model that creates new images.
+      </p>
+      <select
+        id="server-image-understanding-model"
+        data-testid="server-image-understanding-model"
+        className="w-full rounded-md border border-border bg-background-element px-2 py-1.5 text-sm"
+        value={props.selection ?? ""}
+        disabled={!props.canManage}
+        onChange={(event) => props.onChange(event.target.value || null)}
+      >
+        <option value="">Automatic — first available supported model</option>
+        {props.selection !== null && !selectedModel ? (
+          <option value={props.selection} disabled>{props.selection} (Unavailable)</option>
+        ) : null}
+        {props.models.map((model) => (
+          <option key={model.id} value={model.id} disabled={!model.available}>
+            {model.displayName}{model.available ? "" : " (Unavailable)"}
+          </option>
+        ))}
+      </select>
+      <p className="text-[11px] text-foreground-muted" data-testid="effective-image-understanding-model">
+        Current effective model: {effectiveModel?.displayName ?? props.effective
+          ?? (props.selection === null ? "No runnable model available" : "Unavailable")}
+      </p>
+      {explicitUnavailable ? (
+        <p className="text-[11px] text-[var(--warning)]">
+          {selectedModel?.unavailableReason ?? "This saved model is not present in the current supported catalogue."}
+        </p>
+      ) : null}
+    </div>
+  );
 }
 
 function retainedDraftModelIds(config: ServerModelConfig | null): {
@@ -360,6 +417,7 @@ export function ModelsSection() {
       config.reflectionModel !== draft.reflectionModel ||
       config.memoryReviewModel !== draft.memoryReviewModel ||
       config.embeddingModel !== draft.embeddingModel ||
+      config.imageUnderstandingModel !== draft.imageUnderstandingModel ||
       config.imageModel !== draft.imageModel ||
       config.musicModel !== draft.musicModel ||
       config.videoModel !== draft.videoModel ||
@@ -418,6 +476,7 @@ export function ModelsSection() {
         ...(draft.reflectionModel === config?.reflectionModel ? {} : { reflectionModel: draft.reflectionModel }),
         ...(draft.memoryReviewModel === config?.memoryReviewModel ? {} : { memoryReviewModel: draft.memoryReviewModel }),
         ...(draft.embeddingModel === config?.embeddingModel ? {} : { embeddingModel: draft.embeddingModel }),
+        ...(draft.imageUnderstandingModel === config?.imageUnderstandingModel ? {} : { imageUnderstandingModel: draft.imageUnderstandingModel }),
         ...(draft.imageModel === config?.imageModel ? {} : { imageModel: draft.imageModel }),
         ...(draft.musicModel === config?.musicModel ? {} : { musicModel: draft.musicModel }),
         ...(draft.videoModel === config?.videoModel ? {} : { videoModel: draft.videoModel }),
@@ -743,11 +802,18 @@ export function ModelsSection() {
             </div>
 
             <div className="border-t border-border/60 pt-5">
-              <h3 className="text-xs font-semibold text-foreground">Media generation</h3>
+              <h3 className="text-xs font-semibold text-foreground">Images and media</h3>
               <p className="mt-1 text-[11px] text-foreground-muted">
                 Defaults apply when a generation request does not explicitly choose a model. Explicit choices are preserved. Reference-video workflows continue to require their explicit reference model and attached source media. Approved or queued work keeps its quoted model.
               </p>
               <div className="mt-3 grid gap-4">
+                <ImageUnderstandingModelSelect
+                  selection={draft.imageUnderstandingModel}
+                  effective={draft.effectiveImageUnderstandingModel}
+                  models={draft.imageUnderstandingModels}
+                  canManage={canManage}
+                  onChange={(imageUnderstandingModel) => patch({ imageUnderstandingModel })}
+                />
                 <MediaGenerationModelSelect
                   kind="image"
                   selection={draft.imageModel}

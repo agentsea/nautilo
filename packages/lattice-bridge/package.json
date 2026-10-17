@@ -52,6 +52,7 @@
   },
   "dependencies": {
     "@nautilo/api-client": "workspace:*",
+    "@nautilo/config": "workspace:*",
     "@nautilo/db": "workspace:*",
     "@nautilo/lattice-crypto": "workspace:*",
     "@nautilo/logger": "workspace:*",

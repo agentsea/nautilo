@@ -55,6 +55,17 @@ function registryWithSnapshot(
 }
 
 describe("selectDesktopFilesystemGrantSnapshotGrant (D418)", () => {
+  test("selects Windows grants without changing devices, drives, or directory boundaries", () => {
+    const snap = snapshot([{ id: "windows", canonicalRoot: "C:\\Repo", access: ["read"], policyVersion: 3, lifetime: "durable" }]);
+    const select = (candidatePath: string) => selectDesktopFilesystemGrantSnapshotGrant({
+      snapshot: snap, expectedInstanceId: INSTANCE, candidatePath, operation: "read",
+    });
+    expect(select("c:\\repo\\file.ts")?.id).toBe("windows");
+    for (const candidate of ["D:\\Repo\\file.ts", "C:\\Repository\\file.ts", "/Repo/file.ts", "C:\\Repo\\..\\outside"]) {
+      expect(select(candidate)).toBeUndefined();
+    }
+  });
+
   test("selects the most-specific matching read grant", () => {
     const snap = snapshot([
       {

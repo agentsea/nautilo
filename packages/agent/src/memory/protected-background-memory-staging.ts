@@ -7,6 +7,7 @@ import type {
   ProtectedMemoryAuthority,
   ProtectedMemoryOpenedItem,
   ProtectedMemoryResult,
+  MemoryPayloadV1,
 } from "@nautilo/lattice-bridge";
 
 const MAX_INPUTS = 64;
@@ -49,7 +50,15 @@ export type ProtectedBackgroundMemoryTierSlot = Readonly<{
 
 export type ProtectedBackgroundMemoryStaging = Readonly<{
   repository: ProtectedAgentMemoryRepository;
-  outputs(): readonly ProtectedAgentBackgroundMemoryWorkOutput[];
+  modelExposureSnapshots(): readonly ProtectedBackgroundMemoryExposureSnapshot[];
+  outputs(
+    modelExposureDependencies?: MemoryPayloadV1["modelExposureDependencies"],
+  ): readonly ProtectedAgentBackgroundMemoryWorkOutput[];
+}>;
+
+export type ProtectedBackgroundMemoryExposureSnapshot = Readonly<{
+  memoryId: string;
+  contentRevision: number;
 }>;
 
 function unavailable<Value>(
@@ -213,6 +222,10 @@ export function createProtectedBackgroundMemoryStaging(input: Readonly<{
   ) throw new TypeError("Protected background Memory inventory is incomplete");
   const staged = new Map<string, ProtectedAgentBackgroundMemoryWorkOutput>();
   const stagedMemoryIds = new Set<string>();
+  const exposureSnapshots = new Map<
+    string,
+    ProtectedBackgroundMemoryExposureSnapshot
+  >();
 
   async function embed(
     purpose: "memory.content_embedding" | "memory.query_embedding",
@@ -314,11 +327,24 @@ export function createProtectedBackgroundMemoryStaging(input: Readonly<{
           createdAt: new Date(facts.createdAt),
         }));
       }
+      const selected = opened.sort((left, right) =>
+        right.score - left.score || left.id.localeCompare(right.id)
+      ).slice(0, request.limit);
+      for (const result of selected) {
+        const current = metadata.get(result.id);
+        if (current === undefined) {
+          return unavailable<readonly ProtectedMemoryOpenedItem[]>(
+            "stale_revision",
+          );
+        }
+        exposureSnapshots.set(result.id, Object.freeze({
+          memoryId: result.id,
+          contentRevision: current.contentRevision,
+        }));
+      }
       return Object.freeze({
         status: "success" as const,
-        value: Object.freeze(opened.sort((left, right) =>
-          right.score - left.score || left.id.localeCompare(right.id)
-        ).slice(0, request.limit)),
+        value: Object.freeze(selected),
       });
     },
 
@@ -436,12 +462,28 @@ export function createProtectedBackgroundMemoryStaging(input: Readonly<{
 
   return Object.freeze({
     repository,
-    outputs: () => Object.freeze([
+    modelExposureSnapshots: () => Object.freeze(
+      [...exposureSnapshots.values()].sort((left, right) =>
+        left.memoryId.localeCompare(right.memoryId)
+      ),
+    ),
+    outputs: (modelExposureDependencies) => Object.freeze([
       ...input.outputSlots.map((slot) => slot.publicationIdempotencyId),
       ...input.tierSlots.map((slot) => slot.operationIdempotencyId),
     ].flatMap((operationId) => {
       const value = staged.get(operationId);
-      return value === undefined ? [] : [value];
+      if (value === undefined) return [];
+      if (
+        value.kind !== "content_revision"
+        || modelExposureDependencies === undefined
+      ) return [value];
+      return [Object.freeze({
+        ...value,
+        payload: Object.freeze({
+          ...value.payload,
+          modelExposureDependencies,
+        }),
+      })];
     })),
   });
 }

@@ -76,6 +76,8 @@ const EVENT_ROUTING = {
   // identifier-free durable-feed invalidation, delivered through an
   // explicit user audience supplied out of band by the server publisher.
   "event_feed.changed": "scoped",
+  // Content-free connection invalidation requires an explicit owning-user audience.
+  "bolter.state.changed": "scoped",
   room_members_changed: "scoped",
   "typing.ping": "scoped",
   "model.fallback": "scoped",

@@ -99,3 +99,7 @@ export * from "./protected-task-continuation-receipts";
 export * from "./task-content-backfill";
 
 export * from "./protected-task-wake-continuation-receipts";
+export * from "./bolter-bridge";
+
+export * from "./external-room-execution-claims";
+export * from "./chatgpt-registrations";

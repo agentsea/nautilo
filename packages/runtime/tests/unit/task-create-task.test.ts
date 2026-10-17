@@ -1,3 +1,4 @@
+import { installTaskFundingPort, uninstallTaskFundingPort } from "../../src/task-funding-port";
 import { describe, test, expect } from "bun:test";
 import { rejects } from "node:assert/strict";
 import type { DirectDatabase, Task } from "@nautilo/db";
@@ -638,4 +639,19 @@ test("nested capture closes a definition change while parent reads were awaiting
   await rejects(createTask({ ...taskDeps(db, { kick() {} }), captureLocalExecution: async () => delegatedSource },
     baseInput({ parentTaskId: "parent-task", callingRoomId: "task-room", depth: 1 })), /parent lineage/);
   expect(lastValues()).toEqual({});
+});
+
+
+test("persists the trusted subscription pin before a new Task enters the queue", async () => {
+  const { db, lastValues } = fakeDb();
+  const binding = { kind: "personal" as const, providerRoute: "openai-chatgpt", credentialId: "88888888-8888-4888-8888-888888888888", credentialRevision: 7 };
+  const admission = { modelId: "openai:gpt-6.1-sol", binding };
+  installTaskFundingPort({ prepareCreation: async () => admission, admit: async () => admission,
+    openSession: async () => { throw new Error("Not used"); } });
+  try {
+    await createTask({ ...taskDeps(db, { kick: () => {} }), assertServerFunding: async () => { throw new Error("Must not charge server"); } },
+      baseInput({ metadata: { bringBack: true } }));
+    expect(lastValues()["fundingMode"]).toBe("caller");
+    expect(lastValues()["metadata"]).toEqual({ bringBack: true, subscriptionFunding: binding });
+  } finally { uninstallTaskFundingPort(); }
 });

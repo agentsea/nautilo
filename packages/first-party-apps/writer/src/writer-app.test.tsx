@@ -1,12 +1,13 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 
 setDefaultTimeout(15_000);
 
-const HARNESS_PATH = new URL("./writer-app-reconnect-harness.tsx", import.meta.url).pathname;
+const HARNESS_PATH = fileURLToPath(new URL("./writer-app-reconnect-harness.tsx", import.meta.url));
 
 async function runReconnectHarness(): Promise<void> {
   const child = Bun.spawn([process.execPath, "test", HARNESS_PATH], {
-    cwd: new URL("..", import.meta.url).pathname,
+    cwd: fileURLToPath(new URL("..", import.meta.url)),
     stdout: "pipe",
     stderr: "pipe",
   });

@@ -15,6 +15,17 @@ import type { LocalFileHistoryManifest } from "../../electron/local-file-history
 import { parseOptionalExpectedSha256 } from "../../electron/local-file-dispatch/guarded-write.ts";
 
 let mockLocalFileHistoryDir = "";
+const runtimes: DesktopDocumentMutationRuntime[] = [];
+
+function createRuntime(dependencies: ConstructorParameters<typeof DesktopDocumentMutationRuntime>[0]) {
+  const runtime = new DesktopDocumentMutationRuntime(dependencies);
+  runtimes.push(runtime);
+  return runtime;
+}
+
+async function stopRuntimes(): Promise<void> {
+  await Promise.all(runtimes.splice(0).map((runtime) => runtime.stopOutboxPump()));
+}
 
 mock.module("electron", () => ({
   app: {
@@ -39,7 +50,7 @@ beforeAll(async () => {
     const adapter = createGuardedNodeAdapter({
       allowedRoots: request.allowedRoots ?? [],
     });
-    const runtime = new DesktopDocumentMutationRuntime({
+    const runtime = createRuntime({
       getTrustedRelayId: () => options.relayId,
       getTrustedHumanId: () => OWNER,
       fileAdapter: adapter,
@@ -67,6 +78,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await stopRuntimes();
   if (mockLocalFileHistoryDir) {
     await fs.rm(mockLocalFileHistoryDir, { recursive: true, force: true });
   }
@@ -127,6 +139,7 @@ async function fixture(): Promise<{
     journalRoot,
     guard,
     cleanup: async () => {
+      await stopRuntimes();
       await fs.rm(root, { recursive: true, force: true });
       await fs.rm(journalRoot, { recursive: true, force: true });
     },
@@ -203,7 +216,7 @@ describe("M216 guarded local-file write foundation", () => {
       const target = path.join(root, "raced.bin");
       const human = Buffer.from("human won race");
       const adapter = createGuardedNodeAdapter({ allowedRoots: [root] });
-      const runtime = new DesktopDocumentMutationRuntime({
+      const runtime = createRuntime({
         getTrustedRelayId: () => RELAY,
         getTrustedHumanId: () => OWNER,
         fileAdapter: adapter,

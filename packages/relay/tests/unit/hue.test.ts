@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   createOpenHueHandler,
   isOpenHueAction,
@@ -137,7 +138,7 @@ describe("createOpenHueHandler", () => {
     expect(await handler({ action: "discover" })).toEqual({ status: "ok", result: { stdout: "found", stderr: "" } });
     expect(first.calls[0]).toMatchObject({
       binary: "/tools/openhue", argv: ["discover"],
-      options: { env: { HOME: "/Users/alice", XDG_CONFIG_HOME: "/Users/alice/.nautilo" } },
+      options: { env: { HOME: "/Users/alice", XDG_CONFIG_HOME: join("/Users/alice", ".nautilo") } },
     });
     expect(first.calls[0]!.options.timeoutMs).toBeGreaterThan(0);
     expect(first.calls[0]!.options.timeoutMs).toBeLessThanOrEqual(15_000);

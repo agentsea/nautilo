@@ -16,7 +16,7 @@ const DEFAULT_MAX_STDOUT_BYTES = 96 * 1024;
 const DEFAULT_MAX_STDERR_BYTES = 24 * 1024;
 const SERVER_VENDOR_ROOT = fileURLToPath(new URL("../../vendor/agent-browser", import.meta.url));
 
-type AgentBrowserPlatformKey = "darwin-arm64" | "darwin-x64" | "linux-arm64" | "linux-x64";
+type AgentBrowserPlatformKey = "darwin-arm64" | "darwin-x64" | "linux-arm64" | "linux-x64" | "win32-x64";
 
 interface AgentBrowserArtifact {
   readonly sha256: string;
@@ -76,6 +76,7 @@ function platformKey(platform: NodeJS.Platform, arch: string): AgentBrowserPlatf
   if (platform === "darwin" && arch === "x64") return "darwin-x64";
   if (platform === "linux" && arch === "arm64") return "linux-arm64";
   if (platform === "linux" && arch === "x64") return "linux-x64";
+  if (platform === "win32" && arch === "x64") return "win32-x64";
   return null;
 }
 
@@ -84,7 +85,7 @@ function parseManifest(value: unknown): AgentBrowserManifest | null {
   const entry = value["agent-browser"];
   if (entry["version"] !== AGENT_BROWSER_VERSION || entry["binaryName"] !== "agent-browser" || !isRecord(entry["artifacts"])) return null;
   const artifacts: Partial<Record<AgentBrowserPlatformKey, AgentBrowserArtifact>> = {};
-  for (const key of ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"] as const) {
+  for (const key of ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"] as const) {
     const artifact = entry["artifacts"][key];
     if (!isRecord(artifact) || typeof artifact["sha256"] !== "string" || !/^[a-f0-9]{64}$/u.test(artifact["sha256"])
       || typeof artifact["sizeMin"] !== "number" || !Number.isSafeInteger(artifact["sizeMin"]) || artifact["sizeMin"] < 10_000_000) {
@@ -156,7 +157,7 @@ export async function resolveServerVendoredAgentBrowserBinary(
   const manifest = parseManifest(manifestValue);
   const artifact = manifest?.["agent-browser"].artifacts[key];
   if (!artifact) throw new DirectBrowserHarnessError("unavailable");
-  const binary = join(vendorRoot, key, manifest["agent-browser"].binaryName);
+  const binary = join(vendorRoot, key, key === "win32-x64" ? "agent-browser.exe" : manifest["agent-browser"].binaryName);
   if (!await (dependencies.binaryExists ?? defaultBinaryExists)(binary)) {
     throw new DirectBrowserHarnessError("unavailable");
   }

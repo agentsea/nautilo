@@ -1,5 +1,5 @@
 import { realpathSync, existsSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
  * Shared path-safety for relay dispatch handlers.
@@ -58,10 +58,12 @@ export type WorkspaceGuardResult =
  * guard constructed with the same path (macOS canonicalises
  * `/var/folders` → `/private/var/folders`).
  */
+// The native resolver also expands Windows 8.3 short names, matching the
+// async `realpath` used elsewhere for the same roots.
 function canonicalise(path: string): string {
   const abs = resolve(path);
   try {
-    return realpathSync(abs);
+    return realpathSync.native(abs);
   } catch {
     // Walk up to the nearest existing ancestor.
     let current = abs;
@@ -69,11 +71,11 @@ function canonicalise(path: string): string {
     while (!existsSync(current)) {
       const parent = dirname(current);
       if (parent === current) return abs; // nothing exists on this branch
-      tail.unshift(current.slice(parent.length + 1));
+      tail.unshift(basename(current));
       current = parent;
     }
     try {
-      const real = realpathSync(current);
+      const real = realpathSync.native(current);
       return tail.length > 0 ? resolve(real, ...tail) : real;
     } catch {
       return abs;
@@ -106,8 +108,10 @@ export function createWorkspaceGuard(
     const abs = isAbsolute(candidate) ? candidate : resolve(candidate);
     const resolved = canonicalise(abs);
     for (const root of unique) {
-      if (resolved === root) return { ok: true, resolved };
-      if (resolved.startsWith(root + sep)) return { ok: true, resolved };
+      const suffix = relative(root, resolved);
+      if (suffix === "" || (suffix !== ".." && !suffix.startsWith(`..${sep}`) && !isAbsolute(suffix))) {
+        return { ok: true, resolved };
+      }
     }
     return {
       ok: false,

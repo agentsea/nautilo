@@ -8,6 +8,7 @@
 import { workspaceSharingRoutes, type WorkspaceSharingService } from "./workspace-sharing";
 
 import { randomUUID } from "node:crypto";
+import { physicalPathFromStorageUri as absPathFromStorageUri } from "@nautilo/db";
 import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, open, readFile, rm, stat as fsStat, writeFile } from "node:fs/promises";
 import { zipSync } from "fflate";
@@ -209,13 +210,6 @@ function rowToDto(row: Artifact, namespaceIds: string[], mutableNamespaceIds: re
     namespaceIds,
     canWrite: namespaceIds.some((namespaceId) => mutableNamespaceIds.includes(namespaceId)),
   };
-}
-
-function absPathFromStorageUri(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const rest = storageUri.slice("file://".length);
-  if (!rest.startsWith("/")) return null;
-  return rest;
 }
 
 /** D356 — bulk zip export caps (in-memory zipSync; keep bounded). */

@@ -57,9 +57,9 @@ export function imageAssistanceObservationMessages(result: ImageAssistanceResult
 }
 
 /** Preserve cancellation/authority waits while giving failed extraction a safe recovery code. */
-export function failImageAssistance(error: unknown, signal: AbortSignal): never {
+export function failImageAssistance(error: unknown, signal: AbortSignal, stage: "read" | "save" = "read"): never {
   signal.throwIfAborted();
   if (error instanceof StrictShadowEnforcementError || isForegroundContextPreparationWaitingError(error)
     || (error instanceof Error && error.name === "AbortError")) throw error;
-  throw new ImageAssistanceError();
+  throw new ImageAssistanceError(stage);
 }

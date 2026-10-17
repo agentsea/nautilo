@@ -113,7 +113,7 @@ test("every manifest atomic-write interruption reopens complete old or new truth
 test("relay aliases of one root serialize and reject mismatched ownership", async () => {
   const fx = await fixture();
   const alias = `${fx.journalRoot}-alias`;
-  await fs.symlink(fx.journalRoot, alias);
+  await fs.symlink(fx.journalRoot, alias, process.platform === "win32" ? "junction" : "dir");
   roots.push(alias);
   const file = path.join(fx.workspace, "relay.txt");
   await fs.writeFile(file, "after");

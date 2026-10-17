@@ -8,7 +8,7 @@ describe("node process host group signals", () => {
     let result: Promise<void> | undefined;
 
     try {
-      result = signalGroupAsync(123, "SIGTERM", () => true, () => { throw denied; });
+      result = signalGroupAsync(123, "SIGTERM", () => { throw denied; });
     } catch {
       escapedSynchronously = true;
     }
@@ -22,14 +22,14 @@ describe("node process host group signals", () => {
 
   test("preserves ESRCH as an already-gone successful signal", async () => {
     const missing = Object.assign(new Error("missing"), { code: "ESRCH" });
-    let fallbackCalls = 0;
-
-    await signalGroupAsync(123, "SIGKILL", () => { fallbackCalls += 1; return true; }, () => { throw missing; });
-    expect(fallbackCalls).toBe(0);
+    await signalGroupAsync(123, "SIGKILL", () => { throw missing; });
   });
 
-  test("contains an independently detached command group before reporting absence", async () => {
-    if (process.platform === "win32") return;
+  test.skipIf(process.platform !== "win32")("refuses unsupported Windows process-tree construction instead of reporting containment", () => {
+    expect(() => createNodeProcessHost()).toThrow("process-tree containment is unavailable");
+  });
+
+  test.skipIf(process.platform === "win32")("contains an independently detached command group before reporting absence", async () => {
     const host = createNodeProcessHost();
     const child = await host.spawn({
       executablePath: process.execPath,

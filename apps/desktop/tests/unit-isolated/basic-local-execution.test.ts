@@ -22,8 +22,8 @@ afterEach(async () => {
 });
 
 function fixture(tty = false, protectedPolicy: "valid" | "missing" | "mismatch" = "valid") {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
-  const policyHome = realpathSync(mkdtempSync(join(tmpdir(), "local-execution-home-")));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "local-execution-integration-")));
+  const policyHome = realpathSync.native(mkdtempSync(join(tmpdir(), "local-execution-home-")));
   roots.push(root, policyHome);
   let selected = ""; let currentRevision = 1; let allowed = true; let activeProfile = false;
   let preparedHome: string | undefined;

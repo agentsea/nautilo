@@ -76,6 +76,8 @@ export interface ExplorerRow {
   roomKind?: RoomKind;
   /** Open rooms are discoverable by default for compatibility with legacy summaries. */
   roomDiscoverable?: boolean;
+  /** Permanent room-scoped boundary for an externally linked Genie. */
+  roomExternalContext?: boolean;
 }
 
 export interface ExplorerSection {

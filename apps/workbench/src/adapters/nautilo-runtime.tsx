@@ -1,3 +1,4 @@
+import { workspaceAttachmentsForSend } from "../lib/composer-pdf-upload";
 import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
@@ -28,6 +29,7 @@ import {
   type LiveShadowMessageRealtimeEventV1,
   type FullEncryptionMessageRealtimeContentEventV2,
   type ServerEvent,
+  type MessageNewEvent,
   type RealtimeControlEvent,
   type ProveItToolInfo,
 } from "@nautilo/types";
@@ -146,6 +148,7 @@ import {
   dedupeMessageArtifactOpenRefs,
   MESSAGE_ARTIFACT_OPEN_REFS_METADATA_KEY,
   restoreSessionMessages,
+  reconcileCanonicalExternalMessage,
   type RoomHistoryShadowReadAdapter,
 } from "./session-rehydrate";
 import { reconcileAdvancedVideoWorkcardMessage } from "./message-new-reconciliation";
@@ -367,6 +370,24 @@ function isPendingAttentionPreviewEvent(
   return event.type === "approval.ask"
     || event.type === "identity.challenge"
     || event.type === "prove_it.challenge";
+}
+
+/** Called only after the runtime's data-admission and active-Room event gates. */
+export function applyCanonicalExternalMessageEvent(input: {
+  event: MessageNewEvent;
+  messages: readonly ThreadMessageLike[];
+  commit: (messages: readonly ThreadMessageLike[]) => void;
+  recordLive: (laneKey: string, messageId: string) => void;
+  scheduleCache: () => void;
+}): boolean {
+  const { event } = input;
+  if ((event.role !== "user" && event.role !== "human")
+    || (event.externalOrigin === undefined && event.externalAttributionInvalid !== true)) return false;
+  const reconciled = reconcileCanonicalExternalMessage(input.messages, event);
+  if (reconciled !== input.messages) input.commit(reconciled);
+  input.recordLive(event.laneKey, event.messageId);
+  input.scheduleCache();
+  return true;
 }
 
 /** Task/subagent prompts are owner-scoped live UI, not Room checkpoint recovery. */
@@ -4770,6 +4791,17 @@ export function NautiloRuntimeProvider({
             // non-streamed assistant message.new; job may still be live.
             break;
           }
+          if (applyCanonicalExternalMessageEvent({ event, messages: messagesRef.current,
+            commit: messages => {
+              messagesRef.current = [...messages];
+              flush();
+            },
+            recordLive: (laneKey, messageId) => {
+              const roomId = roomIdFromLaneKey(laneKey, laneKeyToRoomIdRef.current);
+              if (roomId) recordLiveRoomMessage(roomId, messageId);
+            },
+            scheduleCache: () => scheduleCacheWrite(activeRoomIdRef.current),
+          })) break;
           if (
             (event.role === "user" || event.role === "human") &&
             (event.content || (event.attachments?.length ?? 0) > 0) &&
@@ -5611,6 +5643,11 @@ export function NautiloRuntimeProvider({
               },
             }),
           );
+          break;
+        }
+
+        case "bolter.state.changed": {
+          window.dispatchEvent(new CustomEvent("nautilo:bolter-state-changed"));
           break;
         }
 
@@ -7480,8 +7517,20 @@ export function NautiloRuntimeProvider({
       const isDetachedFocusedTurn = options?.detachedFocusedResources !== undefined;
       const queuedAttachments = isDetachedFocusedTurn ? [] : getAttachments();
       const fileContext = readFileContext();
+      const workspaceAttachments = workspaceAttachmentsForSend(queuedAttachments, roomIdForSend);
+      // A pending/failed document must never disappear from a send, or move to another Room.
+      if (!workspaceAttachments.ok) {
+        for (const attachment of queuedAttachments) {
+          if (attachment.workspaceArtifact && attachment.workspaceArtifact.roomId !== roomIdForSend) {
+            updateAttachment(attachment.id, { status: "error",
+              errorReason: "This PDF belongs to another room. Remove it here and attach it in the intended room." });
+          }
+        }
+        return false;
+      }
       const attachments: ChatUploadedAttachmentRef[] = [];
       for (const att of queuedAttachments) {
+        if (att.workspaceArtifact) continue;
         if (att.attachmentId && att.status !== "error") {
           attachments.push({ attachmentId: att.attachmentId });
         } else {
@@ -7506,7 +7555,7 @@ export function NautiloRuntimeProvider({
         ? [...options.detachedFocusedResources]
         : mergeFocusedResourcesForSend(
             getFocusedResources().map((item) => item.ref),
-            options?.contextualFocusedResources ?? [],
+            [...(options?.contextualFocusedResources ?? []), ...workspaceAttachments.refs],
           );
       const hasFocusedResourcePayload = focusedResources.length > 0;
 
@@ -7543,7 +7592,7 @@ export function NautiloRuntimeProvider({
       const optimisticId = newMessageId("user");
       const optimisticBubbleText = buildUserBubbleText({
         text,
-        queuedAttachments: hasAttachmentPayload ? queuedAttachments : [],
+        queuedAttachments: hasAttachmentPayload || workspaceAttachments.refs.length > 0 ? queuedAttachments : [],
       });
       const workcardContinuation: AdvancedVideoWorkcardContinuation | undefined =
         options?.cardContinuation === "advanced_video"

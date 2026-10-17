@@ -79,6 +79,47 @@ const BOARD_QUALIFICATION_EXCLUSIONS = [
 ] as const;
 
 export const REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS: readonly SourceAlarmReview[] = [
+  ...[
+    ["c880a2b622dffa5a", "committed-message-observer"],
+    ["754c1418c2958136", "resumed-recovery"],
+    ["89b81c36ea23316a", "recovery-counts"],
+    ["e99f88485eb1c073", "deferred-recovery"],
+  ].map(([fingerprint, suffix]) => exclusion(
+    `packages/server/src/messaging/external-room-execution.ts#log_emitter:${fingerprint}:1`,
+    "packages/server",
+    `exclusion.bolter-bridge.${suffix}`,
+    "This exact diagnostic emits a fixed lifecycle message or counts of pending and ownership-unproven work. It never includes provider text, generated replies, sender labels, owner or routing identifiers, claim tokens, credentials, keys or caught error details; it makes no transcript-encryption claim.",
+  )),
+  exclusion(
+    "packages/db/scripts/finalize-bolter-execution.ts#filesystem_write:ff2763bae2791e66:1",
+    "packages/db",
+    "exclusion.bolter-bridge.execution-migration-finalizer",
+    "This exact developer finalizer writes generated schema SQL and fixed lifecycle trigger definitions to the latest repository migration. It reads checked-in migration templates and the journal only, never provider messages, runtime rows, credentials or encryption keys; actual database and transcript boundaries remain separately inventoried.",
+  ),
+  declaration(
+    "apps/desktop/electron/bolter-bridge/inbox-spool.ts#filesystem_write:5bd7f11fea68097f:1",
+    "apps/desktop",
+    "source.bolter-inbox.ciphertext-write",
+    "This exact temporary write persists the trusted cipher port's bytes, never the JSON batch directly, inside the source.file.desktop-bolter-inbox device-local boundary. The paired OS codec adds its versioned header to safeStorage ciphertext and rejects unavailable protection; receiver wiring and live OS qualification remain separate from this storage primitive.",
+  ),
+  declaration(
+    "apps/desktop/electron/bolter-bridge/inbox-spool.ts#filesystem_write:c475a3203bb7e0fb:1",
+    "apps/desktop",
+    "source.bolter-inbox.ciphertext-publish",
+    "This exact rename publishes the fsynced cipher-port bytes within source.file.desktop-bolter-inbox after current authority is checked. The pinned directory is synced and its current path identity is checked before success; a replacement or retirement cannot become a successful ownership receipt. This is device-local custody, not Namespace encryption.",
+  ),
+  exclusion(
+    "packages/db/scripts/finalize-bolter-bridge.ts#filesystem_write:ff2763bae2791e66:1",
+    "packages/db",
+    "exclusion.bolter-bridge.migration-finalizer",
+    "This exact developer finalizer writes generated migration SQL containing schema, role grants, fixed lifecycle functions and triggers. It does not read or persist provider messages, account credentials, runtime connection rows or Human-authored content; product data retention and encryption belong to their separately inventoried database boundaries.",
+  ),
+  exclusion(
+    "packages/db/scripts/finalize-bolter-factory.ts#filesystem_write:ff2763bae2791e66:1",
+    "packages/db",
+    "exclusion.bolter-bridge.factory-migration-finalizer",
+    "This exact developer finalizer rewrites generated migration SQL by appending fixed product-role grants and lifecycle trigger functions derived from the preceding migration. It operates on checked-in schema bytes and never reads or stores connection rows, provider text, authored attribution, credentials or OS key material.",
+  ),
   exclusion(
     "apps/cli/src/commands/artifacts-relocate.ts#filesystem_write:281ad536784f833d:1",
     "apps/cli",

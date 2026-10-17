@@ -143,7 +143,22 @@ export interface PersonalCostsRecoveryAttempt {
   taskId: string | null;
 }
 
+/** Plan usage is separate from spend; API equivalents are comparison estimates only. */
+export interface PersonalSubscriptionUsageRow {
+  registrationId: string | null;
+  model: string;
+  attempts: number;
+  unresolvedAttempts: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  apiEquivalentCostUsd: number;
+}
+
 export interface PersonalCostsSummary {
+  /** Optional for compatibility with servers predating subscription funding. */
+  subscriptions?: PersonalSubscriptionUsageRow[] | undefined;
   currency: "USD";
   range: {
     key: PersonalCostsRangeKey;

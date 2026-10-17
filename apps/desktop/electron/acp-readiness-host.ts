@@ -50,6 +50,8 @@ export interface HermesAcpNativeProbe {
 export function createElectronHermesAcpNativeProbe(): HermesAcpNativeProbe {
   return {
     async run(input): Promise<HermesAcpNativeProbeResult> {
+      // Readiness probes need the same process-tree containment as execution.
+      if (process.platform === "win32") return { state: "unavailable" };
       const admission = await resolveReviewedHermesExecutable();
       if (admission === null) return { state: "missing" };
       return runStaticProbe(admission.executable, input, probeEnvironment(admission.pathEntries));
@@ -192,6 +194,7 @@ export async function resolveReviewedHermesLaunchAdmission(): Promise<Readonly<{
   executable: string;
   pathEntries: readonly string[];
 }> | null> {
+  if (process.platform === "win32") return null;
   const resolved = await resolveReviewedHermesExecutable();
   if (!resolved) return null;
   const environment = createHermesAcpLaunchEnvironment(resolved.pathEntries);

@@ -1,4 +1,5 @@
 import { isRelayTaskProjectFileDispatch } from "./protocol";
+import { BOLTER_RELAY_PROTOCOL_VERSION, isRelayBolterCapability, parseRelayBolterDesktopMessage, parseRelayBolterServerMessage, sameRelayBolterScope, type RelayBolterScope, type RelayBolterCommand, type RelayBolterBatchAck, type RelayBolterAuthorized, type RelayBolterDesktopMessage } from "./bolter-protocol";
 import { parseRelayLocalExecutionDelegationCapture } from "./protocol";
 import { isRelayLocalExecutionSearchAllowed } from "./protocol";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "./protocol";
@@ -224,6 +225,16 @@ export interface RelayAcpHostPort {
   onDisconnected?(): void | Promise<void>;
 }
 
+/** v30 — fixed external messaging, never a model tool dispatch lane. */
+export interface RelayBolterHostTransport { send(message: RelayBolterDesktopMessage): boolean }
+export interface RelayBolterHostPort {
+  isReady(): boolean;
+  onRegistered(session: RelayBolterScope, transport: RelayBolterHostTransport): void;
+  onCommand(message: RelayBolterCommand): void | Promise<void>;
+  onBatchAck(message: RelayBolterBatchAck): void | Promise<void>;
+  onAuthorized(message: RelayBolterAuthorized): void | Promise<void>;
+  onDisconnected?(): void | Promise<void>;
+}
 /** v17 — injected Electron-only Claude Connections discovery seam. */
 export type RelayClaudeConnectionSession = RelayClaudeConnectionScope;
 export interface RelayClaudeConnectionHostTransport {
@@ -309,6 +320,8 @@ export interface RelayClientOptions {
   codexHostPort?: RelayCodexHostPort;
   /** Optional Electron-owned built-in ACP readiness host. */
   acpHostPort?: RelayAcpHostPort;
+  /** v30 — Electron owns the provider credentials and receiver lifetime. */
+  bolterHostPort?: RelayBolterHostPort;
   /** v17 — no SDK dependency here; Electron injects the host when available. */
   claudeConnectionHostPort?: RelayClaudeConnectionHostPort;
   /** v18 — distinct from discovery; Desktop owns its active execution. */
@@ -379,6 +392,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
   let authenticatedCodexSession: RelayCodexSession | null = null;
   let codexSession: RelayCodexSession | null = null;
   let acpSession: RelayAcpSession | null = null;
+  let bolterSession: RelayBolterScope | null = null;
   let claudeConnectionSession: RelayClaudeConnectionSession | null = null;
   let claudeExecutionSession: RelayClaudeExecutionSession | null = null;
   let desktopTopology: RelayDesktopTopology | null = null;
@@ -696,6 +710,37 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
     } catch {
       acpSession = null;
     }
+  }
+
+  function deactivateBolterHost(): void {
+    const active = bolterSession !== null;
+    bolterSession = null;
+    if (active) {
+      try { void Promise.resolve(options.bolterHostPort?.onDisconnected?.()).catch(() => undefined); } catch { /* isolated host callback */ }
+    }
+  }
+  const bolterTransport: RelayBolterHostTransport = {
+    send(message) {
+      const parsed = parseRelayBolterDesktopMessage(message);
+      if (status !== "connected" || !parsed || !bolterSession || !sameRelayBolterScope(parsed.scope, bolterSession)) return false;
+      send(parsed);
+      return true;
+    },
+  };
+  function reconcileBolterHost(capabilities: RelayCapabilities): void {
+    const port = options.bolterHostPort;
+    let ready = false;
+    try { ready = port?.isReady() === true; } catch { /* unavailable */ }
+    if (!ready || !port || !authenticatedCodexSession || acknowledgedCapabilityRevision === null
+      || authenticatedCodexSession.selectedProtocolVersion < BOLTER_RELAY_PROTOCOL_VERSION
+      || capabilities.profile !== "desktop-agent" || !isRelayBolterCapability(capabilities.bolter)) {
+      deactivateBolterHost(); return;
+    }
+    const next = Object.freeze({ ...authenticatedCodexSession, capabilityRevision: acknowledgedCapabilityRevision });
+    if (bolterSession && sameRelayBolterScope(bolterSession, next)) return;
+    deactivateBolterHost();
+    bolterSession = next;
+    try { port.onRegistered(next, bolterTransport); } catch { deactivateBolterHost(); }
   }
 
   function deactivateClaudeConnectionHost(): void {
@@ -1749,6 +1794,20 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       }
       return;
     }
+    let bolterMessage: ReturnType<typeof parseRelayBolterServerMessage> = null;
+    try { bolterMessage = parseRelayBolterServerMessage(JSON.parse(wire) as unknown); } catch { /* generic handling below */ }
+    if (bolterMessage) {
+      reconcileBolterHost(registeredCapabilities);
+      const session = bolterSession;
+      const port = options.bolterHostPort;
+      if (!session || !port || !sameRelayBolterScope(session, bolterMessage.scope)) return;
+      try {
+        const work = bolterMessage.type === "relay:bolter-command" ? port.onCommand(bolterMessage)
+          : bolterMessage.type === "relay:bolter-batch-ack" ? port.onBatchAck(bolterMessage) : port.onAuthorized(bolterMessage);
+        void Promise.resolve(work).catch(() => { if (bolterSession === session) deactivateBolterHost(); });
+      } catch { if (bolterSession === session) deactivateBolterHost(); }
+      return;
+    }
     let maybeClaudeExecution: RelayClaudeExecutionCommand | null = null;
     try { maybeClaudeExecution = parseRelayClaudeExecutionCommand(JSON.parse(wire) as unknown); } catch { /* generic handling below */ }
     if (maybeClaudeExecution !== null) {
@@ -1852,6 +1911,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
           };
           reconcileCodexHost(registeredCapabilities);
           reconcileAcpHost(registeredCapabilities);
+          reconcileBolterHost(registeredCapabilities);
           reconcileClaudeConnectionHost(registeredCapabilities);
           reconcileClaudeExecutionHost(registeredCapabilities);
         }
@@ -1951,6 +2011,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
             }
             reconcileCodexHost(registeredCapabilities);
             reconcileAcpHost(registeredCapabilities);
+            reconcileBolterHost(registeredCapabilities);
             reconcileClaudeConnectionHost(registeredCapabilities);
             reconcileClaudeExecutionHost(registeredCapabilities);
             resolver.resolve();
@@ -2140,6 +2201,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
         retirePendingDispatches(tokenRejected || intentionalDisconnect);
         authenticatedCodexSession = null;
         deactivateCodexHost();
+        deactivateBolterHost();
         deactivateClaudeConnectionHost();
         deactivateClaudeExecutionHost();
         if (acpSession !== null) {
@@ -2181,6 +2243,7 @@ export function createRelayClient(options: RelayClientOptions): RelayClient {
       retirePendingDispatches(true);
       authenticatedCodexSession = null;
       deactivateCodexHost();
+      deactivateBolterHost();
       deactivateClaudeConnectionHost();
       deactivateClaudeExecutionHost();
       if (acpSession !== null) {

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { rejects } from "node:assert/strict";
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   cp,
@@ -7,6 +8,7 @@ import {
   mkdtemp,
   readFile,
   readdir,
+  rename,
   rm,
   stat,
   symlink,
@@ -211,7 +213,7 @@ describe("seedFirstPartyApps", () => {
 
     const appNodeModulesScope = join(sourceRoot, "writer", "node_modules", "@wafflebase");
     await mkdir(appNodeModulesScope, { recursive: true });
-    await symlink(dependencySource, join(appNodeModulesScope, "sheets"), "dir");
+    await symlink(dependencySource, join(appNodeModulesScope, "sheets"), process.platform === "win32" ? "junction" : "dir");
 
     const appsRoot = await makeTempDir("nautilo-seed-deref-");
     const result = await seedFirstPartyApps({ appsRoot, sourceRoot });
@@ -334,12 +336,14 @@ describe("seedFirstPartyApps", () => {
 
     const result = await seedFirstPartyApps({ appsRoot, sourceRoot });
     expect(result.seeded).toEqual(["nautilo-writer"]);
-    expect(
+    await rejects(
       stat(join(appsRoot, "nautilo-writer", "node_modules", "@nautilo", "dev-only")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    expect(
+      { code: "ENOENT" },
+    );
+    await rejects(
       stat(join(appsRoot, "nautilo-writer", "node_modules", "@nautilo", "peer-only")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
+      { code: "ENOENT" },
+    );
   });
 
   test("skips missing Writer source dir and still seeds Video without throwing", async () => {
@@ -380,6 +384,47 @@ describe("seedFirstPartyApps", () => {
     expect(videoMarker["sourceHash"]).toMatch(/^[a-f0-9]{64}$/);
     await stat(join(videoDir, "app.json"));
     await stat(join(videoDir, "main.ts"));
+  });
+});
+
+describe("isolated seed metadata recovery", () => {
+  async function fixture() {
+    const sourceRoot = await makeTempDir("nautilo-seed-marker-source-");
+    const appsRoot = await makeTempDir("nautilo-seed-marker-apps-");
+    await makeFakeAppSource(sourceRoot, "writer", "nautilo-writer");
+    const source = join(sourceRoot, "writer");
+    await mkdir(join(source, "node_modules", ".bun"), { recursive: true });
+    await writeFile(join(source, "package.json"), JSON.stringify({ name: "writer", dependencies: {} }));
+    const options = { sourceRoot, appsRoot, appIds: ["nautilo-writer"] };
+    await seedFirstPartyApps(options);
+    const installed = join(appsRoot, "nautilo-writer");
+    return { options, installed, marker: join(installed, ".nautilo-seed.json") };
+  }
+
+  test.each(["{broken", "null", "[]", "42", "{}"])("reseeds invalid marker contents %s and then becomes a no-op", async (contents) => {
+    const f = await fixture();
+    const entry = await readFile(join(f.installed, "main.ts"), "utf8");
+    await writeFile(f.marker, contents);
+    expect((await seedFirstPartyApps(f.options)).seeded).toEqual(["nautilo-writer"]);
+    expect(JSON.parse(await readFile(f.marker, "utf8"))).toMatchObject({
+      seededFrom: "first-party", appId: "nautilo-writer", dependencyLayout: "runtime-graph",
+    });
+    expect(await readFile(join(f.installed, "main.ts"), "utf8")).toBe(entry);
+    expect((await seedFirstPartyApps(f.options)).seeded).toEqual([]);
+  });
+
+  test("preserves filesystem errors while reading the marker", async () => {
+    const f = await fixture();
+    const entry = await readFile(join(f.installed, "main.ts"), "utf8");
+    await rename(f.marker, join(f.options.appsRoot, "saved-marker.json"));
+    await mkdir(f.marker);
+    const readError = await readFile(f.marker, "utf8").catch((error: unknown) => error);
+    expect(readError).toBeInstanceOf(Error);
+    const result = await seedFirstPartyApps(f.options).catch((error: unknown) => error);
+    expect(result).toBeInstanceOf(Error);
+    expect((result as NodeJS.ErrnoException).code).toBe((readError as NodeJS.ErrnoException).code);
+    expect((await stat(f.marker)).isDirectory()).toBe(true);
+    expect(await readFile(join(f.installed, "main.ts"), "utf8")).toBe(entry);
   });
 });
 
@@ -429,7 +474,7 @@ describe("optional compiled Sheets", () => {
     await seedFirstPartyApps(options);
     const installed = await readFile(join(options.appsRoot, "nautilo-spreadsheet", "main.ts"), "utf8");
     await rm(join(options.sourceRoot, "spreadsheet", "engine", "node.js"));
-    expect(seedFirstPartyApps(options)).rejects.toThrow("Incomplete compiled engine");
+    await rejects(seedFirstPartyApps(options), /Incomplete compiled engine/);
     expect(await readFile(join(options.appsRoot, "nautilo-spreadsheet", "main.ts"), "utf8")).toBe(installed);
   });
 });
@@ -496,7 +541,7 @@ describe("prepared native Slides", () => {
     const installed = await readFile(join(options.appsRoot, "nautilo-presentation", "main.ts"), "utf8");
     await writeFile(join(options.sourceRoot, "presentation", "main.ts"), "// incomplete upgrade\n");
     await rm(join(options.sourceRoot, "presentation", "engine", "dictionaries", "en_US.dic"));
-    expect(seedFirstPartyApps(options)).rejects.toThrow("Incomplete compiled engine");
+    await rejects(seedFirstPartyApps(options), /Incomplete compiled engine/);
     expect(await readFile(join(options.appsRoot, "nautilo-presentation", "main.ts"), "utf8")).toBe(installed);
   });
 });
@@ -531,7 +576,7 @@ describe("prepared native Board", () => {
 
     await writeFile(join(options.sourceRoot, "board", "main.ts"), "// tampered upgrade\n");
     await writeFile(join(options.sourceRoot, "board", "engine", "main.js"), "tampered bytes\n");
-    expect(seedFirstPartyApps(options)).rejects.toThrow("Compiled engine integrity mismatch for nautilo-board: main.js");
+    await rejects(seedFirstPartyApps(options), /Compiled engine integrity mismatch for nautilo-board: main\.js/);
     expect(await readFile(join(options.appsRoot, "nautilo-board", "main.ts"), "utf8")).toBe(installed);
   });
 });

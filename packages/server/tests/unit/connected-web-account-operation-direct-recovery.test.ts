@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { directBrowserPrivateRoot } from "../../src/connected-web-accounts/operation-direct-production";
+import { createConnectedWebOperationDirectProductionRuntime, directBrowserPrivateRoot, type ConnectedWebOperationDirectProductionOptions } from "../../src/connected-web-accounts/operation-direct-production";
+import { DirectBrowserHarnessError } from "../../src/connected-web-accounts/direct-browser-harness";
 import { recoverDirectConnectedWebOperation, recoverDirectConnectedWebOperations } from "../../src/connected-web-accounts/operation-direct-recovery";
 import { ConnectedWebOperationSecrets } from "../../src/connected-web-accounts/operation-secrets";
 import type { ConnectedWebOperation } from "../../src/connected-web-accounts/store";
@@ -7,6 +8,13 @@ import type { ConnectedWebOperation } from "../../src/connected-web-accounts/sto
 const OPERATION = "11111111-1111-4111-8111-111111111111";
 const OWNER = "22222222-2222-4222-8222-222222222222";
 const ACCOUNT = "33333333-3333-4333-8333-333333333333";
+
+test.skipIf(process.platform !== "win32")("Windows production composition refuses direct control before creating authority or using dependencies", () => {
+  const unusedOptions = new Proxy({} as ConnectedWebOperationDirectProductionOptions, {
+    get() { throw new Error("unsupported runtime must not construct dependencies"); },
+  });
+  expect(() => createConnectedWebOperationDirectProductionRuntime(unusedOptions)).toThrow(DirectBrowserHarnessError);
+});
 
 function fixture() {
   const secrets = new ConnectedWebOperationSecrets({ stableServerSecret: "s".repeat(32) });

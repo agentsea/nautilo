@@ -160,12 +160,12 @@ mock.module("../../src/lib/model-funding", () => ({
     modelId: MODEL,
     workload: "native_text_task" as const,
   }),
-  withAdmittedPersonalProviderKey: async (
+  withAdmittedPersonalCredential: async (
     _decision: unknown,
-    use: (apiKey: string) => Promise<unknown>,
+    use: (credential: { apiKey: string }) => Promise<unknown>,
   ) => {
     providerAttempts += 1;
-    return use("request-local-secret");
+    return use({ apiKey: "request-local-secret" });
   },
 }));
 mock.module("../../src/lib/caller-task-model-context", () => ({

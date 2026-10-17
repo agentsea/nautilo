@@ -35,6 +35,8 @@ operate, package, or release the public source tree.
   public specification template
 - [Build documentation](https://nautilo.ai/docs/build)
 - [Local development](https://nautilo.ai/docs/build/development/local-development)
+- [Windows x64 local source evaluation](docs/windows-local-evaluation.md) —
+  prerequisites, first-owner flow, validation scope, and current blockers
 - [Testing](https://nautilo.ai/docs/build/development/testing)
 
 ## GitHub contribution surfaces
@@ -52,6 +54,7 @@ operate, package, or release the public source tree.
 - [`docs/apply-patch-runtime-boundary.md`](docs/apply-patch-runtime-boundary.md)
 - [`docs/crypto-browser-compatibility.md`](docs/crypto-browser-compatibility.md)
 - [`docs/connected-web-browser-contract.md`](docs/connected-web-browser-contract.md)
+- [`docs/bolter-connection-contract.md`](docs/bolter-connection-contract.md)
 - [`docs/genie-application-bridge.md`](docs/genie-application-bridge.md)
 - [`docs/officecli-provisioning.md`](docs/officecli-provisioning.md)
 - [`docs/office-engines/README.md`](docs/office-engines/README.md)

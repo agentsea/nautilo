@@ -418,7 +418,7 @@ describe("createLocalFileHandlers", () => {
         error: "apply_patch local sandbox envelope is unavailable",
       },
     });
-    expect(resolvedCurrentFolder).toBe(realpathSync(workspace));
+    expect(resolvedCurrentFolder).toBe(realpathSync.native(workspace));
 
     expect(await handlers({
       getLocalWorkspacePath: () => workspace,

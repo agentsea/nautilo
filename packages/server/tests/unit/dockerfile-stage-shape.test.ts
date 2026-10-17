@@ -12,7 +12,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const REPO_ROOT = resolve(import.meta.dir, "../../../..");
 const DOCKERFILE_PATH = join(REPO_ROOT, "packaging/docker/Dockerfile");
@@ -107,6 +107,8 @@ const WORKBENCH_BUILD_PROFILE_PORTABILITY_INPUT = "packages/profile-portability"
 /** Workbench's Lattice dev dependency adds lattice-crypto's build task to Turbo's closure. */
 const WORKBENCH_BUILD_LATTICE_CRYPTO_INPUT =
   "packages/lattice-crypto" as const;
+/** Lattice payload types depend on Reflection's browser-safe subpath exports. */
+const WORKBENCH_BUILD_REFLECTION_INPUT = "packages/reflection" as const;
 /** Exact browser-safe Desktop source closure imported by Workbench. */
 const WORKBENCH_BUILD_DESKTOP_CONNECTION_INPUTS = [
   "apps/desktop/electron/server-target.ts",
@@ -308,6 +310,18 @@ describe("Dockerfile stage shape", () => {
   test("workbench-build stage derives from deps", () => {
     const w = byName.get("workbench-build");
     expect(w?.from).toBe("deps");
+  });
+
+  test("workbench-build includes Reflection payload sources before compilation", () => {
+    const workbench = byName.get("workbench-build");
+    expect(workbench).toBeDefined();
+    expect(stageContainsCopySource(workbench!.body, WORKBENCH_BUILD_REFLECTION_INPUT)).toBe(true);
+    expect(workbench!.body.indexOf(WORKBENCH_BUILD_REFLECTION_INPUT)).toBeLessThan(
+      workbench!.body.indexOf("bunx turbo run build"),
+    );
+    for (const entry of ["payload", "durable"]) {
+      expect(existsSync(join(REPO_ROOT, WORKBENCH_BUILD_REFLECTION_INPUT, "src", `${entry}.ts`))).toBe(true);
+    }
   });
 
   test("mobile-web-build derives from deps with only its audited source closure", () => {
@@ -543,7 +557,7 @@ describe("Dockerfile stage shape", () => {
     const installIndex = deps.body.indexOf("bun dev/scripts/install-first-party-apps.ts");
     for (const [name, spec] of Object.entries(pkg.dependencies ?? {})) {
       if (!spec.startsWith("file:")) continue;
-      const source = relative(REPO_ROOT, resolve(VIDEO_APP_PACKAGE_JSON, "..", spec.slice(5)));
+      const source = relative(REPO_ROOT, resolve(VIDEO_APP_PACKAGE_JSON, "..", spec.slice(5))).split(sep).join("/");
       const materializeIndex = deps.body.indexOf(`COPY ${source} ${source}`);
       expect(materializeIndex).toBeGreaterThanOrEqual(0);
       expect(materializeIndex).toBeLessThan(installIndex);
@@ -1043,7 +1057,7 @@ function collectWriterFileDependencies(): WriterFileDependency[] {
     for (const [packageName, spec] of Object.entries(section)) {
       if (!spec.startsWith("file:")) continue;
       const resolvedSource = resolve(writerDir, spec.slice("file:".length));
-      const sourceRepoPath = relative(REPO_ROOT, resolvedSource);
+      const sourceRepoPath = relative(REPO_ROOT, resolvedSource).split(sep).join("/");
       fileDeps.set(packageName, {
         packageName,
         sourceRepoPath,

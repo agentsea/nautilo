@@ -16,7 +16,17 @@ import {
 import {
   assertStenographerRecordPayloadBinding,
   decodeDurableRecordEnvelope,
+  stenographerJournalEventObservationFingerprint,
+  stenographerJournalRollupObservationFingerprint,
 } from "@nautilo/reflection-bridge/server";
+import type {
+  DurableModelExposureDependency,
+  DurableRecordEnvelope,
+} from "@nautilo/reflection/durable";
+import type {
+  StenographerCompactionModelExposure,
+  StenographerExtractionModelExposure,
+} from "@nautilo/reflection";
 
 import {
   PROTECTED_STENOGRAPHER_MAX_INPUT_OBJECTS,
@@ -108,6 +118,8 @@ export interface OpenedProtectedStenographerEvent {
   readonly objectId: string;
   readonly status: "active" | "superseded" | "resolved";
   readonly payload: RoomEventPayloadV1;
+  /** Present only when the opened event is a native encrypted Record. */
+  readonly recordEnvelope?: DurableRecordEnvelope;
 }
 
 export interface OpenedProtectedStenographerRollup {
@@ -535,6 +547,7 @@ function decodeSources(
     }
     if (binding.kind === "event") {
       let payload: RoomEventPayloadV1;
+      let recordEnvelope: DurableRecordEnvelope | undefined;
       if (binding.payloadFormat === "record_v1") {
         if (binding.recordMetadata === undefined) {
           throw new ProtectedStenographerSourceLoaderError(
@@ -563,6 +576,7 @@ function decodeSources(
             ...binding.binding,
             statement: envelope.semantic.statement,
           };
+          recordEnvelope = envelope;
         } catch {
           throw new ProtectedStenographerSourceLoaderError(
             "binding_mismatch",
@@ -589,6 +603,7 @@ function decodeSources(
         objectId: binding.objectId,
         status: binding.status,
         payload,
+        ...(recordEnvelope === undefined ? {} : { recordEnvelope }),
       });
     }
     let payload: RoomEventRollupPayloadV1;
@@ -610,6 +625,191 @@ function decodeSources(
       payload,
     });
   }));
+}
+
+function durableExposureDependency(
+  dependency: NonNullable<
+    RoomEventRollupPayloadV1["modelExposureDependencies"]
+  >[number],
+): DurableModelExposureDependency {
+  return dependency.kind === "record"
+    ? Object.freeze({
+        kind: "record" as const,
+        recordRef: dependency.recordId,
+        observedProcessingGeneration:
+          dependency.observedProcessingGeneration,
+        terminalAuthorityLeafHandles:
+          Object.freeze([...dependency.terminalAuthorityLeafHandles]),
+      })
+    : Object.freeze({
+        kind: "source" as const,
+        sourceKind: dependency.sourceKind,
+        logicalSourceRef: dependency.logicalObjectRef,
+        ...(dependency.observedRevision === null
+          ? {}
+          : { observedRevision: dependency.observedRevision }),
+        ...(dependency.observedContentFingerprint === null
+          ? {}
+          : {
+              observedContentFingerprint:
+                dependency.observedContentFingerprint,
+            }),
+        terminalAuthorityLeafHandle:
+          dependency.terminalAuthorityLeafHandle,
+      });
+}
+
+function messageExposure(
+  source: OpenedProtectedStenographerMessage,
+  namespaceId: string,
+): DurableModelExposureDependency {
+  const canonical = JSON.stringify([
+    "nautilo/stenographer/message-observation/v1",
+    source.messageId,
+    source.editRevision,
+    source.payload.content,
+  ]);
+  return Object.freeze({
+    kind: "source" as const,
+    sourceKind: "message",
+    logicalSourceRef: `message:${source.messageId}`,
+    observedRevision: String(source.editRevision),
+    observedContentFingerprint:
+      `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`,
+    terminalAuthorityLeafHandle: namespaceId,
+  });
+}
+
+function eventExposure(
+  source: OpenedProtectedStenographerEvent,
+  namespaceId: string,
+): DurableModelExposureDependency {
+  if (source.recordEnvelope !== undefined) {
+    return Object.freeze({
+      kind: "record" as const,
+      recordRef: source.recordEnvelope.recordRef,
+      observedProcessingGeneration:
+        source.recordEnvelope.processingGeneration,
+      terminalAuthorityLeafHandles: Object.freeze([
+        ...source.recordEnvelope.semantic.terminalAuthorityLeafHandles,
+      ]),
+    });
+  }
+  return Object.freeze({
+    kind: "source" as const,
+    sourceKind: "journal_event",
+    logicalSourceRef: `journal-event:${source.payload.eventId}`,
+    observedRevision:
+      `sequence:${source.payload.sequence}:status:${source.status}`,
+    observedContentFingerprint:
+      stenographerJournalEventObservationFingerprint({
+        eventId: source.payload.eventId,
+        sequence: source.payload.sequence,
+        kind: source.payload.kind,
+        statement: source.payload.statement,
+        status: source.status,
+      }),
+    terminalAuthorityLeafHandle: namespaceId,
+  });
+}
+
+function rollupExposure(
+  source: OpenedProtectedStenographerRollup,
+  namespaceId: string,
+): DurableModelExposureDependency {
+  const ancestry = source.payload.modelExposureDependencies?.map(
+    durableExposureDependency,
+  );
+  return Object.freeze({
+    kind: "source" as const,
+    sourceKind: "journal_rollup",
+    logicalSourceRef: `journal-rollup:${source.payload.rollupId}`,
+    observedRevision:
+      `through:${source.payload.throughEventSequence}:version:${source.payload.compactorVersion}`,
+    observedContentFingerprint:
+      stenographerJournalRollupObservationFingerprint({
+        rollupId: source.payload.rollupId,
+        throughEventSequence: source.payload.throughEventSequence,
+        content: source.payload.content,
+        compactorVersion: source.payload.compactorVersion,
+        ...(ancestry === undefined
+          ? {}
+          : { modelExposureDependencies: ancestry }),
+      }),
+    terminalAuthorityLeafHandle: namespaceId,
+  });
+}
+
+/** Exact protected extraction inputs selected by the shared prompt projector. */
+export function protectedExtractionModelExposureDependencies(
+  sources: OpenedProtectedStenographerSources,
+  namespaceId: string,
+  exposure: StenographerExtractionModelExposure,
+): readonly DurableModelExposureDependency[] | undefined {
+  const dependencies: Array<DurableModelExposureDependency | undefined> = [
+    ...exposure.currentRowPositions.map((position) => {
+      const source = sources.currentMessages[position];
+      return source === undefined
+        ? undefined
+        : messageExposure(source, namespaceId);
+    }),
+    ...exposure.priorRowPositions.map((position) => {
+      const source = sources.priorMessages[position];
+      return source === undefined
+        ? undefined
+        : messageExposure(source, namespaceId);
+    }),
+    ...(exposure.latestRollupIncluded
+      ? sources.latestRollup === null
+        ? [undefined]
+        : [rollupExposure(sources.latestRollup, namespaceId)]
+      : []),
+    ...exposure.visibleEventReferences.map((reference) => {
+      const source = sources.events.find(
+        (event) => `E${event.payload.sequence}` === reference,
+      );
+      return source === undefined
+        ? undefined
+        : eventExposure(source, namespaceId);
+    }),
+  ];
+  return dependencies.length === 0
+    || dependencies.some((dependency) => dependency === undefined)
+    ? undefined
+    : Object.freeze(dependencies as DurableModelExposureDependency[]);
+}
+
+/** Exact protected compaction inputs selected by the shared compaction plan. */
+export function protectedCompactionModelExposureDependencies(
+  sources: OpenedProtectedStenographerSources,
+  namespaceId: string,
+  exposure: StenographerCompactionModelExposure,
+): readonly DurableModelExposureDependency[] | undefined {
+  const bySequence = new Map(
+    sources.events.map((source) => [source.payload.sequence, source]),
+  );
+  const sequences = [
+    ...exposure.selectedEventSequences,
+    ...exposure.protectedTailEventSequences,
+  ];
+  const dependencies: Array<DurableModelExposureDependency | undefined> = [
+    ...(exposure.previousRollupThroughEventSequence === null
+      ? []
+      : sources.latestRollup?.payload.throughEventSequence
+          === exposure.previousRollupThroughEventSequence
+        ? [rollupExposure(sources.latestRollup, namespaceId)]
+        : [undefined]),
+    ...sequences.map((sequence) => {
+      const source = bySequence.get(sequence);
+      return source === undefined
+        ? undefined
+        : eventExposure(source, namespaceId);
+    }),
+  ];
+  return dependencies.length === 0
+    || dependencies.some((dependency) => dependency === undefined)
+    ? undefined
+    : Object.freeze(dependencies as DurableModelExposureDependency[]);
 }
 
 function codePointLength(value: string): number {

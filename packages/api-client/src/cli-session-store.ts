@@ -1,5 +1,4 @@
 import {
-  chmod,
   link,
   lstat,
   mkdir,
@@ -7,11 +6,17 @@ import {
   readdir,
   rename,
   unlink,
-  writeFile,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { resolveNautiloRootDir } from "@nautilo/config";
+import {
+  isOwnedFilesystemPathAsync,
+  isPrivateFilesystemPathAsync,
+  publishPrivateFileAtomically,
+  secureFilesystemPath,
+  writePrivateFileExclusive,
+} from "@nautilo/config/private-filesystem";
 import { CliSessionV1, type CliSessionV1Payload } from "./schemas/cli-session";
 
 const FILE_NAME = "cli-session.json";
@@ -73,10 +78,6 @@ export type CliSessionListRow = {
 
 type LockRecord = { pid: number; nonce: string; createdAt: number };
 
-function currentUid(): number | undefined {
-  return typeof process.getuid === "function" ? process.getuid() : undefined;
-}
-
 function cliSessionDir(): string {
   const override = process.env["NAUTILO_HOME_OVERRIDE"];
   return override
@@ -131,30 +132,36 @@ async function assertOwnedRegularFile(path: string): Promise<void> {
   if (!entry.isFile() || entry.isSymbolicLink()) {
     throw new CliSessionSecurityError();
   }
-  if ((entry.mode & 0o777) !== MODE_0600) throw new CliSessionFileModeError("CLI session file must be mode 0600");
-  const uid = currentUid();
-  if (uid !== undefined && entry.uid !== uid) throw new CliSessionSecurityError();
+  if (process.platform !== "win32" && (entry.mode & 0o777) !== MODE_0600) {
+    throw new CliSessionFileModeError("CLI session file must be mode 0600");
+  }
+  // A private path implies ownership; query ownership only to classify a failure.
+  if (await isPrivateFilesystemPathAsync(path)) return;
+  if (!await isOwnedFilesystemPathAsync(path)) throw new CliSessionSecurityError();
+  throw new CliSessionFileModeError("CLI session file must have an owner-only Windows ACL");
 }
 
 async function assertOwnedRemovableRegularFile(path: string): Promise<void> {
   const entry = await lstat(path);
   if (!entry.isFile() || entry.isSymbolicLink()) throw new CliSessionSecurityError();
-  const uid = currentUid();
-  if (uid !== undefined && entry.uid !== uid) throw new CliSessionSecurityError();
+  if (!await isOwnedFilesystemPathAsync(path)) throw new CliSessionSecurityError();
 }
 
 async function ensureOwnedSessionDir(path: string, requireMode0700: boolean): Promise<void> {
   await mkdir(path, { recursive: true, mode: MODE_0700 });
   let entry = await lstat(path);
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw new CliSessionSecurityError();
-  const uid = currentUid();
-  if (uid !== undefined && entry.uid !== uid) throw new CliSessionSecurityError();
-  if (requireMode0700 && (entry.mode & 0o777) !== MODE_0700) {
-    // Historical sessions/ directories inherited the process umask. Harden
-    // only after ownership/non-symlink validation, then verify again.
-    await chmod(path, MODE_0700);
+  if (!await isOwnedFilesystemPathAsync(path)) throw new CliSessionSecurityError();
+  const privateDirectory = !requireMode0700 || (process.platform === "win32"
+    ? await isPrivateFilesystemPathAsync(path)
+    : (entry.mode & 0o777) === MODE_0700);
+  if (!privateDirectory) {
+    // Restrict historical sessions directories only after ownership and
+    // non-symlink validation, then verify the resulting permissions.
+    await secureFilesystemPath(path);
     entry = await lstat(path);
-    if (!entry.isDirectory() || entry.isSymbolicLink() || (entry.mode & 0o777) !== MODE_0700) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !await isPrivateFilesystemPathAsync(path)
+      || (process.platform !== "win32" && (entry.mode & 0o777) !== MODE_0700)) {
       throw new CliSessionSecurityError();
     }
   }
@@ -163,8 +170,7 @@ async function ensureOwnedSessionDir(path: string, requireMode0700: boolean): Pr
 async function assertOwnedExistingDir(path: string): Promise<void> {
   const entry = await lstat(path);
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw new CliSessionSecurityError();
-  const uid = currentUid();
-  if (uid !== undefined && entry.uid !== uid) throw new CliSessionSecurityError();
+  if (!await isOwnedFilesystemPathAsync(path)) throw new CliSessionSecurityError();
 }
 
 async function ensureSessionFileDir(opts?: CliSessionPathOpts): Promise<void> {
@@ -195,17 +201,17 @@ async function withFilesystemSessionWriteLock<T>(
   while (!acquired) {
     const candidateNonce = randomUUID();
     const candidate = `${path}.owner.${candidateNonce}`;
+    let candidateCreated = false;
     try {
       // Build a complete ownership record before atomically linking it into
       // the lock name. A crash can leave only an unreferenced candidate, never
       // a lock whose owner is unknowable.
-      await writeFile(candidate, JSON.stringify({ pid: process.pid, nonce: candidateNonce, createdAt: Date.now() }), { mode: MODE_0600 });
-      await chmod(candidate, MODE_0600);
+      await writePrivateFileExclusive(candidate, Buffer.from(JSON.stringify({ pid: process.pid, nonce: candidateNonce, createdAt: Date.now() }), "utf8"));
+      candidateCreated = true;
       await link(candidate, path);
       nonce = candidateNonce;
       acquired = true;
     } catch (error) {
-      if (!isMissing(error) && (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       // Never reclaim a lock automatically. Without an OS compare-and-delete
       // primitive, PID/mtime-based stale recovery can unlink a replacement
@@ -214,7 +220,7 @@ async function withFilesystemSessionWriteLock<T>(
       if (Date.now() >= deadline) throw new CliSessionWriteConflictError();
       await sleep(LOCK_POLL_MS);
     } finally {
-      await unlink(candidate).catch(() => undefined);
+      if (candidateCreated) await unlink(candidate).catch(() => undefined);
     }
   }
   try {
@@ -296,21 +302,9 @@ async function saveCliSessionUnlocked(
   } catch (error) {
     if (!isMissing(error)) throw error;
   }
-  const tmp = join(
-    sessionFileDir(opts),
-    `.${sessionFileName(opts)}.${process.pid}.${randomUUID()}.tmp`,
-  );
   const payload = { ...s, revision: randomUUID() };
-  try {
-    await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, { mode: MODE_0600 });
-    await chmod(tmp, MODE_0600);
-    await rename(tmp, finalPath);
-    await chmod(finalPath, MODE_0600);
-    await assertOwnedRegularFile(finalPath);
-  } catch (error) {
-    await unlink(tmp).catch(() => undefined);
-    throw error;
-  }
+  await publishPrivateFileAtomically(finalPath, Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, "utf8"));
+  await assertOwnedRegularFile(finalPath);
 }
 
 export async function saveCliSession(

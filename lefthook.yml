@@ -27,11 +27,7 @@ pre-push:
   # builds workbench-components while typecheck/lint turbo are still running.
   jobs:
     - name: install-check
-      run: |
-        if [ ! -d node_modules ] || [ ! -e node_modules/.bin ] || [ bun.lock -nt node_modules/.bin ]; then
-          echo "[pre-push] bun.lock changed since last install (or node_modules missing) — running bun install to heal..."
-          bun install
-        fi
+      run: bash dev/scripts/pre-push-gate.sh install-check
     - group:
         # lint-eslint and typecheck both prepare Board's shared generated dist.
         # Keep this stage serial so one gate cannot clean that tree while the
@@ -39,12 +35,12 @@ pre-push:
         parallel: false
         jobs:
           - name: lint
-            run: TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh lint-eslint
+            run: bash dev/scripts/pre-push-gate.sh lint-eslint
           - name: test-invariants
             run: bash dev/scripts/ci-gates.sh test-invariants
           - name: query-inventory
             run: bash dev/scripts/ci-gates.sh query-inventory
           - name: typecheck
-            run: TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh typecheck
+            run: bash dev/scripts/pre-push-gate.sh typecheck
     - name: test-unit
-      run: TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-4}" TURBO_SCM_BASE="${TURBO_SCM_BASE:-$(git merge-base origin/main HEAD)}" TURBO_SCM_HEAD="${TURBO_SCM_HEAD:-HEAD}" bash dev/scripts/ci-gates.sh unit
+      run: bash dev/scripts/pre-push-gate.sh unit

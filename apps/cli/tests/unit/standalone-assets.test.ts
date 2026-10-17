@@ -79,12 +79,18 @@ describe("standalone server-admin assets", () => {
     rmSync(join(root, "unexpected.txt"));
 
     rmSync(compose);
-    symlinkSync(join(root, "bin/host-port-probe"), compose);
+    symlinkSync(process.platform === "win32" ? join(root, "bin") : join(root, "bin/host-port-probe"), compose,
+      process.platform === "win32" ? "junction" : "file");
     expect(() => verifyStandaloneAssetManifest(root, manifest)).toThrow(/rejects symlink/);
-    rmSync(compose);
+    rmSync(compose, { recursive: process.platform === "win32" });
     writeFileSync(compose, "deploy/compose-driver/templates/docker-compose.yml\n", { mode: 0o600 });
-    chmodSync(compose, 0o600);
-    expect(() => verifyStandaloneAssetManifest(root, manifest)).toThrow(/mode check failed/);
+    // Read-only is representable on Windows as well as POSIX filesystems.
+    chmodSync(compose, 0o444);
+    try {
+      expect(() => verifyStandaloneAssetManifest(root, manifest)).toThrow(/mode check failed/);
+    } finally {
+      chmodSync(compose, 0o600);
+    }
   });
 
   test("rejects traversal, duplicate, absolute, and malformed manifest entries", () => {

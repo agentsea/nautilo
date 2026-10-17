@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ProcessorTransformInput } from "@nautilo/lattice-crypto";
 import {
+  decodeRoomEventRollupPayloadV1,
   encodeRoomEventPayloadV1,
   type RoomEventPayloadV1,
 } from "@nautilo/lattice-bridge";
@@ -105,14 +106,18 @@ describe("protected Stenographer compaction", () => {
         compactorVersion: "m241-v1",
         createdAt: CREATED_AT,
       },
-      invokeModel: (prompt) => {
-        calls.push("model");
-        expect(prompt).toContain("Event 1");
-        expect(prompt).toContain("Protected newer effective-event tail");
-        return Promise.resolve(JSON.stringify({
-          content: "Cumulative protected history.",
-        }));
-      },
+      admitModel: () => Promise.resolve({
+        modelId: "accepted-personal-model",
+        assertCurrent: () => Promise.resolve(),
+        invoke: (prompt) => {
+          calls.push("model");
+          expect(prompt).toContain("Event 1");
+          expect(prompt).toContain("Protected newer effective-event tail");
+          return Promise.resolve(JSON.stringify({
+            content: "Cumulative protected history.",
+          }));
+        },
+      }),
       publication: {
         reserve: (value) => {
           calls.push("reserve");
@@ -142,6 +147,9 @@ describe("protected Stenographer compaction", () => {
       "attach",
     ]);
     expect(publishedText).toContain("Cumulative protected history.");
+    expect(decodeRoomEventRollupPayloadV1(
+      new TextEncoder().encode(publishedText),
+    ).modelId).toBe("accepted-personal-model");
     expect(durable.join("\n"))
       .not.toContain("Cumulative protected history.");
     expect(durable.join("\n")).not.toContain("Event 1");

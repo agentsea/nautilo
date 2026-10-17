@@ -2,11 +2,12 @@ import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 const root = join(import.meta.dir, "../../..");
 // Git hooks export repository-local variables; never pass them into a fixture.
 const fixtureEnv = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
+const pathKey = Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ?? "PATH";
 const migration = "packages/db/src/migrations/0001_fixture.sql";
 
 for (const scenario of ["top-level SQL", "nested metadata", "unrelated file", "edited applied SQL"] as const) {
@@ -47,14 +48,20 @@ for (const scenario of ["top-level SQL", "nested metadata", "unrelated file", "e
       write(path, scenario === "nested metadata" ? "{}\n" : "SELECT 2;\n");
       git("add", "--", path);
       const log = join(fixture, "checks.log");
-      const result = spawnSync(join(root, "node_modules/.bin/lefthook"), [
+      const stdoutPath = join(fixture, "lefthook.stdout");
+      const stderrPath = join(fixture, "lefthook.stderr");
+      const result = spawnSync("sh", ["-c",
+        'stdout_path="$1"; stderr_path="$2"; shift 2; exec "$@" >"$stdout_path" 2>"$stderr_path"',
+        "migration-hook-output", stdoutPath, stderrPath,
+        join(root, "node_modules/.bin/lefthook"),
         "run", "pre-commit", "--command", "drizzle-migration-guard", "--no-auto-install", "--no-tty",
       ], {
-        cwd: fixture, encoding: "utf8",
+        cwd: fixture,
+        stdio: "ignore",
         env: { ...fixtureEnv, LEFTHOOK: "1", LEFTHOOK_CONFIG: join(fixture, "lefthook.yml"),
-          PATH: `${join(fixture, "fake-bin")}:${process.env["PATH"] ?? ""}`, HOOK_TEST_LOG: log, HOOK_TEST_BUN: process.execPath },
+          [pathKey]: `${join(fixture, "fake-bin")}${delimiter}${process.env[pathKey] ?? ""}`, HOOK_TEST_LOG: log, HOOK_TEST_BUN: process.execPath },
       });
-      const output = result.stdout + result.stderr;
+      const output = readFileSync(stdoutPath, "utf8") + readFileSync(stderrPath, "utf8");
       expect(result.status, output).toBe(scenario === "edited applied SQL" ? 1 : 0);
       if (scenario === "unrelated file") expect(existsSync(log), output).toBe(false);
       else expect(readFileSync(log, "utf8")).toContain("run --cwd packages/db db:check");

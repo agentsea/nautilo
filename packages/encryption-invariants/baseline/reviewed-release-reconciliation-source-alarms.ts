@@ -18,6 +18,7 @@ export const SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS = new Set<s
   "packages/agent/src/tools/media/generate-image.ts#filesystem_write:c07c9e85c7ed687d:1",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:0cfd5a6318acc19f:1",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:76e1564f17ff0ffe:1",
+  "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:7ef703451e44cded:8",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:dbdbad31f308a711:1",
   "packages/sandbox/src/git-broker/broker.ts#network_processor:dea009441a2ab912:1",
   "packages/sandbox/src/git-broker/execute.ts#subprocess_processor:a0c0c8f56ca79710:1",
@@ -154,14 +155,14 @@ export const REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS: readonly SourceAlarm
     "owner": "packages/runtime",
     "closure": "reviewed_exclusion",
     "exclusionId": "exclusion.release-reconciliation.18",
-    "reason": "This protected Task diagnostic emits only a fixed lifecycle sentence and fixed recovery code. It excludes Task content, results, identifiers, tool payloads, credentials, and caught exceptions."
+    "reason": "This ordinary Task time-limit diagnostic emits only a bounded lifecycle status and one opaque Task UUID after the pause transition returns. It excludes Task content, result bodies, transcripts, checkpoint bytes, tool payloads, credentials, keys, and caught exceptions."
   },
   {
     "locator": "packages/runtime/src/tasks/task-observer.ts#log_emitter:7ef703451e44cded:13",
     "owner": "packages/runtime",
     "closure": "reviewed_exclusion",
     "exclusionId": "exclusion.release-reconciliation.19",
-    "reason": "This protected Task diagnostic emits only a fixed lifecycle sentence and fixed recovery code. It excludes Task content, results, identifiers, tool payloads, credentials, and caught exceptions."
+    "reason": "This protected Task watchdog recovery diagnostic emits only the fixed pause-retry code. It emits no Task content, results, identifiers, tool payloads, credentials, keys, or caught exceptions."
   },
   {
     "locator": "packages/server/src/media-generation/production-runtime.ts#log_emitter:89b81c36ea23316a:1",

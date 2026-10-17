@@ -4,6 +4,7 @@ export { moderationAccessAllowedSql, moderationBanAbsentSql, moderationEffective
 export * from "./queries/owned-photo-library";
 export * from "./queries/push-notifications";
 export * from "./queries/invocation-origin-access";
+export * from "./queries/image-assistance-admission";
 export { createEventFeedPreferenceStore } from "./queries/event-feed-preferences";
 export * from "./queries/media-generations";
 export * from "./queries/conversion-operations";
@@ -23,6 +24,7 @@ export {
 } from "./queries/protected-task-output-binding-identities";
 export * from "./queries/protected-task-cancellation-output";
 export * from "./queries/video-generation-links";
+export * from "./queries/bolter-bridge";
 export {
   createDatabase,
   db,
@@ -190,6 +192,7 @@ export {
   PROBE_NAUTILO_ESSENTIAL_SELECT_SQL,
   PROBE_PUBLIC_OBJECTS_NOT_OWNED_SQL,
 } from "./utils/legacy-role-repair";
+export { buildEventFeedReaderRoleSql } from "./utils/event-feed-role";
 export {
   createHostedDatabaseSecret,
   withHostedDatabaseSecret,
@@ -906,9 +909,21 @@ export {
   insertLlmUsageEvent,
   beginSurplusLlmAttempt,
   beginPersonalLlmAttempt,
+  beginServiceLlmAttempt,
+  beginServerLlmAttempt,
+  renewPersonalLlmAttemptLeases,
+  interruptExpiredPersonalLlmAttempts,
+  interruptPersonalLlmAttemptsByOwner,
+  PERSONAL_LLM_ATTEMPT_LEASE_MS,
+  PERSONAL_LLM_ATTEMPT_TICK_MS,
+  PERSONAL_LLM_ATTEMPT_BATCH_LIMIT,
+  type PersonalLlmAttemptLeasePageInput,
+  type ExpiredPersonalLlmAttemptPageInput,
   attachSurplusRequestReceipt,
   settleSurplusLlmAttempt,
   settlePersonalLlmAttempt,
+  settleServiceLlmAttempt,
+  settleServerLlmAttempt,
   listPendingSurplusAttempts,
   DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT,
   reconcileSurplusLlmAttemptCost,
@@ -925,6 +940,7 @@ export {
   type SurplusCostState,
   type BeginSurplusLlmAttemptInput,
   type BeginPersonalLlmAttemptInput,
+  type BeginServiceLlmAttemptInput,
   type AttachSurplusRequestReceiptInput,
   type SettleSurplusLlmAttemptInput,
   type SettlePersonalLlmAttemptInput,
@@ -940,6 +956,12 @@ export {
   type CostsSummary,
   type PersonalCostsData,
 } from "./queries/llm-usage";
+export {
+  classifyModelAttemptReplaySafety,
+  resolveModelAttemptReplaySafety,
+  type ModelAttemptReplayIdentity,
+  type ModelAttemptReplaySafety,
+} from "./queries/model-attempt-replay-safety";
 export {
   insertProviderCostEvent,
   insertProviderCostEventWith,
@@ -982,6 +1004,7 @@ export {
 } from "./queries/maintenance";
 export {
   insertAcceptance,
+  insertAcceptanceInTransaction,
   insertAcceptanceWith,
   insertAcceptances,
   insertAcceptancesWith,
@@ -1044,7 +1067,7 @@ export { shareWorkspaceArtifact, listWorkspaceSharesForHuman } from "./queries/w
 export { createEventFeedStorage, listArtifactFeedRecipientUserIds } from "./queries/event-feed";
 
 export { memoryEmbeddingValues, memoryEmbeddingCompatibilityCondition } from "./utils/memory-embedding";
-export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
+export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, physicalPathFromStorageUri, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
 
 export * from "./queries/task-run-message-associations";
 export * from "./queries/protected-task-running-recovery";
@@ -1089,3 +1112,6 @@ export * from "./queries/protected-task-activation-parked-integrity";
 
 export { parseProtectedTaskCheckpointAadBinding, sameProtectedTaskCheckpointAadBinding, type ProtectedTaskCheckpointAadBinding } from "./queries/protected-task-checkpoint-aad-binding";
 export { getTaskLifecycleState, type TaskLifecycleState } from "./queries/task-lifecycle-state";
+
+export * from "./queries/external-room-execution-claims";
+export * from "./queries/chatgpt-registrations";

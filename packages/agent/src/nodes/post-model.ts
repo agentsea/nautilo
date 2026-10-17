@@ -1,4 +1,5 @@
 import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
+import { isExternalRoomState, settleExternalRoomToolDenials } from "../tools/external-room-policy";
 import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
 import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
 import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
@@ -501,6 +502,14 @@ export function createPostModelNode(
     const toolCalls: ToolCall[] = lastMessage.tool_calls.filter(
       (tc) => !rejectedProjectionCallIds.has(tc.id ?? ""),
     );
+
+    if (isExternalRoomState(state)) {
+      return {
+        ...settleExternalRoomToolDenials(state, toolCalls),
+        computerUseInvocationBindings: {}, requiredHostRelays: {},
+        identityEnrollmentToolCallIds: [], ordinaryContentAccessBindings: {},
+      };
+    }
 
     // Personal funding in this phase admits foreground text generation only.
     // Refuse every still-live model-originated call before catalog resolution,

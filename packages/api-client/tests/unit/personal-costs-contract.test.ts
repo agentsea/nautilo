@@ -169,3 +169,16 @@ describe("personal costs client contract", () => {
     expect(new NautiloApiClient(BASE).getPersonalCosts("30d")).rejects.toThrow();
   });
 });
+
+test("parses subscription usage separately and rejects undeclared account payloads", async () => {
+  const row = { registrationId: "11111111-1111-4111-8111-111111111111", model: "openai:synthetic",
+    attempts: 2, unresolvedAttempts: 1, inputTokens: 100, cachedInputTokens: 20, outputTokens: 30,
+    totalTokens: 130, apiEquivalentCostUsd: 0.25 };
+  globalThis.fetch = Object.assign(async () => Response.json({ ...summary, subscriptions: [row] }), { preconnect: originalFetch.preconnect });
+  const client = new NautiloApiClient(BASE);
+  const parsed = await client.getPersonalCosts("30d");
+  expect(parsed.subscriptions).toEqual([row]);
+  expect(parsed.totals.totalCostUsd).toBe(0);
+  globalThis.fetch = Object.assign(async () => Response.json({ ...summary, subscriptions: [{ ...row, accessToken: "synthetic-forbidden" }] }), { preconnect: originalFetch.preconnect });
+  expect(client.getPersonalCosts("30d")).rejects.toThrow();
+});

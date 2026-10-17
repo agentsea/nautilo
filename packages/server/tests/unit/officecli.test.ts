@@ -6,7 +6,7 @@
  * is spawned; the version/env/argv contracts are locked here.
  */
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter as pathDelimiter, join } from "node:path";
 import { EventEmitter } from "node:events";
@@ -31,8 +31,9 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Cross-platform executable bit. On Windows accessSync X_OK still resolves
- *  to a meaningful check for existing files, so we use it everywhere. */
+const officeCliFileName = process.platform === "win32" ? "officecli.exe" : "officecli";
+
+/** Windows has no POSIX execute bit; PATH discovery uses its native filename. */
 function makeExecutable(filePath: string): void {
   if (process.platform === "win32") return;
   chmodSync(filePath, 0o755);
@@ -156,7 +157,7 @@ async function expectRejects(
 describe("resolveOfficeCliPath", () => {
   test("override wins over env and PATH", () => {
     const dir = makeTmpDir();
-    const candidate = join(dir, "officecli");
+    const candidate = join(dir, officeCliFileName);
     writeFileSync(candidate, "#!/bin/sh\n");
     makeExecutable(candidate);
 
@@ -169,7 +170,7 @@ describe("resolveOfficeCliPath", () => {
 
   test("OFFICECLI_PATH wins over PATH when no override", () => {
     const dir = makeTmpDir();
-    const onPath = join(dir, "officecli");
+    const onPath = join(dir, officeCliFileName);
     writeFileSync(onPath, "#!/bin/sh\n");
     makeExecutable(onPath);
 
@@ -181,7 +182,7 @@ describe("resolveOfficeCliPath", () => {
 
   test("falls back to PATH lookup for executable named officecli", () => {
     const dir = makeTmpDir();
-    const candidate = join(dir, "officecli");
+    const candidate = join(dir, officeCliFileName);
     writeFileSync(candidate, "#!/bin/sh\n");
     makeExecutable(candidate);
 
@@ -191,7 +192,7 @@ describe("resolveOfficeCliPath", () => {
     expect(result).toBe(candidate);
   });
 
-  test("PATH lookup skips non-executable candidates", () => {
+  test("PATH lookup skips non-executable or extensionless candidates", () => {
     const dir = makeTmpDir();
     const candidate = join(dir, "officecli");
     writeFileSync(candidate, "not executable");
@@ -203,6 +204,23 @@ describe("resolveOfficeCliPath", () => {
     expect(result).toBeNull();
   });
 
+  test("PATH lookup never treats a directory as an executable", () => {
+    const dir = makeTmpDir();
+    mkdirSync(join(dir, "officecli"));
+    mkdirSync(join(dir, "officecli.exe"));
+    expect(resolveOfficeCliPath({ env: { PATH: dir } })).toBeNull();
+  });
+
+  test("relative PATH entries resolve against the requested working directory", () => {
+    const cwd = makeTmpDir();
+    const directory = join(cwd, "relative-bin");
+    mkdirSync(directory);
+    const candidate = join(directory, officeCliFileName);
+    writeFileSync(candidate, "fixture");
+    makeExecutable(candidate);
+    expect(resolveOfficeCliPath({ cwd, env: { PATH: "relative-bin" } })).toBe(candidate);
+  });
+
   test("returns null when nothing is configured", () => {
     const result = resolveOfficeCliPath({ env: {} });
     expect(result).toBeNull();
@@ -210,7 +228,7 @@ describe("resolveOfficeCliPath", () => {
 
   test("whitespace-only override is treated as unset", () => {
     const dir = makeTmpDir();
-    const candidate = join(dir, "officecli");
+    const candidate = join(dir, officeCliFileName);
     writeFileSync(candidate, "#!/bin/sh\n");
     makeExecutable(candidate);
 
@@ -223,7 +241,7 @@ describe("resolveOfficeCliPath", () => {
 
   test("empty-string OFFICECLI_PATH falls back to PATH", () => {
     const dir = makeTmpDir();
-    const candidate = join(dir, "officecli");
+    const candidate = join(dir, officeCliFileName);
     writeFileSync(candidate, "#!/bin/sh\n");
     makeExecutable(candidate);
 
@@ -254,7 +272,7 @@ describe("resolveOfficeCliPath", () => {
   test("PATH lookup scans multiple dirs and picks the first executable", () => {
     const dirA = makeTmpDir();
     const dirB = makeTmpDir();
-    const candidate = join(dirB, "officecli");
+    const candidate = join(dirB, officeCliFileName);
     writeFileSync(candidate, "#!/bin/sh\n");
     makeExecutable(candidate);
 

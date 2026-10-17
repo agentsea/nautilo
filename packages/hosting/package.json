@@ -17,6 +17,9 @@
     "test": "bun run test:unit",
     "test:unit": "bun test --timeout 15000 tests/unit/"
   },
+  "dependencies": {
+    "@nautilo/config": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "24.10.4",
     "typescript": "5.9.3"

@@ -66,6 +66,14 @@ export interface StenographerExtractionSnapshot {
   hasConversationalContent: boolean;
 }
 
+/** Exact snapshot positions disclosed to one extraction model invocation. */
+export interface StenographerExtractionModelExposure {
+  readonly currentRowPositions: readonly number[];
+  readonly priorRowPositions: readonly number[];
+  readonly latestRollupIncluded: boolean;
+  readonly visibleEventReferences: readonly string[];
+}
+
 export interface StenographerCompactionEvent {
   sequence: number;
   kind: RoomEventKind;
@@ -77,6 +85,13 @@ export interface StenographerCompactionRollup {
   throughEventSequence: number;
   content: string;
   sourceEventCount?: number;
+}
+
+/** Exact journal inputs disclosed to one compaction model invocation. */
+export interface StenographerCompactionModelExposure {
+  readonly previousRollupThroughEventSequence: number | null;
+  readonly selectedEventSequences: readonly number[];
+  readonly protectedTailEventSequences: readonly number[];
 }
 
 export type StenographerModelInvoker = (

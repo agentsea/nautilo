@@ -32,7 +32,7 @@ function fixture(options: {
   attach?: (signal: AbortSignal) => Promise<void>;
   result?: "executed" | "reconciliation_required";
 } = {}) {
-  const revoked = new Set<string>(), events: string[] = [], prompts: string[] = [], batches: string[][] = [];
+  const revoked = new Set<string>(), events: string[] = [], prompts: string[] = [], batches: string[][] = [], exposures: unknown[] = [];
   const prepared: PreparedReflectionSemanticQuestion<ProtectedReflectionSemanticQuestionValue>[] = [];
   const rawBytes: Uint8Array[] = [];
   let preparations = 0;
@@ -75,7 +75,7 @@ function fixture(options: {
         prepare: async opened => {
           await options.beforePrepare?.();
           expect(new TextDecoder().decode(opened[0]!.plaintext)).toBe(id);
-          return Promise.resolve({view: {...view(id), ...(options.noCandidates ? {candidates: []} : {})}, applyProposal: options.apply ?? (async (_application, complete) => {
+          return Promise.resolve({view: {...view(id), ...(options.noCandidates ? {candidates: []} : {})}, runModel: async <Value>(run: () => Promise<Value>) => {events.push(`model-open:${id}`); const value = await run(); events.push(`model-close:${id}`); return value;}, applyProposal: options.apply ?? (async (_application, complete) => {
             await complete(null); return applied;
           })});
         },
@@ -84,8 +84,8 @@ function fixture(options: {
       prepared.push(result); return result;
     },
     invokeOrganizer: () => Promise.resolve(JSON.stringify({operation: "no_change"})),
-    invokeOrganizerBatch: (claims, prompt) => {
-      batches.push(claims.map(current => current.recordRef)); prompts.push(prompt);
+    invokeOrganizerBatch: (claims, prompt, _signal, dependencies) => {
+      exposures.push(dependencies); batches.push(claims.map(current => current.recordRef)); prompts.push(prompt);
       options.afterModel?.(id => revoked.add(id));
       return Promise.resolve(JSON.stringify({answers: claims.map((_, index) => ({question: `Q${index + 1}`, proposal: {operation: "no_change"}}))}));
     },
@@ -98,7 +98,7 @@ function fixture(options: {
     defer: input => {events.push(`defer:${input.claim.recordRef}:${input.failureCode}`); return Promise.resolve({status: "deferred"});},
     enqueue: () => Promise.resolve(),
   });
-  return {semantic, events, prepared, prompts, batches, rawBytes, work, preparations: () => preparations};
+  return {semantic, events, prepared, prompts, batches, exposures, rawBytes, work, preparations: () => preparations};
 }
 
 describe("protected Reflection question lifecycle glue", () => {
@@ -118,6 +118,18 @@ describe("protected Reflection question lifecycle glue", () => {
     expect(f.batches).toEqual([["a", "b"]]); expect(result.completed).toBe(1); expect(result.deferred).toBe(1);
     expect(f.events).not.toContain("attach:a"); expect(f.events).toContain("attach:b");
     expect(f.events).toContain("closed:a"); expect(f.events).toContain("closed:b");
+  });
+
+  test("provider calls remain inside every prepared grant and forward exact exposure", async () => {
+    const f = fixture();
+    const current = claim("a"), attempt = await f.semantic.openOrganizationAttempt!(current);
+    await f.semantic.loadOrganizerView(current);
+    const exposure = [{kind: "record" as const, recordRef: "a", observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: ["namespace-a"]}];
+    await f.semantic.invokeOrganizerBatch!([current], "prompt", undefined, exposure);
+    expect(f.events).toContain("model-open:a"); expect(f.events).toContain("model-close:a");
+    expect(f.exposures).toEqual([exposure]);
+    await attempt.close("cancelled");
   });
 
   test("one preparation is shared, and a closed claim cannot retrieve its old view", async () => {

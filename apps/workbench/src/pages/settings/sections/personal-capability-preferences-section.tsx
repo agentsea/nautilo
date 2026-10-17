@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import type {
   PersonalCapabilityModelReadiness,
+  PersonalCapabilityPreferenceProjection,
   PersonalCapabilityPreferenceOverrides,
   PersonalCapabilityPreferencesResponse,
   PersonalCapabilityRole,
 } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
+import { PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT } from "../../../lib/caller-model-availability";
 import { useAuth } from "../../../hooks/use-auth";
 import { GuestPlaceholder, SectionCard, StatusPill } from "../ui";
 
@@ -40,6 +42,27 @@ function fundingLabel(readiness: PersonalCapabilityModelReadiness): string {
     : `Server ${readiness.providerRoute} credential`;
 }
 
+function imageFundingLabel(readiness: PersonalCapabilityModelReadiness): string {
+  if (readiness.status !== "ready") return statusLabel(readiness.status);
+  if (readiness.fundingSource === "server") return "Server-funded chats only";
+  if (readiness.fundingSource === "personal") return "Personal-funded chats only";
+  return "Both funding sources";
+}
+
+function selectionDisplayName(capability: PersonalCapabilityPreferenceProjection): string {
+  return capability.role === "imageUnderstanding"
+    && capability.selection.source === "inherited"
+    && capability.selection.modelId === null
+    ? "Automatic — depends on chat funding"
+    : capability.selection.displayName;
+}
+
+function capabilityDescription(capability: PersonalCapabilityPreferenceProjection): string {
+  return capability.role === "imageUnderstanding"
+    ? `${capability.description} The helper follows the current chat funding and the main model's privacy requirements.`
+    : capability.description;
+}
+
 export function PersonalCapabilityPreferencesSection() {
   const auth = useAuth();
   const enabled = auth.viewer.isVerified;
@@ -47,24 +70,95 @@ export function PersonalCapabilityPreferencesSection() {
   const [loading, setLoading] = useState(false);
   const [savingRole, setSavingRole] = useState<PersonalCapabilityRole | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const activeAccountGenerationRef = useRef(0);
+  const mutationGenerationRef = useRef(0);
+  const credentialEventGenerationRef = useRef(0);
+  const refreshRequestedRef = useRef(false);
+  const refreshRunnerRef = useRef<Promise<void> | null>(null);
 
-  const load = useCallback(async () => {
-    if (!enabled) return;
-    setLoading(true);
+  const loadOnce = useCallback(async (accountGeneration: number) => {
+    if (!enabled || accountGeneration !== activeAccountGenerationRef.current) return;
+    const mutationGeneration = mutationGenerationRef.current;
     try {
-      setState(await apiClient.getPersonalCapabilityPreferences());
+      const next = await apiClient.getPersonalCapabilityPreferences();
+      if (accountGeneration !== activeAccountGenerationRef.current
+        || mutationGeneration !== mutationGenerationRef.current) return;
+      setState(next);
       setError(null);
     } catch (cause) {
+      if (accountGeneration !== activeAccountGenerationRef.current
+        || mutationGeneration !== mutationGenerationRef.current) return;
       setError(cause instanceof Error ? cause.message : "Capability model preferences could not be loaded.");
-    } finally {
-      setLoading(false);
     }
   }, [enabled]);
 
-  useEffect(() => { void load(); }, [load, auth.viewerGeneration]);
+  const requestRefresh = useCallback((): Promise<void> => {
+    refreshRequestedRef.current = true;
+    const existing = refreshRunnerRef.current;
+    if (existing) return existing;
+
+    const accountGeneration = activeAccountGenerationRef.current;
+    setLoading(true);
+    const runner = (async () => {
+      while (refreshRequestedRef.current
+        && accountGeneration === activeAccountGenerationRef.current) {
+        refreshRequestedRef.current = false;
+        await loadOnce(accountGeneration);
+      }
+    })().finally(() => {
+      if (refreshRunnerRef.current !== runner) return;
+      refreshRunnerRef.current = null;
+      if (accountGeneration !== activeAccountGenerationRef.current) return;
+      if (refreshRequestedRef.current) {
+        void requestRefresh();
+      } else {
+        setLoading(false);
+      }
+    });
+    refreshRunnerRef.current = runner;
+    return runner;
+  }, [loadOnce]);
+
+  useEffect(() => {
+    const accountGeneration = activeAccountGenerationRef.current + 1;
+    activeAccountGenerationRef.current = accountGeneration;
+    mutationGenerationRef.current = 0;
+    credentialEventGenerationRef.current = 0;
+    refreshRequestedRef.current = false;
+    refreshRunnerRef.current = null;
+    setState(null);
+    setError(null);
+    setSavingRole(null);
+
+    if (!enabled) {
+      setLoading(false);
+      return () => {
+        if (activeAccountGenerationRef.current === accountGeneration) {
+          activeAccountGenerationRef.current += 1;
+        }
+      };
+    }
+
+    const refresh = () => {
+      credentialEventGenerationRef.current += 1;
+      void requestRefresh();
+    };
+    window.addEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+    void requestRefresh();
+    return () => {
+      window.removeEventListener(PERSONAL_PROVIDER_CREDENTIALS_CHANGED_EVENT, refresh);
+      if (activeAccountGenerationRef.current === accountGeneration) {
+        activeAccountGenerationRef.current += 1;
+      }
+      refreshRequestedRef.current = false;
+      refreshRunnerRef.current = null;
+    };
+  }, [auth.viewerGeneration, enabled, requestRefresh]);
 
   const save = async (role: PersonalCapabilityRole, value: string) => {
     if (!state || savingRole) return;
+    const accountGeneration = activeAccountGenerationRef.current;
+    const credentialEventGeneration = credentialEventGenerationRef.current;
     const modelId = value === "" ? null : value;
     setSavingRole(role);
     setError(null);
@@ -73,16 +167,23 @@ export function PersonalCapabilityPreferencesSection() {
         expectedRevision: state.revision,
         overrides: nextPersonalCapabilityOverrides(state.overrides, role, modelId),
       });
+      if (accountGeneration !== activeAccountGenerationRef.current) return;
+      mutationGenerationRef.current += 1;
       setState(next);
+      if (credentialEventGeneration !== credentialEventGenerationRef.current) {
+        await requestRefresh();
+      }
     } catch (cause) {
+      if (accountGeneration !== activeAccountGenerationRef.current) return;
       if (cause instanceof ApiError && cause.status === 409) {
-        await load();
+        await requestRefresh();
+        if (accountGeneration !== activeAccountGenerationRef.current) return;
         setError("These preferences changed elsewhere. The current choices were reloaded; choose again if needed.");
       } else {
         setError(cause instanceof Error ? cause.message : "The preference was not saved.");
       }
     } finally {
-      setSavingRole(null);
+      if (accountGeneration === activeAccountGenerationRef.current) setSavingRole(null);
     }
   };
 
@@ -90,7 +191,7 @@ export function PersonalCapabilityPreferencesSection() {
     <SectionCard
       id="capability-models"
       title="Capability models"
-      description="Choose account-wide models for your own research, decisions, generated media and speech. Inherit keeps each workflow's current default; Genie and Room model settings remain separate."
+      description="Choose account-wide models for your own research, decisions, image understanding, eligible personal Memory processing, generated media and speech. Inherit keeps each workflow's current default; Genie and Room model settings remain separate."
     >
       {!enabled ? <GuestPlaceholder what="Capability model preferences" /> : null}
       {enabled && loading && !state ? <p className="text-sm text-foreground-muted">Loading model choices…</p> : null}
@@ -101,6 +202,15 @@ export function PersonalCapabilityPreferencesSection() {
           </p>
           {state.capabilities.map((capability) => {
             const saved = state.overrides[capability.role];
+            const retainedUnavailable = saved && !capability.options.some((option) => option.modelId === saved)
+              ? {
+                  modelId: saved,
+                  displayName: capability.selection.modelId === saved
+                    ? capability.selection.displayName
+                    : saved,
+                }
+              : null;
+            const displayName = selectionDisplayName(capability);
             return (
               <div key={capability.role} className="border-b border-border/40 pb-5 last:border-0 last:pb-0">
                 <div className="flex flex-wrap items-start justify-between gap-2">
@@ -108,10 +218,12 @@ export function PersonalCapabilityPreferencesSection() {
                     <label htmlFor={`capability-${capability.role}`} className="text-sm font-medium text-foreground">
                       {capability.label}
                     </label>
-                    <p className="mt-0.5 text-xs text-foreground-muted">{capability.description}</p>
+                    <p className="mt-0.5 text-xs text-foreground-muted">{capabilityDescription(capability)}</p>
                   </div>
                   <StatusPill tone={statusTone(capability.readiness.status)}>
-                    {statusLabel(capability.readiness.status)}
+                    {capability.role === "imageUnderstanding" && capability.readiness.status === "ready"
+                      ? imageFundingLabel(capability.readiness)
+                      : statusLabel(capability.readiness.status)}
                   </StatusPill>
                 </div>
                 <select
@@ -121,17 +233,24 @@ export function PersonalCapabilityPreferencesSection() {
                   disabled={savingRole !== null}
                   onChange={(event) => { void save(capability.role, event.target.value); }}
                 >
-                  <option value="">Inherit — {capability.selection.source === "inherited" ? capability.selection.displayName : "workflow default"}</option>
+                  <option value="">Inherit — {capability.selection.source === "inherited" ? displayName : "workflow default"}</option>
+                  {retainedUnavailable ? (
+                    <option value={retainedUnavailable.modelId} disabled>
+                      {retainedUnavailable.displayName} · Retained unavailable choice
+                    </option>
+                  ) : null}
                   {capability.options.map((option) => (
                     <option key={option.modelId} value={option.modelId}>
-                      {option.displayName} · {option.provider} · {option.readiness.status === "ready" ? fundingLabel(option.readiness) : statusLabel(option.readiness.status)}
+                      {option.displayName} · {option.provider} · {capability.role === "imageUnderstanding"
+                        ? imageFundingLabel(option.readiness)
+                        : option.readiness.status === "ready" ? fundingLabel(option.readiness) : statusLabel(option.readiness.status)}
                     </option>
                   ))}
                 </select>
                 <p className="mt-2 text-xs text-foreground-muted">
-                  Effective: <strong className="text-foreground">{capability.selection.displayName}</strong>
+                  Effective: <strong className="text-foreground">{displayName}</strong>
                   {` · ${capability.selection.source === "personal" ? "Your choice" : "Inherited"}`}
-                  {` · ${fundingLabel(capability.readiness)}`}
+                  {` · ${capability.role === "imageUnderstanding" ? imageFundingLabel(capability.readiness) : fundingLabel(capability.readiness)}`}
                   {capability.readiness.reason ? ` · ${capability.readiness.reason}` : ""}
                 </p>
               </div>
@@ -146,7 +265,7 @@ export function PersonalCapabilityPreferencesSection() {
       ) : null}
       {enabled && error ? <p className="mt-3 text-sm text-[var(--error)]" role="alert">{error}</p> : null}
       {enabled && error && !state ? (
-        <button type="button" onClick={() => { void load(); }} className="mt-3 text-sm font-medium text-primary">Try again</button>
+        <button type="button" onClick={() => { void requestRefresh(); }} className="mt-3 text-sm font-medium text-primary">Try again</button>
       ) : null}
     </SectionCard>
   );

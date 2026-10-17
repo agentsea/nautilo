@@ -14,18 +14,29 @@ describe("personal capability preference contract", () => {
       "deepResearchCompression",
       "deepResearchFinalReport",
       "decision",
+      "imageUnderstanding",
       "imageGeneration",
       "videoGeneration",
       "musicGeneration",
       "speech",
+      "memoryReview",
+      "memoryReflection",
+      "memorySummarization",
     ]);
   });
 
   test("normalizes sparse overrides and rejects unknown or blank fields", () => {
     expect(parsePersonalCapabilityPreferenceOverrides({
       webSearchSynthesis: "  openrouter:model-a  ",
+      imageUnderstanding: "  anthropic:claude-sonnet-4-6  ",
       speech: "elevenlabs:eleven_v3",
-    })).toEqual({ webSearchSynthesis: "openrouter:model-a", speech: "elevenlabs:eleven_v3" });
+      memoryReview: "openrouter:review-model",
+    })).toEqual({
+      webSearchSynthesis: "openrouter:model-a",
+      imageUnderstanding: "anthropic:claude-sonnet-4-6",
+      speech: "elevenlabs:eleven_v3",
+      memoryReview: "openrouter:review-model",
+    });
     expect(parsePersonalCapabilityPreferenceOverrides({})).toEqual({});
     expect(parsePersonalCapabilityPreferenceOverrides({ embeddings: "openai:embedding" })).toBeNull();
     expect(parsePersonalCapabilityPreferenceOverrides({ decision: " " })).toBeNull();

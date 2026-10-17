@@ -130,7 +130,11 @@ const roomHistoryShadowSelectedSourceV1Schema = z.object({
   logicalMessageKey: portableId.optional(),
   sourceUserId: portableId.optional(),
   authorAgentId: canonicalUuid.optional(),
-}).strict();
+  externalAttributionInvalid: z.literal(true).optional(),
+}).strict().refine((source) => source.externalAttributionInvalid !== true
+  || (source.role === "user" && source.sourceUserId === undefined && source.authorAgentId === undefined), {
+  message: "Unverified external authorship cannot identify a local author",
+});
 
 const roomHistoryTerminalExecutionSummarySchema = z.object({
   messageId: positiveCounter,

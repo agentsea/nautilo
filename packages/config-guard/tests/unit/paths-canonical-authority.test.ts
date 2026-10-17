@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   resolveAuditLogPath,
   resolveConfigAuthorityDir,
@@ -11,6 +11,7 @@ import {
 
 const previousDotenv = process.env["NAUTILO_DOTENV_PATH"];
 const previousHome = process.env["HOME"];
+const previousUserProfile = process.env["USERPROFILE"];
 const previousInstanceId = process.env["NAUTILO_INSTANCE_ID"];
 
 afterEach(() => {
@@ -21,13 +22,16 @@ afterEach(() => {
   }
   if (previousHome === undefined) delete process.env["HOME"];
   else process.env["HOME"] = previousHome;
+  if (previousUserProfile === undefined) delete process.env["USERPROFILE"];
+  else process.env["USERPROFILE"] = previousUserProfile;
   if (previousInstanceId === undefined) delete process.env["NAUTILO_INSTANCE_ID"];
   else process.env["NAUTILO_INSTANCE_ID"] = previousInstanceId;
 });
 
 describe("D445 explicit canonical config authority paths", () => {
   test("snapshot and audit paths share the explicit dotenv parent", () => {
-    const configDir = join("/srv", "nautilo", "runtime-config");
+    // An explicit absolute path keeps its drive on Windows, so resolve it once.
+    const configDir = resolve("/srv", "nautilo", "runtime-config");
     const dotenv = join(configDir, "instance.env");
     process.env["NAUTILO_DOTENV_PATH"] = dotenv;
 
@@ -36,6 +40,18 @@ describe("D445 explicit canonical config authority paths", () => {
     expect(resolveSnapshotDir()).toBe(join(configDir, "config-snapshots"));
     expect(resolveAuditLogPath()).toBe(join(configDir, "config-audit.jsonl"));
     expect(dirname(resolveSnapshotDir())).toBe(dirname(resolveAuditLogPath()));
+  });
+
+  test("relative override is anchored to the working directory once", () => {
+    const override = join("relative-runtime-config", "instance.env");
+    expect(isAbsolute(override)).toBe(false);
+    process.env["NAUTILO_DOTENV_PATH"] = override;
+
+    const configDir = resolve("relative-runtime-config");
+    expect(resolveDotenvPath()).toBe(resolve(override));
+    expect(resolveConfigAuthorityDir()).toBe(configDir);
+    expect(resolveSnapshotDir()).toBe(join(configDir, "config-snapshots"));
+    expect(resolveAuditLogPath()).toBe(join(configDir, "config-audit.jsonl"));
   });
 
   test("whitespace-only override preserves the historical local root", () => {
@@ -56,6 +72,7 @@ describe("D445 explicit canonical config authority paths", () => {
       delete process.env["NAUTILO_DOTENV_PATH"];
       delete process.env["NAUTILO_INSTANCE_ID"];
       process.env["HOME"] = home;
+      process.env["USERPROFILE"] = home;
       const configDir = join(home, ".nautilo", "runtime-config");
       const dotenv = join(configDir, "instance.env");
       await mkdir(configDir, { recursive: true });

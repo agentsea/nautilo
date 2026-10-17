@@ -259,6 +259,16 @@ describe("Desktop Filesystem Grant root matching", () => {
     expect(isPathWithinDesktopFilesystemGrantRoot(path.parse(root).root, path.join(path.sep, "anything"))).toBe(true);
   });
 
+  test.skipIf(process.platform !== "win32")("matches Windows case and drive-rooted paths while rejecting other volumes", () => {
+    const absolute = path.resolve(root);
+    const child = path.join(absolute, "child.txt");
+    expect(isPathWithinDesktopFilesystemGrantRoot(absolute.toUpperCase(), child.toLowerCase())).toBe(true);
+    expect(isPathWithinDesktopFilesystemGrantRoot(root, child)).toBe(true);
+    const otherVolume = absolute.toUpperCase().startsWith("C:") ? "D:\\" : "C:\\";
+    expect(isPathWithinDesktopFilesystemGrantRoot(absolute, path.join(otherVolume, "approved", "child.txt"))).toBe(false);
+    expect(isPathWithinDesktopFilesystemGrantRoot("\\\\server\\share\\approved", "\\\\SERVER\\SHARE\\Approved\\child.txt")).toBe(true);
+  });
+
   test("selects the most-specific root with the requested operation", () => {
     const broad = parse(validGrant({ id: "broad", canonicalRoot: root, access: ["read"] }));
     const narrow = parse(

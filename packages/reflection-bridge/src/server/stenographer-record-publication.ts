@@ -3,6 +3,7 @@ import {
   type RoomEventKind,
 } from "@nautilo/reflection";
 import type {
+  DurableModelExposureDependency,
   DurableRecordEnvelope,
   DurableRecordPublication,
 } from "@nautilo/reflection/durable";
@@ -34,6 +35,8 @@ export interface StenographerRecordPublicationInput {
         predecessorEventId: string;
       }>;
   readonly publicationBindingRef: string;
+  /** Exact model inputs retained only in the encrypted Record payload. */
+  readonly modelExposureDependencies?: readonly DurableModelExposureDependency[];
 }
 
 export interface StenographerRecordPayloadBinding {
@@ -58,7 +61,7 @@ function positiveCounter(label: string, value: number, minimum: 0 | 1): number {
 }
 
 function fingerprint(input: StenographerRecordPublicationInput): string {
-  const canonical = JSON.stringify([
+  const fields: unknown[] = [
     "nautilo/stenographer/record-observation/v1",
     input.eventId,
     input.roomId,
@@ -76,7 +79,27 @@ function fingerprint(input: StenographerRecordPublicationInput): string {
     input.transition.operation === "append"
       ? null
       : input.transition.predecessorEventId,
-  ]);
+  ];
+  if (input.modelExposureDependencies !== undefined) {
+    fields.push(input.modelExposureDependencies.map((dependency) =>
+      dependency.kind === "record"
+        ? [
+            "record",
+            dependency.recordRef,
+            dependency.observedProcessingGeneration,
+            [...dependency.terminalAuthorityLeafHandles].sort(),
+          ]
+        : [
+            "source",
+            dependency.sourceKind,
+            dependency.logicalSourceRef,
+            dependency.observedRevision ?? null,
+            dependency.observedContentFingerprint ?? null,
+            dependency.terminalAuthorityLeafHandle,
+          ]
+    ));
+  }
+  const canonical = JSON.stringify(fields);
   return `sha256:${bytesToHex(sha256(encoder.encode(canonical)))}`;
 }
 
@@ -93,6 +116,18 @@ export function buildStenographerRecordPublication(
   const orderedSources = [...input.sources].sort(
     (left, right) => left.messageId - right.messageId,
   );
+  const orderedModelExposureDependencies = input.modelExposureDependencies
+    === undefined
+    ? undefined
+    : [...input.modelExposureDependencies].sort((left, right) => {
+        const leftKey = left.kind === "record"
+          ? `record\u0000${left.recordRef}`
+          : `source\u0000${left.sourceKind}\u0000${left.logicalSourceRef}`;
+        const rightKey = right.kind === "record"
+          ? `record\u0000${right.recordRef}`
+          : `source\u0000${right.sourceKind}\u0000${right.logicalSourceRef}`;
+        return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+      });
   for (const source of orderedSources) {
     positiveCounter("Message ID", source.messageId, 1);
     positiveCounter("Message edit revision", source.editRevision, 0);
@@ -115,11 +150,20 @@ export function buildStenographerRecordPublication(
       observedContentFingerprint: source.observedContentFingerprint,
       terminalAuthorityLeafHandle: input.namespaceId,
     })),
-    observedContentFingerprint: fingerprint({ ...input, sources: orderedSources }),
+    observedContentFingerprint: fingerprint({
+      ...input,
+      sources: orderedSources,
+      ...(orderedModelExposureDependencies === undefined
+        ? {}
+        : { modelExposureDependencies: orderedModelExposureDependencies }),
+    }),
     producerRef: "stenographer",
     producerPolicyVersion: input.extractorVersion,
     processingGeneration: input.rebuildGeneration + 1,
     transition,
+    ...(orderedModelExposureDependencies === undefined
+      ? {}
+      : { modelExposureDependencies: orderedModelExposureDependencies }),
   });
   return {
     record: planned.record,

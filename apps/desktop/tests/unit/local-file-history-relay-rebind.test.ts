@@ -57,7 +57,10 @@ async function fixture(publish: "published" | "not_published") {
 
 async function waitForActionableOutbox(journalRoot: string): Promise<void> {
   const storage = createJournalStorage(journalRoot);
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  // A deadline rather than an attempt count: on Windows every journal write
+  // goes through the ACL helper, so the pump is slower under suite load.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
     const manifest = await storage.readManifest();
     if (manifest?.v !== 1 && manifest.outbox.some((row) =>
       row.state === "pending" && row.attempts >= 1
@@ -71,7 +74,7 @@ describe("legacy local-history relay rebind", () => {
   test("backs up and atomically rebinds completed whole-history identity", async () => {
     const fx = await fixture("not_published");
     await waitForActionableOutbox(fx.journalRoot);
-    fx.runtime.stopOutboxPump();
+    await fx.runtime.stopOutboxPump();
     const storage = createJournalStorage(fx.journalRoot);
     const actionable = await storage.readManifest();
     if (actionable?.v === 1 || actionable === null) throw new Error("expected current manifest");
@@ -119,7 +122,7 @@ describe("legacy local-history relay rebind", () => {
   test("refuses to transfer actionable outbox work", async () => {
     const fx = await fixture("not_published");
     await waitForActionableOutbox(fx.journalRoot);
-    fx.runtime.stopOutboxPump();
+    await fx.runtime.stopOutboxPump();
     const manifestPath = path.join(fx.journalRoot, "manifest.json");
 
     expect(await rebindLegacyLocalFileHistoryRelay({

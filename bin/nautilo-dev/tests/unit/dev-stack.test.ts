@@ -249,20 +249,26 @@ describe("resolveElectronPackageDir", () => {
   test("returns a path ending in node_modules/electron", () => {
     const dir = resolveElectronPackageDir();
     expect(typeof dir).toBe("string");
-    expect(dir.endsWith("node_modules/electron")).toBe(true);
+    expect(dir.endsWith(join("node_modules", "electron"))).toBe(true);
   });
 });
 
 describe("ensureElectronInstallReady", () => {
   let tmpHome: string;
   let savedHome: string | undefined;
+  let savedUserProfile: string | undefined;
+  let savedNautiloHome: string | undefined;
   let savedInstance: string | undefined;
 
   beforeEach(() => {
     __resetResolvedInstanceForTests();
     tmpHome = mkdtempSync(join(tmpdir(), "nautilo-ds-electron-"));
     savedHome = process.env["HOME"];
+    savedUserProfile = process.env["USERPROFILE"];
+    savedNautiloHome = process.env["NAUTILO_HOME"];
     process.env["HOME"] = tmpHome;
+    process.env["USERPROFILE"] = tmpHome;
+    delete process.env["NAUTILO_HOME"];
     savedInstance = process.env["NAUTILO_INSTANCE_ID"];
     process.env["NAUTILO_INSTANCE_ID"] = "dsprof";
     const instDir = join(tmpHome, ".nautilo-dsprof");
@@ -274,6 +280,10 @@ describe("ensureElectronInstallReady", () => {
     __resetResolvedInstanceForTests();
     if (savedHome === undefined) delete process.env["HOME"];
     else process.env["HOME"] = savedHome;
+    if (savedUserProfile === undefined) delete process.env["USERPROFILE"];
+    else process.env["USERPROFILE"] = savedUserProfile;
+    if (savedNautiloHome === undefined) delete process.env["NAUTILO_HOME"];
+    else process.env["NAUTILO_HOME"] = savedNautiloHome;
     if (savedInstance === undefined) delete process.env["NAUTILO_INSTANCE_ID"];
     else process.env["NAUTILO_INSTANCE_ID"] = savedInstance;
     rmSync(tmpHome, { recursive: true, force: true });
@@ -491,6 +501,8 @@ describe("devStackCmd", () => {
   let savedHome: string | undefined;
   let savedInstance: string | undefined;
   let savedMobileWebDist: string | undefined;
+  let savedUserProfile: string | undefined;
+  let savedNautiloHome: string | undefined;
   let killSpy: ReturnType<typeof mock>;
   let workbenchIndexBefore: { bytes: Buffer; mode: number } | null = null;
   let mobileWebIndexBefore: { bytes: Buffer; mode: number } | null = null;
@@ -534,6 +546,10 @@ describe("devStackCmd", () => {
     __resetResolvedInstanceForTests();
     savedHome = process.env["HOME"];
     process.env["HOME"] = tmpHome;
+    savedUserProfile = process.env["USERPROFILE"];
+    savedNautiloHome = process.env["NAUTILO_HOME"];
+    process.env["USERPROFILE"] = tmpHome;
+    delete process.env["NAUTILO_HOME"];
     savedInstance = process.env["NAUTILO_INSTANCE_ID"];
     savedMobileWebDist = process.env["NAUTILO_MOBILE_WEB_DIST"];
     process.env["NAUTILO_INSTANCE_ID"] = "dsprof";
@@ -555,6 +571,10 @@ describe("devStackCmd", () => {
     else process.env["NAUTILO_INSTANCE_ID"] = savedInstance;
     if (savedMobileWebDist === undefined) delete process.env["NAUTILO_MOBILE_WEB_DIST"];
     else process.env["NAUTILO_MOBILE_WEB_DIST"] = savedMobileWebDist;
+    if (savedUserProfile === undefined) delete process.env["USERPROFILE"];
+    else process.env["USERPROFILE"] = savedUserProfile;
+    if (savedNautiloHome === undefined) delete process.env["NAUTILO_HOME"];
+    else process.env["NAUTILO_HOME"] = savedNautiloHome;
     restoreWorkbenchIndex();
     restoreMobileWebIndex();
     isolatedWorkbenchDist = undefined;

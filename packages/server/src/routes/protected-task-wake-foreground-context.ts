@@ -332,6 +332,7 @@ async function snapshotCurrentContext(input: Readonly<{
         targetChatHandle: tasks.targetChatHandle,
         targetRoomId: tasks.targetRoomId,
         targetUserIds: tasks.targetUserIds,
+        resultDelivery: tasks.resultDelivery,
         useScope: tasks.useScope,
         scopeId: tasks.scopeId,
         toolsMode: tasks.toolsMode,

@@ -16,6 +16,8 @@ import {
   type RelayClient,
   type RelayClientOptions,
   type RelayCodexSession,
+  type RelayBolterScope,
+  type RelayBolterDesktopMessage,
   type RelayDesktopTopology,
   type RelayDispatchRequest,
   type RelayHostCallbackMessage,
@@ -99,7 +101,7 @@ export function resolveDesktopRelayHostLaunch(options: {
   const architecture = options.architecture ?? process.arch;
   const resources = options.isPackaged ? options.resourcesPath! : dirname(options.devVendorRoot);
   const hostRoot = options.isPackaged ? join(resources, "tools-relay-host") : options.devVendorRoot;
-  const runtime = resolve(resources, "bun", architecture, "bun");
+  const runtime = resolve(resources, "bun", architecture, process.platform === "win32" ? "bun.exe" : "bun");
   const script = resolve(hostRoot, "nautilo-relay-host.js");
   const manifestPath = resolve(hostRoot, "manifest.json");
   try {
@@ -344,6 +346,7 @@ class DesktopRelaySidecarClient implements RelayClient {
             acpRegistrations: this.#options.acpHostPort?.registrations?.() ?? [],
             claudeConnection: this.#options.claudeConnectionHostPort !== undefined,
             claudeExecution: this.#options.claudeExecutionHostPort !== undefined,
+            bolter: this.#options.bolterHostPort !== undefined,
           },
         },
       });
@@ -550,23 +553,32 @@ class DesktopRelaySidecarClient implements RelayClient {
       else if (message.event === "claude-execution-registered") this.#options.claudeExecutionHostPort?.onRegistered(message.payload as RelayClaudeExecutionSession, send("claude-execution"));
       else if (message.event === "claude-execution-command") await this.#options.claudeExecutionHostPort?.onCommand(message.payload as never);
       else if (message.event === "claude-execution-disconnected") await this.#options.claudeExecutionHostPort?.onDisconnected?.();
+      else if (message.event === "bolter-registered") this.#options.bolterHostPort?.onRegistered(message.payload as RelayBolterScope,
+        { send: (payload: RelayBolterDesktopMessage) => this.#sendTransport(message.generation, "bolter", payload) });
+      else if (message.event === "bolter-command") await this.#options.bolterHostPort?.onCommand(message.payload as never);
+      else if (message.event === "bolter-authorized") await this.#options.bolterHostPort?.onAuthorized(message.payload as never);
+      else if (message.event === "bolter-batch-ack") await this.#options.bolterHostPort?.onBatchAck(message.payload as never);
+      else if (message.event === "bolter-disconnected") await this.#options.bolterHostPort?.onDisconnected?.();
     } catch {
       // A Desktop host adapter cannot destabilize the Relay transport.
     }
   }
 
-  #sendTransport(expectedGeneration: string, transport: "codex" | "acp" | "claude-connection" | "claude-execution", payload: unknown): boolean {
+  #sendTransport(expectedGeneration: string, transport: "codex" | "acp" | "claude-connection" | "claude-execution" | "bolter", payload: unknown): boolean {
     const child = this.#child;
     const generation = this.#generation;
     if (child === null || generation === null || generation !== expectedGeneration || child.exitCode !== null) return false;
     try {
-      return child.stdin.write(encodeRelayHostFrame({
+      // write() returning false only signals backpressure; the frame is still
+      // queued in order. Windows pipes report it even for small frames.
+      child.stdin.write(encodeRelayHostFrame({
         protocolVersion: RELAY_HOST_PROTOCOL_VERSION,
         kind: "transport-send",
         generation,
         transport,
         payload,
       }));
+      return true;
     } catch {
       return false;
     }
@@ -675,6 +687,7 @@ class DesktopRelaySidecarClient implements RelayClient {
       try { void Promise.resolve(this.#options.acpHostPort?.onDisconnected?.()).catch(() => undefined); } catch { /* isolated */ }
       try { void Promise.resolve(this.#options.claudeConnectionHostPort?.onDisconnected?.()).catch(() => undefined); } catch { /* isolated */ }
       try { void Promise.resolve(this.#options.claudeExecutionHostPort?.onDisconnected?.()).catch(() => undefined); } catch { /* isolated */ }
+      try { void Promise.resolve(this.#options.bolterHostPort?.onDisconnected?.()).catch(() => undefined); } catch { /* isolated */ }
     }
   }
 }

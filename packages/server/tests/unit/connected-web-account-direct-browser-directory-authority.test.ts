@@ -9,8 +9,11 @@ import { directBrowserHarnessSession } from "../../src/connected-web-accounts/di
 import { directBrowserPrivateRoot } from "../../src/connected-web-accounts/operation-direct-production";
 
 const cleanup: string[] = [];
-const uid = process.getuid?.();
-if (uid === undefined) throw new Error("directory authority tests require a POSIX uid");
+function posixUid(): number {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("directory authority tests require a POSIX uid");
+  return uid;
+}
 
 async function tempRoot(prefix = "d-"): Promise<string> {
   const root = await mkdtemp(join(await realpath("/tmp"), prefix));
@@ -60,9 +63,9 @@ describe("D568 direct browser directory authority", () => {
     expect(Buffer.byteLength(socketPath, "utf8")).toBeLessThanOrEqual(103);
   });
 
-  test("derives recoverable private directories from every authority axis within the Unix socket budget", async () => {
+  test.skipIf(process.platform === "win32")("derives recoverable private directories from every authority axis within the Unix socket budget", async () => {
     const rootDirectory = await tempRoot();
-    const options = { rootDirectory, instanceIdentity: "instance-private", expectedUid: uid };
+    const options = { rootDirectory, instanceIdentity: "instance-private", expectedUid: posixUid() };
     const firstAuthority = createServerDirectBrowserDirectoryAuthority(options);
     const first = await firstAuthority.allocate(allocation);
     const recovered = await createServerDirectBrowserDirectoryAuthority(options).allocate(allocation);
@@ -79,7 +82,7 @@ describe("D568 direct browser directory authority", () => {
       expect(info.isDirectory()).toBe(true);
       expect(info.isSymbolicLink()).toBe(false);
       expect(info.mode & 0o777).toBe(0o700);
-      expect(info.uid).toBe(uid);
+      expect(info.uid).toBe(posixUid());
     }
 
     const variants = [
@@ -98,9 +101,9 @@ describe("D568 direct browser directory authority", () => {
     expect((await otherInstance.allocate(allocation)).socketDirectory).not.toBe(first.socketDirectory);
   });
 
-  test("releases the exact derived root across authority reconstruction and remains idempotent", async () => {
+  test.skipIf(process.platform === "win32")("releases the exact derived root across authority reconstruction and remains idempotent", async () => {
     const rootDirectory = await tempRoot();
-    const options = { rootDirectory, instanceIdentity: "instance-private", expectedUid: uid };
+    const options = { rootDirectory, instanceIdentity: "instance-private", expectedUid: posixUid() };
     const directories = await createServerDirectBrowserDirectoryAuthority(options).allocate(allocation);
     const operationRoot = dirname(directories.socketDirectory);
     const recoveredAuthority = createServerDirectBrowserDirectoryAuthority(options);
@@ -110,12 +113,12 @@ describe("D568 direct browser directory authority", () => {
     await recoveredAuthority.release(directories);
   });
 
-  test("rejects release outside its root, mismatched pairs, permissive directories, and symlinks", async () => {
+  test.skipIf(process.platform === "win32")("rejects release outside its root, mismatched pairs, permissive directories, and symlinks", async () => {
     const rootDirectory = await tempRoot();
     const authority = createServerDirectBrowserDirectoryAuthority({
       rootDirectory,
       instanceIdentity: "instance-private",
-      expectedUid: uid,
+      expectedUid: posixUid(),
     });
     const directories = await authority.allocate(allocation);
     const outside = await tempRoot("x-");
@@ -144,7 +147,7 @@ describe("D568 direct browser directory authority", () => {
     expect((await lstat(outside)).isDirectory()).toBe(true);
   });
 
-  test("fails closed for a symlink root and for a root that cannot fit session.sock", async () => {
+  test.skipIf(process.platform === "win32")("fails closed for a symlink root and for a root that cannot fit session.sock", async () => {
     const parent = await tempRoot();
     const actualRoot = join(parent, "actual");
     const linkedRoot = join(parent, "linked");
@@ -153,7 +156,7 @@ describe("D568 direct browser directory authority", () => {
     const linkedAuthority = createServerDirectBrowserDirectoryAuthority({
       rootDirectory: linkedRoot,
       instanceIdentity: "instance-private",
-      expectedUid: uid,
+      expectedUid: posixUid(),
     });
     expect(await rejection(linkedAuthority.allocate(allocation))).toBeInstanceOf(ServerDirectBrowserDirectoryAuthorityError);
 
@@ -162,15 +165,15 @@ describe("D568 direct browser directory authority", () => {
     const longAuthority = createServerDirectBrowserDirectoryAuthority({
       rootDirectory: longRoot,
       instanceIdentity: "instance-private",
-      expectedUid: uid,
+      expectedUid: posixUid(),
     });
     expect(await rejection(longAuthority.allocate(allocation))).toMatchObject({ code: "socket_path_too_long" });
   });
 });
 
-test("recovery finds older exact epochs after cleanup rotations without touching another owner or allocating empty generations", async () => {
+test.skipIf(process.platform === "win32")("recovery finds older exact epochs after cleanup rotations without touching another owner or allocating empty generations", async () => {
   const rootDirectory = await tempRoot();
-  const authority = createServerDirectBrowserDirectoryAuthority({ rootDirectory, instanceIdentity: "instance", expectedUid: uid });
+  const authority = createServerDirectBrowserDirectoryAuthority({ rootDirectory, instanceIdentity: "instance", expectedUid: posixUid() });
   const original = { ...allocation, controlEpoch: 3 };
   const old = await authority.allocate({ ...original, harnessSession: directBrowserHarnessSession(original) });
   const foreign = await authority.allocate({ ...original, ownerUserId: "another-owner", harnessSession: directBrowserHarnessSession(original) });

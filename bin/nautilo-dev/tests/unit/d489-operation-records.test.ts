@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   parseCheckpointMaintenanceOperationRecord,
   parseCloneSeedOperationRecord,
@@ -157,7 +158,8 @@ describe("D489 operation records", () => {
     (replacement["capture"] as Record<string, unknown>)["freshness"] = "reused";
     await writeCloneSeedOperationRecord(path, replacement);
     expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ capture: { freshness: "reused" } });
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(path)).toBe(true);
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   test("requires seed status, failure code, and guidance to agree", () => {
@@ -356,7 +358,8 @@ describe("D489 operation records", () => {
     expect(record.semanticCleanup.status).toBe("complete");
     expect(record.physicalReclamation.reclaimedBytes).toBeNull();
     expect(record.interruption).toBe("during-physical-reclamation");
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(path)).toBe(true);
+    if (process.platform !== "win32") expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   test("accepts measured running physical progress only after semantic verification", () => {

@@ -604,7 +604,7 @@ function productionFilesMatching(pattern: RegExp): string[] {
     collectProductionTypeScriptFiles(join(REPO_ROOT, root)),
   )
     .filter((file) => pattern.test(readFileSync(file, "utf8")))
-    .map((file) => file.slice(REPO_ROOT.length + 1))
+    .map((file) => file.slice(REPO_ROOT.length + 1).replaceAll("\\", "/"))
     .sort();
 }
 
@@ -615,6 +615,10 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/server/src/lib/foreground-chat-funding.ts",
     "packages/server/src/lib/native-task-funding.ts",
     "packages/server/src/messaging/await-resume.ts",
+    // Fresh linking checks the sponsoring Human against the exact Genie.
+    "packages/server/src/messaging/bolter-controller.ts",
+    // Durable adoption and hydration recheck current sponsor, Room and Genie access.
+    "packages/server/src/messaging/external-room-execution.ts",
     "packages/trust/src/action-capability-admission.ts",
   ]);
 
@@ -638,7 +642,13 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/server/src/connected-web-accounts/operation-wake.ts",
     "packages/server/src/media-generation/production-worker.ts",
     "packages/server/src/messaging/await-resume.ts",
+    // Authenticated Relay scope resolves the binding sponsor; intake rechecks
+    // current invocation access before accepting the canonical message.
+    "packages/server/src/messaging/bolter-controller.ts",
     "packages/server/src/messaging/dispatch.ts",
+    // Receipt-bound queued work supplies the sponsor; current admission is
+    // rechecked before execution, without treating the external sender as Human.
+    "packages/server/src/messaging/external-room-execution.ts",
     "packages/server/src/routes/auth.ts",
     "packages/server/src/routes/chat.ts",
     "packages/server/src/routes/codex-requests.ts",
@@ -938,7 +948,7 @@ function productionOccurrenceCounts(sources: readonly { file: string; source: st
           )
         : source;
       return {
-        file: file.slice(REPO_ROOT.length + 1),
+        file: file.slice(REPO_ROOT.length + 1).replaceAll("\\", "/"),
         count: [...searchable.matchAll(matcher)].length,
       };
     })

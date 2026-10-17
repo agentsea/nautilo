@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { parseDeployConfigFromPath } from "@nautilo/deploy-config";
 import type { D508FreshBrowserAdminEvidence } from "../../src/commands/qualify-owner-claim";
 import {
@@ -49,7 +49,7 @@ describe("test-only packaged target qualifier", () => {
     expect(accepted).toEqual({
       disposable: true,
       serverUrl: "http://127.0.0.1:4310",
-      ownerConfigPath: "/private/tmp/owner.toml",
+      ownerConfigPath: resolve("/private/tmp/owner.toml"),
       targetInstanceId: "d508012345abcdef",
     });
     for (const rejected of [

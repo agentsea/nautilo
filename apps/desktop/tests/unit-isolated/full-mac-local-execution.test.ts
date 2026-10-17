@@ -12,7 +12,7 @@ beforeAll(async () => { ({ makeDispatchHandler } = await import("../../electron/
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
 function fixture() {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "full-mac-fixture-")));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "full-mac-fixture-")));
   let activation = "activation"; let count = 0; let command: PreparedLocalExecution | undefined;
   let finish!: (exit: LocalProcessExit) => void;
   let didSpawn!: () => void;

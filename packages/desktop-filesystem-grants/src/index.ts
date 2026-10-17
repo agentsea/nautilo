@@ -382,12 +382,8 @@ export function parseDesktopFilesystemGrant(
 export function isPathWithinDesktopFilesystemGrantRoot(root: string, candidate: string): boolean {
   if (!path.isAbsolute(root) || !path.isAbsolute(candidate)) return false;
 
-  const normalizedRoot = path.normalize(root);
-  const normalizedCandidate = path.normalize(candidate);
-  if (normalizedRoot === path.parse(normalizedRoot).root) {
-    return normalizedCandidate.startsWith(normalizedRoot);
-  }
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 /**

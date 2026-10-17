@@ -85,7 +85,7 @@ test("inventory traverses nested packages and discloses symlink, Git metadata an
     await writeFile(join(root, "unknown.png"), "export const actualSource = true;\n");
     await writeFile(join(root, ".git", "config"), "not source");
     await writeFile(join(root, "packages", "worker", "entry.ts"), "export const task = true;\n");
-    await symlink(join(root, "packages"), join(root, "linked"));
+    await symlink(join(root, "packages"), join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
     const progress: { filesObserved: number; directoriesObserved: number }[] = [];
     const capture = () => captureSecurityInventory({ currentFolder: root, target: root, allowed: (path) => !path.endsWith("blocked"), assertLive: async () => {}, onProgress: (counts) => progress.push(counts) });
     const entries = await capture();

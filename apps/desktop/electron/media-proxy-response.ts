@@ -1,6 +1,6 @@
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { Readable } from "node:stream";
+import { openMediaFileNoFollow } from "./media-source-inspection";
 
 /** Stream the exact staged source, including the byte ranges Chromium needs for seeking. */
 export async function mediaProxyResponse(
@@ -30,9 +30,10 @@ export async function mediaProxyResponse(
     headers.set("Content-Range", `bytes ${start}-${end}/${source.sizeBytes}`);
   }
   headers.set("Content-Length", String(end - start + 1));
-  let file: Awaited<ReturnType<typeof open>> | undefined;
+  let file: FileHandle | undefined;
   try {
-    file = await open(source.outputPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    file = await openMediaFileNoFollow(source.outputPath) ?? undefined;
+    if (!file) return new Response(null, { status: 404 });
     const stat = await file.stat();
     if (!stat.isFile() || stat.size !== source.sizeBytes || (source.signal?.aborted || source.isAuthorityCurrent?.() === false)) return new Response(null, { status: 404 });
     if (request.method === "HEAD") return new Response(null, { status: range === null ? 200 : 206, headers });

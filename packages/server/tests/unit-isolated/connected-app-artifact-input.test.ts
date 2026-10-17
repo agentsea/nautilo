@@ -66,7 +66,7 @@ describe("D456 connected-app Room artifact input", () => {
     expect(resolve.mock.calls[0]?.[0]).toMatchObject({ logicalPath: "brief.pdf", intent: "read" });
   });
 
-  test("detects path replacement after staging even when the catalog row is unchanged", async () => {
+  test("prevents or detects path replacement after staging while the catalog row is unchanged", async () => {
     const physicalPath = join(root, "artifact-B");
     const replacementPath = join(root, "replacement");
     await writeFile(physicalPath, Uint8Array.from([1, 2, 3, 4]));
@@ -83,11 +83,22 @@ describe("D456 connected-app Room artifact input", () => {
     restores.push(() => resolve.mockRestore());
 
     const source = await openWorkspaceArtifactInput({ envelope, artifactPath: "moving.bin" });
-    await rename(replacementPath, physicalPath);
-    const error = await source.verify().catch((cause: unknown) => cause);
-    await source.close();
-
-    expect(error).toEqual(new ConnectedAppArtifactInputError("connected_app_artifact_changed", 409));
+    try {
+      try { await rename(replacementPath, physicalPath); }
+      catch (error) {
+        if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+        // Windows can prevent replacement while the reader owns an open handle.
+        const bytes: number[] = [];
+        for await (const chunk of source.chunks) bytes.push(...chunk);
+        expect(bytes).toEqual([1, 2, 3, 4]);
+        await source.verify();
+        return;
+      }
+      const error = await source.verify().catch((cause: unknown) => cause);
+      expect(error).toEqual(new ConnectedAppArtifactInputError("connected_app_artifact_changed", 409));
+    } finally {
+      await source.close();
+    }
   });
 });
 

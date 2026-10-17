@@ -93,7 +93,9 @@ export async function readPersonalProviderCredentialEvidenceFromDump(
   let firstLine = true;
   let tableDeclared = false;
   let columns: string[] | undefined;
-  let sawCopy = false;
+  const declaredTables = new Set<string>();
+  const copiedTables = new Set<string>();
+  let subscription = false;
   let rowCount = 0;
   const keyIds = new Set<string>();
 
@@ -106,27 +108,17 @@ export async function readPersonalProviderCredentialEvidenceFromDump(
         );
       }
     }
-    if (
-      /^CREATE TABLE (?:(?:"public"|public)\.)?(?:"personal_provider_credentials"|personal_provider_credentials)\s*\($/.test(
-        line,
-      )
-    ) {
-      tableDeclared = true;
-    }
+    const declared = line.match(/^CREATE TABLE (?:(?:"public"|public)\.)?"?(personal_provider_credentials|chatgpt_registrations)"?\s*\($/);
+    if (declared) { tableDeclared = true; declaredTables.add(declared[1]!); }
     if (columns === undefined) {
-      const match = line.match(
-        /^COPY (?:(?:"public"|public)\.)?(?:"personal_provider_credentials"|personal_provider_credentials) \(([^)]+)\) FROM stdin;$/,
-      );
+      const match = line.match(/^COPY (?:(?:"public"|public)\.)?"?(personal_provider_credentials|chatgpt_registrations)"? \(([^)]+)\) FROM stdin;$/);
       if (!match) continue;
       tableDeclared = true;
-      sawCopy = true;
-      columns = match[1]!
-        .split(",")
-        .map((column) => column.trim().replace(/^"|"$/g, ""));
-      if (!columns.includes("key_id")) {
-        throw new Error(
-          "restore refused: personal credential dump is missing custody identity",
-        );
+      copiedTables.add(match[1]!);
+      subscription = match[1] === "chatgpt_registrations";
+      columns = match[2]!.split(",").map(column => column.trim().replace(/^"|"$/g, ""));
+      if (subscription ? !columns.includes("identity_envelope") || !columns.includes("envelope") : !columns.includes("key_id")) {
+        throw new Error("restore refused: personal credential dump is missing custody identity");
       }
       continue;
     }
@@ -138,11 +130,21 @@ export async function readPersonalProviderCredentialEvidenceFromDump(
     if (values.length !== columns.length) {
       throw new Error("restore refused: malformed personal credential COPY row");
     }
-    const keyId = decodePgCopyText(values[columns.indexOf("key_id")]!);
-    if (keyId === undefined || !UUID_RE.test(keyId)) {
-      throw new Error("restore refused: personal credential row has invalid custody identity");
-    }
-    keyIds.add(keyId.toLowerCase());
+    const rememberKey = (keyId: unknown) => {
+      if (typeof keyId !== "string" || !UUID_RE.test(keyId)) {
+        throw new Error("restore refused: personal credential row has invalid custody identity");
+      }
+      keyIds.add(keyId.toLowerCase());
+    };
+    if (subscription) {
+      for (const column of ["identity_envelope", "envelope"]) {
+        const raw = decodePgCopyText(values[columns.indexOf(column)]!);
+        if (raw === undefined && column === "envelope") continue;
+        let envelope: unknown;
+        try { envelope = JSON.parse(raw ?? ""); } catch { throw new Error("restore refused: malformed subscription custody envelope"); }
+        rememberKey(typeof envelope === "object" && envelope !== null && "keyId" in envelope ? envelope.keyId : undefined);
+      }
+    } else rememberKey(decodePgCopyText(values[columns.indexOf("key_id")]!));
     rowCount += 1;
   }
 
@@ -150,7 +152,7 @@ export async function readPersonalProviderCredentialEvidenceFromDump(
     throw new Error("restore refused: truncated personal credential COPY data");
   }
   if (!tableDeclared) return { state: "table-absent" };
-  if (!sawCopy) {
+  if (copiedTables.size === 0 || [...declaredTables].some(table => !copiedTables.has(table))) {
     throw new Error(
       "restore refused: personal credential contents cannot be established from the backup",
     );
@@ -212,3 +214,18 @@ export function assertPersonalProviderRestoreCustody(args: {
     );
   }
 }
+
+/** Run inside the restore transaction before any runtime restarts. A backup's
+ * renewable token may have rotated, or its original custodian may still live.
+ * Keep identity and explicit selection, but require fresh consent before use.
+ * Identity AAD uses authority_revision, so leave it intact until reconnect. */
+export const CHATGPT_RESTORE_FENCE_SQL = `DO $chatgpt_restore$
+BEGIN
+  IF to_regclass('public.chatgpt_registrations') IS NOT NULL THEN
+    UPDATE public.chatgpt_registrations
+      SET envelope = NULL, state = 'reconnect_required',
+          token_generation = token_generation + 1, updated_at = now()
+      WHERE state = 'connected';
+  END IF;
+END
+$chatgpt_restore$;`;

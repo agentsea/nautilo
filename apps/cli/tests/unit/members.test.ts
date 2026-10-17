@@ -16,7 +16,8 @@ import {
   type RevokeInviteResult,
 } from "@nautilo/api-client";
 import yargs from "yargs/yargs";
-import { chmod, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -628,8 +629,7 @@ describe("signed member lifecycle", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "nautilo-permanent-member-")));
     const path = join(root, "credential.json");
     const password = "PERMANENT-PASSWORD-CANARY";
-    await writeFile(path, JSON.stringify({ handle: "alex", temporaryPassword: password, pin: "123456" }), { mode: 0o600 });
-    await chmod(path, 0o600);
+    await writePrivateFileExclusive(path, Buffer.from(JSON.stringify({ handle: "alex", temporaryPassword: password, pin: "123456" }), "utf8"));
     const setPermanentCredentials = mock(async () => ({ ok: true as const, memberId: MEMBER_ID, auditRecorded: true }));
     try {
       await run([
@@ -655,7 +655,7 @@ describe("signed member lifecycle", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "nautilo-permanent-member-")));
     const path = join(root, "credential.json");
     const password = "PERMANENT-PASSWORD-CANARY";
-    await writeFile(path, JSON.stringify({ handle: "alex", password, pin: "123456" }), { mode: 0o600 });
+    await writePrivateFileExclusive(path, Buffer.from(JSON.stringify({ handle: "alex", password, pin: "123456" }), "utf8"));
     const provisionMember = mock(async () => ({
       ok: true as const,
       receiptId: "provision-receipt",

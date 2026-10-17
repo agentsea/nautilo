@@ -3,6 +3,7 @@ import { index, integer, jsonb, pgPolicy, pgRole, pgTable, uniqueIndex, text, ti
 import { sessions } from "./sessions";
 import { agents } from "./agents";
 import { rooms } from "./rooms";
+import type { MemoryOperationBinding } from "@nautilo/types";
 
 /** M319: source coordinates only. No transcript or captured access envelope. */
 export const memoryReviewTurns = pgTable("memory_review_turns", {
@@ -21,6 +22,8 @@ export const memoryReviewTurns = pgTable("memory_review_turns", {
   firstMessageId: integer("first_message_id").notNull(),
   hasHuman: integer("has_human").notNull().default(0),
   state: text("state").$type<"pending" | "awaiting" | "completed" | "interrupted" | "covered">().notNull().default("pending"),
+  /** First accepted model, preference and payer survive retries and restarts. */
+  acceptedModelBinding: jsonb("accepted_model_binding").$type<MemoryOperationBinding | { kind: "service"; modelId: string }>(),
   attemptId: uuid("attempt_id"),
   leaseUntil: timestamp("lease_until", { withTimezone: true }),
   retryAt: timestamp("retry_at", { withTimezone: true }),

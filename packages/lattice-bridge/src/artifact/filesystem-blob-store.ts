@@ -3,13 +3,13 @@ import {
   chmod,
   link,
   lstat,
-  mkdir,
   open,
   opendir,
   unlink,
 } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import { basename, resolve } from "node:path";
+import { ensurePrivateDirectory } from "@nautilo/config/private-filesystem";
 import {
   ARTIFACT_BLOB_CHUNK_PLAINTEXT_BYTES,
   ARTIFACT_BLOB_MAX_FILE_BYTES,
@@ -73,7 +73,9 @@ export interface ArtifactBlobFilesystemV1 {
 }
 
 const nodeFilesystem: ArtifactBlobFilesystemV1 = Object.freeze({
-  mkdir,
+  mkdir(path: string) {
+    return ensurePrivateDirectory(path);
+  },
   open,
   chmod,
   link,
@@ -436,7 +438,13 @@ async function syncDirectory(
   let handle: ArtifactBlobFilesystemFileV1 | undefined;
   try {
     handle = await filesystem.open(directory, "r");
-    await handle.sync();
+    try {
+      await handle.sync();
+    } catch (error) {
+      // Windows rejects fsync on a read-only directory handle. Keep failures
+      // opening the directory and syncing the ciphertext file observable.
+      if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") throw error;
+    }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") throw error;

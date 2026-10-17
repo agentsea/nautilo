@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   bootstrapDirForInstance,
   readBootstrapDir,
@@ -61,14 +62,18 @@ describe("bootstrap-dir", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32")("files are mode 0600; parent dir mode 0700", () => {
+  test("bootstrap files and newly created parents are owner-private", () => {
     const home = mkdtempSync(join(tmpdir(), "nboot-"));
     try {
       const dir = join(home, ".nautilo-y", ".bootstrap");
       writeBootstrapAdminPassword(dir, "x");
       const parent = join(home, ".nautilo-y");
-      expect(statSync(join(dir, "admin-password")).mode & 0o777).toBe(0o600);
-      expect(statSync(parent).mode & 0o777).toBe(0o700);
+      expect(isPrivateFilesystemPath(join(dir, "admin-password"))).toBe(true);
+      expect(isPrivateFilesystemPath(parent)).toBe(true);
+      if (process.platform !== "win32") {
+        expect(statSync(join(dir, "admin-password")).mode & 0o777).toBe(0o600);
+        expect(statSync(parent).mode & 0o777).toBe(0o700);
+      }
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

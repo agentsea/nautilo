@@ -1,4 +1,7 @@
-import { reviewedD581TaskDtoReplacements, SUPERSEDED_D581_TASK_DTO_LOCATORS } from "./reviewed-d581-task-dto";
+import { CHATGPT_PLAN_DTO_DECLARATIONS } from "./reviewed-chatgpt-plan-coverage";
+import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
+import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
+import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
   REVIEWED_MAIN_2026_09_12_NEW_DTO_DECLARATIONS,
@@ -26,6 +29,7 @@ import {
 } from "./reviewed-m322-dto";
 import type { DtoDeclaration } from "../src/node/dto-inventory";
 import { reviewedImageAssistanceDtoReplacements } from "./reviewed-image-assistance-dto";
+import { reviewedExternalMessageAttributionDtoReplacements } from "./reviewed-external-message-attribution-dto";
 import {
   reviewedPaidServiceFundingDtoReplacements,
   SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS,
@@ -44,7 +48,7 @@ import {
   SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS,
 } from "./reviewed-release-reconciliation-dto";
 import { REVIEWED_LANDING_DTO_DECLARATIONS, SUPERSEDED_LANDING_DTO_LOCATORS } from "./reviewed-main-2026-09-05-landing-dto";
-import { REVIEWED_D487_DTO_DECLARATIONS } from "./reviewed-d487-dto";
+import { REVIEWED_OWNED_PHOTO_LIBRARY_DTO_DECLARATIONS } from "./reviewed-owned-photo-library-dto";
 import {
   REVIEWED_MAIN_2026_08_04_DTO_DECLARATIONS,
 } from "./reviewed-main-2026-08-04-dto";
@@ -157,9 +161,9 @@ import {
   SUPERSEDED_M311_DTO_LOCATORS,
 } from "./reviewed-m311-dto";
 import {
-  reviewedD565RelayDtoReplacements,
-  SUPERSEDED_D565_RELAY_DTO_LOCATORS,
-} from "./reviewed-d565-relay-dto";
+  reviewedRelayBindingDtoReplacements,
+  SUPERSEDED_RELAY_BINDING_DTO_LOCATORS,
+} from "./reviewed-relay-binding-dto";
 import { isRetiredM306AuthorityLocator } from "./retired-m306-authority";
 import {
   REVIEWED_MAIN_2026_09_09_DOCUMENTMEDIA_DTO_DECLARATIONS,
@@ -179,7 +183,7 @@ import {
 } from "./reviewed-m314-dto";
 
 const HISTORICAL_DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
-  ...REVIEWED_D487_DTO_DECLARATIONS,
+  ...REVIEWED_OWNED_PHOTO_LIBRARY_DTO_DECLARATIONS,
   ...REVIEWED_MAIN_2026_08_04_DTO_DECLARATIONS,
   {
     "observationId": "wire.app.bridge.app.to.host.arbitrary.apps.workbench.src.apps.app.bridge.ts.appcontextupdatemessage.14d1tdd",
@@ -6087,7 +6091,7 @@ const PRE_M301_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...REVIEWED_MAIN_2026_08_31_DTO_DECLARATIONS,
 ];
 
-const PRE_D565_DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+const PRE_RELAY_BINDING_DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
   ...[
     ...PRE_M301_DTO_DECLARATIONS.filter((declaration) =>
       !SUPERSEDED_M301_DTO_LOCATORS.has(declaration.locator)
@@ -6107,10 +6111,10 @@ const PRE_D565_DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
 );
 
 const PRE_M311_DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
-  ...PRE_D565_DTO_BASELINE_DECLARATIONS.filter((declaration) =>
-    !SUPERSEDED_D565_RELAY_DTO_LOCATORS.has(declaration.locator)
+  ...PRE_RELAY_BINDING_DTO_BASELINE_DECLARATIONS.filter((declaration) =>
+    !SUPERSEDED_RELAY_BINDING_DTO_LOCATORS.has(declaration.locator)
   ),
-  ...reviewedD565RelayDtoReplacements(PRE_D565_DTO_BASELINE_DECLARATIONS),
+  ...reviewedRelayBindingDtoReplacements(PRE_RELAY_BINDING_DTO_BASELINE_DECLARATIONS),
 ];
 
 const PRE_LANDING_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
@@ -6120,7 +6124,7 @@ const PRE_LANDING_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...reviewedM311DtoReplacements(PRE_M311_DTO_BASELINE_DECLARATIONS),
 ];
 
-const PRE_D581_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
+const PRE_TASK_RESEARCH_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...PRE_LANDING_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_LANDING_DTO_LOCATORS.has(entry.locator)
     && !SUPERSEDED_M318_DTO_LOCATORS.has(entry.locator)
@@ -6145,8 +6149,8 @@ const PRE_D581_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
 
 const PRE_M314_DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
   ...[
-    ...PRE_D581_DTO_DECLARATIONS.filter((entry) => !SUPERSEDED_D581_TASK_DTO_LOCATORS.has(entry.locator)),
-    ...reviewedD581TaskDtoReplacements(PRE_D581_DTO_DECLARATIONS),
+    ...PRE_TASK_RESEARCH_DTO_DECLARATIONS.filter((entry) => !SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS.has(entry.locator)),
+    ...reviewedTaskResearchDtoReplacements(PRE_TASK_RESEARCH_DTO_DECLARATIONS),
   ].filter((entry) =>
     !SUPERSEDED_MAIN_2026_09_09_DOCUMENTMEDIA_DTO_LOCATORS.has(entry.locator)
     && !SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_LOCATORS.has(entry.locator)
@@ -6225,7 +6229,9 @@ const PRE_MAIN_2026_10_13_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
 ];
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
+  reviewedBolterRelayDtoReplacements(
+    reviewedExternalMessageAttributionDtoReplacements([
   ...PRE_MAIN_2026_10_13_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(entry.locator)
     && !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
@@ -6237,4 +6243,7 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = [
     !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
   ),
   ...REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS,
-];
+  ...BOLTER_HTTP_DECLARATIONS,
+  ...CHATGPT_PLAN_DTO_DECLARATIONS,
+    ]),
+  );

@@ -22,14 +22,14 @@ import { useAuth } from "../../hooks/use-auth";
 
 /**
  * Settings nav items — all in-page scroll anchors. Connections is NOT here:
- * it's a dedicated rail destination (`/connections`, D384 umbrella of MCP
+ * it's a dedicated rail destination (`/connections`, covering MCP
  * servers + Integrations), a peer of Skills/Memory/Commands — reached from
  * the navigation rail, not this scroll nav (keeps every item here a scroll
  * anchor, no mixed route/scroll behavior).
  */
 export const SETTINGS_SECTIONS: ReadonlyArray<{ id: SectionId; label: string; catalogueTarget: UiTargetId }> = [
   { id: "profile", label: "Profile", catalogueTarget: "settings.profile" },
-  { id: "personal-provider-keys", label: "Personal API keys", catalogueTarget: "settings.personal_api_keys" },
+  { id: "personal-provider-keys", label: "API keys and subscriptions", catalogueTarget: "settings.personal_api_keys" },
   { id: "my-agents", label: "My Agents", catalogueTarget: "settings.my_agents" },
   { id: "this-mac", label: "This Mac", catalogueTarget: "settings.this_mac" },
   { id: "notifications", label: "Notifications", catalogueTarget: "settings.notifications" },

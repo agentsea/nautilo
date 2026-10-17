@@ -159,8 +159,11 @@ describe("Ready Workstation protected receipt", () => {
     expect(() => racing.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     const target = path.join(root, "future.bin");
     fs.renameSync(filePath, target);
-    fs.symlinkSync(target, filePath);
-    expect(() => store.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
+    fs.symlinkSync(process.platform === "win32" ? root : target, filePath,
+      process.platform === "win32" ? "junction" : "file");
+    const linkedFile = process.platform === "win32" ? path.join(filePath, "future.bin") : filePath;
+    const linkedStore = new ReadyToWorkProtectedReceiptStore({ filePath: linkedFile, safeStorage: safeStorage() });
+    expect(() => linkedStore.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     expect(fs.lstatSync(filePath).isSymbolicLink()).toBeTrue();
     expect(fs.readFileSync(target)).toEqual(future);
   });

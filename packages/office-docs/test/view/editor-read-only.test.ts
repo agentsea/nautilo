@@ -692,11 +692,16 @@ describe('TextEditor.pasteFormat() read-only guard', () => {
  * peer edits at all.
  */
 describe('read-only store and doc handles', () => {
+  // Disposed after each test: a live editor keeps its cursor blink interval
+  // running past the jsdom teardown, where it fails on the missing `window`.
+  const mounted: EditorAPI[] = [];
+
   beforeEach(() => {
     installCanvasShim();
     document.body.innerHTML = String();
   });
   afterEach(() => {
+    for (const editor of mounted.splice(0)) editor.dispose();
     document.body.innerHTML = String();
     HTMLCanvasElement.prototype.getContext = originalGetContext;
     if (originalResizeObserver === undefined) {
@@ -725,6 +730,7 @@ describe('read-only store and doc handles', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
     const editor = initialize(container, store, undefined, readOnly);
+    mounted.push(editor);
     const text = () => getBlockText(store.getDocument().blocks[0]);
     return { editor, store, text };
   }
@@ -925,7 +931,7 @@ describe('read-only store and doc handles', () => {
     const container = document.createElement('div');
     document.body.appendChild(container);
 
-    initialize(container, store, undefined, false);
+    mounted.push(initialize(container, store, undefined, false));
 
     expect(store.getDocument().blocks).toHaveLength(1);
   });

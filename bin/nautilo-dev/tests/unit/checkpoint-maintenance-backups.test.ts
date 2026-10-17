@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensurePrivateDirectory } from "@nautilo/config/private-filesystem";
 import { mkdtemp } from "node:fs/promises";
 import {
   CHECKPOINT_MAINTENANCE_CURRENT_BACKUP,
@@ -25,12 +26,13 @@ const SHA = "a".repeat(64);
 async function root(): Promise<string> {
   const value = await mkdtemp(join(tmpdir(), "nautilo-checkpoint-maintenance-"));
   roots.push(value);
+  await ensurePrivateDirectory(value);
   return value;
 }
 
 async function writeRecoveryBackup(rootDir: string, name: string): Promise<void> {
   const dir = join(rootDir, name);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(dir);
   for (const file of ["database.sql.gz", "logto.sql.gz", "dot-env", "home.tar.gz"]) {
     await writeFile(join(dir, file), `${name}:${file}`, { mode: 0o600 });
   }

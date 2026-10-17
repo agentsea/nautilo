@@ -11,7 +11,6 @@
  * — not another composer pipeline.
  */
 import { describe, expect, mock, test } from "bun:test";
-import * as nodePath from "node:path";
 import * as actualDb from "@nautilo/db";
 
 const findArtifactByIdForNamespacesMock = mock(
@@ -373,6 +372,22 @@ describe("resolveFocusedResources", () => {
 });
 
 describe("LocalFileResolver (D423 4.1.3)", () => {
+  test.each([
+    ["C:\\repo\\docs\\deck.pptx", "C:\\repo", "current", "docs\\deck.pptx"],
+    ["D:\\repo\\deck.pptx", "C:\\repo", "absolute", "D:\\repo\\deck.pptx"],
+    ["\\\\server\\share\\repo\\deck.pptx", "\\\\server\\share\\repo", "current", "deck.pptx"],
+    ["/repo/deck.pptx", "C:\\repo", "absolute", "/repo/deck.pptx"],
+  ] as const)("preserves remote paths and folder boundaries: %s", async (path, currentFolder, zone, modelPath) => {
+    const registry = makeMockRegistry([{ relayId: "relay-1", actorId: "user-1", snapshot: V4_DESKTOP_SNAPSHOT }]);
+    const manifest = await resolveFocusedResources({
+      focusedResourceRefs: [{ kind: "local-file", path, rootPath: currentFolder, name: "deck.pptx", relayId: "relay-1" }],
+      resolvedArtifactRefs: [], attachmentStatuses: [], readableNamespaceIds: [],
+      senderActorId: "user-1", currentFolder, relayRegistry: registry,
+    });
+    expect(manifest[0]?.toolTarget).toEqual({ tool: "file", zone, path: modelPath });
+    expect(manifest[0]?.locator).toEqual({ relayId: "relay-1", path });
+  });
+
   const localFileRef = {
     kind: "local-file" as const,
     path: "/Users/alice/demo/deck.pptx",
@@ -481,7 +496,7 @@ describe("LocalFileResolver (D423 4.1.3)", () => {
     expect(manifest[0]!.toolTarget).toEqual({
       tool: "file",
       zone: "current",
-      path: pathPosixRelative("/Users/alice/demo", "/Users/alice/demo/sub/dir/notes.md"),
+      path: "sub/dir/notes.md",
     });
   });
 
@@ -688,12 +703,6 @@ describe("LocalFileResolver (D423 4.1.3)", () => {
     expect(entry.locator).toEqual({ relayId: "relay-secret", path: "/Users/alice/demo/secret.pptx" });
   });
 });
-
-// `node:path.relative` in the resolver uses the runtime's platform path; tests
-// run on POSIX hosts, so the expected relative path mirrors it directly.
-function pathPosixRelative(from: string, to: string): string {
-  return nodePath.relative(from, to);
-}
 
 describe("FocusResolverRegistry extensibility", () => {
   test("adding a future kind requires only registering a resolver", async () => {

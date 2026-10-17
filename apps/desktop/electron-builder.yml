@@ -42,7 +42,7 @@ mac:
   # Sharp's darwin native addons and libvips payload are selected by
   # process.arch. Keep both thin payload trees as runtime-selected files
   # during universal merge rather than attempting to lipo them.
-  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-browser-vision,tools-agent-browser,tools-gog,tools-github-cli,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
+  x64ArchFiles: "Contents/Resources/{bun,tools,tools-cua,tools-computer-use-host,tools-browser-vision,tools-agent-browser,tools-gog,tools-github-cli,tools-ffmpeg,tools-officecli,tools-apply-patch,tools-bolter-handover,tools-ripgrep,app.asar.unpacked/node_modules/{node-pty,argon2,sharp,@img/sharp-darwin-arm64,@img/sharp-darwin-x64,@img/sharp-libvips-darwin-arm64,@img/sharp-libvips-darwin-x64}}/**/*"
   notarize: false
   # user-facing permission strings + Info.plist
   # release metadata. macOS requires permission strings in Info.plist
@@ -72,6 +72,14 @@ mac:
     NSHumanReadableCopyright: "Copyright © 2026 Nautilo"
     LSMinimumSystemVersion: "11.0"
   extraResources:
+    # App-owned stdin handover helper. It has no standalone daemon or credentials.
+    - from: dist/bolter-handover
+      to: tools-bolter-handover
+      filter:
+        - "arm64/bolter-handover"
+        - "arm64/manifest.json"
+        - "x64/bolter-handover"
+        - "x64/manifest.json"
     # Official GitHub CLI, fixed platform selection and MIT license.
     - from: vendor/github-cli
       to: tools-github-cli
@@ -99,12 +107,6 @@ mac:
       to: tools-computer-use-host
       filter:
         - "nautilo-computer-use-host"
-        - "manifest.json"
-    # Electron consumes Relay only through this private child process.
-    - from: vendor/relay-host
-      to: tools-relay-host
-      filter:
-        - "nautilo-relay-host.js"
         - "manifest.json"
     # source-owned universal helper used only to invoke the host-owned
     # CGRequestScreenCaptureAccess API. It is never downloaded at runtime.
@@ -177,6 +179,7 @@ dmg:
 
 files:
   - dist/**/*
+  - "!dist/bolter-handover/**/*"
   - assets/**/*
   # Production source maps disclose dependency source and add no supported
   # end-user debugging path. The afterPack inventory guard below verifies the
@@ -195,6 +198,12 @@ files:
 # picks the right subdir at runtime via process.arch. Size impact:
 # ~60 MB per architecture on top of the Electron base.
 extraResources:
+  # The Relay Host is platform-neutral JavaScript consumed by bundled Bun.
+  - from: vendor/relay-host
+    to: tools-relay-host
+    filter:
+      - "nautilo-relay-host.js"
+      - "manifest.json"
   # Keep the canonical notices outside ASAR without weakening runtime exclusions.
   - from: ../../THIRD_PARTY_NOTICES.md
     to: legal/THIRD_PARTY_NOTICES.md

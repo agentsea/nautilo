@@ -43,6 +43,11 @@ export function validateSubagentToolWhitelist(opts: {
    * — never erroring at dispatch purely because the device is asleep (D1/R2).
    */
   skipRelayLiveCheck?: boolean;
+  /**
+   * The caller has already admitted a runtime that will install and recheck
+   * request-local prerequisites before exposing or invoking these tools.
+   */
+  deferRuntimePrerequisiteChecks?: boolean;
   subagentDepth: number;
   subagentMaxDepth: number;
 }): ValidateSubagentToolsResult {
@@ -60,7 +65,14 @@ export function validateSubagentToolWhitelist(opts: {
   const snapshot = catalog.getFiltered(
     opts.toolPolicy,
     opts.relayCapabilities ?? undefined,
-    opts.skipRelayLiveCheck ? { skipRelayLiveCheck: true } : undefined,
+    opts.skipRelayLiveCheck || opts.deferRuntimePrerequisiteChecks
+      ? {
+          ...(opts.skipRelayLiveCheck ? { skipRelayLiveCheck: true } : {}),
+          ...(opts.deferRuntimePrerequisiteChecks
+            ? { deferRuntimePrerequisiteChecks: true }
+            : {}),
+        }
+      : undefined,
   );
   const parentAllowed = new Set(snapshot.entries.map((e) => e.name));
 

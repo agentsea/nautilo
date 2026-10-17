@@ -513,6 +513,12 @@ export class ToolCatalog {
     relayCapabilities?: Readonly<Record<string, boolean>>  ,
     options?: {
       /**
+       * Validate durable authorization without consulting request-local or
+       * turn-local readiness. The execution owner must repeat ordinary
+       * filtering after it installs that runtime context.
+       */
+      deferRuntimePrerequisiteChecks?: boolean;
+      /**
        * Defense-in-depth filter for post-model pre-flight: verify actor-tier +
        * toolPolicy + whitelist only — skip live relay capability checks (those
        * belong at dispatch time in nodes/tools.ts).
@@ -537,6 +543,7 @@ export class ToolCatalog {
     toolPolicy?: Readonly<Record<string, string>>,
     relayCapabilities?: Readonly<Record<string, boolean>>,
     options?: {
+      deferRuntimePrerequisiteChecks?: boolean;
       skipRelayLiveCheck?: boolean;
       readableNamespaces?: readonly string[];
       context?: ToolContext | undefined;
@@ -554,8 +561,8 @@ export class ToolCatalog {
     );
 
     for (const entry of this.entries.values()) {
-      if (entry.name !== ignoreUnavailableName && entry.isAvailable && !entry.isAvailable()) { exclusions.push({ tool: entry.name, reason: "server prerequisite unavailable" }); continue; }
-      if (entry.name !== ignoreUnavailableName && entry.unavailableInContext?.(options?.context) != null) {
+      if (!options?.deferRuntimePrerequisiteChecks && entry.name !== ignoreUnavailableName && entry.isAvailable && !entry.isAvailable()) { exclusions.push({ tool: entry.name, reason: "server prerequisite unavailable" }); continue; }
+      if (!options?.deferRuntimePrerequisiteChecks && entry.name !== ignoreUnavailableName && entry.unavailableInContext?.(options?.context) != null) {
         exclusions.push({ tool: entry.name, reason: "turn prerequisite unavailable" });
         continue;
       }

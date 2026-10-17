@@ -866,15 +866,19 @@ describe("report-back finalizer (silent + event routing)", () => {
   });
 
   test("safe worker failure honors wake delivery and identifies the terminal outcome", async () => {
-    const { db } = fakeDb(baseTask({ callingRoomId: "room-1" }));
+    const { db } = fakeDb(baseTask({ ownerId: "foreign-genie-owner",
+      requestorId: "causal-human", callingRoomId: "group-room" }));
     const wakes: Array<{
+      ownerId: string;
+      requestorId: string;
+      callingRoomId: string | null;
       text: string;
       kind: string;
       visible: boolean;
       taskRunId: string | undefined;
     }> = [];
     const wake: NonNullable<ReportBackDeps["wake"]> = async (
-      _task,
+      task,
       _deliveryId,
       text,
       _threadId,
@@ -884,6 +888,9 @@ describe("report-back finalizer (silent + event routing)", () => {
       taskRunId,
     ) => {
       wakes.push({
+        ownerId: task.ownerId,
+        requestorId: task.requestorId,
+        callingRoomId: task.callingRoomId,
         text,
         kind: kind ?? "result",
         visible: visible === true,
@@ -904,6 +911,9 @@ describe("report-back finalizer (silent + event routing)", () => {
 
     expect(wakes).toEqual([
       {
+        ownerId: "foreign-genie-owner",
+        requestorId: "causal-human",
+        callingRoomId: "group-room",
         text: SAFE_BACKGROUND_TASK_FAILURE_RESULT,
         kind: "failure",
         visible: false,

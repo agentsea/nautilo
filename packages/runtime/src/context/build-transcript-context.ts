@@ -1,9 +1,12 @@
 import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import { randomUUID } from "node:crypto";
 import {
+  bindModelInputExposure,
   getModelTokenLimit,
   ROOM_CONTEXT_MESSAGE_HEADER,
+  type ModelInputExposure,
   type RunAgentTranscriptMessage,
+  unionModelInputExposures,
 } from "@nautilo/agent";
 import {
   MAX_ROOM_CONTEXT_PERCENT_DEFAULT,
@@ -33,7 +36,43 @@ export const ROOM_JOURNAL_CONTEXT_HEADER =
 
 export interface RoomJournalContext {
   rollup: RoomEventRollupView | null;
-  events: EffectiveRoomEvent[];
+  events: Array<EffectiveRoomEvent & { nativeRecordRef?: string }>;
+}
+
+function journalModelExposure(
+  journal: RoomJournalContext,
+  renderedCharacters: number,
+): ModelInputExposure {
+  if (renderedCharacters <= ROOM_JOURNAL_CONTEXT_HEADER.length) {
+    return Object.freeze({ status: "complete", dependencies: [] });
+  }
+  const entries = [
+    ...(journal.rollup?.content.trim()
+      ? [{
+          text: journal.rollup.content.trim(),
+          dependency: journal.rollup.modelExposureDependency,
+        }]
+      : []),
+    ...journal.events
+      .filter((event) => event.status === "active")
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((event) => ({
+        text: `- [${event.kind}] ${event.statement}`,
+        dependency: event.modelExposureDependency,
+      })),
+  ];
+  const dependencies = [];
+  let start = ROOM_JOURNAL_CONTEXT_HEADER.length;
+  for (const entry of entries) {
+    if (renderedCharacters > start) {
+      if (entry.dependency === undefined) {
+        return Object.freeze({ status: "incomplete" });
+      }
+      dependencies.push(entry.dependency);
+    }
+    start += entry.text.length + 1;
+  }
+  return Object.freeze({ status: "complete", dependencies });
 }
 
 /**
@@ -125,6 +164,11 @@ export interface BuildTranscriptContextDeps {
   readRoomTranscript(
     scope: Extract<TranscriptContextScope, { kind: "room" }>,
   ): Promise<RoomHistoryHit[]>;
+  /** Reopens the selected ordinary rows under current authority before binding provenance. */
+  readOrdinaryModelExposure?(
+    scope: Extract<TranscriptContextScope, { kind: "room" }>,
+    hits: readonly RoomHistoryHit[],
+  ): Promise<ModelInputExposure>;
   /**
    * Pages the canonical Room source for ordinary and protected refreshes.
    * Protected execution identity is opened under authorization before the
@@ -552,6 +596,10 @@ export async function buildTranscriptContext(
   if (policyResult.status === "rejected") throw policyResult.reason;
   if (journalResult.status === "rejected") throw journalResult.reason;
   const admitted = [...(opts.acceptedHumanMessages ?? [])].sort((left, right) => left.messageId - right.messageId);
+  const transcriptExposure: ModelInputExposure = opts.scope.kind === "room"
+    && deps.readOrdinaryModelExposure !== undefined
+    ? await deps.readOrdinaryModelExposure(opts.scope, hitsResult.value)
+    : Object.freeze({ status: "incomplete" });
   // Invocation-local slots let one budgeted chronological projection retain
   // exact admitted Human messages without quoting their bodies a second time.
   const slotNonce = randomUUID();
@@ -561,7 +609,7 @@ export async function buildTranscriptContext(
     const slot = hit.role === "user" ? slotsById.get(hit.messageId) : undefined;
     return slot === undefined ? hit : { ...hit, snippet: slot.marker };
   });
-  const journal = journalResult.value;
+  let journal = journalResult.value;
   const roomPolicy = policyResult.value;
   const transcriptBlock = renderTranscriptBlock(hits, opts);
   const passiveRecallEnabled = roomPolicy?.passiveRecallEnabled ?? true;
@@ -610,7 +658,33 @@ export async function buildTranscriptContext(
             : { clock: deps.foregroundContextClock }),
         });
   }
+  if (
+    opts.scope.kind === "room"
+    && opts.recordContext?.representation === "ordinary"
+    && opts.recordContext.reopenOrdinaryRecord !== undefined
+    && journal.events.some((event) =>
+      event.nativeRecordRef !== undefined
+      && event.modelExposureDependency === undefined
+    )
+  ) {
+    journal = {
+      ...journal,
+      events: await Promise.all(journal.events.map(async (event) => {
+        if (event.nativeRecordRef === undefined || event.modelExposureDependency !== undefined) {
+          return event;
+        }
+        const reopened = await opts.recordContext!.reopenOrdinaryRecord!(event.nativeRecordRef);
+        return reopened !== null
+          && reopened.recordRef === event.nativeRecordRef
+          && reopened.statement === event.statement
+          && reopened.modelExposureDependency !== undefined
+          ? { ...event, modelExposureDependency: reopened.modelExposureDependency }
+          : event;
+      })),
+    };
+  }
   const modelContextTokens = opts.modelId ? getModelTokenLimit(opts.modelId) : 128_000;
+  let projectionFacts: ForegroundContextProjectionFactsV1 | undefined;
   const block =
     opts.scope.kind === "room"
       ? (() => {
@@ -675,6 +749,7 @@ export async function buildTranscriptContext(
               opts.scope.agentId,
             ),
           });
+          projectionFacts = projection.facts;
           if (
             (selectionResult !== undefined || !passiveRecallEnabled)
             && deps.emitForegroundContextDiagnostic !== undefined
@@ -703,7 +778,38 @@ export async function buildTranscriptContext(
         ? `${ROOM_CONTEXT_MESSAGE_HEADER}${transcriptBlock}`
         : null;
 
-  const narrativeMessage = (content: string): HumanMessage => new HumanMessage({
+  const narrativeExposure: ModelInputExposure = projectionFacts === undefined
+    ? transcriptExposure
+    : unionModelInputExposures([], [
+        ...(projectionFacts.transcriptCharacters > 0 ? [transcriptExposure] : []),
+        ...(projectionFacts.journalCharacters > 0
+          ? [journalModelExposure(journal, projectionFacts.journalCharacters)]
+          : []),
+        ...(projectionFacts.recordPackedCount > 0
+          ? [{
+              status: selectionResult?.selection.status === "available"
+                && selectionResult.selection.representation === "ordinary"
+                && selectionResult.selection.records
+                  .slice(0, projectionFacts.recordPackedCount)
+                  .every((record) => record.modelExposureDependency !== undefined)
+                ? "complete" as const
+                : "incomplete" as const,
+              ...(selectionResult?.selection.status === "available"
+                && selectionResult.selection.representation === "ordinary"
+                ? {
+                    dependencies: selectionResult.selection.records
+                      .slice(0, projectionFacts.recordPackedCount)
+                      .flatMap((record) => record.modelExposureDependency === undefined
+                        ? []
+                        : [record.modelExposureDependency]),
+                  }
+                : {}),
+            } as ModelInputExposure]
+          : []),
+      ]);
+
+  const narrativeMessage = (content: string): HumanMessage =>
+    bindModelInputExposure(new HumanMessage({
       content,
       additional_kwargs: {
         nautilo_transient_context: true,
@@ -711,7 +817,7 @@ export async function buildTranscriptContext(
           ? { nautilo_room_context_budgeted: true }
           : {}),
       },
-    });
+    }), narrativeExposure);
   if (slots.length === 0) return block ? [narrativeMessage(block)] : [];
   const body = block ?? "";
   const represented = slots.flatMap((slot) => {
@@ -757,13 +863,13 @@ export function buildProtectedRoomTranscriptContext(
   });
   if (block === null) return [];
   return [
-    new HumanMessage({
+    bindModelInputExposure(new HumanMessage({
       content: block,
       additional_kwargs: {
         nautilo_transient_context: true,
         nautilo_room_context_budgeted: true,
       },
-    }),
+    }), { status: "incomplete" }),
   ];
 }
 

@@ -156,6 +156,35 @@ function candidateIdentity(candidate: CrossRoomOrganizerCandidate): string {
     : `source\0memory\0${candidate.logicalSourceRef}`;
 }
 
+function planCoordinateIdentity(coordinate: CrossRoomInputCoordinate): string {
+  return coordinate.kind === "record"
+    ? `record\0${coordinate.recordRef}`
+    : `source\0${coordinate.sourceKind}\0${coordinate.logicalSourceRef}`;
+}
+
+function candidatePlanCoordinate(
+  coordinate: CrossRoomInputCoordinate,
+): CrossRoomInputCoordinate {
+  return coordinate.role === "candidate"
+    ? coordinate
+    : { ...coordinate, role: "candidate" };
+}
+
+function samePlanCoordinateIgnoringRole(
+  left: CrossRoomInputCoordinate,
+  right: CrossRoomInputCoordinate,
+): boolean {
+  return JSON.stringify(candidatePlanCoordinate(left))
+    === JSON.stringify(candidatePlanCoordinate(right));
+}
+
+function ownsChangedCoordinate(plan: CrossRoomCandidatePlan): boolean {
+  const changed = plan.inputs.filter((coordinate) => coordinate.role === "changed");
+  return changed.length === 1
+    && changed[0]!.kind === "record"
+    && changed[0]!.recordRef === plan.workRef;
+}
+
 function changedCoordinate(
   candidate: Awaited<ReturnType<PostgresCrossRoomOrganizerStore["discover"]>> extends infer R
     ? R extends { status: "available"; changed: infer C } ? C : never
@@ -491,6 +520,96 @@ implements CrossRoomOrganizerPartitionPort {
     input: Parameters<CrossRoomOrganizerPartitionPort["planPublication"]>[0],
   ): Promise<CrossRoomOrganizerPublicationPlanningResult> {
     const candidatePlan = this.ports.codec.open(input.applicationPlanToken);
+    if (
+      input.applicationPlanTokens !== undefined
+      && input.modelExposureDependencies === undefined
+      && candidatePlan.publicationPlan !== undefined
+    ) {
+      const {
+        modelExposureDependencies: _modelExposureDependencies,
+        ...publicationPlan
+      } = candidatePlan.publicationPlan;
+      return Promise.resolve({
+        status: "planned",
+        plan: {
+          applicationPlanToken: input.applicationPlanToken,
+          ...publicationPlan,
+        },
+      });
+    }
+    if (input.modelExposureDependencies !== undefined) {
+      if (this.ports.publicationPlans.planExposure === undefined) {
+        return Promise.resolve({
+          status: "unavailable",
+          failureDetail: "publication_plan_invalid",
+        });
+      }
+      const tokens = [...new Set([
+        input.applicationPlanToken,
+        ...(input.applicationPlanTokens ?? []),
+      ])];
+      const plans = tokens.map((token) => this.ports.codec.open(token));
+      if (plans.some((plan) =>
+        plan.policyVersion !== candidatePlan.policyVersion
+        || plan.commitments.representation
+          !== candidatePlan.commitments.representation
+        || !ownsChangedCoordinate(plan)
+      )) {
+        return Promise.resolve({
+          status: "unavailable",
+          failureDetail: "publication_plan_invalid",
+        });
+      }
+      const inputs = new Map<string, CrossRoomInputCoordinate>(
+        candidatePlan.inputs.map((coordinate) => [
+          planCoordinateIdentity(coordinate),
+          coordinate,
+        ]),
+      );
+      for (const plan of plans.slice(1)) {
+        for (const coordinate of plan.inputs) {
+          const identity = planCoordinateIdentity(coordinate);
+          const current = inputs.get(identity);
+          if (
+            current !== undefined
+            && !samePlanCoordinateIgnoringRole(current, coordinate)
+          ) {
+            return Promise.resolve({
+              status: "stale",
+              failureDetail: "publication_plan_stale",
+            });
+          }
+          if (current === undefined) {
+            // A sibling's changed Record is only a candidate in this primary
+            // question. Keep every primary role and normalize sibling-only
+            // coordinates so the merged plan still has exactly one owner.
+            inputs.set(identity, candidatePlanCoordinate(coordinate));
+          }
+        }
+      }
+      const mergedInputs = [...inputs.values()].sort((left, right) => {
+        if (left.role !== right.role) return left.role === "changed" ? -1 : 1;
+        return compareStrings(
+          planCoordinateIdentity(left),
+          planCoordinateIdentity(right),
+        );
+      });
+      const { publicationPlan: _publicationPlan, ...candidateBase } = candidatePlan;
+      const mergedPlan: CrossRoomCandidatePlan = {
+        ...candidateBase,
+        inputs: mergedInputs,
+        budget: {
+          ...candidatePlan.budget,
+          maxInputItems: mergedInputs.length,
+        },
+      };
+      return this.ports.publicationPlans.planExposure({
+        applicationPlanToken: input.applicationPlanToken,
+        candidatePlan: mergedPlan,
+        modelExposureDependencies: input.modelExposureDependencies,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+    }
     if (candidatePlan.publicationPlan !== undefined) {
       return Promise.resolve({
         status: "planned",
@@ -506,6 +625,13 @@ implements CrossRoomOrganizerPartitionPort {
       proposal: input.proposal,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
+  }
+
+  readModelExposureDependencies(
+    applicationPlanToken: CrossRoomApplicationPlanToken,
+  ): readonly DurableModelExposureDependency[] | undefined {
+    return this.ports.codec.open(applicationPlanToken).publicationPlan
+      ?.modelExposureDependencies;
   }
 
   planDependencyLoss(
@@ -570,6 +696,10 @@ implements CrossRoomOrganizerPartitionPort {
       status: "unavailable",
       failureDetail: "publication_plan_invalid",
     });
+  }
+
+  readModelExposureDependencies(): undefined {
+    return undefined;
   }
 
   planDependencyLoss(): Promise<CrossRoomOrganizerPublicationPlanningResult> {

@@ -1,4 +1,4 @@
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   chmodSync,
   copyFileSync,
@@ -141,6 +141,16 @@ export function stripRetiredIdentityEnvVars(
 }
 
 /**
+ * A relative `NAUTILO_DOTENV_PATH` is anchored to the process working
+ * directory once, so the dotenv target, its snapshot/audit siblings, and the
+ * private-file writers all name the same absolute location.
+ */
+function resolveDotenvOverride(): string | undefined {
+  const override = process.env["NAUTILO_DOTENV_PATH"]?.trim();
+  return override ? resolve(override) : undefined;
+}
+
+/**
  * Resolve the path to the env file that stores API keys and provider config.
  *
  * Default: `~/.nautilo/instance.env` (M091; renamed from `config.env`)
@@ -151,7 +161,7 @@ export function stripRetiredIdentityEnvVars(
  * if it doesn't exist anywhere.
  */
 export function resolveDotenvPath(): string {
-  const override = process.env["NAUTILO_DOTENV_PATH"]?.trim();
+  const override = resolveDotenvOverride();
   if (override) {
     stripForbiddenKeysFromInstanceEnv(override);
     try {
@@ -232,7 +242,7 @@ export function resolveAuditLogPath(): string {
  * `~/.nautilo${suffix}` authority and layout.
  */
 export function resolveConfigAuthorityDir(): string {
-  const override = process.env["NAUTILO_DOTENV_PATH"]?.trim();
+  const override = resolveDotenvOverride();
   if (override) return dirname(override);
   const root = resolveNautiloRootDir();
   const runtimeConfigDir = join(root, "runtime-config");

@@ -257,6 +257,8 @@ export { runWithTaskCausalHuman } from "./runtime/causal-human-context";
 export {
   PersonalDirectFundingUnavailableError,
   PersonalModelFundingUnavailableError,
+  runWithContentPrivateModelDiagnostics,
+  hasContentPrivateModelDiagnostics,
   type ForegroundChatFundingAttempt,
   type ForegroundChatFundingSession,
 } from "./runtime/foreground-chat-funding";
@@ -725,6 +727,11 @@ export {
   type UsageFundingProvenance,
 } from "./usage/usage-context";
 export { recordLlmUsage, type RecordUsageInput } from "./usage/record-usage";
+export {
+  installPersonalLlmAttemptOwner,
+  getPersonalLlmAttemptOwner,
+  type PersonalLlmAttemptOwnerBinding,
+} from "./usage/personal-llm-attempt-owner";
 export { extractUsageFromLLMResult, createUsageCallbackHandler, countNautiloUsageCallbacks } from "./usage/usage-callback";
 // multi-axis task model selection
 export {
@@ -1380,6 +1387,7 @@ export { invokeWithRetry, type RetryOptions } from "./utils/invoke";
 export {
   resolveCompletionBudget,
   personalProviderInvocationFailureCategory,
+  MemoryProviderOutcomeUnknownError,
   invokeChatModelWithFallback,
   PreparedContextExceededError,
   isPreparedContextExceededError,
@@ -1499,7 +1507,8 @@ export { protectedMemoryAuthorityFromEnvelope } from "./tools/memory/protected-m
 export { MemoryReviewError } from "./memory/memory-review-staging";
 export { exportFinalizedSecurityResearch, assertSecurityResearchResumeBinding, assertSecurityResearchContextFailureRecovery, type SecurityResearchExportInput } from "./tools/security/research-export";
 
-export { ProviderTimeoutError, isSafelyRetryableProviderTimeout } from "./providers/errors";
+export type { PersonalProviderCredential } from "./providers/types";
+export { DEFAULT_PROVIDER_TIMEOUT_MS, ProviderTimeoutError, isSafelyRetryableProviderTimeout } from "./providers/errors";
 export { SurplusOutcomeUnknownError } from "./providers/surplus-transport";
 
 export type {
@@ -1546,3 +1555,8 @@ export { SurplusMediaLifecycleAdapter, resolveSurplusMediaRoute, SURPLUS_MEDIA_R
 export { resolveSurplusImageRoute } from "./image-gen/surplus";
 
 export { readBoundedMediaJson, readBoundedMediaBytes, MediaResponseReadError, MAX_MEDIA_METADATA_JSON_BYTES, MAX_IMAGE_RESPONSE_JSON_BYTES } from "./providers/media-response";
+
+export { MODEL_INPUT_EXPOSURE_METADATA_KEY, bindModelInputExposure, readModelInputExposure, copyModelInputExposure, unionModelInputExposures, encodeModelInputExposureForMetadata, modelInputExposureMetadataForPersistence, bindModelInputExposureFromAuthorizedPersistedPayload, runWithAuthoredModelInputExposure, iterateWithAuthoredModelInputExposure, getAuthoredModelInputExposure, getAuthoredMemoryBriefExposure, type AuthoredMemoryBriefExposure, type ModelInputExposure } from "./memory/model-input-exposure";
+export { readCurrentOrdinaryTranscriptExposureRows, projectCurrentOrdinaryTranscriptExposureRows, type CurrentOrdinaryTranscriptExposureRow } from "./store/session-store";
+
+export { memoryReviewFingerprint } from "./memory/memory-review-staging";

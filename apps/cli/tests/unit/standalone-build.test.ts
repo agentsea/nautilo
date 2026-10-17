@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { gunzipSync } from "node:zlib";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
   assertEmptyStandaloneOutputDirectory,
@@ -79,7 +79,7 @@ describe("standalone server-admin build", () => {
       "--version=0.1.0",
       `--source=${"e".repeat(40)}`,
     ], nativeTarget)).toEqual({
-      output: "/tmp/nautilo",
+      output: resolve("/tmp/nautilo"),
       target: nativeTarget,
       version: "0.1.0",
       source: "e".repeat(40),

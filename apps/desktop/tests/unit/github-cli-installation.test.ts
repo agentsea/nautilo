@@ -47,6 +47,10 @@ async function fails(work: Promise<unknown>) {
   )).toBe("GITHUB_INSTALLATION_UNAVAILABLE");
 }
 
+// A verified installation requires POSIX ownership and mode checks; Windows
+// refuses GitHub CLI custody before verification.
+const posixInstallationTest = process.platform === "win32" ? test.skip : test;
+
 describe("GitHub CLI installation", () => {
   test("accepts the exact macOS admin-owned Applications parent", () => {
     const normal = { uid: 0, gid: 80, mode: 0o40775, directory: true };
@@ -62,7 +66,7 @@ describe("GitHub CLI installation", () => {
     }
   });
 
-  test("preserves the trusted native environment without inspecting GitHub config", async () => {
+  posixInstallationTest("preserves the trusted native environment without inspecting GitHub config", async () => {
     const f = await fixture();
     try {
       await mkdir(f.environment.GH_CONFIG_DIR, { recursive: true, mode: 0o777 });
@@ -81,7 +85,7 @@ describe("GitHub CLI installation", () => {
     }
   });
 
-  test("replacement by identical bytes cannot repin an admitted inode", async () => {
+  posixInstallationTest("replacement by identical bytes cannot repin an admitted inode", async () => {
     const f = await fixture();
     try {
       const installation = f.make();
@@ -109,7 +113,7 @@ describe("GitHub CLI installation", () => {
     }
   });
 
-  test("authority revocation invalidates an already verified invocation", async () => {
+  posixInstallationTest("authority revocation invalidates an already verified invocation", async () => {
     const f = await fixture();
     try {
       const installation = f.make();

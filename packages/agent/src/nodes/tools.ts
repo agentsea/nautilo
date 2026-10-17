@@ -50,6 +50,11 @@ import type {
   RecallRecordsPortForState,
 } from "../tools/memory/recall-records";
 import { personalToolCallSupported } from "../runtime/personal-tool-readiness";
+import {
+  bindModelInputExposure,
+  copyModelInputExposure,
+  unionModelInputExposures,
+} from "../memory/model-input-exposure";
 
 export {
   RelayUnavailableError,
@@ -477,6 +482,19 @@ async function invokeToolCall(
     ...(ordinaryMessage.additional_kwargs ?? {}),
     nautilo_tool_status: result.status,
   };
+  const assistantSource = [...state.messages].reverse().find((message) =>
+    AIMessage.isInstance(message)
+    && message.tool_calls?.some((call) =>
+      call.id === nextCall.id && call.name === nextCall.name
+    )
+  );
+  bindModelInputExposure(
+    ordinaryMessage,
+    unionModelInputExposures(
+      assistantSource === undefined ? [] : [assistantSource],
+      [result.modelInputExposure ?? { status: "incomplete" }],
+    ),
+  );
   const delegatedBrowserObservation = isDelegatedBrowserDecisionObservation(
     nextCall,
     ordinaryMessage,
@@ -492,7 +510,9 @@ async function invokeToolCall(
       if (protectedComposition.fullEncryptionOnly === true && openedResult === null) {
         throw new LiveShadowToolProtectionRequiredError();
       }
-      message = openedResult ?? ordinaryMessage;
+      message = openedResult === null
+        ? ordinaryMessage
+        : copyModelInputExposure(ordinaryMessage, openedResult);
     } catch (error) {
       if (
         error instanceof LiveShadowToolProtectionRequiredError

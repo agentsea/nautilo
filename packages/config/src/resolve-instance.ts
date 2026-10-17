@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "./private-filesystem";
 import { join } from "node:path";
 import { fromRuntimeConfig } from "./config";
 import {
@@ -134,7 +135,7 @@ function writeInstanceJsonAtomic(rootDir: string, data: InstanceJsonParse): void
   const target = readInstanceJsonPath(rootDir);
   const tmp = `${target}.${process.pid}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, "utf8");
-  renameSync(tmp, target);
+  renameWithWindowsRetrySync(tmp, target);
 }
 
 /**

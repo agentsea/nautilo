@@ -1,14 +1,9 @@
 import {
-  chmodSync,
   existsSync,
-  mkdirSync,
   readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
-import { randomBytes } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { ensurePrivateDirectorySync, publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 import {
   assertFileMode600,
   assertPathOutsideGitWorkTree,
@@ -141,7 +136,7 @@ export async function appendOperatorSecrets(args: {
   // with the atomic-rotation contract D115 plans. Yielding here satisfies
   // require-await without changing the Promise<void> return shape.
   await Promise.resolve();
-  const resolved = args.path;
+  const resolved = resolve(args.path);
   const createIfMissing = args.createIfMissing ?? true;
   const parent = dirname(resolved);
 
@@ -159,31 +154,11 @@ export async function appendOperatorSecrets(args: {
     if (!createIfMissing) {
       throw new Error(`operator secrets file does not exist: ${resolved}`);
     }
-    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    // Validate before the first mutation: a refused path must stay untouched.
     assertPathOutsideGitWorkTree(resolved);
+    ensurePrivateDirectorySync(parent);
   }
 
   const merged = mergeSecretsContent(existing, args.entries);
-  const tmp = join(
-    parent,
-    `.secrets.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
-  );
-  writeFileSync(tmp, merged, { mode: 0o600 });
-  try {
-    renameSync(tmp, resolved);
-  } catch (e) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      /* ignore */
-    }
-    throw e;
-  }
-  if (process.platform !== "win32") {
-    try {
-      chmodSync(resolved, 0o600);
-    } catch {
-      /* best effort */
-    }
-  }
+  publishPrivateFileAtomicallySync(resolved, Buffer.from(merged));
 }

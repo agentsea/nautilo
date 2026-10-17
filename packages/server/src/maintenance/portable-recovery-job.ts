@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { posix, resolve } from "node:path";
 import {
   LOGTO_TENANT_PASSWORD_RESYNC_SQL,
   buildAgentRoleGrantsSql,
@@ -19,6 +19,7 @@ import {
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
 import {
+  CHATGPT_RESTORE_FENCE_SQL,
   assertPersonalProviderRestoreCustody,
   PERSONAL_PROVIDER_CUSTODY_ENV,
   parsePersonalProviderCustody,
@@ -46,7 +47,13 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_SOURCE_RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 const CHILD_PATH = "/usr/local/bin:/usr/bin:/bin";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const UUID_TEXT_LENGTH = "00000000-0000-4000-8000-000000000000".length;
+const SUBSCRIPTION_ENVELOPE_KEY_ID = "keyId";
 const PERSONAL_PROVIDER_TABLE = "personal_provider_credentials";
+// Restore-list metadata is bounded independently of encrypted row contents.
+const CREDENTIAL_METADATA_CHAR_BUDGET = 65_536;
+const SUBSCRIPTION_TABLE = "chatgpt_registrations";
+const CREDENTIAL_TABLES = [PERSONAL_PROVIDER_TABLE, SUBSCRIPTION_TABLE] as const;
 const LOGTO_TENANT_REGRANT_SQL =
   "DO $$ DECLARE r record; BEGIN " +
   "FOR r IN SELECT rolname FROM pg_roles WHERE rolname LIKE 'logto_tenant_%' LOOP " +
@@ -232,8 +239,8 @@ function childEnvironment(authority: ReturnType<typeof parsePostgresUrl>, pgpass
 }
 
 async function withPgpass<T>(fs: PortableRecoveryFilesystem, authority: ReturnType<typeof parsePostgresUrl>, action: (path: string) => Promise<T>): Promise<T> {
-  const directory = await fs.mkdtemp(join(tmpdir(), "nautilo-recovery-pgpass-"));
-  const path = join(directory, "pgpass");
+  const directory = await fs.mkdtemp(posix.join(tmpdir(), "nautilo-recovery-pgpass-"));
+  const path = posix.join(directory, "pgpass");
   try {
     await fs.writeFile(path, pgpassLine(authority), 0o600);
     await fs.chmod(path, 0o600);
@@ -268,18 +275,33 @@ async function readSourcePersonalProviderCredentialEvidence(input: {
   readonly runner: PortableRecoveryProcessRunner;
   readonly databaseUrl: string;
 }): Promise<PersonalProviderCredentialDbEvidence> {
-  const table = await readDatabaseText({
-    ...input,
-    sql: `SELECT coalesce(to_regclass('public.${PERSONAL_PROVIDER_TABLE}')::text, '')`,
-  });
-  if (table === "") return { state: "table-absent" };
-  if (table !== PERSONAL_PROVIDER_TABLE && table !== `public.${PERSONAL_PROVIDER_TABLE}`) {
-    fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+  const evidence: PersonalProviderCredentialDbEvidence[] = [];
+  for (const tableName of CREDENTIAL_TABLES) {
+    const table = await readDatabaseText({ ...input,
+      sql: `SELECT coalesce(to_regclass('public.${tableName}')::text, '')`,
+    });
+    if (table === "") { evidence.push({ state: "table-absent" }); continue; }
+    if (table !== tableName && table !== `public.${tableName}`) {
+      fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid");
+    }
+    const source = tableName === PERSONAL_PROVIDER_TABLE
+      ? `SELECT key_id::text AS key_id FROM public.${tableName}`
+      : `SELECT identity_envelope->>'keyId' AS key_id FROM public.${tableName} UNION ALL SELECT envelope->>'keyId' FROM public.${tableName} WHERE envelope IS NOT NULL`;
+    const raw = await readDatabaseText({ ...input,
+      sql: `SELECT json_build_object('recordCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id ORDER BY key_id), '[]'::json))::text FROM (${source}) AS custody_keys`,
+    });
+    evidence.push(parseCredentialEvidence(raw));
   }
-  const raw = await readDatabaseText({
-    ...input,
-    sql: `SELECT json_build_object('recordCount', count(*), 'keyIds', coalesce(json_agg(DISTINCT key_id::text ORDER BY key_id::text), '[]'::json))::text FROM public.${PERSONAL_PROVIDER_TABLE}`,
-  });
+  return combineCredentialEvidence(evidence);
+}
+
+function combineCredentialEvidence(evidence: readonly PersonalProviderCredentialDbEvidence[]): PersonalProviderCredentialDbEvidence {
+  const rows = evidence.filter(item => item.state === "rows");
+  if (rows.length) return { state: "rows", keyIds: [...new Set(rows.flatMap(item => item.keyIds))].sort() };
+  return { state: evidence.every(item => item.state === "table-absent") ? "table-absent" : "empty" };
+}
+
+function parseCredentialEvidence(raw: string): PersonalProviderCredentialDbEvidence {
   let value: unknown;
   try { value = JSON.parse(raw); } catch { fail("VERIFICATION_FAILED", "portable recovery personal credential evidence is invalid"); }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -310,8 +332,8 @@ async function* dumpSource(input: { readonly fs: PortableRecoveryFilesystem; rea
   const authority = parsePostgresUrl(input.databaseUrl);
   // Keep the pgpass file alive until pg_dump has exited, including while the
   // container writer exercises streaming backpressure.
-  const directory = await input.fs.mkdtemp(join(tmpdir(), "nautilo-recovery-pgpass-"));
-  const pgpass = join(directory, "pgpass");
+  const directory = await input.fs.mkdtemp(posix.join(tmpdir(), "nautilo-recovery-pgpass-"));
+  const pgpass = posix.join(directory, "pgpass");
   try {
     await input.fs.writeFile(pgpass, pgpassLine(authority), 0o600);
     await input.fs.chmod(pgpass, 0o600);
@@ -342,14 +364,14 @@ async function assertSafeTree(fs: PortableRecoveryFilesystem, root: string): Pro
     if (node.isSymbolicLink || node.isSocket || node.isBlockDevice || node.isCharacterDevice || node.isFIFO || (!node.isDirectory && !node.isFile)) fail("UNSAFE_VOLUME", "portable recovery volume contains an unsafe entry");
     if (node.isDirectory) for (const name of await fs.readdir(path)) {
       if (!safeArchiveName(name)) fail("UNSAFE_VOLUME", "portable recovery volume contains an unsafe entry");
-      await walk(join(path, name));
+      await walk(posix.join(path, name));
     }
   };
   await walk(root);
 }
 
 async function* tarSource(input: { readonly fs: PortableRecoveryFilesystem; readonly runner: PortableRecoveryProcessRunner; readonly root: string; readonly name: PortableRecoveryRootName }): AsyncIterable<Uint8Array> {
-  const absolute = join(input.root, input.name);
+  const absolute = posix.join(input.root, input.name);
   await assertSafeTree(input.fs, absolute);
   const exists = await input.fs.exists(absolute);
   const args = exists
@@ -387,7 +409,7 @@ async function sourcePersonalProviderCustody(
   injected: string | undefined,
 ): Promise<string | undefined> {
   if (injected !== undefined) return canonicalCustody(injected);
-  const path = join(fs.root, "config", "instance.env");
+  const path = posix.join(fs.root, "config", "instance.env");
   if (!(await fs.exists(path))) return undefined;
   try {
     const body = new TextDecoder("utf-8", { fatal: true }).decode(await fs.readFile(path));
@@ -428,8 +450,8 @@ async function restorePersonalProviderCustody(
   if (injected !== undefined && canonicalCustody(injected) !== recovered) {
     fail("VERIFICATION_FAILED", "portable recovery injected custody does not match the recovery bundle");
   }
-  const configRoot = join(fs.root, "config");
-  const target = join(configRoot, "instance.env");
+  const configRoot = posix.join(fs.root, "config");
+  const target = posix.join(configRoot, "instance.env");
   let before = "";
   if (await fs.exists(target)) {
     try { before = new TextDecoder("utf-8", { fatal: true }).decode(await fs.readFile(target)); }
@@ -449,7 +471,7 @@ async function restorePersonalProviderCustody(
   await fs.mkdir(configRoot, 0o700);
   await fs.chmod(configRoot, 0o700);
   const body = `${before}${before.length === 0 || before.endsWith("\n") ? "" : "\n"}${PERSONAL_PROVIDER_CUSTODY_ENV}=${recovered}\n`;
-  const next = join(configRoot, ".personal-provider-custody.next");
+  const next = posix.join(configRoot, ".personal-provider-custody.next");
   await fs.writeFile(next, new TextEncoder().encode(body), 0o600);
   await fs.chmod(next, 0o600);
   await fs.syncFile(next);
@@ -458,7 +480,7 @@ async function restorePersonalProviderCustody(
 }
 
 function stagingPath(fs: PortableRecoveryFilesystem, operationId: string): string {
-  return join(fs.root, ".portable-recovery", operationId);
+  return posix.join(fs.root, ".portable-recovery", operationId);
 }
 
 function stageMarker(identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Uint8Array {
@@ -473,7 +495,7 @@ function stageMarker(identity: PortableRecoveryObjectIdentity, descriptor: Porta
 }
 
 function successMarkerPath(fs: PortableRecoveryFilesystem, identity: PortableRecoveryObjectIdentity): string {
-  return join(fs.root, ".portable-recovery-success", identity.operationId, `${identity.objectId}.json`);
+  return posix.join(fs.root, ".portable-recovery-success", identity.operationId, `${identity.objectId}.json`);
 }
 
 function successMarker(identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Uint8Array {
@@ -497,8 +519,8 @@ async function hasMatchingSuccessMarker(fs: PortableRecoveryFilesystem, identity
 
 async function writeSuccessMarker(fs: PortableRecoveryFilesystem, identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Promise<void> {
   const path = successMarkerPath(fs, identity);
-  const operationDirectory = dirname(path);
-  const rootDirectory = dirname(operationDirectory);
+  const operationDirectory = posix.dirname(path);
+  const rootDirectory = posix.dirname(operationDirectory);
   await fs.mkdir(rootDirectory, 0o700);
   await fs.chmod(rootDirectory, 0o700);
   await fs.syncDirectory(fs.root);
@@ -522,11 +544,11 @@ function assertDescriptorAuthority(identity: PortableRecoveryObjectIdentity, env
 }
 
 async function hasMatchingStage(fs: PortableRecoveryFilesystem, path: string, identity: PortableRecoveryObjectIdentity, descriptor: PortableRecoveryCompletionDescriptor): Promise<boolean> {
-  if (!(await fs.exists(join(path, "verified.json")))) return false;
+  if (!(await fs.exists(posix.join(path, "verified.json")))) return false;
   // The sixth custody member is optional so a stage created from a legacy
   // five-member bundle remains resumable by a newer image.
-  for (const name of PORTABLE_RECOVERY_MEMBERS.slice(0, -1)) if (!(await fs.exists(join(path, name)))) return false;
-  const actual = await fs.readFile(join(path, "verified.json"));
+  for (const name of PORTABLE_RECOVERY_MEMBERS.slice(0, -1)) if (!(await fs.exists(posix.join(path, name)))) return false;
+  const actual = await fs.readFile(posix.join(path, "verified.json"));
   const expected = stageMarker(identity, descriptor);
   if (actual.byteLength !== expected.byteLength) return false;
   return actual.every((byte, index) => byte === expected[index]);
@@ -535,7 +557,7 @@ async function hasMatchingStage(fs: PortableRecoveryFilesystem, path: string, id
 async function assertFresh(input: RunPortableRecoveryJobInput): Promise<void> {
   for (const database of ["app", "logto"] as const) await input.assertFreshTarget.assertFresh({ database, root: input.fs.root });
   for (const root of ROOTS) {
-    const target = join(input.fs.root, root);
+    const target = posix.join(input.fs.root, root);
     if (await input.fs.exists(target)) {
       const node = await input.fs.lstat(target);
       if (!node.isDirectory || node.isSymbolicLink) fail("PRECONDITION_FAILED", "portable recovery target is not fresh");
@@ -615,8 +637,8 @@ async function prepareAppRestoreList(input: {
   try { await child.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery restore list failed"); }
   const retained: string[] = [];
   const observed = new Set<string>();
-  let personalProviderTable = false;
-  let personalProviderTableData = false;
+  const tables = new Set<string>();
+  const tableData = new Set<string>();
   for (const rawLine of new TextDecoder().decode(concat(chunks)).split("\n")) {
     const line = rawLine.trimEnd();
     const extension = /(?: EXTENSION - | COMMENT - EXTENSION )([^ ]+)$/.exec(line)?.[1];
@@ -626,8 +648,10 @@ async function prepareAppRestoreList(input: {
       continue;
     }
     if (line.includes(" EXTENSION ")) fail("VERIFICATION_FAILED", "portable recovery app extension entry is invalid");
-    if (/ TABLE public personal_provider_credentials(?: |$)/.test(line)) personalProviderTable = true;
-    if (/ TABLE DATA public personal_provider_credentials(?: |$)/.test(line)) personalProviderTableData = true;
+    for (const table of CREDENTIAL_TABLES) {
+      if (line.includes(` TABLE public ${table} `)) tables.add(table);
+      if (line.includes(` TABLE DATA public ${table} `)) tableData.add(table);
+    }
     retained.push(rawLine);
   }
   if ([...APP_RETAINED_EXTENSIONS].some((extension) => !observed.has(extension))) {
@@ -636,22 +660,220 @@ async function prepareAppRestoreList(input: {
   await input.fs.writeFile(input.listPath, new TextEncoder().encode(retained.join("\n")), 0o600);
   await input.fs.chmod(input.listPath, 0o600);
   await input.fs.syncFile(input.listPath);
-  if (!personalProviderTable) return { state: "table-absent" };
-  if (!personalProviderTableData) {
-    fail("VERIFICATION_FAILED", "portable recovery personal credential contents cannot be established from the backup");
+  const evidence: PersonalProviderCredentialDbEvidence[] = [];
+  for (const table of CREDENTIAL_TABLES) {
+    if (!tables.has(table)) { evidence.push({ state: "table-absent" }); continue; }
+    if (!tableData.has(table)) {
+      fail("VERIFICATION_FAILED", "portable recovery personal credential contents cannot be established from the backup");
+    }
+    const extracted = await input.runner.start({ command: "pg_restore",
+      args: ["--data-only", `--table=public.${table}`, input.dumpPath], env: { PATH: CHILD_PATH, LANG: "C" },
+    });
+    evidence.push(await readPersonalProviderCredentialEvidenceFromRestoreSql(extracted.stdout, table));
+    try { await extracted.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery personal credential evidence extraction failed"); }
   }
-  const extracted = await input.runner.start({
-    command: "pg_restore",
-    args: ["--data-only", `--table=public.${PERSONAL_PROVIDER_TABLE}`, input.dumpPath],
-    env: { PATH: CHILD_PATH, LANG: "C" },
-  });
-  const evidence = await readPersonalProviderCredentialEvidenceFromRestoreSql(extracted.stdout);
-  try { await extracted.completed; } catch { fail("SUBPROCESS_FAILED", "portable recovery personal credential evidence extraction failed"); }
-  return evidence;
+  return combineCredentialEvidence(evidence);
+}
+
+type JsonContainer =
+  | { kind: "object"; state: "key-or-end" | "key" | "colon" | "value" | "comma-or-end"; key?: string }
+  | { kind: "array"; state: "value-or-end" | "value" | "comma-or-end" };
+
+/**
+ * Validates one PostgreSQL COPY text JSON field while retaining only its
+ * top-level keyId. Subscription token envelopes can legitimately be large, so
+ * recovery evidence must not buffer or impose a separate size policy on them.
+ */
+class SubscriptionEnvelopeKeyIdReader {
+  private readonly containers: JsonContainer[] = [];
+  private rootState: "value" | "end" = "value";
+  private lexical: "normal" | "string" | "escape" | "unicode" | "number" | "literal" = "normal";
+  private capture: "none" | "property" | "key-id" = "none";
+  private captured = "";
+  private captureOverflow = false;
+  private unicode = "";
+  private numberState: "minus" | "zero" | "integer" | "dot" | "fraction" | "exponent" | "exponent-sign" | "exponent-digits" = "minus";
+  private literal = "";
+  private literalIndex = 0;
+  private copyEscape = false;
+  private copyNullCandidate = "";
+  private keyId: string | undefined;
+  private invalid = false;
+
+  pushCopyCharacter(character: string): void {
+    if (this.copyNullCandidate.length < 3) this.copyNullCandidate += character;
+    else this.copyNullCandidate = "not-null";
+    if (this.copyEscape) {
+      this.copyEscape = false;
+      const decoded = ({ b: "\b", t: "\t", n: "\n", r: "\r", "\\": "\\" } as Record<string, string>)[character];
+      if (decoded === undefined) {
+        this.pushJsonCharacter("\\");
+        this.pushJsonCharacter(character);
+      } else this.pushJsonCharacter(decoded);
+      return;
+    }
+    if (character === "\\") this.copyEscape = true;
+    else this.pushJsonCharacter(character);
+  }
+
+  finish(): string | undefined {
+    if (this.isCopyNull()) return undefined;
+    if (this.copyEscape) this.pushJsonCharacter("\\");
+    if (this.lexical === "number") this.finishNumber();
+    if (this.lexical !== "normal" || this.rootState !== "end" || this.containers.length !== 0 || this.invalid) return undefined;
+    return this.keyId;
+  }
+
+  isCopyNull(): boolean { return this.copyNullCandidate === String.raw`\N` || this.copyNullCandidate === `${String.raw`\N`}\r`; }
+
+  private expectsValue(): boolean {
+    const parent = this.containers.at(-1);
+    return parent === undefined ? this.rootState === "value" : parent.kind === "object" ? parent.state === "value" : parent.state === "value-or-end" || parent.state === "value";
+  }
+
+  private completeValue(): void {
+    const parent = this.containers.at(-1);
+    if (parent === undefined) this.rootState = "end";
+    else parent.state = "comma-or-end";
+  }
+
+  private startValue(character: string): void {
+    if (!this.expectsValue()) { this.invalid = true; return; }
+    const parent = this.containers.at(-1);
+    if (parent?.kind === "object" && this.containers.length === 1 && parent.key === SUBSCRIPTION_ENVELOPE_KEY_ID) this.keyId = undefined;
+    if (character === "{") this.containers.push({ kind: "object", state: "key-or-end" });
+    else if (character === "[") this.containers.push({ kind: "array", state: "value-or-end" });
+    else if (character === '"') this.startString();
+    else if (character === "-" || /[0-9]/.test(character)) {
+      this.lexical = "number";
+      this.numberState = character === "-" ? "minus" : character === "0" ? "zero" : "integer";
+    } else if (character === "t" || character === "f" || character === "n") {
+      this.lexical = "literal";
+      this.literal = character === "t" ? "true" : character === "f" ? "false" : "null";
+      this.literalIndex = 1;
+    } else this.invalid = true;
+  }
+
+  private startString(): void {
+    this.lexical = "string";
+    this.captured = "";
+    this.captureOverflow = false;
+    const parent = this.containers.at(-1);
+    if (parent?.kind === "object" && (parent.state === "key-or-end" || parent.state === "key")) this.capture = "property";
+    else if (parent?.kind === "object" && this.containers.length === 1 && parent.state === "value" && parent.key === SUBSCRIPTION_ENVELOPE_KEY_ID) this.capture = "key-id";
+    else this.capture = "none";
+  }
+
+  private appendStringCharacter(character: string): void {
+    if (this.capture === "none") return;
+    const formatLength = this.capture === "property" ? SUBSCRIPTION_ENVELOPE_KEY_ID.length : UUID_TEXT_LENGTH;
+    if (this.captured.length >= formatLength) this.captureOverflow = true;
+    else this.captured += character;
+  }
+
+  private finishString(): void {
+    const parent = this.containers.at(-1);
+    if (this.capture === "property") {
+      if (parent?.kind !== "object" || (parent.state !== "key-or-end" && parent.state !== "key")) { this.invalid = true; return; }
+      if (this.captureOverflow) delete parent.key;
+      else parent.key = this.captured;
+      parent.state = "colon";
+    } else {
+      if (!this.expectsValue()) { this.invalid = true; return; }
+      if (this.capture === "key-id") this.keyId = this.captureOverflow ? undefined : this.captured;
+      this.completeValue();
+    }
+    this.lexical = "normal";
+    this.capture = "none";
+  }
+
+  private finishNumber(): void {
+    if (!["zero", "integer", "fraction", "exponent-digits"].includes(this.numberState)) this.invalid = true;
+    this.lexical = "normal";
+    this.completeValue();
+  }
+
+  private pushJsonCharacter(character: string): void {
+    if (this.invalid) return;
+    if (this.lexical === "string") {
+      if (character === '"') this.finishString();
+      else if (character === "\\") this.lexical = "escape";
+      else if (character.charCodeAt(0) < 0x20) this.invalid = true;
+      else this.appendStringCharacter(character);
+      return;
+    }
+    if (this.lexical === "escape") {
+      if ('"\\/bfnrt'.includes(character)) {
+        this.appendStringCharacter(({ b: "\b", f: "\f", n: "\n", r: "\r", t: "\t" } as Record<string, string>)[character] ?? character);
+        this.lexical = "string";
+      } else if (character === "u") { this.unicode = ""; this.lexical = "unicode"; }
+      else this.invalid = true;
+      return;
+    }
+    if (this.lexical === "unicode") {
+      if (!/[0-9a-f]/i.test(character)) { this.invalid = true; return; }
+      this.unicode += character;
+      if (this.unicode.length === 4) {
+        this.appendStringCharacter(String.fromCharCode(Number.parseInt(this.unicode, 16)));
+        this.lexical = "string";
+      }
+      return;
+    }
+    if (this.lexical === "literal") {
+      if (character !== this.literal[this.literalIndex]) { this.invalid = true; return; }
+      this.literalIndex += 1;
+      if (this.literalIndex === this.literal.length) { this.lexical = "normal"; this.completeValue(); }
+      return;
+    }
+    if (this.lexical === "number") {
+      const digit = /[0-9]/.test(character);
+      if (this.numberState === "minus" && digit) this.numberState = character === "0" ? "zero" : "integer";
+      else if (this.numberState === "zero" && character === ".") this.numberState = "dot";
+      else if ((this.numberState === "zero" || this.numberState === "integer" || this.numberState === "fraction") && /[eE]/.test(character)) this.numberState = "exponent";
+      else if (this.numberState === "integer" && digit) { /* continue */ }
+      else if (this.numberState === "integer" && character === ".") this.numberState = "dot";
+      else if (this.numberState === "dot" && digit) this.numberState = "fraction";
+      else if (this.numberState === "fraction" && digit) { /* continue */ }
+      else if (this.numberState === "exponent" && /[+-]/.test(character)) this.numberState = "exponent-sign";
+      else if ((this.numberState === "exponent" || this.numberState === "exponent-sign") && digit) this.numberState = "exponent-digits";
+      else if (this.numberState === "exponent-digits" && digit) { /* continue */ }
+      else { this.finishNumber(); this.pushJsonCharacter(character); }
+      return;
+    }
+    if (character === " " || character === "\t" || character === "\r" || character === "\n") return;
+    const parent = this.containers.at(-1);
+    if (parent?.kind === "object") {
+      if (parent.state === "key-or-end" || parent.state === "key") {
+        if (character === "}") { this.containers.pop(); this.completeValue(); }
+        else if (character === '"') this.startString();
+        else this.invalid = true;
+        if (parent.state === "key" && character === "}") this.invalid = true;
+      } else if (parent.state === "colon") {
+        if (character === ":") parent.state = "value";
+        else this.invalid = true;
+      } else if (parent.state === "comma-or-end") {
+        if (character === ",") parent.state = "key";
+        else if (character === "}") { this.containers.pop(); this.completeValue(); }
+        else this.invalid = true;
+      } else this.startValue(character);
+      return;
+    }
+    if (parent?.kind === "array") {
+      if (parent.state === "value-or-end" && character === "]") { this.containers.pop(); this.completeValue(); }
+      else if (parent.state === "comma-or-end") {
+        if (character === ",") parent.state = "value";
+        else if (character === "]") { this.containers.pop(); this.completeValue(); }
+        else this.invalid = true;
+      } else this.startValue(character);
+      return;
+    }
+    this.startValue(character);
+  }
 }
 
 async function readPersonalProviderCredentialEvidenceFromRestoreSql(
   source: AsyncIterable<Uint8Array>,
+  table: typeof CREDENTIAL_TABLES[number],
 ): Promise<PersonalProviderCredentialDbEvidence> {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let mode: "header" | "copy" | "done" | "invalid" = "header";
@@ -659,6 +881,9 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
   let header = "";
   let columnCount = 0;
   let keyIndex = -1;
+  let tokenIndex = -1;
+  let identityEnvelope: SubscriptionEnvelopeKeyIdReader | undefined;
+  let tokenEnvelope: SubscriptionEnvelopeKeyIdReader | undefined;
   let fieldIndex = 0;
   let firstFieldPrefix = "";
   let currentKeyId = "";
@@ -673,11 +898,12 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
   const consumeHeaderLine = (): void => {
     const line = header.endsWith("\r") ? header.slice(0, -1) : header;
     header = "";
-    const match = /^COPY (?:(?:"public"|public)\.)?(?:"personal_provider_credentials"|personal_provider_credentials) \(([^)]+)\) FROM stdin;$/.exec(line);
-    if (match === null) return;
-    const columns = match[1]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""));
-    keyIndex = columns.indexOf("key_id");
-    if (keyIndex < 0) {
+    const match = /^COPY (?:(?:"public"|public)\.)?(?:"?(personal_provider_credentials|chatgpt_registrations)"?) \(([^)]+)\) FROM stdin;$/.exec(line);
+    if (match === null || match[1] !== table) return;
+    const columns = match[2]!.split(",").map((column) => column.trim().replace(/^"|"$/g, ""));
+    keyIndex = columns.indexOf(table === PERSONAL_PROVIDER_TABLE ? "key_id" : "identity_envelope");
+    tokenIndex = table === SUBSCRIPTION_TABLE ? columns.indexOf("envelope") : -1;
+    if (keyIndex < 0 || (table === SUBSCRIPTION_TABLE && tokenIndex < 0)) {
       invalidate("portable recovery personal credential dump is missing custody identity");
       return;
     }
@@ -697,15 +923,22 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       return;
     }
     const keyId = currentKeyId.endsWith("\r") ? currentKeyId.slice(0, -1) : currentKeyId;
-    if (!UUID.test(keyId)) {
+    const rowKeys: unknown[] = [];
+    if (table === SUBSCRIPTION_TABLE) {
+      rowKeys.push(identityEnvelope?.finish());
+      if (!tokenEnvelope?.isCopyNull()) rowKeys.push(tokenEnvelope?.finish());
+    } else rowKeys.push(keyId);
+    if (rowKeys.some(value => typeof value !== "string" || !UUID.test(value))) {
       invalidate("portable recovery personal credential row has invalid custody identity");
       return;
     }
-    keyIds.add(keyId.toLowerCase());
+    for (const value of rowKeys) keyIds.add((value as string).toLowerCase());
     rowCount += 1;
     fieldIndex = 0;
     firstFieldPrefix = "";
     currentKeyId = "";
+    identityEnvelope = undefined;
+    tokenEnvelope = undefined;
   };
   const consumeText = (text: string): void => {
     for (const character of text) {
@@ -713,7 +946,7 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       if (mode === "header") {
         if (character === "\n") {
           consumeHeaderLine();
-        } else if (header.length >= 65_536) {
+        } else if (header.length >= CREDENTIAL_METADATA_CHAR_BUDGET) {
           invalidate("portable recovery personal credential dump is malformed");
         } else {
           header += character;
@@ -731,8 +964,21 @@ async function readPersonalProviderCredentialEvidenceFromRestoreSql(
       }
       if (fieldIndex === 0 && firstFieldPrefix.length < 3) firstFieldPrefix += character;
       if (fieldIndex === keyIndex) {
-        if (currentKeyId.length >= 64) invalidate("portable recovery personal credential row has invalid custody identity");
-        else currentKeyId += character;
+        if (table === PERSONAL_PROVIDER_TABLE) {
+          // Permit the final CRLF framing byte after a complete UUID; retain
+          // other carriage returns so malformed field content fails validation.
+          const finalCarriageReturn = character === "\r" && fieldIndex === columnCount - 1
+            && currentKeyId.length === UUID_TEXT_LENGTH;
+          if (currentKeyId.length >= UUID_TEXT_LENGTH && !finalCarriageReturn) invalidate("portable recovery personal credential row has invalid custody identity");
+          else currentKeyId += character;
+        } else {
+          identityEnvelope ??= new SubscriptionEnvelopeKeyIdReader();
+          identityEnvelope.pushCopyCharacter(character);
+        }
+      }
+      if (fieldIndex === tokenIndex) {
+        tokenEnvelope ??= new SubscriptionEnvelopeKeyIdReader();
+        tokenEnvelope.pushCopyCharacter(character);
       }
     }
   };
@@ -761,6 +1007,7 @@ async function runSqlRepair(input: { readonly fs: PortableRecoveryFilesystem; re
 }
 
 const APP_REPAIR_SQL = [
+  CHATGPT_RESTORE_FENCE_SQL,
   buildAppRoleOwnershipRepairSql(),
   buildAgentRoleGrantsSql(),
   buildFullCryptoTablePrivilegeReconcileSql(),
@@ -814,7 +1061,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
   if (stable.direction === "export") {
     // Validate every volume root before opening the remote upload. This keeps
     // unsafe source topology from becoming a partial object-store operation.
-    for (const root of ROOTS) await assertSafeTree(stable.fs, join(stable.fs.root, root));
+    for (const root of ROOTS) await assertSafeTree(stable.fs, posix.join(stable.fs.root, root));
     const credentialEvidence = await readSourcePersonalProviderCredentialEvidence({
       fs: stable.fs,
       runner: stable.runner,
@@ -845,7 +1092,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
   }
 
   const base = stagingPath(stable.fs, stable.operationId);
-  const staging = join(base, stable.objectId);
+  const staging = posix.join(base, stable.objectId);
   let verified = false;
   let discardStaging = false;
   try {
@@ -883,12 +1130,12 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
         || descriptor.objectId !== observedDescriptor.objectId
       )) fail("VERIFICATION_FAILED", "portable recovery descriptor changed during recovery preflight");
       if (await stable.fs.exists(staging)) await stable.fs.remove(staging);
-      await stable.fs.mkdir(dirname(base), 0o700);
-      await stable.fs.chmod(dirname(base), 0o700);
+      await stable.fs.mkdir(posix.dirname(base), 0o700);
+      await stable.fs.chmod(posix.dirname(base), 0o700);
       await stable.fs.syncDirectory(stable.fs.root);
       await stable.fs.mkdir(base, 0o700);
       await stable.fs.chmod(base, 0o700);
-      await stable.fs.syncDirectory(dirname(base));
+      await stable.fs.syncDirectory(posix.dirname(base));
       await stable.fs.mkdir(staging, 0o700);
       await stable.fs.syncDirectory(base);
       discardStaging = true;
@@ -897,7 +1144,7 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     await stable.fs.chmod(staging, 0o700);
     const memberPaths = new Map<PortableRecoveryMemberName, string>();
     for (const name of PORTABLE_RECOVERY_MEMBERS) {
-      const path = join(staging, name);
+      const path = posix.join(staging, name);
       memberPaths.set(name, path);
       if (!resume) {
         await stable.fs.writeFile(path, new Uint8Array(), 0o600);
@@ -907,14 +1154,14 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     if (!resume) {
       await readPortableRecovery({ source: download!.body, key: stable.environment.key, expectedReceipt: { ciphertextSha256: descriptor.ciphertextSha256, ciphertextBytes: descriptor.ciphertextBytes }, onChunk: async ({ member, plaintext }) => { await stable.fs.appendFile(memberPaths.get(member)!, plaintext); } });
       for (const path of memberPaths.values()) await stable.fs.syncFile(path);
-      const markerNext = join(staging, "verified.json.next");
+      const markerNext = posix.join(staging, "verified.json.next");
       await stable.fs.writeFile(markerNext, stageMarker(identity, descriptor), 0o600);
       await stable.fs.chmod(markerNext, 0o600);
       await stable.fs.syncFile(markerNext);
-      await stable.fs.rename(markerNext, join(staging, "verified.json"));
+      await stable.fs.rename(markerNext, posix.join(staging, "verified.json"));
       await stable.fs.syncDirectory(staging);
     }
-    const appRestoreListPath = join(staging, "app-postgres.list");
+    const appRestoreListPath = posix.join(staging, "app-postgres.list");
     const credentialEvidence = await prepareAppRestoreList({ fs: stable.fs, runner: stable.runner, dumpPath: memberPaths.get("app-postgres.dump")!, listPath: appRestoreListPath });
     await restorePersonalProviderCustody(
       stable.fs,
@@ -934,25 +1181,25 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
     // authority, so normalize every resume back to exact empty targets and a
     // clean extraction tree before attempting promotion again.
     if (resume) for (const root of ROOTS) {
-      const target = join(stable.fs.root, root);
+      const target = posix.join(stable.fs.root, root);
       if (await stable.fs.exists(target)) await stable.fs.remove(target);
       await stable.fs.mkdir(target, 0o700);
     }
-    const rootsStaging = join(staging, "roots");
+    const rootsStaging = posix.join(staging, "roots");
     if (await stable.fs.exists(rootsStaging)) await stable.fs.remove(rootsStaging);
     await stable.fs.mkdir(rootsStaging, 0o700);
     const promoted: PortableRecoveryRootName[] = [];
     try {
       for (const root of ROOTS) {
-        const extracted = join(staging, "roots", root);
+        const extracted = posix.join(staging, "roots", root);
         await validateAndExtractTar({ fs: stable.fs, runner: stable.runner, archivePath: memberPaths.get(`${root}.tar` as PortableRecoveryMemberName)!, destination: extracted, root });
         // An absent source root is represented by the deterministic empty tar;
         // materialize a real empty root so promotion remains exact.
-        await stable.fs.mkdir(join(extracted, root), 0o700);
+        await stable.fs.mkdir(posix.join(extracted, root), 0o700);
       }
       for (const root of ROOTS) {
-        const contentRoot = join(staging, "roots", root, root);
-        const target = join(stable.fs.root, root);
+        const contentRoot = posix.join(staging, "roots", root, root);
+        const target = posix.join(stable.fs.root, root);
         if (await stable.fs.exists(target)) await stable.fs.removeEmptyDirectory(target);
         await stable.fs.rename(contentRoot, target);
         promoted.push(root);
@@ -962,13 +1209,13 @@ export async function runPortableRecoveryJob(input: RunPortableRecoveryJobInput)
       // in reverse order, then recreate the prior empty targets. This leaves
       // a retryable all-empty target, never a mixed root set.
       for (const root of [...promoted].reverse()) {
-        const target = join(stable.fs.root, root);
-        await stable.fs.rename(target, join(staging, "roots", root, root));
+        const target = posix.join(stable.fs.root, root);
+        await stable.fs.rename(target, posix.join(staging, "roots", root, root));
         await stable.fs.mkdir(target, 0o700);
       }
       fail("PROMOTION_FAILED", "portable recovery promotion failed; staging was retained for recovery");
     }
-    for (const root of ROOTS) await stable.fs.syncDirectory(join(stable.fs.root, root));
+    for (const root of ROOTS) await stable.fs.syncDirectory(posix.join(stable.fs.root, root));
     await stable.fs.syncDirectory(stable.fs.root);
     await writeSuccessMarker(stable.fs, identity, descriptor);
     await stable.fs.remove(staging);

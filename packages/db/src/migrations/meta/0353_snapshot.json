@@ -1,6 +1,6 @@
 {
-  "id": "79fd432f-829e-4446-91f9-2e20a75f0a8c",
-  "prevId": "1c285e0c-e0bb-4358-b54f-ca8beb788e61",
+  "id": "32bbbff0-a51c-4ce1-917c-75bf0b8263a1",
+  "prevId": "7d2d7dcd-1575-4188-b177-a3d2fd85346e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3426,6 +3426,13 @@
           "primaryKey": false,
           "notNull": false
         },
+        "external_authorship": {
+          "name": "external_authorship",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "crypto_object_id": {
           "name": "crypto_object_id",
           "type": "text",
@@ -3755,6 +3762,10 @@
         "session_messages_human_turn_id_role_check": {
           "name": "session_messages_human_turn_id_role_check",
           "value": "\"session_messages\".\"human_turn_id\" IS NULL OR \"session_messages\".\"role\" = 'user'"
+        },
+        "session_messages_external_authorship_role_check": {
+          "name": "session_messages_external_authorship_role_check",
+          "value": "NOT \"session_messages\".\"external_authorship\" OR \"session_messages\".\"role\" = 'user'"
         }
       },
       "isRLSEnabled": false
@@ -4058,12 +4069,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "task_wake_operation_id": {
-          "name": "task_wake_operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "shadow_transcript_ordinal": {
           "name": "shadow_transcript_ordinal",
           "type": "integer",
@@ -4339,28 +4344,6 @@
         }
       },
       "indexes": {
-        "uq_session_message_crypto_revisions_task_wake_ordinal": {
-          "name": "uq_session_message_crypto_revisions_task_wake_ordinal",
-          "columns": [
-            {
-              "expression": "task_wake_operation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "shadow_transcript_ordinal",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"session_message_crypto_revisions\".\"task_wake_operation_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "uq_session_message_crypto_revisions_shadow_ordinal": {
           "name": "uq_session_message_crypto_revisions_shadow_ordinal",
           "columns": [
@@ -4696,11 +4679,7 @@
         },
         "session_message_crypto_revisions_object_id_scheme": {
           "name": "session_message_crypto_revisions_object_id_scheme",
-          "value": "(\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'message_v2'\n          and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null\n          and \"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" is null\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_start_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_terminal_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_streamed_text_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_durable_event_digest\" is null\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'human_message_edit_v1'\n          and \"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"author_role\" = 'user'\n          and \"session_message_crypto_revisions\".\"edit_revision\" > 0\n          and \"session_message_crypto_revisions\".\"crypto_object_id\" ~ '^message-edit:v1:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9a-f]{64}$'\n          and (\n            (\"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n          )\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'live_shadow_v1'\n          and (\n            (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is not null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n          )\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" > 0\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is not null\n        )"
-        },
-        "session_message_crypto_revisions_task_wake_shape": {
-          "name": "session_message_crypto_revisions_task_wake_shape",
-          "value": "\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'live_shadow_v1'\n          and \"session_message_crypto_revisions\".\"key_class\" = 'ai'\n          and \"session_message_crypto_revisions\".\"author_role\" in ('assistant', 'tool')\n          and \"session_message_crypto_revisions\".\"edit_revision\" = 0\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" is not null\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" >= 2\n          and \"session_message_crypto_revisions\".\"task_wake_operation_id\" ~ '^task-run-delivery-wake:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n        )"
+          "value": "(\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'message_v2'\n          and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" is null\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_start_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_terminal_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_streamed_text_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_durable_event_digest\" is null\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'human_message_edit_v1'\n          and \"session_message_crypto_revisions\".\"author_role\" = 'user'\n          and \"session_message_crypto_revisions\".\"edit_revision\" > 0\n          and \"session_message_crypto_revisions\".\"crypto_object_id\" ~ '^message-edit:v1:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9a-f]{64}$'\n          and (\n            (\"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n          )\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'live_shadow_v1'\n          and (\n            (\"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is not null)\n          )\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" > 0\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is not null\n        )"
         },
         "session_message_crypto_revisions_human_peer_shape": {
           "name": "session_message_crypto_revisions_human_peer_shape",
@@ -8785,6 +8764,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "attempt_owner_token": {
+          "name": "attempt_owner_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "attempt_lease_expires_at": {
+          "name": "attempt_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "timestamp with time zone",
@@ -8996,6 +8987,28 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
+        },
+        "idx_llm_usage_personal_attempt_lease": {
+          "name": "idx_llm_usage_personal_attempt_lease",
+          "columns": [
+            {
+              "expression": "attempt_lease_expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"llm_usage_events\".\"attempt_owner_token\" IS NOT NULL AND \"llm_usage_events\".\"attempt_outcome\" = 'in_progress'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
         }
       },
       "foreignKeys": {
@@ -9049,7 +9062,7 @@
         },
         "llm_usage_events_attempt_state_check": {
           "name": "llm_usage_events_attempt_state_check",
-          "value": "(\n        (\"llm_usage_events\".\"attempt_outcome\" IS NULL AND \"llm_usage_events\".\"cost_state\" IS NULL AND \"llm_usage_events\".\"recovery_state\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"attempt_outcome\" IS NOT NULL AND \"llm_usage_events\".\"cost_state\" IS NOT NULL AND \"llm_usage_events\".\"endpoint\" IS NOT NULL AND length(\"llm_usage_events\".\"endpoint\") > 0\n          AND (\"llm_usage_events\".\"provider_route\" = 'surplus' OR (\"llm_usage_events\".\"funding_kind\" = 'personal' AND \"llm_usage_events\".\"recovery_state\" IS NULL)))\n      )"
+          "value": "(\n        (\"llm_usage_events\".\"attempt_outcome\" IS NULL AND \"llm_usage_events\".\"cost_state\" IS NULL AND \"llm_usage_events\".\"recovery_state\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"attempt_outcome\" IS NOT NULL AND \"llm_usage_events\".\"cost_state\" IS NOT NULL AND \"llm_usage_events\".\"endpoint\" IS NOT NULL AND length(\"llm_usage_events\".\"endpoint\") > 0\n          AND (\"llm_usage_events\".\"provider_route\" = 'surplus' OR (\"llm_usage_events\".\"funding_kind\" IN ('personal', 'server', 'service') AND \"llm_usage_events\".\"recovery_state\" IS NULL)))\n      )"
         },
         "llm_usage_events_recovery_state_check": {
           "name": "llm_usage_events_recovery_state_check",
@@ -9058,6 +9071,10 @@
         "llm_usage_events_cost_state_check": {
           "name": "llm_usage_events_cost_state_check",
           "value": "(\n        \"llm_usage_events\".\"cost_state\" IS NULL\n        OR (\"llm_usage_events\".\"cost_state\" = 'actual' AND \"llm_usage_events\".\"actual_cost_usd\" IS NOT NULL)\n        OR (\"llm_usage_events\".\"cost_state\" = 'estimated' AND \"llm_usage_events\".\"actual_cost_usd\" IS NULL)\n        OR (\"llm_usage_events\".\"cost_state\" IN ('pending', 'unknown') AND \"llm_usage_events\".\"actual_cost_usd\" IS NULL)\n      )"
+        },
+        "llm_usage_events_attempt_owner_check": {
+          "name": "llm_usage_events_attempt_owner_check",
+          "value": "(\n        (\"llm_usage_events\".\"attempt_owner_token\" IS NULL AND \"llm_usage_events\".\"attempt_lease_expires_at\" IS NULL)\n        OR\n        (\"llm_usage_events\".\"attempt_owner_token\" IS NOT NULL AND \"llm_usage_events\".\"attempt_lease_expires_at\" IS NOT NULL\n          AND \"llm_usage_events\".\"funding_kind\" IN ('personal', 'server', 'service') AND \"llm_usage_events\".\"provider_route\" <> 'surplus'\n          AND \"llm_usage_events\".\"attempt_outcome\" IS NOT NULL AND \"llm_usage_events\".\"cost_state\" IS NOT NULL)\n      )"
         }
       },
       "isRLSEnabled": false
@@ -14070,7 +14087,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -14113,6 +14130,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "external_context": {
+          "name": "external_context",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "parent_room_id": {
           "name": "parent_room_id",
@@ -14414,6 +14438,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "model_exposure_dependencies": {
+          "name": "model_exposure_dependencies",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "source_event_count": {
           "name": "source_event_count",
           "type": "integer",
@@ -14569,6 +14599,10 @@
       },
       "policies": {},
       "checkConstraints": {
+        "room_event_rollups_exposure_representation": {
+          "name": "room_event_rollups_exposure_representation",
+          "value": "\"room_event_rollups\".\"content\" IS NOT NULL OR \"room_event_rollups\".\"model_exposure_dependencies\" IS NULL"
+        },
         "room_event_rollups_sequence_positive": {
           "name": "room_event_rollups_sequence_positive",
           "value": "\"room_event_rollups\".\"through_event_sequence\" > 0"
@@ -16540,24 +16574,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pause_request_id": {
-          "name": "pause_request_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pause_requested_at": {
-          "name": "pause_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pause_reason": {
-          "name": "pause_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_error": {
           "name": "last_error",
           "type": "text",
@@ -16842,14 +16858,6 @@
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
         },
-        "tasks_protected_pause_intent_coherent": {
-          "name": "tasks_protected_pause_intent_coherent",
-          "value": "(\n      \"tasks\".\"pause_request_id\" is null and \"tasks\".\"pause_requested_at\" is null and \"tasks\".\"pause_reason\" is null\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"pause_request_id\" is not null and \"tasks\".\"pause_requested_at\" is not null\n      and \"tasks\".\"pause_reason\" in ('manual_pause', 'time_limit')\n    )"
-        },
-        "tasks_protected_requester_owns_content": {
-          "name": "tasks_protected_requester_owns_content",
-          "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
-        },
         "tasks_crypto_mapping_coherent": {
           "name": "tasks_crypto_mapping_coherent",
           "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
@@ -16890,13 +16898,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        },
-        "result_revision": {
-          "name": "result_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
         },
         "result_operation_id": {
           "name": "result_operation_id",
@@ -17089,7 +17090,7 @@
         },
         "protected_task_run_output_bindings_result_identity_shape": {
           "name": "protected_task_run_output_bindings_result_identity_shape",
-          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and (\n          (\"protected_task_run_output_bindings\".\"result_revision\" = 1\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n          or (\"protected_task_run_output_bindings\".\"result_revision\" = 2\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-cancelled-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n        )\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
+          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "protected_task_run_output_bindings_delivery_shape": {
           "name": "protected_task_run_output_bindings_delivery_shape",
@@ -17462,12 +17463,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "historical_repair": {
-          "name": "historical_repair",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "operational_metadata": {
           "name": "operational_metadata",
           "type": "jsonb",
@@ -17642,10 +17637,6 @@
         }
       },
       "checkConstraints": {
-        "task_definition_crypto_revisions_historical_repair": {
-          "name": "task_definition_crypto_revisions_historical_repair",
-          "value": "\"task_definition_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_definition_crypto_revisions\".\"representation\" = 'dual' and \"task_definition_crypto_revisions\".\"content_revision\" = 1\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_definition_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\n        (\"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n          and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)\n        or (\"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n          and \"task_definition_crypto_revisions\".\"historical_repair\" ? 'genesisManifestHash'\n          and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb\n          and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'genesisManifestHash') = 'string'\n          and \"task_definition_crypto_revisions\".\"historical_repair\"->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')\n      )\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
-        },
         "task_definition_crypto_revisions_revision_positive": {
           "name": "task_definition_crypto_revisions_revision_positive",
           "value": "\"task_definition_crypto_revisions\".\"content_revision\" > 0"
@@ -17668,7 +17659,7 @@
         },
         "task_definition_crypto_revisions_object_shape": {
           "name": "task_definition_crypto_revisions_object_shape",
-          "value": "((\n      (\"task_definition_crypto_revisions\".\"historical_repair\" is null or \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb)\n      and \"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'\n    ) or (\n      \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n      and \"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'\n    )) is true"
+          "value": "\"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'"
         },
         "task_definition_crypto_revisions_digest_sizes": {
           "name": "task_definition_crypto_revisions_digest_sizes",
@@ -17784,12 +17775,6 @@
           "type": "bytea",
           "primaryKey": false,
           "notNull": true
-        },
-        "historical_repair": {
-          "name": "historical_repair",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         },
         "completion": {
           "name": "completion",
@@ -17986,10 +17971,6 @@
         }
       },
       "checkConstraints": {
-        "task_run_result_crypto_revisions_historical_repair": {
-          "name": "task_run_result_crypto_revisions_historical_repair",
-          "value": "\"task_run_result_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_run_result_crypto_revisions\".\"representation\" = 'dual' and \"task_run_result_crypto_revisions\".\"result_revision\" = 1\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\n        (\"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n          and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)\n        or (\"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n          and \"task_run_result_crypto_revisions\".\"historical_repair\" ? 'genesisManifestHash'\n          and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb\n          and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'genesisManifestHash') = 'string'\n          and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')\n      )\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
-        },
         "task_run_result_crypto_revisions_revision_positive": {
           "name": "task_run_result_crypto_revisions_revision_positive",
           "value": "\"task_run_result_crypto_revisions\".\"result_revision\" > 0"
@@ -18012,7 +17993,7 @@
         },
         "task_run_result_crypto_revisions_object_shape": {
           "name": "task_run_result_crypto_revisions_object_shape",
-          "value": "((\n      (\"task_run_result_crypto_revisions\".\"historical_repair\" is null or \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb)\n      and \"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'\n    ) or (\n      \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n      and \"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'\n    )) is true"
+          "value": "\"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "task_run_result_crypto_revisions_digest_sizes": {
           "name": "task_run_result_crypto_revisions_digest_sizes",
@@ -23120,6 +23101,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "'pending'"
+        },
+        "accepted_model_binding": {
+          "name": "accepted_model_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         },
         "attempt_id": {
           "name": "attempt_id",
@@ -29559,11 +29546,11 @@
         },
         "background_crypto_authorization_requests_work_kind": {
           "name": "background_crypto_authorization_requests_work_kind",
-          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message',\n        'task.deliver_result',\n        'task.delivery_wake'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_purpose": {
           "name": "background_crypto_authorization_requests_purpose",
-          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message',\n        'task.deliver_result',\n        'task.delivery_wake'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_work_purpose_coherent": {
           "name": "background_crypto_authorization_requests_work_purpose_coherent",
@@ -29583,7 +29570,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not in ('task.cancel_result', 'task.deliver_message', 'task.deliver_result', 'task.delivery_wake')\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message',\n        'task.deliver_result',\n        'task.delivery_wake'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -29715,11 +29702,11 @@
         },
         "background_crypto_authorization_requests_terminal_reason": {
           "name": "background_crypto_authorization_requests_terminal_reason",
-          "value": "\"background_crypto_authorization_requests\".\"terminal_reason\" is null or \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n        'malformed_request',\n        'integrity_failure',\n        'provider_outcome_unknown',\n        'policy_rejected',\n        'unsupported_subject',\n        'retry_limit_exhausted',\n        'recipient_generation_exhausted',\n        'cancelled',\n        'superseded'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"terminal_reason\" is null or \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n        'malformed_request',\n        'integrity_failure',\n        'policy_rejected',\n        'unsupported_subject',\n        'retry_limit_exhausted',\n        'recipient_generation_exhausted',\n        'cancelled',\n        'superseded'\n      )"
         },
         "background_crypto_authorization_requests_terminal_coherent": {
           "name": "background_crypto_authorization_requests_terminal_coherent",
-          "value": "(\n        \"background_crypto_authorization_requests\".\"state\" = 'cancelled'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in ('cancelled', 'superseded')\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'terminal_failure'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n          'malformed_request',\n          'integrity_failure',\n        'provider_outcome_unknown',\n          'policy_rejected',\n          'unsupported_subject',\n          'retry_limit_exhausted',\n          'recipient_generation_exhausted'\n        )\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'completed'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" not in (\n          'completed',\n          'cancelled',\n          'terminal_failure'\n        )\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is null\n      )"
+          "value": "(\n        \"background_crypto_authorization_requests\".\"state\" = 'cancelled'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in ('cancelled', 'superseded')\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'terminal_failure'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n          'malformed_request',\n          'integrity_failure',\n          'policy_rejected',\n          'unsupported_subject',\n          'retry_limit_exhausted',\n          'recipient_generation_exhausted'\n        )\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'completed'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" not in (\n          'completed',\n          'cancelled',\n          'terminal_failure'\n        )\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is null\n      )"
         },
         "background_crypto_authorization_requests_time_order": {
           "name": "background_crypto_authorization_requests_time_order",
@@ -37131,465 +37118,6 @@
         "processor_crypto_signer_authorizations_time_order": {
           "name": "processor_crypto_signer_authorizations_time_order",
           "value": "\"processor_crypto_signer_authorizations\".\"issued_at\" <= \"processor_crypto_signer_authorizations\".\"created_at\"\n        and \"processor_crypto_signer_authorizations\".\"created_at\" < \"processor_crypto_signer_authorizations\".\"expires_at\"\n        and \"processor_crypto_signer_authorizations\".\"expires_at\"\n          <= \"processor_crypto_signer_authorizations\".\"issued_at\" + interval '300 seconds'"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_cancellation_crypto_staging_receipts": {
-      "name": "task_cancellation_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recipient_generation": {
-          "name": "recipient_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorization_digest": {
-          "name": "authorization_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "stopped_intent_hash": {
-          "name": "stopped_intent_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "policy_revision": {
-          "name": "policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_cancel_staging_object_fk": {
-          "name": "task_cancel_staging_object_fk",
-          "tableFrom": "task_cancellation_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_cancel_staging_object": {
-          "name": "uq_task_cancel_staging_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_cancel_staging_crypto_sel": {
-          "name": "task_cancel_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_cancel_staging_crypto_ins": {
-          "name": "task_cancel_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_cancel_staging_request_id_portable": {
-          "name": "task_cancel_staging_request_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"request_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_generation_safe": {
-          "name": "task_cancel_staging_generation_safe",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"recipient_generation\" between 0 and 9007199254740991"
-        },
-        "task_cancel_staging_claim_id_portable": {
-          "name": "task_cancel_staging_claim_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"claim_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"claim_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_authorization_digest_size": {
-          "name": "task_cancel_staging_authorization_digest_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"authorization_digest\") = 32"
-        },
-        "task_cancel_staging_stopped_intent_hash_size": {
-          "name": "task_cancel_staging_stopped_intent_hash_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"stopped_intent_hash\") = 32"
-        },
-        "task_cancel_staging_policy_revision_positive": {
-          "name": "task_cancel_staging_policy_revision_positive",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"policy_revision\" >= 1"
-        },
-        "task_cancel_staging_authority_fingerprint_size": {
-          "name": "task_cancel_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_cancel_staging_object_id_portable": {
-          "name": "task_cancel_staging_object_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_object_shape": {
-          "name": "task_cancel_staging_object_shape",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
-        },
-        "task_cancel_staging_genesis_manifest_hash_size": {
-          "name": "task_cancel_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_historical_content_crypto_staging_receipts": {
-      "name": "task_historical_content_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signed_publication_request_bytes": {
-          "name": "signed_publication_request_bytes",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signed_request_digest": {
-          "name": "signed_request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_historical_staging_object_fk": {
-          "name": "task_historical_staging_object_fk",
-          "tableFrom": "task_historical_content_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_historical_staging_operation": {
-          "name": "uq_task_historical_staging_operation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "operation_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_historical_staging_crypto_sel": {
-          "name": "task_historical_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_historical_staging_crypto_ins": {
-          "name": "task_historical_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_historical_staging_operation_portable": {
-          "name": "task_historical_staging_operation_portable",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"operation_id\") between 1\n      and 128\n      and \"task_historical_content_crypto_staging_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_historical_staging_object_portable": {
-          "name": "task_historical_staging_object_portable",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_historical_staging_object_shape": {
-          "name": "task_historical_staging_object_shape",
-          "value": "\"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'"
-        },
-        "task_historical_staging_signed_request_size": {
-          "name": "task_historical_staging_signed_request_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"signed_publication_request_bytes\") between 1\n      and 1048576"
-        },
-        "task_historical_staging_signed_request_digest_size": {
-          "name": "task_historical_staging_signed_request_digest_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"signed_request_digest\") = 32"
-        },
-        "task_historical_staging_authority_fingerprint_size": {
-          "name": "task_historical_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_historical_staging_genesis_manifest_hash_size": {
-          "name": "task_historical_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_terminal_message_crypto_staging_receipts": {
-      "name": "task_terminal_message_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recipient_generation": {
-          "name": "recipient_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorization_digest": {
-          "name": "authorization_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delivery_intent_hash": {
-          "name": "delivery_intent_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "raw_result_message_intent": {
-          "name": "raw_result_message_intent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "accepted_policy_revision": {
-          "name": "accepted_policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "publication_policy_revision": {
-          "name": "publication_policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_terminal_message_staging_object_fk": {
-          "name": "task_terminal_message_staging_object_fk",
-          "tableFrom": "task_terminal_message_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_terminal_message_staging_object": {
-          "name": "uq_task_terminal_message_staging_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_terminal_message_staging_crypto_sel": {
-          "name": "task_terminal_message_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_terminal_message_staging_crypto_ins": {
-          "name": "task_terminal_message_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_terminal_message_staging_request_id_portable": {
-          "name": "task_terminal_message_staging_request_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"request_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_generation_safe": {
-          "name": "task_terminal_message_staging_generation_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"recipient_generation\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_claim_id_portable": {
-          "name": "task_terminal_message_staging_claim_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"claim_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"claim_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_authorization_digest_size": {
-          "name": "task_terminal_message_staging_authorization_digest_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"authorization_digest\") = 32"
-        },
-        "task_terminal_message_staging_delivery_intent_hash_size": {
-          "name": "task_terminal_message_staging_delivery_intent_hash_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"delivery_intent_hash\") = 32"
-        },
-        "task_terminal_message_staging_raw_intent_object": {
-          "name": "task_terminal_message_staging_raw_intent_object",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"raw_result_message_intent\" is null or jsonb_typeof(\"task_terminal_message_crypto_staging_receipts\".\"raw_result_message_intent\") = 'object'"
-        },
-        "task_terminal_message_staging_policy_revision_positive": {
-          "name": "task_terminal_message_staging_policy_revision_positive",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\" >= 1 and \"task_terminal_message_crypto_staging_receipts\".\"publication_policy_revision\" >= \"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\""
-        },
-        "task_terminal_message_staging_accepted_policy_safe": {
-          "name": "task_terminal_message_staging_accepted_policy_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_publication_policy_safe": {
-          "name": "task_terminal_message_staging_publication_policy_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"publication_policy_revision\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_authority_fingerprint_size": {
-          "name": "task_terminal_message_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_terminal_message_staging_object_id_portable": {
-          "name": "task_terminal_message_staging_object_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_object_shape": {
-          "name": "task_terminal_message_staging_object_shape",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\" ~ '^message:v2:[0-9a-f]{64}$'"
-        },
-        "task_terminal_message_staging_genesis_manifest_hash_size": {
-          "name": "task_terminal_message_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
         }
       },
       "isRLSEnabled": true
@@ -45848,72 +45376,101 @@
       },
       "isRLSEnabled": true
     },
-    "public.task_content_backfill_failures": {
-      "name": "task_content_backfill_failures",
+    "public.bolter_connections": {
+      "name": "bolter_connections",
       "schema": "",
       "columns": {
-        "kind": {
-          "name": "kind",
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "relay_id": {
+          "name": "relay_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "entity_id": {
-          "name": "entity_id",
-          "type": "uuid",
+        "desktop_session_id": {
+          "name": "desktop_session_id",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
+        "pairing_generation_ref": {
+          "name": "pairing_generation_ref",
+          "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
+        "home_handle": {
+          "name": "home_handle",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_agent_id": {
+          "name": "provider_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_fingerprint": {
+          "name": "identity_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
         },
-        "source_revision": {
-          "name": "source_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_updated_at": {
-          "name": "source_updated_at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
-          "notNull": true
+          "notNull": true,
+          "default": "now()"
         },
-        "source_status": {
-          "name": "source_status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_completed_at": {
-          "name": "source_completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "policy_revision": {
-          "name": "policy_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "reason": {
-          "name": "reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "observed_at": {
-          "name": "observed_at",
+        "updated_at": {
+          "name": "updated_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
@@ -45921,17 +45478,44 @@
         }
       },
       "indexes": {
-        "idx_task_content_backfill_failures_task": {
-          "name": "idx_task_content_backfill_failures_task",
+        "bolter_connections_home": {
+          "name": "bolter_connections_home",
           "columns": [
             {
-              "expression": "task_id",
+              "expression": "user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "task_run_id",
+              "expression": "relay_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "home_handle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_connections_owner": {
+          "name": "bolter_connections_owner",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -45943,157 +45527,1014 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {
-        "task_content_backfill_failures_kind_entity_id_pk": {
-          "name": "task_content_backfill_failures_kind_entity_id_pk",
+      "foreignKeys": {
+        "bolter_connections_user_id_users_id_fk": {
+          "name": "bolter_connections_user_id_users_id_fk",
+          "tableFrom": "bolter_connections",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_connections_owner_id": {
+          "name": "bolter_connections_owner_id",
+          "nullsNotDistinct": false,
           "columns": [
-            "kind",
-            "entity_id"
+            "user_id",
+            "id"
           ]
         }
       },
-      "uniqueConstraints": {},
       "policies": {
-        "task_content_backfill_failures_product": {
-          "name": "task_content_backfill_failures_product",
+        "bolter_connections_owner": {
+          "name": "bolter_connections_owner",
           "as": "PERMISSIVE",
           "for": "ALL",
           "to": [
-            "nautilo"
+            "nautilo",
+            "nautilo_agent"
           ],
-          "using": "true",
-          "withCheck": "true"
+          "using": "\"bolter_connections\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_connections\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
         }
       },
       "checkConstraints": {
-        "task_content_backfill_failures_coordinate": {
-          "name": "task_content_backfill_failures_coordinate",
-          "value": "(\n    \"task_content_backfill_failures\".\"kind\" = 'definition' and \"task_content_backfill_failures\".\"entity_id\" = \"task_content_backfill_failures\".\"task_id\" and \"task_content_backfill_failures\".\"task_run_id\" is null\n  ) or (\n    \"task_content_backfill_failures\".\"kind\" = 'result' and \"task_content_backfill_failures\".\"entity_id\" = \"task_content_backfill_failures\".\"task_run_id\" and \"task_content_backfill_failures\".\"task_run_id\" is not null\n  )"
+        "bolter_connections_generation": {
+          "name": "bolter_connections_generation",
+          "value": "\"bolter_connections\".\"generation\" > 0 AND \"bolter_connections\".\"revision\" >= 0"
         },
-        "task_content_backfill_failures_revision": {
-          "name": "task_content_backfill_failures_revision",
-          "value": "\"task_content_backfill_failures\".\"source_revision\" >= 0 and \"task_content_backfill_failures\".\"policy_revision\" > 0"
+        "bolter_connections_revocation": {
+          "name": "bolter_connections_revocation",
+          "value": "\"bolter_connections\".\"revoked_at\" IS NULL OR \"bolter_connections\".\"enabled\" = false"
         },
-        "task_content_backfill_failures_reason": {
-          "name": "task_content_backfill_failures_reason",
-          "value": "\"task_content_backfill_failures\".\"reason\" in ('unsupported', 'no_content', 'integrity', 'waiting_parent')"
+        "bolter_connections_identity": {
+          "name": "bolter_connections_identity",
+          "value": "\"bolter_connections\".\"identity_fingerprint\" ~ '^[0-9a-f]{64}$' AND length(\"bolter_connections\".\"provider_agent_id\") > 0 AND length(\"bolter_connections\".\"origin\") > 0 AND length(\"bolter_connections\".\"relay_id\") > 0 AND length(\"bolter_connections\".\"desktop_session_id\") > 0 AND length(\"bolter_connections\".\"pairing_generation_ref\") > 0"
+        },
+        "bolter_connections_home_handle": {
+          "name": "bolter_connections_home_handle",
+          "value": "length(\"bolter_connections\".\"home_handle\") > 0 AND position('/' in \"bolter_connections\".\"home_handle\") = 0 AND position(chr(92) in \"bolter_connections\".\"home_handle\") = 0 AND position('..' in \"bolter_connections\".\"home_handle\") = 0"
         }
       },
       "isRLSEnabled": true
     },
-    "public.task_content_backfill_scans": {
-      "name": "task_content_backfill_scans",
+    "public.bolter_explicit_shares": {
+      "name": "bolter_explicit_shares",
       "schema": "",
       "columns": {
-        "human_actor_id": {
-          "name": "human_actor_id",
+        "id": {
+          "name": "id",
           "type": "uuid",
           "primaryKey": true,
           "notNull": true
         },
-        "phase": {
-          "name": "phase",
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_id": {
+          "name": "request_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'definition'"
+          "notNull": true
         },
-        "cursor_at": {
-          "name": "cursor_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cursor_task_id": {
-          "name": "cursor_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cursor_task_run_id": {
-          "name": "cursor_task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "through_at": {
-          "name": "through_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "through_task_id": {
-          "name": "through_task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "through_task_run_id": {
-          "name": "through_task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "sweep_started_at": {
-          "name": "sweep_started_at",
+        "created_at": {
+          "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "last_sweep_at": {
-          "name": "last_sweep_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_active_at": {
-          "name": "last_active_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "resume_at": {
-          "name": "resume_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_token": {
-          "name": "lease_token",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_device_id": {
-          "name": "lease_device_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "lease_expires_at": {
-          "name": "lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "claim": {
-          "name": "claim",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {},
       "foreignKeys": {
-        "task_content_backfill_scans_human_actor_id_actors_id_fk": {
-          "name": "task_content_backfill_scans_human_actor_id_actors_id_fk",
-          "tableFrom": "task_content_backfill_scans",
-          "tableTo": "actors",
+        "bolter_explicit_shares_user_id_users_id_fk": {
+          "name": "bolter_explicit_shares_user_id_users_id_fk",
+          "tableFrom": "bolter_explicit_shares",
+          "tableTo": "users",
           "columnsFrom": [
-            "human_actor_id"
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_explicit_shares_session_message_id_session_messages_id_fk": {
+          "name": "bolter_explicit_shares_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_explicit_shares",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_shares_binding_owner": {
+          "name": "bolter_shares_binding_owner",
+          "tableFrom": "bolter_explicit_shares",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_shares_owner_binding_id": {
+          "name": "bolter_shares_owner_binding_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "binding_id",
+            "id"
+          ]
+        },
+        "bolter_shares_request": {
+          "name": "bolter_shares_request",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "request_id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_shares_owner": {
+          "name": "bolter_shares_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_explicit_shares\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_explicit_shares\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_shares_identity": {
+          "name": "bolter_shares_identity",
+          "value": "\"bolter_explicit_shares\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND \"bolter_explicit_shares\".\"binding_revision\" >= 0 AND \"bolter_explicit_shares\".\"connection_generation\" > 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_inbox_receipts": {
+      "name": "bolter_inbox_receipts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_sender_id": {
+          "name": "external_sender_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_inbox_provider_message": {
+          "name": "bolter_inbox_provider_message",
+          "columns": [
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_inbox_canonical_message": {
+          "name": "bolter_inbox_canonical_message",
+          "columns": [
+            {
+              "expression": "session_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_inbox_receipts_user_id_users_id_fk": {
+          "name": "bolter_inbox_receipts_user_id_users_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_receipts_session_message_id_session_messages_id_fk": {
+          "name": "bolter_inbox_receipts_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_receipts_job_id_jobs_id_fk": {
+          "name": "bolter_inbox_receipts_job_id_jobs_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "jobs",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_binding_owner": {
+          "name": "bolter_inbox_binding_owner",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_inbox_owner_binding_id": {
+          "name": "bolter_inbox_owner_binding_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "binding_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_inbox_owner": {
+          "name": "bolter_inbox_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_inbox_receipts\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_inbox_receipts\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_inbox_state": {
+          "name": "bolter_inbox_state",
+          "value": "\"bolter_inbox_receipts\".\"state\" IN ('pending', 'accepted', 'quarantined', 'cancelled') AND (\"bolter_inbox_receipts\".\"state\" <> 'accepted' OR (\"bolter_inbox_receipts\".\"session_message_id\" IS NOT NULL AND \"bolter_inbox_receipts\".\"turn_id\" IS NOT NULL))"
+        },
+        "bolter_inbox_identity": {
+          "name": "bolter_inbox_identity",
+          "value": "\"bolter_inbox_receipts\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND length(\"bolter_inbox_receipts\".\"provider_message_id\") > 0 AND length(\"bolter_inbox_receipts\".\"external_sender_id\") > 0 AND \"bolter_inbox_receipts\".\"binding_revision\" >= 0 AND \"bolter_inbox_receipts\".\"connection_generation\" > 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_outbox": {
+      "name": "bolter_outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_inbox_id": {
+          "name": "source_inbox_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "explicit_share_id": {
+          "name": "explicit_share_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_outbox_explicit_share": {
+          "name": "bolter_outbox_explicit_share",
+          "columns": [
+            {
+              "expression": "explicit_share_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"bolter_outbox\".\"explicit_share_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_outbox_canonical_publication": {
+          "name": "bolter_outbox_canonical_publication",
+          "columns": [
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_outbox_final_reply": {
+          "name": "bolter_outbox_final_reply",
+          "columns": [
+            {
+              "expression": "source_inbox_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"bolter_outbox\".\"source_inbox_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_outbox_owner_pending": {
+          "name": "bolter_outbox_owner_pending",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bolter_outbox\".\"state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_outbox_user_id_users_id_fk": {
+          "name": "bolter_outbox_user_id_users_id_fk",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_session_message_id_session_messages_id_fk": {
+          "name": "bolter_outbox_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_binding_owner": {
+          "name": "bolter_outbox_binding_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_reply_owner": {
+          "name": "bolter_outbox_reply_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_inbox_receipts",
+          "columnsFrom": [
+            "user_id",
+            "binding_id",
+            "source_inbox_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "binding_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_share_owner": {
+          "name": "bolter_outbox_share_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_explicit_shares",
+          "columnsFrom": [
+            "user_id",
+            "binding_id",
+            "explicit_share_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "binding_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "bolter_outbox_owner": {
+          "name": "bolter_outbox_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_outbox\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_outbox\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_outbox_reason": {
+          "name": "bolter_outbox_reason",
+          "value": "(\"bolter_outbox\".\"source_inbox_id\" IS NOT NULL) <> (\"bolter_outbox\".\"explicit_share_id\" IS NOT NULL)"
+        },
+        "bolter_outbox_identity": {
+          "name": "bolter_outbox_identity",
+          "value": "\"bolter_outbox\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND \"bolter_outbox\".\"binding_revision\" >= 0 AND \"bolter_outbox\".\"connection_generation\" > 0"
+        },
+        "bolter_outbox_state": {
+          "name": "bolter_outbox_state",
+          "value": "\"bolter_outbox\".\"state\" IN ('pending', 'publishing', 'published', 'uncertain', 'cancelled') AND (\"bolter_outbox\".\"state\" NOT IN ('publishing', 'published', 'uncertain') OR \"bolter_outbox\".\"claim_token\" IS NOT NULL) AND (\"bolter_outbox\".\"state\" <> 'published' OR \"bolter_outbox\".\"provider_message_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_room_bindings": {
+      "name": "bolter_room_bindings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "namespace_id": {
+          "name": "namespace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_agent_id": {
+          "name": "provider_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chat_id": {
+          "name": "chat_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "model_sponsorship_accepted_at": {
+          "name": "model_sponsorship_accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_bindings_external_identity": {
+          "name": "bolter_bindings_external_identity",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "chat_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_bindings_room": {
+          "name": "bolter_bindings_room",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_room_bindings_user_id_users_id_fk": {
+          "name": "bolter_room_bindings_user_id_users_id_fk",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_room_bindings_agent_id_agents_id_fk": {
+          "name": "bolter_room_bindings_agent_id_agents_id_fk",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_bindings_connection_owner": {
+          "name": "bolter_bindings_connection_owner",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "bolter_connections",
+          "columnsFrom": [
+            "user_id",
+            "connection_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_bindings_exact_namespace": {
+          "name": "bolter_bindings_exact_namespace",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id",
+            "namespace_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_bindings_owner_id": {
+          "name": "bolter_bindings_owner_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_bindings_owner": {
+          "name": "bolter_bindings_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo",
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_room_bindings\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_room_bindings\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_bindings_revision": {
+          "name": "bolter_bindings_revision",
+          "value": "\"bolter_room_bindings\".\"revision\" >= 0"
+        },
+        "bolter_bindings_state": {
+          "name": "bolter_bindings_state",
+          "value": "\"bolter_room_bindings\".\"state\" IN ('active', 'paused', 'revoked')"
+        },
+        "bolter_bindings_identity": {
+          "name": "bolter_bindings_identity",
+          "value": "length(\"bolter_room_bindings\".\"origin\") > 0 AND length(\"bolter_room_bindings\".\"provider_agent_id\") > 0 AND length(\"bolter_room_bindings\".\"chat_id\") > 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.external_room_execution_claims": {
+      "name": "external_room_execution_claims",
+      "schema": "",
+      "columns": {
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token": {
+          "name": "token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "external_room_execution_claims_room_id_rooms_id_fk": {
+          "name": "external_room_execution_claims_room_id_rooms_id_fk",
+          "tableFrom": "external_room_execution_claims",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
           ],
           "columnsTo": [
             "id"
@@ -46105,373 +46546,18 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {
-        "task_content_backfill_scans_product": {
-          "name": "task_content_backfill_scans_product",
+        "external_room_execution_claim_owner": {
+          "name": "external_room_execution_claim_owner",
           "as": "PERMISSIVE",
           "for": "ALL",
           "to": [
             "nautilo"
           ],
-          "using": "true",
-          "withCheck": "true"
+          "using": "\"external_room_execution_claims\".\"owner_user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"external_room_execution_claims\".\"owner_user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
         }
       },
-      "checkConstraints": {
-        "task_content_backfill_scans_phase": {
-          "name": "task_content_backfill_scans_phase",
-          "value": "\"task_content_backfill_scans\".\"phase\" in ('definition', 'result')"
-        },
-        "task_content_backfill_scans_cursor": {
-          "name": "task_content_backfill_scans_cursor",
-          "value": "(\n    (\"task_content_backfill_scans\".\"cursor_at\" is null and \"task_content_backfill_scans\".\"cursor_task_id\" is null and \"task_content_backfill_scans\".\"cursor_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'definition' and \"task_content_backfill_scans\".\"cursor_at\" is not null\n      and \"task_content_backfill_scans\".\"cursor_task_id\" is not null and \"task_content_backfill_scans\".\"cursor_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'result' and \"task_content_backfill_scans\".\"cursor_at\" is not null\n      and \"task_content_backfill_scans\".\"cursor_task_id\" is not null and \"task_content_backfill_scans\".\"cursor_task_run_id\" is not null)\n  )"
-        },
-        "task_content_backfill_scans_through": {
-          "name": "task_content_backfill_scans_through",
-          "value": "(\n    (\"task_content_backfill_scans\".\"through_at\" is null and \"task_content_backfill_scans\".\"through_task_id\" is null and \"task_content_backfill_scans\".\"through_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'definition' and \"task_content_backfill_scans\".\"through_at\" is not null\n      and \"task_content_backfill_scans\".\"through_task_id\" is not null and \"task_content_backfill_scans\".\"through_task_run_id\" is null)\n    or (\"task_content_backfill_scans\".\"phase\" = 'result' and \"task_content_backfill_scans\".\"through_at\" is not null\n      and \"task_content_backfill_scans\".\"through_task_id\" is not null and \"task_content_backfill_scans\".\"through_task_run_id\" is not null)\n  )"
-        },
-        "task_content_backfill_scans_lease": {
-          "name": "task_content_backfill_scans_lease",
-          "value": "case when \"task_content_backfill_scans\".\"lease_token\" is null\n    then \"task_content_backfill_scans\".\"lease_device_id\" is null and \"task_content_backfill_scans\".\"lease_expires_at\" is null and \"task_content_backfill_scans\".\"claim\" is null\n    else \"task_content_backfill_scans\".\"lease_device_id\" is not null and \"task_content_backfill_scans\".\"lease_expires_at\" is not null and \"task_content_backfill_scans\".\"claim\" is not null end"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.protected_task_wake_continuation_receipts": {
-      "name": "protected_task_wake_continuation_receipts",
-      "schema": "",
-      "columns": {
-        "wake_job_id": {
-          "name": "wake_job_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "segment": {
-          "name": "segment",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "binding_id": {
-          "name": "binding_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wake_operation_id": {
-          "name": "wake_operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prior_recipient_generation": {
-          "name": "prior_recipient_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wake_authorization_request_id": {
-          "name": "wake_authorization_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "additional_authorization_request_id": {
-          "name": "additional_authorization_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "interrupt_id": {
-          "name": "interrupt_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_digest": {
-          "name": "request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "required_authority_digest": {
-          "name": "required_authority_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "semantic_authority_requirements": {
-          "name": "semantic_authority_requirements",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "retained_source_namespace_ids": {
-          "name": "retained_source_namespace_ids",
-          "type": "uuid[]",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_envelope_digest": {
-          "name": "source_envelope_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "initial_policy_revision": {
-          "name": "initial_policy_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "initial_agent_authorization_revision": {
-          "name": "initial_agent_authorization_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_room_id": {
-          "name": "destination_room_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_namespace_id": {
-          "name": "destination_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_authority_digest": {
-          "name": "destination_authority_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_thread_id": {
-          "name": "checkpoint_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_contract": {
-          "name": "checkpoint_contract",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_checkpoint_count": {
-          "name": "expected_checkpoint_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_ordered_digest": {
-          "name": "checkpoint_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_blob_count": {
-          "name": "expected_blob_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "blob_ordered_digest": {
-          "name": "blob_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_pending_write_count": {
-          "name": "expected_pending_write_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pending_write_ordered_digest": {
-          "name": "pending_write_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sealed_at": {
-          "name": "sealed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "protected_task_wake_continuation_receipts_wake_job_id_jobs_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_wake_job_id_jobs_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "jobs",
-          "columnsFrom": [
-            "wake_job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_receipts_task_id_tasks_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_task_id_tasks_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_receipts_task_run_id_task_runs_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_task_run_id_task_runs_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "task_runs",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_binding_fk": {
-          "name": "protected_task_wake_continuation_binding_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "protected_task_run_output_bindings",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "task_run_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_destination_fk": {
-          "name": "protected_task_wake_continuation_destination_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "rooms",
-          "columnsFrom": [
-            "destination_room_id",
-            "destination_namespace_id"
-          ],
-          "columnsTo": [
-            "id",
-            "namespace_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "protected_task_wake_continuation_receipts_pkey": {
-          "name": "protected_task_wake_continuation_receipts_pkey",
-          "columns": [
-            "wake_job_id",
-            "segment"
-          ]
-        }
-      },
-      "uniqueConstraints": {
-        "uq_protected_task_wake_continuation_authorization_generation": {
-          "name": "uq_protected_task_wake_continuation_authorization_generation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wake_authorization_request_id",
-            "prior_recipient_generation"
-          ]
-        },
-        "uq_protected_task_wake_continuation_interrupt": {
-          "name": "uq_protected_task_wake_continuation_interrupt",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wake_job_id",
-            "interrupt_id"
-          ]
-        }
-      },
-      "policies": {
-        "protected_task_wake_continuation_receipts_product_select": {
-          "name": "protected_task_wake_continuation_receipts_product_select",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true"
-        },
-        "protected_task_wake_continuation_receipts_product_insert": {
-          "name": "protected_task_wake_continuation_receipts_product_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "protected_task_wake_continuation_receipts_segment_positive": {
-          "name": "protected_task_wake_continuation_receipts_segment_positive",
-          "value": "\"protected_task_wake_continuation_receipts\".\"segment\" between 1 and 2147483647"
-        },
-        "protected_task_wake_continuation_receipts_generation_safe": {
-          "name": "protected_task_wake_continuation_receipts_generation_safe",
-          "value": "\"protected_task_wake_continuation_receipts\".\"prior_recipient_generation\" between 0 and 2147483646\n        and \"protected_task_wake_continuation_receipts\".\"segment\" = \"protected_task_wake_continuation_receipts\".\"prior_recipient_generation\" + 1"
-        },
-        "protected_task_wake_continuation_receipts_identity_shape": {
-          "name": "protected_task_wake_continuation_receipts_identity_shape",
-          "value": "\"protected_task_wake_continuation_receipts\".\"binding_id\" = 'task-run-output:' || \"protected_task_wake_continuation_receipts\".\"task_run_id\"::text\n        and \"protected_task_wake_continuation_receipts\".\"wake_operation_id\" = 'task-run-delivery-wake:' || \"protected_task_wake_continuation_receipts\".\"task_run_id\"::text\n        and \"protected_task_wake_continuation_receipts\".\"wake_authorization_request_id\" = 'task-wake-authorization:' || \"protected_task_wake_continuation_receipts\".\"wake_job_id\"::text"
-        },
-        "protected_task_wake_continuation_receipts_interrupt_shape": {
-          "name": "protected_task_wake_continuation_receipts_interrupt_shape",
-          "value": "\"protected_task_wake_continuation_receipts\".\"additional_authorization_request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"interrupt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"checkpoint_thread_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "protected_task_wake_continuation_receipts_digest_sizes": {
-          "name": "protected_task_wake_continuation_receipts_digest_sizes",
-          "value": "octet_length(\"protected_task_wake_continuation_receipts\".\"request_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"required_authority_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"source_envelope_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"destination_authority_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"checkpoint_ordered_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"blob_ordered_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"pending_write_ordered_digest\") = 32"
-        },
-        "protected_task_wake_continuation_receipts_public_revision_positive": {
-          "name": "protected_task_wake_continuation_receipts_public_revision_positive",
-          "value": "\"protected_task_wake_continuation_receipts\".\"initial_policy_revision\" > 0\n        and \"protected_task_wake_continuation_receipts\".\"initial_agent_authorization_revision\" > 0"
-        },
-        "protected_task_wake_continuation_receipts_manifest_counts_safe": {
-          "name": "protected_task_wake_continuation_receipts_manifest_counts_safe",
-          "value": "\"protected_task_wake_continuation_receipts\".\"expected_checkpoint_count\" between 1 and 2147483647\n        and \"protected_task_wake_continuation_receipts\".\"expected_blob_count\" between 0 and 2147483647\n        and \"protected_task_wake_continuation_receipts\".\"expected_pending_write_count\" between 0 and 2147483647"
-        },
-        "protected_task_wake_continuation_receipts_authority_shape": {
-          "name": "protected_task_wake_continuation_receipts_authority_shape",
-          "value": "jsonb_typeof(\"protected_task_wake_continuation_receipts\".\"semantic_authority_requirements\") = 'array'\n        and cardinality(\"protected_task_wake_continuation_receipts\".\"retained_source_namespace_ids\") > 0\n        and array_position(\"protected_task_wake_continuation_receipts\".\"retained_source_namespace_ids\", null) is null"
-        }
-      },
+      "checkConstraints": {},
       "isRLSEnabled": true
     }
   },

@@ -8,7 +8,12 @@ import {
   type MessageArtifactOpenRef,
   type ServerEvent,
 } from "@nautilo/types";
-import { appendTranscriptMessages, computeMessageFingerprint, ImageAssistanceError } from "@nautilo/agent";
+import {
+  appendTranscriptMessages,
+  computeMessageFingerprint,
+  copyModelInputExposure,
+  ImageAssistanceError,
+} from "@nautilo/agent";
 import type { AppendNotificationContext } from "@nautilo/trust";
 import {
   type MemoryReviewAdmission,
@@ -48,7 +53,7 @@ export function sanitizeMessageForTranscript(message: BaseMessage): BaseMessage 
   if (message.tool_calls?.length) {
     sanitized.tool_calls = message.tool_calls;
   }
-  return sanitized;
+  return copyModelInputExposure(message, sanitized);
 }
 
 function persistDebugRole(msg: BaseMessage): string {
@@ -61,7 +66,12 @@ function persistDebugRole(msg: BaseMessage): string {
 export interface PersistMessagesOptions {
   /** Durable rows for an invocation-owned narrative read fence. */
   onCommittedRows?: (
-    rows: readonly { id: string; role: string }[],
+    rows: readonly {
+      id: string;
+      role: string;
+      content: string | null;
+      fingerprint: string | null;
+    }[],
     messages: readonly BaseMessage[],
   ) => void;
   /** Same ordinary Task resume boundary for newly inserted assistant calls. */

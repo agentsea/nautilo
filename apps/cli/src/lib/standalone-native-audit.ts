@@ -32,12 +32,21 @@ export function auditStandaloneNativeBinary(input: {
   if (details.isSymbolicLink() || !details.isFile() || (details.mode & 0o111) === 0) {
     throw new Error("Standalone native audit requires a regular executable candidate.");
   }
+  return auditStandaloneNativeBytes({ ...input, bytes: readFileSync(binaryPath) });
+}
+
+/** Inspect release bytes independently of the host filesystem's execute bits. */
+export function auditStandaloneNativeBytes(input: {
+  bytes: Buffer;
+  platform: string;
+  forbiddenRoots?: readonly string[];
+}): StandaloneNativeAuditReceipt {
   const expectedCpu = MACHO_CPU[input.platform];
   const expectedBinding = KEYRING_BINDING[input.platform];
   if (expectedCpu === undefined || expectedBinding === undefined) {
     throw new Error(`Standalone native audit rejects unsupported platform ${input.platform}.`);
   }
-  const bytes = readFileSync(binaryPath);
+  const bytes = input.bytes;
   if (
     bytes.length < 8 ||
     bytes.readUInt32LE(0) !== MACHO_64_LITTLE_ENDIAN ||

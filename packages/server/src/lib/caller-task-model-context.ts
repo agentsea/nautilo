@@ -1,8 +1,8 @@
-import { getEligibleModels, resolveCatalogModel, resolveSurplusChatServingAvailability } from "@nautilo/agent";
-import { getServerProviderPolicy, listPersonalProviderCredentials, getCachedServerModelConfigRow } from "@nautilo/db";
+import { getEligibleModels } from "@nautilo/agent";
+import { getServerProviderPolicy, listPersonalProviderCredentials } from "@nautilo/db";
 import { getUserCapabilities } from "@nautilo/trust";
 import { getServerDirectDb } from "./server-direct-db";
-import { resolveServerFundingRoute } from "./model-funding";
+import { createModelFundingSnapshot, resolveModelFunding, resolveServerFundingRoute } from "./model-funding";
 
 /** Presence-only selection data. No credential plaintext crosses model discovery. */
 const PERSONAL_CHAT_ENV: Readonly<Record<string, string>> = {
@@ -29,17 +29,16 @@ export async function callerTaskModelEnvironment(humanUserId: string): Promise<N
 }
 
 export async function callerTaskModelIds(humanUserId: string): Promise<readonly string[]> {
-  const env = await callerTaskModelEnvironment(humanUserId);
-  return getEligibleModels({ purpose: "chat", includeUnavailable: true, env }).filter((row) => {
-    if (row.availability === "selectable") return true;
-    if (row.availability !== "missing-key") return false;
-    const catalog = resolveCatalogModel(row.id, { env });
-    return catalog.workload === "chat" && catalog.output.includes("text")
-      && resolveSurplusChatServingAvailability({ catalogModelId: row.id,
-        policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
-        keyConfigured: Boolean(env["SURPLUS_API_KEY"]?.trim()),
-      }).status === "available";
-  }).map((row) => row.id);
+  const snapshot = await createModelFundingSnapshot(humanUserId);
+  const rows = getEligibleModels({ purpose: "chat", includeUnavailable: true, env: {} });
+  const admitted = await Promise.all(rows.map(async row => {
+    if (row.availability !== "selectable" && row.availability !== "missing-key") return null;
+    try {
+      await resolveModelFunding({ humanUserId, modelId: row.id, workload: "native_text_task" }, snapshot.deps);
+      return row.id;
+    } catch { return null; }
+  }));
+  return admitted.filter((id): id is string => id !== null);
 }
 
 export async function personalOnlyTaskModelIds(humanUserId: string, models: readonly string[]): Promise<readonly string[]> {

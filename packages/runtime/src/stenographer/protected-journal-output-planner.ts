@@ -10,6 +10,8 @@ import {
   encodeDurableRecordEnvelope,
   type StenographerMessageBinding,
 } from "@nautilo/reflection-bridge/server";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import type { RecordPayloadModelExposureDependencyV1 } from "@nautilo/reflection/payload";
 
 import {
   planEventTransitions,
@@ -486,6 +488,8 @@ export function planProtectedExtractionOutputs(input: Readonly<{
   readonly operations: readonly StenographerOperation[];
   readonly outputSlots: readonly ProtectedEventOutputSlotV1[];
   readonly messageBindings: readonly StenographerMessageBinding[];
+  readonly modelExposureDependencies?:
+    readonly DurableModelExposureDependency[];
 }>): ProtectedExtractionOutputPlanningResultV1 {
   const roomId = uuid("protected extraction Room", input.roomId);
   const namespaceId = uuid(
@@ -582,6 +586,12 @@ export function planProtectedExtractionOutputs(input: Readonly<{
       rebuildGeneration,
       transition: transitionInput,
       publicationBindingRef: `journal:namespace:${namespaceId}:protected:v1`,
+      ...(input.modelExposureDependencies === undefined
+        ? {}
+        : {
+            modelExposureDependencies:
+              input.modelExposureDependencies,
+          }),
     });
     return Object.freeze({
       objectId: slots[index]!.objectId,
@@ -623,6 +633,8 @@ export function planProtectedRollupOutput(input: Readonly<{
   readonly modelId: string;
   readonly compactorVersion: string;
   readonly createdAt: string;
+  readonly modelExposureDependencies?:
+    readonly DurableModelExposureDependency[];
 }>): ProtectedJournalPlannedOutputsV1 {
   const roomId = uuid("protected rollup Room", input.roomId);
   const namespaceId = uuid("protected rollup Namespace", input.namespaceId);
@@ -678,6 +690,34 @@ export function planProtectedRollupOutput(input: Readonly<{
         modelId: rollup.modelId,
         compactorVersion: rollup.compactorVersion,
         createdAt: rollup.createdAt,
+        ...(input.modelExposureDependencies === undefined
+          ? {}
+          : {
+              modelExposureDependencies:
+                input.modelExposureDependencies.map(
+                  (dependency): RecordPayloadModelExposureDependencyV1 =>
+                    dependency.kind === "record"
+                      ? {
+                          kind: "record",
+                          recordId: dependency.recordRef,
+                          observedProcessingGeneration:
+                            dependency.observedProcessingGeneration,
+                          terminalAuthorityLeafHandles:
+                            dependency.terminalAuthorityLeafHandles,
+                        }
+                      : {
+                          kind: "source",
+                          sourceKind: dependency.sourceKind,
+                          logicalObjectRef: dependency.logicalSourceRef,
+                          observedRevision:
+                            dependency.observedRevision ?? null,
+                          observedContentFingerprint:
+                            dependency.observedContentFingerprint ?? null,
+                          terminalAuthorityLeafHandle:
+                            dependency.terminalAuthorityLeafHandle,
+                        },
+                ),
+            }),
       }),
     })]),
     attachmentPlan,

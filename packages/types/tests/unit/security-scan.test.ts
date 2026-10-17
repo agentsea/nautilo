@@ -37,6 +37,28 @@ const status = {
   }],
 } as const;
 
+test.each([
+  ["/private/project", true],
+  ["C:\\work\\project", true],
+  ["D:/work/project", true],
+  ["\\\\server\\share\\project", true],
+  ["relative/project", false],
+  ["C:relative", false],
+  ["\\root-relative", false],
+  ["C:\\work\nproject", false],
+] as const)("validates the platform-independent Current Folder assertion %s", (expectedCurrentFolder, accepted) => {
+  const result = securityScanRelayRequestSchema.safeParse({
+    operation: { version: SECURITY_SCAN_VERSION, operation: "start", targetDirectory: ".", mode: "deep_research" },
+    trustedContext: {
+      taskId: "00000000-0000-4000-8000-000000000001",
+      taskRunId: "00000000-0000-4000-8000-000000000002",
+      toolCallId: "platform-path", modelId: "fireworks:accounts/fireworks/models/eligible-model",
+    },
+    expectedCurrentFolder,
+  });
+  expect(result.success).toBe(accepted);
+});
+
 const envelope = {
   version: SECURITY_SCAN_VERSION,
   status,

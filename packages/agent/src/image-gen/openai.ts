@@ -41,7 +41,7 @@ export async function generateImagesOpenAi(
         : reference.mime.slice("image/".length);
       body.append(
         "image[]",
-        new Blob([Uint8Array.from(reference.bytes)], { type: reference.mime }),
+        new Blob([new Uint8Array(reference.bytes)], { type: reference.mime }),
         `reference-${index + 1}.${extension}`,
       );
     }

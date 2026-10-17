@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../node_modules/.cache/tsconfig/dev-tests.tsbuildinfo"
+  },
+  "include": ["./test-lifecycle-preload.ts"]
+}

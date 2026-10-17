@@ -7,6 +7,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { physicalPathFromStorageUri as storagePathFromUri } from "@nautilo/db";
 import { readFile } from "node:fs/promises";
 import { createPatch } from "diff";
 import {
@@ -170,12 +171,6 @@ function replayEventMatchesAuthority(
     event.before.identity.logicalPath === input.artifact.path &&
     event.after.identity.logicalPath === input.artifact.path
   );
-}
-
-function storagePathFromUri(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const path = storageUri.slice("file://".length);
-  return path.startsWith("/") ? path : null;
 }
 
 async function readArtifactBytes(row: Artifact): Promise<Uint8Array> {

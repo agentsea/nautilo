@@ -33,7 +33,9 @@ describe("media source inspection", () => {
     expect(await readPickedMediaFile(source, 3)).toBeNull();
     for (const limit of [0, -1, NaN, Infinity, 2.5]) expect(await readPickedMediaFile(source, limit)).toBeNull();
     const symlink = path.join(root, "link");
-    await fsp.symlink(source, symlink);
+    await fsp.symlink(process.platform === "win32" ? root : source, symlink,
+      process.platform === "win32" ? "junction" : "file");
+    expect((await fsp.lstat(symlink)).isSymbolicLink()).toBe(true);
     expect(await readPickedMediaFile(symlink, 4).catch(() => null)).toBeNull();
   });
 
@@ -49,9 +51,22 @@ describe("media source inspection", () => {
     expect(await copyMediaSnapshot(source, snapshot)).toBe(false);
     expect(await fsp.readFile(snapshot)).toEqual(content);
     const symlink = path.join(root, "link");
-    await fsp.symlink(source, symlink);
+    await fsp.symlink(process.platform === "win32" ? root : source, symlink,
+      process.platform === "win32" ? "junction" : "file");
     expect(await copyMediaSnapshot(symlink, path.join(root, "refused"))).toBe(false);
     expect(await fsp.access(path.join(root, "refused")).then(() => true, () => false)).toBe(false);
+  });
+
+  test("picked-file reads allow a parent alias while canonical snapshot copying refuses it", async () => {
+    const root = await fixtureRoot();
+    const directory = path.join(root, "original");
+    await fsp.mkdir(directory);
+    await fsp.writeFile(path.join(directory, "picked"), "four");
+    const alias = path.join(root, "alias");
+    await fsp.symlink(directory, alias, process.platform === "win32" ? "junction" : "dir");
+    const source = path.join(alias, "picked");
+    expect(await readPickedMediaFile(source, 4)).toEqual(Buffer.from("four"));
+    expect(await copyMediaSnapshot(source, path.join(root, "snapshot"))).toBe(false);
   });
 
   test("aborted snapshots publish no partial file", async () => {

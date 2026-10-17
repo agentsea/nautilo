@@ -56,7 +56,7 @@ test("electron-builder extraResources maps vendored Relay Host and managed tools
 test("Desktop launch and package flows build the private Relay Host before Electron", () => {
   expect(packageJson.scripts["vendor:relay-host"]).toBe("bun scripts/vendor-relay-host.ts");
   expect(packageJson.scripts["app"]).toContain("bun run dev:prepare");
-  for (const scriptName of ["dev:prepare", "package:mac:build", "package:dev:build"] as const) {
+  for (const scriptName of ["dev:prepare", "package:mac:build", "package:dev:build", "package:win"] as const) {
     const script = packageJson.scripts[scriptName];
     expect(script).toContain("bun run vendor:relay-host");
     const boundary = scriptName.startsWith("package:") ? script.indexOf("electron-builder") : script.indexOf("build:electron");

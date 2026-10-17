@@ -202,6 +202,29 @@ describe("Explorer room visibility labels", () => {
     fireEvent.click(legacyPublic.getByLabelText("Actions for # Legacy public"));
     expect(await legacyPublic.findByText("◐ Visibility: Public…")).toBeTruthy();
   });
+
+  test("labels a restricted externally linked room as permanently External", async () => {
+    const view = render(
+      <ExplorerRow
+        row={{
+          id: "group:linked",
+          kind: "room",
+          depth: 0,
+          label: "# Linked support",
+          roomId: "linked",
+          isSubthread: false,
+          roomKind: "private",
+          roomExternalContext: true,
+        }}
+        isActive={false}
+        onActivate={() => {}}
+      />,
+    );
+
+    expect(view.getByLabelText("External room")).toBeTruthy();
+    fireEvent.click(view.getByLabelText("Actions for # Linked support"));
+    expect(await view.findByText("◐ Visibility: External (permanent)…")).toBeTruthy();
+  });
 });
 
 describe("Explorer Agent avatars", () => {

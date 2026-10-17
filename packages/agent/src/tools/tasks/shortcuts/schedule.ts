@@ -1,5 +1,5 @@
-import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { DynamicStructuredTool } from "@langchain/core/tools";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { log } from "@nautilo/logger";
 import { z } from "zod";
 import { CronExpressionParser } from "cron-parser";
@@ -112,11 +112,9 @@ export function createScheduleTool(context?: unknown) {
             : { selectionProfile: args.model_selection }),
         });
       const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
-      const callerFundedToolFree = !getCapabilityFundingSession() && (personalTaskControls || personalOnlyCreate);
-      if (callerFundedToolFree && ctx.currentTaskId) {
-        return "Personal scheduled Tasks can only be created from the foreground parent chat.";
-      }
-      const selectionError = callerFundedToolFree ? null : validateTaskModelSelectionForCreate({
+      const callerFundedNative = personalTaskControls || personalOnlyCreate;
+      const selectionError = callerFundedNative || getCapabilityFundingSession()
+        ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         // schedule runs with the full tool set (auto).
@@ -156,12 +154,10 @@ export function createScheduleTool(context?: unknown) {
         cron = args.when.cron;
       }
 
-      const lineage = callerFundedToolFree
-        ? { ok: true as const, depth: 0, parentTaskId: undefined }
-        : await resolveTaskToolCreateLineage({
-            ownerId: ctx.ownerId, db: rt.db,
-            ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
-          });
+      const lineage = await resolveTaskToolCreateLineage({
+        ownerId: ctx.ownerId, db: rt.db,
+        ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+      });
       if (!lineage.ok) return lineage.message;
       const input: TaskToolCreateInput = {
         ownerId: ctx.ownerId,
@@ -174,11 +170,14 @@ export function createScheduleTool(context?: unknown) {
         ...(cron ? { cron } : {}),
         timezone,
         useScope: false,
-        targetChat: callerFundedToolFree ? "orphan" : "last_in_namespace",
+        targetChat: "last_in_namespace",
+        // `schedule` promises to report back to the exact Room that admitted
+        // it. Persist the Room coordinate now so a newer group Room cannot
+        // become the destination when the occurrence fires later.
+        ...(callerFundedNative ? { targetRoomId: ctx.roomId || null } : {}),
         resultDelivery: "wake",
         awaitResponse: false,
-        toolsMode: callerFundedToolFree ? "none" : "auto",
-        ...(callerFundedToolFree ? { toolsWhitelist: [] } : {}),
+        toolsMode: "auto",
         callingRoomId: ctx.roomId || null,
         targetUserIds: [ctx.causalHumanUserId],
         ...(lineage.parentTaskId ? { parentTaskId: lineage.parentTaskId } : {}),

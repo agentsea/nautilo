@@ -113,7 +113,7 @@ export async function findActorByLogtoSub(
       `User ${user.id} has external_id=${sub} but no user-kind actor row — invariant violated`,
     );
   }
-  // D219 — surface soft-delete state so the bearer resolver can
+  // surface soft-delete state so the bearer resolver can
   // fail-closed (the trust preHandler 401s a disabled account).
   return { actorId: actor.id, userId: user.id, disabledAt: user.disabledAt };
 }
@@ -227,7 +227,7 @@ export async function findAgentById(
  * foreign-origin stub. `getFederatedIdForActor` reads this to render
  * `@handle@home-server` correctly for federated Humans.
  *
- * D219: the legacy M061 `serverRole` enum was retired — server-wide
+ * the legacy M061 `serverRole` enum was retired — server-wide
  * authority is derived from Capabilities (`getUserCapabilities`) /
  * `userHasCapability`, not a column on `users`.
  */
@@ -324,7 +324,7 @@ export async function findUserDisplayInfo(
 }
 
 /**
- * D219: replaces the retired `isUserAdmin` enum read. True when `userId`
+ * replaces the retired `isUserAdmin` enum read. True when `userId`
  * holds Capability `slug` via any Group→Role membership (REL-CAP-HUM).
  * Single indexed `EXISTS` (no N+1, no full cap-set materialisation).
  *
@@ -596,6 +596,7 @@ export async function getRoomWithAccess(
   namespaceId: string;
   humanActorIds: string[];
   isPublicNamespaceBoundary: boolean;
+  externalContext?: boolean;
 } | null> {
   if (!roomId) return null;
   const db = getSharedDirectDb();
@@ -607,12 +608,14 @@ export async function getRoomWithAccess(
         sql`${boundary.sourceRoom.humanActorIds}`, sql`${boundary.sourceRoom.id}`,
       ),
       publicBoundaryRoomId: boundary.publicBoundaryRoomId,
+      externalBoundaryRoomId: boundary.externalBoundaryRoomId,
     })
     .from(boundary.sourceRoom)
     .leftJoin(
       boundary.publicBoundaryRoom,
       boundary.publicBoundaryJoin,
     )
+    .leftJoin(boundary.externalBoundaryRoom, boundary.externalBoundaryJoin)
     .where(and(
       eq(boundary.sourceRoom.id, roomId),
       requesterActorId === undefined ? undefined : sql`EXISTS (
@@ -630,6 +633,7 @@ export async function getRoomWithAccess(
     namespaceId: row.namespaceId,
     humanActorIds: row.humanActorIds ?? [],
     isPublicNamespaceBoundary: row.publicBoundaryRoomId !== null,
+    externalContext: typeof row.externalBoundaryRoomId === "string",
   };
 }
 
@@ -642,7 +646,7 @@ export type NamespaceSubsetSourcePolicy = {
 };
 
 /**
- * D476 — a deliberately small, requester-scoped Room candidate row for
+ * a deliberately small, requester-scoped Room candidate row for
  * name-driven projection sharing. Unlike `listRoomsForActor`, this is not an
  * explorer query: it does not load message activity, unread counts, or a
  * roster, and it never returns a caller's complete Room directory.
@@ -675,7 +679,7 @@ const MAX_AUTHORIZED_ROOM_NAME_QUERY_ROWS = 6;
 export type AuthorizedRoomNameLookupStage = "exact" | "prefix" | "fuzzy";
 
 /**
- * D476 query-shape contract. One- and two-character names are valid, but they
+ * Room-name query-shape contract. One- and two-character names are valid, but they
  * can only take btree-backed exact/prefix paths. pg_trgm is not selective
  * enough below three Unicode code points, so substring/fuzzy work is absent
  * from the plan rather than hidden behind a SQL FALSE branch.
@@ -689,7 +693,7 @@ export function authorizedRoomNameLookupStages(
 }
 
 /**
- * D476 — hash canonical membership identities after the database has applied
+ * hash canonical membership identities after the database has applied
  * Room membership filters. This is an integrity fingerprint, not a public
  * identifier: it travels only through the trusted approval snapshot and is
  * compared against a fresh server-derived value before execution.
@@ -701,7 +705,7 @@ function fingerprintAuthorizedRoomAudience(roomId: string, membershipRows: strin
 }
 
 /**
- * D476 — fetch a bounded candidate set for an authorized Room-name lookup.
+ * fetch a bounded candidate set for an authorized Room-name lookup.
  *
  * The membership join is canonical authority, not the denormalized
  * `human_actor_ids` cache. Joining the requester actor to `actors` verifies
@@ -1001,7 +1005,7 @@ export async function resolveActorsDisplay(
 }
 
 /**
- * M173/D328 — batched form of {@link findRoomByNamespaceId}: resolve many
+ * M173 — batched form of {@link findRoomByNamespaceId}: resolve many
  * Namespaces → their Rooms' human members in **one** query. Returns a Map keyed
  * by namespaceId; namespaces with no backing room are simply absent. Lets the
  * memory-list route compute per-row `accessList` without an N+1 fan-out (the
@@ -1028,7 +1032,7 @@ export async function findRoomsByNamespaceIds(
 }
 
 /**
- * M173/D328 — like {@link resolveActorsDisplay} but **keyed by actorId** so a
+ * M173 — like {@link resolveActorsDisplay} but **keyed by actorId** so a
  * caller can map specific actors back to people (the deduped-array form drops
  * that association). User-kind actors only (memory access is about Humans).
  * Used to build per-row `accessList` for the memory list.
@@ -1476,15 +1480,17 @@ export type RoomSummaryRow = {
    *  viewer and not yet read by the viewer. 0 for agent-actor callers (agents
    *  don't have unread) and for producers that don't compute it (manage/discover). */
   unreadCount: number;
-  /** D111 + M124 ('open') + M141 ('task') + M173 ('access'). Conversational
+  /** M124 ('open') + M141 ('task') + M173 ('access'). Conversational
    *  surfaces exclude 'task'/'access', but the column type admits them. */
   kind: "private" | "group" | "multi_agent" | "subthread" | "open" | "task" | "access";
   /** Whether an open room appears in server-wide discovery and automatic landing. */
   discoverable?: boolean;
+  /** Permanent external context boundary, independent of directory visibility. */
+  externalContext?: boolean;
   parentRoomId: string | null;
   threadRootMessageId: number | null;
   /**
-   * D246 Wave 2 — compact roster projection folded from one batch query keyed
+   * compact roster projection folded from one batch query keyed
    * by `roomId`. Populated by `listRoomsForActor` and the bounded manageable
    * Room catalogue; discoverable producers omit it. Absent → explorer
    * heuristics still work.
@@ -1493,7 +1499,7 @@ export type RoomSummaryRow = {
 };
 
 /**
- * D246 Wave 2 — minimal roster member shape folded into `RoomSummaryRow`.
+ * minimal roster member shape folded into `RoomSummaryRow`.
  * Mirrors {@link RoomSummaryRosterMemberDto} (the wire shape): only the
  * grouping/display fields the explorer consumes. No `roomRole`,
  * `agentResponseMode` or owner cues — those arrive with the
@@ -1600,6 +1606,7 @@ export async function listRoomsForActor(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
@@ -1608,7 +1615,7 @@ export async function listRoomsForActor(
       roomMembers,
       and(eq(roomMembers.roomId, rooms.id), eq(roomMembers.actorId, actorId)),
     )
-    // M157/M173/D426 — task/access containers and Subthread children are not
+    // M157/M173 — task/access containers and Subthread children are not
     // top-level navigation rows. Realtime auth/refresh explicitly opts into
     // Subthreads while continuing to exclude non-conversational containers.
     .where(
@@ -1668,7 +1675,7 @@ export async function listRoomsForActor(
     }
   }
 
-  // D246 Wave 2 — fourth batch: compact roster projection for every visible
+  // fourth batch: compact roster projection for every visible
   // room, folded from ONE query keyed by `roomId` (joined to actors + users +
   // agents for display/handle/identity). Grouped in-memory into a
   // Map<roomId, RoomSummaryRosterMember[]> so the explorer classifies every
@@ -1693,6 +1700,7 @@ export async function listRoomsForActor(
     unreadCount: unreadMap.get(r.id) ?? 0,
     kind: r.kind,
     discoverable: r.discoverable !== false,
+    ...(r.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
     ...(includeRoster ? { roster: rosterMap?.get(r.id) ?? [] } : {}),
@@ -1700,7 +1708,7 @@ export async function listRoomsForActor(
 }
 
 /**
- * D246 Wave 2 — fold compact roster rows for every `roomIds` member in ONE
+ * fold compact roster rows for every `roomIds` member in ONE
  * query. Returns Map<roomId, RoomSummaryRosterMember[]>; rooms with zero
  * members map to an empty array (caller-friendly — the explorer treats
  * absent and empty identically). The query count is constant w.r.t. room
@@ -1784,6 +1792,7 @@ export async function listManageableRoomsForUser(
     createdAt: rooms.createdAt,
     kind: rooms.kind,
     discoverable: rooms.discoverable,
+    externalContext: rooms.externalContext,
     parentRoomId: rooms.parentRoomId,
     threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
   };
@@ -1828,7 +1837,7 @@ export async function listManageableRoomsForUser(
   const countMap = new Map(
     countRows.map((c) => [c.roomId, Number(c.n)] as const),
   );
-  // D529 — management surfaces also need an identity-safe membership cue for
+  // management surfaces also need an identity-safe membership cue for
   // archived rows. This remains one bounded query keyed by the selected room
   // ids; it does not expand into a per-room detail fan-out.
   const rosterMap = await queryRoomSummaryRosters(db, ids);
@@ -1845,6 +1854,7 @@ export async function listManageableRoomsForUser(
     unreadCount: 0,
     kind: r.kind,
     discoverable: r.discoverable !== false,
+    ...(r.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
     roster: rosterMap.get(r.id) ?? [],
@@ -1910,13 +1920,15 @@ export type RoomDetailPayload = {
   type: string;
   graphThreadId: string;
   createdAt: string;
-  /** D111 + M124 ('open') + M141 ('task') + M173 ('access') */
+  /** M124 ('open') + M141 ('task') + M173 ('access') */
   kind: "private" | "group" | "multi_agent" | "subthread" | "open" | "task" | "access";
   /** Whether an open room appears in server-wide discovery and automatic landing. */
   discoverable?: boolean;
+  /** Permanent external context boundary, independent of directory visibility. */
+  externalContext?: boolean;
   parentRoomId: string | null;
   threadRootMessageId: number | null;
-  /** D302 — `advanced` (FM default-arbiter inference) | `standard` (today's conductor). */
+  /** `advanced` (FM default-arbiter inference) | `standard` (today's conductor). */
   conductorMode: "advanced" | "standard";
   members: Array<{
     actorId: string;
@@ -1966,6 +1978,7 @@ export async function getRoomDetailForMember(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
@@ -1985,6 +1998,7 @@ export async function getRoomDetailForMember(
     createdAt: (room.createdAt ?? new Date()).toISOString(),
     kind: room.kind,
     discoverable: room.discoverable !== false,
+    ...(room.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: room.parentRoomId ?? null,
     threadRootMessageId: room.threadRootMessageId ?? null,
     conductorMode: room.conductorMode === "standard" ? "standard" : "advanced",
@@ -2013,6 +2027,7 @@ export async function getRoomDetailForManager(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
       conductorMode: rooms.conductorMode,
@@ -2047,6 +2062,7 @@ export async function getRoomDetailForManager(
     createdAt: (room.createdAt ?? new Date()).toISOString(),
     kind: room.kind,
     discoverable: room.discoverable !== false,
+    ...(room.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: room.parentRoomId ?? null,
     threadRootMessageId: room.threadRootMessageId ?? null,
     conductorMode: room.conductorMode === "standard" ? "standard" : "advanced",
@@ -2159,22 +2175,29 @@ export async function insertPrivateRoomBundleTx(
     memberRows: Array<{
       actorId: string;
       roomRole: "admin" | "member";
-      /** D128 — set only for agent-kind members when minting. */
+      /** set only for agent-kind members when minting. */
       agentResponseMode?: AgentResponseMode | null;
     }>;
     createdByActorId: string;
-    /** D111 + M124 — defaults to `private`. M173 adds `access`. */
+    /** M124 — defaults to `private`. M173 adds `access`. */
     roomKind?: "private" | "group" | "multi_agent" | "open" | "access";
     /**
      * M042B legacy `type` bucket. Defaults to `private`; M124 open rooms
-     * pass `shared`. (The `type` axis is independent of D111 `kind` and will
+     * pass `shared`. (The `type` axis is independent of `kind` and will
      * be retired in a later sweep.)
      */
     roomType?: "private" | "shared" | "room";
     /** Defaults to the schema default when omitted. */
     discoverable?: boolean;
+    /** Trusted fresh-room factory only; this boundary cannot be added later. */
+    externalContext?: true;
   },
 ): Promise<{ namespaceId: string }> {
+  if (params.externalContext === true && (
+    (params.roomKind !== undefined && params.roomKind !== "private")
+    || (params.roomType !== undefined && params.roomType !== "private")
+    || params.discoverable === true
+  )) throw new Error("external_room_requires_private_room");
   const [nsRow] = await tx
     .insert(namespaces)
     .values({
@@ -2196,9 +2219,9 @@ export async function insertPrivateRoomBundleTx(
     humanActorIds: params.humanActorIds,
     createdBy: params.createdByActorId,
     kind: params.roomKind ?? "private",
-    ...(params.discoverable === undefined
-      ? {}
-      : { discoverable: params.discoverable }),
+    ...(params.externalContext === true
+      ? { externalContext: true, discoverable: false }
+      : params.discoverable === undefined ? {} : { discoverable: params.discoverable }),
   });
   await createRoomJournalStateInTx(tx, params.roomId);
 
@@ -2417,7 +2440,7 @@ export type ShareTargetRoomRow = {
  */
 // M212 Phase 4 — full-role shared pool (`getSharedDirectDb`). Agent-scoped
 // migration to `withTrustContext` requires adding userId to params and
-// threading it through callers (D197 chokepoint refactor surface).
+// threading it through callers (chokepoint refactor surface).
 export async function findShareTargetRoom(params: {
   requesterActorId: string;
   targetActorId: string;
@@ -2547,6 +2570,7 @@ export async function listDiscoverableRoomsForUser(
       createdAt: rooms.createdAt,
       kind: rooms.kind,
       discoverable: rooms.discoverable,
+      externalContext: rooms.externalContext,
       parentRoomId: rooms.parentRoomId,
       threadRootMessageId: sql<number | null>`COALESCE(${rooms.threadRootMessageId}, ${rooms.deletedThreadRootMessageId})`,
     })
@@ -2632,6 +2656,7 @@ export async function listDiscoverableRoomsForUser(
     unreadCount: 0,
     kind: r.kind,
     discoverable: r.discoverable !== false,
+    ...(r.externalContext === true ? { externalContext: true } : {}),
     parentRoomId: r.parentRoomId ?? null,
     threadRootMessageId: r.threadRootMessageId ?? null,
   }));
@@ -2778,7 +2803,7 @@ async function repairOpenParentMemberSubthreads(
  * returns the membership event for the route to publish + audit. Every join
  * also reconciles the actor into child Subthreads, so an idempotent parent
  * join may still return repaired child IDs for subscription/WS convergence.
- * A fully converged rejoin returns no events (D196 "emit only on real
+ * A fully converged rejoin returns no events ("emit only on real
  * change").
  */
 export async function joinOpenRoom(params: {
@@ -2878,7 +2903,7 @@ export type CreateOpenRoomParams = {
   creatorActorId: string;
   label: string;
   discoverable?: boolean;
-  /** D473 — optional exact initial roster; omit for creator-only open rooms. */
+  /** optional exact initial roster; omit for creator-only open rooms. */
   members?: Array<{ kind: "user" | "agent"; id: string }>;
 };
 
@@ -3038,7 +3063,7 @@ export async function findRoomOwnerUserId(
   return row?.ownerId ?? null;
 }
 
-/** D111 — initial `rooms.kind` from an explicit member list (never `subthread`). */
+/** initial `rooms.kind` from an explicit member list (never `subthread`). */
 export type RoomKindNonSubthread = "private" | "group" | "multi_agent";
 
 export function deriveInitialKind(
@@ -3051,7 +3076,7 @@ export function deriveInitialKind(
   return "private";
 }
 
-/** D128 — default `agent_response_mode` stamped on new agent memberships at mint. */
+/** default `agent_response_mode` stamped on new agent memberships at mint. */
 export type AgentResponseMode = "active" | "mention_only" | "observe";
 
 export function defaultAgentResponseModeAtMint(
@@ -3075,7 +3100,7 @@ export type CreateRoomFromMembersParams = {
 };
 
 /**
- * D111 — mint namespace + room from an explicit member list (agent-less
+ * mint namespace + room from an explicit member list (agent-less
  * rooms supported). Caller passes `members` with `kind` + entity id
  * (`users.id` or `agents.id`).
  */
@@ -3493,6 +3518,8 @@ export interface SubthreadDetailPayload {
     summaryRevision: number;
     sourceUserId: string;
     authorAgentId: string | null;
+    /** An assertion can deny local authorship even after receipt cleanup. */
+    externalAuthorship?: boolean;
   };
   summary: {
     replyCount: number;
@@ -3502,7 +3529,7 @@ export interface SubthreadDetailPayload {
 }
 
 /**
- * D426 — canonical child hydration, gated on requester membership before the
+ * canonical child hydration, gated on requester membership before the
  * parent anchor is read. Invalid room shape and a missing/cross-parent anchor
  * deliberately collapse to null so HTTP callers can fail closed with 404.
  */
@@ -3579,6 +3606,7 @@ export async function getSubthreadDetailForMemberWithDb(
       summaryRevision: sessionMessages.summaryRevision,
       sourceUserId: sessions.ownerId,
       authorAgentId: sessions.agentId,
+      externalAuthorship: sessionMessages.externalAuthorship,
     })
     .from(sessionMessages)
     .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
@@ -3604,7 +3632,7 @@ export async function getSubthreadDetailForMemberWithDb(
 }
 
 /**
- * D111 — create a Subthread Room anchored to a message in `parentRoomId`.
+ * create a Subthread Room anchored to a message in `parentRoomId`.
  * Inherits `namespace_id`, `human_actor_ids`, `owner_id`, and `type` from parent.
  */
 export async function createSubthreadRoom(
@@ -3809,7 +3837,7 @@ export async function createSubthreadRoom(
 }
 
 /**
- * D111 — list Subthreads under `parentRoomId` visible to `requesterActorId`.
+ * list Subthreads under `parentRoomId` visible to `requesterActorId`.
  */
 export async function listSubthreadsForRoom(
   parentRoomId: string,
@@ -3859,7 +3887,7 @@ export type RenamePrivateRoomForOwnerParams = {
 };
 
 /**
- * D106 — rename a private Room owned by `ownerUserId`, or explicitly admit a
+ * rename a private Room owned by `ownerUserId`, or explicitly admit a
  * server-authorized global Room manager. Both paths still require the
  * requester's Actor membership and keep the paired Namespace label aligned.
  */
@@ -3929,18 +3957,18 @@ export interface RoomParticipant {
   agentId?: string;
   roomRole: "admin" | "member";
   /**
-   * D128 — per-(Room, Agent) reply policy. NULL on `kind === "user"`
+   * per-(Room, Agent) reply policy. NULL on `kind === "user"`
    * rows; the trust gate treats NULL on agent rows as `'active'`
-   * (legacy default for pre-D128 backfill). See migration 0054.
+   * (legacy default for response-policy backfill). See migration 0054.
    */
   agentResponseMode?: AgentResponseMode | null;
-  /** D300 — human owner of this agent member (`actors.owner_id`). */
+  /** human owner of this agent member (`actors.owner_id`). */
   agentOwnerUserId?: string;
-  /** D300 — owner handle from the existing users join. */
+  /** owner handle from the existing users join. */
   agentOwnerHandle?: string | null;
-  /** D300 — owner display name from the existing users join. */
+  /** owner display name from the existing users join. */
   agentOwnerDisplayName?: string | null;
-  /** D300 — profile avatar ref for this agent member. */
+  /** profile avatar ref for this agent member. */
   agentAvatar?: AvatarRef | null;
 }
 
@@ -4057,7 +4085,7 @@ export async function findLocalUserByHandle(
  * Used by call sites that need "Agents this user can administer" —
  * `/api/agents` admin list, the `manage_agents` mint-authz gate, etc.
  * NOT the right query for "the user's personal Genie" — use
- * `findPersonalAgentsForUser` for that (the post-D201 personal-Genie
+ * `findPersonalAgentsForUser` for that (the current personal-Genie
  * model still seeds one Agent per Human via the `actors.agent_id`
  * pointer; that ownership is independent of the `manage_agents` cap).
  *
@@ -4088,7 +4116,7 @@ export async function findAgentsOwnedByUser(
  * (one or more), resolved via the `actors` mirror table:
  * `actors.owner_id = userId AND actors.kind = 'agent'`.
  *
- * Post-D201 every Human gets one personal-Genie Agent seeded by
+ * Currently, every Human gets one personal-Genie Agent seeded by
  * `seedPersonalAgentForInviteeInTx` at redeem time; today's invite
  * model produces exactly one row, but the query returns an array
  * so future sub-Agent work can extend it without an API churn.
@@ -4183,7 +4211,7 @@ export async function findRoomsContainingAgent(
 // M068 — agent / room membership management (day-2 ops)
 // ---------------------------------------------------------------------------
 
-/** Structured errors for membership rails (M068) + D111 Subthreads. */
+/** Structured errors for membership rails (M068) + Subthreads. */
 export class MembershipOpError extends Error {
   constructor(
     public readonly opCode:
@@ -4204,7 +4232,8 @@ export class MembershipOpError extends Error {
       // M258 — hidden access Rooms are immutable authority containers.
       | "access_room_immutable"
       // Visibility changes apply only to ordinary conversation Rooms.
-      | "invalid_kind_for_visibility",
+      | "invalid_kind_for_visibility"
+      | "external_room_visibility_immutable",
     message?: string,
   ) {
     super(message ?? opCode);
@@ -4221,7 +4250,7 @@ export function assertRoomAllowsDirectMembershipMutation(
 }
 
 /**
- * D128 — flip `room_members.agent_response_mode` for an agent member.
+ * flip `room_members.agent_response_mode` for an agent member.
  *
  * Throws `MembershipOpError("not_member")` if the (room, actor) row
  * doesn't exist, and `MembershipOpError("not_agent")` if the row
@@ -4277,7 +4306,7 @@ export async function updateRoomMemberAgentResponseMode(
 }
 
 /**
- * D302 P5b — flip `rooms.conductor_mode` for smart routing.
+ * flip `rooms.conductor_mode` for smart routing.
  *
  * Caller must validate manage authorization (owner / server-admin) BEFORE
  * invoking; this function does NOT recheck.
@@ -4297,7 +4326,7 @@ export async function updateRoomConductorMode(
 }
 
 /**
- * D194 C2 — flip `room_members.room_role` for a human member.
+ * flip `room_members.room_role` for a human member.
  *
  * Throws `MembershipOpError("not_member")` if the (room, actor) row
  * doesn't exist, and `MembershipOpError("not_agent")` if the row
@@ -4388,12 +4417,16 @@ export async function updateRoomVisibility(
         type: rooms.type,
         kind: rooms.kind,
         discoverable: rooms.discoverable,
+        externalContext: rooms.externalContext,
       })
       .from(rooms)
       .where(eq(rooms.id, roomId))
       .limit(1);
     if (!row) {
       throw new MembershipOpError("not_found");
+    }
+    if (row.externalContext === true) {
+      throw new MembershipOpError("external_room_visibility_immutable");
     }
     if (row.kind !== "private" && row.kind !== "open" && row.kind !== "group") {
       throw new MembershipOpError("invalid_kind_for_visibility");
@@ -4996,7 +5029,7 @@ export async function removeUserFromAgentRole(
 }
 
 /**
- * D124 P8 — human-readable line for membership system rows.
+ * human-readable line for membership system rows.
  */
 export function formatRoomMembershipSystemLine(event: RoomMembershipSystemEventPayload): string {
   if (event.kind === "member_added") {
@@ -5518,7 +5551,7 @@ export class CreateRoomReachabilityError extends Error {
 }
 
 /**
- * D543 — validate an exact new-Room roster against the Server's social and
+ * validate an exact new-Room roster against the Server's social and
  * delegation boundaries.
  *
  * Every active local Human is reachable by every authenticated local Human;
@@ -5637,7 +5670,7 @@ export async function listAddableUsersForRoom(
 }
 
 /**
- * D543 — Server-wide Human directory for new conversations. All authenticated
+ * Server-wide Human directory for new conversations. All authenticated
  * callers see every other active local Human, independent of Role and prior
  * Room overlap. Disabled, federated, and self identities are excluded.
  */
@@ -5669,7 +5702,7 @@ export async function listDirectoryHumans(
 }
 
 /**
- * D187 (Stack 129) — unified directory search for the "New conversation"
+ * unified directory search for the "New conversation"
  * member picker. Returns humans + agents in one recency-ranked list so the
  * client picker no longer has to load the whole directory and sort locally.
  *
@@ -6225,7 +6258,7 @@ export async function closeScope(params: {
 }
 
 /**
- * D124 — best-effort presence bump; callers should fire-and-forget.
+ * best-effort presence bump; callers should fire-and-forget.
  */
 export async function bumpLastSeen(userId: string): Promise<void> {
   const db = getSharedDirectDb();
@@ -6233,7 +6266,7 @@ export async function bumpLastSeen(userId: string): Promise<void> {
 }
 
 /**
- * D124 — read-side counterpart to {@link bumpLastSeen}. Returns the
+ * read-side counterpart to {@link bumpLastSeen}. Returns the
  * stored `users.last_seen_at` for `userId`, or `null` when the user
  * does not exist OR has no recorded presence yet (the route handler
  * intentionally does not distinguish — see `users-presence.ts`).

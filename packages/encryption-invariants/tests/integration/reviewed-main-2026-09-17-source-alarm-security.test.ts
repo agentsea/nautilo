@@ -21,20 +21,20 @@ const repositoryRoot = resolve(import.meta.dir, "../../../..");
 const sourceScan = scanSourceAlarms({ repoRoot: repositoryRoot });
 
 describe("current-main 2026-09-17 source alarm review", () => {
-  test("reconciles the exact 41 new and 15 stale locators without new alarm debt", async () => {
+  test("reconciles the historical and Bolter locators without new alarm debt", async () => {
     const scan = await sourceScan;
     const inspection = inspectSourceAlarmReviews(scan.alarms);
 
     expect(scan.errors).toEqual([]);
     expect(inspection.errors).toEqual([]);
-    expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS).toHaveLength(41);
+    expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS).toHaveLength(50);
     expect(SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.size).toBe(15);
     expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.filter((review) =>
       review.closure === "baseline_debt"
     )).toEqual([]);
     expect(new Set(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.map((review) =>
       review.locator
-    )).size).toBe(41);
+    )).size).toBe(50);
 
     for (const review of REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
@@ -53,24 +53,71 @@ describe("current-main 2026-09-17 source alarm review", () => {
     const declarations = REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.filter(
       (review) => review.closure === "declaration",
     );
-    expect(declarations.map((review) => review.locator)).toEqual([
+    const spoolDeclarations = declarations.filter((review) =>
+      review.locator.startsWith("apps/desktop/electron/bolter-bridge/inbox-spool.ts#"),
+    );
+    expect(spoolDeclarations.map((review) => ({
+      locator: review.locator,
+      declarationId: review.closure === "declaration" ? review.declarationId : "",
+    }))).toEqual([
+      {
+        locator: "apps/desktop/electron/bolter-bridge/inbox-spool.ts#filesystem_write:5bd7f11fea68097f:1",
+        declarationId: "source.bolter-inbox.ciphertext-write",
+      },
+      {
+        locator: "apps/desktop/electron/bolter-bridge/inbox-spool.ts#filesystem_write:c475a3203bb7e0fb:1",
+        declarationId: "source.bolter-inbox.ciphertext-publish",
+      },
+    ]);
+    expect(spoolDeclarations.every((review) =>
+      review.reason.includes("source.file.desktop-bolter-inbox")
+      && /cipher|ciphertext/u.test(review.reason)
+    )).toBe(true);
+    expect(SOURCE_DECLARATIONS.find((entry) =>
+      entry.id === "source.file.desktop-bolter-inbox"
+    )).toMatchObject({
+      surface: "file",
+      locator: "apps/desktop/electron/bolter-bridge/inbox-spool.ts#BolterInboxSpool",
+      role: "store",
+    });
+    const subprocessDeclarations = declarations.filter((review) =>
+      !spoolDeclarations.includes(review),
+    );
+    expect(subprocessDeclarations.map((review) => review.locator)).toEqual([
       "apps/desktop/electron/sequence-export-host.ts#subprocess_processor:1a362bfafa05b5d7:1",
       "bin/nautilo-dev/src/commands/restore.ts#subprocess_processor:c8fc3c3c55eefdd5:1",
       "deploy/compose-driver/src/artifact-relocation-backup.ts#subprocess_processor:a1bfc61b41ebbc7e:1",
     ]);
-    expect(declarations.every((review) =>
+    expect(subprocessDeclarations.every((review) =>
       /explicit|existing/u.test(review.reason)
       && /plaintext|ordinary operator file/u.test(review.reason)
     )).toBe(true);
-    expect(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.filter((review) =>
+    const exclusions = REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS.filter((review) =>
+      review.closure === "reviewed_exclusion",
+    );
+    const bolterExclusions = exclusions.filter((review) =>
       review.closure === "reviewed_exclusion"
-    )).toHaveLength(38);
+      && review.exclusionId.startsWith("exclusion.bolter-bridge."),
+    );
+    expect(bolterExclusions.map((review) =>
+      review.closure === "reviewed_exclusion" ? review.exclusionId : ""
+    )).toEqual([
+      "exclusion.bolter-bridge.committed-message-observer",
+      "exclusion.bolter-bridge.resumed-recovery",
+      "exclusion.bolter-bridge.recovery-counts",
+      "exclusion.bolter-bridge.deferred-recovery",
+      "exclusion.bolter-bridge.execution-migration-finalizer",
+      "exclusion.bolter-bridge.migration-finalizer",
+      "exclusion.bolter-bridge.factory-migration-finalizer",
+    ]);
+    expect(exclusions.filter((review) => !bolterExclusions.includes(review)))
+      .toHaveLength(38);
 
     const semanticIds = new Set(SOURCE_DECLARATIONS.map((entry) => entry.id));
-    expect(declarations.slice(1).map((review) =>
+    expect(subprocessDeclarations.slice(1).map((review) =>
       review.closure === "declaration" ? review.declarationId : ""
     )).toEqual(["source.backup.dev-snapshot", "source.backup.compose-bundle"]);
-    expect(declarations.slice(1).every((review) =>
+    expect(subprocessDeclarations.slice(1).every((review) =>
       review.closure === "declaration"
       && semanticIds.has(review.declarationId)
     )).toBe(true);
@@ -79,8 +126,8 @@ describe("current-main 2026-09-17 source alarm review", () => {
       .find((review) => review.locator ===
         "apps/desktop/electron/sequence-export-host.ts#subprocess_processor:a536c8590ec41360:1");
     expect(previousSequence?.closure).toBe("declaration");
-    expect(declarations[0]?.closure === "declaration"
-      ? declarations[0].declarationId
+    expect(subprocessDeclarations[0]?.closure === "declaration"
+      ? subprocessDeclarations[0].declarationId
       : "").toBe(previousSequence?.closure === "declaration"
         ? previousSequence.declarationId
         : "missing");

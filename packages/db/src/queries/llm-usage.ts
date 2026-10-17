@@ -1,10 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   and,
+  count,
+  sum,
   asc,
   desc,
   eq,
   exists,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -14,8 +17,10 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import { llmUsageEvents } from "../schema/llm-usage";
+import { chatgptRegistrations } from "../schema/chatgpt-registrations";
 import { users } from "../schema/users";
 import { getSharedDirectDb } from "../config/direct-database";
 import type { DirectDatabase } from "../config/direct-database";
@@ -108,6 +113,7 @@ export interface BeginSurplusLlmAttemptInput {
 export interface BeginPersonalLlmAttemptInput {
   /** Caller-generated UUID; retrying the same begin is idempotent. */
   id: string;
+  ownerToken: string;
   occurredAt?: Date;
   userId: string;
   roomId?: string | null;
@@ -121,6 +127,10 @@ export interface BeginPersonalLlmAttemptInput {
   endpoint: string;
   metadata?: Record<string, unknown> | null;
 }
+
+/** Explicit platform work has causal attribution but never a personal payer. */
+export type BeginServiceLlmAttemptInput = Omit<BeginPersonalLlmAttemptInput,
+  "userId" | "credentialId" | "credentialRevision"> & { userId?: string | null };
 
 export interface AttachSurplusRequestReceiptInput {
   attemptId: string;
@@ -151,6 +161,7 @@ export interface SettleSurplusLlmAttemptInput {
 
 export interface SettlePersonalLlmAttemptInput {
   attemptId: string;
+  ownerToken: string;
   outcome: Exclude<SurplusAttemptOutcome, "in_progress">;
   costState: "actual" | "estimated" | "unknown";
   inputTokens?: number;
@@ -177,6 +188,24 @@ export interface ListPendingSurplusAttemptsInput {
 
 // Bound each fair-ranked recovery pass and the corresponding diagnostic list.
 export const DEFAULT_SURPLUS_RECOVERY_BATCH_LIMIT = 100;
+
+/** Provisional foreground-attempt liveness policy; reviewed before publication. */
+export const PERSONAL_LLM_ATTEMPT_LEASE_MS = 60_000;
+export const PERSONAL_LLM_ATTEMPT_TICK_MS = 20_000;
+export const PERSONAL_LLM_ATTEMPT_BATCH_LIMIT = 100;
+
+export interface PersonalLlmAttemptLeasePageInput {
+  ownerToken: string;
+  limit?: number;
+  /** Unit-test seam. Production omits this so PostgreSQL time is authoritative. */
+  now?: Date;
+}
+
+export interface ExpiredPersonalLlmAttemptPageInput {
+  limit?: number;
+  /** Unit-test seam. Production omits this so PostgreSQL time is authoritative. */
+  now?: Date;
+}
 
 export interface SurplusPendingAttempt {
   id: string;
@@ -263,6 +292,28 @@ function optionalUsd(value: number | null | undefined, label: string): string | 
   return toNumeric(value);
 }
 
+function personalAttemptBatch(limit: number | undefined): number {
+  const resolved = limit ?? PERSONAL_LLM_ATTEMPT_BATCH_LIMIT;
+  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > PERSONAL_LLM_ATTEMPT_BATCH_LIMIT) {
+    throw new Error(`limit must be between 1 and ${PERSONAL_LLM_ATTEMPT_BATCH_LIMIT}`);
+  }
+  return resolved;
+}
+
+function personalAttemptNow(now: Date | undefined): SQL {
+  if (now === undefined) return sql`CURRENT_TIMESTAMP`;
+  if (!Number.isFinite(now.getTime())) throw new Error("now must be a valid timestamp");
+  return sql`${now.toISOString()}::timestamptz`;
+}
+
+function personalAttemptLeaseExpiresAt(now: SQL): SQL {
+  return sql`${now} + (${PERSONAL_LLM_ATTEMPT_LEASE_MS} * interval '1 millisecond')`;
+}
+
+function personalAttemptRenewBefore(now: SQL): SQL {
+  return sql`${now} + (${PERSONAL_LLM_ATTEMPT_LEASE_MS - PERSONAL_LLM_ATTEMPT_TICK_MS} * interval '1 millisecond')`;
+}
+
 /** Persist the attempt before any Surplus wire request is sent. */
 export async function beginSurplusLlmAttempt(
   input: BeginSurplusLlmAttemptInput,
@@ -308,12 +359,29 @@ export async function beginPersonalLlmAttempt(
   if (!Number.isSafeInteger(input.credentialRevision) || input.credentialRevision < 1) {
     throw new Error("credentialRevision must be a positive integer");
   }
+  return beginDirectLlmAttempt(input, "personal");
+}
+
+export function beginServiceLlmAttempt(input: BeginServiceLlmAttemptInput): Promise<void> {
+  return beginDirectLlmAttempt(input, "service");
+}
+
+export function beginServerLlmAttempt(input: BeginServiceLlmAttemptInput): Promise<void> {
+  return beginDirectLlmAttempt(input, "server");
+}
+
+async function beginDirectLlmAttempt(
+  input: BeginPersonalLlmAttemptInput | BeginServiceLlmAttemptInput,
+  fundingKind: "personal" | "server" | "service",
+): Promise<void> {
+  const ownerToken = assertNonEmpty(input.ownerToken, "ownerToken");
+  const leaseNow = personalAttemptNow(undefined);
   await db()
     .insert(llmUsageEvents)
     .values({
       id: input.id,
       ...(input.occurredAt ? { occurredAt: input.occurredAt } : {}),
-      userId: input.userId,
+      userId: input.userId ?? null,
       roomId: input.roomId ?? null,
       taskId: input.taskId ?? null,
       callType: assertNonEmpty(input.callType, "callType"),
@@ -321,17 +389,114 @@ export async function beginPersonalLlmAttempt(
       model: assertNonEmpty(input.model, "model"),
       endpoint: assertNonEmpty(input.endpoint, "endpoint"),
       providerRoute: assertNonEmpty(input.providerRoute, "providerRoute"),
-      fundingKind: "personal",
-      payerHumanId: input.userId,
-      credentialId: input.credentialId,
-      credentialRevision: input.credentialRevision,
+      fundingKind,
+      payerHumanId: fundingKind === "personal" ? input.userId : null,
+      credentialId: fundingKind === "personal" && "credentialId" in input ? input.credentialId : null,
+      credentialRevision: fundingKind === "personal" && "credentialRevision" in input ? input.credentialRevision : null,
       attemptOutcome: "in_progress",
       costState: "pending",
       estimatedCostUsd: "0.00000000",
       actualCostUsd: null,
+      attemptOwnerToken: ownerToken,
+      attemptLeaseExpiresAt: personalAttemptLeaseExpiresAt(leaseNow),
       metadata: input.metadata ?? null,
     })
     .onConflictDoNothing({ target: llmUsageEvents.id });
+}
+
+/** Renew one due page owned by this exact process token. Callers drain pages. */
+export async function renewPersonalLlmAttemptLeases(
+  input: PersonalLlmAttemptLeasePageInput,
+): Promise<number> {
+  const ownerToken = assertNonEmpty(input.ownerToken, "ownerToken");
+  const limit = personalAttemptBatch(input.limit);
+  const now = personalAttemptNow(input.now);
+  return db().transaction(async (tx) => {
+    const candidates = await tx.select({ id: llmUsageEvents.id }).from(llmUsageEvents).where(and(
+      eq(llmUsageEvents.attemptOwnerToken, ownerToken),
+      inArray(llmUsageEvents.fundingKind, ["personal", "server", "service"]),
+      ne(llmUsageEvents.providerRoute, "surplus"),
+      eq(llmUsageEvents.attemptOutcome, "in_progress"),
+      isNotNull(llmUsageEvents.attemptLeaseExpiresAt),
+      gt(llmUsageEvents.attemptLeaseExpiresAt, now),
+      lte(llmUsageEvents.attemptLeaseExpiresAt, personalAttemptRenewBefore(now)),
+    )).orderBy(llmUsageEvents.attemptLeaseExpiresAt, llmUsageEvents.id)
+      .limit(limit).for("update", { skipLocked: true });
+    if (candidates.length === 0) return 0;
+    const rows = await tx.update(llmUsageEvents).set({
+      attemptLeaseExpiresAt: personalAttemptLeaseExpiresAt(now),
+      updatedAt: now,
+    }).where(and(
+      inArray(llmUsageEvents.id, candidates.map(({ id }) => id)),
+      eq(llmUsageEvents.attemptOwnerToken, ownerToken),
+      eq(llmUsageEvents.attemptOutcome, "in_progress"),
+      gt(llmUsageEvents.attemptLeaseExpiresAt, now),
+    )).returning({ id: llmUsageEvents.id });
+    return rows.length;
+  });
+}
+
+async function interruptPersonalLlmAttemptPage(input: {
+  ownerToken?: string;
+  failureCode: "attempt_owner_expired" | "attempt_owner_shutdown";
+  limit?: number;
+  now?: Date;
+}): Promise<number> {
+  const ownerToken = input.ownerToken === undefined
+    ? undefined : assertNonEmpty(input.ownerToken, "ownerToken");
+  const limit = personalAttemptBatch(input.limit);
+  const now = personalAttemptNow(input.now);
+  return db().transaction(async (tx) => {
+    const candidates = await tx.select({ id: llmUsageEvents.id }).from(llmUsageEvents).where(and(
+      inArray(llmUsageEvents.fundingKind, ["personal", "server", "service"]),
+      ne(llmUsageEvents.providerRoute, "surplus"),
+      eq(llmUsageEvents.attemptOutcome, "in_progress"),
+      isNotNull(llmUsageEvents.attemptOwnerToken),
+      isNotNull(llmUsageEvents.attemptLeaseExpiresAt),
+      ...(ownerToken === undefined
+        ? [lte(llmUsageEvents.attemptLeaseExpiresAt, now)]
+        : [eq(llmUsageEvents.attemptOwnerToken, ownerToken)]),
+    )).orderBy(llmUsageEvents.attemptLeaseExpiresAt, llmUsageEvents.id)
+      .limit(limit).for("update", { skipLocked: true });
+    if (candidates.length === 0) return 0;
+    const rows = await tx.update(llmUsageEvents).set({
+      attemptOutcome: "interrupted",
+      costState: "unknown",
+      failureCode: input.failureCode,
+      settledAt: now,
+      updatedAt: now,
+    }).where(and(
+      inArray(llmUsageEvents.id, candidates.map(({ id }) => id)),
+      eq(llmUsageEvents.attemptOutcome, "in_progress"),
+      ...(ownerToken === undefined
+        ? [lte(llmUsageEvents.attemptLeaseExpiresAt, now)]
+        : [eq(llmUsageEvents.attemptOwnerToken, ownerToken)]),
+    )).returning({ id: llmUsageEvents.id });
+    return rows.length;
+  });
+}
+
+/** Terminalize one bounded page whose explicit owner lease is dead. */
+export function interruptExpiredPersonalLlmAttempts(
+  input: ExpiredPersonalLlmAttemptPageInput = {},
+): Promise<number> {
+  return interruptPersonalLlmAttemptPage({
+    failureCode: "attempt_owner_expired",
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.now === undefined ? {} : { now: input.now }),
+  });
+}
+
+/** Graceful shutdown fence for one exact process token. Callers drain pages. */
+export function interruptPersonalLlmAttemptsByOwner(
+  input: PersonalLlmAttemptLeasePageInput,
+): Promise<number> {
+  return interruptPersonalLlmAttemptPage({
+    ownerToken: input.ownerToken,
+    failureCode: "attempt_owner_shutdown",
+    ...(input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.now === undefined ? {} : { now: input.now }),
+  });
 }
 
 /** Bind the provider request receipt to the already-durable local attempt. */
@@ -469,6 +634,19 @@ export async function settleSurplusLlmAttempt(
 export async function settlePersonalLlmAttempt(
   input: SettlePersonalLlmAttemptInput,
 ): Promise<void> {
+  return settleDirectLlmAttempt(input, "personal");
+}
+
+export function settleServiceLlmAttempt(input: SettlePersonalLlmAttemptInput): Promise<void> {
+  return settleDirectLlmAttempt(input, "service");
+}
+
+export function settleServerLlmAttempt(input: SettlePersonalLlmAttemptInput): Promise<void> {
+  return settleDirectLlmAttempt(input, "server");
+}
+
+async function settleDirectLlmAttempt(input: SettlePersonalLlmAttemptInput, fundingKind: "personal" | "server" | "service"): Promise<void> {
+  const ownerToken = assertNonEmpty(input.ownerToken, "ownerToken");
   const actualCostUsd = optionalUsd(input.actualCostUsd, "actualCostUsd");
   const estimatedCostUsd = optionalUsd(input.estimatedCostUsd, "estimatedCostUsd");
   if (input.costState === "actual" && actualCostUsd === null) {
@@ -480,9 +658,6 @@ export async function settlePersonalLlmAttempt(
   if (input.costState === "estimated"
     && (estimatedCostUsd === null || !input.pricingVersion?.trim())) {
     throw new Error("estimated costState requires estimatedCostUsd and pricingVersion");
-  }
-  if (input.preserveOutcome && input.costState === "unknown") {
-    throw new Error("Late personal settlement requires known financial evidence");
   }
 
   const inputTokens = input.inputTokens === undefined
@@ -504,8 +679,7 @@ export async function settlePersonalLlmAttempt(
     : input.servingProvider?.trim() || null;
   const failureCode = input.failureCode?.trim() || null;
   const settledAt = input.settledAt ?? new Date();
-  const rows = await db().update(llmUsageEvents).set({
-    ...(input.preserveOutcome ? {} : { attemptOutcome: input.outcome }),
+  const evidenceUpdate = {
     costState: input.costState,
     ...(providerRequestId === undefined ? {} : { providerRequestId }),
     ...(metadataPatch === undefined ? {} : {
@@ -522,18 +696,69 @@ export async function settlePersonalLlmAttempt(
     actualCostUsd,
     pricingVersion,
     ...(servingProvider === undefined ? {} : { servingProvider }),
+    updatedAt: personalAttemptNow(undefined),
+  };
+  const rows = await db().update(llmUsageEvents).set({
+    ...evidenceUpdate,
+    ...(input.preserveOutcome ? {} : { attemptOutcome: input.outcome }),
     ...(input.preserveOutcome ? {} : { failureCode }),
     ...(input.preserveOutcome ? {} : { settledAt }),
-    updatedAt: new Date(),
   }).where(and(
     eq(llmUsageEvents.id, input.attemptId),
-    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.fundingKind, fundingKind),
     ne(llmUsageEvents.providerRoute, "surplus"),
+    eq(llmUsageEvents.attemptOwnerToken, ownerToken),
+    ...(providerRequestId === undefined ? [] : [or(
+      isNull(llmUsageEvents.providerRequestId),
+      eq(llmUsageEvents.providerRequestId, providerRequestId),
+    )]),
     ...(input.preserveOutcome
       ? [eq(llmUsageEvents.costState, "unknown")]
-      : [eq(llmUsageEvents.attemptOutcome, "in_progress")]),
+      : [eq(llmUsageEvents.attemptOutcome, "in_progress"),
+          gt(llmUsageEvents.attemptLeaseExpiresAt, personalAttemptNow(undefined))]),
   )).returning({ id: llmUsageEvents.id });
   if (rows.length === 1) return;
+
+  // A request may return after its process lease expired. The old owner can
+  // contribute receipt and financial evidence, but it cannot reclaim terminal
+  // outcome authority or make another provider request.
+  if (!input.preserveOutcome) {
+    const expired = await db().update(llmUsageEvents).set({
+      ...evidenceUpdate,
+      attemptOutcome: "interrupted",
+      failureCode: "attempt_owner_expired",
+      settledAt: personalAttemptNow(undefined),
+    }).where(and(
+      eq(llmUsageEvents.id, input.attemptId),
+      eq(llmUsageEvents.fundingKind, fundingKind),
+      ne(llmUsageEvents.providerRoute, "surplus"),
+      eq(llmUsageEvents.attemptOwnerToken, ownerToken),
+      ...(providerRequestId === undefined ? [] : [or(
+        isNull(llmUsageEvents.providerRequestId),
+        eq(llmUsageEvents.providerRequestId, providerRequestId),
+      )]),
+      eq(llmUsageEvents.attemptOutcome, "in_progress"),
+      lte(llmUsageEvents.attemptLeaseExpiresAt, personalAttemptNow(undefined)),
+    )).returning({ id: llmUsageEvents.id });
+    if (expired.length === 1) return;
+  }
+  const late = await db().update(llmUsageEvents).set(evidenceUpdate).where(and(
+    eq(llmUsageEvents.id, input.attemptId),
+    eq(llmUsageEvents.fundingKind, fundingKind),
+    ne(llmUsageEvents.providerRoute, "surplus"),
+    eq(llmUsageEvents.attemptOwnerToken, ownerToken),
+    ...(providerRequestId === undefined ? [] : [or(
+      isNull(llmUsageEvents.providerRequestId),
+      eq(llmUsageEvents.providerRequestId, providerRequestId),
+    )]),
+    ne(llmUsageEvents.attemptOutcome, "in_progress"),
+    eq(llmUsageEvents.costState, "unknown"),
+    ...(input.preserveOutcome ? [] : [inArray(llmUsageEvents.failureCode, [
+      "attempt_owner_expired",
+      "attempt_owner_shutdown",
+    ])]),
+  )).returning({ id: llmUsageEvents.id });
+  if (late.length === 1) return;
   const [current] = await db().select({
     attemptOutcome: llmUsageEvents.attemptOutcome,
     costState: llmUsageEvents.costState,
@@ -550,11 +775,15 @@ export async function settlePersonalLlmAttempt(
     servingProvider: llmUsageEvents.servingProvider,
     failureCode: llmUsageEvents.failureCode,
     settledAt: llmUsageEvents.settledAt,
+    attemptOwnerToken: llmUsageEvents.attemptOwnerToken,
   }).from(llmUsageEvents).where(and(
     eq(llmUsageEvents.id, input.attemptId),
-    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.fundingKind, fundingKind),
     ne(llmUsageEvents.providerRoute, "surplus"),
   )).limit(1);
+  const ownerRecovered = current?.attemptOutcome === "interrupted"
+    && (current.failureCode === "attempt_owner_expired"
+      || current.failureCode === "attempt_owner_shutdown");
   const sameMetadata = metadataPatch === undefined
     || Object.entries(metadataPatch).every(([key, value]) => (
       isDeepStrictEqual(current?.metadata?.[key], value)
@@ -573,13 +802,13 @@ export async function settlePersonalLlmAttempt(
     && current.actualCostUsd === actualCostUsd
     && current.pricingVersion === pricingVersion
     && (servingProvider === undefined || current.servingProvider === servingProvider);
-  const sameTerminalState = input.preserveOutcome || (
+  const sameTerminalState = input.preserveOutcome || ownerRecovered || (
     current?.attemptOutcome === input.outcome
     && current.failureCode === failureCode
     && (input.settledAt === undefined
       || current.settledAt?.getTime() === input.settledAt.getTime())
   );
-  if (sameEvidence && sameTerminalState) return;
+  if (current?.attemptOwnerToken === ownerToken && sameEvidence && sameTerminalState) return;
   throw new Error("Personal attempt settlement conflicts with durable state");
 }
 
@@ -784,7 +1013,7 @@ export async function reconcileSurplusLlmAttemptCost(input: {
 }
 
 // ---------------------------------------------------------------------------
-// Costs dashboard aggregations (D405)
+// Costs dashboard aggregations
 // ---------------------------------------------------------------------------
 
 export interface CostsRange {
@@ -976,6 +1205,7 @@ export function buildCostsSummaryQueries(
   // the storage boundary and remain in totals for continuity; explicitly
   // personal-funded calls are excluded.
   const inWindow = and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     ...(payerHumanId === undefined
@@ -1124,6 +1354,34 @@ export function buildCostsSummaryQueries(
   return { totals, byModel, byCallType, byUser, timeSeries };
 }
 
+/** Account-scoped plan usage. Frozen API prices are comparisons, never charges. */
+export function buildPersonalSubscriptionUsageQuery(
+  range: CostsRange,
+  handle: Pick<DirectDatabase, "select">,
+  payerHumanId: string,
+) {
+  return handle.select({
+    registrationId: llmUsageEvents.credentialId,
+    model: llmUsageEvents.model,
+    attempts: count(),
+    unresolvedAttempts: sql<number>`COUNT(*) FILTER (
+      WHERE ${llmUsageEvents.attemptOutcome} IN ('in_progress', 'unknown', 'interrupted')
+    )::int`,
+    inputTokens: sum(llmUsageEvents.inputTokens),
+    cachedInputTokens: sum(llmUsageEvents.cachedInputTokens),
+    outputTokens: sum(llmUsageEvents.outputTokens),
+    totalTokens: sum(llmUsageEvents.totalTokens),
+    apiEquivalentCostUsd: sum(llmUsageEvents.estimatedCostUsd),
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.fundingKind, "personal"),
+    eq(llmUsageEvents.payerHumanId, payerHumanId),
+    eq(llmUsageEvents.providerRoute, "openai-chatgpt"),
+    gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
+    lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
+  )).groupBy(llmUsageEvents.credentialId, llmUsageEvents.model)
+    .orderBy(asc(llmUsageEvents.credentialId), asc(llmUsageEvents.model));
+}
+
 /** Personal model spend grouped by the actual funded transport route. */
 export function buildPersonalCostsByRouteQuery(
   range: CostsRange,
@@ -1141,6 +1399,7 @@ export function buildPersonalCostsByRouteQuery(
     actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
     total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
   }).from(llmUsageEvents).where(and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     eq(llmUsageEvents.fundingKind, "personal"),
@@ -1166,6 +1425,7 @@ export function buildPersonalCostsByTaskQuery(
     actual_cost: sql<string>`COALESCE(SUM(${llmUsageEvents.actualCostUsd}), 0)`,
     total_cost: sql<string>`COALESCE(SUM(${EFFECTIVE_COST}), 0)`.as("total_cost"),
   }).from(llmUsageEvents).where(and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     eq(llmUsageEvents.fundingKind, "personal"),
@@ -1191,6 +1451,7 @@ export function buildCostsRecoveryAttemptsQuery(
     failureCode: llmUsageEvents.failureCode,
     updatedAt: llmUsageEvents.updatedAt,
   }).from(llmUsageEvents).where(and(
+    or(isNull(llmUsageEvents.providerRoute), ne(llmUsageEvents.providerRoute, "openai-chatgpt")),
     gte(llmUsageEvents.occurredAt, new Date(range.sinceIso)),
     lt(llmUsageEvents.occurredAt, new Date(range.untilIso)),
     inArray(llmUsageEvents.costState, ["pending", "unknown"]),
@@ -1450,7 +1711,7 @@ export async function getPersonalCostsSummary(input: {
     [totalsRow], byModelRows, byCallTypeRows, modelTimeSeriesRows,
     [providerTotalsRow], byProviderRows, providerTimeSeriesRows, modelByRouteRows,
     modelByTaskRows, providerByTaskRows, recoveryRows, serviceRecoveryRows,
-    credentialRows, llmHistoryRows, providerHistoryRows,
+    credentialRows, llmHistoryRows, providerHistoryRows, subscriptionRows, registrationRows,
   ] = await Promise.all([
     queries.totals,
     queries.byModel,
@@ -1487,6 +1748,9 @@ export async function getPersonalCostsSummary(input: {
         eq(providerCostEvents.payerHumanId, payerHumanId),
       ))
       .limit(1),
+    buildPersonalSubscriptionUsageQuery(input.range, db(), payerHumanId),
+    db().select({ id: chatgptRegistrations.id }).from(chatgptRegistrations)
+      .where(eq(chatgptRegistrations.userId, payerHumanId)).limit(1),
   ]);
 
   const providerOperations = n(providerTotalsRow?.["operations"]);
@@ -1595,9 +1859,20 @@ export async function getPersonalCostsSummary(input: {
       totalCostUsd: (current?.totalCostUsd ?? 0) + n(row["total_cost"]),
     });
   }
-  const hasPersonalCredentials = credentialRows.length > 0;
+  const hasPersonalCredentials = credentialRows.length > 0 || registrationRows.length > 0;
   const hasHistory = llmHistoryRows.length > 0 || providerHistoryRows.length > 0;
   return {
+    subscriptions: subscriptionRows.map(row => ({
+      registrationId: row.registrationId,
+      model: row.model,
+      attempts: n(row.attempts),
+      unresolvedAttempts: n(row.unresolvedAttempts),
+      inputTokens: n(row.inputTokens),
+      cachedInputTokens: n(row.cachedInputTokens),
+      outputTokens: n(row.outputTokens),
+      totalTokens: n(row.totalTokens),
+      apiEquivalentCostUsd: n(row.apiEquivalentCostUsd),
+    })),
     entry: {
       available: hasPersonalCredentials || hasHistory,
       hasPersonalCredentials,

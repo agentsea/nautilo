@@ -261,11 +261,12 @@ describe("browser_read_page renderer", () => {
     }));
 
     expect(formatBrowserPageReadSummary(raw)).toBe("Read page · An example article");
-    expect(formatBrowserPageReadExtras(raw)).toBe("complete · 50,000 chars");
+    const formattedCount = (50_000).toLocaleString();
+    expect(formatBrowserPageReadExtras(raw)).toBe(`complete · ${formattedCount} chars`);
     const { container, root } = await renderExpanded(raw, { resultTruncated: true });
     expect(container.querySelector('[data-testid="browser-read-page-renderer"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="browser-read-page-raw"]')).toBeNull();
-    expect(container.textContent).toContain("50,000 returned of 50,000 characters");
+    expect(container.textContent).toContain(`${formattedCount} returned of ${formattedCount} characters`);
     expect(container.textContent).toContain("ToolCard preview clipped; Genie received the full chunk.");
     expect(container.querySelector('[data-testid="browser-read-page-content"]')?.textContent).toContain(preview);
     await act(async () => root.unmount());

@@ -109,7 +109,7 @@ describe("resolveDesktopRuntimePath — officecli", () => {
     if (!outcome.ok) {
       expect(outcome.runtime).toBe("officecli");
       expect(outcome.error).toContain("darwin-arm64");
-      expect(outcome.error).toContain("vendor/officecli/darwin-arm64/officecli");
+      expect(outcome.error).toContain(join("vendor", "officecli", "darwin-arm64", "officecli"));
     }
 
     expect(

@@ -55,6 +55,15 @@ test("only one canonical occurrence child and closed local file arguments are ad
   }
   for (const kind of ["file", "history", "search"]) expect(allowed({ ...request, args: { ...request.args, operation: { kind } } })).toBe(true);
 });
+test("Task project roots use the remote Windows path syntax on every server", () => {
+  for (const project of ["C:\\project", "\\\\desktop\\share\\project"]) {
+    const windowsRoot = `${project}\\nautilo-repo-docs\\task-run-${binding.authority.taskRunId}`;
+    expect(allowed({ ...request, args: { ...request.args, allowedRoots: [windowsRoot] } })).toBe(true);
+    for (const invalid of [windowsRoot + "\\..\\escape", windowsRoot + "\\", windowsRoot.replace(binding.authority.taskRunId, "other-run")]) {
+      expect(allowed({ ...request, args: { ...request.args, allowedRoots: [invalid] } })).toBe(false);
+    }
+  }
+});
 test("capability projection keeps ordinary file support but withholds new Task support from older peers", () => {
   const old = projectRelayCapabilitiesForProtocol(capabilities, RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION - 1);
   expect(old.canUseTaskProjectFiles).toBeUndefined();

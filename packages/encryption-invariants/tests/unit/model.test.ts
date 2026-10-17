@@ -18,6 +18,72 @@ const commonEntry = {
   testEvidence: ["packages/runtime/tests/integration/session-messages-ordering.test.ts"],
 } as const;
 
+const transientPlaintext = {
+  ...commonEntry,
+  id: "source.fixture.transient",
+  surface: "processor",
+  locator: "packages/fixture/src/processor.ts#fixedProcessor",
+  classification: "authorized_plaintext",
+  migrationState: "not_applicable",
+  mode: "plaintext_only",
+  transientOnly: true,
+  modeGate: "Canonical plaintext-only fence precedes content admission.",
+  recipientAuthority: "One current owner-bound recipient is verified before disclosure.",
+  cleanupContract: "No extra durable body or log is created by this transient carrier.",
+  noRetentionTestEvidence: ["packages/fixture/tests/unit/no-retention.test.ts"],
+  releaseImpact: "blocks_whole_product_claim",
+} as const;
+
+describe("authorized transient plaintext contracts", () => {
+  test("accepts an exact transient carrier without claiming encryption", () => {
+    expect(validateCoverageEntry(transientPlaintext)).toEqual({ ok: true });
+    expect(validateCoverageEntry({ ...transientPlaintext, surface: "wire" })).toEqual({ ok: true });
+  });
+
+  test("accepts exact HTTP boundaries only with source and transient-disclosure evidence", () => {
+    const entry = { ...transientPlaintext, surface: "wire", locator: "http:request_response:POST /api/fixture/:id/messages",
+      writers: ["packages/fixture/src/routes.ts"] };
+    expect(validateCoverageEntry(entry)).toEqual({ ok: true });
+    for (const locator of ["http:request_response:/api/fixture", "http:request_response:POST /api/*",
+      "http:request_response:POST /api/../fixture", "http:request_response:POST /api/%2e%2e/fixture",
+      "http:request_response:POST /api/fixture?wildcard=true", "http:request_response:POST https://example.test/api/fixture"]) {
+      expect(validateCoverageEntry({ ...entry, locator }).ok).toBe(false);
+    }
+    for (const writers of [[], ["packages/fixture"], ["../routes.ts"], ["packages/fixture/*.ts"]]) {
+      expect(validateCoverageEntry({ ...entry, writers }).ok).toBe(false);
+    }
+    expect(validateCoverageEntry({ ...entry, noRetentionTestEvidence: [] }).ok).toBe(false);
+    expect(validateCoverageEntry({ ...entry, surface: "processor" }).ok).toBe(false);
+    expect(validateCoverageEntry({ ...entry, mode: "full" }).ok).toBe(false);
+  });
+
+  test.each([undefined, "shadow_encryption", "full", "all"])("rejects missing or wider mode %s", mode => {
+    expect(validateCoverageEntry({ ...transientPlaintext, mode }).ok).toBe(false);
+  });
+
+  test.each(["db", "file", "cache", "log", "notification", "backup", "export"])("cannot classify durable or unrelated %s surfaces", surface => {
+    expect(validateCoverageEntry({ ...transientPlaintext, surface }).ok).toBe(false);
+  });
+
+  test.each([
+    { recipientAuthority: undefined }, { recipientAuthority: "anyone" },
+    { modeGate: undefined }, { modeGate: "allowed" },
+    { cleanupContract: undefined }, { cleanupContract: "retained" },
+    { noRetentionTestEvidence: undefined }, { noRetentionTestEvidence: [] },
+    { noRetentionTestEvidence: ["future:evidence"] },
+    { noRetentionTestEvidence: ["../outside.test.ts"] },
+    { transientOnly: undefined }, { transientOnly: false },
+    { releaseImpact: undefined }, { releaseImpact: "blocks_enabled_scope" },
+    { migrationState: "verified" }, { migrationState: "ciphertext_only" },
+    { locator: "packages/fixture/*#fixedProcessor" },
+    { locator: "packages/fixture/src/processor.ts#*" },
+    { locator: "packages/fixture/src/processor.ts" },
+    { locator: "../fixture.ts#processor" },
+  ])("rejects incomplete or blanket review %#", change => {
+    expect(validateCoverageEntry({ ...transientPlaintext, ...change }).ok).toBe(false);
+  });
+});
+
 describe("coverage model validation", () => {
   test("accepts each precise classification contract", () => {
     expect(validateCoverageEntry({

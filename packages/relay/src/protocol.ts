@@ -1,3 +1,4 @@
+import { BOLTER_RELAY_PROTOCOL_VERSION, isRelayBolterCapability, type RelayBolterDesktopMessage, type RelayBolterServerMessage } from "./bolter-protocol";
 import { parseHumanTerminalOwner, type HumanTerminalOwner } from "../../types/src/human-terminal";
 import { parseLocalExecutionDelegation, type LocalExecutionDelegation, isLocalExecutionReadArgs } from "@nautilo/types";
 import type { RelaySecurityScanProgressMessage, SecurityScanProgress } from "./security-scan-progress";
@@ -22,7 +23,7 @@ import {
 } from "@nautilo/computer-use-host-protocol";
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
-import * as path from "node:path";
+import { pathApiForRelayPath } from "./relay-path";
 import {
   parseRelayClaudeExecutionCapability,
   parseRelayLocalExecutionCapability,
@@ -168,6 +169,7 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
+/** v30 also adds the finite owned Bolter adapter lane. */
 // v31 forwards SDK-observed Claude root-message boundaries.
 export const RELAY_PROTOCOL_VERSION = 31;
 /** Typed local-file may borrow only the exact captured Task project grant. */
@@ -289,6 +291,7 @@ export function projectRelayCapabilitiesForProtocol(
   if (protocolVersion < CLAUDE_CONNECTION_DISCOVERY_PROTOCOL_VERSION) {
     delete compatible.claude;
   }
+  if (protocolVersion < BOLTER_RELAY_PROTOCOL_VERSION || compatible.profile !== "desktop-agent" || !isRelayBolterCapability(compatible.bolter)) delete compatible.bolter;
   if (protocolVersion < 18) {
     delete compatible.claudeExecution;
   } else if (
@@ -893,6 +896,7 @@ export type RelayClientMessage =
   | RelayCodexRequestMessage
   | RelayCodexEventMessage
   | RelayAcpClientMessage
+  | RelayBolterDesktopMessage
   | RelayClaudeConnectionDiscoveryResult
   | RelayClaudeExecutionDesktopEvent;
 
@@ -1175,6 +1179,7 @@ export type RelayServerMessage =
   | RelayCodexCreditMessage
   | RelayCodexRequestResponseMessage
   | RelayAcpServerMessage
+  | RelayBolterServerMessage
   | RelayClaudeConnectionDiscoverCommand
   | RelayClaudeExecutionCommand;
 
@@ -1539,6 +1544,13 @@ export function parseDesktopAutomationInvocationBinding(
   };
 }
 
+function isCanonicalWirePath(value: string): boolean {
+  // These paths belong to the remote Desktop, not necessarily the server's
+  // OS. Validate the originating syntax without rewriting its identity.
+  const syntax = pathApiForRelayPath(value);
+  return syntax.isAbsolute(value) && syntax.normalize(value) === value;
+}
+
 /**
  * Strict, fail-closed parser for the v1 desktop-filesystem-grant request envelope.
  * The relay calls this at its JSON ingress boundary before exposing the request
@@ -1562,8 +1574,7 @@ export function parseRelayDesktopFilesystemGrantRequest(value: unknown): RelayDe
   }
   if (
     !isNonBlankString(value.requestedRoot) ||
-    !path.isAbsolute(value.requestedRoot) ||
-    path.normalize(value.requestedRoot) !== value.requestedRoot
+    !isCanonicalWirePath(value.requestedRoot)
   ) {
     return { ok: false, error: "Desktop Filesystem Grant request requestedRoot must be a canonical absolute path" };
   }
@@ -1835,8 +1846,7 @@ export function parseRelayWorkstationShellBinding(
   }
   if (
     !isNonBlankString(value["currentFolder"]) ||
-    !path.isAbsolute(value["currentFolder"]) ||
-    path.normalize(value["currentFolder"]) !== value["currentFolder"]
+    !isCanonicalWirePath(value["currentFolder"])
   ) {
     return { ok: false, error: "workstation shell binding currentFolder must be a normalized absolute path" };
   }
@@ -2740,8 +2750,7 @@ function parseSnapshotEntry(
   if (!isNonBlankString(value.id)) return undefined;
   if (
     !isNonBlankString(value.canonicalRoot) ||
-    !path.isAbsolute(value.canonicalRoot) ||
-    path.normalize(value.canonicalRoot) !== value.canonicalRoot
+    !isCanonicalWirePath(value.canonicalRoot)
   ) {
     return undefined;
   }
@@ -3766,6 +3775,8 @@ export function isRelayTaskProjectFileDispatch(input: Readonly<{
   const capability = parseRelayLocalExecutionCapability(capabilities.localExecution);
   const operation = request.args["operation"];
   const roots = request.args["allowedRoots"];
+  if (!Array.isArray(roots) || roots.length !== 1 || typeof roots[0] !== "string") return false;
+  const path = pathApiForRelayPath(roots[0]);
   const envelope = request as unknown as Readonly<Record<string, unknown>>;
   const separateAuthority = ["githubBinding", "humanTerminalBinding", "sshBinding", "desktopAutomationBinding",
     "computerUseRequest", "localExecutionDelegationCapture"];

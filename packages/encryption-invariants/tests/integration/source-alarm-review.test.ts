@@ -1,11 +1,12 @@
+import { REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS, SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-paid-service-funding-source-alarms";
+import { CHATGPT_PLAN_SOURCE_ALARMS } from "../../baseline/reviewed-chatgpt-plan-coverage";
+import { BOLTER_NATIVE_STORAGE_ALARMS } from "../../baseline/reviewed-bolter-native-storage";
+import { BOLTER_PLAINTEXT_SOURCE_ALARMS } from "../../baseline/reviewed-bolter-plaintext-carriers";
+import { reviewedExternalRoomSourceAlarms } from "../../baseline/reviewed-external-room-source-alarms";
 import {
   REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS,
   SUPERSEDED_TASK_FOUNDATION_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-task-foundation-source-alarms";
-import {
-  REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS,
-  SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS,
-} from "../../baseline/reviewed-paid-service-funding-source-alarms";
 import { REVIEWED_REFLECTION_REPLAY_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-09-12-reflection";
 import { REVIEWED_M314_SOURCE_ALARMS } from "../../baseline/reviewed-m314-source-alarms";
 import {
@@ -16,6 +17,7 @@ import {
   REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-17-source-alarms";
+import { REVIEWED_TASK_RESEARCH_SOURCE_ALARMS } from "../../baseline/reviewed-task-research-continuity";
 import {
   REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS,
@@ -32,7 +34,6 @@ import {
   REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS,
   SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-trusted-development-environment-source-alarms";
-import { REVIEWED_D581_SOURCE_ALARMS } from "../../baseline/reviewed-d581-research-continuity";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 
@@ -129,9 +130,9 @@ import {
 import { REVIEWED_M301_SOURCE_ALARMS } from "../../baseline/reviewed-m301-source-alarms";
 import { REVIEWED_M303_SOURCE_ALARMS } from "../../baseline/reviewed-m303-source-alarms";
 import {
-  REVIEWED_D565_RELAY_SOURCE_ALARMS,
-  SUPERSEDED_D565_RELAY_SOURCE_ALARM_LOCATORS,
-} from "../../baseline/reviewed-d565-relay-source-alarms";
+  REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS,
+  SUPERSEDED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-relay-dispatch-source-alarms";
 import {
   REVIEWED_MAIN_2026_08_31_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS,
@@ -148,9 +149,9 @@ import {
 } from "../../baseline/reviewed-main-2026-09-05-source-alarms";
 import { REVIEWED_LANDING_SOURCE_ALARMS, SUPERSEDED_LANDING_SOURCE_LOCATORS } from "../../baseline/reviewed-main-2026-09-05-landing-source-alarms";
 import {
-  REVIEWED_D487_SOURCE_ALARMS,
-  SUPERSEDED_D487_SOURCE_ALARM_LOCATORS,
-} from "../../baseline/reviewed-d487-source-alarms";
+  REVIEWED_OWNED_PHOTO_LIBRARY_SOURCE_ALARMS,
+  SUPERSEDED_OWNED_PHOTO_LIBRARY_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-owned-photo-library-source-alarms";
 import {
   REVIEWED_M240_SOURCE_ALARMS,
   SUPERSEDED_M240_SOURCE_ALARM_LOCATORS,
@@ -262,7 +263,7 @@ describe("source alarm review closure", () => {
           && !SUPERSEDED_MAIN_2026_08_04_SOURCE_ALARM_LOCATORS.has(
             review.locator,
           )
-          && !SUPERSEDED_D487_SOURCE_ALARM_LOCATORS.has(review.locator)
+          && !SUPERSEDED_OWNED_PHOTO_LIBRARY_SOURCE_ALARM_LOCATORS.has(review.locator)
           && !SUPERSEDED_M240_SOURCE_ALARM_LOCATORS.has(review.locator)
           && !SUPERSEDED_MAIN_2026_08_15_SOURCE_ALARM_LOCATORS.has(
             review.locator,
@@ -278,11 +279,11 @@ describe("source alarm review closure", () => {
         !SUPERSEDED_MAIN_2026_08_04_SOURCE_ALARM_LOCATORS.has(review.locator)
       ),
       ...REVIEWED_MAIN_2026_08_04_SOURCE_ALARMS.filter((review) =>
-        !SUPERSEDED_D487_SOURCE_ALARM_LOCATORS.has(review.locator)
+        !SUPERSEDED_OWNED_PHOTO_LIBRARY_SOURCE_ALARM_LOCATORS.has(review.locator)
         && !SUPERSEDED_M240_SOURCE_ALARM_LOCATORS.has(review.locator)
       ),
       ...REVIEWED_M240_SOURCE_ALARMS,
-      ...REVIEWED_D487_SOURCE_ALARMS,
+      ...REVIEWED_OWNED_PHOTO_LIBRARY_SOURCE_ALARMS,
     ];
     const beforeAugust13 = [
       ...previous.filter((review) =>
@@ -349,7 +350,7 @@ describe("source alarm review closure", () => {
       ),
       ...REVIEWED_M300_SOURCE_ALARMS,
     ];
-    const beforeD565 = [
+    const beforeRelayDispatch = [
       ...beforeAugust31.filter((review) =>
         !SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS.has(review.locator)
       ),
@@ -357,17 +358,19 @@ describe("source alarm review closure", () => {
       ...REVIEWED_M301_SOURCE_ALARMS,
       ...REVIEWED_M303_SOURCE_ALARMS,
     ];
-    expect(CURRENT_SOURCE_ALARM_REVIEWS).toEqual([
+    expect(CURRENT_SOURCE_ALARM_REVIEWS).toEqual(reviewedExternalRoomSourceAlarms([
+      ...BOLTER_PLAINTEXT_SOURCE_ALARMS,
+      ...BOLTER_NATIVE_STORAGE_ALARMS,
       ...[
-        ...beforeD565.filter((review) =>
+        ...beforeRelayDispatch.filter((review) =>
           !SUPERSEDED_MAIN_2026_09_03_SOURCE_ALARM_LOCATORS.has(review.locator)
         ),
         ...REVIEWED_MAIN_2026_09_03_SOURCE_ALARMS,
         ...REVIEWED_MAIN_2026_09_04_SOURCE_ALARMS,
       ].filter((review) =>
-        !SUPERSEDED_D565_RELAY_SOURCE_ALARM_LOCATORS.has(review.locator)
+        !SUPERSEDED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS.has(review.locator)
       ),
-      ...REVIEWED_D565_RELAY_SOURCE_ALARMS,
+      ...REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS,
     ].filter((review) => !isRetiredM306AuthorityLocator(review.locator)).concat(
       REVIEWED_MAIN_2026_09_05_SOURCE_ALARMS,
     ).filter((review) => !SUPERSEDED_LANDING_SOURCE_LOCATORS.has(review.locator))
@@ -375,7 +378,8 @@ describe("source alarm review closure", () => {
       .filter((review) => !SUPERSEDED_M318_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_M318_SOURCE_ALARMS)
       .concat(REVIEWED_M321_SOURCE_ALARMS)
-      .concat(REVIEWED_D581_SOURCE_ALARMS)
+      .concat(REVIEWED_TASK_RESEARCH_SOURCE_ALARMS)
+      .concat(CHATGPT_PLAN_SOURCE_ALARMS)
       .filter((review) =>
         !SUPERSEDED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_LOCATORS.has(review.locator)
         && !SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_SOURCE_LOCATORS.has(review.locator)
@@ -394,13 +398,9 @@ describe("source alarm review closure", () => {
       .filter((review) => !SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS)
       .concat(REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS)
-      .filter((review) =>
-        !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator)
-      )
+      .filter((review) => !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS)
-      .filter((review) =>
-        !SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS.has(review.locator)
-      )
+      .filter((review) => !SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS)
       .filter((review) =>
         !SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS.has(review.locator)
@@ -413,7 +413,7 @@ describe("source alarm review closure", () => {
       .filter((review) =>
         !SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS.has(review.locator)
       )
-      .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS));
+      .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS)));
   });
 
   test("maps every exact baseline alarm to owned, release-blocking closure", () => {

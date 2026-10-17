@@ -30,16 +30,12 @@ import {
   users,
 } from "@nautilo/db";
 import {
-  chmodSync,
   existsSync,
   readFileSync,
-  renameSync,
-  rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { randomBytes } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { publishPrivateFileAtomicallySync } from "@nautilo/config/private-filesystem";
 import { loadConfigEnvIntoProcess } from "../lib/config-env";
 import { resolveAndEvaluateDefaultInstanceMutationGuard } from "../lib/default-instance-guard";
 import {
@@ -84,8 +80,8 @@ export interface CleanupTestCruftArgs {
   planJson?: boolean | undefined;
   /**
    * Stack 198 / D266 follow-up: when supplied alongside `--plan-json`,
-   * atomically write the serialized plan to this path (mode 0600 where the
-   * platform supports it) in addition to stdout. Refuses if the destination
+   * atomically write the serialized plan privately to this path in addition
+   * to stdout. Refuses if the destination
    * already exists (never overwrites a reviewed manifest) or if the parent
    * directory does not exist. Only valid with `--plan-json`; ignored for
    * every other mode. Never authorizes deletion — `--plan-json` remains
@@ -219,7 +215,7 @@ function deletedRowCount(r: unknown): number {
 
 /**
  * Stack 198 / D266 follow-up: atomically write the serialized plan to
- * `targetPath` with mode 0600 (where the platform honors it). Writes to a
+ * `targetPath` with private owner permissions. Writes to a
  * uniquely-named temp file in the same directory, then renames — rename is
  * atomic on POSIX so a reviewed manifest is never partially overwritten and
  * a write failure never leaves a partial plan file behind. Exported for
@@ -227,34 +223,15 @@ function deletedRowCount(r: unknown): number {
  * failure; the caller surfaces it as a nonzero refusal.
  */
 export function atomicWritePlanFile(targetPath: string, content: string): void {
-  const dir = dirname(targetPath);
+  const destination = resolve(targetPath);
+  const dir = dirname(destination);
   const dirStat = statSync(dir);
   if (!dirStat.isDirectory()) {
     throw new Error(
       `--plan-out parent is not a directory: ${dir}`,
     );
   }
-  const tmp = join(
-    dir,
-    `.nautilo-cleanup-plan.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
-  );
-  try {
-    writeFileSync(tmp, content, { mode: 0o600, flag: "wx" });
-    try {
-      chmodSync(tmp, 0o600);
-    } catch {
-      // Best-effort: the open-time mode already requested 0600; a chmod
-      // failure (e.g. restricted platform) is not fatal to atomicity.
-    }
-    renameSync(tmp, targetPath);
-  } catch (e) {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      // Swallow cleanup errors so the original write failure surfaces.
-    }
-    throw e;
-  }
+  publishPrivateFileAtomicallySync(destination, new TextEncoder().encode(content));
 }
 
 /**

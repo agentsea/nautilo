@@ -50,6 +50,7 @@ import {
   type RelayNetworkPolicy,
   type RelayNetworkAllowRule,
   type RelayCodexHostPort,
+  type RelayBolterHostPort,
   type RelaySshPrepareRequestV1,
   RELAY_COMPUTER_USE_SEMANTIC_PROTOCOL_VERSION,
   type RelayAcpHostPort,
@@ -813,7 +814,7 @@ export function createDesktopFilesystemGrantAuthorityResolver(
     // local decision never approved.
     let canonicalRequestedRoot: string;
     try {
-      canonicalRequestedRoot = fsSync.realpathSync(request.requestedRoot);
+      canonicalRequestedRoot = fsSync.realpathSync.native(request.requestedRoot);
     } catch {
       return { ok: false, code: "DESKTOP_FILESYSTEM_GRANT_REQUEST_INVALID" };
     }
@@ -911,8 +912,8 @@ export function createLocalShellWorkspaceAuthorityResolver(
         readonly filesystemIdentity: DesktopFilesystemGrantFilesystemIdentity;
         /** Keeps the selected inode alive so an unlinked root cannot reuse it. */
         readonly pinnedDescriptor: number;
-        readonly device: number;
-        readonly inode: number;
+        readonly device: bigint;
+        readonly inode: bigint;
       }
     | undefined;
 
@@ -920,11 +921,10 @@ export function createLocalShellWorkspaceAuthorityResolver(
     let descriptor: number | undefined;
     try {
       descriptor = fsSync.openSync(canonicalRoot, fsSync.constants.O_RDONLY);
-      const stat = fsSync.fstatSync(descriptor);
+      const stat = fsSync.fstatSync(descriptor, { bigint: true });
       if (
         !stat.isDirectory() ||
-        !Number.isSafeInteger(stat.dev) || stat.dev < 0 ||
-        !Number.isSafeInteger(stat.ino) || stat.ino < 0
+        stat.dev < 0n || stat.ino < 0n
       ) {
         fsSync.closeSync(descriptor);
         return undefined;
@@ -942,8 +942,8 @@ export function createLocalShellWorkspaceAuthorityResolver(
     baseline: NonNullable<typeof currentFolderBaseline>,
   ): boolean => {
     try {
-      const pinned = fsSync.fstatSync(baseline.pinnedDescriptor);
-      const live = fsSync.statSync(baseline.canonicalRoot);
+      const pinned = fsSync.fstatSync(baseline.pinnedDescriptor, { bigint: true });
+      const live = fsSync.statSync(baseline.canonicalRoot, { bigint: true });
       return pinned.isDirectory() &&
         live.isDirectory() &&
         pinned.dev === baseline.device &&
@@ -958,7 +958,7 @@ export function createLocalShellWorkspaceAuthorityResolver(
   return async function resolve(candidate) {
     let workspace: string;
     try {
-      workspace = fsSync.realpathSync(candidate);
+      workspace = fsSync.realpathSync.native(candidate);
       if (!fsSync.statSync(workspace).isDirectory()) {
         return { ok: false, code: "WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE" };
       }
@@ -2695,7 +2695,7 @@ export function makeDispatchHandler(
         try {
           const executable = await options.getDevelopmentGitHubExecutable?.();
           if (executable !== undefined) {
-            fallbackDirectory = path.dirname(fsSync.realpathSync(executable));
+            fallbackDirectory = path.dirname(fsSync.realpathSync.native(executable));
             nativeEnvironment["PATH"] = [nativeEnvironment["PATH"], fallbackDirectory].filter(Boolean).join(path.delimiter);
           }
         } catch {
@@ -3186,13 +3186,13 @@ export function makeDispatchHandler(
               await verify();
               const selected = options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath;
               if (!selected) throw new Error("WORKSTATION_SHELL_WORKSPACE_UNAVAILABLE");
-              const workspace = fsSync.realpathSync(selected);
+              const workspace = fsSync.realpathSync.native(selected);
               const workdir = req.args["workdir"];
               if (typeof workdir === "string" && (path.isAbsolute(workdir) || path.win32.isAbsolute(workdir))) throw new Error("LOCAL_EXECUTION_WORKDIR_MUST_BE_RELATIVE");
               const cwd = await resolveWorkstationRelativeCwd({ workspacePath: workspace, requestedCwd: workdir === "." ? undefined : workdir });
               if (!cwd.ok) throw new Error(cwd.errorCode);
               await verify();
-              if (fsSync.realpathSync(options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath ?? "") !== workspace) {
+              if (fsSync.realpathSync.native(options.getLocalWorkspacePath?.() ?? options.workstationWorkspacePath ?? "") !== workspace) {
                 throw new Error("WORKSTATION_SHELL_WORKSPACE_IDENTITY_MISMATCH");
               }
               // Full Mac grants account filesystem access, but never injects
@@ -3220,7 +3220,7 @@ export function makeDispatchHandler(
                 preparationSignal.throwIfAborted();
                 const scratch = (options.createGuardedShellScratch ?? createGuardedShellScratch)();
                 basicScratch = scratch.workspace;
-                const managedHome = fsSync.realpathSync(scratch.workspace);
+                const managedHome = fsSync.realpathSync.native(scratch.workspace);
                 const developmentEnvironment = delegation?.developmentEnvironment === undefined
                   ? undefined
                   : await prepareDevelopmentEnvironment(delegation.developmentEnvironment,
@@ -3500,6 +3500,8 @@ export interface StartRelayOptions {
    * is manufactured here; absent or not-ready ports leave the capability off.
    */
   codexHostPort?: RelayCodexHostPort | undefined;
+  /** Fixed Electron-owned integration port; its retirement drains real native children. */
+  bolterHostPort?: (RelayBolterHostPort & { retire(): Promise<void> }) | undefined;
   /** readiness-only Hermes ACP host; no execution route exists yet. */
   acpHostPort?: RelayAcpHostPort | undefined;
   /** Electron-owned parked Claude account/catalog discovery host. */
@@ -3552,6 +3554,16 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
   // callable while the replacement relay is still authenticating.
   activeComputerUseRuntime = null;
   const hostedRelay = createDesktopHostedRelayAdapter({
+    bolterHostPort: options.bolterHostPort ? {
+      ...options.bolterHostPort,
+      isReady: () => !candidateSession.closed && options.bolterHostPort!.isReady(),
+      onDisconnected() {
+        void (async () => { await options.bolterHostPort!.onDisconnected?.(); })().catch(() => undefined);
+        void candidateSession.settleBoundWork((async () => {
+          await options.bolterHostPort!.retire();
+        })()).catch(() => undefined);
+      },
+    } : undefined,
     codexHostPort: options.codexHostPort,
     acpHostPort: options.acpHostPort,
     claudeConnectionHostPort: options.claudeConnectionHostPort,
@@ -4339,6 +4351,9 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
   }
   } catch (error) {
+    // A superseded candidate must not clear the replacement's runtime authority.
+    const ownsRuntime = activeRelaySession === candidateSession || pendingRelayCandidate?.session === candidateSession;
+    // Fence candidate authority before any adapter cleanup can suspend or fail.
     revokeCandidateHumanConsent();
     sessionClient = null;
     if (pendingRelayCandidate?.session === candidateSession) {
@@ -4347,21 +4362,33 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
     }
     if (activeRelaySession === candidateSession) { activeRelaySession = null; notifyLocalExecutionChanges(); }
     if (capabilityPublisher === candidatePublisher) capabilityPublisher = null;
-    activeComputerUseRuntime = null;
+    if (ownsRuntime) activeComputerUseRuntime = null;
     custodyRetirements += 1;
     const retired = candidateSession.retire();
-    try {
-      await retired.client?.disconnect();
-    } catch {
-      // A failed relay start must preserve the original start error.
-    }
-    try {
-      await retired.mcpHost?.stop();
-    } catch {
-      // A failed relay start must preserve the original start error.
-    }
-    await candidateSession.finishRetirement();
-    if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
+    // Start independent cleanup even when another adapter is still draining.
+    // Cleanup failures must not replace the original startup failure.
+    const retirement = Promise.allSettled([
+      (async () => { await options.bolterHostPort?.onDisconnected?.(); })(),
+      (async () => { await options.bolterHostPort?.retire(); })(),
+      (async () => {
+        try {
+          await retired.client?.disconnect();
+        } catch {
+          // Continue retiring the remaining candidate-owned resources.
+        }
+        try {
+          await retired.mcpHost?.stop();
+        } catch {
+          // Bound work still needs its final retirement sweep.
+        }
+        await candidateSession.finishRetirement();
+        if (candidateSession.localExecution.retainedContainedRoots().length === 0) custodyRetirements -= 1;
+      })(),
+    ]);
+    // A replacement may be selected now, but cannot use native resources until
+    // this exact failed candidate and any prior retirement have drained.
+    relayRetirementBarrier = Promise.allSettled([relayRetirementBarrier, retirement]).then(() => {});
+    await retirement;
     throw error;
   }
 }

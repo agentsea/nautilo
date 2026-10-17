@@ -7,10 +7,12 @@ const REQUIRED_FRONTMATTER_KEYS = [
 
 type RequiredFrontmatterKey = (typeof REQUIRED_FRONTMATTER_KEYS)[number];
 
-export function parseFrontmatter(raw: string): {
+export function parseFrontmatter(source: string): {
   frontmatter: Record<RequiredFrontmatterKey, string>;
   body: string;
 } {
+  // Windows checkouts with core.autocrlf deliver the bundled files with CRLF.
+  const raw = source.replace(/\r\n/g, "\n");
   if (!raw.startsWith("---\n")) {
     throw new Error("Bundled command markdown must start with a frontmatter block (---)");
   }

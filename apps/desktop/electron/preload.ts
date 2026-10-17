@@ -2355,6 +2355,11 @@ contextBridge.exposeInMainWorld("nautiloDesktop", {
 
   /** Google Workspace OAuth connect / status (explicit UI only for keychain). */
   googleWorkspace: googleWorkspaceAPI,
+  chatGPT: {
+    prepare: () => ipcRenderer.invoke("chatGPT:prepare") as Promise<{ listenerId: string; port: number }>,
+    receive: (args: { listenerId: string; authorizationUrl: string }) => ipcRenderer.invoke("chatGPT:receive", args) as Promise<string>,
+    cancel: (listenerId: string) => ipcRenderer.invoke("chatGPT:cancel", listenerId) as Promise<void>,
+  },
 
   /** terminal (PTY) work surface bridge. */
   terminal: terminalAPI,

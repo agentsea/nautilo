@@ -36,6 +36,8 @@ async function main(): Promise<void> {
 
   const cli = yargs(hideBin(process.argv))
     .scriptName("nautilo")
+    // Command help is English; keep yargs' own messages from following LANG.
+    .locale("en")
     .version(versionString)
     .alias("v", "version")
     .strict()

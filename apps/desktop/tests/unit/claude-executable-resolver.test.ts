@@ -11,13 +11,14 @@ import {
 
 describe("D452 ambient Claude executable resolver", () => {
   test("admits only an ambient exact reviewed executable and returns its frozen feature ledger", async () => {
+    const executableName = process.platform === "win32" ? "claude.exe" : "claude";
     const calls: string[] = [];
     const resolver = createAmbientClaudeExecutableResolver({
       path: ["/missing", "/ambient"].join(delimiter),
       inspect: {
         canonicalAmbientClaude: async (candidate) => {
           calls.push(candidate);
-          return candidate === join("/ambient", "claude") ? "/resolved/claude" : null;
+          return candidate === join("/ambient", executableName) ? "/resolved/claude" : null;
         },
         version: async (executable, args) => {
           expect(executable).toBe("/resolved/claude");
@@ -31,7 +32,7 @@ describe("D452 ambient Claude executable resolver", () => {
       version: CLAUDE_AGENT_SDK_COMPATIBLE_CLAUDE_CODE_VERSION,
       features: REVIEWED_CLAUDE_RUNTIME_FEATURES,
     });
-    expect(calls).toEqual([join("/missing", "claude"), join("/ambient", "claude")]);
+    expect(calls).toEqual([join("/missing", executableName), join("/ambient", executableName)]);
   });
 
   test("resolves other canonical ambient versions for discovery without inventing execution features", async () => {

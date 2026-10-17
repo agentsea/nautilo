@@ -7,6 +7,177 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Windows x64 source builds produce a Desktop installer with bundled Bun and
+  the private Relay Host for connecting to a Nautilo server.
+  ACP-backed local agents remain unavailable on Windows until process-tree
+  containment is supported.
+- New first-owner claim files include a copyable claim URL while retaining the
+  single-use code. Existing code-only files remain redeemable through the
+  server's `/claim` page. Owner-claim setup resolves the native user home when
+  the Unix `HOME` environment variable is absent.
+- Desktop smoke commands read their app path from the environment on Windows,
+  so contributor checks can exercise a packaged `.exe`. Connection smoke
+  tests use a recognized private operator-state directory on Windows and POSIX.
+- Windows source installs use Bun's isolated linker for first-party apps,
+  allowing Writer and Video dependencies to install without elevation. Seeded
+  app copies preserve resolved package versions and dependency cycles.
+- Contributor scripts and tests convert file URLs to native filesystem paths,
+  including Windows drive letters and encoded characters.
+- Vendor archive extraction and Sharp staging use local archive names with Windows tar and
+  Git Bash tar, avoiding remote-host interpretation of drive letters.
+  Backup creation, restore, cloning, and archive verification use the same
+  local-path handling.
+- SQL migrations and shell scripts retain LF line endings in Windows checkouts,
+  preserving migration hashes and native Git Bash execution.
+- Contributor Git hooks execute their affected checks on Windows, and repository
+  invariants compare portable paths without changing their ownership rules.
+- The pinned Knip checker recognizes explicit Bun test files on Windows.
+- Windows repository invariant files run in separate Bun processes to avoid
+  a crash in the combined test run.
+- Database role repair rolls back the complete SQL batch if any statement fails.
+- First-party app seeding rebuilds isolated dependencies when seed metadata is
+  invalid, while still reporting filesystem errors.
+- First-party dependency snapshots skip empty package placeholders and resolve
+  valid ancestor packages in reused installations.
+- OpenConnector patches retain LF bytes in CRLF checkouts, preserving their
+  pinned digest and patch syntax.
+- Windows pre-push checks retain affected workspace selection. Hosted Windows
+  checks also execute every repository invariant suite.
+- The root typecheck command runs on Windows and retains package filters and
+  the selected concurrency setting.
+- Windows server startup explicitly defers direct Connected Website browser
+  control until its private-directory containment is supported.
+- Native path checks preserve protected directories, workspace boundaries,
+  and mini-app build paths on Windows. Relay messages retain the originating
+  Desktop's Windows, UNC, or POSIX path syntax independently of the server OS.
+  Patch targets, file-grant selection, approval paths, focused documents, and
+  the remote file browser use the same syntax.
+- Media reads verify regular file entries and stable file identities on
+  Windows before returning bytes.
+- Current Folder leases, folder adoption, and shell authority retain exact
+  64-bit filesystem identities. Large NTFS directory IDs no longer fail
+  admission because of numeric rounding.
+- Generated media staging and private atomic writes apply Windows ACLs before
+  writing data.
+- Workspace artifact readers and clone rebinding accept native Windows paths
+  in the repository's physical storage pointers.
+- Artifact recovery reports failed quarantine attempts instead of counting
+  them as successful.
+- Storage path validation recognizes both Windows separators, and migrated
+  storage directories use directory junctions on Windows.
+- Private Vault files, encrypted Artifact files, runtime metadata, security
+  research records, operator secrets, configuration snapshots, local backups,
+  CLI sessions, headless Relay pairing metadata, bootstrap tokens and profile
+  bundles, deployment checkpoints,
+  development operation records,
+  and instance-allocation locks use
+  Windows owner/ACL checks instead of Unix permission bits. New private files
+  and lock directories receive their ACL at creation. Artifact and checkpoint
+  publication handles Windows directory-sync limits while still rejecting file-sync and
+  directory-access failures.
+- Credential handoffs use Windows ACL checks and verify the reserved file
+  identity before publication or cleanup.
+- Desktop history files and rendered text frames receive private Windows ACLs
+  before content is written. Encrypted execution history retains file flushes
+  while handling Windows directory-flush limitations, and rejects linked or
+  replaced archive files before decryption.
+- Local document mutations synchronize staged bytes before atomic replacement.
+- Deployment checkpoint storage rejects ancestor-directory links and keeps
+  filesystem failures distinct from an empty state directory.
+- Provider and recovery configuration readers apply native Windows
+  file-ownership and ACL checks. Local release evidence uses the same checks.
+- Local backup verification checks Windows ACLs and accepts CRLF output from
+  the system tar reader. Backup creation preserves private local ACLs and
+  uses Linux paths for remote staging and configuration files. Remote staging
+  directories are created privately and reject existing directories.
+- Owner recovery files and artifact-relocation plans use Windows ACLs and
+  retain exclusive publication. Recovery reads verify the opened file identity.
+- Standalone CLI dependency evidence uses native paths and distinguishes
+  external packages from workspaces on Windows.
+- Moderation audit retries can synchronize existing logs on Windows after a
+  lost checkpoint.
+- OfficeCLI discovery uses the native executable name and rejects directories
+  on the search path.
+- Windows tests retain an event-loop reference while each test runs, allowing
+  unref timers and test timeouts to settle instead of leaving a busy test process.
+- Packaged upgrades install Bolter lifecycle guards before withdrawing their
+  temporary trigger permission. Existing migration files and final restricted
+  database privileges remain unchanged.
+
+- Image understanding has independent administrator and personal model choices
+  beside media generation settings. Text-only chats can use a qualified vision
+  helper through their admitted direct or Surplus credentials. Costs separates
+  helper attempts from the main reply, including failures and uncertain charges;
+  retained observations and accepted funding survive recovery without automatic
+  regeneration of a previously dispatched helper call. Settings show which chat
+  funding sources can run each helper and retain unavailable saved choices;
+  independently shipped clients keep their compatible preference contract.
+
+- Server images retire obsolete Chromium security decisions after installing
+  the supported update. Remaining source-fixed but binary-unavailable findings
+  require fresh authenticated package evidence and short-lived exact approvals.
+
+- Server image builds include the shared Reflection payload sources required
+  by Workbench, so clean container builds can resolve Lattice's type imports.
+
+- The Room composer accepts PDFs from the paperclip or file drop through the
+  same Room-scoped Workspace storage as existing document references. Text-only
+  Genies can read PDF text locally, with page continuation and explicit visual
+  limitations. Workspace PDFs can be converted locally to text, Markdown, or
+  Word without generated scripts. Text conversion preserves neither layout nor
+  annotations and refuses to silently produce an incomplete document.
+
+- Add ChatGPT plan connection settings, encrypted account custody,
+  account-specific model discovery and a separate subscription Responses adapter.
+  Selecting a subscription prevents automatic API-key/server fallback. Plan usage
+  appears separately from API spending, with comparison estimates clearly labeled.
+  Desktop can connect a user-owned remote Server through the system browser.
+  Unfinished sign-ins retain their registration for retry; restores require
+  reconnect before using subscription tokens. Settings identify the active
+  subscription and ask for confirmation before switching to API-key/server funding.
+
+- Personal Memory review, reflection and summarization models can be selected
+  independently. Memory processing uses a member's admitted funding only when
+  current input evidence proves that member's exclusive authorship and audience;
+  shared, mixed and uncertain work remains an explicit server service. Accepted
+  work retains its model and funding across recovery, while embeddings keep the
+  server-wide configuration. Costs records provider attempts and unresolved
+  charges without replaying inference.
+
+- Desktop acquires the latest Bolter CLI without waiting for a Desktop release.
+  Failed CLI operations can upgrade and retry once when a newer build is
+  available, preserving credentials and queued messages. Uncertain sends are
+  never automatically replayed. Additional provider metadata no longer blocks
+  otherwise valid messages.
+
+- Bolter-linked rooms update their creator's live room subscriptions before
+  receiving messages. They appear as External rooms under Groups, with permanent
+  room-only Genie context and read-only visibility controls.
+
+- Unknown Bolter events, including profile requests, are logged locally and
+  ignored so later messages can reach their linked room. Profile support remains
+  deferred; message and sender validation are unchanged.
+
+- Personal model funding now follows the initiating member across permitted
+  group Rooms, other members' Genies, Conductor routing and native nested,
+  delegated and scheduled Tasks. Existing invocation and content permissions
+  still apply. Each accepted operation retains its model, payer and credential
+  binding; scheduled shortcuts keep their original Room for report-back.
+  Interrupted direct-personal model attempts retain unknown costs after a
+  process failure and are recovered without repeating inference.
+- Personal key and capability readiness refresh safely after key changes,
+  including concurrent saves and account metadata reloads. Mobile capability
+  settings and personal Costs refresh when the app returns to the foreground.
+- Full database restores prepare the restricted event-feed reader role before
+  importing grants and policies, so backups can restore into fresh PostgreSQL
+  volumes. Unsafe existing role privileges still block the restore.
+- Local Compose restores and custody diagnostics verify personal credentials
+  through the selected server container, preserving the existing localhost
+  authorization boundary when Docker publishes the server port.
+- Mobile Web preserves a safe Task destination while connecting to its current
+  server or checking encryption policy after sign-in. It returns to that
+  destination after admission without carrying it to another account or server.
+
 - Generated media can use Surplus when its catalogue lists the exact selected
   model and the request is compatible. Missing or unsupported marketplace
   routes fall back to the same model's direct provider within the admitted
@@ -27,6 +198,20 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   applying the older-history message count to the current run. Journal and
   recalled Records remain available, concurrent Room activity is labelled as
   surrounding history, and admitted replies keep their chronological position.
+
+- Bolter connections use a Desktop-managed receiver and explicitly linked rooms.
+  External senders retain their own attribution and restricted room context.
+  Genie replies return to their source conversation; Human messages require
+  Review & send. Incoming messages and receiver status update live; unrelated
+  archived rooms no longer block external replies. Provider system notices no
+  longer stall queued messages. Replies support provider text blocks while
+  excluding reasoning content. Ordinary Genie text replies need no additional
+  local approval; tools and private resources remain unavailable. Sign-in updates automatically, and interrupted
+  or uncertain delivery remains visible. Initial support is text on macOS Desktop with
+  plaintext server content mode; protected-content modes remain unavailable.
+  Backups retain bridge history, but development restore rejects populated
+  Bolter records before changing the target until safe authority reconciliation
+  is supported.
 
 - Existing Development profiles can open the updated scope review and PIN dialog
   after a Desktop upgrade. Activation still requires consent to the exact reviewed

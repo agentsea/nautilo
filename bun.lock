@@ -532,6 +532,7 @@
         "@nautilo/logger": "workspace:*",
         "@nautilo/message-invariants": "workspace:*",
         "@nautilo/model-capabilities": "workspace:*",
+        "@nautilo/reflection": "workspace:*",
         "@nautilo/relay": "workspace:*",
         "@nautilo/sandbox": "workspace:*",
         "@nautilo/security": "workspace:*",
@@ -545,6 +546,7 @@
         "docx": "9.6.1",
         "linkedom": "0.18.12",
         "mdast-util-to-string": "4.0.0",
+        "pdfjs-dist": "6.2.108",
         "pg": "8.13.1",
         "react": "19.2.5",
         "remark": "15.0.1",
@@ -560,6 +562,7 @@
         "@types/react": "19.2.14",
         "@types/write-file-atomic": "4.0.3",
         "dotenv": "16.6.1",
+        "fflate": "0.8.3",
         "jimp": "^1.6.1",
         "typescript": "5.9.3",
       },
@@ -892,6 +895,9 @@
     "packages/hosting": {
       "name": "@nautilo/hosting",
       "version": "0.1.0",
+      "dependencies": {
+        "@nautilo/config": "workspace:*",
+      },
       "devDependencies": {
         "@types/node": "24.10.4",
         "typescript": "5.9.3",
@@ -915,6 +921,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@nautilo/api-client": "workspace:*",
+        "@nautilo/config": "workspace:*",
         "@nautilo/db": "workspace:*",
         "@nautilo/lattice-crypto": "workspace:*",
         "@nautilo/logger": "workspace:*",
@@ -1105,6 +1112,7 @@
       "name": "@nautilo/operator-secrets",
       "version": "0.1.0",
       "dependencies": {
+        "@nautilo/config": "workspace:*",
         "@nautilo/config-guard": "workspace:*",
       },
       "devDependencies": {
@@ -1176,6 +1184,7 @@
         "@nautilo/lattice-bridge": "workspace:*",
         "@nautilo/lattice-crypto": "workspace:*",
         "@nautilo/reflection": "workspace:*",
+        "@nautilo/types": "workspace:*",
         "@noble/hashes": "2.2.0",
       },
       "devDependencies": {
@@ -1306,6 +1315,7 @@
         "drizzle-orm": "0.45.2",
         "fastify": "5.12.5",
         "fflate": "^0.8.3",
+        "jose": "6.2.3",
         "pino": "10.3.1",
         "sharp": "0.35.5",
         "ws": "8.21.2",
@@ -1319,7 +1329,6 @@
         "@types/node": "24.10.4",
         "@types/ws": "8.18.1",
         "dotenv": "16.6.1",
-        "jose": "6.2.3",
         "postgres": "3.4.7",
         "typescript": "5.9.3",
       },
@@ -1457,6 +1466,7 @@
     "@assistant-ui/react-lexical@0.2.4": "patches/@assistant-ui%2Freact-lexical@0.2.4.patch",
     "@expo/plist@0.8.1": "patches/@expo%2Fplist@0.8.1.patch",
     "@langchain/langgraph@1.2.9": "patches/@langchain%2Flanggraph@1.2.9.patch",
+    "knip@5.88.1": "patches/knip@5.88.1.patch",
   },
   "overrides": {
     "@fastify/busboy": "3.2.1",

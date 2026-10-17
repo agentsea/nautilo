@@ -429,6 +429,48 @@ describe("defaultBuildTranscriptContextDeps (bounded context)", () => {
     expect(calls()).toBe(3);
   });
 
+  test("retains exact rollup and legacy Journal source coordinates", async () => {
+    const ancestry = [{
+      kind: "source", sourceKind: "message", logicalSourceRef: "message:1",
+      observedRevision: "0", observedContentFingerprint: "sha256:message",
+      terminalAuthorityLeafHandle: "namespace-room",
+    }];
+    const { db } = scriptedDb([
+      [{ rebuildRequestedAt: null, namespaceId: "namespace-room" }],
+      [{
+        id: "rollup-7", throughEventSequence: 7, content: "Earlier journal",
+        sourceEventCount: 3, compactorVersion: "v1",
+        modelExposureDependencies: ancestry,
+      }],
+      [{
+        id: "event-8", roomId: "r1", sequence: 8, kind: "fact",
+        projectionKind: "legacy", recordId: null, statement: "Legacy statement",
+        status: "active", supersedesEventId: null, resolvesEventId: null,
+      }],
+    ]);
+    const journal = await defaultBuildTranscriptContextDeps(db).readRoomJournal!({
+      kind: "room", roomId: "r1", ownerId: "owner-1",
+    });
+    expect(journal.rollup).toMatchObject({
+      id: "rollup-7", sourceEventCount: 3, compactorVersion: "v1",
+      modelExposureDependencies: ancestry,
+      modelExposureDependency: {
+        kind: "source", sourceKind: "journal_rollup",
+        logicalSourceRef: "journal-rollup:rollup-7",
+        observedRevision: "through:7:version:v1",
+        terminalAuthorityLeafHandle: "namespace-room",
+      },
+    });
+    expect(journal.events[0]).toMatchObject({
+      modelExposureDependency: {
+        kind: "source", sourceKind: "journal_event",
+        logicalSourceRef: "journal-event:event-8",
+        observedRevision: "sequence:8:status:active",
+        terminalAuthorityLeafHandle: "namespace-room",
+      },
+    });
+  });
+
   test("fails journal context closed while a rebuild is pending", async () => {
     const { db, calls } = scriptedDb([
       [{ rebuildRequestedAt: new Date("2026-08-17T10:00:00.000Z") }],
@@ -491,6 +533,8 @@ describe("defaultBuildTranscriptContextDeps (bounded context)", () => {
           roomId: "room-1",
           sequence: 1,
           kind: "decision",
+          projectionKind: "native",
+          recordId: "record-native",
           statement: "The statement opened from the native Record payload.",
           status: "active",
           supersedesEventId: null,
@@ -508,6 +552,7 @@ describe("defaultBuildTranscriptContextDeps (bounded context)", () => {
     expect(journal?.events.map((event) => event.statement)).toEqual([
       "The statement opened from the native Record payload.",
     ]);
+    expect(journal?.events[0]?.nativeRecordRef).toBe("record-native");
     expect(calls()).toBe(3);
   });
 

@@ -1,7 +1,8 @@
 import { Stack, router, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Pressable,
   StyleSheet,
   Text,
@@ -22,6 +23,7 @@ import {
   personalCostCallTypeRows,
   personalCostDayRows,
   personalCostProviderEvidence,
+  personalCostProviderOperationLabel,
   personalCostTaskRows,
   personalCostsForRequestedRange,
   personalUnknownProviderOperations,
@@ -45,6 +47,7 @@ export default function PersonalCostsScreen() {
   const { status, viewer, viewerState } = useAuth();
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const focusedRef = useRef(false);
   const serverRef = useRef(activeServer);
   serverRef.current = activeServer;
   const controllerRef = useRef<PersonalCostsController | null>(null);
@@ -73,11 +76,24 @@ export default function PersonalCostsScreen() {
   );
   useFocusEffect(
     useCallback(() => {
+      focusedRef.current = true;
       controller.setScope(scope);
       if (scope) void controller.load();
-      return () => controller.setScope(null);
+      return () => {
+        focusedRef.current = false;
+        controller.setScope(null);
+      };
     }, [controller, scope]),
   );
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active" && focusedRef.current && scope) {
+        controller.setScope(scope);
+        void controller.load();
+      }
+    });
+    return () => subscription.remove();
+  }, [controller, scope]);
   const range = state.draft?.range ?? state.data?.range.key ?? "30d";
   const data = personalCostsForRequestedRange(state.data, range);
   const unresolved = data
@@ -405,7 +421,10 @@ export default function PersonalCostsScreen() {
                     <View style={styles.modelRow}>
                       <View style={styles.modelCopy}>
                         <Text style={styles.title}>
-                          {row.provider} / {row.operation}
+                          {personalCostProviderOperationLabel(
+                            row.provider,
+                            row.operation,
+                          )}
                         </Text>
                         <Text style={styles.help}>
                           {integer(row.operations)} operations

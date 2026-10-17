@@ -187,8 +187,10 @@ describe("Ready-to-work desired state", () => {
       .toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     const target = path.join(tempRoot, "future.json");
     fs.renameSync(storePath(), target);
-    fs.symlinkSync(target, storePath());
-    const store = new ReadyToWorkStore({ filePath: storePath() });
+    fs.symlinkSync(process.platform === "win32" ? tempRoot : target, storePath(),
+      process.platform === "win32" ? "junction" : "file");
+    const linkedFile = process.platform === "win32" ? path.join(storePath(), "future.json") : storePath();
+    const store = new ReadyToWorkStore({ filePath: linkedFile });
     expect(() => store.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     expect(() => store.save(createReadyToWorkDesiredState(binding, selection))).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     expect(fs.lstatSync(storePath()).isSymbolicLink()).toBeTrue();

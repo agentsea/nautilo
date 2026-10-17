@@ -122,6 +122,7 @@ function providerLabel(model: AssistantModelSummary): string {
 }
 
 function fundingLabel(model: AssistantModelSummary): string | null {
+  if (model.fundingProviderRoute === "openai-chatgpt") return "Your ChatGPT plan";
   if (model.fundingSource === "personal") return "Your key";
   if (model.fundingSource === "server") return "Server key";
   return null;

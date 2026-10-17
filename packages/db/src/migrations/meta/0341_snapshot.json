@@ -1,5 +1,5 @@
 {
-  "id": "77879243-aca6-435d-879b-2f5896088017",
+  "id": "1fd91cfa-ab11-4fb9-b43a-05e9818a1681",
   "prevId": "f49f83ad-01ca-449c-972f-7b435ec81b69",
   "version": "7",
   "dialect": "postgresql",
@@ -14081,6 +14081,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": true
+        },
+        "external_context": {
+          "name": "external_context",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "parent_room_id": {
           "name": "parent_room_id",
@@ -29498,7 +29505,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -45300,6 +45307,920 @@
         "conversion_operations_submission_lease": {
           "name": "conversion_operations_submission_lease",
           "value": "(\n        (\"conversion_operations\".\"status\" = 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NOT NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NULL)\n      )"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_connections": {
+      "name": "bolter_connections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "relay_id": {
+          "name": "relay_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "desktop_session_id": {
+          "name": "desktop_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pairing_generation_ref": {
+          "name": "pairing_generation_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "home_handle": {
+          "name": "home_handle",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_agent_id": {
+          "name": "provider_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_fingerprint": {
+          "name": "identity_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_connections_home": {
+          "name": "bolter_connections_home",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "relay_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "home_handle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_connections_owner": {
+          "name": "bolter_connections_owner",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_connections_user_id_users_id_fk": {
+          "name": "bolter_connections_user_id_users_id_fk",
+          "tableFrom": "bolter_connections",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_connections_owner_id": {
+          "name": "bolter_connections_owner_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_connections_owner": {
+          "name": "bolter_connections_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_connections\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_connections\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_connections_generation": {
+          "name": "bolter_connections_generation",
+          "value": "\"bolter_connections\".\"generation\" > 0 AND \"bolter_connections\".\"revision\" >= 0"
+        },
+        "bolter_connections_revocation": {
+          "name": "bolter_connections_revocation",
+          "value": "\"bolter_connections\".\"revoked_at\" IS NULL OR \"bolter_connections\".\"enabled\" = false"
+        },
+        "bolter_connections_identity": {
+          "name": "bolter_connections_identity",
+          "value": "\"bolter_connections\".\"identity_fingerprint\" ~ '^[0-9a-f]{64}$' AND length(\"bolter_connections\".\"provider_agent_id\") > 0 AND length(\"bolter_connections\".\"origin\") > 0 AND length(\"bolter_connections\".\"relay_id\") > 0 AND length(\"bolter_connections\".\"desktop_session_id\") > 0 AND length(\"bolter_connections\".\"pairing_generation_ref\") > 0"
+        },
+        "bolter_connections_home_handle": {
+          "name": "bolter_connections_home_handle",
+          "value": "length(\"bolter_connections\".\"home_handle\") > 0 AND position('/' in \"bolter_connections\".\"home_handle\") = 0 AND position(chr(92) in \"bolter_connections\".\"home_handle\") = 0 AND position('..' in \"bolter_connections\".\"home_handle\") = 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_inbox_receipts": {
+      "name": "bolter_inbox_receipts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_sender_id": {
+          "name": "external_sender_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_inbox_provider_message": {
+          "name": "bolter_inbox_provider_message",
+          "columns": [
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_inbox_canonical_message": {
+          "name": "bolter_inbox_canonical_message",
+          "columns": [
+            {
+              "expression": "session_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_inbox_receipts_user_id_users_id_fk": {
+          "name": "bolter_inbox_receipts_user_id_users_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_receipts_session_message_id_session_messages_id_fk": {
+          "name": "bolter_inbox_receipts_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_receipts_job_id_jobs_id_fk": {
+          "name": "bolter_inbox_receipts_job_id_jobs_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "jobs",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_binding_owner": {
+          "name": "bolter_inbox_binding_owner",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_inbox_owner_binding_id": {
+          "name": "bolter_inbox_owner_binding_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "binding_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_inbox_owner": {
+          "name": "bolter_inbox_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_inbox_receipts\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_inbox_receipts\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_inbox_state": {
+          "name": "bolter_inbox_state",
+          "value": "\"bolter_inbox_receipts\".\"state\" IN ('pending', 'accepted', 'quarantined', 'cancelled') AND (\"bolter_inbox_receipts\".\"state\" <> 'accepted' OR (\"bolter_inbox_receipts\".\"session_message_id\" IS NOT NULL AND \"bolter_inbox_receipts\".\"turn_id\" IS NOT NULL))"
+        },
+        "bolter_inbox_identity": {
+          "name": "bolter_inbox_identity",
+          "value": "\"bolter_inbox_receipts\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND length(\"bolter_inbox_receipts\".\"provider_message_id\") > 0 AND length(\"bolter_inbox_receipts\".\"external_sender_id\") > 0 AND \"bolter_inbox_receipts\".\"binding_revision\" >= 0 AND \"bolter_inbox_receipts\".\"connection_generation\" > 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_outbox": {
+      "name": "bolter_outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_inbox_id": {
+          "name": "source_inbox_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "explicit_share_id": {
+          "name": "explicit_share_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_outbox_canonical_publication": {
+          "name": "bolter_outbox_canonical_publication",
+          "columns": [
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_outbox_owner_pending": {
+          "name": "bolter_outbox_owner_pending",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bolter_outbox\".\"state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_outbox_user_id_users_id_fk": {
+          "name": "bolter_outbox_user_id_users_id_fk",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_session_message_id_session_messages_id_fk": {
+          "name": "bolter_outbox_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_binding_owner": {
+          "name": "bolter_outbox_binding_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_reply_owner": {
+          "name": "bolter_outbox_reply_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_inbox_receipts",
+          "columnsFrom": [
+            "user_id",
+            "binding_id",
+            "source_inbox_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "binding_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "bolter_outbox_owner": {
+          "name": "bolter_outbox_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_outbox\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_outbox\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_outbox_reason": {
+          "name": "bolter_outbox_reason",
+          "value": "(\"bolter_outbox\".\"source_inbox_id\" IS NOT NULL) <> (\"bolter_outbox\".\"explicit_share_id\" IS NOT NULL)"
+        },
+        "bolter_outbox_identity": {
+          "name": "bolter_outbox_identity",
+          "value": "\"bolter_outbox\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND \"bolter_outbox\".\"binding_revision\" >= 0 AND \"bolter_outbox\".\"connection_generation\" > 0"
+        },
+        "bolter_outbox_state": {
+          "name": "bolter_outbox_state",
+          "value": "\"bolter_outbox\".\"state\" IN ('pending', 'publishing', 'published', 'uncertain', 'cancelled') AND (\"bolter_outbox\".\"state\" NOT IN ('publishing', 'published', 'uncertain') OR \"bolter_outbox\".\"claim_token\" IS NOT NULL) AND (\"bolter_outbox\".\"state\" <> 'published' OR \"bolter_outbox\".\"provider_message_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_room_bindings": {
+      "name": "bolter_room_bindings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "namespace_id": {
+          "name": "namespace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_agent_id": {
+          "name": "provider_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chat_id": {
+          "name": "chat_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_bindings_external_identity": {
+          "name": "bolter_bindings_external_identity",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "chat_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_bindings_room": {
+          "name": "bolter_bindings_room",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_room_bindings_user_id_users_id_fk": {
+          "name": "bolter_room_bindings_user_id_users_id_fk",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_room_bindings_agent_id_agents_id_fk": {
+          "name": "bolter_room_bindings_agent_id_agents_id_fk",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_bindings_connection_owner": {
+          "name": "bolter_bindings_connection_owner",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "bolter_connections",
+          "columnsFrom": [
+            "user_id",
+            "connection_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_bindings_exact_namespace": {
+          "name": "bolter_bindings_exact_namespace",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id",
+            "namespace_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_bindings_owner_id": {
+          "name": "bolter_bindings_owner_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_bindings_owner": {
+          "name": "bolter_bindings_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_room_bindings\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_room_bindings\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_bindings_revision": {
+          "name": "bolter_bindings_revision",
+          "value": "\"bolter_room_bindings\".\"revision\" >= 0"
+        },
+        "bolter_bindings_state": {
+          "name": "bolter_bindings_state",
+          "value": "\"bolter_room_bindings\".\"state\" IN ('active', 'paused', 'revoked')"
+        },
+        "bolter_bindings_identity": {
+          "name": "bolter_bindings_identity",
+          "value": "length(\"bolter_room_bindings\".\"origin\") > 0 AND length(\"bolter_room_bindings\".\"provider_agent_id\") > 0 AND length(\"bolter_room_bindings\".\"chat_id\") > 0"
         }
       },
       "isRLSEnabled": true

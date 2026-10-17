@@ -66,6 +66,8 @@ export async function reconcileRoomJournalMembershipInTx(
       lastProcessedAt: sql<Date>`${timestamp}`.as("last_processed_at"),
       leaseToken: sql<null>`null`.as("lease_token"),
       leaseExpiresAt: sql<null>`null`.as("lease_expires_at"),
+      compactionAcceptedModelBinding: sql<null>`null`.as("compaction_accepted_model_binding"),
+      compactionAcceptedPlan: sql<null>`null`.as("compaction_accepted_plan"),
       compactionLeaseToken: sql<null>`null`.as("compaction_lease_token"),
       compactionLeaseExpiresAt: sql<null>`null`
         .as("compaction_lease_expires_at"),
@@ -83,6 +85,8 @@ export async function reconcileRoomJournalMembershipInTx(
         .as("last_extraction_completed_at"),
       compactionDueAt: sql<null>`null`.as("compaction_due_at"),
       compactionFailureCount: sql<number>`0`.as("compaction_failure_count"),
+      compactionLastAttemptKnownNonusable: sql<boolean>`false`
+        .as("compaction_last_attempt_known_nonusable"),
       compactionRetryAfter: sql<null>`null`.as("compaction_retry_after"),
       lastCompactionErrorCode: sql<null>`null`.as("last_compaction_error_code"),
       lastCompactionErrorAt: sql<null>`null`.as("last_compaction_error_at"),

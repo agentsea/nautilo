@@ -8,6 +8,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
+import { resolve } from "node:path";
 import { testModeRoutes } from "../../src/routes/test-mode";
 
 const TEST_TOKEN = "test-token-0123456789abcdef";
@@ -183,7 +184,7 @@ describe("test-mode /api/test/security-scan — path layer", () => {
     expect(r.statusCode).toBe(200);
     const body = parseBody<ScanBody>(r.body);
     expect(body.blocked).toBe(true);
-    expect(body.reason).toContain("/etc");
+    expect(body.reason).toContain(resolve("/etc"));
   });
 
   test("allows normal path", async () => {

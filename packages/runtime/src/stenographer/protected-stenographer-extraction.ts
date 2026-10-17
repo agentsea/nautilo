@@ -3,15 +3,22 @@ import type {
   ProcessorTransformCapability,
   ProcessorTransformOutput,
 } from "@nautilo/lattice-crypto";
-import { runStenographerExtraction } from "@nautilo/reflection";
+import {
+  prepareStenographerExtractionEvidence,
+  runStenographerExtraction,
+} from "@nautilo/reflection";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { mapStenographerProposal } from "./semantic-adapter";
+import { mapModelFailure } from "./model-invoker";
 import {
   planProtectedExtractionOutputs,
   type ProtectedJournalAttachmentPlanV1,
 } from "./protected-journal-output-planner";
 import {
   fingerprintProtectedStenographerSourceBindings,
+  protectedExtractionModelExposureDependencies,
   withProtectedStenographerSources,
+  type OpenedProtectedStenographerSources,
   type ProtectedStenographerParticipantDisplay,
   type ProtectedStenographerSourceBinding,
 } from "./protected-source-loader";
@@ -119,10 +126,22 @@ export interface RunProtectedStenographerExtractionInput {
     participantIds: readonly string[],
     signal: AbortSignal,
   ) => Promise<readonly ProtectedStenographerParticipantDisplay[]>;
-  readonly invokeModel: (
+  readonly invokeModel?: (
     prompt: string,
     signal: AbortSignal,
   ) => Promise<string>;
+  readonly admitModel?: (input: Readonly<{
+    readonly sources: OpenedProtectedStenographerSources;
+    readonly dependencies:
+      readonly DurableModelExposureDependency[] | undefined;
+  }>) => Promise<Readonly<{
+    readonly modelId: string;
+    readonly invoke: (
+      prompt: string,
+      signal?: AbortSignal,
+    ) => Promise<string>;
+    readonly assertCurrent: () => Promise<void>;
+  }>>;
   readonly publication: ProtectedStenographerExtractionPublicationPort;
 }
 
@@ -148,6 +167,13 @@ function assertActive(signal: AbortSignal): void {
   throw signal.reason instanceof Error
     ? signal.reason
     : new Error("protected Stenographer extraction aborted");
+}
+
+class ProtectedStenographerProviderOutcomeUnknownError extends Error {
+  constructor() {
+    super("Protected Stenographer provider outcome is unknown");
+    this.name = "ProtectedStenographerProviderOutcomeUnknownError";
+  }
 }
 
 async function rejectWithoutPublication(
@@ -278,11 +304,64 @@ export async function runProtectedStenographerExtraction(
           active: event.status === "active",
         })),
       };
+      const projection = prepareStenographerExtractionEvidence(snapshot);
+      if (!projection.ok) {
+        result = await rejectWithoutPublication(
+          input.capability,
+          "input_too_large",
+        );
+        return;
+      }
+      const modelExposure = {
+        currentRowPositions: projection.modelExposure.currentRowPositions,
+        priorRowPositions: projection.modelExposure.priorRowPositions,
+        latestRollupIncluded: snapshot.latestRollup !== null,
+        visibleEventReferences: snapshot.visibleEvents.map(
+          (event) => event.localReference,
+        ),
+      };
+      const modelExposureDependencies = snapshot.hasConversationalContent
+        ? protectedExtractionModelExposureDependencies(
+            sources,
+            input.work.namespaceId,
+            modelExposure,
+          )
+        : undefined;
+      const admitted = snapshot.hasConversationalContent
+        && input.admitModel !== undefined
+        ? await input.admitModel({
+            sources,
+            dependencies: modelExposureDependencies,
+          })
+        : undefined;
+      const invokeModel = admitted?.invoke ?? input.invokeModel;
+      if (snapshot.hasConversationalContent && invokeModel === undefined) {
+        throw new Error("Protected Stenographer model admission is unavailable");
+      }
+      let providerHasReturned = false;
+      const guardedInvoke = async (prompt: string): Promise<string> => {
+        try {
+          await admitted?.assertCurrent();
+        } catch (error) {
+          if (providerHasReturned) {
+            throw new ProtectedStenographerProviderOutcomeUnknownError();
+          }
+          throw error;
+        }
+        const value = await invokeModel!(prompt, input.signal);
+        providerHasReturned = true;
+        try {
+          await admitted?.assertCurrent();
+        } catch {
+          throw new ProtectedStenographerProviderOutcomeUnknownError();
+        }
+        return value;
+      };
       let processed: Awaited<ReturnType<typeof runStenographerExtraction>>;
       try {
         processed = await runStenographerExtraction({
           snapshot,
-          invoke: (prompt) => input.invokeModel(prompt, input.signal),
+          invoke: guardedInvoke,
           signal: input.signal,
           validateProposal: (proposal) => {
             const mapped = mapStenographerProposal(proposal, mappingContext);
@@ -290,11 +369,14 @@ export async function runProtectedStenographerExtraction(
           },
         });
         assertActive(input.signal);
-      } catch {
+      } catch (error) {
         assertActive(input.signal);
         result = await rejectWithoutPublication(
           input.capability,
-          "provider_failure",
+          error instanceof ProtectedStenographerProviderOutcomeUnknownError
+              || mapModelFailure(error) === "provider_outcome_unknown"
+            ? "provider_outcome_unknown"
+            : "provider_failure",
         );
         return;
       }
@@ -338,6 +420,9 @@ export async function runProtectedStenographerExtraction(
             ])),
           )).toString("hex")}`,
         })),
+        ...(modelExposureDependencies === undefined
+          ? {}
+          : { modelExposureDependencies }),
       });
       if (planned.status !== "planned") {
         result = await rejectWithoutPublication(
@@ -381,6 +466,15 @@ export async function runProtectedStenographerExtraction(
       const outputObjectIds = Object.freeze(
         planned.outputs.map((output) => output.objectId),
       );
+      try {
+        await admitted?.assertCurrent();
+      } catch {
+        result = await rejectWithoutPublication(
+          input.capability,
+          "provider_outcome_unknown",
+        );
+        return;
+      }
       try {
         await input.capability.publishOutputs(planned.outputs);
       } finally {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ensurePrivateDirectory } from "@nautilo/config/private-filesystem";
 import {
   prepareCanonicalDefaultCloneSeed,
   type CanonicalDefaultSourceEvidence,
@@ -27,7 +28,7 @@ const TIME = new Date(Date.now() - 1_000).toISOString();
 
 async function makeCanonicalBackup(root: string, name: string, createdAt = TIME): Promise<VerifiedFullBackup> {
   const dir = join(root, name);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(dir);
   for (const file of ["database.sql.gz", "logto.sql.gz", "dot-env", "home.tar.gz"]) {
     await writeFile(join(dir, file), `${name}:${file}`, { mode: 0o600 });
   }

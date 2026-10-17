@@ -1,6 +1,6 @@
 {
-  "id": "2088f4ce-31ac-494f-a489-0a6d6e3b7fcf",
-  "prevId": "0251be5f-067e-4010-942c-3bdf9e1c964c",
+  "id": "19ec8dca-aff2-4d23-9b99-4d164fab776f",
+  "prevId": "1c497fcd-d74e-4630-b200-575bb87800a2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -14082,6 +14082,13 @@
           "notNull": true,
           "default": true
         },
+        "external_context": {
+          "name": "external_context",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "parent_room_id": {
           "name": "parent_room_id",
           "type": "uuid",
@@ -16514,12 +16521,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "local_execution_delegation": {
-          "name": "local_execution_delegation",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -16590,6 +16591,12 @@
         "cancelled_at": {
           "name": "cancelled_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_execution_delegation": {
+          "name": "local_execution_delegation",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
@@ -16792,10 +16799,6 @@
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
         },
-        "tasks_protected_requester_owns_content": {
-          "name": "tasks_protected_requester_owns_content",
-          "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
-        },
         "tasks_crypto_mapping_coherent": {
           "name": "tasks_crypto_mapping_coherent",
           "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
@@ -16836,13 +16839,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": false
-        },
-        "result_revision": {
-          "name": "result_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
         },
         "result_operation_id": {
           "name": "result_operation_id",
@@ -17035,7 +17031,7 @@
         },
         "protected_task_run_output_bindings_result_identity_shape": {
           "name": "protected_task_run_output_bindings_result_identity_shape",
-          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and (\n          (\"protected_task_run_output_bindings\".\"result_revision\" = 1\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n          or (\"protected_task_run_output_bindings\".\"result_revision\" = 2\n            and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-cancelled-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text)\n        )\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
+          "value": "\"protected_task_run_output_bindings\".\"binding_id\" = 'task-run-output:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_operation_id\" = 'task-run-result:' || \"protected_task_run_output_bindings\".\"task_run_id\"::text\n        and \"protected_task_run_output_bindings\".\"result_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "protected_task_run_output_bindings_delivery_shape": {
           "name": "protected_task_run_output_bindings_delivery_shape",
@@ -29485,11 +29481,11 @@
         },
         "background_crypto_authorization_requests_work_kind": {
           "name": "background_crypto_authorization_requests_work_kind",
-          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_purpose": {
           "name": "background_crypto_authorization_requests_purpose",
-          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume'\n      )"
         },
         "background_crypto_authorization_requests_work_purpose_coherent": {
           "name": "background_crypto_authorization_requests_work_purpose_coherent",
@@ -29509,7 +29505,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" <> 'task.cancel_result'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume',\n        'task.cancel_result'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -42606,12 +42602,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "profile_funding_binding": {
-          "name": "profile_funding_binding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_verified_at": {
           "name": "last_verified_at",
           "type": "timestamp with time zone",
@@ -42656,6 +42646,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "profile_funding_binding": {
+          "name": "profile_funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -42820,18 +42816,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "run_cost_custody": {
-          "name": "run_cost_custody",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "funding_binding": {
-          "name": "funding_binding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "receipt": {
           "name": "receipt",
           "type": "jsonb",
@@ -42851,6 +42835,18 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_cost_custody": {
+          "name": "run_cost_custody",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -43183,12 +43179,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "funding_binding": {
-          "name": "funding_binding",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "action_operation_id": {
           "name": "action_operation_id",
           "type": "uuid",
@@ -43366,6 +43356,12 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "funding_binding": {
+          "name": "funding_binding",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
@@ -44267,568 +44263,6 @@
       "checkConstraints": {},
       "isRLSEnabled": true
     },
-    "public.conversion_operations": {
-      "name": "conversion_operations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "operation_key": {
-          "name": "operation_key",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "recovery_handle": {
-          "name": "recovery_handle",
-          "type": "varchar(36)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "causal_human_user_id": {
-          "name": "causal_human_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "room_id": {
-          "name": "room_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "agent_id": {
-          "name": "agent_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "funding_kind": {
-          "name": "funding_kind",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_route": {
-          "name": "provider_route",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_sandbox": {
-          "name": "provider_sandbox",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_region": {
-          "name": "provider_region",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_id": {
-          "name": "credential_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_revision": {
-          "name": "credential_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_fingerprint": {
-          "name": "credential_fingerprint",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_kind": {
-          "name": "source_kind",
-          "type": "varchar(16)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_artifact_id": {
-          "name": "source_artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_artifact_revision": {
-          "name": "source_artifact_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "source_sha256": {
-          "name": "source_sha256",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_authority_digest": {
-          "name": "source_authority_digest",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_artifact_id": {
-          "name": "destination_artifact_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "destination_artifact_revision": {
-          "name": "destination_artifact_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "destination_namespace_id": {
-          "name": "destination_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_path_digest": {
-          "name": "destination_path_digest",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_authority_digest": {
-          "name": "destination_authority_digest",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "input_format": {
-          "name": "input_format",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "output_format": {
-          "name": "output_format",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "max_output_bytes": {
-          "name": "max_output_bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_tag": {
-          "name": "provider_tag",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider_job_id": {
-          "name": "provider_job_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "submission_lease_id": {
-          "name": "submission_lease_id",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "submission_lease_expires_at": {
-          "name": "submission_lease_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cancellation_requested_at": {
-          "name": "cancellation_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "status": {
-          "name": "status",
-          "type": "varchar(32)",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'prepared'"
-        },
-        "provider_credits": {
-          "name": "provider_credits",
-          "type": "numeric(20, 8)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_sha256": {
-          "name": "output_sha256",
-          "type": "varchar(64)",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "output_bytes": {
-          "name": "output_bytes",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "publication_revision_id": {
-          "name": "publication_revision_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "publication_artifact_id": {
-          "name": "publication_artifact_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "failure_code": {
-          "name": "failure_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "version": {
-          "name": "version",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 1
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "submitted_at": {
-          "name": "submitted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "terminal_at": {
-          "name": "terminal_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "published_at": {
-          "name": "published_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "uq_conversion_operations_operation_key": {
-          "name": "uq_conversion_operations_operation_key",
-          "columns": [
-            {
-              "expression": "operation_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_conversion_operations_recovery_handle": {
-          "name": "uq_conversion_operations_recovery_handle",
-          "columns": [
-            {
-              "expression": "recovery_handle",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "uq_conversion_operations_provider_tag": {
-          "name": "uq_conversion_operations_provider_tag",
-          "columns": [
-            {
-              "expression": "provider_tag",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_conversion_operations_provider_job": {
-          "name": "idx_conversion_operations_provider_job",
-          "columns": [
-            {
-              "expression": "provider_job_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_conversion_operations_recovery": {
-          "name": "idx_conversion_operations_recovery",
-          "columns": [
-            {
-              "expression": "status",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "updated_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "idx_conversion_operations_human": {
-          "name": "idx_conversion_operations_human",
-          "columns": [
-            {
-              "expression": "causal_human_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "conversion_operations_causal_human_user_id_users_id_fk": {
-          "name": "conversion_operations_causal_human_user_id_users_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "users",
-          "columnsFrom": [
-            "causal_human_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_room_id_rooms_id_fk": {
-          "name": "conversion_operations_room_id_rooms_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "rooms",
-          "columnsFrom": [
-            "room_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_agent_id_agents_id_fk": {
-          "name": "conversion_operations_agent_id_agents_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "agents",
-          "columnsFrom": [
-            "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_task_id_tasks_id_fk": {
-          "name": "conversion_operations_task_id_tasks_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_run_id_task_runs_id_fk": {
-          "name": "conversion_operations_run_id_task_runs_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "task_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        },
-        "conversion_operations_job_id_jobs_id_fk": {
-          "name": "conversion_operations_job_id_jobs_id_fk",
-          "tableFrom": "conversion_operations",
-          "tableTo": "jobs",
-          "columnsFrom": [
-            "job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {
-        "conversion_operations_product_all": {
-          "name": "conversion_operations_product_all",
-          "as": "PERMISSIVE",
-          "for": "ALL",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true",
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "conversion_operations_operation_key_digest": {
-          "name": "conversion_operations_operation_key_digest",
-          "value": "\"conversion_operations\".\"operation_key\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_recovery_handle_shape": {
-          "name": "conversion_operations_recovery_handle_shape",
-          "value": "\"conversion_operations\".\"recovery_handle\" ~ '^cvr_[0-9a-f]{32}$'"
-        },
-        "conversion_operations_credential_fingerprint_digest": {
-          "name": "conversion_operations_credential_fingerprint_digest",
-          "value": "\"conversion_operations\".\"credential_fingerprint\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_source_sha_digest": {
-          "name": "conversion_operations_source_sha_digest",
-          "value": "\"conversion_operations\".\"source_sha256\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_source_authority_digest": {
-          "name": "conversion_operations_source_authority_digest",
-          "value": "\"conversion_operations\".\"source_authority_digest\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_destination_path_digest": {
-          "name": "conversion_operations_destination_path_digest",
-          "value": "\"conversion_operations\".\"destination_path_digest\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_destination_authority_digest": {
-          "name": "conversion_operations_destination_authority_digest",
-          "value": "\"conversion_operations\".\"destination_authority_digest\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_output_sha_digest": {
-          "name": "conversion_operations_output_sha_digest",
-          "value": "\"conversion_operations\".\"output_sha256\" IS NULL OR \"conversion_operations\".\"output_sha256\" ~ '^[0-9a-f]{64}$'"
-        },
-        "conversion_operations_version_positive": {
-          "name": "conversion_operations_version_positive",
-          "value": "\"conversion_operations\".\"version\" > 0"
-        },
-        "conversion_operations_output_bytes_nonnegative": {
-          "name": "conversion_operations_output_bytes_nonnegative",
-          "value": "\"conversion_operations\".\"output_bytes\" IS NULL OR \"conversion_operations\".\"output_bytes\" >= 0"
-        },
-        "conversion_operations_max_output_bytes_positive": {
-          "name": "conversion_operations_max_output_bytes_positive",
-          "value": "\"conversion_operations\".\"max_output_bytes\" > 0"
-        },
-        "conversion_operations_provider_credits_nonnegative": {
-          "name": "conversion_operations_provider_credits_nonnegative",
-          "value": "\"conversion_operations\".\"provider_credits\" IS NULL OR \"conversion_operations\".\"provider_credits\" >= 0"
-        },
-        "conversion_operations_funding_binding": {
-          "name": "conversion_operations_funding_binding",
-          "value": "(\n        (\"conversion_operations\".\"funding_kind\" = 'personal' AND \"conversion_operations\".\"credential_id\" IS NOT NULL AND \"conversion_operations\".\"credential_revision\" >= 1)\n        OR (\"conversion_operations\".\"funding_kind\" = 'server' AND \"conversion_operations\".\"credential_id\" IS NULL AND \"conversion_operations\".\"credential_revision\" IS NULL)\n      )"
-        },
-        "conversion_operations_source_binding": {
-          "name": "conversion_operations_source_binding",
-          "value": "(\n        (\"conversion_operations\".\"source_kind\" = 'inline' AND \"conversion_operations\".\"source_artifact_id\" IS NULL AND \"conversion_operations\".\"source_artifact_revision\" IS NULL)\n        OR (\"conversion_operations\".\"source_kind\" = 'artifact' AND \"conversion_operations\".\"source_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"source_artifact_revision\" >= 1)\n      )"
-        },
-        "conversion_operations_provider_job_phase": {
-          "name": "conversion_operations_provider_job_phase",
-          "value": "(\n        (\"conversion_operations\".\"status\" IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NULL)\n        OR (\"conversion_operations\".\"status\" NOT IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" = 'cancelled' AND \"conversion_operations\".\"provider_job_id\" IS NULL\n          AND \"conversion_operations\".\"failure_code\" IS NOT DISTINCT FROM 'cancelled_before_provider_dispatch')\n      )"
-        },
-        "conversion_operations_submission_lease": {
-          "name": "conversion_operations_submission_lease",
-          "value": "(\n        (\"conversion_operations\".\"status\" = 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NOT NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NULL)\n      )"
-        },
-        "conversion_operations_publication_receipt": {
-          "name": "conversion_operations_publication_receipt",
-          "value": "(\n        (\"conversion_operations\".\"status\" = 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NOT NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"published_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NULL AND \"conversion_operations\".\"published_at\" IS NULL)\n      )"
-        }
-      },
-      "isRLSEnabled": true
-    },
     "public.task_run_message_associations": {
       "name": "task_run_message_associations",
       "schema": "",
@@ -45311,6 +44745,1484 @@
         "protected_task_continuation_receipts_shape_coherent": {
           "name": "protected_task_continuation_receipts_shape_coherent",
           "value": "(\n        \"protected_task_continuation_receipts\".\"kind\" = 'checkpoint_safe_v1'\n        and \"protected_task_continuation_receipts\".\"reason\" in ('manual_pause', 'time_limit', 'grant_refresh')\n        and \"protected_task_continuation_receipts\".\"effect_disposition\" = 'none_v1'\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" is null\n        and \"protected_task_continuation_receipts\".\"operation_id\" is null\n        and \"protected_task_continuation_receipts\".\"request_digest\" is null\n        and \"protected_task_continuation_receipts\".\"required_authority_digest\" is null\n        and \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n        and \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n      ) or (\n        \"protected_task_continuation_receipts\".\"kind\" = 'pre_effect_interrupt_v1'\n        and \"protected_task_continuation_receipts\".\"reason\" in ('grant_refresh', 'additional_authority')\n        and \"protected_task_continuation_receipts\".\"effect_disposition\" = 'not_started_v1'\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" is not null\n        and \"protected_task_continuation_receipts\".\"interrupt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_continuation_receipts\".\"operation_id\" is not null\n        and \"protected_task_continuation_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_continuation_receipts\".\"request_digest\" is not null\n        and octet_length(\"protected_task_continuation_receipts\".\"request_digest\") = 32\n        and \"protected_task_continuation_receipts\".\"required_authority_digest\" is not null\n        and octet_length(\"protected_task_continuation_receipts\".\"required_authority_digest\") = 32\n        and (\n          \"protected_task_continuation_receipts\".\"reason\" = 'grant_refresh'\n          and \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n          and \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n          or \"protected_task_continuation_receipts\".\"reason\" = 'additional_authority'\n          and (\n            \"protected_task_continuation_receipts\".\"stable_routing_digest\" is null\n            or octet_length(\"protected_task_continuation_receipts\".\"stable_routing_digest\") = 32\n          )\n          and (\n            \"protected_task_continuation_receipts\".\"semantic_authority_requirements\" is null\n            or jsonb_typeof(\"protected_task_continuation_receipts\".\"semantic_authority_requirements\") = 'array'\n          )\n        )\n      )"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.conversion_operations": {
+      "name": "conversion_operations",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "operation_key": {
+          "name": "operation_key",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recovery_handle": {
+          "name": "recovery_handle",
+          "type": "varchar(36)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "causal_human_user_id": {
+          "name": "causal_human_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "task_id": {
+          "name": "task_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "funding_kind": {
+          "name": "funding_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_route": {
+          "name": "provider_route",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_id": {
+          "name": "credential_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_revision": {
+          "name": "credential_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "credential_fingerprint": {
+          "name": "credential_fingerprint",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_kind": {
+          "name": "source_kind",
+          "type": "varchar(16)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_artifact_id": {
+          "name": "source_artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_artifact_revision": {
+          "name": "source_artifact_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "source_sha256": {
+          "name": "source_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_authority_digest": {
+          "name": "source_authority_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_artifact_id": {
+          "name": "destination_artifact_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_artifact_revision": {
+          "name": "destination_artifact_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_namespace_id": {
+          "name": "destination_namespace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_path_digest": {
+          "name": "destination_path_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "destination_authority_digest": {
+          "name": "destination_authority_digest",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "input_format": {
+          "name": "input_format",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "output_format": {
+          "name": "output_format",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_tag": {
+          "name": "provider_tag",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_job_id": {
+          "name": "provider_job_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'prepared'"
+        },
+        "provider_credits": {
+          "name": "provider_credits",
+          "type": "numeric(20, 8)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_sha256": {
+          "name": "output_sha256",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "output_bytes": {
+          "name": "output_bytes",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "publication_revision_id": {
+          "name": "publication_revision_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "publication_artifact_id": {
+          "name": "publication_artifact_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "submitted_at": {
+          "name": "submitted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "terminal_at": {
+          "name": "terminal_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "published_at": {
+          "name": "published_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_sandbox": {
+          "name": "provider_sandbox",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_region": {
+          "name": "provider_region",
+          "type": "varchar(32)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "max_output_bytes": {
+          "name": "max_output_bytes",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "submission_lease_id": {
+          "name": "submission_lease_id",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "submission_lease_expires_at": {
+          "name": "submission_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cancellation_requested_at": {
+          "name": "cancellation_requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "uq_conversion_operations_operation_key": {
+          "name": "uq_conversion_operations_operation_key",
+          "columns": [
+            {
+              "expression": "operation_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_conversion_operations_recovery_handle": {
+          "name": "uq_conversion_operations_recovery_handle",
+          "columns": [
+            {
+              "expression": "recovery_handle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "uq_conversion_operations_provider_tag": {
+          "name": "uq_conversion_operations_provider_tag",
+          "columns": [
+            {
+              "expression": "provider_tag",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_conversion_operations_provider_job": {
+          "name": "idx_conversion_operations_provider_job",
+          "columns": [
+            {
+              "expression": "provider_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_conversion_operations_recovery": {
+          "name": "idx_conversion_operations_recovery",
+          "columns": [
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_conversion_operations_human": {
+          "name": "idx_conversion_operations_human",
+          "columns": [
+            {
+              "expression": "causal_human_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "conversion_operations_causal_human_user_id_users_id_fk": {
+          "name": "conversion_operations_causal_human_user_id_users_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "causal_human_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_room_id_rooms_id_fk": {
+          "name": "conversion_operations_room_id_rooms_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_agent_id_agents_id_fk": {
+          "name": "conversion_operations_agent_id_agents_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_task_id_tasks_id_fk": {
+          "name": "conversion_operations_task_id_tasks_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "tasks",
+          "columnsFrom": [
+            "task_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_run_id_task_runs_id_fk": {
+          "name": "conversion_operations_run_id_task_runs_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "task_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        },
+        "conversion_operations_job_id_jobs_id_fk": {
+          "name": "conversion_operations_job_id_jobs_id_fk",
+          "tableFrom": "conversion_operations",
+          "tableTo": "jobs",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "conversion_operations_product_all": {
+          "name": "conversion_operations_product_all",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo"
+          ],
+          "using": "true",
+          "withCheck": "true"
+        }
+      },
+      "checkConstraints": {
+        "conversion_operations_operation_key_digest": {
+          "name": "conversion_operations_operation_key_digest",
+          "value": "\"conversion_operations\".\"operation_key\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_recovery_handle_shape": {
+          "name": "conversion_operations_recovery_handle_shape",
+          "value": "\"conversion_operations\".\"recovery_handle\" ~ '^cvr_[0-9a-f]{32}$'"
+        },
+        "conversion_operations_credential_fingerprint_digest": {
+          "name": "conversion_operations_credential_fingerprint_digest",
+          "value": "\"conversion_operations\".\"credential_fingerprint\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_source_sha_digest": {
+          "name": "conversion_operations_source_sha_digest",
+          "value": "\"conversion_operations\".\"source_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_source_authority_digest": {
+          "name": "conversion_operations_source_authority_digest",
+          "value": "\"conversion_operations\".\"source_authority_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_destination_path_digest": {
+          "name": "conversion_operations_destination_path_digest",
+          "value": "\"conversion_operations\".\"destination_path_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_destination_authority_digest": {
+          "name": "conversion_operations_destination_authority_digest",
+          "value": "\"conversion_operations\".\"destination_authority_digest\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_output_sha_digest": {
+          "name": "conversion_operations_output_sha_digest",
+          "value": "\"conversion_operations\".\"output_sha256\" IS NULL OR \"conversion_operations\".\"output_sha256\" ~ '^[0-9a-f]{64}$'"
+        },
+        "conversion_operations_version_positive": {
+          "name": "conversion_operations_version_positive",
+          "value": "\"conversion_operations\".\"version\" > 0"
+        },
+        "conversion_operations_output_bytes_nonnegative": {
+          "name": "conversion_operations_output_bytes_nonnegative",
+          "value": "\"conversion_operations\".\"output_bytes\" IS NULL OR \"conversion_operations\".\"output_bytes\" >= 0"
+        },
+        "conversion_operations_provider_credits_nonnegative": {
+          "name": "conversion_operations_provider_credits_nonnegative",
+          "value": "\"conversion_operations\".\"provider_credits\" IS NULL OR \"conversion_operations\".\"provider_credits\" >= 0"
+        },
+        "conversion_operations_funding_binding": {
+          "name": "conversion_operations_funding_binding",
+          "value": "(\n        (\"conversion_operations\".\"funding_kind\" = 'personal' AND \"conversion_operations\".\"credential_id\" IS NOT NULL AND \"conversion_operations\".\"credential_revision\" >= 1)\n        OR (\"conversion_operations\".\"funding_kind\" = 'server' AND \"conversion_operations\".\"credential_id\" IS NULL AND \"conversion_operations\".\"credential_revision\" IS NULL)\n      )"
+        },
+        "conversion_operations_source_binding": {
+          "name": "conversion_operations_source_binding",
+          "value": "(\n        (\"conversion_operations\".\"source_kind\" = 'inline' AND \"conversion_operations\".\"source_artifact_id\" IS NULL AND \"conversion_operations\".\"source_artifact_revision\" IS NULL)\n        OR (\"conversion_operations\".\"source_kind\" = 'artifact' AND \"conversion_operations\".\"source_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"source_artifact_revision\" >= 1)\n      )"
+        },
+        "conversion_operations_provider_job_phase": {
+          "name": "conversion_operations_provider_job_phase",
+          "value": "(\n        (\"conversion_operations\".\"status\" IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NULL)\n        OR (\"conversion_operations\".\"status\" NOT IN ('prepared', 'submitting', 'submission_unknown', 'recovery_ambiguous') AND \"conversion_operations\".\"provider_job_id\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" = 'cancelled' AND \"conversion_operations\".\"provider_job_id\" IS NULL\n          AND \"conversion_operations\".\"failure_code\" IS NOT DISTINCT FROM 'cancelled_before_provider_dispatch')\n      )"
+        },
+        "conversion_operations_publication_receipt": {
+          "name": "conversion_operations_publication_receipt",
+          "value": "(\n        (\"conversion_operations\".\"status\" = 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NOT NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NOT NULL AND \"conversion_operations\".\"published_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'published' AND \"conversion_operations\".\"publication_revision_id\" IS NULL AND \"conversion_operations\".\"publication_artifact_id\" IS NULL AND \"conversion_operations\".\"published_at\" IS NULL)\n      )"
+        },
+        "conversion_operations_max_output_bytes_positive": {
+          "name": "conversion_operations_max_output_bytes_positive",
+          "value": "\"conversion_operations\".\"max_output_bytes\" > 0"
+        },
+        "conversion_operations_submission_lease": {
+          "name": "conversion_operations_submission_lease",
+          "value": "(\n        (\"conversion_operations\".\"status\" = 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NOT NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NOT NULL)\n        OR (\"conversion_operations\".\"status\" <> 'submitting' AND \"conversion_operations\".\"submission_lease_id\" IS NULL AND \"conversion_operations\".\"submission_lease_expires_at\" IS NULL)\n      )"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_connections": {
+      "name": "bolter_connections",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "relay_id": {
+          "name": "relay_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "desktop_session_id": {
+          "name": "desktop_session_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pairing_generation_ref": {
+          "name": "pairing_generation_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "home_handle": {
+          "name": "home_handle",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_agent_id": {
+          "name": "provider_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "identity_fingerprint": {
+          "name": "identity_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "generation": {
+          "name": "generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_connections_home": {
+          "name": "bolter_connections_home",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "relay_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "home_handle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_connections_owner": {
+          "name": "bolter_connections_owner",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_connections_user_id_users_id_fk": {
+          "name": "bolter_connections_user_id_users_id_fk",
+          "tableFrom": "bolter_connections",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_connections_owner_id": {
+          "name": "bolter_connections_owner_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_connections_owner": {
+          "name": "bolter_connections_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo",
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_connections\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_connections\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_connections_generation": {
+          "name": "bolter_connections_generation",
+          "value": "\"bolter_connections\".\"generation\" > 0 AND \"bolter_connections\".\"revision\" >= 0"
+        },
+        "bolter_connections_revocation": {
+          "name": "bolter_connections_revocation",
+          "value": "\"bolter_connections\".\"revoked_at\" IS NULL OR \"bolter_connections\".\"enabled\" = false"
+        },
+        "bolter_connections_identity": {
+          "name": "bolter_connections_identity",
+          "value": "\"bolter_connections\".\"identity_fingerprint\" ~ '^[0-9a-f]{64}$' AND length(\"bolter_connections\".\"provider_agent_id\") > 0 AND length(\"bolter_connections\".\"origin\") > 0 AND length(\"bolter_connections\".\"relay_id\") > 0 AND length(\"bolter_connections\".\"desktop_session_id\") > 0 AND length(\"bolter_connections\".\"pairing_generation_ref\") > 0"
+        },
+        "bolter_connections_home_handle": {
+          "name": "bolter_connections_home_handle",
+          "value": "length(\"bolter_connections\".\"home_handle\") > 0 AND position('/' in \"bolter_connections\".\"home_handle\") = 0 AND position(chr(92) in \"bolter_connections\".\"home_handle\") = 0 AND position('..' in \"bolter_connections\".\"home_handle\") = 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_inbox_receipts": {
+      "name": "bolter_inbox_receipts",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "external_sender_id": {
+          "name": "external_sender_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "turn_id": {
+          "name": "turn_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "job_id": {
+          "name": "job_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_inbox_provider_message": {
+          "name": "bolter_inbox_provider_message",
+          "columns": [
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_inbox_canonical_message": {
+          "name": "bolter_inbox_canonical_message",
+          "columns": [
+            {
+              "expression": "session_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_inbox_receipts_user_id_users_id_fk": {
+          "name": "bolter_inbox_receipts_user_id_users_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_receipts_session_message_id_session_messages_id_fk": {
+          "name": "bolter_inbox_receipts_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_receipts_job_id_jobs_id_fk": {
+          "name": "bolter_inbox_receipts_job_id_jobs_id_fk",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "jobs",
+          "columnsFrom": [
+            "job_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_inbox_binding_owner": {
+          "name": "bolter_inbox_binding_owner",
+          "tableFrom": "bolter_inbox_receipts",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_inbox_owner_binding_id": {
+          "name": "bolter_inbox_owner_binding_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "binding_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_inbox_owner": {
+          "name": "bolter_inbox_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_inbox_receipts\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_inbox_receipts\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_inbox_state": {
+          "name": "bolter_inbox_state",
+          "value": "\"bolter_inbox_receipts\".\"state\" IN ('pending', 'accepted', 'quarantined', 'cancelled') AND (\"bolter_inbox_receipts\".\"state\" <> 'accepted' OR (\"bolter_inbox_receipts\".\"session_message_id\" IS NOT NULL AND \"bolter_inbox_receipts\".\"turn_id\" IS NOT NULL))"
+        },
+        "bolter_inbox_identity": {
+          "name": "bolter_inbox_identity",
+          "value": "\"bolter_inbox_receipts\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND length(\"bolter_inbox_receipts\".\"provider_message_id\") > 0 AND length(\"bolter_inbox_receipts\".\"external_sender_id\") > 0 AND \"bolter_inbox_receipts\".\"binding_revision\" >= 0 AND \"bolter_inbox_receipts\".\"connection_generation\" > 0"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_outbox": {
+      "name": "bolter_outbox",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "binding_revision": {
+          "name": "binding_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_generation": {
+          "name": "connection_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "session_message_id": {
+          "name": "session_message_id",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source_inbox_id": {
+          "name": "source_inbox_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "explicit_share_id": {
+          "name": "explicit_share_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "fingerprint": {
+          "name": "fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "claim_token": {
+          "name": "claim_token",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_outbox_canonical_publication": {
+          "name": "bolter_outbox_canonical_publication",
+          "columns": [
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "session_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_outbox_owner_pending": {
+          "name": "bolter_outbox_owner_pending",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "binding_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"bolter_outbox\".\"state\" = 'pending'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_outbox_user_id_users_id_fk": {
+          "name": "bolter_outbox_user_id_users_id_fk",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_session_message_id_session_messages_id_fk": {
+          "name": "bolter_outbox_session_message_id_session_messages_id_fk",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "session_messages",
+          "columnsFrom": [
+            "session_message_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_binding_owner": {
+          "name": "bolter_outbox_binding_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_room_bindings",
+          "columnsFrom": [
+            "user_id",
+            "binding_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_outbox_reply_owner": {
+          "name": "bolter_outbox_reply_owner",
+          "tableFrom": "bolter_outbox",
+          "tableTo": "bolter_inbox_receipts",
+          "columnsFrom": [
+            "user_id",
+            "binding_id",
+            "source_inbox_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "binding_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {
+        "bolter_outbox_owner": {
+          "name": "bolter_outbox_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_outbox\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_outbox\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_outbox_reason": {
+          "name": "bolter_outbox_reason",
+          "value": "(\"bolter_outbox\".\"source_inbox_id\" IS NOT NULL) <> (\"bolter_outbox\".\"explicit_share_id\" IS NOT NULL)"
+        },
+        "bolter_outbox_identity": {
+          "name": "bolter_outbox_identity",
+          "value": "\"bolter_outbox\".\"fingerprint\" ~ '^[0-9a-f]{64}$' AND \"bolter_outbox\".\"binding_revision\" >= 0 AND \"bolter_outbox\".\"connection_generation\" > 0"
+        },
+        "bolter_outbox_state": {
+          "name": "bolter_outbox_state",
+          "value": "\"bolter_outbox\".\"state\" IN ('pending', 'publishing', 'published', 'uncertain', 'cancelled') AND (\"bolter_outbox\".\"state\" NOT IN ('publishing', 'published', 'uncertain') OR \"bolter_outbox\".\"claim_token\" IS NOT NULL) AND (\"bolter_outbox\".\"state\" <> 'published' OR \"bolter_outbox\".\"provider_message_id\" IS NOT NULL)"
+        }
+      },
+      "isRLSEnabled": true
+    },
+    "public.bolter_room_bindings": {
+      "name": "bolter_room_bindings",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_id": {
+          "name": "connection_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "room_id": {
+          "name": "room_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "namespace_id": {
+          "name": "namespace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "agent_id": {
+          "name": "agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "origin": {
+          "name": "origin",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_agent_id": {
+          "name": "provider_agent_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chat_id": {
+          "name": "chat_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bolter_bindings_external_identity": {
+          "name": "bolter_bindings_external_identity",
+          "columns": [
+            {
+              "expression": "connection_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "origin",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "chat_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bolter_bindings_room": {
+          "name": "bolter_bindings_room",
+          "columns": [
+            {
+              "expression": "room_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bolter_room_bindings_user_id_users_id_fk": {
+          "name": "bolter_room_bindings_user_id_users_id_fk",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bolter_room_bindings_agent_id_agents_id_fk": {
+          "name": "bolter_room_bindings_agent_id_agents_id_fk",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_bindings_connection_owner": {
+          "name": "bolter_bindings_connection_owner",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "bolter_connections",
+          "columnsFrom": [
+            "user_id",
+            "connection_id"
+          ],
+          "columnsTo": [
+            "user_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "bolter_bindings_exact_namespace": {
+          "name": "bolter_bindings_exact_namespace",
+          "tableFrom": "bolter_room_bindings",
+          "tableTo": "rooms",
+          "columnsFrom": [
+            "room_id",
+            "namespace_id"
+          ],
+          "columnsTo": [
+            "id",
+            "namespace_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "bolter_bindings_owner_id": {
+          "name": "bolter_bindings_owner_id",
+          "nullsNotDistinct": false,
+          "columns": [
+            "user_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {
+        "bolter_bindings_owner": {
+          "name": "bolter_bindings_owner",
+          "as": "PERMISSIVE",
+          "for": "ALL",
+          "to": [
+            "nautilo",
+            "nautilo_agent"
+          ],
+          "using": "\"bolter_room_bindings\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid",
+          "withCheck": "\"bolter_room_bindings\".\"user_id\" = nullif(current_setting('app.current_user_id', true), '')::uuid"
+        }
+      },
+      "checkConstraints": {
+        "bolter_bindings_revision": {
+          "name": "bolter_bindings_revision",
+          "value": "\"bolter_room_bindings\".\"revision\" >= 0"
+        },
+        "bolter_bindings_state": {
+          "name": "bolter_bindings_state",
+          "value": "\"bolter_room_bindings\".\"state\" IN ('active', 'paused', 'revoked')"
+        },
+        "bolter_bindings_identity": {
+          "name": "bolter_bindings_identity",
+          "value": "length(\"bolter_room_bindings\".\"origin\") > 0 AND length(\"bolter_room_bindings\".\"provider_agent_id\") > 0 AND length(\"bolter_room_bindings\".\"chat_id\") > 0"
         }
       },
       "isRLSEnabled": true

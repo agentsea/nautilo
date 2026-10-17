@@ -1,17 +1,19 @@
 import { prepareCapabilityFundingSession, capabilityFundingBinding } from "./capability-funding";
 import { resolveRetainedModels, resolveCatalogModel, type ForegroundChatFundingSession, type ForegroundFundingSnapshot } from "@nautilo/agent";
-import { getServerProviderPolicy, listPersonalProviderCredentials } from "@nautilo/db";
+import { and, eq, isNull, rooms, getServerProviderPolicy } from "@nautilo/db";
 import {
+  AgentInvocationDeniedError,
+  assertAcceptedInvocationAuthoritySubject,
   assertCanInvokeAgent,
   findActorByOwnerId,
   getRoomDetailForMember,
   getUserCapabilities,
+  type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
 import {
   ModelFundingError,
-  PERSONAL_CHAT_PROVIDER_IDS,
   resolveModelFunding,
-  withAdmittedPersonalProviderKey,
+  withAdmittedPersonalCredential,
   type ModelFundingDecision,
 } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
@@ -22,8 +24,17 @@ type FundingPortInput = Readonly<{
   modelId: string;
   roomId: string;
   agentId: string;
-  entrypoint: "foreground.main" | "foreground.fork";
+  entrypoint: "foreground.main" | "foreground.fork" | "foreground.external_room";
+  assertExternalRoomSponsorship?: () => Promise<void>;
   prior?: ForegroundFundingSnapshot;
+}>;
+
+type ConductorFundingPortInput = Readonly<{
+  humanUserId: string;
+  modelId: string;
+  roomId: string;
+  authority: AcceptedInvocationAuthority;
+  protectedTurn?: boolean;
 }>;
 
 export function usageFundingFor(decision: ModelFundingDecision) {
@@ -44,7 +55,10 @@ export function usageFundingFor(decision: ModelFundingDecision) {
 }
 
 function assertSignedChatModel(modelId: string): void {
-  const model = resolveRetainedModels([modelId], { purpose: "chat", env: {} })[0];
+  const model = resolveRetainedModels([modelId], {
+    purpose: "chat",
+    env: { NAUTILO_ALLOW_CHINA_UPSTREAM: process.env["NAUTILO_ALLOW_CHINA_UPSTREAM"] },
+  })[0];
   if (!model || (model.availability !== "selectable" && model.availability !== "missing-key")) {
     throw new ModelFundingError("unsupported_provider");
   }
@@ -54,7 +68,7 @@ function assertSignedChatModel(modelId: string): void {
   }
 }
 
-/** A live, exact private Room and the actor mirror establish the supported chat shape. */
+/** Narrow topology predicate retained for workload adapters that still require an own private Genie. */
 export async function isOwnPrivateGenieRoom(
   humanUserId: string,
   roomId: string,
@@ -71,21 +85,34 @@ export async function isOwnPrivateGenieRoom(
     && genie.agentOwnerUserId === humanUserId;
 }
 
-/** Used only to stop unsupported auxiliary/conductor shapes before they spend. */
-export async function callerHasConfiguredPersonalFunding(humanUserId: string): Promise<boolean> {
-  const caps = await getUserCapabilities(humanUserId);
-  if (!caps.includes("use_personal_provider_credentials")) return false;
-  const db = getServerDirectDb();
-  const policy = await getServerProviderPolicy(db);
-  if (!policy.allowPersonalProviderKeys) return false;
-  return (await listPersonalProviderCredentials(db, humanUserId)).some((credential) =>
-    (PERSONAL_CHAT_PROVIDER_IDS as readonly string[]).includes(credential.provider));
-}
-
-export async function callerMayUsePersonalChat(humanUserId: string): Promise<boolean> {
-  const caps = await getUserCapabilities(humanUserId);
-  if (!caps.includes("use_personal_provider_credentials")) return false;
-  return (await getServerProviderPolicy(getServerDirectDb())).allowPersonalProviderKeys;
+export async function assertForegroundRoomAuthority(input: Readonly<{
+  humanUserId: string;
+  roomId: string;
+  agentId?: string;
+}>): Promise<void> {
+  const actor = await findActorByOwnerId(input.humanUserId);
+  if (!actor) throw new ModelFundingError("unsupported_workload");
+  const [liveRoom] = await getServerDirectDb().select({ id: rooms.id }).from(rooms)
+    .where(and(eq(rooms.id, input.roomId), isNull(rooms.archivedAt))).limit(1);
+  if (!liveRoom) throw new ModelFundingError("unsupported_workload");
+  const room = await getRoomDetailForMember(input.roomId, actor.id);
+  if (!room || !room.members.some((member) =>
+    member.kind === "user" && member.userId === input.humanUserId
+  )) throw new ModelFundingError("unsupported_workload");
+  if (input.agentId && !room.members.some((member) =>
+    member.kind === "agent" && member.agentId === input.agentId
+  )) throw new ModelFundingError("unsupported_workload");
+  try {
+    await assertCanInvokeAgent({
+      humanUserId: input.humanUserId,
+      origin: "room_message",
+      roomId: input.roomId,
+      ...(input.agentId ? { agentId: input.agentId } : {}),
+    });
+  } catch (error) {
+    if (!(error instanceof AgentInvocationDeniedError)) throw error;
+    throw new ModelFundingError("unsupported_workload");
+  }
 }
 
 /**
@@ -96,6 +123,17 @@ export async function callerMayUsePersonalChat(humanUserId: string): Promise<boo
 export async function openForegroundChatFundingSession(
   input: FundingPortInput,
 ): Promise<ForegroundChatFundingSession | null> {
+  const external = input.entrypoint === "foreground.external_room";
+  const recheckAuthority = async () => {
+    if (external) {
+      if (!input.assertExternalRoomSponsorship) {
+        throw new ModelFundingError("unsupported_workload");
+      }
+      await input.assertExternalRoomSponsorship();
+    }
+    await assertForegroundRoomAuthority(input);
+  };
+  await recheckAuthority();
   const db = getServerDirectDb();
   const policy = await getServerProviderPolicy(db);
   const caps = await getUserCapabilities(input.humanUserId);
@@ -106,19 +144,6 @@ export async function openForegroundChatFundingSession(
   if (!caps.includes("use_personal_provider_credentials")) {
     if (!serverAllowed || input.prior?.binding.kind === "personal") throw new ModelFundingError("personal_credentials_forbidden");
   }
-  if (!(await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId))) {
-    // A member who also has server funding keeps the established foreign-DM
-    // path. Personal-only callers cannot turn a foreign Room into server spend.
-    if (serverAllowed && !input.prior) return null;
-    throw new ModelFundingError("unsupported_workload");
-  }
-  await assertCanInvokeAgent({
-    humanUserId: input.humanUserId,
-    origin: "room_message",
-    roomId: input.roomId,
-    agentId: input.agentId,
-  });
-
   // Funding can make a missing-key catalogue entry runnable, but it cannot
   // authorize an unsigned, disabled, or non-chat model identifier.
   assertSignedChatModel(input.modelId);
@@ -134,10 +159,6 @@ export async function openForegroundChatFundingSession(
     workload: "foreground_text_chat",
     ...(priorDecision ? { priorDecision } : {}),
   });
-  const recheckAuthority = async () => {
-    if (!await isOwnPrivateGenieRoom(input.humanUserId, input.roomId, input.agentId)) throw new ModelFundingError("unsupported_workload");
-    await assertCanInvokeAgent({ humanUserId: input.humanUserId, origin: "room_message", roomId: input.roomId, agentId: input.agentId });
-  };
   const resolveCandidate = async (modelId: string, transport?: "direct" | "surplus") => {
     await recheckAuthority();
     assertSignedChatModel(modelId);
@@ -153,8 +174,9 @@ export async function openForegroundChatFundingSession(
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(external ? { contentPrivateDiagnostics: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
-    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind),
+    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind, capabilityFundingBinding(admitted)),
     personalTaskControls: admitted.kind === "personal"
       && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
     runnableModelIds,
@@ -173,9 +195,66 @@ export async function openForegroundChatFundingSession(
       lastAttempt = decision;
       const usageFunding = usageFundingFor(decision);
       if (decision.kind === "server") return run({ usageFunding });
-      return withAdmittedPersonalProviderKey(
+      return withAdmittedPersonalCredential(
         decision,
-        (apiKey) => run({ usageFunding, personalCredential: { apiKey } }),
+        (personalCredential) => run({ usageFunding, personalCredential }),
+        undefined,
+        admitted,
+      );
+    },
+  };
+}
+
+/**
+ * Open funding only when ambiguous Room routing actually needs the Conductor
+ * model. The initiating Human remains the payer; the administrator-selected
+ * Conductor model remains authoritative.
+ */
+export async function openForegroundConductorFundingSession(
+  input: ConductorFundingPortInput,
+): Promise<ForegroundChatFundingSession> {
+  assertAcceptedInvocationAuthoritySubject(input.authority, input.humanUserId);
+  const recheckAuthority = () => assertForegroundRoomAuthority(input);
+  await recheckAuthority();
+  assertSignedChatModel(input.modelId);
+  const admitted = await resolveModelFunding({
+    humanUserId: input.humanUserId,
+    modelId: input.modelId,
+    workload: "foreground_text_chat",
+    ...(input.protectedTurn ? { fundingKind: "server" as const } : {}),
+  });
+  let lastAttempt: ModelFundingDecision | undefined;
+  const resolveCandidate = async (modelId: string, transport?: "direct" | "surplus") => {
+    await recheckAuthority();
+    assertSignedChatModel(modelId);
+    return resolveModelFunding({
+      humanUserId: input.humanUserId,
+      modelId,
+      workload: "foreground_text_chat",
+      priorDecision: admitted,
+      ...(transport ? { transport } : {}),
+    });
+  };
+  return {
+    kind: admitted.kind,
+    admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
+    async recheckAttempt(modelId, transport) {
+      const current = await resolveCandidate(modelId, transport);
+      if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"
+        && lastAttempt.modelId === modelId && lastAttempt.providerRoute === current.providerRoute
+        && (lastAttempt.credentialId !== current.credentialId
+          || lastAttempt.credentialRevision !== current.credentialRevision)) {
+        throw new ModelFundingError("personal_credential_stale");
+      }
+    },
+    async runAttempt(modelId, run, transport) {
+      const decision = await resolveCandidate(modelId, transport);
+      lastAttempt = decision;
+      const usageFunding = usageFundingFor(decision);
+      if (decision.kind === "server") return run({ usageFunding });
+      return withAdmittedPersonalCredential(
+        decision,
+        (personalCredential) => run({ usageFunding, personalCredential }),
         undefined,
         admitted,
       );

@@ -55,6 +55,7 @@ export {
 
 export {
   assertPersonalProviderCustodyHealth,
+  CHATGPT_RESTORE_FENCE_SQL,
   assertPersonalProviderRestoreCustody,
   buildPersonalProviderCustodyBackupEvidence,
   readPersonalProviderCredentialEvidenceFromDump,

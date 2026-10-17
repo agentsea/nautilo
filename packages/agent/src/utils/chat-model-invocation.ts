@@ -1,3 +1,4 @@
+import { findChatGPTSubscriptionError } from "../providers/chatgpt-plan-errors";
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
@@ -63,6 +64,7 @@ import {
 import {
   PersonalDirectFundingUnavailableError,
   PersonalModelFundingUnavailableError,
+  hasContentPrivateModelDiagnostics,
   type ForegroundChatFundingAttempt,
   type ForegroundChatFundingSession,
 } from "../runtime/foreground-chat-funding";
@@ -92,6 +94,14 @@ import { filterPersonalTaskControlTools } from "../runtime/personal-task-control
  * checkpoint rather than re-deriving it).
  */
 export type ModelFallbackMode = "agent_chain" | "none";
+
+/** Content-free terminal result used by durable Memory workers to quarantine replay. */
+export class MemoryProviderOutcomeUnknownError extends Error {
+  constructor() {
+    super("Memory provider outcome is unknown.");
+    this.name = "MemoryProviderOutcomeUnknownError";
+  }
+}
 
 /** One already-resolved foreground tuple, re-created for every fallback candidate. */
 export interface ResolvedForegroundModelControls {
@@ -483,7 +493,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -518,7 +528,11 @@ async function invokeOnceWithShortRetries(
         endpoint,
         signal: llmCallConfig.signal,
         hasObservedProviderWork: () => hasAssistantVisibleOutputForCurrentTurn(agentId),
-        invoke: () => invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress),
+        invoke: async () => {
+          const response = await invokeModelWithAttemptSupervisor(modelWithTools, messages, llmCallConfig, agentId, attemptPolicy, attemptPolicyOptions.isolatedProgress);
+          attemptPolicyOptions.validateResponse?.(response);
+          return response;
+        },
       });
     } catch (error) {
       const personalAttemptError = error instanceof PersonalAttemptInvocationError ? error : undefined;
@@ -527,6 +541,8 @@ async function invokeOnceWithShortRetries(
       // failure. Never turn it into a same-model retry because a provider's
       // cooperative AbortError happens to resemble a timeout.
       if (llmCallConfig.signal?.aborted) throw error;
+      const subscriptionError = findChatGPTSubscriptionError(providerError);
+      if (subscriptionError) throw subscriptionError;
       // Unknown/visible timeout outcomes cannot be replayed. Safe supervised timeouts
       // use the existing bounded same-model retry policy, including strict model mode.
       if (isProviderTimeoutError(providerError) && (!isSafelyRetryableProviderTimeout(providerError)
@@ -566,7 +582,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -779,6 +795,8 @@ export async function invokeChatModelWithFallback(
   laneKey: string | null,
   invocationConfig?: RunnableConfig,
   invokeOptions?: {
+    /** Producer validation runs before settling a buffered response as usable. */
+    validateResponse?: (response: AIMessage) => void;
     /** Exact initiating Human; separate from the Agent owner's model policy. */
     fundingHumanUserId?: string;
     /** Trusted request-local authority for foreground funding and credential injection. */
@@ -838,12 +856,22 @@ export async function invokeChatModelWithFallback(
   const strictNoChain = isStrictNoChain(invokeOptions?.modelFallbackMode);
   const fundingSession = invokeOptions?.fundingSession;
   const personalFunding = fundingSession?.kind === "personal";
-  if (personalFunding && messagesContainImageInputs(messages)) {
+  const contentPrivateDiagnostics = invokeOptions?.confidential === true
+    || hasContentPrivateModelDiagnostics()
+    || fundingSession?.contentPrivateDiagnostics === true;
+  const admittedPersonalNativeVision = personalFunding
+    && fundingSession.workload === undefined
+    && fundingSession.admission?.modelId === initialModelId
+    && fundingSession.admission.binding.kind === "personal"
+    && modelSupportsInput(initialModelId, "image");
+  if (personalFunding && messagesContainImageInputs(messages)
+    && !admittedPersonalNativeVision
+    && (fundingSession.workload !== "image_assistance" || tools.length !== 0)) {
     throw new ModelUnavailableError(initialModelId, "unsupported-capability", "personal funding supports foreground text chat only");
   }
   // Direct callers receive the same model-tool fence as agentNode. The
   // server/legacy path preserves its existing tool binding unchanged.
-  tools = personalFunding && fundingSession?.workload !== "research" && !fundingSession?.capabilityFunding
+  tools = personalFunding && fundingSession?.workload !== "research" && fundingSession?.workload !== "memory" && !fundingSession?.capabilityFunding
     ? fundingSession?.personalTaskControls === true
       ? filterPersonalTaskControlTools(tools)
       : []
@@ -1072,6 +1100,7 @@ export async function invokeChatModelWithFallback(
                 ...(openRouterSessionId === undefined ? {} : { openrouterSessionId: openRouterSessionId }),
                 funding: surplusFunding,
                 hasDeliveredOutput: attemptVisibility.hasVisibleOutput,
+                ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
                 invokeModel: (model, selectedMessages, selectedConfig) => invokeForegroundAttemptWithUsageContext(
                   model,
                   selectedMessages,
@@ -1186,6 +1215,7 @@ export async function invokeChatModelWithFallback(
               callerSuppliedProviderTimeout: callerProviderTimeoutMs !== undefined,
               ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
+              ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
             },
             endpoint,
           );
@@ -1249,7 +1279,17 @@ export async function invokeChatModelWithFallback(
       const personalAttemptError = providerError instanceof PersonalAttemptInvocationError
         ? providerError : undefined;
       const providerFailure = personalAttemptError?.cause ?? providerError;
-      if (providerFailure instanceof SurplusOutcomeUnknownError) throw providerFailure;
+      const memoryMaintenance = [
+        "memory_review", "room_stenographer", "room_reflection", "room_event_compaction",
+      ].includes(getUsageContext()?.callType ?? "");
+      if (providerFailure instanceof SurplusOutcomeUnknownError) {
+        if (memoryMaintenance) throw new MemoryProviderOutcomeUnknownError();
+        throw providerFailure;
+      }
+      if (memoryMaintenance && personalAttemptError?.disposition !== undefined
+        && personalAttemptError.disposition !== "safe_refusal") {
+        throw new MemoryProviderOutcomeUnknownError();
+      }
       // The caller owns this cancellation. It must bypass error
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
@@ -1258,6 +1298,8 @@ export async function invokeChatModelWithFallback(
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
           : providerFailure;
       }
+      const subscriptionError = findChatGPTSubscriptionError(providerFailure);
+      if (subscriptionError) throw subscriptionError;
       const classified = classifyError(providerFailure);
       const terminalProviderError = personalFunding
         && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)
@@ -1276,9 +1318,9 @@ export async function invokeChatModelWithFallback(
         if (await recoverContext("provider")) continue;
         throw terminalProviderError;
       }
-      if (personalFunding) {
-        log(`[nautilo/agent] Personal-funded model ${currentModelId} failed (${classified.category}, retryable=${classified.retryable})`);
-      } else if (!invokeOptions?.confidential) {
+      if (personalFunding || contentPrivateDiagnostics) {
+        log(`[nautilo/agent] ${personalFunding ? "Personal-funded model" : "Model"} ${currentModelId} failed (${classified.category}, retryable=${classified.retryable})`);
+      } else {
         log(
           `[nautilo/agent] Model ${currentModelId} failed: ${providerError instanceof Error ? providerError.message : String(providerError)} ` +
             `(${classified.category}, retryable=${classified.retryable})`,
@@ -1289,7 +1331,7 @@ export async function invokeChatModelWithFallback(
       }
 
       if (!personalFunding && shouldCooldownAfterFailure(classified)) {
-        markModelInvokeFailure(currentModelId, invokeOptions?.confidential ? classified.category : classified.message);
+        markModelInvokeFailure(currentModelId, contentPrivateDiagnostics ? classified.category : classified.message);
       }
 
       const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);

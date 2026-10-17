@@ -1,3 +1,4 @@
+import { externalRoomExecutionInput } from "./external-room-context";
 import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
 import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
 import { foregroundHumanTerminalAdmissionPort } from "../conversation/human-terminal-admission";
@@ -13,6 +14,7 @@ import { AIMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langch
 import { Command } from "@langchain/langgraph";
 import {
   buildForegroundUserHumanMessage,
+  hasContentPrivateModelDiagnostics,
   createNautiloGraph,
   streamForegroundGraph,
   defaultPostModelDeps,
@@ -57,6 +59,11 @@ import {
   parseTaskReportBackContinuation,
   classifyModelStreamProgress,
   modelAttemptIdFromStreamEvent,
+  bindModelInputExposure,
+  readModelInputExposure,
+  readCurrentOrdinaryTranscriptExposureRows,
+  iterateWithAuthoredModelInputExposure,
+  type ModelInputExposure,
 } from "@nautilo/agent";
 
 // Re-export so existing importers (notably the runtime's own unit
@@ -68,11 +75,17 @@ import { classifyTurnKind, type TurnKind } from "./turn-kind";
 import { resolveForegroundHistoryMessages } from "../context/foreground-history";
 export { resolveForegroundHistoryMessages } from "../context/foreground-history";
 import {
+  currentOrdinaryHumanModelExposure,
+  projectNeutralCurrentHumanMessageExposure,
+} from
+  "../context/ordinary-source-model-exposure";
+import {
   buildProtectedRoomHybridContext,
 } from "../context/build-transcript-context";
 import type { MemoryAccessEnvelope, RoomParticipant } from "@nautilo/trust";
 import {
   envelopeReadableNamespaces,
+  getRoomWithAccess,
   getPolicyResolver,
   isScopeMemoryEnvelope,
 } from "@nautilo/trust";
@@ -144,9 +157,17 @@ import type { LiveShadowAgentRuntimeTurn } from
 import type {
   LiveShadowAgentTurnSession,
 } from "@nautilo/lattice-bridge/server";
-import { loadForegroundAuthoredContext } from
+import {
+  foregroundProfileSoulFingerprint,
+  foregroundMemoryBriefExposure,
+  loadForegroundAuthoredContext,
+} from
   "./foreground-authored-context";
+import { reflectionMessageSourceFingerprint } from
+  "../reflection/canonical-room-sources";
 import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
+import { getCurrentExternalRoomExecution } from "../external-room-execution";
+import { formatExternalMessageForModel } from "../conductor/external-message-attribution";
 import { openTaskWakeFundingSessionForInvocation } from "../task-funding-port";
 import {
   assertProtectedTaskWakeForegroundJobInput,
@@ -156,6 +177,7 @@ import {
 import {
   assertForegroundChatFundingWorkloadSupported,
   openConnectedWebOperationWakeFundingSessionForInvocation,
+  openExternalRoomFundingSession,
   openForegroundChatFundingSessionForInvocation,
   openImageAssistanceForInvocation,
 } from "../foreground-chat-funding-port";
@@ -431,6 +453,45 @@ function markAssistantVisibleOutputForTurnByKey(key: string | undefined): void {
   getOrCreateAgentTurnContextByKey(k).assistantVisibleOutput = true;
 }
 
+/** Canonical visible text for external replies; unsupported content never becomes a partial publication. */
+export function externalRoomFinalReplyText(message: unknown): string | null {
+  if (!message || !AIMessage.isInstance(message) || message.tool_calls?.length) return null;
+  let text: string;
+  if (typeof message.content === "string") text = message.content;
+  else if (Array.isArray(message.content)) {
+    const parts: string[] = [];
+    for (const block of message.content) {
+      if (!block || typeof block !== "object" || Array.isArray(block)) return null;
+      if (block.type === "reasoning" || block.type === "thinking" || block.type === "redacted_thinking") continue;
+      if (block.type !== "text" || typeof block["text"] !== "string") return null;
+      parts.push(block["text"]);
+    }
+    text = parts.join("");
+  } else return null;
+  return text.trim() ? text : null;
+}
+
+/** Match the completed checkpoint to this invocation's harvested assistant reply before publication. */
+export function confirmedExternalRoomFinalReply(input: {
+  checkpoint: unknown;
+  reference: { turnId: string; agentId: string };
+  candidate: BaseMessage | null;
+  signal: AbortSignal;
+}): string {
+  const checkpoint = input.checkpoint as { values?: Record<string, unknown> } | undefined;
+  const values = checkpoint?.values;
+  const messages = values?.["messages"];
+  const finalText = externalRoomFinalReplyText(Array.isArray(messages) ? messages.at(-1) : undefined);
+  const candidateText = externalRoomFinalReplyText(input.candidate);
+  if (memoryReviewCompletionState(checkpoint) !== "completed"
+    || values?.["turnId"] !== input.reference.turnId || values?.["agentId"] !== input.reference.agentId
+    || candidateText === null || finalText === null || finalText !== candidateText) {
+    throw new Error("external_room_final_reply_unavailable");
+  }
+  input.signal.throwIfAborted();
+  return finalText;
+}
+
 /**
  * consume the recorded redirect request exactly once on the
  * executor SUCCESS path and notify the runtime-internal completion hook. The
@@ -517,9 +578,15 @@ export async function* langgraphExecutor(
       "Protected conversation services and authorized turn scope must be supplied together",
     );
   }
+  const externalTurn = getCurrentExternalRoomExecution();
+  let externalFinalMessage: AIMessage | null = null;
+  const externalExecution = await externalRoomExecutionInput(input);
+  input = externalExecution.input;
+  const externalContext = externalExecution.externalContext;
   const taskWake = getCurrentProtectedTaskWakeForegroundContext();
   if (taskWake !== undefined) {
-    if (protectedServices !== undefined || protectedTurn !== undefined) {
+    if (externalTurn !== null || externalContext
+      || protectedServices !== undefined || protectedTurn !== undefined) {
       throw new TypeError("Protected Task wake cannot borrow a Human turn scope");
     }
     assertProtectedTaskWakeForegroundJobInput({
@@ -713,7 +780,7 @@ export async function* langgraphExecutor(
     ? freshForegroundActivationState(input)
     : freshProtectedTaskWakeForegroundActivationState();
   const trustedExecutionEntrypoint = foregroundActivationState.trustedExecutionEntrypoint;
-  const foregroundContextRefreshEligible = foregroundContextRefreshEligibleForActivation({
+  const foregroundContextRefreshEligible = !externalContext && foregroundContextRefreshEligibleForActivation({
     roomId,
     agentId,
     trustedExecutionEntrypoint,
@@ -752,6 +819,7 @@ export async function* langgraphExecutor(
     humanTerminalAdmissionPortForState: (state) => foregroundHumanTerminalAdmissionPort(state, signal),
     ...defaultPostModelDeps,
     recallRecordsPortForState: (state) => {
+      if (externalContext) return undefined;
       const ordinary = foregroundRecordRecallPortForState(state);
       return ordinary === undefined
         ? undefined
@@ -768,10 +836,10 @@ export async function* langgraphExecutor(
   if (liveShadowRuntime !== undefined) {
     foregroundActivationState.suppressToolLifecycleEvents = true;
   }
-  const taskReportBackContinuation = parseTaskReportBackContinuation(
+  const taskReportBackContinuation = externalContext ? null : parseTaskReportBackContinuation(
     input["taskReportBackContinuation"],
   );
-  const desktopAutomationAdmission = await admitFreshComputerUseRoot({
+  const desktopAutomationAdmission = externalContext ? null : await admitFreshComputerUseRoot({
     userId: ownerId,
     actorId: memoryAccessEnvelope?.actorId ?? ownerId,
     causalHumanUserId: causalHumanUserId ?? "",
@@ -782,21 +850,54 @@ export async function* langgraphExecutor(
     resolveGrant: postModelDeps.resolveComputerUseRootGrant,
   });
   const isGuest = actorRole === "guest";
+  const currentRoomAccess = memoryAccessEnvelope !== null
+    && !isScopeMemoryEnvelope(memoryAccessEnvelope)
+    && roomId.length > 0
+    && memoryAccessEnvelope.actorId.length > 0
+    ? await getRoomWithAccess(roomId, memoryAccessEnvelope.actorId)
+      .catch(() => null)
+    : null;
+  const currentNamespaceId = currentRoomAccess !== null
+    && memoryAccessEnvelope !== null
+    && !isScopeMemoryEnvelope(memoryAccessEnvelope)
+    && memoryAccessEnvelope.readableNamespaces.includes(
+      currentRoomAccess.namespaceId,
+    )
+    ? currentRoomAccess.namespaceId
+    : undefined;
   // Profile is 1:1 with Agent. `ownerId` in room turns is the
   // authorization / transcript owner and can differ from the speaking agent's
   // owner (e.g. a foreign-owned agent in a shared room). Agent identity
   // fields like soul/name/model must therefore resolve by `agentId`.
+  const profileSoulFingerprint = foregroundProfileSoulFingerprint();
   const authoredContext = await loadForegroundAuthoredContext({
     agentId,
     ownerId,
     isGuest,
+    externalContext,
+    ...(currentNamespaceId === undefined
+      ? {}
+      : { namespaceId: currentNamespaceId }),
   }, {
     getExecutionConfigByAgentId: getAgentExecutionConfigById,
     resolveEnabledBodies,
+    ...(profileSoulFingerprint === undefined
+      ? {}
+      : { fingerprintProfileSoul: profileSoulFingerprint }),
   });
   const profile = authoredContext.profile;
   const soulFile = authoredContext.soulFile;
   const skills = authoredContext.skills;
+  const authoredModelInputExposure: ModelInputExposure = skills.length > 0
+    ? { status: "incomplete" }
+    : soulFile.length > 0
+      ? authoredContext.soulSourceReceipt === null
+        ? { status: "incomplete" }
+        : {
+            status: "complete",
+            dependencies: authoredContext.modelInputDependencies,
+          }
+      : { status: "complete", dependencies: [] };
   const displayNameFromAgent =
     !isGuest && agentId ? await getAgentDisplayNameById(agentId).catch(() => null) : null;
   const assistantName = displayNameFromAgent ?? profile?.name ?? "Nautilo";
@@ -825,6 +926,7 @@ export async function* langgraphExecutor(
   };
   const memoryBriefItems = (
     protectedTurn === undefined
+    && !externalContext
     && !isGuest
     && briefNamespaces.length > 0
   )
@@ -836,9 +938,8 @@ export async function* langgraphExecutor(
       )
       : await selectMemoryBrief().catch(() => [])
     : [];
-  const memoryBrief = memoryBriefItems
-    .map((memory) => `- [${memory.type}] ${memory.content}`)
-    .join("\n");
+  const memoryBriefReceipt = foregroundMemoryBriefExposure(memoryBriefItems);
+  const memoryBrief = memoryBriefReceipt.content;
   // per-turn model override (decision A: per-thread). Explicit
   // Room/Agent state is never silently replaced if it becomes unavailable.
   const perTurnModelRaw = typeof input["model"] === "string" ? input["model"].trim() : "";
@@ -851,7 +952,9 @@ export async function* langgraphExecutor(
       ? configuredModel
       : getDefaultForegroundAgentModelId(),
   );
-  const fundingSession = await openTaskWakeFundingSessionForInvocation({
+  const fundingSession = externalTurn
+    ? await openExternalRoomFundingSession({ modelId: foregroundModelPlan.initialModelId, roomId, agentId })
+    : await openTaskWakeFundingSessionForInvocation({
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input, causalHumanUserId,
     modelId: foregroundModelPlan.initialModelId, roomId, agentId,
   }) ?? await openConnectedWebOperationWakeFundingSessionForInvocation({
@@ -888,6 +991,10 @@ export async function* langgraphExecutor(
   // respond to it) but SKIP the transcript persist + its message.new — avoiding
   // a duplicate human row without relying on read-time fingerprint collapse.
   const humanAlreadyPersisted = input["humanAlreadyPersisted"] === true;
+  if (externalTurn && (!externalContext || !humanAlreadyPersisted || causalHumanUserId !== null
+    || typeof input["currentMessageId"] !== "number" || !Number.isInteger(input["currentMessageId"]))) {
+    throw new Error("external_room_canonical_input_required");
+  }
   // TTS admits the initiating Human's ElevenLabs account independently of chat.
   const clientVoiceMode = input["voiceMode"] === true;
   const voiceEnabled = clientVoiceMode && Boolean(causalHumanUserId);
@@ -931,7 +1038,7 @@ export async function* langgraphExecutor(
     );
   }
 
-  const resolvedInitialRecordContext = roomId && freshForegroundRecordContextEligible(input)
+  const resolvedInitialRecordContext = !externalContext && roomId && freshForegroundRecordContextEligible(input)
     ? foregroundRecordContextPortForRoom(roomId)
     : undefined;
   const initialRecordContext = resolvedInitialRecordContext === undefined
@@ -1000,6 +1107,50 @@ export async function* langgraphExecutor(
       suppressImageDropNote: true, replyToMessageId,
     })
     : null;
+  const canonicalCurrentHumanBody = typeof userMessageForTranscript?.content === "string"
+    ? userMessageForTranscript.content
+    : null;
+  const plainCurrentHumanInput = taskWake === undefined
+    && currentNamespaceId !== undefined
+    && causalHumanUserId !== null
+    && externalTurn === null
+    && attachmentTextBlocks.length === 0
+    && multimodalImages.length === 0;
+  const exactCanonicalCurrentHumanInput = plainCurrentHumanInput
+    && canonicalCurrentHumanBody !== null;
+  let currentHumanExposure: ModelInputExposure = { status: "incomplete" };
+  if (exactCanonicalCurrentHumanInput && protectedTurn !== undefined) {
+    const currentProtectedHuman = protectedTurn.history.find((candidate) =>
+      candidate.messageId === currentMessageId
+      && candidate.role === "user"
+      && candidate.snippet === message
+      && readModelInputExposure(candidate)?.status === "complete"
+    );
+    currentHumanExposure = currentProtectedHuman === undefined
+      ? { status: "incomplete" }
+      : readModelInputExposure(currentProtectedHuman)
+        ?? { status: "incomplete" };
+  } else if (
+    exactCanonicalCurrentHumanInput
+    && protectedTurn === undefined
+    && humanAlreadyPersisted
+    && currentMessageId !== undefined
+  ) {
+    const rows = await readCurrentOrdinaryTranscriptExposureRows({
+      ownerId: transcriptOwnerId,
+      agentId,
+      roomIds: [roomId],
+      messageIds: [currentMessageId],
+    }).catch(() => []);
+    currentHumanExposure = currentOrdinaryHumanModelExposure({
+      messageId: currentMessageId,
+      roomId,
+      namespaceId: currentNamespaceId,
+      sourceUserId: causalHumanUserId,
+      content: canonicalCurrentHumanBody,
+      rows,
+    });
+  }
   const savedFingerprints = new Set<string>();
   const inputMetadata =
     input["metadata"] && typeof input["metadata"] === "object"
@@ -1010,8 +1161,51 @@ export async function* langgraphExecutor(
 
   const foregroundContextReceipts = new ForegroundContextReceipts(currentMessageId);
 
+  const recordCommittedTranscriptRows = (
+    rows: readonly {
+      id: string;
+      role: string;
+      content: string | null;
+      fingerprint: string | null;
+    }[],
+    messages: readonly BaseMessage[],
+  ): void => {
+    if (foregroundContextRefreshEligible) {
+      foregroundContextReceipts.recordMessages(rows, messages);
+    }
+    if (!exactCanonicalCurrentHumanInput || protectedTurn !== undefined) return;
+    const index = messages.findIndex((candidate) =>
+      candidate === userMessageForTranscript
+    );
+    const row = index < 0 ? undefined : rows[index];
+    if (
+      row === undefined
+      || row.role !== "user"
+      || row.content === null
+      || row.content !== canonicalCurrentHumanBody
+    ) return;
+    const messageId = Number(row.id);
+    if (!Number.isSafeInteger(messageId) || messageId < 1) return;
+    currentHumanExposure = {
+      status: "complete",
+      dependencies: [{
+        kind: "source",
+        sourceKind: "message",
+        logicalSourceRef: `message:${row.id}`,
+        observedRevision: "0",
+        observedContentFingerprint: reflectionMessageSourceFingerprint({
+          id: messageId,
+          editRevision: 0,
+          content: row.content,
+        }),
+        terminalAuthorityLeafHandle: currentNamespaceId,
+      }],
+    };
+  };
+
   const persistOptsBase = {
-    ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, onCommittedRows: foregroundContextReceipts.recordRows, foregroundExecutionId } : {}),
+    onCommittedRows: recordCommittedTranscriptRows,
+    ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, foregroundExecutionId } : {}),
     ...(supervisionMetadata === undefined
       ? await memoryReviewAdmission(memoryAccessEnvelope, langgraphThreadId, {
           threadId: langgraphThreadId, transcriptOwnerId, turnId, input,
@@ -1109,6 +1303,9 @@ export async function* langgraphExecutor(
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
     causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.main" ? "foreground.main" : null,
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+    jobId: _jobId, turnId: turnId || _jobId,
+    inputDigest: imageAssistanceInputDigest({ turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
+    ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
     humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
@@ -1123,7 +1320,7 @@ export async function* langgraphExecutor(
     ...attachmentTextBlocks,
   ];
   const userMessageArgs = {
-    userText: message,
+    userText: externalTurn ? formatExternalMessageForModel(externalTurn.origin, message) : message,
     attachmentTextBlocks: mergedAttachmentTextBlocks,
     multimodalImages,
     modelId,
@@ -1141,6 +1338,14 @@ export async function* langgraphExecutor(
       serverTimePrefixIso,
     })
     : null;
+  if (userMessage !== null) {
+    bindModelInputExposure(userMessage, projectNeutralCurrentHumanMessageExposure({
+      sourceExposure: currentHumanExposure,
+      canonicalBody: canonicalCurrentHumanBody ?? "",
+      actualModelBody: userMessage.content,
+      ...(serverTimePrefixIso === undefined ? {} : { serverTimePrefixIso }),
+    }));
+  }
 
 
   // the full transcript subsumes the old transient peer-diff /
@@ -1195,10 +1400,11 @@ export async function* langgraphExecutor(
     ...foregroundActivationState,
     taskReportBackContinuation,
     memoryAccessEnvelope,
+    externalContext,
     actorRole,
     autoApprove,
     agentId,
-    relayCapabilities: buildRuntimeCapabilityTokens(
+    relayCapabilities: externalContext ? {} : buildRuntimeCapabilityTokens(
       getRelayRegistry(),
       ownerId,
       trustedExecutionEntrypoint === "foreground.main" && desktopAutomationAdmission !== null
@@ -1245,7 +1451,7 @@ export async function* langgraphExecutor(
     // background/subagent execution sharing a checkpoint. Task report-back is
     // a fresh foreground continuation whose tools are recomputed from current
     // policy, Relay liveness, and its validated return binding.
-    toolWhitelist: undefined,
+    toolWhitelist: externalContext ? [] : undefined,
   };
 
   const tokenBatcher = new TokenBatcher({
@@ -1303,7 +1509,7 @@ export async function* langgraphExecutor(
     } else await persistMessages(langgraphThreadId, transcriptOwnerId, observations, savedFingerprints, { ...persistOptsBase, requireDurable: true });
   }
   } catch (error) {
-    failImageAssistance(error, signal);
+    failImageAssistance(error, signal, "save");
   }
 
   const protectedCheckpointSaver = protectedServices === undefined
@@ -1425,17 +1631,21 @@ export async function* langgraphExecutor(
             taskWake.continuation.resume,
           ),
         });
-    const eventStream = streamForegroundGraph(graph, streamInput, streamConfig, {
-      signal,
-      ...(foregroundContextRefreshEligible ? {
-        rebuildForegroundContext: createForegroundContextRebuilder({
-          roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
-          ...(protectedTurn === undefined ? {} : { protectedTurn }),
-          ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
-          onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
-        }),
-      } : {}),
-    });
+    const eventStream = iterateWithAuthoredModelInputExposure(
+      authoredModelInputExposure,
+      streamForegroundGraph(graph, streamInput, streamConfig, {
+        signal,
+        ...(foregroundContextRefreshEligible ? {
+          rebuildForegroundContext: createForegroundContextRebuilder({
+            roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
+            ...(protectedTurn === undefined ? {} : { protectedTurn }),
+            ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+            onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
+          }),
+        } : {}),
+      }),
+      memoryBriefReceipt,
+    );
 
     for await (const ev of eventStream) {
       if (signal.aborted) {
@@ -1484,6 +1694,12 @@ export async function* langgraphExecutor(
       }
 
       if (messagesToPersist.length > 0) {
+        if (externalTurn) {
+          for (const candidate of messagesToPersist) {
+            if (AIMessage.isInstance(candidate) && externalRoomFinalReplyText(candidate) !== null) externalFinalMessage = candidate;
+          }
+          continue;
+        }
         if (liveShadowRuntime !== undefined) {
           const protectedEvents = await publishLiveShadowRuntimeMessages({
             ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
@@ -1599,6 +1815,11 @@ export async function* langgraphExecutor(
         Array.isArray(task["interrupts"]) && task["interrupts"].length > 0
       ) ?? false;
       if (hasAnyPendingInterrupt) memoryReviewState = "awaiting";
+      if (externalTurn) {
+        const finalText = confirmedExternalRoomFinalReply({ checkpoint: postState,
+          reference: externalTurn.reference, candidate: externalFinalMessage, signal });
+        await externalTurn.complete(finalText);
+      }
       const events = collectPendingInterruptEvents(
         postState as { tasks?: Array<Record<string, unknown>>; values?: unknown } | undefined,
         langgraphThreadId,
@@ -1613,7 +1834,10 @@ export async function* langgraphExecutor(
         additionalAuthorityObserved,
         e,
       );
-      log(`[nautilo/executor] Error checking interrupt state: ${e instanceof Error ? e.message : String(e)}`);
+      if (externalTurn) throw e;
+      log(hasContentPrivateModelDiagnostics()
+        ? "[nautilo/executor] Error checking interrupt state"
+        : `[nautilo/executor] Error checking interrupt state: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     if (!memoryReviewRecorded) {
@@ -1955,7 +2179,8 @@ export function processStreamEvent(
     // needs auto-emit, reintroduce here with a guard against
     // double-firing.
   } else if (event === "on_chain_end" && data) {
-    if (process.env["NAUTILO_DEBUG_PERSIST"] === "1") {
+    if (!hasContentPrivateModelDiagnostics() && !getCurrentExternalRoomExecution()
+      && process.env["NAUTILO_DEBUG_PERSIST"] === "1") {
       const output = data["output"] as Record<string, unknown> | undefined;
       const outputKeys = output && typeof output === "object"
         ? Object.keys(output).join(",")
@@ -2201,7 +2426,8 @@ function handleTokenStream(
     }
   }
 
-  const debugStream = process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] === "1";
+  const debugStream = !hasContentPrivateModelDiagnostics() && !getCurrentExternalRoomExecution()
+    && process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] === "1";
   if (debugStream && streamMetadataLooksFireworksOrDeepSeek(streamMetadata)) {
     debug(
       "[nautilo/executor] on_chat_model_stream chunk:",

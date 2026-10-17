@@ -16,7 +16,7 @@ import {
   VendoredBinaryFetchError,
 } from "../../packages/config/src/vendored-binary-fetch.ts";
 
-const PLATFORM_KEYS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"] as const;
+const PLATFORM_KEYS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"] as const;
 type PlatformKey = (typeof PLATFORM_KEYS)[number];
 
 type Artifact = Readonly<{
@@ -81,13 +81,14 @@ try {
   const target = platformKey(process.argv[2]);
   const manifest = loadManifest(join(vendorRoot, "manifest.json"));
   const artifact = manifest["agent-browser"].artifacts[target];
-  const destination = join(vendorRoot, target, manifest["agent-browser"].binaryName);
+  const destination = join(vendorRoot, target, target === "win32-x64" ? "agent-browser.exe" : manifest["agent-browser"].binaryName);
   mkdirSync(dirname(destination), { recursive: true });
   const result = await fetchAndVerifyVendoredBinary({
     url: artifact.url,
     sha256: artifact.sha256,
     destPath: destination,
     minBytes: artifact.sizeMin,
+    executable: target !== "win32-x64",
     log,
   });
   log(`ok platform=${target} version=${manifest["agent-browser"].version}`);

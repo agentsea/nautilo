@@ -517,7 +517,7 @@ test("staging never reads or creates through a symlinked parent", async () => {
   try {
     await fs.writeFile(path.join(outside, "secret.txt"), "outside secret\n");
     await fs.writeFile(path.join(root, "source.txt"), "inside source\n");
-    await fs.symlink(outside, path.join(root, "link"));
+    await fs.symlink(outside, path.join(root, "link"), process.platform === "win32" ? "junction" : "dir");
     const cases = [
       {
         patch: "*** Begin Patch\n*** Update File: link/secret.txt\n@@\n-outside secret\n+stolen\n*** End Patch",

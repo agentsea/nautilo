@@ -6,11 +6,12 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import * as path from "node:path";
 import {
   LOCAL_FILE_EXECUTION_UNSUPPORTED,
   DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION,
   DESKTOP_FILESYSTEM_GRANT_SNAPSHOT_AGENT_SCOPE,
+  isRelayPathWithinRoot,
+  pathApiForRelayPath,
 } from "@nautilo/relay";
 import type {
   RelayServerMessage,
@@ -100,6 +101,7 @@ export function localFileReadOperation(
 
 /** Canonical absolute path guard: absolute and already lexically normalized. */
 function isCanonicalAbsolutePath(candidate: string): boolean {
+  const path = pathApiForRelayPath(candidate);
   return path.isAbsolute(candidate) && path.normalize(candidate) === candidate;
 }
 
@@ -111,16 +113,7 @@ function isCanonicalAbsolutePath(candidate: string): boolean {
  * package depends on the relay protocol, not `@nautilo/desktop-filesystem-grants`).
  */
 function isPathWithinRoot(root: string, candidate: string): boolean {
-  if (!path.isAbsolute(root) || !path.isAbsolute(candidate)) return false;
-  const normalizedRoot = path.normalize(root);
-  const normalizedCandidate = path.normalize(candidate);
-  if (normalizedRoot === path.parse(normalizedRoot).root) {
-    return normalizedCandidate.startsWith(normalizedRoot);
-  }
-  return (
-    normalizedCandidate === normalizedRoot ||
-    normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`)
-  );
+  return isRelayPathWithinRoot(root, candidate);
 }
 
 /**
@@ -435,14 +428,14 @@ export function buildFocusedLocalFileHints(
     const rawPath = locator?.path;
     if (typeof relayId !== "string" || relayId.length === 0) continue;
     if (typeof rawPath !== "string" || rawPath.length === 0) continue;
-    out.push({ relayId, path: path.normalize(rawPath) });
+    out.push({ relayId, path: pathApiForRelayPath(rawPath).normalize(rawPath) });
   }
   return out;
 }
 
 /** D423 Phase 5 — canonicalize an absolute local path for hint comparison. */
 export function canonicalLocalFilePath(p: string): string {
-  return path.normalize(p);
+  return pathApiForRelayPath(p).normalize(p);
 }
 
 function reconstructAbsolutePath(
@@ -451,11 +444,13 @@ function reconstructAbsolutePath(
   currentFolder: string | null,
 ): string | null {
   if (!inputPath) return null;
-  if (zone === "absolute") return path.normalize(inputPath);
+  if (zone === "absolute") return pathApiForRelayPath(inputPath).normalize(inputPath);
   // zone:"current" — the model-facing path is relative to the trusted current
   // folder (server-derived). Reconstruct the absolute path the same way the
   // server resolver produced the relative form.
-  if (!currentFolder || !path.isAbsolute(currentFolder)) return null;
+  if (!currentFolder) return null;
+  const path = pathApiForRelayPath(currentFolder);
+  if (!path.isAbsolute(currentFolder)) return null;
   return path.normalize(path.join(currentFolder, inputPath));
 }
 

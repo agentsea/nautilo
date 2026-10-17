@@ -8,6 +8,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { physicalPathFromStorageUri as storagePathFromUri } from "@nautilo/db";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute } from "node:path";
 import {
@@ -217,12 +218,6 @@ function sha256Hex(bytes: Uint8Array): string {
 
 function actorId(actor: DocumentMutationActor): string {
   return actor.kind === "human" ? actor.humanId : actor.agentId;
-}
-
-function storagePathFromUri(storageUri: string): string | null {
-  if (!storageUri.startsWith("file://")) return null;
-  const path = storageUri.slice("file://".length);
-  return path.startsWith("/") ? path : null;
 }
 
 function isCanonicalMutationContent(

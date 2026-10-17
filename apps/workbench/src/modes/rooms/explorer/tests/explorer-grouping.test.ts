@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { fileURLToPath } from "node:url";
 import {
   compareExplorerRows,
   filterSectionsByQuery,
@@ -22,7 +23,7 @@ import type { WorkbenchRoomSummary } from "../../../../rooms/room-navigation-typ
 async function buildExplorerRostersInIsolate(
   rooms: WorkbenchRoomSummary[],
 ): Promise<Map<string, ExplorerRosterMember[]>> {
-  const modulePath = new URL("../use-explorer-data.ts", import.meta.url).pathname;
+  const modulePath = fileURLToPath(new URL("../use-explorer-data.ts", import.meta.url));
   const script = `
     import { buildExplorerRosters } from ${JSON.stringify(modulePath)};
     const rooms = JSON.parse(process.env.D246_ROOMS);
@@ -100,6 +101,42 @@ describe("groupRoomsForExplorer", () => {
     const legacyPublic = sections.find((section) => section.kind === "public")?.rows[0];
     expect(legacyPublic?.roomId).toBe("legacy-public-room");
     expect(legacyPublic?.roomDiscoverable).toBeUndefined();
+  });
+
+  test("groups a restricted externally linked Genie room instead of treating it as a personal chat", () => {
+    const rooms = [
+      mkRoom({
+        id: "linked-genie-room",
+        label: "Bolter support",
+        kind: "private",
+        memberCount: 2,
+        externalContext: true,
+      }),
+    ];
+    const rosters = roster({
+      "linked-genie-room": [
+        { actorId: VIEWER, kind: "user", displayName: "Owner" },
+        {
+          actorId: AGENT_G,
+          kind: "agent",
+          displayName: "Linked Genie",
+          agentId: AGENT_G_ID,
+        },
+      ],
+    });
+
+    const sections = groupRoomsForExplorer({
+      rooms,
+      rosters,
+      viewerActorId: VIEWER,
+      ownedAgentIds: new Set([AGENT_G_ID]),
+    });
+
+    const linkedRoom = sections.find((section) => section.kind === "groups")?.rows[0];
+    expect(linkedRoom?.roomId).toBe("linked-genie-room");
+    expect(linkedRoom?.roomKind).toBe("private");
+    expect(linkedRoom?.roomExternalContext).toBe(true);
+    expect(sections.find((section) => section.kind === "my-agents")).toBeUndefined();
   });
 
   test("1:1 people DM with federated counterparty and nested direct room", () => {

@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as logger from "@nautilo/logger";
 import { PgDialect } from "drizzle-orm/pg-core";
 import {
   appendCanonicalTranscriptRowsInTx,
@@ -16,6 +17,7 @@ type Operation = "select" | "insert" | "update" | "delete" | "execute";
 interface Step {
   operation: Operation;
   result: unknown;
+  error?: Error;
 }
 
 class ScriptedTransaction {
@@ -32,6 +34,7 @@ class ScriptedTransaction {
     const step = this.steps.shift();
     expect(step?.operation).toBe(operation);
     this.events.push(operation);
+    if (step?.error) throw step.error;
     return step?.result;
   }
 
@@ -140,7 +143,118 @@ describe("internal website supervision notification admission", () => {
   }
 });
 
+describe("external message notification authorship", () => {
+  test("retained structural authorship never turns the sponsor into a protected message author", async () => {
+    const script = new ScriptedTransaction([
+      { operation: "select", result: [{ externalAuthorship: true,
+        roomId: "room-1", sessionOwnerId: "sponsor-1", roomKind: "subthread" }] },
+      { operation: "select", result: [
+        { actorId: "sponsor-actor", kind: "user", userId: "sponsor-1" },
+        { actorId: "genie-actor", kind: "agent", userId: "sponsor-1" },
+      ] },
+      { operation: "insert", result: [] },
+    ]);
+    expect(await persistNotificationClassification(script as unknown as NotificationClassificationTx, {
+      messageId: 42,
+      context: { mentionedHumanUserIds: [], causalHumanUserId: null, causalHumanTurnId: null },
+      protectedProjection: { role: "user", transcriptOrigin: "main", replyToMessageId: null, eligibility: "eligible" },
+    })).toBe(true);
+    expect(script.insertedValues).toEqual([[{ messageId: 42, recipientId: "sponsor-1", reason: "direct_room" }]]);
+    expect(script.selectedFieldKeys.flat()).not.toContain("metadata");
+    expect(script.selectedFieldKeys.flat()).not.toContain("content");
+    script.assertExhausted();
+  });
+  for (const roomKind of ["private", "subthread"]) {
+    test(`notifies the sponsor without claiming they posted in the ${roomKind} Room`, async () => {
+      const script = new ScriptedTransaction([
+        { operation: "select", result: [{
+          role: "user", content: "External visitor text", replyToMessageId: null,
+          transcriptOrigin: "main", roomId: "room-1", sessionOwnerId: "sponsor-1", roomKind,
+          metadata: { externalOrigin: {}, externalReceiptId: "receipt-1" },
+        }] },
+        { operation: "select", result: [
+          { actorId: "sponsor-actor", kind: "user", userId: "sponsor-1" },
+          { actorId: "genie-actor", kind: "agent", userId: "sponsor-1" },
+        ] },
+        { operation: "insert", result: [] },
+      ]);
+      expect(await persistNotificationClassification(script as unknown as NotificationClassificationTx, {
+        messageId: 42,
+        context: { mentionedHumanUserIds: [], causalHumanUserId: null, causalHumanTurnId: null },
+      })).toBe(true);
+      expect(script.insertedValues).toEqual([[{
+        messageId: 42, recipientId: "sponsor-1", reason: "direct_room",
+      }]]);
+      script.assertExhausted();
+    });
+  }
+});
+
 describe("canonical transcript edit transaction seam", () => {
+  for (const protectedOnly of [false, true]) {
+    test(`retained external authorship denies ${protectedOnly ? "protected" : "ordinary"} edits after receipt cleanup`, async () => {
+      const script = new ScriptedTransaction([
+        { operation: "select", result: [{ roomId: "room-1" }] },
+        { operation: "execute", result: [] },
+        { operation: "select", result: [{ messageId: 41, sessionId: "session-1", role: "user",
+          fingerprint: "imported-turn", editRevision: 0, ownerId: "sponsor-1", roomId: "room-1", externalAuthorship: true }] },
+        { operation: "select", result: [{ messageId: 41, sessionId: "session-1", role: "user", editRevision: 0, externalAuthorship: true }] },
+      ]);
+      if (protectedOnly) script.policyMode = "encrypted_only";
+      let hookCalled = false;
+      expect(await editCanonicalTranscriptMessageInTx(asTx(script), {
+        messageId: 41, expectedRevision: 0,
+        ...(protectedOnly ? { content: null,
+          publicationPolicy: { expectedRevision: 1, representation: "protected_only" as const },
+          protectedTargets: [{ sessionId: "session-1", messageId: 41, cryptoObjectId: "object-41" }],
+        } : { content: "Sponsor edit", clearCryptoObjectId: true }),
+      }, { beforeRowsEdited: async () => { hookCalled = true; } })).toBeNull();
+      expect(hookCalled).toBe(false);
+      expect(script.updatedValues).toEqual([]);
+      expect(script.selectedFieldKeys.flat()).not.toContain("metadata");
+      script.assertExhausted();
+    });
+  }
+  for (const receiptMessageId of [41, 52]) {
+    for (const protectedOnly of [false, true]) {
+      test(`rejects a sponsor ${protectedOnly ? "protected" : "ordinary"} edit when physical copy ${receiptMessageId} has an external receipt`, async () => {
+        const script = new ScriptedTransaction([
+          { operation: "select", result: [{ roomId: "room-1" }] },
+          { operation: "execute", result: [] },
+          { operation: "select", result: [{
+            messageId: 41, sessionId: "session-1", role: "user",
+            fingerprint: "imported-turn", editRevision: 0,
+            ownerId: "sponsor-1", roomId: "room-1",
+          }] },
+          { operation: "select", result: [
+            { messageId: 41, sessionId: "session-1", role: "user", editRevision: 0 },
+            { messageId: 52, sessionId: "session-2", role: "user", editRevision: 0 },
+          ] },
+          { operation: "select", result: [{ sessionMessageId: receiptMessageId }] },
+        ]);
+        if (protectedOnly) script.policyMode = "encrypted_only";
+        let hookCalled = false;
+        expect(await editCanonicalTranscriptMessageInTx(asTx(script), {
+          messageId: 41, expectedRevision: 0,
+          ...(protectedOnly ? {
+            content: null,
+            publicationPolicy: { expectedRevision: 1, representation: "protected_only" as const },
+            protectedTargets: [
+              { sessionId: "session-1", messageId: 41, cryptoObjectId: "object-41" },
+              { sessionId: "session-2", messageId: 52, cryptoObjectId: "object-52" },
+            ],
+          } : { content: "Local sponsor impersonating the sender", clearCryptoObjectId: true }),
+        }, {
+          beforeRowsEdited: async () => { hookCalled = true; },
+        })).toBeNull();
+        expect(hookCalled).toBe(false);
+        expect(script.updatedValues).toEqual([]);
+        expect(script.insertedValues).toEqual([]);
+        script.assertExhausted();
+      });
+    }
+  }
+
   test("publishes a Full edit with exact fanout objects and no ordinary fields", async () => {
     const script = new ScriptedTransaction([
       { operation: "select", result: [{ roomId: "room-1" }] },
@@ -154,6 +268,7 @@ describe("canonical transcript edit transaction seam", () => {
         { messageId: 41, sessionId: "session-1", role: "user", editRevision: 2 },
         { messageId: 52, sessionId: "session-2", role: "user", editRevision: 2 },
       ] },
+      { operation: "select", result: [] },
       { operation: "update", result: [{ messageId: 41 }] },
       { operation: "update", result: [{ messageId: 52 }] },
       { operation: "insert", result: [] },
@@ -191,6 +306,7 @@ describe("canonical transcript edit transaction seam", () => {
         { messageId: 41, sessionId: "session-1", role: "user", editRevision: 2 },
         { messageId: 52, sessionId: "session-2", role: "user", editRevision: 2 },
       ] },
+      { operation: "select", result: [] },
     ]);
     script.policyMode = "encrypted_only";
     expect(await editCanonicalTranscriptMessageInTx(asTx(script), {
@@ -239,6 +355,7 @@ describe("canonical transcript edit transaction seam", () => {
           },
         ],
       },
+      { operation: "select", result: [] },
       {
         operation: "update",
         result: [{ messageId: 41 }, { messageId: 52 }],
@@ -272,6 +389,7 @@ describe("canonical transcript edit transaction seam", () => {
       "for:update",
       "select",
       "for:update",
+      "select",
       "update",
       "insert",
       "hook:41,52",
@@ -295,6 +413,7 @@ describe("canonical transcript edit transaction seam", () => {
           roomId: "room-1",
         }],
       },
+      { operation: "select", result: [] },
       { operation: "update", result: [{ messageId: 61 }] },
       { operation: "insert", result: [] },
     ]);
@@ -312,7 +431,26 @@ describe("canonical transcript edit transaction seam", () => {
       role: "assistant",
       editRevision: 0,
     }]);
-    expect(script.events.filter((event) => event === "select")).toHaveLength(2);
+    expect(script.events.filter((event) => event === "select")).toHaveLength(3);
+    script.assertExhausted();
+  });
+
+  test("rejects editing an assistant reply retained by the external outbox", async () => {
+    const script = new ScriptedTransaction([
+      { operation: "select", result: [{ roomId: "room-1" }] },
+      { operation: "execute", result: [] },
+      { operation: "select", result: [{
+        messageId: 61, sessionId: "session-agent", role: "assistant",
+        fingerprint: "final-reply", editRevision: 0,
+        ownerId: "sponsor-1", roomId: "room-1",
+      }] },
+      { operation: "select", result: [{ sessionMessageId: 61 }] },
+    ]);
+    expect(await editCanonicalTranscriptMessageInTx(asTx(script), {
+      messageId: 61, expectedRevision: 0, content: "Changed after send admission", clearCryptoObjectId: true,
+    })).toBeNull();
+    expect(script.updatedValues).toEqual([]);
+    expect(script.insertedValues).toEqual([]);
     script.assertExhausted();
   });
 });
@@ -346,6 +484,30 @@ function asTx(script: ScriptedTransaction): CanonicalTranscriptTx {
 }
 
 describe("canonical transcript append transaction seam", () => {
+  for (const role of ["user", "assistant"] as const) {
+    test(`does not log external ${role} SQL parameters when canonical persistence fails`, async () => {
+      const script = new ScriptedTransaction([
+        { operation: "execute", result: [] },
+        { operation: "select", result: [{ id: "session-1" }] },
+        { operation: "select", result: [] },
+        { operation: "execute", result: [{ id: 41 }] },
+        { operation: "insert", result: [], error: new Error("SQL parameters: SYNTHETIC_PRIVATE_TEXT") },
+      ]);
+      const warning = spyOn(logger, "warn").mockImplementation(() => {});
+      try {
+        const failure = await appendCanonicalTranscriptRowsInTx(asTx(script), { session, rows: [{
+          ...row, role, toolName: null, content: "SYNTHETIC_PRIVATE_TEXT",
+          metadata: role === "user" ? { externalReceiptId: "receipt-1" } : { externalFinalReply: {} },
+        }] }).then(() => undefined, (error: unknown) => error);
+        expect(failure).toBeInstanceOf(Error);
+        expect((failure as Error).message).toContain("every row failed");
+        expect(warning).toHaveBeenCalledTimes(1);
+        expect(JSON.stringify(warning.mock.calls)).toContain("external_transcript_insert_failed");
+        expect(JSON.stringify(warning.mock.calls)).not.toContain("SYNTHETIC_PRIVATE_TEXT");
+        script.assertExhausted();
+      } finally { warning.mockRestore(); }
+    });
+  }
   test("Full blocks legacy ordinary append before Room or entity work", async () => {
     const script = new ScriptedTransaction([]);
     script.policyMode = "encrypted_only";

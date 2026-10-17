@@ -1864,6 +1864,10 @@ const reviewedBridgeProductConsumerInventory = [
   // adapters. Cryptographic protocol and crypto-table ownership remain in the
   // lattice bridge; product clients own only local sealed custody and UI.
   "apps/desktop/electron/encryption-recovery-readiness.ts -> @nautilo/lattice-bridge/client/electron",
+  // Electron main supplies its OS safeStorage codec for the sealed Bolter
+  // inbox and recovery descriptor. This type-only facade import grants no
+  // Namespace keys, protected-content admission, or renderer/CLI custody.
+  "apps/desktop/electron/bolter-bridge/spool-cipher.ts -> @nautilo/lattice-bridge/client/electron",
   "apps/desktop/package.json dependency @nautilo/lattice-bridge -> workspace:*",
   "apps/workbench/src/adapters/nautilo-runtime.tsx -> @nautilo/lattice-bridge/client/browser",
   // Protected Done/Cancel supplies the current browser device ID via
@@ -1992,6 +1996,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/tests/unit/protected-foreground-journal-reader.test.ts -> @nautilo/lattice-bridge",
   "packages/runtime/tests/unit/protected-invocation-lease-registry.test.ts -> @nautilo/lattice-bridge",
   "packages/runtime/tests/unit/protected-journal-agent-content-authority.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/runtime/tests/unit/protected-journal-output-planner.test.ts -> @nautilo/lattice-bridge",
   "packages/runtime/tests/unit/protected-journal-publication-repository.test.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/tests/unit/protected-journal-rebuild-repository.test.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/tests/unit/protected-stenographer-compaction.test.ts -> @nautilo/lattice-bridge",
@@ -2006,6 +2011,7 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/server/src/routes/protected-memory-exact-access-target.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/helpers/protected-memory-foreground-conformance.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/helpers/protected-memory-foreground-conformance.ts -> @nautilo/lattice-bridge/testing",
+  "packages/server/tests/unit/stenographer-protected-memory-evidence.test.ts -> @nautilo/lattice-bridge",
   "packages/server/tests/unit-isolated/memory-routes.test.ts -> @nautilo/lattice-bridge/server",
   "packages/server/tests/unit-isolated/memory-routes.test.ts -> @nautilo/lattice-bridge/testing",
   "packages/server/tests/unit-isolated/protected-memory-exact-access-target.test.ts -> @nautilo/lattice-bridge/server",

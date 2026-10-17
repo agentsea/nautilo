@@ -14,7 +14,7 @@ import {
 import { SUPERSEDED_MAIN_2026_08_29_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-main-2026-08-29-source-alarms";
 import { SUPERSEDED_MAIN_2026_09_03_COVERAGE_LOCATORS } from "../../baseline/reviewed-main-2026-09-03-coverage";
 import { SUPERSEDED_MAIN_2026_09_03_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-main-2026-09-03-source-alarms";
-import { SUPERSEDED_D565_RELAY_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-d565-relay-source-alarms";
+import { SUPERSEDED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-relay-dispatch-source-alarms";
 import { isRetiredM306AuthorityLocator } from "../../baseline/retired-m306-authority";
 import { SUPERSEDED_M300_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-m300-source-alarms";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
@@ -115,7 +115,7 @@ describe("reviewed main 2026-08-22 encryption inventory", () => {
         SUPERSEDED_MAIN_2026_08_29_SOURCE_ALARM_LOCATORS.has(review.locator)
         || SUPERSEDED_M300_SOURCE_ALARM_LOCATORS.has(review.locator)
         || SUPERSEDED_MAIN_2026_09_03_SOURCE_ALARM_LOCATORS.has(review.locator)
-        || SUPERSEDED_D565_RELAY_SOURCE_ALARM_LOCATORS.has(review.locator)
+        || SUPERSEDED_RELAY_DISPATCH_SOURCE_ALARM_LOCATORS.has(review.locator)
         || isRetiredM306AuthorityLocator(review.locator)
       ) {
         continue;

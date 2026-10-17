@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { basename, dirname, resolve } from "node:path";
 import {
   decideFsWrite,
   FS_WRITE_FILE_MAX_BYTES,
@@ -116,10 +117,11 @@ describe("writeFileAtomically", () => {
     });
 
     expect(calls).toHaveLength(2);
-    expect(calls[0]).toMatch(/^write:\/allowed\/project\/\.readme\.md\.[a-f0-9]+\.tmp$/);
-    expect(calls[1]).toMatch(
-      /^rename:\/allowed\/project\/\.readme\.md\.[a-f0-9]+\.tmp->\/allowed\/project\/readme\.md$/,
-    );
+    expect(calls[0]).toStartWith("write:");
+    const temporary = calls[0]!.slice("write:".length);
+    expect(resolve(dirname(temporary))).toBe(resolve(dirname(target)));
+    expect(basename(temporary)).toMatch(/^\.readme\.md\.[a-f0-9]+\.tmp$/);
+    expect(calls[1]).toBe(`rename:${temporary}->${target}`);
   });
 
   test("cleans temp file when rename fails", async () => {

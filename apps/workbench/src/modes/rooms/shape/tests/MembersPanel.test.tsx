@@ -14,6 +14,7 @@ import { ProtectedRoomAccessContext } from "../../../../adapters/runtime-context
 let manageDetailMembers: RoomMemberDto[] = [];
 let manageDetailKind: RoomKind = "group";
 let manageDetailDiscoverable: boolean | undefined;
+let manageDetailExternalContext: boolean | undefined;
 let manageDetailConductorMode: RoomConductorMode = "advanced";
 let manageDetailError: Error | null = null;
 let manageDetailGate: Promise<void> | null = null;
@@ -81,6 +82,9 @@ const getRoomManageDetail = mock(async (roomId: string) => {
     ...(manageDetailDiscoverable === undefined
       ? {}
       : { discoverable: manageDetailDiscoverable }),
+    ...(manageDetailExternalContext === undefined
+      ? {}
+      : { externalContext: manageDetailExternalContext }),
     conductorMode: manageDetailConductorMode,
     members: detailMembers,
   };
@@ -89,6 +93,8 @@ const getRoomManageDetail = mock(async (roomId: string) => {
 mock.module("../../../../lib/api", () => ({
   apiClient: {
     getTokenProvider: () => async () => null,
+    getCredentialGeneration: () => 0,
+    getBolterRoomLink: async () => ({ link: null }),
     getRoomManageDetail,
     getRoomPresence: async () => ({ members: [] }),
     listAddableUsersForRoom: async () => addableUsers,
@@ -144,6 +150,7 @@ beforeEach(() => {
   addableUsers = [];
   addableAgents = [];
   manageDetailDiscoverable = undefined;
+  manageDetailExternalContext = undefined;
   manageDetailError = null;
   manageDetailGate = null;
   manageDetailGateByRoomId.clear();
@@ -694,6 +701,37 @@ describe("MembersPanel — room management", () => {
       expect(view.getByTestId("visibility-radio-external")).toBeTruthy();
       expect(view.getByTestId("visibility-radio-public")).toBeTruthy();
     });
+    view.unmount();
+  });
+
+  test("keeps an externally linked Genie room permanently External", async () => {
+    manageDetailMembers = [
+      human("u1", "Room Admin", "admin"),
+      agent("a1", "Linked Genie", "active"),
+    ];
+    manageDetailKind = "private";
+    manageDetailExternalContext = true;
+    const view = render(
+      <MembersPanel
+        roomId="r1"
+        viewerActorId="u1"
+        initialMembers={manageDetailMembers}
+        open={true}
+        onClose={() => undefined}
+        viewerCanManageRooms={true}
+        viewerSupportsRoomDiscoverability={true}
+      />,
+    );
+
+    await waitFor(() => {
+      const label = view.getByTestId("members-panel-visibility").textContent;
+      expect(label).toContain("External — permanent");
+      expect(label).toContain("linked Genie is limited to this room");
+    });
+    expect(view.queryByTestId("visibility-radio-private")).toBeNull();
+    expect(view.queryByTestId("visibility-radio-external")).toBeNull();
+    expect(view.queryByTestId("visibility-radio-public")).toBeNull();
+    expect(setRoomVisibility).not.toHaveBeenCalled();
     view.unmount();
   });
 

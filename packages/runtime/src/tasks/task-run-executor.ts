@@ -310,7 +310,7 @@ export const taskRunExecutor: JobExecutor = async function* taskRunExecutor(
       || str(input, "currentTaskId") !== task.id
       || str(input, "roomId") !== (task.targetChat === "orphan" ? "" : task.targetRoomId ?? "")
       || !callerTaskToolIntentMatches(task, input)
-      || input["awaitResponse"] === true || input["requiresLiveMiniApp"] === true
+      || input["requiresLiveMiniApp"] === true
       || (Array.isArray(input["artifactRefs"]) && input["artifactRefs"].length > 0)
       || (Array.isArray(input["focusedResources"]) && input["focusedResources"].length > 0)
     )) throw new TaskFundingError("funding_source_changed");

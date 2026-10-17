@@ -302,14 +302,34 @@ describe("durable hierarchy Sleep state machine", () => {
       }],
       existingParents: [],
       maxSelectedChildren: 2,
+      applicationPlanToken: `plan:${recordRef}`,
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef,
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: [`leaf:${recordRef}`],
+      }, {
+        kind: "record",
+        recordRef: `neighbor:${recordRef}`,
+        observedProcessingGeneration: 2,
+        terminalAuthorityLeafHandles: [`leaf:neighbor:${recordRef}`],
+      }],
     });
     const semantic = semanticHarness(events);
+    const invokedExposures: unknown[] = [];
+    const appliedExposures: unknown[] = [];
     semantic.loadOrganizerView = (loadedClaim) => Promise.resolve({
       status: "ready",
       view: viewFor(loadedClaim.recordRef),
     });
-    semantic.invokeOrganizerBatch = (batchClaims) => {
+    semantic.invokeOrganizerBatch = (
+      batchClaims,
+      _prompt,
+      _signal,
+      modelExposureDependencies,
+    ) => {
       events.push(`batch:${batchClaims.length}`);
+      invokedExposures.push(modelExposureDependencies);
       return Promise.resolve(JSON.stringify({
         answers: batchClaims.map((_, index) => ({
           question: `Q${index + 1}`,
@@ -317,8 +337,13 @@ describe("durable hierarchy Sleep state machine", () => {
         })),
       }));
     };
-    semantic.applyProposal = ({ claim: appliedClaim }) => {
+    semantic.applyProposal = ({
+      claim: appliedClaim,
+      modelExposureDependencies,
+      applicationPlanTokens,
+    }) => {
       events.push(`apply:${appliedClaim.recordRef}`);
+      appliedExposures.push({ modelExposureDependencies, applicationPlanTokens });
       return Promise.resolve({
         status: "applied",
         operation: "no_change",
@@ -338,10 +363,201 @@ describe("durable hierarchy Sleep state machine", () => {
       "apply:record:a",
       "apply:record:b",
     ]);
+    expect(invokedExposures).toHaveLength(1);
+    expect(invokedExposures[0]).toHaveLength(4);
+    expect(appliedExposures).toEqual([
+      {
+        modelExposureDependencies: invokedExposures[0],
+        applicationPlanTokens: ["plan:record:a", "plan:record:b"],
+      },
+      {
+        modelExposureDependencies: invokedExposures[0],
+        applicationPlanTokens: ["plan:record:a", "plan:record:b"],
+      },
+    ]);
     expect(result).toMatchObject({
       completed: 2,
       usage: { modelCalls: 1 },
       diagnostics: { modelBatches: 1, modelBatchItems: 2, batchStaleRescheduled: 0 },
+    });
+  });
+
+  test("partitions fresh and retained model-binding families before admission", async () => {
+    const events: string[] = [];
+    const claims = [
+      { ...claim("record:fresh-a", "organization"), modelBatchFamilyKey: "fresh" },
+      { ...claim("record:fresh-b", "organization"), modelBatchFamilyKey: "fresh" },
+      { ...claim("record:family-a-1", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-a-2", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-b", "organization"), modelBatchFamilyKey: "binding:b" },
+    ];
+    const semantic = semanticHarness(events);
+    const admissions: string[][] = [];
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        ...mixedView(),
+        changed: {
+          handle: "C0",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+      },
+    });
+    semantic.invokeOrganizerBatch = (batchClaims) => {
+      admissions.push(batchClaims.map((item) => item.recordRef));
+      return Promise.resolve(JSON.stringify({
+        answers: batchClaims.map((_, index) => ({
+          question: `Q${index + 1}`,
+          proposal: { operation: "no_change" },
+        })),
+      }));
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: workHarness(claims, events).port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 5 },
+    });
+
+    expect(admissions).toEqual([
+      ["record:fresh-a", "record:fresh-b"],
+      ["record:family-a-1", "record:family-a-2"],
+      ["record:family-b"],
+    ]);
+    expect(result).toMatchObject({
+      completed: 5,
+      usage: { modelCalls: 3 },
+      diagnostics: { modelBatches: 3, modelBatchItems: 5 },
+    });
+  });
+
+  test("drains an exposure-limited family without mixing the next family", async () => {
+    const events: string[] = [];
+    const claims = [
+      { ...claim("record:family-a-1", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-a-2", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-a-3", "organization"), modelBatchFamilyKey: "binding:a" },
+      { ...claim("record:family-b", "organization"), modelBatchFamilyKey: "binding:b" },
+    ];
+    const work = workHarness(claims, events);
+    const paused: string[] = [];
+    work.port.pause = ({ claim: pausedClaim }) => {
+      paused.push(pausedClaim.recordRef);
+      return Promise.resolve({ status: "accepted" });
+    };
+    const semantic = semanticHarness(events);
+    const admissions: string[][] = [];
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        ...mixedView(),
+        changed: {
+          handle: "C0",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+        modelExposureBatchMaximum: 2,
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: current.recordRef,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [`leaf:${current.recordRef}`],
+        }],
+      },
+    });
+    semantic.invokeOrganizerBatch = (batchClaims) => {
+      admissions.push(batchClaims.map((item) => item.recordRef));
+      return Promise.resolve(JSON.stringify({
+        answers: batchClaims.map((_, index) => ({
+          question: `Q${index + 1}`,
+          proposal: { operation: "no_change" },
+        })),
+      }));
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: work.port,
+      semantic,
+      budget: {
+        hierarchy: { ...hierarchyBudget, maxModelCalls: 2 },
+        maxWorkItems: 4,
+      },
+    });
+
+    expect(admissions).toEqual([["record:family-a-1", "record:family-a-2"]]);
+    expect(admissions.every((batch) => batch.every((recordRef) =>
+      recordRef.includes("family-a")
+    ))).toBe(true);
+    expect(paused).toEqual(["record:family-a-3", "record:family-b"]);
+    expect(result).toMatchObject({
+      claimed: 4,
+      completed: 2,
+      paused: 2,
+      usage: { modelCalls: 1 },
+      diagnostics: { modelBatches: 1, modelBatchItems: 2 },
+      budgetExhausted: true,
+    });
+  });
+
+  test("splits model batches before the producer exact-plan ceiling", async () => {
+    const events: string[] = [];
+    const claims = [
+      claim("record:a", "organization"),
+      claim("record:b", "organization"),
+    ];
+    const semantic = semanticHarness(events);
+    semantic.loadOrganizerView = (current) => Promise.resolve({
+      status: "ready",
+      view: {
+        changed: {
+          handle: "R1",
+          snapshot: snapshot(current.recordRef),
+          dependency: { kind: "record", recordRef: current.recordRef },
+        },
+        candidates: [{
+          handle: "C1",
+          snapshot: snapshot(`neighbor:${current.recordRef}`),
+          dependency: {
+            kind: "record",
+            recordRef: `neighbor:${current.recordRef}`,
+          },
+        }],
+        existingParents: [],
+        maxSelectedChildren: 2,
+        modelExposureBatchMaximum: 2,
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: current.recordRef,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [`leaf:${current.recordRef}`],
+        }, {
+          kind: "record",
+          recordRef: `neighbor:${current.recordRef}`,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [`leaf:neighbor:${current.recordRef}`],
+        }],
+      },
+    });
+    const batches: string[][] = [];
+    semantic.invokeOrganizerBatch = async (batchClaims) => {
+      batches.push(batchClaims.map((current) => current.recordRef));
+      return JSON.stringify({
+        answers: [{ question: "Q1", proposal: { operation: "no_change" } }],
+      });
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: workHarness(claims, events).port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 2 },
+    });
+
+    expect(batches).toEqual([["record:a"], ["record:b"]]);
+    expect(result).toMatchObject({
+      completed: 2,
+      usage: { modelCalls: 2 },
+      diagnostics: { modelBatches: 2, modelBatchItems: 2 },
     });
   });
 

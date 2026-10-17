@@ -21,16 +21,16 @@ export function sanitizeComposerAttachmentBasenameForUi(name: string): string {
 }
 
 /**
- * Cheap client-side gate before queueing a composer chip. The server D066 gate
+ * Cheap client-side gate before queueing a composer chip. The server attachment gate
  * remains authoritative (magic bytes, MIME, zone, size).
  */
-export function preflightComposerChatAttachment(pathOrName: string): ComposerChatAttachmentPreflight {
+export function preflightComposerChatAttachment(pathOrName: string, options?: { workspacePdf?: boolean }): ComposerChatAttachmentPreflight {
   const basename = pathOrName.split(/[/\\]/).pop() ?? pathOrName;
   const ext = extensionOfBasename(pathOrName);
   if (ext === "") {
     return { ok: false, skip: { basename, reason: "no_extension" } };
   }
-  if (!isComposerChatAttachmentPathAllowed(pathOrName)) {
+  if (!(options?.workspacePdf && ext === ".pdf") && !isComposerChatAttachmentPathAllowed(pathOrName)) {
     return { ok: false, skip: { basename, reason: "unsupported_type" } };
   }
   return { ok: true };

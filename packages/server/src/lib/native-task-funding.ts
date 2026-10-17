@@ -1,17 +1,19 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { chatGPTFundingRegistration } from "./chatgpt-plan/runtime";
 import { createCapabilityFundingSession, prepareCapabilityFundingSession } from "./capability-funding";
 import {
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
-import { and, eq, isNull, rooms, namespaces, sql, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
-import { assertCanInvokeAgent, getUserCapabilities } from "@nautilo/trust";
+import { and, eq, isNull, rooms, roomMembers, namespaces, sql, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
+import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@nautilo/trust";
 import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type TaskFundingAdmission,
   type TaskFundingRunSource, type TaskFundingTaskSource } from "@nautilo/runtime";
 import { classifyProtectedTaskMetadataV1, parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
 import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
-import { ModelFundingError, resolveModelFunding, withAdmittedPersonalProviderKey, type ModelFundingDecision } from "./model-funding";
+import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential,
+  type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
@@ -42,6 +44,7 @@ const protectedTaskProjection = {
   targetChatHandle: tasks.targetChatHandle,
   targetRoomId: tasks.targetRoomId,
   targetUserIds: tasks.targetUserIds,
+  resultDelivery: tasks.resultDelivery,
   useScope: tasks.useScope,
   scopeId: tasks.scopeId,
   toolsMode: tasks.toolsMode,
@@ -118,6 +121,25 @@ export async function withProtectedTaskFundingAuthority<T>(
   });
 }
 
+const NATIVE_TASK_METADATA_KEYS = new Set([
+  "preparation", "lastInterruption", "deepResearch", "bringBack",
+  "writerReviewAwaiting", "writerReviewAcceptedReceipt", "subscriptionFunding",
+]);
+
+// These fields are durable runtime progress, not admitted prompt, routing, or
+// provider-selection input. They may advance while an approved Task is parked
+// or while its exact run is executing. Every other accepted metadata field is
+// part of the funding source fence below.
+const MUTABLE_TASK_RUNTIME_METADATA_KEYS = new Set([
+  "preparation", "lastInterruption",
+  "writerReviewAwaiting", "writerReviewAcceptedReceipt",
+]);
+
+function fundingRelevantTaskMetadata(metadata: Candidate["metadata"]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(metadata ?? {})
+    .filter(([key]) => !MUTABLE_TASK_RUNTIME_METADATA_KEYS.has(key)));
+}
+
 export function shouldPrepareNativeTaskCallerFunding(
   metadata: Candidate["metadata"],
   access: Readonly<{
@@ -142,15 +164,11 @@ function hasAdmittedDeepResearchFunding(metadata: Candidate["metadata"]): boolea
 }
 
 function supportedShape(task: FundingTaskSource): boolean {
-  return task.ownerId === task.requestorId && !task.parentTaskId && (task.depth ?? 0) === 0
-    && (task.contentRepresentation ?? "ordinary") === "ordinary"
+  return (task.contentRepresentation ?? "ordinary") === "ordinary"
     && ["none", "auto", "whitelist"].includes(task.toolsMode ?? "auto")
     && (task.toolsWhitelist ?? []).every(isSupportedPersonalTool)
-    && !task.useScope && !task.scopeId && !task.targetChatHandle
-    && (task.preset === "task" || task.preset === "in_background" || task.preset === "schedule")
-    && (task.targetChat === "orphan" || task.targetChat === "last_in_namespace")
-    && (task.targetUserIds ?? []).every((id) => id === task.requestorId)
-    && !task.awaitResponse && Object.keys(task.metadata ?? {}).every((key) => key === "preparation" || key === "deepResearch");
+    && !["ping", "repo_docs"].includes(task.preset ?? "task")
+    && Object.keys(task.metadata ?? {}).every((key) => NATIVE_TASK_METADATA_KEYS.has(key));
 }
 
 function protectedRuntimeShape(task: FundingTaskSource): boolean {
@@ -232,12 +250,9 @@ async function assertOwnShape(
   task: FundingTaskSource,
   retainedProtectedAuthority?: ProtectedTaskFundingAuthority,
 ): Promise<ProtectedTaskFundingAuthority | undefined> {
-  const isProtected = protectedRuntimeShape(task);
-  const authority = isProtected
-    ? retainedProtectedAuthority ?? protectedTaskFundingAuthority.getStore()
-    : undefined;
-  if ((!supportedShape(task) && !isProtected)
-    || isProtected && authority === undefined
+  const authority = retainedProtectedAuthority ?? protectedTaskFundingAuthority.getStore();
+  if (!protectedRuntimeShape(task)
+    || authority === undefined
     || !task.callingRoomId
     || !await isOwnPrivateGenieRoom(task.requestorId, task.callingRoomId, task.agentId)) {
     throw new TaskFundingError("unsupported_workload");
@@ -277,7 +292,91 @@ async function assertOwnShape(
   }
   await assertCanInvokeAgent({ humanUserId: task.requestorId, origin: "task_dispatch",
     agentId: task.agentId, roomId: task.callingRoomId });
+  await authority();
   return authority;
+}
+
+async function resolveCanonicalLineage(task: FundingTaskSource): Promise<Readonly<{
+  sourceRoomId: string;
+  taskIds: readonly string[];
+}>> {
+  let current = task;
+  const seen = new Set<string>();
+  const taskIds = [task.id ?? "candidate"];
+  while (current.parentTaskId) {
+    if (seen.has(current.parentTaskId)) throw new TaskFundingError("unsupported_workload");
+    seen.add(current.parentTaskId);
+    const parent = await getTaskById(getServerDirectDb(), current.parentTaskId);
+    if (!parent || parent.requestorId !== task.requestorId
+      || (current.depth ?? 0) !== parent.depth + 1
+      || !current.callingRoomId
+      || (current.callingRoomId !== parent.callingRoomId && current.callingRoomId !== parent.targetRoomId)
+      || ["cancelled", "errored"].includes(parent.status)) {
+      throw new TaskFundingError("unsupported_workload");
+    }
+    taskIds.push(parent.id);
+    current = parent;
+  }
+  if ((current.depth ?? 0) !== 0 || !current.callingRoomId) {
+    throw new TaskFundingError("unsupported_workload");
+  }
+  return { sourceRoomId: current.callingRoomId, taskIds };
+}
+
+async function isLiveSourceRoomMember(roomId: string, actorId: string): Promise<boolean> {
+  const [room] = await getServerDirectDb()
+    .select({ id: rooms.id })
+    .from(rooms)
+    .innerJoin(roomMembers, eq(roomMembers.roomId, rooms.id))
+    .where(and(
+      eq(rooms.id, roomId),
+      isNull(rooms.archivedAt),
+      eq(roomMembers.actorId, actorId),
+    ))
+    .limit(1);
+  return room?.id === roomId;
+}
+
+async function assertCanonicalShape(task: FundingTaskSource): Promise<void> {
+  if (!supportedShape(task) || !task.callingRoomId) {
+    throw new TaskFundingError("unsupported_workload");
+  }
+  const lineage = await resolveCanonicalLineage(task);
+  const { sourceRoomId } = lineage;
+  const requestor = await findActorByOwnerId(task.requestorId);
+  if (!requestor) throw new TaskFundingError("unsupported_workload");
+  const requestorActorId = requestor.id;
+  // The calling Room is the causal Human's source. The target Genie can be a
+  // foreign Genie and need not already be a member of that Room; exact-target
+  // invocation admission below owns that social boundary.
+  if (!await isLiveSourceRoomMember(sourceRoomId, requestorActorId)
+    || (task.preset === "schedule" && task.targetRoomId !== null
+      && task.targetRoomId !== undefined && task.targetRoomId !== task.callingRoomId)) {
+    throw new TaskFundingError("unsupported_workload");
+  }
+  const research = readDeepResearchTaskMetadata(task.metadata);
+  if (research && research.version !== 2) throw new TaskFundingError("unsupported_workload");
+  if (research?.version === 2) {
+    const session = createCapabilityFundingSession(task.requestorId);
+    const lanes = { supervisor: research.modelPlan.supervisorModel, research: research.modelPlan.researchModel,
+      summarization: research.modelPlan.summarizationModel, compression: research.modelPlan.compressionModel,
+      finalReport: research.modelPlan.finalReportModel } as const;
+    for (const lane of Object.keys(lanes) as (keyof typeof lanes)[]) {
+      await session.openModel(lanes[lane], "research", research.modelFunding[lane]);
+    }
+    await session.openService("tavily", research.tavilyFunding);
+  }
+  await assertCanInvokeAgent({ humanUserId: task.requestorId, origin: "task_dispatch",
+    agentId: task.agentId, roomId: sourceRoomId });
+  const [currentLineage, currentCallingRoomLive] = await Promise.all([
+    resolveCanonicalLineage(task),
+    isLiveSourceRoomMember(sourceRoomId, requestorActorId),
+  ]);
+  if (currentLineage.sourceRoomId !== lineage.sourceRoomId
+    || JSON.stringify(currentLineage.taskIds) !== JSON.stringify(lineage.taskIds)
+    || !currentCallingRoomLive) {
+    throw new TaskFundingError("unsupported_workload");
+  }
 }
 
 function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
@@ -287,13 +386,30 @@ function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
     : { kind: "server", providerRoute: decision.providerRoute };
 }
 
-function restoreDecision(task: Pick<FundingTaskSource, "id" | "requestorId">,
+function assertProtectedFundingDecision(decision: ModelFundingDecision): void {
+  if (decision.kind === "personal" && decision.providerRoute === "openai-chatgpt") {
+    throw new TaskFundingError("unsupported_workload");
+  }
+}
+
+function subscriptionPin(task: Pick<FundingTaskSource, "metadata">): Extract<TaskFundingBinding, { kind: "personal" }> | null {
+  if (!Object.hasOwn(task.metadata ?? {}, "subscriptionFunding")) return null;
+  try {
+    const binding = parseTaskFundingBinding(task.metadata!["subscriptionFunding"]);
+    if (binding.kind !== "personal" || binding.providerRoute !== "openai-chatgpt") throw new Error();
+    return binding;
+  } catch { throw new TaskFundingError("funding_source_changed"); }
+}
+
+function restoreDecision(task: Pick<FundingTaskSource, "id" | "requestorId" | "metadata">,
   run: Pick<FundingRunSource, "taskId" | "modelId" | "fundingBinding">,
 ): ModelFundingDecision {
   if (run.taskId !== task.id || !run.modelId) throw new TaskFundingError("funding_source_changed");
   let binding: TaskFundingBinding;
   try { binding = parseTaskFundingBinding(run.fundingBinding); }
   catch { throw new TaskFundingError("funding_source_changed"); }
+  const pin = subscriptionPin(task);
+  if (pin && JSON.stringify(pin) !== JSON.stringify(binding)) throw new TaskFundingError("funding_source_changed");
   const base = { humanUserId: task.requestorId, modelId: run.modelId,
     providerRoute: binding.providerRoute, workload: "native_text_task" as const };
   return binding.kind === "personal"
@@ -406,7 +522,6 @@ export async function isPersonalOnlyNativeTaskSelection(
     toolsWhitelist?: TaskSelection["toolsWhitelist"];
   },
 ): Promise<boolean> {
-  if (!await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) return false;
   const modelId = await selectRunnableTaskModel({ ...input,
     selectionProfile: input.selectionProfile ?? undefined,
     selectionSpec: input.selectionSpec ?? undefined,
@@ -420,10 +535,17 @@ export async function isPersonalOnlyNativeTaskSelection(
 
 async function admit(task: TaskFundingTaskSource,
   priorRun?: TaskFundingRunSource): Promise<TaskFundingAdmission> {
-  const authority = await assertOwnShape(task);
+  const authority = (task.contentRepresentation ?? "ordinary") === "ordinary"
+    ? (await assertCanonicalShape(task), undefined)
+    : await assertOwnShape(task);
   const modelId = await selectTaskModel(task, priorRun);
+  const pin = subscriptionPin(task);
+  const priorDecision = priorRun ? restoreDecision(task, priorRun) : pin ? {
+    ...pin, humanUserId: task.requestorId, payerHumanId: task.requestorId, modelId, workload: "native_text_task" as const,
+  } : undefined;
   const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId,
-    workload: "native_text_task", ...(priorRun ? { priorDecision: restoreDecision(task, priorRun) } : {}) });
+    workload: "native_text_task", ...(priorDecision ? { priorDecision } : {}) });
+  if (authority) assertProtectedFundingDecision(decision);
   await authority?.();
   return { modelId, binding: bindingFor(decision) };
 }
@@ -436,8 +558,10 @@ function sameBinding(left: unknown, right: unknown): boolean {
 async function openSession(task: FundingTaskSource, run: FundingRunSource,
   modelId: string, wake: boolean, retainedDecision?: ModelFundingDecision,
 ): Promise<ForegroundChatFundingSession> {
-  const authority = await assertOwnShape(task);
-  const protectedSource = protectedRuntimeShape(task);
+  const protectedSource = (task.contentRepresentation ?? "ordinary") !== "ordinary";
+  const authority = protectedSource
+    ? await assertOwnShape(task)
+    : (await assertCanonicalShape(task), undefined);
   const acceptedProtectedMetadata = protectedSource
     ? structuredClone(task.metadata)
     : undefined;
@@ -447,6 +571,7 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
   const taskRunId = run.id;
   const freshCancelledWake = retainedDecision !== undefined;
   const admitted = retainedDecision ?? restoreDecision(task, run);
+  if (protectedSource) assertProtectedFundingDecision(admitted);
   const resolveCandidateUnchecked = async (candidateModelId: string, transport?: "direct" | "surplus") => {
     await authority?.();
     // Every retry/fallback rechecks exact Room authority and the original revision.
@@ -462,12 +587,29 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
     if (!currentTask || !currentRun || currentTask.fundingMode !== "caller"
       || currentTask.ownerId !== task.ownerId || currentTask.requestorId !== task.requestorId
       || currentTask.agentId !== task.agentId || currentTask.callingRoomId !== task.callingRoomId
+      || currentTask.parentTaskId !== task.parentTaskId || currentTask.depth !== task.depth
+      || currentTask.preset !== task.preset || currentTask.targetChat !== task.targetChat
+      || currentTask.targetChatHandle !== task.targetChatHandle
+      || currentTask.targetRoomId !== task.targetRoomId
+      || JSON.stringify(currentTask.targetUserIds) !== JSON.stringify(task.targetUserIds)
+      || currentTask.resultDelivery !== task.resultDelivery
+      || currentTask.useScope !== task.useScope || currentTask.scopeId !== task.scopeId
+      || currentTask.awaitResponse !== task.awaitResponse
       || currentTask.requestedModelId !== task.requestedModelId
+      || currentTask.selectionProfile !== task.selectionProfile
+      || JSON.stringify(currentTask.selectionSpec) !== JSON.stringify(task.selectionSpec)
       || currentTask.toolsMode !== task.toolsMode
       || JSON.stringify(currentTask.toolsWhitelist) !== JSON.stringify(task.toolsWhitelist)
-      || !sameProtectedRuntimeCoordinates(currentTask, task)
-      || currentRun.modelId !== run.modelId || currentRun.jobId !== run.jobId
-      || currentRun.graphThreadId !== run.graphThreadId
+      || (protectedSource
+        ? !sameProtectedRuntimeCoordinates(currentTask, task)
+          || currentRun.jobId !== run.jobId
+        : currentTask.contentRepresentation !== task.contentRepresentation
+          || currentTask.contentNamespaceId !== task.contentNamespaceId
+          || currentTask.contentRevision !== task.contentRevision
+          || currentTask.cryptoObjectId !== task.cryptoObjectId
+          || JSON.stringify(fundingRelevantTaskMetadata(currentTask.metadata))
+            !== JSON.stringify(fundingRelevantTaskMetadata(task.metadata)))
+      || currentRun.modelId !== run.modelId || currentRun.graphThreadId !== run.graphThreadId
       || currentRun.fundingPredecessorRunId !== run.fundingPredecessorRunId
       || (freshCancelledWake
         ? currentRun.fundingBinding !== null || run.fundingBinding !== null
@@ -488,13 +630,15 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
         throw new TaskFundingError("funding_source_changed");
       }
     }
-    await assertOwnShape(currentTask, authority);
+    if (protectedSource) await assertOwnShape(currentTask, authority);
+    else await assertCanonicalShape(currentTask);
     assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
     if (!wake && task.requestedModelId && task.requestedModelId !== candidateModelId) {
       throw new TaskFundingError("funding_source_changed");
     }
     const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId: candidateModelId,
       workload: "native_text_task", priorDecision: admitted, ...(transport ? { transport } : {}) });
+    if (protectedSource) assertProtectedFundingDecision(decision);
     await authority?.();
     return decision;
   };
@@ -516,6 +660,7 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
       task.requestorId,
       async () => { await resolveCandidate(modelId); },
       admitted.kind,
+      bindingFor(admitted),
     ),
     async recheckAttempt(candidate, transport) {
       const current = await resolveCandidate(candidate, transport);
@@ -534,8 +679,8 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
         await authority?.();
         try {
           if (decision.kind === "server") return await runAttempt({ usageFunding });
-          return await withAdmittedPersonalProviderKey(decision,
-            (apiKey) => runAttempt({ usageFunding, personalCredential: { apiKey } }), undefined, admitted);
+          return await withAdmittedPersonalCredential(decision,
+            (personalCredential) => runAttempt({ usageFunding, personalCredential }), undefined, admitted);
         } finally {
           await authority?.();
         }
@@ -599,6 +744,7 @@ export async function openProtectedTaskWakeFundingSession(input: Readonly<{
         modelId,
         workload: "native_text_task",
       });
+      assertProtectedFundingDecision(retainedDecision);
       await input.assertCurrent();
       return openSession(
         task,
@@ -621,6 +767,24 @@ async function fundingBoundary<T>(work: () => Promise<T>): Promise<T> {
 
 export const nativeTaskFundingPort: TaskFundingPort = {
   async prepareCreation(input, provenance) {
+    if (Object.hasOwn(input.metadata ?? {}, "subscriptionFunding")) throw new TaskFundingError("funding_source_changed");
+    let inheritedSubscription: ModelFundingDecision | undefined;
+    if (provenance.kind === "agent_turn" && provenance.parentTaskId && provenance.parentTaskRunId) {
+      const db = getServerDirectDb();
+      const parent = await getTaskById(db, provenance.parentTaskId);
+      const run = await getTaskRunForTask(db, provenance.parentTaskId, provenance.parentTaskRunId);
+      if (!parent || parent.requestorId !== input.requestorId || !run || !["running", "awaiting", "completed"].includes(run.status)) {
+        throw new TaskFundingError("unsupported_workload");
+      }
+      if (run.fundingBinding !== null && run.fundingBinding !== undefined) {
+        const decision = restoreDecision(parent, run);
+        if (decision.kind === "personal" && decision.providerRoute === "openai-chatgpt") inheritedSubscription = decision;
+      }
+    }
+    const wouldUseSelectedSubscription = async () => {
+      const selected = await chatGPTFundingRegistration(input.requestorId);
+      return selected !== null && (await selectTaskModel(input)).startsWith("openai:");
+    };
     const caps = await getUserCapabilities(input.requestorId);
     const policy = await getServerProviderPolicy(getServerDirectDb());
     let admittedDeepResearch: boolean;
@@ -632,23 +796,41 @@ export const nativeTaskFundingPort: TaskFundingPort = {
     if (!shouldPrepareNativeTaskCallerFunding(input.metadata, {
       allowPersonalProviderKeys: policy.allowPersonalProviderKeys,
       capabilities: caps,
-    })) return false;
+    }) && !inheritedSubscription) {
+      // An unavailable explicitly selected plan is still a funding choice.
+      // Never reinterpret policy disable/revocation as permission to charge
+      // the legacy server lane when a queued Task is created.
+      if (await wouldUseSelectedSubscription()) throw new TaskFundingError(
+        policy.allowPersonalProviderKeys ? "personal_credentials_forbidden" : "personal_credentials_disabled",
+      );
+      return false;
+    }
+    const inputParentTaskId = input.parentTaskId ?? null;
     const originSupported = provenance.kind === "human_api"
-      ? !provenance.requestedParentTaskId
+      ? provenance.requestedParentTaskId === inputParentTaskId
       : provenance.kind === "agent_turn"
-        && (provenance.entrypoint === "foreground.main" || provenance.entrypoint === "foreground.fork")
-        && provenance.roomId === input.callingRoomId && !provenance.parentTaskId;
-    if (!originSupported || input.targetRoomId || !supportedShape(input)
-      || !input.callingRoomId || !await isOwnPrivateGenieRoom(input.requestorId, input.callingRoomId, input.agentId)) {
-      if (!admittedDeepResearch && caps.includes("use_server_provider_credentials")) return false;
+        && provenance.roomId === input.callingRoomId
+        && provenance.parentTaskId === inputParentTaskId
+        && (provenance.parentTaskId === null || provenance.parentTaskRunId !== null);
+    if (!originSupported || !supportedShape(input) || !input.callingRoomId) {
+      if (!inheritedSubscription && !admittedDeepResearch && caps.includes("use_server_provider_credentials")
+        && !await wouldUseSelectedSubscription()) return false;
       throw new TaskFundingError("unsupported_workload");
     }
-    await fundingBoundary(async () => {
-      await assertOwnShape(input);
+    const decision = await fundingBoundary(async () => {
+      if (provenance.kind === "agent_turn" && provenance.parentTaskId && provenance.parentTaskRunId) {
+        const parentRun = await getTaskRunForTask(getServerDirectDb(), provenance.parentTaskId, provenance.parentTaskRunId);
+        if (!parentRun || !["running", "awaiting", "completed"].includes(parentRun.status)) {
+          throw new TaskFundingError("unsupported_workload");
+        }
+      }
+      await assertCanonicalShape(input);
       const modelId = await selectTaskModel(input);
-      await resolveModelFunding({ humanUserId: input.requestorId, modelId, workload: "native_text_task" });
+      return resolveModelFunding({ humanUserId: input.requestorId, modelId, workload: "native_text_task",
+        ...(inheritedSubscription ? { priorDecision: inheritedSubscription } : {}) });
     });
-    return true;
+    return decision.kind === "personal" && decision.providerRoute === "openai-chatgpt"
+      ? { modelId: decision.modelId, binding: bindingFor(decision) } : true;
   },
   admit: (task, priorRun) => fundingBoundary(() => admit(task, priorRun)),
   openSession: (task, run, modelId, wake) => fundingBoundary(() => openSession(task, run, modelId, wake)),

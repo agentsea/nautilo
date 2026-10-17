@@ -60,7 +60,11 @@ function mockRuntime(execute: (query: unknown) => Promise<{ rows: unknown[] }>):
     join: (values: unknown[], separator: unknown) => values.join(String(separator)),
   });
   mock.module("../../src/usage/record-usage", () => ({ recordLlmUsage: () => {} }));
-  mock.module("../../src/usage/usage-context", () => ({ getUsageContext: () => null }));
+  mock.module("../../src/usage/usage-context", () => ({
+    getUsageContext: () => null,
+    normalizeUsageRoomId: (roomId: string | null | undefined) =>
+      typeof roomId === "string" && roomId.trim().length > 0 ? roomId : null,
+  }));
   mock.module("@nautilo/db", () => ({
     agentDb: handle,
     getCachedServerModelConfigRow: () => null,
@@ -105,6 +109,12 @@ function mockRuntime(execute: (query: unknown) => Promise<{ rows: unknown[] }>):
     isNull: () => ({}),
     memoryEmbeddingValues,
     memoryEmbeddingCompatibilityCondition,
+    beginServiceLlmAttempt: async () => {
+      throw new Error("service attempt must not run in projection isolation");
+    },
+    settleServiceLlmAttempt: async () => {
+      throw new Error("service settlement must not run in projection isolation");
+    },
   }));
   mock.module("@nautilo/logger", () => ({
     log: () => {},

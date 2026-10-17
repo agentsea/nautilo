@@ -1,5 +1,6 @@
 import { expect, test, spyOn } from "bun:test";
 import { rejects } from "node:assert/strict";
+import { resolve } from "node:path";
 import { createLocalExecutionDelegationAuthority } from "../../electron/local-execution-delegation";
 import { DesktopFilesystemGrantAuthority } from "../../electron/desktop-filesystem-grants/authority";
 import { DesktopFilesystemGrantStore } from "../../electron/desktop-filesystem-grants/store";
@@ -9,7 +10,7 @@ const request = { version: 1 as const, humanUserId: "human", agentId: "agent", s
 function fixture() {
   let access: ("read" | "create_modify" | "delete" | "execute")[] = ["read", "create_modify", "delete", "execute"];
   let projectCurrent = true; let authorityExpiresAt: number | undefined;
-  let bytes: string | null = null; let epoch = "epoch"; let selected = "/fixture/project"; let source = true; let inode = 1;
+  let bytes: string | null = null; let epoch = "epoch"; let selected = resolve("/fixture/project"); let source = true; let inode = 1;
   const store = new DesktopFilesystemGrantStore({ instanceId: "", filePath: "/unused", storage: {
     read: async () => bytes, writeAtomic: async value => { bytes = value; } } });
   const grants = new DesktopFilesystemGrantAuthority({ instanceId: "", store });
@@ -21,12 +22,12 @@ function fixture() {
       ? { ok: true, canonicalRoot: identity.realRoot, filesystemIdentity: identity }
       : { ok: false, error: { code: "root_identity_changed", message: "changed" } },
   });
-  return { authority, grants, setExpiry: (value: number) => { authorityExpiresAt = value; }, setAccess: (value: typeof access) => { access = value; }, reduceProject: () => { projectCurrent = false; }, folder: (value: string) => { selected = value; }, revokeSource: () => { source = false; },
+  return { authority, grants, setExpiry: (value: number) => { authorityExpiresAt = value; }, setAccess: (value: typeof access) => { access = value; }, reduceProject: () => { projectCurrent = false; }, folder: (value: string) => { selected = resolve(value); }, revokeSource: () => { source = false; },
     replaceRoot: () => { inode++; }, changeEpoch: () => { epoch = "replacement"; } };
 }
 test("durable Task grant resolves its original project after the selected folder changes", async () => {
   const f = fixture(); const saved = await f.authority.capture(request); f.folder("/fixture/other");
-  const scope = await f.authority.resolve(saved); expect(scope.canonicalRoot).toBe("/fixture/project"); expect(scope.isCurrent()).toBe(true);
+  const scope = await f.authority.resolve(saved); expect(scope.canonicalRoot).toBe(resolve("/fixture/project")); expect(scope.isCurrent()).toBe(true);
   const listed = await f.grants.list({ userId: "human" });
   expect(listed).toMatchObject({ ok: true, data: { grants: [{ grant: { lifetime: "durable", origin: "approval", subject: { agentScope: "task:task" } } }] } });
   f.changeEpoch(); expect(scope.isCurrent()).toBe(false);

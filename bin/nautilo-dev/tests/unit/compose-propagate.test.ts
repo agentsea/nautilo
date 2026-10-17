@@ -2,10 +2,11 @@
  * M071 Phase 2B — compose project name and derived container names match
  * `resolveInstance()` without invoking Docker.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   __resetResolvedInstanceForTests,
   deriveComposeContainerBundle,
@@ -35,6 +36,10 @@ import {
   parseContainerNameConflict,
   waitForPgEntrypointComplete,
 } from "../../src/commands/infra-start";
+
+// Clone propagation runs many private-filesystem calls, each through the
+// PowerShell ACL helper on Windows; concurrent package runs exceed 15 s there.
+if (process.platform === "win32") setDefaultTimeout(60_000);
 
 describe("compose propagation (M071 2B)", () => {
   let userHomeDir: string;
@@ -136,7 +141,8 @@ describe("compose propagation (M071 2B)", () => {
     });
     expect(second).toEqual(first);
     expect(readFileSync(first.keyPath, "utf8").trim()).toMatch(/^[a-f0-9]{64}$/u);
-    expect(statSync(first.keyPath).mode & 0o777).toBe(0o600);
+    expect(isPrivateFilesystemPath(first.keyPath)).toBe(true);
+    if (process.platform !== "win32") expect(statSync(first.keyPath).mode & 0o777).toBe(0o600);
     expect(first.dataDir).toBe(join(userHomeDir, ".nautilo-beta", "openconnector-data"));
   });
 
@@ -144,6 +150,8 @@ describe("compose propagation (M071 2B)", () => {
     const prevEnv = { ...process.env };
     try {
       process.env["HOME"] = userHomeDir;
+      process.env["USERPROFILE"] = userHomeDir;
+      delete process.env["NAUTILO_HOME"];
       process.env["NAUTILO_INSTANCE_ID"] = "beta";
       process.env["NAUTILO_DB_PASSWORD"] = "wrong-ambient-full";
       process.env["NAUTILO_AGENT_DB_PASSWORD"] = "wrong-ambient-agent";
@@ -243,6 +251,8 @@ describe("compose propagation (M071 2B)", () => {
     const prevEnv = { ...process.env };
     try {
       process.env["HOME"] = userHomeDir;
+      process.env["USERPROFILE"] = userHomeDir;
+      delete process.env["NAUTILO_HOME"];
       process.env["NAUTILO_INSTANCE_ID"] = "beta";
       process.env["NAUTILO_DB_PASSWORD"] = "ambient-must-not-win";
       delete process.env["DB_CONNECTION_STRING"];
@@ -345,7 +355,8 @@ describe("compose propagation (M071 2B)", () => {
     expect(readFileSync(cryptoPath, "utf8")).not.toContain("ambient-crypto-must-not-persist");
     expect(readFileSync(sentinelPath, "utf8")).toContain("credential-authority-v1");
     for (const path of [instanceEnvPath, cryptoPath, sentinelPath]) {
-      expect(statSync(path).mode & 0o777).toBe(0o600);
+      expect(isPrivateFilesystemPath(path)).toBe(true);
+      if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
     }
     expect(inspectInfraCredentialAuthority({
       instanceEnvPath,

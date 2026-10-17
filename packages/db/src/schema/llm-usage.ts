@@ -56,7 +56,7 @@ export const llmUsageEvents = pgTable(
     /**
      * What kind of call this was:
      * `chat` | `subagent` | `conductor` | `room_stenographer` | `room_reflection`
-     * | `room_event_compaction` | `embedding` | `image_gen`
+     * | `room_event_compaction` | `embedding` | `image_gen` | `image_assistance`
      * | `memory_flush` | `memory_review` | `web_search` | `session_search`
      * | `title` | `capability_probe` | `soul` | `other`.
      */
@@ -123,6 +123,10 @@ export const llmUsageEvents = pgTable(
     /** Content-free stable failure category suitable for operator diagnostics. */
     failureCode: text("failure_code"),
     settledAt: timestamp("settled_at", { withTimezone: true }),
+    /** Process-lifetime fence for a foreground direct-personal wire attempt. */
+    attemptOwnerToken: uuid("attempt_owner_token"),
+    /** Explicit liveness authority; legacy unowned rows remain unresolved. */
+    attemptLeaseExpiresAt: timestamp("attempt_lease_expires_at", { withTimezone: true }),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -167,7 +171,7 @@ export const llmUsageEvents = pgTable(
         (${table.attemptOutcome} IS NULL AND ${table.costState} IS NULL AND ${table.recoveryState} IS NULL)
         OR
         (${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL AND ${table.endpoint} IS NOT NULL AND length(${table.endpoint}) > 0
-          AND (${table.providerRoute} = 'surplus' OR (${table.fundingKind} = 'personal' AND ${table.recoveryState} IS NULL)))
+          AND (${table.providerRoute} = 'surplus' OR (${table.fundingKind} IN ('personal', 'server', 'service') AND ${table.recoveryState} IS NULL)))
       )`,
     ),
     check(
@@ -186,6 +190,19 @@ export const llmUsageEvents = pgTable(
         OR (${table.costState} IN ('pending', 'unknown') AND ${table.actualCostUsd} IS NULL)
       )`,
     ),
+    check(
+      "llm_usage_events_attempt_owner_check",
+      sql`(
+        (${table.attemptOwnerToken} IS NULL AND ${table.attemptLeaseExpiresAt} IS NULL)
+        OR
+        (${table.attemptOwnerToken} IS NOT NULL AND ${table.attemptLeaseExpiresAt} IS NOT NULL
+          AND ${table.fundingKind} IN ('personal', 'server', 'service') AND ${table.providerRoute} <> 'surplus'
+          AND ${table.attemptOutcome} IS NOT NULL AND ${table.costState} IS NOT NULL)
+      )`,
+    ),
+    index("idx_llm_usage_personal_attempt_lease")
+      .on(table.attemptLeaseExpiresAt, table.id)
+      .where(sql`${table.attemptOwnerToken} IS NOT NULL AND ${table.attemptOutcome} = 'in_progress'`),
   ],
 );
 

@@ -1,8 +1,13 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, TextInput } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 
 import { getApiClient } from "@/lib/api";
+import {
+  captureCryptoAdmissionNavigationResume,
+  type CryptoAdmissionNavigationResumeIntent,
+} from "@/lib/crypto-admission-navigation-resume";
+import { CryptoAdmissionNavigationResumeProvider } from "@/lib/crypto-admission-navigation-resume-context";
 import { useAuth } from "@/providers/auth";
 import { useServers } from "@/providers/server-registry";
 import { useAppTheme } from "@/providers/theme";
@@ -12,6 +17,11 @@ type AdmissionDecision = Readonly<{
   key: string;
   outcome: Admission;
 }>;
+type ResumeMemory = {
+  observed: boolean;
+  key: string | null;
+  intent: CryptoAdmissionNavigationResumeIntent | null;
+};
 
 /**
  * Mobile and Mobile Web do not yet own crypto-device custody. Resolve the
@@ -32,12 +42,28 @@ export function CryptoDeviceAdmissionBoundary({
   const admissionKey = status === "signed-in" && activeServer !== null
     ? `${activeServer.id}\0${activeServer.serverUrl}\0${viewer?.userId ?? "identity-pending"}`
     : null;
+  const resumeKey = status === "signed-in" && activeServer !== null && viewer?.userId
+    ? `${activeServer.id}\0${activeServer.serverUrl}\0${viewer.userId}`
+    : null;
+  const resumeMemory = useRef<ResumeMemory>({ observed: false, key: null, intent: null });
   const [decision, setDecision] = useState<AdmissionDecision | null>(null);
   const admission: Admission = admissionKey === null
     ? "plaintext"
     : decision?.key === admissionKey
       ? decision.outcome
       : "checking";
+
+  useEffect(() => {
+    if (!resumeMemory.current.observed && resumeKey !== null) {
+      resumeMemory.current = {
+        observed: true,
+        key: resumeKey,
+        intent: captureCryptoAdmissionNavigationResume(resumeKey),
+      };
+    } else if (resumeMemory.current.observed && resumeMemory.current.key !== resumeKey) {
+      resumeMemory.current = { observed: true, key: resumeKey, intent: null };
+    }
+  }, [resumeKey]);
 
   useEffect(() => {
     let current = true;
@@ -72,7 +98,30 @@ export function CryptoDeviceAdmissionBoundary({
     };
   }, [activeServerUrl, admissionKey]);
 
-  if (admission === "plaintext") return <>{children}</>;
+  if (admission === "plaintext") {
+    const resumeIntent = resumeMemory.current.intent;
+    return (
+      <CryptoAdmissionNavigationResumeProvider binding={resumeKey !== null
+        && resumeIntent !== null
+        && resumeIntent.admissionKey === resumeKey
+        ? {
+            admissionKey: resumeKey,
+            intent: resumeIntent,
+            onConsumed: (consumed) => {
+              if (
+                resumeMemory.current.key === resumeKey
+                && resumeMemory.current.intent === consumed
+              ) {
+                resumeMemory.current.intent = null;
+              }
+            },
+          }
+        : null}
+      >
+        {children}
+      </CryptoAdmissionNavigationResumeProvider>
+    );
+  }
 
   const chooseSavedServer = async (serverId: string): Promise<void> => {
     setServerBusy(true);

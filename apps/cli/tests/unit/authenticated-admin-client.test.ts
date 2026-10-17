@@ -351,7 +351,8 @@ describe("createAuthenticatedAdminClient", () => {
     );
   });
 
-  test("accepts only the exact persisted canonical Unix target binding", async () => {
+  // Windows pipe endpoints do not create the Unix socket inode required here.
+  test.skipIf(process.platform === "win32")("accepts only the exact persisted canonical Unix target binding", async () => {
     const dir = mkdtempSync(join(tmpdir(), "nautilo-auth-client-unix-"));
     const socket = join(dir, "server.sock");
     const server = createServer();

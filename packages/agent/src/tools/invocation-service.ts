@@ -1,5 +1,6 @@
 import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
+import { isExternalRoomState, EXTERNAL_ROOM_TOOL_DENIAL } from "./external-room-policy";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { bindDelegatedLocalExecution } from "./local-execution/admission";
 import type { DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
@@ -212,6 +213,12 @@ import {
   computerResultDurableSidecar,
   projectSemanticComputerResult,
 } from "./computer/model-result-projector";
+import {
+  bindModelInputExposure,
+  readDeclaredModelInputExposureProducer,
+  readModelInputExposure,
+  type ModelInputExposure,
+} from "../memory/model-input-exposure";
 
 function isCheckpointLocalMcpInstallPrepared(value: unknown): value is LocalMcpInstallPrepared {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -953,6 +960,8 @@ export interface NautiloToolInvocationResult {
   readonly content: ToolMessage["content"];
   readonly additionalKwargs?: ToolMessage["additional_kwargs"];
   readonly eventSummary?: string;
+  /** Process-trusted producer evidence; never reconstructed from tool JSON. */
+  readonly modelInputExposure?: ModelInputExposure;
 }
 
 export interface NautiloToolInvocationSnapshot {
@@ -1154,6 +1163,7 @@ export function createNautiloToolInvocationSession(
   }
   const trustedContext = serverContext as ServerToolInvocationContext;
   const state = trustedContext.state;
+  if (isExternalRoomState(state)) throw new Error(EXTERNAL_ROOM_TOOL_DENIAL);
   const protectedMemoryRepository =
     trustedContext.protectedMemoryRepository();
   const protectedMemorySearch = trustedContext.protectedMemorySearch();
@@ -2049,6 +2059,10 @@ export function createNautiloToolInvocationSession(
             });
             assignStableToolMessageId(tm);
             setToolMessageStatus(tm, fileStatus);
+            const declaredExposure = readDeclaredModelInputExposureProducer(tool);
+            if (declaredExposure !== undefined) {
+              bindModelInputExposure(tm, declaredExposure);
+            }
             return tm;
           }
           rawContent = typeof result === "string" ? result : JSON.stringify(result);
@@ -2180,6 +2194,10 @@ export function createNautiloToolInvocationSession(
         });
         assignStableToolMessageId(tm);
         setToolMessageStatus(tm, "success");
+        const declaredExposure = readDeclaredModelInputExposureProducer(tool);
+        if (declaredExposure !== undefined) {
+          bindModelInputExposure(tm, declaredExposure);
+        }
         return tm;
       } catch (error) {
         if (isGraphBubbleUp(error)) throw error;
@@ -2320,6 +2338,7 @@ export function createNautiloToolInvocationSession(
         additionalKwargs["nautilo_file_operation"] = fileCommand;
       }
       const summary = additionalKwargs["nautilo_event_summary"];
+      const modelInputExposure = readModelInputExposure(message);
       return {
         callId: call.callId,
         toolName: call.toolName,
@@ -2327,6 +2346,7 @@ export function createNautiloToolInvocationSession(
         content: message.content,
         ...(additionalKwargs ? { additionalKwargs } : {}),
         ...(typeof summary === "string" ? { eventSummary: summary } : {}),
+        ...(modelInputExposure === undefined ? {} : { modelInputExposure }),
       };
   };
   let invocationTail: Promise<unknown> = Promise.resolve();

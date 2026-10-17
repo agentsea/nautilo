@@ -24,6 +24,11 @@
         "sha256": "b699f24eebdb7fde91a34a9d697a1b84c3145f54327b60694b46f06b2972ce4d",
         "sizeMin": 14021032,
         "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-linux-x64"
+      },
+      "win32-x64": {
+        "sha256": "5ffcad90cda06114730e8b202285c45ec0866d1b8d7876b561329e4a8cfbb126",
+        "sizeMin": 13000000,
+        "url": "https://github.com/vercel-labs/agent-browser/releases/download/v0.35.2/agent-browser-win32-x64.exe"
       }
     }
   }

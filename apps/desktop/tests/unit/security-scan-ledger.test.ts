@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import {
   securityScanRecordAcknowledgementSchema,
@@ -266,8 +267,12 @@ describe("D560 Desktop security research ledger", () => {
       const bytes = await readFile(file, "utf8");
       expect(bytes).not.toContain("/private/");
       expect(bytes).not.toContain("source excerpt");
-      expect((await stat(file)).mode & 0o777).toBe(0o600);
-      expect((await stat(join(root, "security-research"))).mode & 0o777).toBe(0o700);
+      expect(isPrivateFilesystemPath(file)).toBe(true);
+      expect(isPrivateFilesystemPath(join(root, "security-research"))).toBe(true);
+      if (process.platform !== "win32") {
+        expect((await stat(file)).mode & 0o777).toBe(0o600);
+        expect((await stat(join(root, "security-research"))).mode & 0o777).toBe(0o700);
+      }
     } finally {
       await rm(root, { recursive: true, force: true });
     }

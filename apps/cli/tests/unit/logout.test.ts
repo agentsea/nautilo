@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { saveCliSession } from "@nautilo/api-client";
@@ -118,7 +119,7 @@ describe("nautilo logout", () => {
       handle: "a", displayName: "A", externalId: "s", accessToken: "t", tokenType: "Bearer",
       expiresAt: Date.now() + 60_000, scopes: [], source: "token", obtainedAt: Date.now(),
     });
-    chmodSync(cliSessionPath(), 0o644);
+    allowOtherReadersSync(cliSessionPath());
     let out = "";
     const write = process.stdout.write.bind(process.stdout);
     process.stdout.write = (value: string | Uint8Array) => {

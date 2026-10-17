@@ -18,7 +18,7 @@ const migration = migrationEntry === undefined
   : readFileSync(
     resolve(migrations, `${migrationEntry.tag}.sql`),
     "utf8",
-  );
+  ).replaceAll("\r\n", "\n");
 
 describe("M237 durable hard-delete effects", () => {
   test("generates a metadata-only additive migration with bounded coherent state", () => {

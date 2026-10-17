@@ -12,7 +12,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import {
-  chmodSync,
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -29,6 +28,7 @@ import {
   type CDPTarget,
 } from "./smoke-packaged";
 import { computeUserDataDirName } from "../electron/user-data-dir-name";
+import { secureFilesystemPathSync } from "@nautilo/config/private-filesystem";
 
 type Artifact =
   | { kind: "unpackaged"; input: string; executable: string; mainJs: string }
@@ -238,6 +238,12 @@ function parseArtifact(argv: string[]): Artifact {
   };
 }
 
+export function createDesktopSmokeOperatorRoot(): string {
+  const root = mkdtempSync(join(tmpdir(), "nautilo-d514-smoke-"));
+  secureFilesystemPathSync(root);
+  return root;
+}
+
 async function startRun(
   artifact: Artifact,
   fixture: ControlledFixture,
@@ -245,8 +251,7 @@ async function startRun(
 ): Promise<Run> {
   const userDataParent = mkdtempSync(join(tmpdir(), "nautilo-desktop-smoke-user-data-"));
   const requestedUserDataDir = join(userDataParent, "chromium-user-data");
-  const operatorRoot = mkdtempSync(join(tmpdir(), "nautilo-desktop-smoke-"));
-  chmodSync(operatorRoot, 0o700);
+  const operatorRoot = createDesktopSmokeOperatorRoot();
   beforeLaunch?.(operatorRoot);
   const cdpPort = await unusedLoopbackPort();
   const profile = `desktop-smoke-${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;

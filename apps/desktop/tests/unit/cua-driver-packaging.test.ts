@@ -197,7 +197,9 @@ test("Cua vendor atomically installs verified bytes, rejects cache tampering, an
     expect(readdirSync(vendorDirectory).sort()).toEqual(["LICENSE", "PROVENANCE.md", "cua-driver", "manifest.json"]);
     expect(readFileSync(join(vendorDirectory, "cua-driver"))).toEqual(binary);
     expect(readFileSync(join(vendorDirectory, "LICENSE"))).toEqual(license);
-    expect(statSync(join(vendorDirectory, "cua-driver")).mode & 0o777).toBe(0o755);
+    const installed = statSync(join(vendorDirectory, "cua-driver"));
+    expect(installed.isFile()).toBe(true);
+    if (process.platform !== "win32") expect(installed.mode & 0o777).toBe(0o755);
     const manifest = JSON.parse(readFileSync(join(vendorDirectory, "manifest.json"), "utf8")) as Record<string, unknown>;
     expect(manifest.driverVersion).toBe(contract.driverVersion);
     expect(manifest.releaseRevision).toBe(contract.releaseRevision);
@@ -210,15 +212,18 @@ test("Cua vendor atomically installs verified bytes, rejects cache tampering, an
     expect(provenance).toContain(`Reviewed equivalent source revision: ${contract.reviewedSourceRevision}`);
     expect(provenance).toContain(`Archive SHA-256: ${contract.archiveSha256}`);
 
-    expect(await vendorCuaDriver(options)).toBe("cached");
-    expect(transport.requests).toHaveLength(2);
+    // Windows cannot preserve the POSIX execute bits required by this macOS
+    // cache. Keep its cache refusal covered along with the artifact checks.
+    const expectedCachedDownloads = process.platform === "win32" ? 4 : 2;
+    expect(await vendorCuaDriver(options)).toBe(process.platform === "win32" ? "installed" : "cached");
+    expect(transport.requests).toHaveLength(expectedCachedDownloads);
     for (const file of ["LICENSE", "PROVENANCE.md", "manifest.json"] as const) {
       writeFileSync(join(vendorDirectory, file), "tampered\n");
       expect(await vendorCuaDriver(options)).toBe("installed");
     }
     writeFileSync(join(vendorDirectory, "cua-driver"), "tampered");
     expect(await vendorCuaDriver(options)).toBe("installed");
-    expect(transport.requests).toHaveLength(10);
+    expect(transport.requests).toHaveLength(expectedCachedDownloads + 8);
 
     const unsafeArchive = fixtureTar([{ path: "cua-driver", type: "2" }]);
     const unsafeContract = fixtureContract(unsafeArchive, license);

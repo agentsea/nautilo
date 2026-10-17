@@ -1648,6 +1648,7 @@ export class PostgresHumanMemoryProductUpdate
           id: input.memoryId, tier: 1,
           type: input.retainOrdinary ? input.authored.type : null,
           content: input.retainOrdinary ? input.authored.content : null,
+          modelExposureDependencies: null,
           importance: input.authored.importance ?? 0.5,
           embedding: [...input.embedding.vector], creationKey: input.operationId,
           contentRevision: 1, cryptoAccessRevision: 0,
@@ -1689,6 +1690,7 @@ export class PostgresHumanMemoryProductUpdate
       conversationProductTypedDb.update(memories).set({
         type: input.retainOrdinary ? input.authored.type : null,
         content: input.retainOrdinary ? input.authored.content : null,
+        modelExposureDependencies: null,
         ...(input.authored.importance === undefined
           ? {} : { importance: input.authored.importance }),
         contentRevision: input.nextContentRevision,

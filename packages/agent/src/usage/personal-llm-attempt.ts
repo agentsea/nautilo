@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { beginPersonalLlmAttempt, settlePersonalLlmAttempt, type SettlePersonalLlmAttemptInput } from "@nautilo/db";
+import { beginPersonalLlmAttempt, settlePersonalLlmAttempt, beginServiceLlmAttempt, settleServiceLlmAttempt, beginServerLlmAttempt, settleServerLlmAttempt, type SettlePersonalLlmAttemptInput } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { estimateCostFromPrice, resolveModelPrice, PRICING_VERSION } from "../config/model-pricing";
 import { getUsageContext, normalizeUsageRoomId, runWithUsageContext } from "./usage-context";
 import type { ExtractedUsage } from "./usage-callback";
 import { classifyError } from "../utils/errors";
+import {
+  getPersonalLlmAttemptOwner,
+  type PersonalLlmAttemptOwnerBinding,
+} from "./personal-llm-attempt-owner";
 
 /** Admission/accounting failure occurs before the wire and must not trigger model fallback. */
 export class PersonalAttemptLedgerUnavailableError extends Error {
@@ -56,6 +60,23 @@ export function classifyPersonalAttemptFailure(
 }
 
 type SettlePersonalAttempt = (input: SettlePersonalLlmAttemptInput) => Promise<void>;
+type PersonalAttemptDependencies = Readonly<{
+  begin: typeof beginPersonalLlmAttempt;
+  settle: SettlePersonalAttempt;
+  owner: () => PersonalLlmAttemptOwnerBinding | null;
+  beginService?: typeof beginServiceLlmAttempt;
+  settleService?: SettlePersonalAttempt;
+  beginServer?: typeof beginServerLlmAttempt;
+  settleServer?: SettlePersonalAttempt;
+}>;
+
+const defaultDependencies: PersonalAttemptDependencies = {
+  begin: beginPersonalLlmAttempt,
+  settle: settlePersonalLlmAttempt,
+  owner: getPersonalLlmAttemptOwner,
+  beginService: beginServiceLlmAttempt, settleService: settleServiceLlmAttempt,
+  beginServer: beginServerLlmAttempt, settleServer: settleServerLlmAttempt,
+};
 
 /** Retry one exact idempotent settlement without replaying inference. */
 async function settlePersonalAttemptWithRetry(
@@ -126,23 +147,34 @@ export async function runPersonalLlmAttempt<T>(input: {
   signal?: AbortSignal | undefined;
   hasObservedProviderWork?: (() => boolean) | undefined;
   invoke: () => Promise<T>;
-}, deps = { begin: beginPersonalLlmAttempt, settle: settlePersonalLlmAttempt }): Promise<T> {
+}, deps: PersonalAttemptDependencies = defaultDependencies): Promise<T> {
   const context = getUsageContext();
   const funding = context?.funding;
-  if (!context || funding?.kind !== "personal" || funding.providerRoute === "surplus") return input.invoke();
+  const isMemoryWork = context && ["memory_review", "room_stenographer", "room_reflection", "room_event_compaction"].includes(context.callType);
+  const isServerImageAssistance = context?.callType === "image_assistance" && funding?.kind === "server";
+  if (!context || !funding || funding.providerRoute === "surplus"
+    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance)) return input.invoke();
+  const nonpersonalBegin = funding.kind === "service" ? deps.beginService : deps.beginServer;
+  const persistSettlement = funding.kind === "personal" ? deps.settle
+    : funding.kind === "service" ? deps.settleService : deps.settleServer;
+  if (!persistSettlement || (funding.kind !== "personal" && !nonpersonalBegin)) throw new PersonalAttemptLedgerUnavailableError();
+  const owner = deps.owner();
+  if (owner === null) throw new PersonalAttemptLedgerUnavailableError();
   const id = randomUUID();
   const pricing = structuredClone(resolveModelPrice(input.modelId, context.modelControl?.servingProfileId));
   try {
-    await deps.begin({ id, userId: funding.humanUserId,
+    const common = { id, ownerToken: owner.ownerToken,
       roomId: normalizeUsageRoomId(context.roomId),
       ...(typeof context.metadata?.["taskId"] === "string" ? { taskId: context.metadata["taskId"] } : {}),
       callType: context.callType, model: input.modelId,
       provider: input.modelId.split(":", 1)[0]!, providerRoute: funding.providerRoute,
-      credentialId: funding.credentialId, credentialRevision: funding.credentialRevision,
       endpoint: input.endpoint,
       metadata: { ...(context.metadata ?? {}), usagePricingSource: pricing.source,
         pricingSnapshot: pricing.price, ...(context.modelControl ?? {}) },
-    });
+    };
+    if (funding.kind === "personal") await deps.begin({ ...common, userId: funding.humanUserId,
+      credentialId: funding.credentialId, credentialRevision: funding.credentialRevision });
+    else await nonpersonalBegin!({ ...common, userId: funding.humanUserId ?? context.userId ?? null });
   } catch { throw new PersonalAttemptLedgerUnavailableError(); }
   let usage: ExtractedUsage | undefined;
   let terminalOutcome: "succeeded" | "cancelled" | "failed" | "unknown" | undefined;
@@ -165,7 +197,8 @@ export async function runPersonalLlmAttempt<T>(input: {
       : hasTokenEvidence ? "estimated" as const : "unknown" as const;
     const providerRequestId = evidence?.providerRequestId ?? terminalProviderRequestId;
     try {
-      await settlePersonalAttemptWithRetry(deps.settle, { attemptId: id, outcome, costState,
+      await settlePersonalAttemptWithRetry(persistSettlement, { attemptId: id, ownerToken: owner.ownerToken,
+        outcome, costState,
         ...(preserveOutcome ? { preserveOutcome: true } : {}),
         ...(evidence && (hasTokenEvidence || evidence.actualCostUsd !== null)
           ? { inputTokens: evidence.inputTokens, outputTokens: evidence.outputTokens,

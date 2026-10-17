@@ -18,6 +18,11 @@ import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { grantArtifactExactUserAccess } from "../../file/share-artifact";
 import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
 import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
+import {
+  isBoundedPersonalNativeShortcutCreate,
+  isPersonalOnlyNativeShortcutCreate,
+} from "../../../runtime/personal-task-controls";
 
 /**
  * `ask_peer` intent shortcut. Sends the agent to DM another
@@ -70,10 +75,19 @@ const askPeerSchema = z.object({
   model_id: modelIdParam,
 });
 
+const personalAskPeerSchema = askPeerSchema.omit({
+  include_focused_artifacts: true,
+  artifact_ids: true,
+  sensitivity: true,
+}).strict();
+
 type AskPeerArgs = z.infer<typeof askPeerSchema>;
 
 const ASK_PEER_DESCRIPTION =
   "Start a DM subagent that asks any local server PERSON something and brings their reply back here. Put the EXACT text to send in `message_to_peer` — it is delivered to the peer verbatim; you do NOT answer it yourself. For 'take this document to <person>' requests, set `include_focused_artifacts: true` (or pass `artifact_ids`): this one call grants the exact person access and sends Artifact cards with the DM, without a separate share call or a user-created Room. The subagent delivers the message, WAITS for the peer's human reply, then reports back to this chat.";
+
+const PERSONAL_ASK_PEER_DESCRIPTION =
+  "Start a plain DM subagent that asks any local server PERSON something and brings their reply back here. Put the EXACT text to send in `message_to_peer`; it is delivered verbatim. Artifact handoff is unavailable for caller-funded peer Tasks. The subagent waits for the peer's human reply, then reports back to this chat.";
 
 function focusedWorkspaceArtifactIds(
   resources: readonly ResolvedFocusedResource[],
@@ -119,19 +133,62 @@ function buildAskPeerBrief(args: {
 
 export function createAskPeerTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
+  const trustedContext = context as Record<string, unknown> | undefined;
+  const capabilityFunding = getCapabilityFundingSession();
+  const personalParent = trustedContext?.["personalTaskControls"] === true
+    || capabilityFunding !== undefined && capabilityFunding.parentFundingKind !== "server";
+  const personalOnlyTaskModelIds = Array.isArray(trustedContext?.["personalOnlyTaskModelIds"])
+    ? trustedContext["personalOnlyTaskModelIds"] as string[]
+    : undefined;
+  const schema = personalParent ? personalAskPeerSchema : askPeerSchema;
 
   return new DynamicStructuredTool({
     name: "ask_peer",
-    description: ASK_PEER_DESCRIPTION,
-    schema: askPeerSchema,
-    func: async (args: AskPeerArgs) => {
+    description: personalParent ? PERSONAL_ASK_PEER_DESCRIPTION : ASK_PEER_DESCRIPTION,
+    schema,
+    func: async (rawArgs) => {
+      const args = rawArgs as AskPeerArgs;
       log(`[ask_peer]`);
       if (!ctx.ownerId || !ctx.agentId) {
         return "Cannot start ask_peer task: missing owner or agent context.";
       }
       if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
+      const rt = getTaskToolRuntime();
+      const boundedPersonalCreate = !personalParent
+        && personalOnlyTaskModelIds !== undefined
+        && isBoundedPersonalNativeShortcutCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          ctx.currentTaskId,
+          { allowTools: true },
+        );
+      const exactPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection === undefined
+        && isPersonalOnlyNativeShortcutCreate(
+          args as unknown as Readonly<Record<string, unknown>>,
+          ctx.currentTaskId,
+          personalOnlyTaskModelIds,
+          { allowTools: true },
+        );
+      const resolvedPersonalOnlyCreate = boundedPersonalCreate
+        && rt.isPersonalOnlyTaskSelection !== undefined
+        && await rt.isPersonalOnlyTaskSelection({
+          requestorId: ctx.causalHumanUserId,
+          agentId: ctx.agentId,
+          callingRoomId: ctx.roomId,
+          ...(args.model_id === undefined ? {} : { requestedModelId: args.model_id }),
+          ...(args.model_selection === undefined
+            ? {}
+            : { selectionProfile: args.model_selection }),
+        });
+      const callerFundedNative = personalParent || exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
+      if (callerFundedNative && (
+        Object.hasOwn(args, "include_focused_artifacts")
+        || Object.hasOwn(args, "artifact_ids")
+      )) {
+        return "Cannot start caller-funded ask_peer with Artifacts. Send a plain peer message or use an independently admitted Artifact-sharing flow.";
+      }
       const hasTools = Array.isArray(args.tools) && args.tools.length > 0;
-      const selectionError = validateTaskModelSelectionForCreate({
+      const selectionError = callerFundedNative || capabilityFunding ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         // ask_peer defaults to tool-free (none); a non-empty tools list → whitelist.
@@ -139,7 +196,6 @@ export function createAskPeerTool(context?: unknown) {
         toolsWhitelist: normalizeTaskToolWhitelist(args.tools ?? []),
       });
       if (selectionError) return selectionError;
-      const rt = getTaskToolRuntime();
       const lineage = await resolveTaskToolCreateLineage({
         ownerId: ctx.ownerId, db: rt.db,
         ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),

@@ -1,7 +1,7 @@
 /**
- * D174 — `POST /api/rooms/:roomId/messages` agent-mediated routing (B1 fix).
+ * `POST /api/rooms/:roomId/messages` agent-mediated routing (B1 fix).
  *
- * D211 follow-up note: each test now constructs its OWN mock instances
+ * follow-up note: each test now constructs its OWN mock instances
  * for `createForegroundJob`, `loadRoomRoster`, `buildEnvelopeForRoom`,
  * and `getRoomDetailForMember` instead of sharing module-level mocks.
  * Pre-fix, these were `const mock = mock(...)` at module scope and
@@ -56,7 +56,7 @@ import {
   type RoomParticipant,
 } from "@nautilo/trust";
 
-// D211 — stub the @nautilo/trust capability helper reached by
+// stub the @nautilo/trust capability helper reached by
 // `dispatchRoomMessageSend()` so this unit test never opens a real
 // Postgres connection. The response-mode gate is deliberately retained as a
 // spy: strict 1-human/1-agent dispatch must not consult it at all.
@@ -84,17 +84,21 @@ const serverFundingAdmission = mock(async (humanUserId: string) => {
     throw new actualTrust.ServerProviderCredentialsDeniedError(humanUserId, "room_message");
   }
 });
+const conductorFundingOpen = mock(async () => ({ kind: "personal" as const }));
 
 mock.module("../../src/lib/foreground-chat-funding", () => ({
   callerMayUsePersonalChat: async () => personalChatEnabled,
   callerHasConfiguredPersonalFunding: personalFundingLookup,
+  openForegroundConductorFundingSession: conductorFundingOpen,
 }));
 mock.module("../../src/lib/foreground-chat-preflight", () => ({
-  resolveForegroundChatPreflightFunding: preflightFunding,
+  resolveForegroundChatPreflightFunding: async (input: Parameters<typeof preflightFunding>[0]) =>
+    personalChatEnabled ? preflightFunding(input) : { kind: "server" as const },
 }));
 
 mock.module("@nautilo/trust", () => ({
   ...actualTrust,
+  getExternalRoomPolicy: async (_roomId: string) => null,
   shouldFireLLMTurn,
   assertCanInvokeAgent: async (input: actualTrust.AgentInvocationAdmissionInput) => {
     if (!invocationCapabilityEnabled) {
@@ -113,7 +117,7 @@ mock.module("@nautilo/trust", () => ({
   ],
 }));
 
-// D298 — `dispatchRoomMessageSend()` now gates archived rooms via
+// `dispatchRoomMessageSend()` now gates archived rooms via
 // `roomIsArchived()` / `roomRowExists()` in peer-broadcast, which use the
 // singleton `db` handle (not `createDirectDb`). Stub so this file stays a
 // DB-free unit test of routing/envelope logic.
@@ -153,7 +157,11 @@ import {
   permissiveMaintenanceGate,
   setMaintenanceGate,
   eventBus,
+  runFloorManager,
+  type ConductorContext,
+  type FloorManagerExtra,
   type MaintenanceGate,
+  type RoomMemberView,
 } from "@nautilo/runtime";
 import {
   MAX_SUBAGENT_DEPTH,
@@ -173,13 +181,14 @@ import {
 } from "../../src/routes/live-shadow-message-composition";
 import { protectedTaskForegroundCreationCandidateIdentity } from
   "../../src/routes/protected-task-foreground-creation-identity";
+import { createRequestLocalConductorInvoker } from "../../src/messaging/dispatch";
 
 bootstrapTestDbInstance();
 
 const R1_ID = "a1111111-1111-4111-8111-111111111111";
 const DEFAULT_ROOM_ID = "b2222222-2222-4222-8222-222222222222";
 const BOOTSTRAP_AGENT_ID = "c3333333-3333-4333-8333-333333333333";
-const CUSTOM_AGENT_ID = "d4444444-4444-4444-8444-444444444444";
+const CUSTOM_AGENT_ID = "44444444-4444-4444-8444-444444444444";
 const SENDER_USER_ID = "e5555555-5555-4555-8555-555555555555";
 const SENDER_ACTOR_ID = "f6666666-6666-4666-8666-666666666666";
 let priorToolCatalog: ToolCatalog | null = null;
@@ -1128,7 +1137,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("D566 keeps authenticated chat independent of denied optional mobile provenance", async () => {
+  test("keeps authenticated chat independent of denied optional mobile provenance", async () => {
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>
       roomId === R1_ID ? r1Detail() : null,
@@ -2713,7 +2722,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("personal-funded voice still rejects unsupported active mini-app context", async () => {
+  test("personal-funded voice admits active mini-app context to its typed runtime checks", async () => {
     personalChatEnabled = true;
     personalCredentialConfigured = true;
     serverFundingAllowed = false;
@@ -2744,12 +2753,8 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
           activeMiniApp: { appId: "writer", updatedAt: 1 },
         },
       });
-      expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body)).toMatchObject({
-        code: "unsupported_workload",
-        error: "Personal provider credentials support chat, image attachments, and voice only.",
-      });
-      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(202);
+      expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
       expect(serverFundingAdmission).not.toHaveBeenCalled();
     } finally {
       personalChatEnabled = false;
@@ -2839,9 +2844,12 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("a configured personal key cannot reach mixed-Room paid routing", async () => {
+  test("an explicitly addressed mixed-Room Genie can use the initiating Human's personal funding", async () => {
+    personalChatEnabled = true;
     personalCredentialConfigured = true;
     serverFundingAllowed = false;
+    preflightFundingKind = "personal";
+    preflightFunding.mockClear();
     personalFundingLookup.mockClear();
     serverFundingAdmission.mockClear();
     const mocks = makeTestMocks();
@@ -2856,18 +2864,105 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     try {
       const res = await app.inject({
         method: "POST", url: `/api/rooms/${R1_ID}/messages`,
-        payload: { content: "@Custom Agent X hello" },
+        payload: { content: "hello", uiSelectedBotActorId: CUSTOM_AGENT_ACTOR_ID },
       });
-      expect(res.statusCode).toBe(422);
-      expect(JSON.parse(res.body)).toMatchObject({ code: "unsupported_workload" });
-      expect(mocks.createForegroundJob).not.toHaveBeenCalled();
-      expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
-      expect(personalFundingLookup).toHaveBeenCalledTimes(1);
+      expect(res.statusCode).toBe(202);
+      expect(serverFundingAdmission).not.toHaveBeenCalled();
+      expect(personalFundingLookup).not.toHaveBeenCalled();
+      expect(preflightFunding).toHaveBeenCalledTimes(1);
     } finally {
+      personalChatEnabled = false;
       personalCredentialConfigured = false;
       serverFundingAllowed = true;
+      preflightFundingKind = "personal";
       await app.close();
     }
+  });
+
+  test("a Conductor search loop keeps its admitted credential when policy priority changes", async () => {
+    const members: RoomMemberView[] = [
+      {
+        kind: "agent",
+        actorId: "conductor-agent-one",
+        agentId: "conductor-agent-id-one",
+        handle: "one",
+        agentResponseMode: "active",
+      },
+      {
+        kind: "agent",
+        actorId: "conductor-agent-two",
+        agentId: "conductor-agent-id-two",
+        handle: "two",
+        agentResponseMode: "active",
+      },
+    ];
+    const context: ConductorContext = {
+      roomId: R1_ID,
+      userActorId: SENDER_ACTOR_ID,
+      message: { content: "Who handled the deploy?" },
+      members,
+      now: new Date("2026-10-13T12:00:00.000Z"),
+    };
+    let priority: "personal" | "server" = "personal";
+    let personalRevoked = false;
+    let serverAttempts = 0;
+    const admitted: Array<{ kind: "personal" | "server"; credentialId: string | null }> = [];
+    const attempted: Array<{ kind: "personal" | "server"; credentialId: string | null }> = [];
+    const open = mock(async () => {
+      const session = priority === "personal"
+        ? { kind: "personal" as const, credentialId: "credential-initial" }
+        : { kind: "server" as const, credentialId: null };
+      admitted.push(session);
+      return async () => {
+        attempted.push(session);
+        if (session.kind === "personal" && personalRevoked) {
+          throw new Error("personal_credential_revoked");
+        }
+        if (session.kind === "server") serverAttempts += 1;
+        return '{"action":"request_search","query":"deploy","limit":5,"reason":"need evidence"}';
+      };
+    });
+    const invokeModel = createRequestLocalConductorInvoker(open);
+    const extra: FloorManagerExtra = {
+      coldVolunteer: members,
+      active: [],
+      searchRoomHistory: async () => {
+        priority = "server";
+        personalRevoked = true;
+        return [{
+          messageId: 7,
+          ts: new Date("2026-10-13T11:00:00.000Z"),
+          authorDisplayName: "One",
+          handle: "one",
+          authorActorId: "conductor-agent-one",
+          snippet: "deploy notes",
+        }];
+      },
+    };
+
+    const decision = await runFloorManager(context, extra, { invokeModel });
+
+    expect(decision).toEqual({ kind: "silent", reason: "floor: model error" });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(admitted).toEqual([{ kind: "personal", credentialId: "credential-initial" }]);
+    expect(attempted).toEqual([
+      { kind: "personal", credentialId: "credential-initial" },
+      { kind: "personal", credentialId: "credential-initial" },
+    ]);
+    expect(serverAttempts).toBe(0);
+  });
+
+  test("a request-local Conductor invoker coalesces concurrent first use", async () => {
+    const open = mock(async () => {
+      await Promise.resolve();
+      return async (prompt: string) => `pinned:${prompt}`;
+    });
+    const invokeModel = createRequestLocalConductorInvoker(open);
+
+    const results = await Promise.all([invokeModel("first"), invokeModel("second")]);
+
+    expect(results).toEqual(["pinned:first", "pinned:second"]);
+    expect(open).toHaveBeenCalledTimes(1);
   });
 
   test("a server-funded member keeps mixed-Room routing when they also save a personal key", async () => {
@@ -2885,7 +2980,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     try {
       const res = await app.inject({
         method: "POST", url: `/api/rooms/${R1_ID}/messages`,
-        payload: { content: "@Custom Agent X hello" },
+        payload: { content: "hello", uiSelectedBotActorId: CUSTOM_AGENT_ACTOR_ID },
       });
       expect(res.statusCode).toBe(202);
       expect(serverFundingAdmission).toHaveBeenCalledTimes(1);
@@ -3004,7 +3099,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("D420 rejects group executable work before persisting its human message", async () => {
+  test("rejects group executable work before persisting its human message", async () => {
     const drainingGate: MaintenanceGate = {
       async assertAcceptingNewWork() {
         throw new MaintenanceDrainError("draining");
@@ -3166,7 +3261,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     }
   });
 
-  test("D426 direct one-to-one subthread forwards its existing child-room persistence id", async () => {
+  test("direct one-to-one subthread forwards its existing child-room persistence id", async () => {
     shouldFireLLMTurn.mockClear();
     const mocks = makeTestMocks();
     mocks.getRoomDetailForMember.mockImplementation(async (roomId) =>

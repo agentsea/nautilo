@@ -1,3 +1,4 @@
+import { isExternalRoomState, prepareExternalRoomTextContext } from "../tools/external-room-policy";
 import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { personalToolReady } from "../runtime/personal-tool-readiness";
 import {
@@ -63,6 +64,10 @@ import {
   filterPersonalTaskControlTools,
   PERSONAL_TASK_CONTROL_TOOL_NAMES,
 } from "../runtime/personal-task-controls";
+import {
+  bindModelInputExposure,
+  unionModelInputExposures,
+} from "../memory/model-input-exposure";
 
 function signedCatalogEntrySupportsForegroundText(
   entry: ReturnType<typeof getActiveModelCatalogSync>["catalog"]["entries"][number],
@@ -145,6 +150,7 @@ export async function agentNode(
   foregroundChatFundingSession?: ForegroundChatFundingSession,
   confidential?: true,
 ): Promise<Partial<NautiloState>> {
+  if (isExternalRoomState(state)) state = { ...state, ...await prepareExternalRoomTextContext(state) };
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
   const isForegroundTurn = (state.subagentDepth ?? 0) === 0;
@@ -214,7 +220,7 @@ export async function agentNode(
     : selectedActivatedToolNamesForActor(state.actorRole, state.activatedToolNames);
   const recallRecordsContext = recallRecordsToolContextForState(
     state,
-    recallRecordsPortForState?.(state),
+    isExternalRoomState(state) ? undefined : recallRecordsPortForState?.(state),
   );
 
   const applyPatchContext = buildApplyPatchToolContext({
@@ -229,7 +235,7 @@ export async function agentNode(
     focusedResources: state.focusedResources ?? [],
   }, { relayRegistry: getRelayRegistry() });
   const toolContext = {
-    ...await ordinaryContentAccessToolContextForState(state, ordinaryContentAccessForState),
+    ...await ordinaryContentAccessToolContextForState(state, isExternalRoomState(state) ? undefined : ordinaryContentAccessForState),
     ownerId: state.userId,
     causalHumanUserId: causalHumanForExecution(state.causalHumanUserId),
     personaId: state.personaId,
@@ -291,7 +297,7 @@ export async function agentNode(
     relayCapabilities: state.relayCapabilities ?? undefined,
     readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
     activeModelCapabilities,
-    toolNameWhitelist: personalTaskControls
+    toolNameWhitelist: isExternalRoomState(state) ? [] : personalTaskControls
       ? PERSONAL_TASK_CONTROL_TOOL_NAMES
       : state.toolWhitelist,
       activatedToolNames,
@@ -303,7 +309,7 @@ export async function agentNode(
   // Personal-funded foreground chat supports text generation only. Keeping the
   // provider binding empty is an execution fence in addition to route/tool
   // admission owned by the server and graph.
-  const invocationTools = foregroundChatFundingSession?.kind === "personal"
+  const invocationTools = isExternalRoomState(state) ? [] : foregroundChatFundingSession?.kind === "personal"
     ? getCapabilityFundingSession() ? tools.filter((tool) => personalToolReady(tool.name)) : personalTaskControls ? filterPersonalTaskControlTools(tools) : []
     : tools;
   // Recompute only the stable intent category here for telemetry parity with
@@ -428,6 +434,10 @@ export async function agentNode(
   );
 
   const response = normalizeModelToolCallIdentity(providerResponse, actualPreparedMessages);
+  bindModelInputExposure(
+    response,
+    unionModelInputExposures(actualPreparedMessages),
+  );
   if (config.nautilo_log_tool_calls) {
     logProgressiveToolExposure(
       "agent",

@@ -5,7 +5,6 @@ export const SUPERSEDED_LANDING_SOURCE_LOCATORS = new Set<string>([
   "apps/workbench/src/adapters/nautilo-runtime.tsx#log_emitter:02d6d32a757bab9d:9",
   "packages/agent/src/graph/resume-approval.ts#log_emitter:a1436e7c26c240df:4",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:0ae25e725db4e950:4",
-  "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:7ef703451e44cded:8",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:89b81c36ea23316a:1",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:a1436e7c26c240df:3",
   "packages/runtime/src/executors/langgraph-executor.ts#log_emitter:a1436e7c26c240df:4",

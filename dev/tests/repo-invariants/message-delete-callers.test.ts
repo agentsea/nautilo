@@ -8,14 +8,15 @@ describe("ordinary message delete callers", () => {
   test("remain limited to the two explicit conversation action surfaces", async () => {
     const callers: string[] = [];
     const glob = new Bun.Glob("{apps,packages}/**/*.{ts,tsx}");
-    for await (const path of glob.scan({ cwd: repoRoot, onlyFiles: true })) {
+    for await (const nativePath of glob.scan({ cwd: repoRoot, onlyFiles: true })) {
+      const path = nativePath.replaceAll("\\", "/");
       if (
         path.includes("/node_modules/") ||
         path.includes("/dist/") ||
         /(?:\.test|\.spec)\.[^.]+$/.test(path)
       ) continue;
       if (readFileSync(resolve(repoRoot, path), "utf8").includes(".deleteRoomMessage(")) {
-        callers.push(relative(repoRoot, resolve(repoRoot, path)));
+        callers.push(relative(repoRoot, resolve(repoRoot, path)).replaceAll("\\", "/"));
       }
     }
 

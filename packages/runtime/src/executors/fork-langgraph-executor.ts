@@ -1,3 +1,4 @@
+import { assertForkRoomContextAllowed } from "./external-room-context";
 import { createForegroundContextRebuilder, ForegroundContextReceipts } from "./foreground-context-refresh";
 import { retainedImageAssistance, imageAssistanceHistory, imageAssistanceObservationMessages, attributeImageAssistance, failImageAssistance } from "./image-assistance";
 import { finishMemoryReviewTurn, memoryReviewAdmission, memoryReviewSourceIds, memoryReviewCompletionState } from "../memory-review/admission";
@@ -167,6 +168,8 @@ export async function* forkLanggraphExecutor(
   if (!forkRun || forkRun.mode !== "fork") {
     throw new Error('forkLanggraphExecutor requires forkRun.mode === "fork"');
   }
+
+  await assertForkRoomContextAllowed(input, forkRun);
 
   const ownerId = typeof input["ownerId"] === "string" ? input["ownerId"] : "";
   const message = typeof input["message"] === "string" ? input["message"] : "";
@@ -549,6 +552,9 @@ export async function* forkLanggraphExecutor(
     authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
     causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork" ? "foreground.fork" : null,
     modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+    jobId: jobId, turnId: turnId || jobId,
+    inputDigest: imageAssistanceInputDigest({ turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
+    ...(fundingSession ? { parentFunding: fundingSession } : {}),
   }).catch((error) => failImageAssistance(error, signal)) : null;
   const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
     humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
@@ -691,7 +697,7 @@ export async function* forkLanggraphExecutor(
     } else await persistMessages(transcriptThreadId, ownerId, observations, savedFingerprints, { ...persistOptsBase, requireDurable: true });
   }
   } catch (error) {
-    failImageAssistance(error, signal);
+    failImageAssistance(error, signal, "save");
   }
 
   const protectedCheckpointSaver = protectedServices === undefined

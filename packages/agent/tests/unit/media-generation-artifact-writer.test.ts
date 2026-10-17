@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
 import {
   MediaArtifactIndexCommitError,
   MediaArtifactWriteError,
@@ -47,6 +48,7 @@ function indexCommitter(record: { calls: MediaArtifactIndexCommit[]; fail?: "not
     async commit(input: MediaArtifactIndexCommit) {
       record.calls.push(input);
       expect(await fsp.stat(input.finalPath)).toMatchObject({ size: input.size });
+      expect(await isPrivateFilesystemPathAsync(input.finalPath)).toBe(true);
       if (record.fail) throw new MediaArtifactIndexCommitError(record.fail);
       return { artifactId: "media-artifact-external", artifactInternalId: "media-artifact-internal", artifactRevision: 7 };
     },

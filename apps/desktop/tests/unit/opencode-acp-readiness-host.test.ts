@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { delimiter } from "node:path";
 import type { RelayAcpSession } from "@nautilo/relay";
 import {
   ElectronAcpReadinessRouter,
   ElectronOpenCodeAcpReadinessHost,
   OPENCODE_ACP_VERSION_ARGS,
   createOpenCodeAcpLaunchEnvironment,
+  createElectronOpenCodeAcpNativeProbe,
+  resolveReviewedOpenCodeLaunchAdmission,
   type OpenCodeAcpNativeProbe,
 } from "../../electron/opencode-acp-readiness-host";
 
@@ -14,12 +17,26 @@ const session: RelayAcpSession = {
 };
 
 describe("OpenCode ACP desktop readiness", () => {
+  test.skipIf(process.platform !== "win32")("reports unavailable before native discovery on Windows", async () => {
+    const previousPath = process.env["PATH"];
+    process.env["PATH"] = "";
+    try {
+      expect(await createElectronOpenCodeAcpNativeProbe().run({
+        executableBasename: "opencode", args: OPENCODE_ACP_VERSION_ARGS,
+        timeoutMs: 3_000, maxOutputBytes: 4_096, shell: false,
+      })).toEqual({ state: "unavailable" });
+      expect(await resolveReviewedOpenCodeLaunchAdmission()).toBeNull();
+    } finally {
+      if (previousPath === undefined) delete process.env["PATH"]; else process.env["PATH"] = previousPath;
+    }
+  });
+
   test("builds a fresh allowlisted launch environment without provider configuration", () => {
     const prior = process.env["OPENAI_API_KEY"];
     process.env["OPENAI_API_KEY"] = "must-not-cross";
     try {
       const environment = createOpenCodeAcpLaunchEnvironment(["/reviewed", "/usr/bin"]);
-      expect(environment["PATH"]).toBe("/reviewed:/usr/bin");
+      expect(environment["PATH"]).toBe(["/reviewed", "/usr/bin"].join(delimiter));
       expect(environment).not.toHaveProperty("OPENAI_API_KEY");
       expect(environment).not.toHaveProperty("OPENCODE_CONFIG");
       expect(environment).not.toHaveProperty("provider");

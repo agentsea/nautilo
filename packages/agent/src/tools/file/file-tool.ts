@@ -1,30 +1,8 @@
 import { getCurrentProtectedTaskProjectFilePort } from "../../runtime/protected-task-project-file";
 /**
- * D079 Phase 4 / G3 — the unified `file` tool.
- *
- * One DynamicStructuredTool named `file`; discriminated-union Zod
- * schema dispatches on `command` to per-command handlers. Replaces
- * the 11 legacy filesystem + artifact tools (which stay as
- * deprecated aliases in G3 commit 9 routing calls to this tool
- * with a mapped command+zone).
- *
- * Execution model: cloud (server-process-direct via node:fs/promises
- * in the per-command handlers). Aligned with existing filesystem
- * tools in this codebase. When the relay work (D057 branch) is fully
- * wired, this tool migrates to executor:"relay" with a single
- * relay-side dispatcher that receives the Zod-validated args
- * verbatim — mechanical refactor, no schema change.
- *
- * The tool description + worked-examples table is LOAD-BEARING for
- * Option D's LLM-selection correctness. G4 commit 10 ships the
- * ~500-word description. This commit ships a minimal placeholder
- * description so the catalog registration + schema validation can
- * be verified end-to-end without waiting for the prompt-engineering
- * work. Live-verify doesn't happen until G4 lands the real
- * description.
- *
- * Decision record anchor:
- *   pr-reviews/DECISION-2026-04-21-file-tool-shape.md
+ * Unified filesystem tool with a discriminated command schema.
+ * Workspace commands use server-owned artifacts; local commands route through
+ * the admitted Desktop relay. Keep tool guidance aligned with both dispatchers.
  */
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -69,12 +47,12 @@ interface FileToolContext {
   currentFolder: string;
   workspacePath: string;
   /**
-   * Turn-scoped model id for D069 multimodal read gating (matches
+   * Turn-scoped model id for multimodal read gating (matches
    * pre-model / agent / tools node tool context).
    */
   activeModelId: string;
   /**
-   * D087 Phase 2A — plumbed through from `NautiloState.agentId` via
+   * plumbed through from `NautiloState.agentId` via
    * the tool-factory call sites (pre-model / agent / tools nodes).
    * Threaded into `DispatchContext.agentId` so the backup subsystem
    * can attribute `file_revisions` rows to the correct agent. Empty
@@ -84,7 +62,7 @@ interface FileToolContext {
    */
   agentId: string;
   /**
-   * D087 Phase 2A — plumbed through from `NautiloState.roomId`.
+   * plumbed through from `NautiloState.roomId`.
    * Threaded into `DispatchContext.roomId` for the `file_revisions`
    * room FK (nullable). Empty string when the flow has no room in
    * scope; `recordRevision()` tolerates missing roomId because the
@@ -92,7 +70,7 @@ interface FileToolContext {
    */
   roomId: string;
   /**
-   * M088A — Room-derived access envelope. Threaded from
+   * Room-derived access envelope. Threaded from
    * `NautiloState.memoryAccessEnvelope` via the tool-factory call sites
    * (pre-model / agent / tools nodes), same plumbing path as
    * `share_memory`. The `workspace` zone in the artifact-aware path
@@ -132,35 +110,12 @@ function contextFromUnknown(ctx: unknown): FileToolContext {
   };
 }
 
-/**
- * D079 Phase 4 / G4 commit 10 — the LOAD-BEARING tool description.
- *
- * Per the decision record (§ Costs we accept → "Out-of-training-
- * distribution shape"), rock-solid prompting is the non-negotiable
- * mitigation for Option D. The agent trained on Anthropic's
- * 5-command `str_replace_based_edit_tool` needs to reason about a
- * 10-command `file` tool every call; the description is what
- * bridges the gap.
- *
- * Target length: 450-550 words (tuned per the decision record's
- * "Description length target" guidance). Shorter loses guidance;
- * longer fattens every turn's context. Tune after the first batch
- * of live command-selection data per revert criteria §1.
- *
- * Structure (matches the Phase 4 task doc §4.3 spec):
- *   1. One-paragraph intro — commands grouped by category
- *   2. Zone quick-reference (3 zones)
- *   3. Worked-examples table — natural-language intent → command
- *   4. Mode notes for str_replace (the 3-mode disambiguator)
- *   5. Anti-patterns — what NOT to do
- *   6. Delivery guidance — mention the Open affordance post-write
- *   7. Cross-reference to run_shell
- */
+/** Model-facing command, authority, and artifact delivery guidance. */
 const FILE_TOOL_DESCRIPTION = `Unified filesystem tool. One tool, many commands, chosen via the 'command' arg. Use file.write zone="workspace" to create durable workspace artifacts, including self-contained interactive HTML artifact workspace mini-apps rendered in Work. In those HTML artifacts, use await window.nwState.emit(topic, payload) to enqueue an event for your next turn, or await window.nwState.ping(topic, payload) when a user action should enqueue the event and wake you immediately; keep payload JSON-serializable and drain it later with read_artifact_events.
 
 Read commands (non-destructive, parallel-safe):
 - list: directory entries (optional recursive, explicit depth, limit, includeIgnored and discoveryCursor). Local recursive discovery has no implicit depth cutoff. Inspect incompleteReasons and per-directory descendants; depth-limited or skipped directories are not fully enumerated. In Workspace, path is a logical prefix: omit path to list the Workspace root; never pass an empty string. Then filter the returned logical paths.
-- read: text file contents (path is always required; a prior grep/read never establishes an implicit current file, and lineRange does not identify one; optional offset/limit or inclusive lineRange select a line window, with lineRange taking precedence when both forms appear; offset 0 and 1 both mean the first line). Text results preserve exact UTF-8 bytes, including newlines, in JSON content with startByte/endByte, line bounds and a sourceVersion. Echo nextCursor as readCursor on the same path until null to finish the requested range; use nextLineOffset to start the next range. Partial-line flags mean that the line continues across byte pages, not that it was discarded. A stale cursor requires restarting the range. There is no git_history file zone: a security scanner's historyOnlyPath is provenance, never a file.read target. For closed .docx/.xlsx/.pptx documents, use officecli view instead. For images (PNG/JPEG/GIF/WebP) and PDFs the tool returns a multimodal block the active vision/PDF-capable model sees natively — call read on the file path; do NOT base64 it yourself or describe it from filename alone. If the active model lacks vision/PDF support the tool returns a clean rejection string instead of a binary error.
+- read: text file contents (path is always required; a prior grep/read never establishes an implicit current file, and lineRange does not identify one; optional offset/limit or inclusive lineRange select a line window, with lineRange taking precedence when both forms appear; offset 0 and 1 both mean the first line). Text results preserve exact UTF-8 bytes, including newlines, in JSON content with startByte/endByte, line bounds and a sourceVersion. Echo nextCursor as readCursor on the same path until null to finish the requested range; use nextLineOffset to start the next range. Partial-line flags mean that the line continues across byte pages, not that it was discarded. A stale cursor requires restarting the range. There is no git_history file zone: a security scanner's historyOnlyPath is provenance, never a file.read target. For closed .docx/.xlsx/.pptx documents, use officecli view instead. For images (PNG/JPEG/GIF/WebP) and PDFs the tool returns a multimodal block the active vision/PDF-capable model sees natively — call read on the file path; do NOT base64 it yourself or describe it from filename alone. Text-only models read the PDF text layer locally; offset/limit then count pages and nextPage indicates continuation. This does not interpret images, annotations or redline styling. For visual PDF detail, use a PDF-capable model via in_background in this Room with tools=["file"], never in_scope or guessed filesystem paths. Images still require vision support.
 - glob: Desktop-local native ripgrep file discovery for current/absolute zones only (pattern, path, optional limit/includeIgnored/hidden). Workspace returns unsupported_zone; use file.list with a logical path prefix and filter its returned paths. For local search, path must be a non-empty directory; use path:"." for the selected zone root. Defaults to 1000 returned paths and always excludes .git internals.
 - grep: Desktop-local native ripgrep regex search for current/absolute zones only (query is always required; pattern belongs to glob; path names a search directory or one exact file; optional glob/lineRange/limit/caseMode/includeIgnored/hidden). Workspace returns unsupported_zone; use file.list to identify artifacts and file.read to inspect selected contents. Workspace full-text search is unavailable. For local search, use path:"." for the selected zone root.
 - stat: file or directory metadata (size, mtime, type).
@@ -223,21 +178,21 @@ Anti-patterns to avoid:
 - Don't paste long rendered content into chat after a write. The tool card above your reply has an Open affordance the user can tap.
 - Don't str_replace without having read the file in this session — the staleness guard will reject you.
 - Use this tool for file operations. Reserve available command tools for builds and tests.
-- Don't use write to hand-author PDF bytes or ask the model to restate a document for conversion. Use the dedicated convert tool; conversion is programmatic and deterministic.
+- Don't use write to hand-author PDF bytes or ask the model to restate a document for conversion. Use the dedicated convert tool; conversion is programmatic and deterministic. Workspace PDF text layers can be converted locally to TXT, Markdown or DOCX without generated scripts; this does not preserve page layout, images, annotations or redline styling. Do not claim a script ran just because file.write succeeded.
 - If a str_replace needs more than ~200 chars of oldString to be unique, switch to bookend mode or narrow with lineRange.
 - Don't ask permission before editing — just make the change and briefly describe it.
 - Don't tell the user to confirm a diff — edits already landed; mention Revert if they might want to roll back.
 
 Delivery note: after a write, str_replace, or insert applies, briefly say what you changed — e.g. "Wrote <path> — open in Work to view; revert from the diff card if it's not what you wanted." Don't regurgitate the content; the DiffView shows the red/green change directly. If the result includes an Open affordance, mention it naturally.
 
-History notes (D087 Phase 3 — load-bearing rules about undo semantics):
+History notes (load-bearing rules about undo semantics):
 
 - When the user asks to undo or revert a change, USE file.undo (or file.undo_turn for the whole round). DON'T rewrite the old content from memory — the revision store has the exact pre-state bytes, and rewriting is both slower AND prone to hallucination. If file.undo returns { error: "no_revisions" }, say so directly rather than guessing at what the old state looked like.
 - A revert is itself revertable — calling undo again or redo walks the timeline. If the user asks to go back to the edited version after an undo, use redo.
 - undo applies immediately — once the tool returns success, past tense is correct ("reverted", "undid").
 - Pin sparingly. Pins compete for the deployment-wide storage cap. Pin only on explicit user request ("pin this version", "remember this state"), not proactively on every important-seeming edit.
 
-Block-addressable commands (D121-P6, shipped): for HTML5 + <nw-*> artifacts under zone="workspace", you have list_blocks, read_block, replace_block, insert_block, move_block, and rewrite_block. Prefer these over 'read' + 'str_replace' for structured HTML — they address blocks by stable id (no large oldString context), and 'move_block' carries zero body content so reorders stay cheap. The block commands are workspace-only; for plain markdown / XML in zone="current" or zone="absolute", keep using 'read' + 'str_replace'.`;
+Block-addressable commands: for HTML5 + <nw-*> artifacts under zone="workspace", you have list_blocks, read_block, replace_block, insert_block, move_block, and rewrite_block. Prefer these over 'read' + 'str_replace' for structured HTML — they address blocks by stable id (no large oldString context), and 'move_block' carries zero body content so reorders stay cheap. The block commands are workspace-only; for plain markdown / XML in zone="current" or zone="absolute", keep using 'read' + 'str_replace'.`;
 
 const SECURITY_RESEARCH_FILE_TOOL_DESCRIPTION = `Read-only Current Folder file access for an active security research Task. Only list, read, glob, grep, and stat are available; mutation and history fields do not exist in this Task. Always pass zone="current" and a concrete path: use path="." only for the selected-folder root, a subdirectory for list/glob, and either a directory or exact relative file for grep; read/stat require an exact relative file path. read accepts offset/limit or an inclusive lineRange, with lineRange taking precedence. glob requires pattern. grep requires query. Read results preserve UTF-8 byte windows with sourceVersion and line metadata. Echo nextCursor as readCursor on the same path until null to finish a requested range or long line; nextLineOffset starts a later range. For list/glob/grep, echo nextCursor as discoveryCursor with the exact same path/query/filters until null; sourceVersionScope identifies the discovery snapshot. Inspect scopeExclusions, incompleteReasons and per-directory descendants: page exhaustion does not mean omitted directories were searched. Local recursive list has no implicit depth limit; includeIgnored:true retrieves skipped directories. A changed source/result set requires restarting its range/query, not combining versions. Keep reads bounded and use returned line/byte metadata for citations.`;
 
@@ -258,12 +213,11 @@ export function createFileTool(context?: unknown) {
      * currentFolder, workspacePath from agent state) and dispatches.
      *
      * Per-command log tag (`[file:<command>]`) is ADDED at the log
-     * call — G4 commit 12 wires the same tag convention into the
+     * call. The same tag convention is used by the
      * token-batcher so `grep '[file:str_replace]' server.log` works
      * across the whole tool lifecycle. This log is the handler-
      * internal trace; tool.start/tool.end events on the WS bus are
-     * still branded with the bare tool name `file` (per the D083
-     * tool-card expectations).
+     * still branded with the bare tool name `file` for tool cards.
      */
     func: async (rawArgs: FileToolRawArgs, _runManager, runConfig) => {
       const requiredHost = getRequiredOrdinaryHostContext();
@@ -323,7 +277,7 @@ export function createFileTool(context?: unknown) {
         }));
       }
 
-      // M206 — one typed `local-file` relay dispatch for every command
+      // one typed `local-file` relay dispatch for every command
       // whose effective zone is `current` or `absolute`, plus zone-less
       // history commands that carry explicit local authority (zone and/or
       // `local:<relayId>:<uuid>` revision refs). No fs primitives, no

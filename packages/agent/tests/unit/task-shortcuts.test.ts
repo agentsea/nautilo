@@ -407,7 +407,7 @@ describe("task intent shortcuts", () => {
       peer_handle: "peer", message_to_peer: "Question", tools: ["exec_command"],
     }) },
   ];
-  test.each(nestedShortcutCases)("$name preserves canonical nested lineage and orphan calling Room", async ({ invoke }) => {
+  test.each(nestedShortcutCases)("$name preserves canonical nested lineage and orphan calling Room", async ({ name, invoke }) => {
     stubRuntime();
     const parentSp = spyOn(db, "getTaskById").mockResolvedValue({
       id: "parent-task", ownerId: OWNER_ID, depth: 1,
@@ -417,6 +417,7 @@ describe("task intent shortcuts", () => {
       currentTaskId: "parent-task", currentTaskRunId: "parent-run" });
     expect(capturedCreate).toMatchObject({ callingRoomId: ROOM_ID,
       parentTaskId: "parent-task", depth: 2, ownerId: OWNER_ID, requestorId: OWNER_ID });
+    if (name.startsWith("schedule")) expect(capturedCreate?.targetRoomId).toBeUndefined();
   });
   test.each(nestedShortcutCases)("$name refuses missing or foreign canonical parents", async ({ invoke }) => {
     stubRuntime();
@@ -429,15 +430,20 @@ describe("task intent shortcuts", () => {
     await invoke(context);
     expect(capturedCreate).toBeNull();
   });
-  test("personal schedules remain foreground-only without consulting a parent", async () => {
+  test("personal schedules preserve canonical nested lineage", async () => {
     stubRuntime();
-    const parentSp = spyOn(db, "getTaskById");
+    const parentSp = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "parent-task", ownerId: OWNER_ID, depth: 1,
+    } as never);
     restores.push(() => parentSp.mockRestore());
     const result = await createScheduleTool({ ...CTX, currentTaskId: "parent-task", personalTaskControls: true })
       .invoke({ message: "nested work", when: { kind: "recurring", cron: "0 9 * * *" } });
-    expect(result).toContain("foreground parent chat");
-    expect(parentSp).not.toHaveBeenCalled();
-    expect(capturedCreate).toBeNull();
+    expect(result).toContain("taskId");
+    expect(parentSp).toHaveBeenCalled();
+    expect(capturedCreate).toMatchObject({
+      parentTaskId: "parent-task", depth: 2,
+      toolsMode: "auto", targetChat: "last_in_namespace", targetRoomId: ROOM_ID,
+    });
   });
 
   test("ask_peer refuses invalid nested lineage before granting artifact access", async () => {

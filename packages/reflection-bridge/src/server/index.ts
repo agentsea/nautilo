@@ -46,3 +46,5 @@ export * from "./protected-stenographer-record-commitment";
 export * from "./postgres-ordinary-stenographer-journal";
 
 export { PostgresGroundedDependencyRecordState } from "./postgres-dependency-record-state";
+
+export * from "./personal-memory-evidence";

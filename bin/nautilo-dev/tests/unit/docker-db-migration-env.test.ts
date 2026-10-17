@@ -65,6 +65,7 @@ describe("buildRestoreMigrationEnv", () => {
       "postgresql://nautilo:inherited-runtime@db.localtest.me:7652/nautilo";
     const parent = isolatedHomeEnv({
       NAUTILO_DB_PORT: "7652",
+      NAUTILO_DB_PASSWORD: "nautilo",
       DB_DIRECT_CONNECTION: inheritedDirect,
       DB_CONNECTION_STRING: inheritedDirect,
     });

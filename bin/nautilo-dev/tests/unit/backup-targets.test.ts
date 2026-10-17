@@ -31,6 +31,27 @@ function collectSchemaTableNames(): string[] {
 }
 
 describe("backup restore target allowlists", () => {
+  test("includes all Bolter history and authority tables after their foreign-key parents", () => {
+    const dependencies: Record<string, string[]> = {
+      bolter_connections: ["users"],
+      bolter_room_bindings: ["users", "agents", "rooms", "namespaces", "bolter_connections"],
+      bolter_inbox_receipts: ["users", "bolter_room_bindings", "session_messages", "jobs"],
+      bolter_explicit_shares: ["users", "bolter_room_bindings", "session_messages"],
+      bolter_outbox: ["users", "bolter_room_bindings", "session_messages", "bolter_inbox_receipts", "bolter_explicit_shares"],
+      external_room_execution_claims: ["rooms"],
+    };
+    for (const [table, parents] of Object.entries(dependencies)) {
+      const child = DATA_TABLES.indexOf(`public.${table}`);
+      expect(child).toBeGreaterThanOrEqual(0);
+      expect(RESTORE_DATA_TABLES.has(`public.${table}`)).toBe(true);
+      expect(RESTORE_MIGRATIONS.find(rule => rule.table === `public.${table}`)).toBeUndefined();
+      for (const parent of parents) {
+        const index = DATA_TABLES.indexOf(`public.${parent}`);
+        expect(index).toBeGreaterThanOrEqual(0);
+        expect(index).toBeLessThan(child);
+      }
+    }
+  });
   test("restores Soul admission receipts after their Human", () => {
     expect(DATA_TABLES.indexOf("public.users"))
       .toBeLessThan(DATA_TABLES.indexOf("public.soul_generation_attempts"));
@@ -182,7 +203,7 @@ describe("backup restore target allowlists", () => {
     });
   });
 
-  test("restores D468 push lifecycle rows after their foreign-key parents", () => {
+  test("restores push lifecycle rows after their foreign-key parents", () => {
     const indexOf = (table: string): number => DATA_TABLES.indexOf(table);
 
     expect(indexOf("public.users")).toBeLessThan(
@@ -370,7 +391,7 @@ describe("backup restore target allowlists", () => {
     }
   });
 
-  test("restores D518 rollout items after their rollout header", () => {
+  test("restores rollout items after their rollout header", () => {
     const indexOf = (table: string): number => DATA_TABLES.indexOf(table);
 
     expect(indexOf("public.member_rollouts")).toBeLessThan(

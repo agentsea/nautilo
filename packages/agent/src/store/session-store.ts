@@ -1,4 +1,4 @@
-import { parseImageAssistanceSummary, type ImageAssistanceSummary } from "@nautilo/types";
+import { externalMessageAttributionFields, parseImageAssistanceSummary, type ExternalMessageAttributionFields, type ImageAssistanceSummary } from "@nautilo/types";
 import type { BaseMessage } from "@langchain/core/messages";
 import { HumanMessage, SystemMessage, ToolMessage, AIMessage } from "@langchain/core/messages";
 import {
@@ -7,9 +7,12 @@ import {
   type MemoryReviewAdmission,
   actors,
   roomMembers,
+  rooms,
   sessionMessages,
   sessions,
   getAttachmentsForTurns,
+  getBolterCanonicalAttributions,
+  getBolterReceiptMessageIds,
   eq,
   and,
   or,
@@ -32,6 +35,10 @@ import {
   type AppendNotificationContext,
   ServerProviderCredentialsDeniedError,
 } from "@nautilo/trust";
+import {
+  encodeModelInputExposureForMetadata,
+  MODEL_INPUT_EXPOSURE_METADATA_KEY,
+} from "../memory/model-input-exposure";
 import { withAgentTrustContext, withSerializableAgentTrustContext, type TrustAgentTx } from "./trust-agent-db";
 import { createUniversalModel } from "../providers/universal";
 import { runWithUsageContext } from "../usage/usage-context";
@@ -290,9 +297,20 @@ export function transcriptMetadataForMessage(message: BaseMessage, options: Appe
   const sourceMetadata = options.internalToolMetadata && (
     message instanceof ToolMessage || (AIMessage.isInstance(message) && message.tool_calls?.length)
   ) ? options.internalToolMetadata : options.metadata ?? null;
-  let metadata = sourceMetadata !== null && Object.keys(sourceMetadata).length > 0
-    ? sourceMetadata
+  const {
+    [MODEL_INPUT_EXPOSURE_METADATA_KEY]: _untrustedExposure,
+    ...trustedSourceMetadata
+  } = sourceMetadata ?? {};
+  let metadata = Object.keys(trustedSourceMetadata).length > 0
+    ? trustedSourceMetadata
     : null;
+  const trustedExposure = encodeModelInputExposureForMetadata(message);
+  if (trustedExposure !== undefined) {
+    metadata = {
+      ...(metadata ?? {}),
+      [MODEL_INPUT_EXPOSURE_METADATA_KEY]: trustedExposure,
+    };
+  }
   if (message instanceof ToolMessage
     && message.additional_kwargs["nautilo_browser_decision_observation"] === true) {
     metadata = {
@@ -387,7 +405,7 @@ export async function appendTranscriptMessages(
   );
 }
 
-export interface SessionMessage extends TranscriptToolPresentation {
+export interface SessionMessage extends TranscriptToolPresentation, ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary | undefined;
   id: string;
   logicalMessageKey?: string;
@@ -408,7 +426,7 @@ export interface SessionMessage extends TranscriptToolPresentation {
   replyCount?: number;
   lastReplyAt?: Date | null;
   summaryRevision?: number;
-  /** `sessions.owner_id` for room-scoped cross-session fan-in. */
+  /** Local Human author for ordinary rows; never the sponsor of external input. */
   sourceUserId?: string;
   /** `sessions.agent_id` for assistant/tool rows in multi-agent rooms. */
   authorAgentId?: string;
@@ -424,6 +442,104 @@ export interface SessionMessage extends TranscriptToolPresentation {
   fingerprint?: string | null | undefined;
   /** Closed, server-authored neutral presentation for a workcard continuation. */
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
+}
+
+export interface CurrentOrdinaryTranscriptExposureRow {
+  readonly messageId: number;
+  readonly sessionId: string;
+  readonly roomId: string;
+  readonly sourceUserId: string;
+  readonly editRevision: number;
+  readonly role: "user" | "assistant" | "tool" | "system";
+  readonly content: string;
+  readonly metadata: unknown;
+  readonly namespaceId: string;
+}
+
+export function projectCurrentOrdinaryTranscriptExposureRows(
+  messageIds: readonly number[],
+  rows: readonly Readonly<{
+    messageId: number;
+    sessionId: string;
+    roomId: string | null;
+    sourceUserId: string;
+    editRevision: number;
+    role: string;
+    content: string | null;
+    metadata: unknown;
+    namespaceId: string;
+  }>[],
+): readonly CurrentOrdinaryTranscriptExposureRow[] {
+  const expected = [...new Set(messageIds)].sort((left, right) => left - right);
+  if (rows.length !== expected.length) throw new Error("Ordinary transcript exposure source changed");
+  return Object.freeze(rows.map((row, index) => {
+    if (row.messageId !== expected[index]
+      || typeof row.sessionId !== "string"
+      || row.sessionId.length === 0
+      || typeof row.roomId !== "string"
+      || row.roomId.length === 0
+      || typeof row.sourceUserId !== "string"
+      || row.sourceUserId.length === 0
+      || !Number.isSafeInteger(row.editRevision)
+      || row.editRevision < 0
+      || row.content === null
+      || !["user", "assistant", "tool", "system"].includes(row.role)
+      || typeof row.namespaceId !== "string"
+      || row.namespaceId.length === 0) {
+      throw new Error("Ordinary transcript exposure source changed");
+    }
+    return Object.freeze({
+      messageId: row.messageId,
+      sessionId: row.sessionId,
+      roomId: row.roomId,
+      sourceUserId: row.sourceUserId,
+      editRevision: row.editRevision,
+      role: row.role as CurrentOrdinaryTranscriptExposureRow["role"],
+      content: row.content,
+      metadata: row.metadata,
+      namespaceId: row.namespaceId,
+    });
+  }));
+}
+
+/** Reopen exact selected transcript rows under current Room and Agent authority. */
+export async function readCurrentOrdinaryTranscriptExposureRows(input: Readonly<{
+  ownerId: string;
+  agentId: string;
+  roomIds: readonly string[];
+  messageIds: readonly number[];
+}>): Promise<readonly CurrentOrdinaryTranscriptExposureRow[]> {
+  const messageIds = [...new Set(input.messageIds)];
+  const roomIds = [...new Set(input.roomIds)];
+  if (messageIds.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    throw new TypeError("Ordinary transcript exposure coordinates are invalid");
+  }
+  if (roomIds.length === 0 || roomIds.some((id) => typeof id !== "string" || id.length === 0)) {
+    throw new TypeError("Ordinary transcript exposure Rooms are invalid");
+  }
+  if (messageIds.length === 0) return Object.freeze([]);
+  return withSerializableAgentTrustContext({ userId: input.ownerId, agentId: input.agentId }, async (tx) => {
+    const rows = await tx.select({
+      messageId: sessionMessages.id,
+      sessionId: sessions.id,
+      roomId: sessions.roomId,
+      sourceUserId: sessions.ownerId,
+      editRevision: sessionMessages.editRevision,
+      role: sessionMessages.role,
+      content: sessionMessages.content,
+      metadata: sessionMessages.metadata,
+      namespaceId: rooms.namespaceId,
+    }).from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+      .innerJoin(rooms, eq(rooms.id, sessions.roomId))
+      .where(and(
+        inArray(sessions.roomId, roomIds),
+        excludeSubagentTranscriptSessions(),
+        inArray(sessionMessages.id, messageIds),
+      ))
+      .orderBy(asc(sessionMessages.id));
+    return projectCurrentOrdinaryTranscriptExposureRows(messageIds, rows);
+  });
 }
 
 /**
@@ -824,6 +940,31 @@ async function fetchAttachmentRefsByFingerprint(
   return map;
 }
 
+async function selectedExternalAttributions(
+  rows: readonly { id: number; role: string; metadata?: unknown; sourceUserId?: string; externalAuthorship?: boolean }[],
+  structural = false,
+) {
+  const fields = new Map<number, ExternalMessageAttributionFields>();
+  const groups = new Map<string, number[]>();
+  for (const row of rows) {
+    if (row.role !== "user") continue;
+    fields.set(row.id, externalMessageAttributionFields(row.role, row.metadata, undefined, row.externalAuthorship));
+    if (row.sourceUserId) groups.set(row.sourceUserId, [...(groups.get(row.sourceUserId) ?? []), row.id]);
+  }
+  for (const [userId, messageIds] of groups) {
+    if (structural) {
+      const linked = await getBolterReceiptMessageIds({ userId }, messageIds);
+      for (const id of linked) fields.set(id, { externalAttributionInvalid: true });
+      continue;
+    }
+    const canonical = await getBolterCanonicalAttributions({ userId }, messageIds);
+    for (const row of rows) if (row.role === "user" && row.sourceUserId === userId) {
+      fields.set(row.id, externalMessageAttributionFields(row.role, row.metadata, canonical.get(row.id), row.externalAuthorship));
+    }
+  }
+  return fields;
+}
+
 export async function getSessionMessages(
   sessionId: string,
   limit = 100,
@@ -832,6 +973,8 @@ export async function getSessionMessages(
   const rows = await db
     .select({
       id: sessionMessages.id,
+      sourceUserId: sessions.ownerId,
+      externalAuthorship: sessionMessages.externalAuthorship,
       role: sessionMessages.role,
       content: sessionMessages.content,
       toolCalls: sessionMessages.toolCalls,
@@ -843,14 +986,17 @@ export async function getSessionMessages(
       fingerprint: sessionMessages.fingerprint,
     })
     .from(sessionMessages)
+    .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
     .where(eq(sessionMessages.sessionId, sessionId))
     .orderBy(asc(sessionMessages.createdAt), asc(sessionMessages.id))
     .limit(limit)
     .offset(offset);
 
+  const external = await selectedExternalAttributions(rows);
   const attachmentsByFp = await fetchAttachmentRefsByFingerprint(rows.map((r) => r.fingerprint));
   return rows.map((r) => ({
     id: String(r.id),
+    ...(external.get(r.id) ?? {}),
     logicalMessageKey: logicalMessageKey(r),
     ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
     role: r.role,
@@ -873,6 +1019,8 @@ export async function getLatestSessionMessages(
   const rows = await db
     .select({
       id: sessionMessages.id,
+      sourceUserId: sessions.ownerId,
+      externalAuthorship: sessionMessages.externalAuthorship,
       role: sessionMessages.role,
       content: sessionMessages.content,
       toolCalls: sessionMessages.toolCalls,
@@ -884,13 +1032,16 @@ export async function getLatestSessionMessages(
       fingerprint: sessionMessages.fingerprint,
     })
     .from(sessionMessages)
+    .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
     .where(eq(sessionMessages.sessionId, sessionId))
     .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
     .limit(limit);
 
+  const external = await selectedExternalAttributions(rows);
   const attachmentsByFp = await fetchAttachmentRefsByFingerprint(rows.map((r) => r.fingerprint));
   return [...rows].reverse().map((r) => ({
     id: String(r.id),
+    ...(external.get(r.id) ?? {}),
     logicalMessageKey: logicalMessageKey(r),
     ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
     role: r.role,
@@ -915,10 +1066,12 @@ export async function getRoomMessagesBeforeCursor(args: {
 }): Promise<{ messages: SessionMessage[]; hasMoreBefore: boolean }> {
   const limit = Math.max(1, args.limit ?? 100);
   const beforeCreatedAtIso = args.beforeCreatedAt.toISOString();
-  return withSessionTrustContext(args.ownerId, undefined, async (tx) => {
-    const rows = await tx
+  const rows = await withSessionTrustContext(args.ownerId, undefined, async (tx) => {
+    return tx
       .select({
         id: sessionMessages.id,
+        sourceUserId: sessions.ownerId,
+        externalAuthorship: sessionMessages.externalAuthorship,
         role: sessionMessages.role,
         content: sessionMessages.content,
         toolCalls: sessionMessages.toolCalls,
@@ -945,37 +1098,40 @@ export async function getRoomMessagesBeforeCursor(args: {
       )
       .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
       .limit(limit + 1);
-
-    const pageRows = rows.slice(0, limit);
-    return {
-      hasMoreBefore: rows.length > limit,
-      messages: [...pageRows].reverse().map((r) => ({
-        id: String(r.id),
-        logicalMessageKey: logicalMessageKey(r),
-    ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
-        role: r.role,
-        content: r.content,
-        toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
-        toolName: r.toolName ?? null,
-        ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
-        createdAt: r.createdAt,
-        editedAt: r.editedAt,
-        editRevision: r.editRevision,
-        replyCount: r.replyCount,
-        lastReplyAt: r.lastReplyAt,
-        summaryRevision: r.summaryRevision,
-        ...(r.role === "assistant" || r.role === "tool"
-          ? r.sessionAgentId
-            ? { authorAgentId: r.sessionAgentId }
-            : {}
-          : {}),
-        ...(projectAuthorHarnessAttribution(r.metadata) ?? {}),
-        ...(projectAdvancedVideoWorkcardContinuation(r.metadata)
-          ? { workcardContinuation: projectAdvancedVideoWorkcardContinuation(r.metadata) }
-          : {}),
-      })),
-    };
   });
+
+  // Provenance uses the same pool; release the viewer transaction first.
+  const pageRows = rows.slice(0, limit);
+  const external = await selectedExternalAttributions(pageRows);
+  return {
+    hasMoreBefore: rows.length > limit,
+    messages: [...pageRows].reverse().map((r) => ({
+      id: String(r.id),
+      ...(external.get(r.id) ?? {}),
+      logicalMessageKey: logicalMessageKey(r),
+  ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
+      role: r.role,
+      content: r.content,
+      toolCalls: sanitizeSerializedTranscriptToolCalls(r.toolCalls),
+      toolName: r.toolName ?? null,
+      ...(r.role === "tool" ? readTranscriptToolPresentation(r.metadata) : {}),
+      createdAt: r.createdAt,
+      editedAt: r.editedAt,
+      editRevision: r.editRevision,
+      replyCount: r.replyCount,
+      lastReplyAt: r.lastReplyAt,
+      summaryRevision: r.summaryRevision,
+      ...(r.role === "assistant" || r.role === "tool"
+        ? r.sessionAgentId
+          ? { authorAgentId: r.sessionAgentId }
+          : {}
+        : {}),
+      ...(projectAuthorHarnessAttribution(r.metadata) ?? {}),
+      ...(projectAdvancedVideoWorkcardContinuation(r.metadata)
+        ? { workcardContinuation: projectAdvancedVideoWorkcardContinuation(r.metadata) }
+        : {}),
+    })),
+  };
 }
 
 /**
@@ -1020,6 +1176,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
         createdAt: sessionMessages.createdAt,
         replyToMessageId: sessionMessages.replyToMessageId,
         sourceUserId: sessions.ownerId,
+        externalAuthorship: sessionMessages.externalAuthorship,
         sessionAgentId: sessions.agentId,
         fingerprint: sessionMessages.fingerprint,
         replyCount: sessionMessages.replyCount,
@@ -1139,6 +1296,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
   const attachmentsByFp = args.contentRepresentation === "structural"
     ? new Map<string, MessageAttachmentRef[]>()
     : await fetchAttachmentRefsByFingerprint(pageRows.map((r) => r.fingerprint));
+  const external = await selectedExternalAttributions(pageRows, args.contentRepresentation === "structural");
   return {
     hasMoreBefore: deduped.length > limit,
     selectedCoordinates: Object.freeze(
@@ -1146,6 +1304,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
     ),
     messages: [...pageRows].reverse().map((r) => ({
       id: String(r.id),
+      ...(external.get(r.id) ?? {}),
       logicalMessageKey: logicalMessageKey(r),
     ...(args.contentRepresentation !== "structural" && parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
       role: r.role,
@@ -1163,7 +1322,7 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
       replyCount: r.replyCount,
       lastReplyAt: r.lastReplyAt,
       summaryRevision: r.summaryRevision,
-      sourceUserId: r.sourceUserId,
+      ...(external.get(r.id)?.externalOrigin || external.get(r.id)?.externalAttributionInvalid ? {} : { sourceUserId: r.sourceUserId }),
       ...(r.role === "assistant" || r.role === "tool"
         ? r.sessionAgentId
           ? { authorAgentId: r.sessionAgentId }

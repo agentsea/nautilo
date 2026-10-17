@@ -1,8 +1,6 @@
 import {
   chmodSync,
-  copyFileSync,
   existsSync,
-  mkdirSync,
   readFileSync,
   readdirSync,
   statSync,
@@ -10,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { KEY_REGISTRY } from "@nautilo/config-guard";
+import { ensurePrivateDirectorySync, publishPrivateFileAtomicallySync, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
 import {
   bootstrapDirForInstance,
   loadOperatorSecrets,
@@ -330,7 +329,8 @@ export async function runDoctorMigrateConfig(
   }
 
   const parsed = await loadOperatorSecrets(operatorFilePath);
-  const rawBody = readFileSync(operatorFilePath, "utf8");
+  const rawBytes = readFileSync(operatorFilePath);
+  const rawBody = rawBytes.toString("utf8");
 
   const providerKeysExtracted: string[] = [];
   const bootstrapBySuffix = new Map<
@@ -432,11 +432,9 @@ export async function runDoctorMigrateConfig(
   }
 
   if (!dryRun) {
-    mkdirSync(operatorConfigDir(home), { recursive: true, mode: 0o700 });
-    copyFileSync(operatorFilePath, operatorFileBackupPath);
-    chmodSync(operatorFileBackupPath, 0o600);
-    writeFileSync(operatorFilePath, newSecretsBody, { encoding: "utf8", mode: 0o600 });
-    chmodSync(operatorFilePath, 0o600);
+    ensurePrivateDirectorySync(operatorConfigDir(home));
+    writePrivateFileExclusiveSync(operatorFileBackupPath, rawBytes);
+    publishPrivateFileAtomicallySync(operatorFilePath, Buffer.from(newSecretsBody, "utf8"));
     writeFileSync(deployTomlExamplePath, deployBody, { encoding: "utf8", mode: 0o644 });
     chmodSync(deployTomlExamplePath, 0o644);
   } else {

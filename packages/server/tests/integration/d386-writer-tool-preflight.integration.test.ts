@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { config } from "dotenv";
@@ -74,7 +75,7 @@ async function cleanupCreatedArtifacts(): Promise<void> {
     .select({ id: artifacts.id, storageUri: artifacts.storageUri })
     .from(artifacts)
     .where(inArray(artifacts.id, artifactIds));
-  const absolutePaths = rows.map(({ storageUri }) => new URL(storageUri!).pathname);
+  const absolutePaths = rows.map(({ storageUri }) => fileURLToPath(storageUri!));
   if (absolutePaths.length > 0) {
     await fx.db.delete(fileRevisions).where(inArray(fileRevisions.absolutePath, absolutePaths));
   }
@@ -381,7 +382,7 @@ describe("D386 real Writer preflight", () => {
     const revisions = await fx.db
       .select({ id: fileRevisions.id })
       .from(fileRevisions)
-      .where(eq(fileRevisions.absolutePath, new URL(persistedAfter!.storageUri!).pathname));
+      .where(eq(fileRevisions.absolutePath, fileURLToPath(persistedAfter!.storageUri!)));
     expect(revisions).toHaveLength(0);
   });
 });

@@ -6,26 +6,44 @@ import {
   PersonalAttemptLedgerUnavailableError,
 } from "../../src/usage/personal-llm-attempt";
 import { getUsageContext, runWithUsageContext } from "../../src/usage/usage-context";
-import type { BeginPersonalLlmAttemptInput, SettlePersonalLlmAttemptInput } from "@nautilo/db";
+import type { BeginPersonalLlmAttemptInput, BeginServiceLlmAttemptInput, SettlePersonalLlmAttemptInput } from "@nautilo/db";
+import {
+  getPersonalLlmAttemptOwner,
+  installPersonalLlmAttemptOwner,
+} from "../../src/usage/personal-llm-attempt-owner";
 
 const funding = { kind: "personal" as const, humanUserId: "10000000-0000-4000-8000-000000000001",
   payerHumanId: "10000000-0000-4000-8000-000000000001", providerRoute: "openai",
   credentialId: "20000000-0000-4000-8000-000000000002", credentialRevision: 4 };
+const owner = { ownerToken: "99999999-9999-4999-8999-999999999999" };
 function harness() {
   const begun: BeginPersonalLlmAttemptInput[] = [];
   const settled: SettlePersonalLlmAttemptInput[] = [];
-  return { begun, settled, deps: { begin: async (row: BeginPersonalLlmAttemptInput) => { begun.push(row); },
+  return { begun, settled, deps: { owner: () => owner,
+    begin: async (row: BeginPersonalLlmAttemptInput) => { begun.push(row); },
     settle: async (row: SettlePersonalLlmAttemptInput) => { settled.push(row); } } };
 }
 const scope = <T>(fn: () => T) => runWithUsageContext({ callType: "chat", funding, metadata: { turnId: "synthetic-turn" } }, fn);
 const modelId = "openai:gpt-5.6-luna";
 
 describe("durable personal direct attempts", () => {
+  test("an old uninstall cannot clear a later process owner", () => {
+    const uninstallFirst = installPersonalLlmAttemptOwner(owner);
+    expect(getPersonalLlmAttemptOwner()).toEqual(owner);
+    uninstallFirst();
+    const replacement = { ownerToken: "88888888-8888-4888-8888-888888888888" };
+    const uninstallReplacement = installPersonalLlmAttemptOwner(replacement);
+    uninstallFirst();
+    expect(getPersonalLlmAttemptOwner()).toEqual(replacement);
+    uninstallReplacement();
+    expect(getPersonalLlmAttemptOwner()).toBeNull();
+  });
   test("begins before the wire and settles one frozen estimate from callback evidence", async () => {
     const h = harness();
     const answer = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => {
       expect(h.begun).toHaveLength(1);
       expect(h.begun[0]).toMatchObject({ userId: funding.humanUserId, credentialRevision: 4, providerRoute: "openai" });
+      expect(h.begun[0]).toMatchObject({ ownerToken: owner.ownerToken });
       const context = getUsageContext()!;
       expect(context.trackedAttemptId).toBe(h.begun[0]!.id);
       context.onAttemptUsage!({ inputTokens: 100, outputTokens: 20, reasoningTokens: 0, cachedInputTokens: 0,
@@ -139,12 +157,23 @@ describe("durable personal direct attempts", () => {
   test("ledger admission failure prevents paid work; post-answer settlement failure never repeats it", async () => {
     let calls = 0;
     expect(scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => { calls++; } },
-      { begin: async () => { throw new Error("database unavailable"); }, settle: async () => {} }))).rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
+      { owner: () => owner, begin: async () => { throw new Error("database unavailable"); }, settle: async () => {} }))).rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
     expect(calls).toBe(0);
     const h = harness();
     const answer = await scope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => { calls++; return "answer"; } },
       { ...h.deps, settle: async () => { throw new Error("settlement unavailable"); } }));
     expect(answer).toBe("answer"); expect(calls).toBe(1); expect(h.begun).toHaveLength(1);
+  });
+  test("missing durable process ownership prevents the wire", async () => {
+    let calls = 0;
+    const h = harness();
+    expect(scope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { calls += 1; },
+    }, { ...h.deps, owner: () => null }))).rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
+    expect(calls).toBe(0);
+    expect(h.begun).toHaveLength(0);
   });
   test("retries one exact immutable settlement after acknowledgement loss without replaying inference", async () => {
     const h = harness();
@@ -155,6 +184,7 @@ describe("durable personal direct attempts", () => {
       endpoint: "/v1/chat/completions",
       invoke: async () => { invokes += 1; return "answer"; },
     }, {
+      owner: () => owner,
       begin: h.deps.begin,
       settle: async (input) => {
         settlements.push(input);
@@ -189,5 +219,188 @@ describe("personal direct attempt terminal classification", () => {
       .toEqual({ outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" });
     expect(classifyPersonalAttemptFailure({ status: 429 }, false, true))
       .toEqual({ outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" });
+  });
+});
+
+
+describe("explicit nonpersonal Memory model attempts", () => {
+  for (const kind of ["server", "service"] as const) {
+    test(`${kind} review has one durable unknown-cost row even when successful usage is absent`, async () => {
+      const begun: BeginServiceLlmAttemptInput[] = [];
+      const settled: SettlePersonalLlmAttemptInput[] = [];
+      const ordinary = harness();
+      const begin = async (row: BeginServiceLlmAttemptInput) => { begun.push(row); };
+      const settle = async (row: SettlePersonalLlmAttemptInput) => { settled.push(row); };
+      await runWithUsageContext({ callType: "memory_review", funding: {kind, providerRoute:"openai"} },
+        () => runPersonalLlmAttempt({modelId,endpoint:"/v1/chat/completions",invoke:async()=> {
+          expect(begun).toHaveLength(1);
+          expect(getUsageContext()?.trackedAttemptId).toBe(begun[0]!.id);
+          return "complete";
+        }}, {...ordinary.deps, beginService:begin,settleService:settle,beginServer:begin,settleServer:settle}));
+      expect(ordinary.begun).toHaveLength(0);
+      expect(begun[0]!.userId).toBeNull();
+      expect(begun[0]).not.toHaveProperty("credentialId");
+      expect(settled[0]).toMatchObject({outcome:"succeeded",costState:"unknown"});
+    });
+  }
+  test("a service review cannot dispatch without the durable accounting owner", async () => {
+    let calls = 0;
+    const ordinary = harness();
+    const outcome = await runWithUsageContext({callType:"memory_review",funding:{kind:"service",providerRoute:"openai"}},
+      () => runPersonalLlmAttempt({modelId,endpoint:"/v1/chat/completions",invoke:async()=>{calls++;}},
+        {...ordinary.deps,owner:()=>null,beginService:async()=>{},settleService:async()=>{}}))
+      .then(() => null, (error: unknown) => error);
+    expect(outcome).toBeInstanceOf(PersonalAttemptLedgerUnavailableError);
+    expect(calls).toBe(0);
+  });
+});
+
+describe("server-funded image assistance attempts", () => {
+  function imageHarness() {
+    const begun: BeginServiceLlmAttemptInput[] = [];
+    const settled: SettlePersonalLlmAttemptInput[] = [];
+    const ordinary = harness();
+    return {
+      begun,
+      settled,
+      deps: {
+        ...ordinary.deps,
+        beginServer: async (input: BeginServiceLlmAttemptInput) => { begun.push(input); },
+        settleServer: async (input: SettlePersonalLlmAttemptInput) => { settled.push(input); },
+      },
+    };
+  }
+
+  const imageScope = <T>(fn: () => T) => runWithUsageContext({
+    callType: "image_assistance",
+    userId: "10000000-0000-4000-8000-000000000001",
+    roomId: "30000000-0000-4000-8000-000000000003",
+    funding: {
+      kind: "server" as const,
+      humanUserId: "10000000-0000-4000-8000-000000000001",
+      providerRoute: "openai",
+    },
+    metadata: { operationId: "image-assistance:turn-a:digest-a", turnId: "turn-a" },
+  }, fn);
+
+  test("begins before dispatch and settles callback evidence on the same attempt", async () => {
+    const h = imageHarness();
+    const result = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => {
+        expect(h.begun).toHaveLength(1);
+        expect(h.begun[0]).toMatchObject({
+          callType: "image_assistance",
+          userId: "10000000-0000-4000-8000-000000000001",
+          roomId: "30000000-0000-4000-8000-000000000003",
+          providerRoute: "openai",
+          metadata: {
+            operationId: "image-assistance:turn-a:digest-a",
+            turnId: "turn-a",
+          },
+        });
+        expect(getUsageContext()?.trackedAttemptId).toBe(h.begun[0]!.id);
+        getUsageContext()?.onAttemptUsage?.({
+          inputTokens: 120,
+          outputTokens: 24,
+          reasoningTokens: 0,
+          cachedInputTokens: 0,
+          cacheCreationTokens: 0,
+          actualCostUsd: null,
+        });
+        return "observations";
+      },
+    }, h.deps));
+
+    expect(result).toBe("observations");
+    expect(h.settled).toHaveLength(1);
+    expect(h.settled[0]).toMatchObject({
+      attemptId: h.begun[0]!.id,
+      outcome: "succeeded",
+      costState: "estimated",
+      inputTokens: 120,
+      outputTokens: 24,
+    });
+  });
+
+  test("keeps missing usage unknown and records a proven refusal without replay", async () => {
+    const missing = imageHarness();
+    await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => "observations",
+    }, missing.deps));
+    expect(missing.settled).toHaveLength(1);
+    expect(missing.settled[0]).toMatchObject({ outcome: "succeeded", costState: "unknown" });
+
+    const refused = imageHarness();
+    let invokes = 0;
+    const providerError = Object.assign(new Error("rejected"), { status: 429 });
+    const error = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { invokes += 1; throw providerError; },
+    }, refused.deps)).then(() => null, (caught: unknown) => caught);
+    expect(error).toMatchObject({ disposition: "safe_refusal", cause: providerError });
+    expect(invokes).toBe(1);
+    expect(refused.begun).toHaveLength(1);
+    expect(refused.settled).toHaveLength(1);
+    expect(refused.settled[0]).toMatchObject({
+      outcome: "failed",
+      costState: "unknown",
+      failureCode: "provider_refused",
+    });
+  });
+
+  test("preserves cancellation when late actual cost arrives", async () => {
+    const h = imageHarness();
+    const abort = new AbortController();
+    let callback: NonNullable<ReturnType<typeof getUsageContext>>["onAttemptUsage"];
+    const error = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      signal: abort.signal,
+      invoke: async () => {
+        callback = getUsageContext()!.onAttemptUsage;
+        abort.abort();
+        throw new Error("cancelled");
+      },
+    }, h.deps)).then(() => null, (caught: unknown) => caught);
+    expect(error).toMatchObject({ disposition: "terminal_cancelled" });
+    expect(h.settled[0]).toMatchObject({ outcome: "cancelled", costState: "unknown" });
+
+    callback!({
+      inputTokens: 12,
+      outputTokens: 3,
+      reasoningTokens: 0,
+      cachedInputTokens: 0,
+      cacheCreationTokens: 0,
+      actualCostUsd: 0.002,
+    });
+    expect(h.settled[1]).toMatchObject({
+      outcome: "cancelled",
+      costState: "actual",
+      actualCostUsd: 0.002,
+      preserveOutcome: true,
+    });
+  });
+
+  test("settlement failure returns completed output without another invocation", async () => {
+    const h = imageHarness();
+    let invokes = 0;
+    let settlements = 0;
+    const result = await imageScope(() => runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => { invokes += 1; return "retained observations"; },
+    }, {
+      ...h.deps,
+      settleServer: async () => { settlements += 1; throw new Error("database unavailable"); },
+    }));
+    expect(result).toBe("retained observations");
+    expect(invokes).toBe(1);
+    expect(settlements).toBe(2);
+    expect(h.begun).toHaveLength(1);
   });
 });

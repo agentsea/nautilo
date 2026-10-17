@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { rejects } from "node:assert/strict";
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,6 +19,8 @@ import {
 } from "../../electron/computer-use-host-runtime/official-release-authority.ts";
 
 const roots: string[] = [];
+// The managed macOS store requires real POSIX ownership and executable mode bits.
+const posixStorageTest = process.platform === "win32" ? test.skip : test;
 afterEach(async () => { await Promise.all(roots.splice(0).map(async (root) => await rm(root, { recursive: true, force: true }))); });
 const sha = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 
@@ -81,7 +84,7 @@ function trustedRunner(version = "0.1.0"): MacosCommandRunner {
 }
 
 describe("managed Computer Use Host delivery", () => {
-  test("propagates bootstrap cancellation into the initial macOS identity probes", async () => {
+  posixStorageTest("propagates bootstrap cancellation into the initial macOS identity probes", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-host-cancel-")); roots.push(root);
     const resource = join(root, "tools-computer-use-host"); await mkdir(resource);
     const entrypoint = join(resource, "nautilo-computer-use-host"); await writeFile(entrypoint, "host"); await chmod(entrypoint, 0o755);
@@ -107,6 +110,27 @@ describe("managed Computer Use Host delivery", () => {
     expect(observedSignal).toBe(controller.signal);
   });
 
+  test("propagates cancellation to both simulated signature probes", async () => {
+    const controller = new AbortController();
+    const observed: Array<AbortSignal | undefined> = [];
+    const attestation = MacosComputerUseHostAttestor.create({
+      desktopExecutable: "/Applications/Nautilo.app/Contents/MacOS/Nautilo",
+      bundledEntrypoint: "/bundle/host",
+      signal: controller.signal,
+      runner: async (_command, _args, signal) => {
+        observed.push(signal);
+        return new Promise((resolve) => {
+          const aborted = () => resolve({ code: null, stdout: "", stderr: "aborted" });
+          if (signal?.aborted) aborted();
+          else signal?.addEventListener("abort", aborted, { once: true });
+        });
+      },
+    });
+    controller.abort();
+    await rejects(attestation, /trust anchor rejected/u);
+    expect(observed).toEqual([controller.signal, controller.signal]);
+  });
+
   test("extracts only the canonical designated requirement from codesign diagnostics", () => {
     const requirement = 'identifier "com.nautilo.desktop.computer-use-host" and anchor apple generic';
     expect(parseDesignatedRequirement(`Executable=/tmp/host\ndesignated => ${requirement}\n`)).toBe(requirement);
@@ -127,8 +151,8 @@ describe("managed Computer Use Host delivery", () => {
     expect(calls).toEqual([OFFICIAL_COMPUTER_USE_HOST_POINTER_URL, manifestUrl]);
     const changed = Uint8Array.from(manifest); changed[0] ^= 1;
     const hostile = new OfficialComputerUseHostReleaseAuthority(async (url) => url === OFFICIAL_COMPUTER_USE_HOST_POINTER_URL ? response(url, pointer) : response(url, changed));
-    expect(hostile.resolveOfficialRelease(OFFICIAL_COMPUTER_USE_HOST_POINTER_URL)).rejects.toThrow(/digest rejected/u);
-    expect(authority.resolveOfficialRelease("https://evil.example/latest.json")).rejects.toThrow(/authority rejected/u);
+    await rejects(hostile.resolveOfficialRelease(OFFICIAL_COMPUTER_USE_HOST_POINTER_URL), /digest rejected/u);
+    await rejects(authority.resolveOfficialRelease("https://evil.example/latest.json"), /authority rejected/u);
   });
 
   test("admits only the exact Developer ID team, Host requirement, universal slices, publisher-attested notarization, and build version", async () => {
@@ -140,7 +164,7 @@ describe("managed Computer Use Host delivery", () => {
     expect(await attestor.verifyMacosRelease("/managed/host", { ...candidate, signature: { ...candidate.signature, teamId: "ZZZZZ99999" } }, ["arm64", "x64"])).toBeFalse();
   });
 
-  test("downloads and extracts an exact archive into a marker-owned immutable digest root and rejects links", async () => {
+  posixStorageTest("downloads and extracts an exact archive into a marker-owned immutable digest root and rejects links", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-host-delivery-")); roots.push(root); const runtimeRoot = join(root, "runtime"); const bundle = join(root, "bundle"); await mkdir(bundle);
     const binary = new TextEncoder().encode("managed-host"); const archive = tar("nautilo-computer-use-host", binary); const candidate = release(archive, binary);
     const storage = new NodeComputerUseHostStorage({ runtimeRoot, bundledDirectory: bundle, officialPointerUrl: OFFICIAL_COMPUTER_USE_HOST_POINTER_URL, fetcher: async (url) => response(url, archive, 200, "application/gzip") });
@@ -151,10 +175,10 @@ describe("managed Computer Use Host delivery", () => {
     expect(new Uint8Array(await readFile(join(installed.root, candidate.entrypoint)))).toEqual(binary);
     const linkArchive = tar("nautilo-computer-use-host", new Uint8Array(), "2"); const hostile = release(linkArchive, new Uint8Array());
     const hostileStorage = new NodeComputerUseHostStorage({ runtimeRoot: join(root, "hostile"), bundledDirectory: bundle, officialPointerUrl: OFFICIAL_COMPUTER_USE_HOST_POINTER_URL, fetcher: async (url) => response(url, linkArchive, 200, "application/gzip") });
-    expect(hostileStorage.downloadAndStage(hostile)).rejects.toThrow(/unsafe archive/u);
+    await rejects(hostileStorage.downloadAndStage(hostile), /unsafe archive/u);
   });
 
-  test("recovers only nonce-marker-owned staging and leaves foreign collisions untouched", async () => {
+  posixStorageTest("recovers only nonce-marker-owned staging and leaves foreign collisions untouched", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-host-recovery-")); roots.push(root); const runtimeRoot = join(root, "runtime"); const bundle = join(root, "bundle"); await mkdir(bundle);
     const storage = new NodeComputerUseHostStorage({ runtimeRoot, bundledDirectory: bundle, officialPointerUrl: OFFICIAL_COMPUTER_USE_HOST_POINTER_URL });
     expect(await storage.ensurePrivateRoot()).toBeTrue();
@@ -162,7 +186,7 @@ describe("managed Computer Use Host delivery", () => {
     await mkdir(join(runtimeRoot, "staging", owned)); await writeFile(join(runtimeRoot, "staging", owned, ".nautilo-computer-use-host-staging"), `${owned}\n`);
     await mkdir(join(runtimeRoot, "staging", foreign)); await writeFile(join(runtimeRoot, "staging", foreign, ".nautilo-computer-use-host-staging"), "wrong\n");
     await storage.recoverStaging();
-    expect(lstat(join(runtimeRoot, "staging", owned))).rejects.toThrow();
+    await rejects(lstat(join(runtimeRoot, "staging", owned)));
     expect((await lstat(join(runtimeRoot, "staging", foreign))).isDirectory()).toBeTrue();
   });
 
@@ -174,7 +198,7 @@ describe("managed Computer Use Host delivery", () => {
     expect(await readFile(join(runtimeRoot, "foreign"), "utf8")).toBe("do not claim");
   });
 
-  test("boots the packaged Host offline into managed storage and never launches the mutable bundle path", async () => {
+  posixStorageTest("boots the packaged Host offline into managed storage and never launches the mutable bundle path", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-host-production-")); roots.push(root); const resource = join(root, "tools-computer-use-host"); await mkdir(resource);
     const binary = new TextEncoder().encode("bundled-host"); const entrypoint = join(resource, "nautilo-computer-use-host"); await writeFile(entrypoint, binary); await chmod(entrypoint, 0o755);
     await writeFile(join(resource, "manifest.json"), JSON.stringify({ schemaVersion: 2, binary: "nautilo-computer-use-host", version: "0.1.0", architectures: ["arm64", "x64"] }));

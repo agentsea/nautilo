@@ -6,6 +6,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { __resetResolvedInstanceForTests } from "@nautilo/config";
+import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReadersSync } from "@nautilo/config/private-filesystem-fixtures";
 import { credentials, invites, users } from "@nautilo/db";
 import {
   bootstrapClaimInvite,
@@ -168,6 +170,7 @@ describe("formatClaimInviteFile", () => {
       {
         redeemInput: "inv_abc",
         token: "inv_abc",
+        serverUrl: "http://localhost:3001",
       },
       "2026-05-04T12:00:00.000Z",
     );
@@ -175,8 +178,8 @@ describe("formatClaimInviteFile", () => {
     expect(out).toContain("# Created: 2026-05-04T12:00:00.000Z");
     expect(out).toContain("redeem_input: inv_abc");
     expect(out).toContain("token: inv_abc");
-    expect(out).toContain("open the redeem_input URL");
-    expect(out).toContain("Workbench or the Desktop app");
+    expect(out).toContain("redeem_url: http://localhost:3001/claim#claim=inv_abc");
+    expect(out).toContain("redeem_input is a code, not a URL");
   });
 });
 
@@ -281,6 +284,8 @@ describe("bootstrapClaimInvite", () => {
     // skipping the mint and leaving no recovery path.
     const logs: string[] = [];
     const tmpDir = mkdtempSync(join(tmpdir(), "nautilo-claim-seed-user-"));
+    // Readable by other accounts: an inherited ACL would expose the token.
+    allowOtherReadersSync(tmpDir);
     const target = join(tmpDir, "claim-invite.txt");
     try {
       const db = createMockDb({
@@ -297,6 +302,7 @@ describe("bootstrapClaimInvite", () => {
       });
       expect(r.outcome.kind).toBe("minted");
       expect(logs.some((l) => l.includes("already claimed"))).toBe(false);
+      expect(isPrivateFilesystemPath(target)).toBe(true);
     } finally {
       rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -434,6 +440,7 @@ describe("bootstrapClaimInvite", () => {
       expect(writes[0]?.path).toBe(target);
       expect(writes[0]?.body).toContain(`token: ${expectedToken}`);
       expect(writes[0]?.body).toContain(`redeem_input: ${r.outcome.redeemInput}`);
+      expect(writes[0]?.body).toContain(`redeem_url: http://localhost:3001/claim#claim=${expectedToken}`);
       expect(order).toEqual(["write", "insert"]);
       expect(existsSync(r.outcome.bootstrapClaimInvitePath)).toBe(true);
       expect(readFileSync(r.outcome.bootstrapClaimInvitePath, "utf8").trim()).toBe(expectedToken);

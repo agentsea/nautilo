@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "../../..");
 const REFLECTION_SOURCE = join(ROOT, "packages/reflection/src");
@@ -96,8 +96,8 @@ describe("M253 Reflection ownership boundary", () => {
 describe("M257 Reflection bridge ownership boundary", () => {
   test("browser-safe bridge root has no DB, lattice, or Node imports", () => {
     const rootFiles = TypeScriptFiles(REFLECTION_BRIDGE_SOURCE)
-      .filter((file) => !file.includes(`${join("src", "server")}/`))
-      .filter((file) => !file.includes(`${join("src", "testing")}/`));
+      .filter((file) => !file.includes(`${join("src", "server")}${sep}`))
+      .filter((file) => !file.includes(`${join("src", "testing")}${sep}`));
     const violations = rootFiles.flatMap((file) =>
       imports(readFileSync(file, "utf8"))
         .filter((specifier) =>

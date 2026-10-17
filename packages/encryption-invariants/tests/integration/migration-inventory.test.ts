@@ -403,9 +403,9 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 354,
-      tag: "0354_strange_red_shift",
-      path: "0354_strange_red_shift.sql",
+      index: 374,
+      tag: "0374_strange_red_shift",
+      path: "0374_strange_red_shift.sql",
       sha256: "950d05509ccf6affa335753842e8f2f07a47ee5c1877577fadb8df48626b3f2b",
     });
 

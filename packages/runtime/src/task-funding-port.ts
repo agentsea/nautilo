@@ -46,7 +46,7 @@ export interface TaskFundingAdmission {
 export type TaskFundingTaskSource = Readonly<Omit<Pick<Task,
   | "id" | "ownerId" | "requestorId" | "agentId" | "preset"
   | "callingRoomId" | "targetChat" | "targetChatHandle" | "targetRoomId"
-  | "targetUserIds" | "useScope" | "scopeId" | "toolsMode"
+  | "targetUserIds" | "resultDelivery" | "useScope" | "scopeId" | "toolsMode"
   | "toolsWhitelist" | "awaitResponse" | "selectionProfile"
   | "selectionSpec" | "requestedModelId" | "parentTaskId" | "depth"
   | "fundingMode" | "metadata" | "contentRepresentation"
@@ -67,7 +67,7 @@ export type TaskFundingRunSource = Readonly<Pick<TaskRun,
 
 /** Server composition owns live funding policy and custody; Runtime owns Task identity. */
 export interface TaskFundingPort {
-  prepareCreation(input: TaskCreateInput, provenance: TaskCreationProvenance): Promise<boolean>;
+  prepareCreation(input: TaskCreateInput, provenance: TaskCreationProvenance): Promise<boolean | TaskFundingAdmission>;
   admit(task: TaskFundingTaskSource, priorRun?: TaskFundingRunSource): Promise<TaskFundingAdmission>;
   openSession(task: TaskFundingTaskSource, run: TaskFundingRunSource,
     modelId: string, wake: boolean): Promise<ForegroundChatFundingSession>;
@@ -87,7 +87,7 @@ export function uninstallTaskFundingPort(): void {
 export async function prepareTaskCreationFunding(
   input: TaskCreateInput,
   provenance: TaskCreationProvenance,
-): Promise<boolean> {
+): Promise<boolean | TaskFundingAdmission> {
   return installedPort ? installedPort.prepareCreation(input, provenance) : false;
 }
 

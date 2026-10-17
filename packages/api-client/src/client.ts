@@ -14,6 +14,16 @@ import {
   type ProtectedTaskExternalRequestReadBody,
   type ProtectedTaskExternalRequestRespondBody,
 } from "./schemas/protected-task-external-requests";
+import {
+  bolterConnectRequestSchema, bolterConnectionUpdateSchema, bolterRevisionRequestSchema,
+  bolterCreateRoomRequestSchema, bolterBindingUpdateSchema, bolterReviewedMessageRequestSchema,
+  bolterConnectionsResponseSchema, bolterConnectionSummarySchema, bolterOperationResponseSchema,
+  bolterConversationsResponseSchema, bolterCreateRoomResponseSchema, bolterRoomLinkResponseSchema,
+  bolterRoomLinkSummarySchema, bolterReviewedMessageResponseSchema, bolterDeliveriesResponseSchema,
+  bolterRoomLinksResponseSchema,
+  type BolterConnectRequest, type BolterConnectionUpdate, type BolterRevisionRequest,
+  type BolterCreateRoomRequest, type BolterBindingUpdate, type BolterReviewedMessageRequest,
+} from "@nautilo/types";
 import type {
   ModerationCommand,
   PersonalCostsRangeKey,
@@ -1432,6 +1442,15 @@ export const serverModelConfigSchema = z.object({
     }),
     decision: z.object({ operations: z.array(z.string()) }).nullable().optional(),
   })).optional(),
+  imageUnderstandingModel: z.string().nullable().optional().default(null),
+  effectiveImageUnderstandingModel: z.string().nullable().optional().default(null),
+  imageUnderstandingModels: z.array(z.object({
+    id: z.string(),
+    displayName: z.string(),
+    provider: z.string(),
+    available: z.boolean(),
+    unavailableReason: z.string().optional(),
+  })).optional().default([]),
   imageModel: z.string().nullable().optional().default(null),
   musicModel: z.string().nullable().optional().default(null),
   videoModel: z.string().nullable().optional().default(null),
@@ -2597,6 +2616,17 @@ const personalServiceRecoverySchema = z.object({
   }).strict()),
 }).strict();
 const personalCostsSummarySchema: z.ZodType<PersonalCostsSummary> = z.object({
+  subscriptions: z.array(z.object({
+    registrationId: z.uuid().nullable(),
+    model: z.string().min(1),
+    attempts: personalCostsCountSchema,
+    unresolvedAttempts: personalCostsCountSchema,
+    inputTokens: personalCostsCountSchema,
+    cachedInputTokens: personalCostsCountSchema,
+    outputTokens: personalCostsCountSchema,
+    totalTokens: personalCostsCountSchema,
+    apiEquivalentCostUsd: personalCostsMoneySchema,
+  }).strict()).optional(),
   serviceOperations: personalServiceOperationsSchema.optional(),
   serviceRecovery: personalServiceRecoverySchema.optional(),
   currency: z.literal("USD"),
@@ -3286,6 +3316,8 @@ type StatusErrorMap = Record<
  * internal `_fetch` JSON call sites.
  */
 interface RequestOpts<T> {
+  /** Exact caller generation for authority-sensitive Bolter operations only. */
+  expectedCredentialGeneration?: number;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** Path beginning with `/` (joined with `this.baseUrl`). */
   path: string;
@@ -4499,6 +4531,7 @@ export class NautiloApiClient {
         reflectionModel?: string;
         memoryReviewModel?: string | null;
         embeddingModel?: string | null;
+        imageUnderstandingModel?: string | null;
         imageModel?: string | null;
         musicModel?: string | null;
         videoModel?: string | null;
@@ -4888,13 +4921,20 @@ export class NautiloApiClient {
     });
   }
 
-  private async _fetch(url: string, init?: RequestInit): Promise<Response> {
+  private async _fetch(url: string, init?: RequestInit, expectedCredentialGeneration?: number): Promise<Response> {
+    const assertCurrent = () => {
+      if (expectedCredentialGeneration !== undefined && this.credentialGeneration !== expectedCredentialGeneration) {
+        throw new Error("The signed-in Nautilo session changed. Reload before continuing.");
+      }
+    };
+    assertCurrent();
     const requestCredentialGeneration = this.credentialGeneration;
     const authorization = new Headers(init?.headers).get("authorization");
     const canonicalAuthorization = this.token ? `Bearer ${this.token}` : null;
     const sentCanonicalSessionBearer =
       canonicalAuthorization !== null && authorization === canonicalAuthorization;
     let response = await this.transportFetch(url, init);
+    assertCurrent();
 
     if (response.status === 401 && this.unauthorizedResponseHandler && sentCanonicalSessionBearer) {
       // Only observe rejection of this client's canonical session bearer.
@@ -4912,12 +4952,14 @@ export class NautiloApiClient {
           init,
           requestCredentialGeneration,
         );
+      assertCurrent();
       if (typeof replacement === "string" && replacement.length > 0) {
         if (this.token !== replacement) return response;
         const retryHeaders = new Headers(init?.headers);
         retryHeaders.set("Authorization", `Bearer ${replacement}`);
         const retryInit = { ...(init ?? {}), headers: retryHeaders };
         response = await this.transportFetch(url, retryInit);
+        assertCurrent();
         if (response.status === 401) {
           await this.unauthorizedResponse(response, url, retryInit, true);
         }
@@ -5157,7 +5199,7 @@ export class NautiloApiClient {
     };
     if (body !== undefined) init.body = JSON.stringify(body);
 
-    const res = await this._fetch(`${this.baseUrl}${path}`, init);
+    const res = await this._fetch(`${this.baseUrl}${path}`, init, opts.expectedCredentialGeneration);
 
     if (!res.ok) {
       const errJson = (await res.json().catch(() => ({}))) as Record<string, unknown> & {
@@ -5187,6 +5229,9 @@ export class NautiloApiClient {
     // Success path: do NOT swallow JSON parse errors — legacy `await res.json()` sites throw on
     // non-JSON 2xx responses, and the helper must preserve that.
     const json: unknown = await res.json();
+    if (opts.expectedCredentialGeneration !== undefined && opts.expectedCredentialGeneration !== this.credentialGeneration) {
+      throw new Error("The signed-in Nautilo session changed. Reload before continuing.");
+    }
     if (schema) return schema.parse(json);
     return json as T;
   }
@@ -6128,6 +6173,48 @@ export class NautiloApiClient {
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
   }
 
+  async listChatGPTAccounts() {
+    return this.request({ path: "/api/account/chatgpt", schema: z.object({
+      canEnroll: z.boolean(), canEnrollWithDesktop: z.boolean().optional(), enabled: z.boolean(), accounts: z.array(z.object({
+        id: z.string().uuid(), label: z.string(), registrationLabel: z.string(), revision: z.number().int().positive(),
+        selected: z.boolean(), requiresReplacement: z.boolean().optional(), pendingRegistration: z.boolean().optional(), state: z.enum(["connected", "reconnect_required", "disconnected"]),
+      })),
+    }) });
+  }
+
+  async startChatGPTSignIn(accountId?: string, desktopPort?: number) {
+    return this.request({ method: "POST", path: "/api/account/chatgpt/sign-in", body: { ...(accountId ? { accountId } : {}), ...(desktopPort === undefined ? {} : { desktopPort }) },
+      schema: z.object({ attemptId: z.string().uuid(), authorizationUrl: z.string().url() }) });
+  }
+
+  async completeChatGPTSignIn(attemptId: string, callbackUrl: string) {
+    return this.request({ method: "POST", path: `/api/account/chatgpt/sign-in/${encodeURIComponent(attemptId)}/complete`, body: { callbackUrl },
+      schema: z.object({ status: z.enum(["connected", "failed"]), code: z.string().optional() }) });
+  }
+
+  async chatGPTSignInStatus(attemptId: string) {
+    return this.request({ path: `/api/account/chatgpt/sign-in/${encodeURIComponent(attemptId)}`,
+      schema: z.object({ status: z.enum(["pending", "connected", "failed", "cancelled"]), code: z.string().optional() }) });
+  }
+
+  async cancelChatGPTSignIn(attemptId: string) {
+    return this.request({ method: "DELETE", path: `/api/account/chatgpt/sign-in/${encodeURIComponent(attemptId)}`,
+      schema: z.object({ ok: z.boolean() }) });
+  }
+
+  async selectChatGPTAccount(accountId: string | null) {
+    return this.request({ method: "PUT", path: "/api/account/chatgpt/selection", body: { accountId }, schema: z.object({ ok: z.boolean() }) });
+  }
+
+  async listChatGPTModels(accountId: string) {
+    return this.request({ path: `/api/account/chatgpt/${encodeURIComponent(accountId)}/models`, schema: z.object({ models: z.array(z.object({ id: z.string(), name: z.string() })) }) });
+  }
+
+  async disconnectChatGPTAccount(accountId: string, revision: number) {
+    return this.request({ method: "POST", path: `/api/account/chatgpt/${encodeURIComponent(accountId)}/disconnect`, body: { revision },
+      schema: z.object({ remoteRevocationConfirmed: z.boolean() }) });
+  }
+
   async listProviderCredentials(): Promise<{
     allowPersonalProviderKeys?: boolean;
     credentials: CredentialMetadata[];
@@ -6184,7 +6271,7 @@ export class NautiloApiClient {
     options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<PersonalCapabilityPreferencesResponse> {
     return this.request({
-      path: "/api/account/capability-preferences",
+      path: "/api/account/capability-preferences?include=imageUnderstanding",
       auth: "session-fresh",
       schema: personalCapabilityPreferencesResponseSchema,
       defaultErrorPrefix: "GET /api/account/capability-preferences",
@@ -6199,7 +6286,7 @@ export class NautiloApiClient {
   ): Promise<PersonalCapabilityPreferencesResponse> {
     return this.request({
       method: "PUT",
-      path: "/api/account/capability-preferences",
+      path: "/api/account/capability-preferences?include=imageUnderstanding",
       auth: "session-fresh",
       body: replacePersonalCapabilityPreferencesRequestSchema.parse(input),
       schema: personalCapabilityPreferencesResponseSchema,
@@ -7654,6 +7741,60 @@ export class NautiloApiClient {
       schema: ConnectedAppsResponseSchema,
       defaultErrorPrefix: "GET /api/connected-apps",
     });
+  }
+
+  private bolterRequest<T>(opts: RequestOpts<T>): Promise<T> {
+    return this.request({ ...opts, auth: "session-fresh", expectedCredentialGeneration: this.credentialGeneration });
+  }
+
+  getBolterConnections(signal?: AbortSignal) {
+    return this.bolterRequest({ path: "/api/bolter/connections", schema: bolterConnectionsResponseSchema, ...(signal ? { signal } : {}) });
+  }
+  connectBolter(input: BolterConnectRequest = {}) {
+    return this.bolterRequest({ method: "POST", path: "/api/bolter/connections/connect",
+      body: bolterConnectRequestSchema.parse(input), schema: bolterOperationResponseSchema });
+  }
+  getBolterOperation(operationId: string, signal?: AbortSignal) {
+    return this.bolterRequest({ path: `/api/bolter/operations/${encodeURIComponent(operationId)}`, schema: bolterOperationResponseSchema, ...(signal ? { signal } : {}) });
+  }
+  cancelBolterOperation(operationId: string) {
+    return this.bolterRequest({ method: "POST", path: `/api/bolter/operations/${encodeURIComponent(operationId)}/cancel`, body: {}, schema: bolterOperationResponseSchema });
+  }
+  checkBolterConnection(connectionId: string) {
+    return this.bolterRequest({ method: "POST", path: `/api/bolter/connections/${encodeURIComponent(connectionId)}/check`, body: {}, schema: bolterConnectionSummarySchema });
+  }
+  updateBolterConnection(connectionId: string, input: BolterConnectionUpdate) {
+    return this.bolterRequest({ method: "PATCH", path: `/api/bolter/connections/${encodeURIComponent(connectionId)}`,
+      body: bolterConnectionUpdateSchema.parse(input), schema: bolterConnectionSummarySchema });
+  }
+  revokeBolterConnection(connectionId: string, input: BolterRevisionRequest) {
+    return this.bolterRequest({ method: "DELETE", path: `/api/bolter/connections/${encodeURIComponent(connectionId)}`,
+      body: bolterRevisionRequestSchema.parse(input), schema: bolterConnectionSummarySchema });
+  }
+  getBolterConversations(connectionId: string, signal?: AbortSignal) {
+    return this.bolterRequest({ path: `/api/bolter/connections/${encodeURIComponent(connectionId)}/conversations`, schema: bolterConversationsResponseSchema, ...(signal ? { signal } : {}) });
+  }
+  getBolterRoomLinks(connectionId: string, signal?: AbortSignal) {
+    return this.bolterRequest({ path: `/api/bolter/connections/${encodeURIComponent(connectionId)}/rooms`, schema: bolterRoomLinksResponseSchema,
+      ...(signal ? { signal } : {}) });
+  }
+  createBolterRoom(connectionId: string, input: BolterCreateRoomRequest) {
+    return this.bolterRequest({ method: "POST", path: `/api/bolter/connections/${encodeURIComponent(connectionId)}/rooms`,
+      body: bolterCreateRoomRequestSchema.parse(input), schema: bolterCreateRoomResponseSchema });
+  }
+  getBolterRoom(roomId: string, signal?: AbortSignal) {
+    return this.bolterRequest({ path: `/api/bolter/rooms/${encodeURIComponent(roomId)}`, schema: bolterRoomLinkResponseSchema, ...(signal ? { signal } : {}) });
+  }
+  updateBolterBinding(bindingId: string, input: BolterBindingUpdate) {
+    return this.bolterRequest({ method: "PATCH", path: `/api/bolter/bindings/${encodeURIComponent(bindingId)}`,
+      body: bolterBindingUpdateSchema.parse(input), schema: bolterRoomLinkSummarySchema });
+  }
+  sendBolterMessage(bindingId: string, input: BolterReviewedMessageRequest) {
+    return this.bolterRequest({ method: "POST", path: `/api/bolter/bindings/${encodeURIComponent(bindingId)}/messages`,
+      body: bolterReviewedMessageRequestSchema.parse(input), schema: bolterReviewedMessageResponseSchema });
+  }
+  getBolterDeliveries(bindingId: string, signal?: AbortSignal) {
+    return this.bolterRequest({ path: `/api/bolter/bindings/${encodeURIComponent(bindingId)}/deliveries`, schema: bolterDeliveriesResponseSchema, ...(signal ? { signal } : {}) });
   }
 
   async getConnectedAppResultMedia(

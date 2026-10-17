@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import type {
   RelayAcpClientMessage,
   RelayAcpHostTransport,
@@ -24,6 +25,7 @@ import {
 import { validateAcpInitializeCapabilityTruth } from "../../../../packages/acp-host/src/capability-truth";
 
 const UNSUPPORTED_REQUEST_CAPABILITIES = validateAcpInitializeCapabilityTruth({ protocolVersion: 1, agentCapabilities: {} });
+const executablePath = join(process.cwd(), "opencode");
 
 const socket: RelayAcpSession = {
   relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop-session",
@@ -351,7 +353,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes, clock, observedTimeouts),
       },
     );
@@ -376,7 +378,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const folder = process.cwd();
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
-      { launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }), createRuntime: liveRuntime(processes) },
+      { launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }), createRuntime: liveRuntime(processes) },
     );
     host.onRegistered({ ...socket, selectedProtocolVersion: 14 }, { send: (message) => { messages.push(message); return true; } });
     await host.onPrepare({ ...prepare("old"), scope: { ...socket, selectedProtocolVersion: 14 } });
@@ -394,7 +396,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -418,7 +420,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     let nextId = 0;
     const folder = process.cwd();
     const launch: AcpCanonicalLaunchAdmission = {
-      executablePath: "/reviewed/opencode", cwd: folder,
+      executablePath, cwd: folder,
       environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" },
     };
     let runtime: AcpHostRuntime<number> | undefined;
@@ -455,7 +457,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     expect(processes.peers[0]?.methods).toEqual(["initialize", "session/new", "session/prompt"]);
     expect(processes.peers[0]?.modeIds).toEqual([]);
     expect(processes.specs).toEqual([{
-      executablePath: "/reviewed/opencode", args: ["acp"], cwd: folder,
+      executablePath, args: ["acp"], cwd: folder,
       env: launch.environment, shell: false, detached: true,
     }]);
     expect(processes.specs[0]?.env).not.toHaveProperty("OPENAI_API_KEY");
@@ -486,7 +488,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -508,7 +510,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         startFailureDiagnostic: (message) => { diagnostics.push(message); },
         createRuntime: liveRuntime(processes),
       },
@@ -537,7 +539,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
         terminalFailureDiagnostic: (message) => { diagnostics.push(message); },
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -565,7 +567,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       {
         now: () => now,
         mintId: () => `id-${++ids}`,
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -637,7 +639,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     // Current Folder selection while it is pending must make this admission stale.
     current = { path: `${folder}/.`, revision: 2 };
     admission.resolve({
-      executablePath: "/reviewed/opencode", cwd: folder,
+      executablePath, cwd: folder,
       environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" },
     });
     await within(start);
@@ -653,7 +655,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: ({ resolveLaunch, turnFor }) => {
           runtimes += 1;
           if (runtimes === 1) return {
@@ -708,7 +710,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       {
         mintId: () => "reused-opaque-id",
         turnClock: clock,
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: ({ resolveLaunch, turnFor }) => {
           runtimes += 1;
           if (runtimes === 1) return {
@@ -787,7 +789,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
         turnClock: clock,
         turnLimits: { stallTimeoutMs: 5, observationIntervalMs: 1 },
         turnHealthDiagnostic: (message) => { diagnostics.push(message); },
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -829,7 +831,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       {
         turnClock: clock,
         turnLimits: { stallTimeoutMs: 5, observationIntervalMs: 1 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -867,7 +869,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -900,7 +902,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -925,7 +927,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -974,7 +976,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1000,7 +1002,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1029,7 +1031,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const host = new ElectronOpenCodeAcpExecutionHost(
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1068,7 +1070,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       { currentFolder: () => ({ path: folder, revision: 1 }) },
       {
         mintId: () => "reused-opaque-id",
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1104,7 +1106,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
         turnClock: clock,
         turnLimits: { stallTimeoutMs: 5, observationIntervalMs: 1 },
         turnHealthDiagnostic: (message) => { diagnostics.push(message); },
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1147,7 +1149,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       {
         turnClock: clock,
         turnLimits: { stallTimeoutMs: 5, observationIntervalMs: 1 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1186,7 +1188,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
       {
         turnClock: clock,
         turnLimits: { stallTimeoutMs: 20, observationIntervalMs: 1 },
-        launchAdmission: async () => ({ executablePath: "/reviewed/opencode", cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
+        launchAdmission: async () => ({ executablePath, cwd: folder, environment: { PATH: "/reviewed:/usr/bin", HOME: "/private/home", TMPDIR: "/private/tmp", LANG: "C", LC_ALL: "C" } }),
         createRuntime: liveRuntime(processes),
       },
     );
@@ -1227,6 +1229,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     let id = 0;
     const host = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 7 }) }, {
       mintId: () => `opaque-${++id}`,
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
     });
     const transport: RelayAcpHostTransport = { send: (message) => { messages.push(message); return true; } };
     host.onRegistered(socket, transport);
@@ -1241,6 +1244,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const noFolderMessages: RelayAcpClientMessage[] = [];
     const noFolderDelegateCalls: string[] = [];
     const noFolder = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => null }, {
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
       readiness: {
         onRegistered: () => { noFolderDelegateCalls.push("registered"); },
         onReadiness: () => { noFolderDelegateCalls.push("readiness"); },
@@ -1258,6 +1262,7 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
     const folderDelegateCalls: string[] = [];
     let delegateTransport: RelayAcpHostTransport | null = null;
     const withFolder = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 1 }) }, {
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
       readiness: {
         onRegistered: (_session, transport) => { folderDelegateCalls.push("registered"); delegateTransport = transport; },
         onReadiness: (message) => {
@@ -1276,13 +1281,18 @@ describe("ElectronOpenCodeAcpExecutionHost", () => {
 
   test("fails closed without a Current Folder and caps unconsumed opaque receipts", async () => {
     const messages: RelayAcpClientMessage[] = [];
-    const noFolder = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => null });
+    const noFolder = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => null }, {
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
+    });
     noFolder.onRegistered(socket, { send: (message) => { messages.push(message); return true; } });
     await noFolder.onPrepare(prepare("none"));
     expect(messages).toHaveLength(0);
 
     let id = 0;
-    const host = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 1 }) }, { mintId: () => `receipt-${++id}` });
+    const host = new ElectronOpenCodeAcpExecutionHost({ currentFolder: () => ({ path: process.cwd(), revision: 1 }) }, {
+      mintId: () => `receipt-${++id}`,
+      createRuntime: liveRuntime(new FakeProcessRuntime()),
+    });
     host.onRegistered(socket, { send: (message) => { messages.push(message); return true; } });
     for (let index = 0; index < 33; index += 1) await host.onPrepare(prepare(`request-${index}`));
     expect(messages).toHaveLength(32);

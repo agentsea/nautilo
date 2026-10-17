@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 
 import {
   captureDesktopFilesystemGrantRootIdentity,
@@ -55,21 +56,23 @@ function expectRejected(
 
 describe("Desktop Filesystem Grant filesystem identity", () => {
   test("captures an existing direct directory and canonicalizes /var through realpath", async () => {
+    const selected = resolve("/var/approved");
+    const canonical = resolve("/private/var/approved");
     const fs = filesystem({
-      "/var/approved": {
+      [selected]: {
         lstat: stat({ device: 10, inode: 20 }),
         stat: stat({ device: 10, inode: 20 }),
-        realpath: "/private/var/approved",
+        realpath: canonical,
       },
-      "/private/var/approved": { stat: stat({ device: 10, inode: 20 }) },
+      [canonical]: { stat: stat({ device: 10, inode: 20 }) },
     });
 
-    const result = await captureDesktopFilesystemGrantRootIdentity("/var/approved", fs);
+    const result = await captureDesktopFilesystemGrantRootIdentity(selected, fs);
 
     expect(result).toEqual({
       ok: true,
-      canonicalRoot: "/private/var/approved",
-      filesystemIdentity: { realRoot: "/private/var/approved", device: 10, inode: 20 },
+      canonicalRoot: canonical,
+      filesystemIdentity: { realRoot: canonical, device: 10, inode: 20 },
     });
   });
 

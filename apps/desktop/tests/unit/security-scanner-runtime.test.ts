@@ -75,6 +75,22 @@ function manifest(overrides: Partial<Record<string, unknown>> = {}): SecuritySca
 async function* chunks(value: Uint8Array): AsyncIterable<Uint8Array> { yield value; }
 
 describe("D560 managed security-scanner runtime", () => {
+  test("refuses Windows scanner installation before downloading or activating bytes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "nautilo-scanner-unsupported-"));
+    let fetches = 0;
+    let healthChecks = 0;
+    const manager = new SecurityScannerRuntimeManager({
+      platform: "win32", arch: "x64", runtimeRoot: root,
+      async fetch() { fetches++; throw new Error("Unexpected download"); },
+      async health() { healthChecks++; return true; }, now: () => 1,
+    }, manifest());
+    try {
+      expect((await manager.install("gitleaks", "engine")).details.code).toBe("SECURITY_SCANNER_PLATFORM_UNSUPPORTED");
+      expect(fetches).toBe(0);
+      expect(healthChecks).toBe(0);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   test("ships one exact media.nautilo.ai identity per supported component and macOS architecture", () => {
     const production = validateSecurityScannerManifest(PRODUCTION_SECURITY_SCANNER_MANIFEST);
     expect(production).not.toBeNull();
@@ -115,7 +131,7 @@ describe("D560 managed security-scanner runtime", () => {
     expect(validateSecurityScannerManifest({ ...manifest(), artifacts: [{ ...artifact, notices: { ...notices, unexpected: true } }] })).toBeNull();
   });
 
-  test("downloads only a manifest-approved response, verifies exact bytes, reuses the exact release, and activates atomically", async () => {
+  test.skipIf(process.platform === "win32")("downloads only a manifest-approved response, verifies exact bytes, reuses the exact release, and activates atomically", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-security-scanner-test-"));
     let fetches = 0;
     const manager = new SecurityScannerRuntimeManager({
@@ -148,7 +164,7 @@ describe("D560 managed security-scanner runtime", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  test("rejects a redirect/response host outside the reviewed host and retains no active release", async () => {
+  test.skipIf(process.platform === "win32")("rejects a redirect/response host outside the reviewed host and retains no active release", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-security-scanner-test-"));
     const manager = new SecurityScannerRuntimeManager({
       platform: "darwin", arch: "arm64", runtimeRoot: root,
@@ -174,7 +190,7 @@ describe("D560 managed security-scanner runtime", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  test("keeps the prior healthy generation active when a replacement artifact fails verification", async () => {
+  test.skipIf(process.platform === "win32")("keeps the prior healthy generation active when a replacement artifact fails verification", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-security-scanner-test-"));
     const v2 = { ...manifest().artifacts[0]!, version: "2.0.0", sha256: "0".repeat(64), entrypointSha256: "0".repeat(64) };
     const manager = new SecurityScannerRuntimeManager({
@@ -189,7 +205,7 @@ describe("D560 managed security-scanner runtime", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  test("installs rule content as a distinct non-executable identity and resolves its payload directory", async () => {
+  test.skipIf(process.platform === "win32")("installs rule content as a distinct non-executable identity and resolves its payload directory", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-security-scanner-test-"));
     const rules = tarGz([{ name: "rules/unsafe-input.yml", bytes: new TextEncoder().encode("rules: []\n") }]);
     const ruleArtifact = {
@@ -221,7 +237,7 @@ describe("D560 managed security-scanner runtime", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  test("rejects content after the two-block tar terminator", async () => {
+  test.skipIf(process.platform === "win32")("rejects content after the two-block tar terminator", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-security-scanner-test-"));
     const archive = tarGz([{ name: "bin/gitleaks", bytes: binary }], new TextEncoder().encode("trailing"));
     const artifact = { ...manifest().artifacts[0]!, format: "tar.gz" as const, archiveBytes: archive.byteLength, sha256: sha256(archive) };
@@ -236,7 +252,7 @@ describe("D560 managed security-scanner runtime", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
-  test("accepts all-zero tar padding after the terminator", async () => {
+  test.skipIf(process.platform === "win32")("accepts all-zero tar padding after the terminator", async () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-security-scanner-test-"));
     const archive = tarGz([{ name: "bin/gitleaks", bytes: binary }], new Uint8Array(1_024));
     const artifact = { ...manifest().artifacts[0]!, format: "tar.gz" as const, archiveBytes: archive.byteLength, sha256: sha256(archive) };

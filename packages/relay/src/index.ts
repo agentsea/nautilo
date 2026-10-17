@@ -1,3 +1,4 @@
+export { isRelayPathWithinRoot, pathApiForRelayPath } from "./relay-path";
 export type {
   RelayCapabilities,
   ToolPolicy,
@@ -411,6 +412,8 @@ export {
   type RelayAcpHostPort,
   type RelayAcpHostTransport,
   type RelayAcpSession,
+  type RelayBolterHostPort,
+  type RelayBolterHostTransport,
   type RelayClaudeConnectionHostPort,
   type RelayClaudeConnectionHostTransport,
   type RelayClaudeConnectionSession,
@@ -670,3 +673,5 @@ export { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayLocalExecut
 export { RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION, isRelayTaskProjectFileDispatch } from "./protocol";
 
 export { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture } from "./protocol";
+
+export * from "./bolter-protocol";

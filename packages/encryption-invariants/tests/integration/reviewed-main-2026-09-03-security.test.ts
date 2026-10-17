@@ -1,3 +1,6 @@
+import { reviewedExternalMessageAttributionDtoReplacements } from "../../baseline/reviewed-external-message-attribution-dto";
+import { reviewedImageAssistanceDtoReplacements } from "../../baseline/reviewed-image-assistance-dto";
+
 import { describe, expect, test } from "bun:test";
 import { REVIEWED_LANDING_DTO_DECLARATIONS, SUPERSEDED_LANDING_DTO_LOCATORS } from "../../baseline/reviewed-main-2026-09-05-landing-dto";
 
@@ -115,7 +118,9 @@ function currentSeptember12Replacement(locator: string) {
   } else {
     throw new Error(`Unreviewed September 17 successor for ${locator}`);
   }
-  return { ...september12, structuralSignatures };
+  return [...reviewedExternalMessageAttributionDtoReplacements(
+    reviewedImageAssistanceDtoReplacements([{ ...september12, structuralSignatures }]),
+  )][0]!;
 }
 
 describe("reviewed main 2026-09-03 encryption inventory", () => {
@@ -189,7 +194,9 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === declaration.locator))
-          .toEqual(REVIEWED_M318_DTO_DECLARATIONS.filter((entry) => entry.locator === declaration.locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_M318_DTO_DECLARATIONS.filter((entry) => entry.locator === declaration.locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_LANDING_DTO_LOCATORS.has(declaration.locator)) {
@@ -224,7 +231,9 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === locator))
-          .toEqual(REVIEWED_M318_DTO_DECLARATIONS.filter((entry) => entry.locator === locator));
+          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+            REVIEWED_M318_DTO_DECLARATIONS.filter((entry) => entry.locator === locator),
+          ))]);
         continue;
       }
       if (SUPERSEDED_LANDING_DTO_LOCATORS.has(locator)) {

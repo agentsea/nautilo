@@ -229,6 +229,8 @@ describe("Reflection durable Record schema", () => {
       "stage",
       "state",
       "claim_generation",
+      "accepted_model_binding",
+      "accepted_model_binding_generation",
       "attempt_count",
       "quarantine_round",
       "recovery_policy_version",

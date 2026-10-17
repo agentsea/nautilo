@@ -60,7 +60,7 @@ export {
   type ScopeMemoryEnvelopeWithOrigin,
 } from "./scope-memory-origin";
 
-/** D086 Phase 4 — shared eligible-model list types (implementation in `@nautilo/agent`). */
+/** shared eligible-model list types (implementation in `@nautilo/agent`). */
 export type {
   EligibleModel,
   EligibleModelCapabilities,
@@ -78,7 +78,7 @@ export type {
   RoutingClass,
 } from "./eligible-models-types";
 
-/** D429 Phase 1 — resolved catalog projection types (implementation in `@nautilo/agent`). */
+/** resolved catalog projection types (implementation in `@nautilo/agent`). */
 export type {
   IntelligenceTier,
   ResolvedCatalogAvailability,
@@ -122,7 +122,7 @@ export {
 } from "./command-approvals";
 
 /**
- * D120 A1 — sync in-memory cache for bootstrap-time identity facts
+ * sync in-memory cache for bootstrap-time identity facts
  * (ownerId / ownerActorId / defaultAgentId). Populated at server boot
  * + refreshed post-claim. Replaces NAUTILO_OWNER_ID / OWNER_ACTOR_ID /
  * DEFAULT_AGENT_ID env-var reads scattered through the server.
@@ -182,10 +182,10 @@ export {
 } from "./tool-policies";
 
 /**
- * D079 Phase 4 / G2 — per-command trust policies for the unified
- * `file` tool. Consumed by the file-tool handler (registered in G3)
- * and the approval dock (G4 commit 11). See
- * `pr-reviews/DECISION-2026-04-21-file-tool-shape.md` + H-025.
+ * Per-command trust policies for the unified
+ * `file` tool. Consumed by the file-tool handler
+ * and the approval dock to apply the same policy
+ * during admission and approval.
  */
 export {
   resolveFileCommandPolicy,
@@ -229,7 +229,7 @@ export {
 
 export { initPolicyResolver, getPolicyResolver } from "./resolver-singleton";
 
-/** D476 Phase 2 — trusted, name-driven destination resolution for projection sharing. */
+/** trusted, name-driven destination resolution for projection sharing. */
 export {
   MAX_ROOM_NAME_CANDIDATES,
   ROOM_NAME_QUERY_CANDIDATE_LIMIT,
@@ -245,7 +245,7 @@ export {
 } from "./room-name-resolver";
 
 /**
- * D418 Commit 3 — Workstation execution-admission engine.
+ * Workstation execution-admission engine.
  *
  * Strict pure module: takes a slim execution-admission contract
  * (`executionClass + activeSession + exactPlan + tool/operation identity`)
@@ -660,7 +660,7 @@ export {
 } from "./focus";
 
 /**
- * D426 Phase 2 — durable, requester-private Thread Responder substrate
+ * durable, requester-private Thread Responder substrate
  * (per-(Subthread, human) Genie selection; no expiry). See
  * `./focus/responder`.
  */
@@ -791,3 +791,7 @@ export {
 export { inspectContentAccess, type ContentAccessSummary } from "./content-access-summary";
 export { createContentAccessPreviewCodec } from "./content-access-preview";
 export type { ContentAccessReceipt } from "./content-access-publication";
+
+export { getExternalRoomPolicy, restrictExternalRoomEnvelope, assertExternalRoomTextMode, assertExternalRoomSubject, externalRoomExecutionDependencies, type ExternalRoomExecutionDependencies, type ExternalRoomPolicy } from "./external-room-policy";
+
+export { insertPrivateRoomBundleTx } from "./queries";

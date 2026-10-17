@@ -15,6 +15,7 @@ import {
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
 import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 
 /**
  * `in_scope` intent shortcut for asynchronous scoped work.
@@ -44,10 +45,11 @@ const inScopeSchema = z.object({
 type InScopeArgs = z.infer<typeof inScopeSchema>;
 
 const IN_SCOPE_DESCRIPTION =
-  "Have a helper do a narrow task with only the tools you list and none of your private memory (scoped). Runs in the background; I'll report back to this chat when it's done. After calling this, tell the user the work is running in the background.";
+  "Have a helper do a narrow task with only the tools you list and none of your private memory (scoped). Runs in the background; I'll report back to this chat when it's done. This isolated scope cannot access Workspace artifacts. For an existing Room document, use file.read or convert directly, or in_background with the same Room context; do not use in_scope. After calling this, tell the user the work is running in the background.";
 
 export function createInScopeTool(context?: unknown) {
   const ctx: ShortcutContext = shortcutContextFromUnknown(context);
+  const personalTaskControls = (context as Record<string, unknown> | undefined)?.["personalTaskControls"] === true;
 
   return new DynamicStructuredTool({
     name: "in_scope",
@@ -59,7 +61,7 @@ export function createInScopeTool(context?: unknown) {
         return "Cannot start scoped task: missing owner or agent context.";
       }
       if (!ctx.causalHumanUserId) return "Cannot start task: initiating Human is unavailable.";
-      const selectionError = validateTaskModelSelectionForCreate({
+      const selectionError = personalTaskControls || getCapabilityFundingSession() ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         // in_scope is always tool-using with a (possibly empty) whitelist.

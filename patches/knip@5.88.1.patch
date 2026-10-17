@@ -1,0 +1,29 @@
+diff --git a/dist/plugins/bun/index.js b/dist/plugins/bun/index.js
+--- a/dist/plugins/bun/index.js
++++ b/dist/plugins/bun/index.js
+@@ -1,4 +1,5 @@
+ import parseArgs from 'minimist';
++import { isFile } from "../../util/fs.js";
+ import { toDeferResolve, toEntry } from "../../util/input.js";
+ const title = 'Bun';
+ const enablers = ['bun'];
+@@ -10,8 +11,8 @@
+     const preload = localConfig.test?.preload ?? [];
+     return preload.map(specifier => toDeferResolve(specifier));
+ };
+-const toPatterns = (arg) => {
+-    if (/[*{?]/.test(arg))
++const toPatterns = (arg, cwd) => {
++    if (/[*{?]/.test(arg) || isFile(cwd, arg))
+         return [arg];
+     const dir = arg.replace(/\/+$/, '');
+     return patterns.map(pattern => `${dir}/${pattern}`);
+@@ -22,7 +23,7 @@
+         if (/(?<=^|\s)bun test/.test(script)) {
+             const parsed = parseArgs(script.split(' '), { string: ['timeout', 'rerun-each', 'preload'] });
+             const args = parsed._.filter(id => id !== 'bun' && id !== 'test');
+-            const inputs = (args.length === 0 ? patterns : args.flatMap(toPatterns)).map(toEntry);
++            const inputs = (args.length === 0 ? patterns : args.flatMap(arg => toPatterns(arg, options.cwd))).map(toEntry);
+             for (const specifier of [parsed.preload ?? []].flat())
+                 inputs.push(toDeferResolve(specifier));
+             return inputs;

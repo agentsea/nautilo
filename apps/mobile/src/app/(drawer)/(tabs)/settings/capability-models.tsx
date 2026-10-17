@@ -1,13 +1,16 @@
 import { Stack, router, type Href, useFocusEffect } from "expo-router";
-import { useCallback, useMemo, useRef, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
 import { Screen } from "@/components/screen";
 import { SettingsStatus } from "@/components/settings/settings-status";
 import {
   createPersonalCapabilityPreferencesController,
+  personalCapabilityDescription,
   personalCapabilityPreferenceErrorMessage,
+  personalCapabilityReadinessLabel,
+  personalCapabilitySelectionDisplayName,
   type PersonalCapabilityPreferencesController,
 } from "@/features/settings/personal-capability-preferences-controller";
 import { settingsScopeForVerifiedViewer } from "@/features/settings/settings-data-state";
@@ -22,6 +25,7 @@ export default function CapabilityModelsScreen() {
   const { status, viewer, viewerState } = useAuth();
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
+  const focusedRef = useRef(false);
   const serverRef = useRef(activeServer);
   serverRef.current = activeServer;
   const controllerRef = useRef<PersonalCapabilityPreferencesController | null>(null);
@@ -45,17 +49,30 @@ export default function CapabilityModelsScreen() {
   }), [activeServer, status, viewer, viewerState]);
 
   useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
     controller.setScope(scope);
     if (scope) void controller.load();
-    return () => controller.setScope(null);
+    return () => {
+      focusedRef.current = false;
+      controller.setScope(null);
+    };
   }, [controller, scope]));
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (next === "active" && focusedRef.current && scope) {
+        controller.setScope(scope);
+        void controller.load();
+      }
+    });
+    return () => subscription.remove();
+  }, [controller, scope]);
 
   const goBack = () => router.canGoBack() ? router.back() : router.replace("/(drawer)/(tabs)/settings");
   return (
     <View style={styles.container}>
       <Stack.Screen options={{ header: () => <AppBar title="Capability models" left={<AppBarBackButton onPress={goBack} />} /> }} />
       <Screen edgeTop={false} contentStyle={styles.content}>
-        <Text style={styles.helper}>These account-wide choices apply to your own research, decisions, generated media and speech. Genie and Room model settings stay separate.</Text>
+        <Text style={styles.helper}>These account-wide choices apply to your own research, decisions, image understanding, eligible personal Memory processing, generated media and speech. Genie and Room model settings stay separate.</Text>
         {!scope ? <SettingsStatus tone="warning">Sign in and reconnect before changing capability models.</SettingsStatus> : null}
         {state.loading && !state.data ? <ActivityIndicator color={t.color.brand.accent} accessibilityLabel="Loading capability models" /> : null}
         {state.loadError ? <SettingsStatus tone="error">{personalCapabilityPreferenceErrorMessage(state.loadError)}</SettingsStatus> : null}
@@ -71,13 +88,10 @@ export default function CapabilityModelsScreen() {
           >
             <View style={styles.rowCopy}>
               <Text style={styles.rowLabel}>{capability.label}</Text>
-              <Text style={styles.rowDetail}>{capability.selection.displayName} · {capability.selection.source === "personal" ? "Your choice" : "Inherited"}</Text>
+              <Text style={styles.rowDetail}>{personalCapabilitySelectionDisplayName(capability)} · {capability.selection.source === "personal" ? "Your choice" : "Inherited"}</Text>
+              {capability.role === "imageUnderstanding" ? <Text style={styles.rowDetail}>{personalCapabilityDescription(capability)}</Text> : null}
               <Text style={[styles.readiness, capability.readiness.status !== "ready" && styles.warning]}>
-                {capability.readiness.status === "ready"
-                  ? capability.readiness.fundingSource === "personal"
-                    ? `Ready · Your ${capability.readiness.providerRoute} credential`
-                    : `Ready · Server ${capability.readiness.providerRoute} credential`
-                  : capability.readiness.reason ?? "Unavailable"}
+                {personalCapabilityReadinessLabel(capability)}
               </Text>
             </View>
             <Text style={styles.chevron}>›</Text>

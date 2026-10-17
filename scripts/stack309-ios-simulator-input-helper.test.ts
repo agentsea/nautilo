@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 const sourcePath = new URL("./stack309-ios-simulator-input.swift", import.meta.url);
 
@@ -44,8 +45,9 @@ describe("Stack 309 iOS Simulator input helper", () => {
     expect(source).not.toContain("fixture.value +");
   });
 
-  test("typechecks independently without installing or replacing any helper", async () => {
-    const result = await run("swiftc", ["-typecheck", sourcePath.pathname]);
+  // The helper imports Apple frameworks that require the macOS SDK.
+  test.skipIf(process.platform !== "darwin")("typechecks independently without installing or replacing any helper", async () => {
+    const result = await run("swiftc", ["-typecheck", fileURLToPath(sourcePath)]);
     expect(result.code, result.stderr).toBe(0);
   });
 });

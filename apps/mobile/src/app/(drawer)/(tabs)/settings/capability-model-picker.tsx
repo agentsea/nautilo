@@ -1,6 +1,6 @@
-import { Stack, router, useLocalSearchParams } from "expo-router";
+import { Stack, router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Text, View } from "react-native";
 import { isPersonalCapabilityRole } from "@nautilo/types";
 
 import { AppBar, AppBarBackButton } from "@/components/app-bar";
@@ -8,6 +8,8 @@ import { SettingsPickerScreen } from "@/components/settings/settings-picker-scre
 import { SettingsStatus } from "@/components/settings/settings-status";
 import {
   createPersonalCapabilityPreferencesController,
+  PERSONAL_CAPABILITY_INHERIT,
+  personalCapabilityPickerOptions,
   personalCapabilityPreferenceErrorMessage,
   type PersonalCapabilityPreferencesController,
 } from "@/features/settings/personal-capability-preferences-controller";
@@ -18,8 +20,6 @@ import { useServers } from "@/providers/server-registry";
 import { useAppTheme } from "@/providers/theme";
 import type { AppTheme } from "@/theme/tokens";
 
-const INHERIT = "__inherit__";
-
 export default function CapabilityModelPickerScreen() {
   const params = useLocalSearchParams<{ role?: string }>();
   const role = isPersonalCapabilityRole(params.role) ? params.role : null;
@@ -28,6 +28,7 @@ export default function CapabilityModelPickerScreen() {
   const t = useAppTheme();
   const styles = useMemo(() => createStyles(t), [t]);
   const [query, setQuery] = useState("");
+  const focusedRef = useRef(false);
   const serverRef = useRef(activeServer);
   serverRef.current = activeServer;
   const controllerRef = useRef<PersonalCapabilityPreferencesController | null>(null);
@@ -50,41 +51,44 @@ export default function CapabilityModelPickerScreen() {
     viewer: viewer && viewerState === "verified" ? viewer : null,
   }), [activeServer, status, viewer, viewerState]);
 
-  useEffect(() => {
+  useFocusEffect(useCallback(() => {
+    focusedRef.current = true;
     controller.setScope(scope);
     if (scope) void controller.load();
-    return () => controller.setScope(null);
+    return () => {
+      focusedRef.current = false;
+      controller.setScope(null);
+    };
+  }, [controller, scope]));
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (next) => {
+      if (
+        next === "active"
+        && focusedRef.current
+        && scope
+        && !controller.data.getState().mutating
+      ) {
+        controller.setScope(scope);
+        void controller.load();
+      }
+    });
+    return () => subscription.remove();
   }, [controller, scope]);
 
   const capability = role ? state.data?.capabilities.find((entry) => entry.role === role) : undefined;
-  const needle = query.trim().toLocaleLowerCase();
-  const options = capability ? [
-    {
-      id: INHERIT,
-      label: `Inherit · ${capability.selection.source === "inherited" ? capability.selection.displayName : "workflow default"}`,
-      description: "Follow the current workflow default.",
-    },
-    ...capability.options.filter((option) => !needle || [option.modelId, option.displayName, option.provider]
-      .some((value) => value.toLocaleLowerCase().includes(needle)))
-      .map((option) => ({
-        id: option.modelId,
-        label: option.displayName,
-        description: `${option.modelId} · ${option.provider} · ${option.readiness.status === "ready"
-          ? option.readiness.fundingSource === "personal"
-            ? `Your ${option.readiness.providerRoute} credential`
-            : `Server ${option.readiness.providerRoute} credential`
-          : option.readiness.reason ?? "Unavailable now"}`,
-      })),
-  ] : [];
-  const selectedId = role && state.data?.overrides[role] ? state.data.overrides[role] : INHERIT;
+  const savedModelId = role ? state.data?.overrides[role] : undefined;
+  const options = capability ? personalCapabilityPickerOptions(capability, query, savedModelId) : [];
+  const selectedId = role && state.data?.overrides[role]
+    ? state.data.overrides[role]
+    : PERSONAL_CAPABILITY_INHERIT;
   const pendingId = state.mutating
-    ? state.draft?.modelId ?? INHERIT
+    ? state.draft?.modelId ?? PERSONAL_CAPABILITY_INHERIT
     : undefined;
 
   const apply = async (id: string) => {
     if (!role) return;
     try {
-      const result = await controller.apply(role, id === INHERIT ? null : id);
+      const result = await controller.apply(role, id === PERSONAL_CAPABILITY_INHERIT ? null : id);
       if (result.status === "applied") router.replace("/(drawer)/(tabs)/settings/capability-models");
     } catch {
       // The controller retains the canonical state and exposes the error below.

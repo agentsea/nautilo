@@ -435,6 +435,27 @@ describe("Task creation admission", () => {
     }
   });
 
+  test.each(["background.task", "foreground.task_report_back", "foreground.subagent"] as const)(
+    "server-authored %s provenance retains its exact parent Task and run",
+    (entrypoint) => {
+      const provenance = createAgentTurnTaskCreationProvenance({
+        ownerId: HUMAN,
+        invocation: {
+          ownerId: HUMAN,
+          roomId: ROOM,
+          entrypoint,
+          taskId: TASK,
+          taskRunId: RUN,
+        },
+      });
+      expect(provenance).toMatchObject({
+        kind: "agent_turn",
+        parentTaskId: TASK,
+        parentTaskRunId: RUN,
+      });
+    },
+  );
+
   test("rejects missing positive origin and Artifact-dependent creation", async () => {
     const missingOriginPorts = ports();
     const missingOrigin = await createProtectedTaskCreationAdmissionV1(

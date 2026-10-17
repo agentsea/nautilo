@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { registerAllTools } from "@nautilo/agent";
+import { installPersonalLlmAttemptOwner, registerAllTools } from "@nautilo/agent";
 import { ToolCatalog, clearToolCatalog, getToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import {
   actors,
@@ -9,6 +9,7 @@ import {
   channelIdentities,
   credentials,
   eq,
+  getServerProviderPolicy,
   groupMembers,
   groups,
   inArray,
@@ -53,6 +54,8 @@ let priorDirectKey: string | undefined;
 let priorGatewayKey: string | undefined;
 let priorGatewayUrl: string | undefined;
 let priorCatalog: ToolCatalog | null;
+let priorPolicy: Awaited<ReturnType<typeof getServerProviderPolicy>> | undefined;
+let uninstallPersonalAttemptOwner: (() => void) | undefined;
 
 const providerCalls: Array<{ authorization: string | null; body: string }> = [];
 
@@ -222,6 +225,9 @@ async function removePeer(peer: Peer): Promise<void> {
 }
 
 beforeAll(async () => {
+  uninstallPersonalAttemptOwner = installPersonalLlmAttemptOwner({
+    ownerToken: randomUUID(),
+  });
   priorCatalog = getToolCatalog();
   const catalog = new ToolCatalog();
   registerAllTools(catalog);
@@ -238,6 +244,7 @@ beforeAll(async () => {
     suiteName: "personalchatiso",
     withDefaultAgentGraph: true,
   });
+  priorPolicy = await getServerProviderPolicy(fx.db);
   first = await seatPeerUser(fx.db, { suiteName: "personalchatisoa", groupType: "contributors" });
   second = await seatPeerUser(fx.db, { suiteName: "personalchatisob", groupType: "contributors" });
   guest = await seatPeerUser(fx.db, { suiteName: "personalchatisog", groupType: "guests" });
@@ -298,6 +305,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  uninstallPersonalAttemptOwner?.();
   globalThis.fetch = priorFetch;
   if (priorDirectKey === undefined) delete process.env["OPENROUTER_API_KEY"];
   else process.env["OPENROUTER_API_KEY"] = priorDirectKey;
@@ -306,7 +314,7 @@ afterAll(async () => {
   if (priorGatewayUrl === undefined) delete process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"];
   else process.env["NAUTILO_MANAGED_GATEWAY_BASE_URL"] = priorGatewayUrl;
   if (!fx) return;
-  await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
+  if (priorPolicy) await upsertServerProviderPolicy(fx.db, priorPolicy);
   for (const room of [foreignRoom, guestRoom, secondRoom, firstRoom]) {
     if (room) await removeRoom(room);
   }
@@ -408,13 +416,17 @@ describe.serial("personal chat isolation and role regressions", () => {
 
     const callsBefore = providerCalls.length;
     const response = await sendChat(first.bearer, firstRoom.roomId, "This turn must be blocked.");
-    expect(response.statusCode, response.body).toBe(403);
-    expect(JSON.parse(response.body)).toMatchObject({ code: "server_provider_credentials_required" });
+    expect(response.statusCode, response.body).toBe(422);
+    expect(JSON.parse(response.body)).toMatchObject({ code: "server_credentials_forbidden" });
     expect(providerCalls).toHaveLength(callsBefore);
-    const hidden = await authedInject(fx.app, {
+    const configured = await authedInject(fx.app, {
       method: "GET", url: "/api/account/provider-credentials", bearer: first.bearer,
     });
-    expect(hidden.statusCode).toBe(404);
+    expect(configured.statusCode).toBe(200);
+    expect(configured.body).not.toContain(FIRST_KEY);
+    expect(configured.body).not.toContain(SECOND_KEY);
+    expect(configured.json<{ credentials: Array<{ provider: string }> }>().credentials)
+      .toMatchObject([{ provider: "openrouter" }]);
 
     const after = await fx.db.select({
       id: personalProviderCredentials.id,

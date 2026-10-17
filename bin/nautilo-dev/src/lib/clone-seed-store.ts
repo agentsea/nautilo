@@ -1,6 +1,7 @@
 import { copyFile } from "node:fs/promises";
-import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, statfs } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { lstat, open, readFile, readdir, rm, statfs } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, renameWithWindowsRetry, resolveLinkedLocationSync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   sha256File,
   verifyFullBackupDirectory,
@@ -93,7 +94,8 @@ export function defaultCloneSeedRoot(userHome: string): string {
 }
 
 export function cloneSeedPaths(root: string): CloneSeedPaths {
-  const absoluteRoot = resolve(root);
+  // A linked seed root is used through its real directory.
+  const absoluteRoot = resolveLinkedLocationSync(resolve(root));
   return {
     root: absoluteRoot,
     generations: join(absoluteRoot, "generations"),
@@ -111,7 +113,7 @@ function safeGeneration(value: string): string {
 
 function seedGenerationDirectory(paths: CloneSeedPaths, generation: string): string {
   const directory = resolve(paths.generations, safeGeneration(generation));
-  if (!directory.startsWith(`${paths.generations}/`)) throw new Error("Clone seed generation escapes its store");
+  if (dirname(directory) !== paths.generations) throw new Error("Clone seed generation escapes its store");
   return directory;
 }
 
@@ -141,8 +143,7 @@ function isMissing(error: unknown): boolean {
 }
 
 async function ownerOnlyDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  await chmod(path, 0o700);
+  await ensurePrivateDirectory(path);
 }
 
 async function ensureStore(paths: CloneSeedPaths): Promise<void> {
@@ -151,8 +152,8 @@ async function ensureStore(paths: CloneSeedPaths): Promise<void> {
 }
 
 async function assertOwnerOnlyDirectory(path: string): Promise<void> {
-  const details = await stat(path);
-  if (!details.isDirectory() || (details.mode & 0o077) !== 0) {
+  const details = await lstat(path);
+  if (!details.isDirectory() || !await isPrivateFilesystemPathAsync(path)) {
     throw new Error("Clone seed directory is not owner-only");
   }
 }
@@ -261,11 +262,11 @@ async function copyVerifiedBackup(input: {
   for (const file of files) {
     const source = resolve(sourceRoot, file);
     const destination = resolve(destinationRoot, file);
-    if (!source.startsWith(`${sourceRoot}/`) || !destination.startsWith(`${destinationRoot}/`)) {
+    if (dirname(source) !== sourceRoot || dirname(destination) !== destinationRoot) {
       throw new Error("Clone seed artifact escapes its directory");
     }
     await input.copy(source, destination);
-    await chmod(destination, 0o600);
+    await secureFilesystemPath(destination);
   }
 }
 
@@ -354,7 +355,7 @@ async function reconcileUnreferencedGenerations(paths: CloneSeedPaths): Promise<
   // Validate references before removing anything. A corrupted pointer must be
   // a zero-mutation safety stop, including for otherwise recognizable orphans.
   for (const generation of referenced) {
-    const details = await stat(seedGenerationDirectory(paths, generation)).catch((error: unknown) => {
+    const details = await lstat(seedGenerationDirectory(paths, generation)).catch((error: unknown) => {
       if (isMissing(error)) return null;
       throw error;
     });
@@ -365,7 +366,7 @@ async function reconcileUnreferencedGenerations(paths: CloneSeedPaths): Promise<
   const entries = await readdir(paths.generations);
   for (const entry of entries) {
     const path = join(paths.generations, entry);
-    const details = await stat(path);
+    const details = await lstat(path);
     if (!details.isDirectory()) throw new Error("Clone seed generations contains an unexpected non-directory entry");
     if (entry.startsWith(".staging-")) {
       const generation = entry.slice(".staging-".length);
@@ -482,7 +483,8 @@ export async function refreshCloneSeed(input: RefreshCloneSeedInput): Promise<Cl
       stage = "publication";
       await input.beforePublish?.();
       const finalDirectory = seedGenerationDirectory(paths, generation);
-      await rename(staging, finalDirectory);
+      // A just-written file inside can briefly block the rename on Windows.
+      await renameWithWindowsRetry(staging, finalDirectory);
       staging = null;
       publishedGeneration = generation;
       // The final path is verified before it can become authoritative. Do not

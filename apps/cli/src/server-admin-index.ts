@@ -164,6 +164,8 @@ export function createServerAdminCli(
 
   const cli = yargs(commandLine(input))
     .scriptName("nautilo")
+    // Command help is English; keep yargs' own messages from following LANG.
+    .locale("en")
     .version(SERVER_ADMIN_VERSION)
     .alias("v", "version")
     .strict()

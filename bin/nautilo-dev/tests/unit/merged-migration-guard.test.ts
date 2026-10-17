@@ -7,7 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { devNull, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 import { isRecordedMainMergeMigration } from "../../src/lib/recorded-main-merge-migration";
@@ -40,12 +40,16 @@ type MergeFixture = {
 const fixtureRoots: string[] = [];
 
 function git(root: string, args: string[]): string {
+  const environment = { ...process.env };
+  for (const key of Object.keys(environment)) {
+    if (key.toUpperCase().startsWith("GIT_")) delete environment[key];
+  }
   return execFileSync("git", args, {
     cwd: root,
     encoding: "utf8",
     env: {
-      ...process.env,
-      GIT_CONFIG_GLOBAL: devNull,
+      ...environment,
+      GIT_CONFIG_GLOBAL: join(root, ".git-fixture-global-config"),
       GIT_CONFIG_NOSYSTEM: "1",
       GIT_AUTHOR_NAME: "Merge Guard Test",
       GIT_AUTHOR_EMAIL: "merge-guard@example.invalid",
@@ -70,6 +74,7 @@ function createMergeFixture(options: FixtureOptions = {}): MergeFixture {
   fixtureRoots.push(root);
   const migrationPath = options.migrationPath ?? SQL_PATH;
 
+  writeFileSync(join(root, ".git-fixture-global-config"), "");
   git(root, ["init", "--quiet"]);
   write(root, migrationPath, BEFORE_SQL);
   write(root, RECEIPT_PATH, JSON.stringify({ schemaVersion: 1, rewrites: [] }, null, 2));
@@ -95,9 +100,8 @@ function createMergeFixture(options: FixtureOptions = {}): MergeFixture {
   const incomingSha = git(root, ["rev-parse", "HEAD"]);
 
   git(root, ["update-ref", "refs/remotes/origin/main", incomingSha]);
-  git(root, ["reset", "--quiet", "--hard", baseSha]);
-  git(root, ["checkout", "--quiet", incomingSha, "--", migrationPath, RECEIPT_PATH]);
-  writeFileSync(join(root, ".git/MERGE_HEAD"), `${incomingSha}\n`);
+  git(root, ["switch", "--quiet", "--create", "fixture-feature", baseSha]);
+  git(root, ["merge", "--quiet", "--no-ff", "--no-commit", incomingSha]);
 
   return { root, migrationPath, baseSha, incomingSha };
 }
@@ -130,7 +134,7 @@ describe("isRecordedMainMergeMigration", () => {
       `${multipleParents.incomingSha}\n${multipleParents.baseSha}\n`,
     );
     expect(isRecordedMainMergeMigration(multipleParents.migrationPath, multipleParents.root)).toBe(false);
-  });
+  }, 60_000); // Three Git fixtures start about thirty Git processes; Windows process creation is slow under load.
 
   test("rejects an absent or mismatching approval in the incoming parent", () => {
     const absent = createMergeFixture({

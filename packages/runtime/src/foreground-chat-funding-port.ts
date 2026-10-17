@@ -1,3 +1,4 @@
+import { getCurrentExternalRoomExecution } from "./external-room-execution";
 import type { ForegroundChatFundingSession } from "@nautilo/agent";
 import {
   getAcceptedInvocationAuthoritySubject,
@@ -8,7 +9,8 @@ import { getTaskRunDb } from "./tasks/task-runtime-context";
 
 export type ForegroundChatFundingEntrypoint =
   | "foreground.main"
-  | "foreground.fork";
+  | "foreground.fork"
+  | "foreground.external_room";
 
 export interface ForegroundChatFundingOpenInput {
   readonly humanUserId: string;
@@ -17,16 +19,23 @@ export interface ForegroundChatFundingOpenInput {
   readonly agentId: string;
   readonly entrypoint: ForegroundChatFundingEntrypoint;
   readonly hasImages?: boolean;
+  readonly assertExternalRoomSponsorship?: () => Promise<void>;
 }
 
 export interface ImageAssistanceSession {
   readonly modelId: string;
   readonly fundingSession: ForegroundChatFundingSession;
+  readonly operationId: string;
+  readonly preferenceRevision: number;
 }
 
 export interface ForegroundChatFundingPort {
   openImageAssistance?(
-    input: ForegroundChatFundingOpenInput & { readonly fundingKind?: "server" | "personal" },
+    input: Omit<ForegroundChatFundingOpenInput, "entrypoint"> & {
+      readonly entrypoint: "foreground.main" | "foreground.fork";
+      readonly fundingKind?: "server" | "personal";
+      readonly jobId: string; readonly turnId: string; readonly inputDigest: string;
+    },
   ): Promise<ImageAssistanceSession | null>;
 
   openSession(
@@ -206,7 +215,7 @@ export async function openForegroundChatFundingSessionForInvocation(input: Reado
   return session;
 }
 
-/** Refuse unsupported paid auxiliaries before vision, voice, or chat dispatch. */
+/** Resource access has its own authority; funding retains the protected-turn boundary. */
 export function assertForegroundChatFundingWorkloadSupported(
   session: ForegroundChatFundingSession | null,
   input: Readonly<{
@@ -218,7 +227,7 @@ export function assertForegroundChatFundingWorkloadSupported(
 ): void {
   if (
     session?.kind === "personal"
-    && (input.hasResources || input.protectedTurn)
+    && input.protectedTurn
   ) throw new ForegroundChatFundingUnsupportedWorkloadError();
 }
 
@@ -226,9 +235,13 @@ export function assertForegroundChatFundingWorkloadSupported(
 export async function openImageAssistanceForInvocation(
   input: Parameters<typeof openForegroundChatFundingSessionForInvocation>[0] & {
     fundingKind?: "server" | "personal";
+    jobId: string; turnId: string; inputDigest: string;
+    parentFunding?: ForegroundChatFundingSession;
   },
 ): Promise<ImageAssistanceSession | null> {
-  if (!installedPort?.openImageAssistance || !input.authority || !input.entrypoint
+  if (input.parentFunding?.admission?.binding.providerRoute === "openai-chatgpt") return null;
+  if (!installedPort?.openImageAssistance || !input.authority
+    || (input.entrypoint !== "foreground.main" && input.entrypoint !== "foreground.fork")
     || hasUnsupportedForegroundFundingShape(input.jobInput)) return null;
   const humanUserId = getAcceptedInvocationAuthoritySubject(input.authority);
   if (!humanUserId || input.jobInput["requestorId"] !== humanUserId
@@ -236,6 +249,23 @@ export async function openImageAssistanceForInvocation(
   return installedPort.openImageAssistance({
     humanUserId, modelId: input.modelId, roomId: input.roomId,
     agentId: input.agentId, entrypoint: input.entrypoint,
+    jobId: input.jobId, turnId: input.turnId, inputDigest: input.inputDigest,
     ...(input.fundingKind ? { fundingKind: input.fundingKind } : {}),
   });
+}
+
+/** External authorship never supplies a causal Human or an implicit server payer. */
+export async function openExternalRoomFundingSession(input: {
+  modelId: string; roomId: string; agentId: string;
+}): Promise<ForegroundChatFundingSession> {
+  const context = getCurrentExternalRoomExecution();
+  if (!context || !installedPort || context.reference.roomId !== input.roomId
+    || context.reference.agentId !== input.agentId) throw new ForegroundChatFundingAuthorityError();
+  await context.assertSponsorship();
+  const session = await installedPort.openSession({
+    ...input, humanUserId: context.sponsorUserId, entrypoint: "foreground.external_room",
+    hasImages: false, assertExternalRoomSponsorship: () => context.assertSponsorship(),
+  });
+  if (!session) throw new ForegroundChatFundingAuthorityError();
+  return session;
 }

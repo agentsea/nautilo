@@ -1,4 +1,4 @@
-import { sep } from "node:path";
+import { containsHostPath as pathWithin } from "./host-paths";
 import { CodexBindingRegistry, sameChild } from "./binding-registry";
 import {
   CodexHostError,
@@ -1229,7 +1229,6 @@ function hasActiveBindingWork(bindings: readonly import("./contracts").Persisted
 }
 function sameReceipt(left: BindingRequest["workspace"], right: BindingRequest["workspace"]): boolean { return left.handle === right.handle && left.revision === right.revision && left.fingerprint === right.fingerprint && left.relayId === right.relayId && left.relaySessionId === right.relaySessionId && left.desktopSessionId === right.desktopSessionId && left.pairingGenerationRef === right.pairingGenerationRef && left.capabilityRevision === right.capabilityRevision && left.expiresAt === right.expiresAt; }
 function pathsOverlap(left: string, right: string): boolean { return pathWithin(left, right) || pathWithin(right, left); }
-function pathWithin(root: string, candidate: string): boolean { return root === sep ? candidate.startsWith(sep) : candidate === root || candidate.startsWith(`${root}${sep}`); }
 async function settleQuietly(work: Promise<void>): Promise<void> { try { await work; } catch { /* terminal child state */ } }
 class StopSuperseded extends Error {}
 function validatedEnvironment(environment: Readonly<Record<string, string>>): Readonly<Record<string, string>> {

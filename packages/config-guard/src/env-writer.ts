@@ -1,5 +1,6 @@
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { publishPrivateFileAtomically } from "@nautilo/config/private-filesystem";
 import { config as loadEnv } from "dotenv";
 import { warn as logWarn } from "@nautilo/logger";
 import { getAllKeyDefinitions } from "./key-registry";
@@ -25,15 +26,9 @@ function notifyEnvReload(): void {
 }
 
 export async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  await mkdir(dirname(filePath), { recursive: true });
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  try {
-    await writeFile(tmp, content, { encoding: "utf-8", mode: 0o600 });
-    await rename(tmp, filePath);
-  } catch (e) {
-    await unlink(tmp).catch(() => undefined);
-    throw e;
-  }
+  const target = resolve(filePath);
+  await mkdir(dirname(target), { recursive: true });
+  await publishPrivateFileAtomically(target, Buffer.from(content));
 }
 
 /** Reload `.env` into `process.env` (override), then drop managed registry keys absent from the file. */

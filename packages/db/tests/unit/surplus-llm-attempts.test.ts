@@ -6,20 +6,28 @@ import {
   __setLlmUsageDbForTests,
   attachSurplusRequestReceipt,
   beginPersonalLlmAttempt,
+  beginServiceLlmAttempt,
+  beginServerLlmAttempt,
   beginSurplusLlmAttempt,
+  interruptExpiredPersonalLlmAttempts,
+  interruptPersonalLlmAttemptsByOwner,
   listPendingSurplusAttempts,
   reconcileSurplusLlmAttemptCost,
   requeueBlockedPersonalSurplusAttempts,
   requeueBlockedServerSurplusAttempts,
   requeueBlockedSurplusDecisionAttempts,
+  renewPersonalLlmAttemptLeases,
   settlePersonalLlmAttempt,
+  settleServiceLlmAttempt,
+  settleServerLlmAttempt,
   settleSurplusLlmAttempt,
   type SurplusPendingAttempt,
 } from "../../src/queries/llm-usage";
 
 const ATTEMPT_ID = "11111111-1111-4111-8111-111111111111";
+const OWNER_TOKEN = "99999999-9999-4999-8999-999999999999";
 
-function mutationDb(options: { returning?: unknown[]; selected?: unknown[] } = {}) {
+function mutationDb(options: { returning?: unknown[]; returningSequence?: unknown[][]; selected?: unknown[] } = {}) {
   const inserted: Record<string, unknown>[] = [];
   const updated: Record<string, unknown>[] = [];
   const updatePredicates: SQL[] = [];
@@ -36,7 +44,7 @@ function mutationDb(options: { returning?: unknown[]; selected?: unknown[] } = {
         where: (predicate: SQL) => {
           updatePredicates.push(predicate);
           return {
-          returning: async () => options.returning ?? [{ id: ATTEMPT_ID }],
+          returning: async () => options.returningSequence?.shift() ?? options.returning ?? [{ id: ATTEMPT_ID }],
           };
         },
       };
@@ -63,6 +71,64 @@ function mutationDb(options: { returning?: unknown[]; selected?: unknown[] } = {
     updatePredicates,
   };
 }
+
+function leaseDb(candidatePages: string[][]) {
+  const selectedPredicates: SQL[] = [];
+  const updatePredicates: SQL[] = [];
+  const updated: Record<string, unknown>[] = [];
+  const handle: Record<string, unknown> = {};
+  handle["transaction"] = async (callback: (tx: DirectDatabase) => Promise<unknown>) => callback(handle as unknown as DirectDatabase);
+  handle["select"] = () => {
+    let predicate: SQL;
+    const builder: Record<string, unknown> = {};
+    builder["from"] = () => builder;
+    builder["where"] = (value: SQL) => { predicate = value; return builder; };
+    builder["orderBy"] = () => builder;
+    builder["limit"] = () => builder;
+    builder["for"] = async () => {
+      selectedPredicates.push(predicate);
+      return (candidatePages.shift() ?? []).map((id) => ({ id }));
+    };
+    return builder;
+  };
+  handle["update"] = () => ({
+    set(value: Record<string, unknown>) {
+      updated.push(value);
+      return { where(predicate: SQL) {
+        updatePredicates.push(predicate);
+        return { returning: async () => [{ id: ATTEMPT_ID }] };
+      } };
+    },
+  });
+  return { handle: handle as unknown as DirectDatabase, selectedPredicates, updatePredicates, updated };
+}
+
+describe("explicit nonpersonal direct attempts", () => {
+  afterEach(() => __setLlmUsageDbForTests(undefined));
+  for (const [kind, begin, settle] of [
+    ["service", beginServiceLlmAttempt, settleServiceLlmAttempt],
+    ["server", beginServerLlmAttempt, settleServerLlmAttempt],
+  ] as const) {
+    test(`${kind} attempts keep causal Human separate from personal payer and fence settlement`, async () => {
+      const fake = mutationDb();
+      __setLlmUsageDbForTests(fake.handle);
+      await begin({ id: ATTEMPT_ID, ownerToken: OWNER_TOKEN, userId: "causal-human",
+        callType: "embedding", provider: "openai", model: "openai:text-embedding-3-small",
+        providerRoute: "openai", endpoint: "/v1/embeddings" });
+      expect(fake.inserted[0]).toMatchObject({ fundingKind: kind, userId: "causal-human",
+        payerHumanId: null, credentialId: null, credentialRevision: null,
+        attemptOutcome: "in_progress", costState: "pending", attemptOwnerToken: OWNER_TOKEN });
+      await settle({ attemptId: ATTEMPT_ID, ownerToken: OWNER_TOKEN,
+        outcome: "succeeded", costState: "unknown" });
+      expect(fake.updated[0]).toMatchObject({ attemptOutcome: "succeeded", costState: "unknown" });
+      const compiled = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
+      expect(compiled.params).toContain(kind);
+      expect(compiled.params).toContain(OWNER_TOKEN);
+      expect(compiled.params).toContain("in_progress");
+      expect(compiled.sql).toContain("attempt_lease_expires_at");
+    });
+  }
+});
 
 describe("Surplus durable LLM attempts", () => {
   afterEach(() => {
@@ -116,6 +182,7 @@ describe("Surplus durable LLM attempts", () => {
     const fake = mutationDb();
     __setLlmUsageDbForTests(fake.handle);
     await beginPersonalLlmAttempt({
+      ownerToken: OWNER_TOKEN,
       id: ATTEMPT_ID,
       userId: "22222222-2222-4222-8222-222222222222",
       callType: "chat",
@@ -132,9 +199,14 @@ describe("Surplus durable LLM attempts", () => {
       credentialRevision: 2,
       attemptOutcome: "in_progress",
       costState: "pending",
+      attemptOwnerToken: OWNER_TOKEN,
     });
+    const lease = new PgDialect().sqlToQuery(fake.inserted[0]?.["attemptLeaseExpiresAt"] as SQL);
+    expect(lease.sql).toContain("CURRENT_TIMESTAMP");
+    expect(lease.params).toContain(60_000);
 
     await settlePersonalLlmAttempt({
+      ownerToken: OWNER_TOKEN,
       attemptId: ATTEMPT_ID,
       outcome: "succeeded",
       costState: "estimated",
@@ -150,6 +222,83 @@ describe("Surplus durable LLM attempts", () => {
       pricingVersion: "test-pricing-v1",
       totalTokens: 120,
     });
+    const settlementPredicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
+    expect(settlementPredicate.params).toContain(OWNER_TOKEN);
+    expect(settlementPredicate.params).toContain("in_progress");
+  });
+
+  test("renews only the exact live owner token and leaves expired rows fenced", async () => {
+    const fake = leaseDb([[ATTEMPT_ID]]);
+    __setLlmUsageDbForTests(fake.handle);
+    expect(await renewPersonalLlmAttemptLeases({
+      ownerToken: OWNER_TOKEN,
+      now: new Date("2026-10-13T10:00:00.000Z"),
+      limit: 1,
+    })).toBe(1);
+    expect(fake.updated[0]).toHaveProperty("attemptLeaseExpiresAt");
+    const dialect = new PgDialect();
+    const selected = dialect.sqlToQuery(fake.selectedPredicates[0]!);
+    const guarded = dialect.sqlToQuery(fake.updatePredicates[0]!);
+    expect(selected.params).toContain(OWNER_TOKEN);
+    expect(selected.params).toContain("in_progress");
+    expect(selected.sql).toContain('"attempt_lease_expires_at" >');
+    expect(guarded.params).toContain(OWNER_TOKEN);
+    expect(guarded.sql).toContain('"attempt_lease_expires_at" >');
+  });
+
+  test("expires only explicitly leased rows and graceful shutdown uses exact owner CAS", async () => {
+    const expired = leaseDb([[ATTEMPT_ID]]);
+    __setLlmUsageDbForTests(expired.handle);
+    expect(await interruptExpiredPersonalLlmAttempts({
+      now: new Date("2026-10-13T10:00:00.000Z"),
+      limit: 1,
+    })).toBe(1);
+    expect(expired.updated[0]).toMatchObject({
+      attemptOutcome: "interrupted",
+      costState: "unknown",
+      failureCode: "attempt_owner_expired",
+    });
+    const expiredSelection = new PgDialect().sqlToQuery(expired.selectedPredicates[0]!);
+    expect(expiredSelection.sql).toContain('"attempt_owner_token" is not null');
+    expect(expiredSelection.sql).toContain('"attempt_lease_expires_at" <=');
+
+    const shutdown = leaseDb([[ATTEMPT_ID]]);
+    __setLlmUsageDbForTests(shutdown.handle);
+    expect(await interruptPersonalLlmAttemptsByOwner({
+      ownerToken: OWNER_TOKEN,
+      now: new Date("2026-10-13T10:00:00.000Z"),
+      limit: 1,
+    })).toBe(1);
+    expect(shutdown.updated[0]).toMatchObject({ failureCode: "attempt_owner_shutdown" });
+    const shutdownSelection = new PgDialect().sqlToQuery(shutdown.selectedPredicates[0]!);
+    expect(shutdownSelection.params).toContain(OWNER_TOKEN);
+    expect(shutdownSelection.sql).not.toContain('"attempt_lease_expires_at" <=');
+  });
+
+  test("late usage after owner recovery adds cost without rewriting the interrupted outcome", async () => {
+    const fake = mutationDb({ returningSequence: [[], [], [{ id: ATTEMPT_ID }]] });
+    __setLlmUsageDbForTests(fake.handle);
+    await settlePersonalLlmAttempt({
+      ownerToken: OWNER_TOKEN,
+      attemptId: ATTEMPT_ID,
+      outcome: "succeeded",
+      costState: "estimated",
+      inputTokens: 90,
+      outputTokens: 10,
+      estimatedCostUsd: 0.001,
+      pricingVersion: "test-pricing-v1",
+    });
+    expect(fake.updated[2]).toMatchObject({
+      costState: "estimated",
+      totalTokens: 100,
+      estimatedCostUsd: "0.00100000",
+    });
+    expect(fake.updated[2]).not.toHaveProperty("attemptOutcome");
+    expect(fake.updated[2]).not.toHaveProperty("failureCode");
+    const latePredicate = new PgDialect().sqlToQuery(fake.updatePredicates[2]!);
+    expect(latePredicate.params).toContain(OWNER_TOKEN);
+    expect(latePredicate.params).toContain("attempt_owner_expired");
+    expect(latePredicate.params).toContain("attempt_owner_shutdown");
   });
 
   test("settles an explicit zero as actual rather than unknown", async () => {
@@ -177,6 +326,7 @@ describe("Surplus durable LLM attempts", () => {
     const fake = mutationDb();
     __setLlmUsageDbForTests(fake.handle);
     await settlePersonalLlmAttempt({
+      ownerToken: OWNER_TOKEN,
       attemptId: ATTEMPT_ID,
       outcome: "interrupted",
       costState: "estimated",
@@ -214,10 +364,12 @@ describe("Surplus durable LLM attempts", () => {
       servingProvider: "anthropic",
       failureCode: null,
       settledAt,
+      attemptOwnerToken: OWNER_TOKEN,
     };
     const fake = mutationDb({ returning: [], selected: [committed] });
     __setLlmUsageDbForTests(fake.handle);
     await settlePersonalLlmAttempt({
+      ownerToken: OWNER_TOKEN,
       attemptId: ATTEMPT_ID,
       outcome: "succeeded",
       costState: "estimated",
@@ -233,6 +385,7 @@ describe("Surplus durable LLM attempts", () => {
       settledAt,
     });
     expect(settlePersonalLlmAttempt({
+      ownerToken: OWNER_TOKEN,
       attemptId: ATTEMPT_ID,
       outcome: "failed",
       costState: "estimated",

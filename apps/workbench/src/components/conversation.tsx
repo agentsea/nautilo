@@ -62,7 +62,7 @@ import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
 import { MessageAttachmentImages } from "./message-attachment-images";
-import { MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
+import { externalMessageAuthorLabel, MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
   SHELL_AGENT_NAME,
@@ -236,6 +236,7 @@ import { CompanionTarget } from "../companion/companion-provider";
 import { isAuthenticatedHumanViewer } from "../hooks/viewer-authentication";
 import { useCan } from "../hooks/use-can";
 import { apiClient } from "../lib/api";
+import { BolterMessageComposer } from "./bolter-message-composer";
 import { shouldMarkRoomReadAtBottom } from "../modes/rooms/shape/read-tracking/mark-room-read-at-bottom";
 import { useLocation, useNavigate } from "react-router-dom";
 import { createRoomMessageRouteIntentConsumer } from "../routes/room-route";
@@ -1994,6 +1995,10 @@ function ConversationBody({
           NOT bounce when the "…is thinking" strip appears/disappears. */}
       {canInvokeAgents && !directHumanRoom.isDirectHumanRoom ? <AutoApproveBar /> : null}
 
+      {verified && activeRoomId ? <BolterMessageComposer
+        key={`${activeRoomId}:${auth.viewerGeneration}:${auth.credentialGeneration}`}
+        roomId={activeRoomId} scopeKey={`${auth.viewerGeneration}:${auth.credentialGeneration}`} /> : null}
+
       <div className={`border-t border-border bg-background ${railPadX} ${railNarrow ? "py-2" : "py-3"}`}>
         <Composer
           assistantName={canInvokeAgents ? conversationPeerLabel : activeRoom?.label ?? "room"}
@@ -2049,7 +2054,8 @@ function Composer({
   const focus = useRoomFocusContext();
   const activeRoomId = roomNav.activeRoomId;
   const roomComposerSendPending = useRoomComposerSendPending(activeRoomId);
-  useEffect(() => () => speech.cancelListening(), [activeRoomId, speech.cancelListening]);
+  const cancelListening = speech.cancelListening;
+  useEffect(() => () => cancelListening(), [activeRoomId, cancelListening]);
   const workspaceArtifacts = useWorkspaceArtifacts();
   const resolveContextualFocusedResources = useCallback(
     async (): Promise<readonly ChatFocusedResourceRef[]> => {
@@ -2516,6 +2522,7 @@ function Composer({
   const canSubmitComposer =
     canSend &&
     !composerSendPending && !imageAttachmentConflict &&
+    !attachments.some((attachment) => attachment.status === "pending" || attachment.status === "error") &&
     (composerText.trim().length > 0 || attachments.length > 0 || focusedResources.length > 0);
 
   const submitComposer = useCallback(async () => {
@@ -2706,7 +2713,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name);
+      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -2840,7 +2847,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name);
+      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -3242,7 +3249,7 @@ function AttachmentChip({ attachment }: { attachment: ComposerAttachment }) {
     ? `rejected: ${attachment.errorReason ?? "not sent"}`
     : attachment.status === "pending"
       ? "pending"
-      : "ready"; // matched server send — not an upload progress state
+      : attachment.workspaceArtifact ? "ready — stored in this Room’s Workspace" : "ready";
   return (
     <span
       className={`flex max-w-[16rem] items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${
@@ -3589,8 +3596,7 @@ function Message({
   // returns a fresh object
   // literal on every render → useSyncExternalStore treats every render
   // as a store change → infinite update loop (React error #185, "The
-  // result of getSnapshot should be cached"). Pin: see conversation
-  // crash on first turn render, 2026-05-18, Phase 10.D session-3.
+  // result of getSnapshot should be cached").
   const messageId = useMessage((state) => {
     const n = Number(state.id);
     return Number.isInteger(n) && n > 0 ? n : null;
@@ -3611,7 +3617,10 @@ function Message({
   );
   // Resolve message authorship from the persisted source id. A missing id is
   // unknown, not evidence that the current viewer authored the message.
+  const externalAuthorLabel = useMessage((state) => state.role === "user"
+    ? externalMessageAuthorLabel(state.metadata?.custom ?? {}) : null);
   const sourceUserId = useMessage((state) => {
+    if (externalAuthorLabel !== null) return undefined;
     const c = (state.metadata as { custom?: { sourceUserId?: unknown } })?.custom;
     return typeof c?.sourceUserId === "string" ? c.sourceUserId : undefined;
   });
@@ -3760,7 +3769,7 @@ function Message({
     }
   }, [canDelete, confirmDeleteScope, currentDeleteScope, messageId, roomId, toast]);
   const authorUserId = sourceUserId ?? "";
-  const userAuthorLabel = isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender");
+  const userAuthorLabel = externalAuthorLabel ?? (isOwnUserMessage ? "You" : (peerLabel ?? "Unknown sender"));
   const { toggleReaction } = useRoomReactions();
   const editRoomMessage = useRoomMessageEdit();
   const {

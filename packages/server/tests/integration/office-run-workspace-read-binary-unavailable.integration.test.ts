@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { NautiloApiClient } from "@nautilo/api-client";
 import {
   __resetSharedDirectAgentDbForTests,
@@ -81,7 +82,7 @@ beforeAll(async () => {
 afterAll(async () => {
   try {
     if (artifactId) {
-      const absolutePath = new URL(artifactStorageUri).pathname;
+      const absolutePath = fileURLToPath(artifactStorageUri);
       await fixture.db
         .delete(fileRevisions)
         .where(eq(fileRevisions.absolutePath, absolutePath));

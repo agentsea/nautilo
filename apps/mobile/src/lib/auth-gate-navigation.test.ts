@@ -22,7 +22,10 @@ test("carries one safe protected Mobile route into the sign-in screen", () => {
     "/(onboarding)/add-server",
     `${origin}/mobile/chat/room-1`,
     origin,
-  )).toBe("/(onboarding)/add-server");
+  )).toEqual({
+    pathname: "/(onboarding)/add-server",
+    params: { returnTo: "/mobile/chat/room-1" },
+  });
 });
 
 test("does not create sign-in loops or preserve rejected browser locations", () => {
@@ -51,6 +54,14 @@ test("validates the visible return parameter and derives its in-app route", () =
   expect(validatedMobileWebSignInReturnPath("/mobile/chat/r#anchor", origin)).toBeNull();
   expect(validatedMobileWebSignInReturnPath(["/mobile/chat/a", "/mobile/chat/b"], origin)).toBeNull();
   const task = "b487068d-9720-4f0f-a7a0-e84d9e4bff54";
+  expect(webAuthGateNavigationTarget(
+    "/(onboarding)/add-server",
+    `${origin}/mobile/tasks/${task}`,
+    origin,
+  )).toEqual({
+    pathname: "/(onboarding)/add-server",
+    params: { returnTo: `/mobile/tasks/${task}` },
+  });
   expect(validatedMobileWebSignInReturnPath(`/mobile/tasks/${task}`, origin)).toBe(`/mobile/tasks/${task}`);
   expect(mobileWebRouterDestination(`/mobile/tasks/${task}`)).toBe(`/tasks/${task}`);
   const room = "6f1b16fb-b1a6-46c8-a3ca-690c4d87931b";

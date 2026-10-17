@@ -1,8 +1,13 @@
+import { createChatGPTDesktopListener } from "./chatgpt-plan-loopback";
 import "./instance-argv-bootstrap.ts";
 import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
 import { parseReadyToWorkComponentSelection, type AgentAccessStatus } from "./ready-to-work-contract";
 
+import { createBolterNativeRelayPort } from "./bolter-bridge/relay-port";
+import { createManagedBolterConnectionFactory } from "./bolter-bridge/managed-connection";
+import { createBolterHelper } from "./bolter-bridge/helper-runtime";
+import { createBolterSpoolCipher } from "./bolter-bridge/spool-cipher";
 import {
   app,
   BaseWindow,
@@ -2065,7 +2070,7 @@ function isPathWithinAllowedRoot(targetPath: string): boolean {
 function resolveReal(input: string): string {
   const resolved = path.resolve(input);
   try {
-    return fs.realpathSync(resolved);
+    return fs.realpathSync.native(resolved);
   } catch {
     return resolved;
   }
@@ -2288,7 +2293,7 @@ function getDesktopDocumentMutationRuntime():
   if (!relayId) {
     if (desktopDocumentMutationRuntime) {
       desktopDocumentMutationRuntimeGeneration += 1;
-      desktopDocumentMutationRuntime.stopOutboxPump();
+      void desktopDocumentMutationRuntime.stopOutboxPump();
       desktopDocumentMutationRuntime = undefined;
       desktopDocumentMutationRuntimeRelayId = undefined;
       invalidatePendingDocumentMutationAcks();
@@ -2304,7 +2309,7 @@ function getDesktopDocumentMutationRuntime():
       desktopDocumentMutationRuntime !== undefined
     ) {
       desktopDocumentMutationRuntimeGeneration += 1;
-      desktopDocumentMutationRuntime?.stopOutboxPump();
+      void desktopDocumentMutationRuntime?.stopOutboxPump();
       desktopDocumentMutationRuntime = undefined;
       desktopDocumentMutationRuntimeRelayId = undefined;
       invalidatePendingDocumentMutationAcks();
@@ -2326,7 +2331,7 @@ function getDesktopDocumentMutationRuntime():
   // new journal; permanently stop the old unref'd pump so it cannot publish
   // or contend with batches under a stale relay identity.
   const generation = ++desktopDocumentMutationRuntimeGeneration;
-  desktopDocumentMutationRuntime?.stopOutboxPump();
+  void desktopDocumentMutationRuntime?.stopOutboxPump();
   invalidatePendingDocumentMutationAcks();
   const journal = new LocalDurableMutationJournal({
     rootDir: localFileHistoryDirPath(),
@@ -2434,7 +2439,7 @@ function queueFsWatchEvent(rootPath: string, changedPath: string): void {
 
 function ensureFsWatchRoot(rootPath: string): void {
   assertPathInAllowedRoot(rootPath);
-  const resolvedRoot = fs.realpathSync(rootPath);
+  const resolvedRoot = fs.realpathSync.native(rootPath);
   if (fsWatchers.has(resolvedRoot)) return;
   const watcher = fs.watch(
     resolvedRoot,
@@ -2476,7 +2481,7 @@ function workingFolderBootstrapOptions(): WorkingFolderBootstrapOptions {
       access: (directory) => {
         fs.accessSync(directory, fs.constants.R_OK | fs.constants.W_OK);
       },
-      realpath: (directory) => fs.realpathSync(directory),
+      realpath: (directory) => fs.realpathSync.native(directory),
       writeFileExclusive: (filePath, contents) => {
         fs.writeFileSync(filePath, contents, {
           encoding: "utf-8",
@@ -3083,6 +3088,7 @@ async function bootRelayIfPossible(serverUrl: string): Promise<void> {
  * torn down before the target's is started).
  */
 async function startRelayForSession(session: ServerSession): Promise<void> {
+  const bolterAuthGeneration = miniAppRecoveryAuthGeneration;
   const serverUrl = session.serverUrl;
   // Establish or transition the server-scoped local authority before any
   // target-server auth/token early return. A switch to an unavailable or
@@ -3171,7 +3177,23 @@ async function startRelayForSession(session: ServerSession): Promise<void> {
   // newly paired desktop useful immediately. Current Folder remains the
   // optional Human project selection; passing it through a provider never
   // creates, replaces, or persists it during relay boot/pairing.
+  const bolterAuthority = authoritativeConnectionSnapshot();
+  const bolterOrigin = new URL(serverUrl).origin;
   const relayOpts: StartRelayOptions = {
+    bolterHostPort: bolterAuthority.scope === bolterOrigin && bolterAuthority.serverFingerprint ? createBolterNativeRelayPort({
+      isCurrent: () => {
+        const current = authoritativeConnectionSnapshot();
+        return serverSessions.active === session && session.signedIn && miniAppRecoveryAuthGeneration === bolterAuthGeneration
+          && current.scope === bolterOrigin && current.serverFingerprint === bolterAuthority.serverFingerprint
+          && current.revision === bolterAuthority.revision && current.connectionAttemptId === bolterAuthority.connectionAttemptId;
+      },
+      createConnection: createManagedBolterConnectionFactory({ appDataDirectory: app.getPath("userData"),
+        serverId: JSON.stringify([bolterOrigin, bolterAuthority.serverFingerprint, desktopInstance.instanceId]),
+        userId, cipher: createBolterSpoolCipher(safeStorage),
+        helper: createBolterHelper(app.isPackaged ? path.join(process.resourcesPath, "tools-bolter-handover")
+          : path.join(__dirname, "bolter-handover"), process.arch,
+          app.isPackaged ? { resourcesPath: process.resourcesPath, executablePath: process.execPath } : undefined) }),
+    }) : undefined,
     serverUrl,
     userId,
     localExecutionHistoryWriter: localExecutionHistoryWriter(serverUrl, userId),
@@ -3656,6 +3678,9 @@ function broadcastAuthState(state: "signed-in" | "signed-out"): void {
 }
 
 function invalidateMiniAppRecoveryAuthentication(): void {
+  chatGPTDesktopPreparation?.abort();
+  chatGPTDesktopEnrollment?.controller.abort();
+  chatGPTDesktopEnrollment = null;
   githubCliConnection.cancel();
   githubAccountCustody.retire();
   clearHumanTerminalHandoff();
@@ -5444,28 +5469,30 @@ const hermesAcpReadinessHost = new ElectronHermesAcpReadinessHost(
 const opencodeAcpReadinessHost = new ElectronOpenCodeAcpReadinessHost(
   createElectronOpenCodeAcpNativeProbe(),
 );
-const hermesAcpExecutionHost = new ElectronHermesAcpExecutionHost({
+const acpProcessTreeAvailable = process.platform !== "win32";
+const unavailableAcpExecutionHost = { isReady: () => false };
+const hermesAcpExecutionHost = acpProcessTreeAvailable ? new ElectronHermesAcpExecutionHost({
   currentFolder: () => currentFolderPath === null
     ? null
     : Object.freeze({ path: currentFolderPath, revision: currentFolderRevision }),
 }, {
   readiness: hermesAcpReadinessHost,
   onAvailabilityChanged: () => { void refreshDesktopRelayCapabilities("ACP cleanup settled"); },
-});
-const opencodeAcpExecutionHost = new ElectronOpenCodeAcpExecutionHost({
+}) : unavailableAcpExecutionHost;
+const opencodeAcpExecutionHost = acpProcessTreeAvailable ? new ElectronOpenCodeAcpExecutionHost({
   currentFolder: () => currentFolderPath === null
     ? null
     : Object.freeze({ path: currentFolderPath, revision: currentFolderRevision }),
 }, {
   readiness: opencodeAcpReadinessHost,
   onAvailabilityChanged: () => { void refreshDesktopRelayCapabilities("ACP cleanup settled"); },
-});
+}) : unavailableAcpExecutionHost;
 const acpExecutionRouter = new ElectronAcpExecutionRouter({
   "hermes-acp": hermesAcpExecutionHost,
   "opencode-acp": opencodeAcpExecutionHost,
 }, {
-  isEnabled: (registrationId) => registrationId === "opencode-acp" ||
-    loadConfig()?.hermesConnectionEnabled === true,
+  isEnabled: (registrationId) => acpProcessTreeAvailable &&
+    (registrationId === "opencode-acp" || loadConfig()?.hermesConnectionEnabled === true),
 });
 
 function codexProductionHostFactory(actorId: string) {
@@ -9425,6 +9452,69 @@ ipcMain.handle(
   },
 );
 
+let chatGPTDesktopPreparation: AbortController | null = null;
+let chatGPTDesktopEnrollment: { listener: Awaited<ReturnType<typeof createChatGPTDesktopListener>>;
+  controller: AbortController; senderId: number } | null = null;
+ipcMain.handle("chatGPT:prepare", async e => {
+  const session = resolveSessionFromSender(e);
+  if (!session.signedIn) throw new Error("Sign in to Nautilo first.");
+  const destination = new URL(session.serverUrl);
+  if (destination.protocol !== "https:" && !(destination.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(destination.hostname))) {
+    throw new Error("ChatGPT enrollment requires HTTPS for a remote Server.");
+  }
+  const authGeneration = miniAppRecoveryAuthGeneration;
+  const snapshot = authoritativeConnectionSnapshot();
+  if (!snapshot?.serverFingerprint || snapshot.scope !== destination.origin) throw new Error("The active Server could not be verified.");
+  const authority = JSON.stringify(snapshot);
+  const current = () => {
+    try { return serverSessions.active === session && serverSessions.getBySender(e.sender.id) === session && session.signedIn
+      && miniAppRecoveryAuthGeneration === authGeneration
+      && JSON.stringify(authoritativeConnectionSnapshot()) === authority && !e.sender.isDestroyed(); }
+    catch { return false; }
+  };
+  chatGPTDesktopPreparation?.abort();
+  chatGPTDesktopEnrollment?.controller.abort();
+  const controller = new AbortController();
+  chatGPTDesktopPreparation = controller;
+  const unsubscribe = serverSessions.onChange(() => { if (!current()) controller.abort(); });
+  const cancel = () => controller.abort();
+  e.sender.once("destroyed", cancel);
+  const navigate = (_event: Electron.Event, _url: string, _inPlace: boolean, isMainFrame: boolean) => { if (isMainFrame) cancel(); };
+  e.sender.on("did-start-navigation", navigate);
+  controller.signal.addEventListener("abort", () => {
+    unsubscribe();
+    if (chatGPTDesktopPreparation === controller) chatGPTDesktopPreparation = null;
+    e.sender.removeListener("destroyed", cancel); e.sender.removeListener("did-start-navigation", navigate);
+  }, { once: true });
+  try {
+    const listener = await createChatGPTDesktopListener({ current, signal: controller.signal });
+    chatGPTDesktopEnrollment = { listener, controller, senderId: e.sender.id };
+    return { listenerId: listener.id, port: listener.port };
+  } catch { controller.abort(); throw new Error("Could not prepare ChatGPT sign-in."); }
+});
+ipcMain.handle("chatGPT:receive", async (e, args: { listenerId?: unknown; authorizationUrl?: unknown }) => {
+  resolveSessionFromSender(e);
+  const entry = chatGPTDesktopEnrollment;
+  if (!entry || entry.senderId !== e.sender.id || args?.listenerId !== entry.listener.id || typeof args.authorizationUrl !== "string") {
+    throw new Error("ChatGPT sign-in is no longer active.");
+  }
+  try {
+    const callback = entry.listener.receive(args.authorizationUrl);
+    // receive() arms state validation synchronously, before even a fast SSO
+    // redirect can reach the listener.
+    await shell.openExternal(args.authorizationUrl);
+    return await callback;
+  }
+  finally { entry.controller.abort(); if (chatGPTDesktopEnrollment === entry) chatGPTDesktopEnrollment = null; }
+});
+ipcMain.handle("chatGPT:cancel", (e, listenerId: unknown) => {
+  resolveSessionFromSender(e);
+  const entry = chatGPTDesktopEnrollment;
+  if (entry?.senderId === e.sender.id && entry.listener.id === listenerId) {
+    entry.controller.abort(); chatGPTDesktopEnrollment = null;
+  }
+});
+
 ipcMain.handle("googleWorkspace:authStatus", async (e) => {
   assertMainWindowSender(e);
   const serverUrl = resolvedServerUrl();
@@ -10384,7 +10474,7 @@ ipcMain.handle("fs:watchRoot", (e, args: { path: string }) => {
 ipcMain.handle("fs:unwatchRoot", (e, args: { path: string }) => {
   assertMainWindowSender(e);
   try {
-    cleanupFsWatchRoot(fs.realpathSync(args.path));
+    cleanupFsWatchRoot(fs.realpathSync.native(args.path));
   } catch {
     cleanupFsWatchRoot(path.resolve(args.path));
   }
@@ -15764,7 +15854,7 @@ app.on("before-quit", (event) => {
   isQuitting = true;
   if (quitTeardownStarted) return;
   quitTeardownStarted = true;
-  desktopDocumentMutationRuntime?.stopOutboxPump();
+  void desktopDocumentMutationRuntime?.stopOutboxPump();
   invalidatePendingDocumentMutationAcks();
   clearInterval(binaryReadSessionExpiryTimer);
   disposeBinaryReadSenderBindings();

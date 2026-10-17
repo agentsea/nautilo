@@ -1,14 +1,11 @@
 import {
-  chmod,
   lstat,
-  mkdir,
   open,
   readFile,
-  rename,
   unlink,
 } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { basename, dirname, join, resolve } from "node:path";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, publishPrivateFileAtomically, syncDirectory } from "@nautilo/config/private-filesystem";
 
 import {
   parseLaunchReceipt,
@@ -75,18 +72,19 @@ function isMissing(error: unknown): boolean {
 
 async function assertSafeParent(path: string, create: boolean): Promise<boolean> {
   const parent = dirname(path);
-  if (create) await mkdir(parent, { recursive: true, mode: 0o700 });
   let status;
   try {
     status = await lstat(parent);
   } catch (error) {
-    if (!create && isMissing(error)) return false;
-    throw error;
+    if (!isMissing(error)) throw error;
+    if (!create) return false;
+    await ensurePrivateDirectory(parent);
+    status = await lstat(parent);
   }
   if (status.isSymbolicLink() || !status.isDirectory()) {
     throw new LaunchReceiptStoreError("unsafe-path");
   }
-  if (process.platform !== "win32" && (status.mode & 0o777) !== 0o700) {
+  if (process.platform === "win32" ? !await isPrivateFilesystemPathAsync(parent) : (status.mode & 0o777) !== 0o700) {
     throw new LaunchReceiptStoreError("unsafe-permissions");
   }
   return true;
@@ -101,7 +99,9 @@ async function assertSafeTarget(
     if (status.isSymbolicLink() || !status.isFile()) {
       throw new LaunchReceiptStoreError("unsafe-path");
     }
-    if (options.requireOwnerOnly && (status.mode & 0o777) !== OWNER_ONLY_MODE) {
+    if (options.requireOwnerOnly && (process.platform === "win32"
+      ? !await isPrivateFilesystemPathAsync(path)
+      : (status.mode & 0o777) !== OWNER_ONLY_MODE)) {
       throw new LaunchReceiptStoreError("unsafe-permissions");
     }
     return true;
@@ -126,15 +126,6 @@ function redactStoreFailure(error: unknown): LaunchReceiptStoreError {
   return error instanceof LaunchReceiptStoreError
     ? error
     : new LaunchReceiptStoreError("io-failure");
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const handle = await open(path, "r");
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 function lockPath(path: string): string {
@@ -184,6 +175,7 @@ async function withExclusiveLock<T>(path: string, work: () => Promise<T>): Promi
 }
 
 export async function readLaunchReceipt(path: string): Promise<LaunchReceipt | null> {
+  path = resolve(path);
   try {
     const parentExists = await assertSafeParent(path, false);
     if (!parentExists) return null;
@@ -222,41 +214,19 @@ async function publishLaunchReceipt(
   await assertSafeParent(path, false);
   await assertSafeTarget(path, { allowMissing: true, requireOwnerOnly: false });
 
-  const temporary = join(
-    dirname(path),
-    `.${basename(path)}.${String(process.pid)}.${randomUUID()}.tmp`,
-  );
-  const handle = await open(temporary, "wx", OWNER_ONLY_MODE);
   let published = false;
   try {
-    await handle.writeFile(`${JSON.stringify(receipt, null, 2)}\n`, "utf8");
-    await handle.chmod(OWNER_ONLY_MODE);
-    await handle.sync();
-    await handle.close();
-
-    await options.hooks?.beforeRename?.();
-    await assertSafeTarget(path, { allowMissing: true, requireOwnerOnly: false });
-    await rename(temporary, path);
+    await publishPrivateFileAtomically(path, Buffer.from(`${JSON.stringify(receipt, null, 2)}\n`), {
+      beforePublish: async () => {
+        await options.hooks?.beforeRename?.();
+        await assertSafeTarget(path, { allowMissing: true, requireOwnerOnly: false });
+      },
+    });
     published = true;
-    await chmod(path, OWNER_ONLY_MODE);
     await syncDirectory(dirname(path));
   } catch (error) {
     if (error instanceof LaunchReceiptStoreError) throw error;
     throw new LaunchReceiptStoreError(published ? "publish-unknown" : "io-failure");
-  } finally {
-    if (!published) {
-      try {
-        await handle.close();
-      } catch {
-        // The handle may already be closed after a durable temp write.
-      }
-      try {
-        await unlink(temporary);
-      } catch {
-        // A uniquely named unpublished temp can be repaired safely later. Never
-        // mask the original write failure or disturb the last good receipt.
-      }
-    }
   }
 }
 
@@ -278,6 +248,7 @@ export async function writeLaunchReceipt(
   value: LaunchReceipt,
   options: WriteLaunchReceiptOptions = {},
 ): Promise<void> {
+  path = resolve(path);
   try {
     const receipt = validateForStorage(value);
     if (!isCanonicalInitialReceipt(receipt)) {
@@ -309,6 +280,7 @@ export async function updateLaunchReceipt(
   options: UpdateLaunchReceiptOptions,
   update: (current: LaunchReceipt) => LaunchReceipt,
 ): Promise<LaunchReceipt> {
+  path = resolve(path);
   try {
     await assertSafeParent(path, true);
     return await withExclusiveLock(path, async () => {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { resolve } from "node:path";
 
 import {
   composeOwnerClaimKeyringAccount,
@@ -97,7 +98,7 @@ describe("KeyringComposeOwnerClaimStore", () => {
     const configIdentity = {
       ...identity,
       mode: "owner-config" as const,
-      seedResultPath: "/safe/owner-result.json",
+      seedResultPath: resolve("/safe/owner-result.json"),
     };
     try {
       await store.getOrCreate(configIdentity);
@@ -112,7 +113,7 @@ describe("KeyringComposeOwnerClaimStore", () => {
     try {
       await configStore.getOrCreate({
         ...configIdentity,
-        seedResultPath: "/safe/other-owner-result.json",
+        seedResultPath: resolve("/safe/other-owner-result.json"),
       });
       throw new Error("expected result path custody mismatch");
     } catch (error) {

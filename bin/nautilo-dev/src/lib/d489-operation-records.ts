@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { chmod, rename, rm, writeFile } from "node:fs/promises";
+import { publishPrivateFileAtomically } from "@nautilo/config/private-filesystem";
 
 /**
  * D489 operation evidence is deliberately an allow-listed, aggregate-only
@@ -500,16 +499,7 @@ export function parseCheckpointMaintenanceOperationRecord(value: unknown): Check
 
 /** Atomically replace one owner-only JSON record; callers validate before publishing. */
 export async function writeOwnerOnlyJsonAtomically(path: string, value: unknown): Promise<void> {
-  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await chmod(temporary, 0o600);
-    await rename(temporary, path);
-    await chmod(path, 0o600);
-  } catch (error) {
-    await rm(temporary, { force: true }).catch(() => undefined);
-    throw error;
-  }
+  await publishPrivateFileAtomically(path, new TextEncoder().encode(`${JSON.stringify(value, null, 2)}\n`));
 }
 
 export async function writeCloneSeedOperationRecord(path: string, value: unknown): Promise<CloneSeedOperationRecord> {

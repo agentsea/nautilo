@@ -7,7 +7,7 @@ import { useNavigate } from "react-router-dom";
 import { apiClient } from "../../lib/api";
 import { useAuth } from "../../hooks/use-auth";
 import { CostsDashboard, CostsDashboardPage } from "./costs-dashboard";
-import { formatInt, normalizePersonalCosts } from "./costs-view-model";
+import { formatInt, formatUsd, normalizePersonalCosts } from "./costs-view-model";
 import {
   CostsRecoveryPanel,
   CostsServiceOperations,
@@ -68,7 +68,7 @@ export function PersonalCostsPage() {
   return (
     <CostsDashboardPage
       title="Your costs"
-      description="Charges and estimates for work paid with your personal provider keys. Server-funded work stays in the separate administrator dashboard."
+      description="API-key spending and ChatGPT plan usage for your account. Server-funded work stays in the separate administrator dashboard."
       returnLabel="Settings"
       onReturn={goBack}
       range={range}
@@ -80,28 +80,29 @@ export function PersonalCostsPage() {
       info={
         <>
           Known spend combines reported provider charges and fallback estimates.
-          Unresolved costs remain excluded until a receipt is available.
+          Unresolved costs remain excluded until a receipt is available. ChatGPT plan usage is shown separately.
         </>
       }
     >
       {!loading && !error && data && !data.entry.available ? (
         <section className="rounded-lg border border-border bg-background-panel p-5">
-          <h2 className="text-sm font-semibold">No personal-key costs yet</h2>
+          <h2 className="text-sm font-semibold">No personal usage yet</h2>
           <p className="mt-1 text-sm text-foreground-muted">
-            Add a supported personal key to pay for eligible work from your own
-            provider account. Cost history remains available if you later remove
-            or replace a key.
+            Connect your ChatGPT plan or add a supported API key to fund eligible work.
+            Usage history remains available after you disconnect.
           </p>
           <button
             type="button"
             className="mt-3 text-sm text-primary hover:underline"
             onClick={() => void navigate("/settings#personal-provider-keys")}
           >
-            Add a personal API key
+            Add a key or subscription
           </button>
         </section>
       ) : null}
       {!loading && !error && data?.entry.available ? (
+        <>
+        <SubscriptionUsage rows={data.subscriptions ?? []} />
         <CostsDashboard
           data={normalizePersonalCosts(data)}
           providerHeading="Provider routes and services"
@@ -114,8 +115,33 @@ export function PersonalCostsPage() {
             <CostsRecoveryPanel attempts={data.recovery.attempts ?? []} keysPath="/settings#personal-provider-keys" />
           </>}
         />
+        </>
       ) : null}
     </CostsDashboardPage>
+  );
+}
+
+function SubscriptionUsage({ rows }: { rows: NonNullable<PersonalCostsSummary["subscriptions"]> }) {
+  if (rows.length === 0) return null;
+  return (
+    <section className="rounded-lg border border-border bg-background-panel p-5" aria-label="ChatGPT plan usage">
+      <h2 className="text-sm font-semibold">Your ChatGPT plan usage</h2>
+      <p className="mt-1 text-sm text-foreground-muted">
+        Included in your ChatGPT plan allowance. API-equivalent estimates are comparisons,
+        not additional charges, and are excluded from the spending totals. This does not show your remaining plan allowance.
+      </p>
+      <ul className="mt-3 space-y-3">
+        {rows.map(row => (
+          <li key={`${row.registrationId ?? "unknown"}:${row.model}`} className="text-sm">
+            <p className="font-medium">{row.model} · ChatGPT connection {row.registrationId?.slice(0, 8) ?? "unavailable"}</p>
+            <p>{formatInt(row.attempts)} attempts · {formatInt(row.inputTokens)} input tokens
+              {" "}({formatInt(row.cachedInputTokens)} cached) · {formatInt(row.outputTokens)} output tokens</p>
+            <p className="text-foreground-muted">API-equivalent estimate: {formatUsd(row.apiEquivalentCostUsd)} for reported usage.</p>
+            {row.unresolvedAttempts > 0 ? <p className="text-warning">{formatInt(row.unresolvedAttempts)} attempts have unconfirmed outcomes; reported tokens may be incomplete. Check any partial output before retrying.</p> : null}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

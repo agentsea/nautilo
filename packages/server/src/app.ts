@@ -12,6 +12,9 @@ import { lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOp
 import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
 import { resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
+import { createBolterController, type BolterController } from "./messaging/bolter-controller";
+import { bolterRoutes } from "./routes/bolter";
+import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
 import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
 import { parseLocalExecutionDelegation } from "@nautilo/types";
@@ -52,7 +55,14 @@ import { createArtifactFeedInvalidator } from "./event-feed/artifact-invalidatio
 import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCreationRoom,
   resolveArtifactFeedActorNames } from "./event-feed/artifact-identities";
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
+import { getCurrentProtectedMemoryEvidence } from "./lib/protected-memory-model-evidence";
+import { openMemoryOperation } from "./lib/personal-memory-operation";
+import { createPersonalMemoryEvidencePort } from "./lib/personal-memory-evidence-port";
+import { createStenographerMemoryFunding } from "./lib/stenographer-memory-funding";
+import { createReviewMemoryExposureResolver } from "./lib/memory-review-exposure";
+import { createHmacOrdinarySourceFingerprintPort } from "@nautilo/runtime";
 import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
+import { createPersonalLlmAttemptOwnerRuntime } from "./lib/personal-llm-attempt-owner";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { createCloudConversionRuntime } from "./conversions";
 import { installConversionRuntime, uninstallConversionRuntime } from "@nautilo/agent";
@@ -317,6 +327,7 @@ import { serverModelsRoutes } from "./routes/server-models";
 import { serverContextRoutes } from "./routes/server-context";
 import { serverProviderPolicyRoutes } from "./routes/server-provider-policy";
 import { personalCapabilityPreferenceRoutes } from "./routes/personal-capability-preferences";
+import { chatGPTPlanRoutes } from "./routes/chatgpt-plan";
 import { personalProviderCredentialRoutes } from "./routes/personal-provider-credentials";
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
@@ -561,6 +572,9 @@ import {
   installForegroundRecordRecallPortFactory,
   uninstallForegroundRecordContextPortFactory,
   uninstallForegroundRecordRecallPortFactory,
+  createHmacProfileSoulFingerprint,
+  installForegroundAuthoredFingerprintPort,
+  uninstallForegroundAuthoredFingerprintPort,
   installForegroundChatFundingPort,
   uninstallForegroundChatFundingPort,
   installTaskFundingPort,
@@ -1090,7 +1104,9 @@ export async function createApp(options?: CreateAppOptions) {
   // Room send or even the first interval tick.
   reconcileLiveShadowLifecycle();
   const surplusCostRecovery = createSurplusCostRecovery();
+  const personalAttemptOwner = createPersonalLlmAttemptOwnerRuntime();
   app.addHook("onClose", async () => {
+    await personalAttemptOwner.stop();
     await surplusCostRecovery.stop();
     clearInterval(liveShadowLifecycleTimer);
     await liveShadowLifecycleReconciliation;
@@ -1871,6 +1887,11 @@ export async function createApp(options?: CreateAppOptions) {
   let reflectionCommitmentKey: Uint8Array | undefined;
   const getReflectionCommitmentKey = () =>
     reflectionCommitmentKey ??= resolveCurrentReflectionCommitmentKey();
+  installForegroundAuthoredFingerprintPort(
+    (input) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(input),
+    (input) => createHmacOrdinarySourceFingerprintPort(getReflectionCommitmentKey()).memory(input),
+  );
+  app.addHook("onClose", () => { uninstallForegroundAuthoredFingerprintPort(); });
   const recordRepositorySelection = resolveCurrentRecordRepositorySelection();
   const resolveStenographerModel = () => {
     kickServerModelConfigRefresh();
@@ -1915,7 +1936,29 @@ export async function createApp(options?: CreateAppOptions) {
           });
           return (await ordinaryPublisherPromise).convertNextLegacyPage(input);
         };
-  const memoryReviewRuntime = createServerMemoryReviewRuntime(maintenanceGate);
+  const memoryFingerprints = { memory: (row: Parameters<ReturnType<typeof createHmacOrdinarySourceFingerprintPort>["memory"]>[0]) => createHmacOrdinarySourceFingerprintPort(getReflectionCommitmentKey()).memory(row) };
+  const memoryEvidence = createPersonalMemoryEvidencePort({
+    db: getServerDirectDb(), selected: resolveCurrentRecordRepositorySelection,
+    fingerprints: memoryFingerprints,
+    fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
+    readRecord: async (dependency) => (await reflectionRuntime()).readMemoryEvidenceRecord(dependency),
+  });
+  const memoryReviewRuntime = createServerMemoryReviewRuntime(maintenanceGate, {
+    evidence: memoryEvidence, budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+    get commitmentKey() { return getReflectionCommitmentKey(); },
+    fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
+    resolveExposureDependencies: createReviewMemoryExposureResolver({ db: getServerDirectDb(), fingerprints: memoryFingerprints }),
+  });
+  const stenographerMemoryFunding = createStenographerMemoryFunding({
+    db: getServerDirectDb(), ports: memoryEvidence,
+    budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+    get commitmentKey() { return getReflectionCommitmentKey(); }, resolveServiceModel: resolveStenographerModel,
+    assertAvailable: async () => {
+      await maintenanceGate.assertAcceptingNewWork();
+      const policy = await getEncryptionTransitionPolicy(getServerDirectDb());
+      if (policy.mode !== "plaintext_only" && policy.shadowBehavior === "strict") throw new Error("Protected Memory source access is unavailable");
+    },
+  });
   const stenographerDataOwner = bindEncryptionDataOperationOwner({
     policy: createLiveShadowDataOperationPolicyBinding(
       () => getEncryptionTransitionPolicy(getServerDirectDb()),
@@ -1970,6 +2013,9 @@ export async function createApp(options?: CreateAppOptions) {
         recordCommitment: createHmacProtectedStenographerRecordCommitmentPort(getReflectionCommitmentKey()),
         semanticCommitments: createHmacRecordSemanticCommitmentPort(getReflectionCommitmentKey()),
         resolveModelId: resolveStenographerModel,
+        memoryEvidence,
+        admitExtractionModel: stenographerMemoryFunding.admitProtectedExtractionModel,
+        admitCompactionModel: stenographerMemoryFunding.admitProtectedCompactionModel,
         authorizationRequested: async (record) => {
           if (record.snapshot.formatVersion !== 2
             || record.snapshot.credentialSubject.kind !== "processor"
@@ -2014,6 +2060,7 @@ export async function createApp(options?: CreateAppOptions) {
       protected: lazyStenographerAdapter((composition) => composition.adapter),
       dual: lazyStenographerAdapter((composition) => composition.dualAdapter),
       ordinary: createOrdinaryStenographerIntentAdapter({
+        ...stenographerMemoryFunding,
         publishExtraction: publishStenographerRecord,
         ...(convertStenographerRecords === undefined
           ? {}
@@ -2093,7 +2140,7 @@ export async function createApp(options?: CreateAppOptions) {
                 selection: {...recordRepositorySelection, selectedRepresentation: "protected"}, commitmentKey,
                 operation: authority, readiness: {ensureAuthority: authority.ensureAuthority, ensureSearchProjection: search.ensureSearchProjection},
                 model: {readiness: signal => ordinary.modelLaneReadiness?.(signal) ?? Promise.resolve({status: "ready"}),
-                  invoke: (claim, prompt, signal) => invokePreparedOrganizerBatch([claim], prompt, signal), invokeBatch: invokePreparedOrganizerBatch},
+                  invoke: (claim, prompt, signal, dependencies) => invokePreparedOrganizerBatch([claim], prompt, signal, dependencies), invokeBatch: invokePreparedOrganizerBatch},
                 resolveParentConflict: operation => ordinary.resolveParentConflict(operation), sourceInvalidation,
                 nextRetryAt: () => Date.now() + REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.scanIntervalMilliseconds,
               });
@@ -2109,8 +2156,8 @@ export async function createApp(options?: CreateAppOptions) {
             loadOrganizerView: async (claim, signal) => (await resolveProtected()).loadOrganizerView(claim, signal),
             resolveParentConflict: async operation => (await resolveProtected()).resolveParentConflict(operation),
             resolveDependencyLoss: async operation => (await resolveProtected()).resolveDependencyLoss(operation),
-            invokeOrganizer: async (claim, prompt, signal) => (await resolveProtected()).invokeOrganizer(claim, prompt, signal),
-            invokeOrganizerBatch: async (claims, prompt, signal) => (await resolveProtected()).invokeOrganizerBatch!(claims, prompt, signal),
+            invokeOrganizer: async (claim, prompt, signal, dependencies) => (await resolveProtected()).invokeOrganizer(claim, prompt, signal, dependencies),
+            invokeOrganizerBatch: async (claims, prompt, signal, dependencies) => (await resolveProtected()).invokeOrganizerBatch!(claims, prompt, signal, dependencies),
             applyProposal: async operation => (await resolveProtected()).applyProposal(operation),
             modelLaneReadiness: signal => ordinary.modelLaneReadiness?.(signal) ?? Promise.resolve({status: "ready"}),
           };
@@ -2119,6 +2166,15 @@ export async function createApp(options?: CreateAppOptions) {
               releaseWaitingSemantic: async (claim, stage, failure) => (await reflectionAuthority()).releaseWaitingSemantic(claim, stage, failure), maintain: async operation => (await reflectionAuthority()).maintain(operation)}});
         },
         resolveModelId: resolveReflectionModel,
+        admitMemoryModel: async (request) => openMemoryOperation({
+          role: "memoryReflection", bindingScope: "claim_family",
+          operationKey: `reflection:${[...request.claims].sort((left, right) => left.recordRef.localeCompare(right.recordRef)).map(claim => `${claim.recordRef}:${claim.generation}`).join(":")}`,
+          dependencies: () => Promise.resolve(request.dependencies), ports: getCurrentProtectedMemoryEvidence() ?? memoryEvidence,
+          budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+          commitmentKey: getReflectionCommitmentKey(), bind: request.bind,
+          assertCurrent: async () => { await maintenanceGate.assertAcceptingNewWork(); await request.assertCurrent(); },
+          resolveServiceModel: resolveReflectionModel,
+        }),
       });
       reflectionRuntimePromise = pending;
       void pending.catch(() => {
@@ -2131,6 +2187,16 @@ export async function createApp(options?: CreateAppOptions) {
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
   installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance });
+  let bolterController: BolterController | null = null;
+  const externalRoomExecution = createExternalRoomExecutionService({ jobManager,
+    onPendingPublication: () => { bolterController?.wakePublications(); },
+    onRecoveryPass: () => { bolterController?.wakePublications(); },
+  });
+  app.decorate("externalRoomExecution", externalRoomExecution);
+  // Match the existing conversion worker's recovery cadence. Durable claims
+  // prevent overlapping execution across processes; this timer never takes over a claim.
+  app.addHook("onListen", () => { externalRoomExecution.start({ intervalMs: 5_000 }); return Promise.resolve(); });
+  app.addHook("onClose", () => externalRoomExecution.close());
   installTaskFundingPort(nativeTaskFundingPort);
   app.addHook("onClose", () => {
     uninstallForegroundChatFundingPort();
@@ -2955,6 +3021,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   app.addHook("onListen", () => {
+    personalAttemptOwner.start();
     surplusCostRecovery.start();
     void loadConnectionProviderCatalog().then((resolved) => {
       const nextServices = createConnectedAppServices(resolved);
@@ -3095,6 +3162,16 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   serverProviderPolicyRoutes(app);
+  chatGPTPlanRoutes(app, async request => {
+    const authorization = request.headers.authorization;
+    if (!authorization?.startsWith("Bearer ")) return false;
+    const current = await resolveBearer(authorization.slice(7), { depth: "rbac" });
+    if (!current.ok || current.sessionUserId !== request.sessionUserId) return false;
+    if ((await getEncryptionTransitionPolicy(getServerDirectDb())).mode !== "plaintext_only") {
+      await resolveCurrentDeviceAdmission({ request, composition: deviceAdmissionComposition, now: Date.now() });
+    }
+    return true;
+  });
   personalCapabilityPreferenceRoutes(app);
   personalProviderCredentialRoutes(app, {
     auditEvent: (request, event) => {
@@ -4069,6 +4146,10 @@ export async function createApp(options?: CreateAppOptions) {
   );
   const codexTaskExecutionReader = createCodexTaskExecutionRouteReader(codexDb);
   const taskHarnessExecutionRouteReader = createTaskHarnessExecutionRouteStore(codexDb);
+  bolterController = createBolterController({ relay: relayRegistry, execution: externalRoomExecution });
+  bolterRoutes(app, bolterController);
+  app.addHook("onClose", () => bolterController?.close());
+
   const claudeConnections = new ClaudeConnectionController({
     getConnection: (userId) => getOrCreateClaudeConnectionWith(getServerDirectDb(), { userId }),
     setEnabled: async (userId, enabled) => {

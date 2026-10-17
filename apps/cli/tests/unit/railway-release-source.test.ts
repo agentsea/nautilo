@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { chmod, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { generateKeyPairSync, sign } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +28,8 @@ import {
   resolveRailwayRelease,
 } from "../../src/lib/railway-release-source";
 import { SERVER_PRODUCTION_RELEASE_MANIFEST_URL } from "../../src/lib/server-release-source";
+import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 
 const digest = (name: string, hex: string): string => `${name}@sha256:${hex.repeat(64)}`;
 
@@ -125,6 +127,7 @@ let root: string;
 
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "nautilo-railway-release-"));
+  await secureFilesystemPath(root);
 });
 
 afterEach(async () => {
@@ -160,7 +163,7 @@ describe("Railway qualification release source", () => {
     await writeFile(runtimeArtifactRecordPath, JSON.stringify(runtimeArtifactRecord()), { mode: 0o600 });
     await writeFile(bootstrapArtifactRecordPath, JSON.stringify(bootstrapArtifactRecord()), { mode: 0o600 });
 
-    const result = await resolveRailwayQualificationRelease({
+    const validInput = {
       [RAILWAY_QUALIFICATION_MANIFEST_PATH_ENV]: manifestPath,
       [RAILWAY_QUALIFICATION_TRUST_ROOT_PATH_ENV]: trustRootPath,
       [RAILWAY_QUALIFICATION_RUNTIME_ARTIFACT_RECORD_PATH_ENV]: runtimeArtifactRecordPath,
@@ -169,12 +172,17 @@ describe("Railway qualification release source", () => {
       [RAILWAY_QUALIFICATION_BOOTSTRAP_ARTIFACT_RECORD_PATH_ENV]: bootstrapArtifactRecordPath,
       [RAILWAY_QUALIFICATION_BOOTSTRAP_ARTIFACT_EXPECTED_SOURCE_SHA_ENV]: "ffffffffffffffffffffffffffffffffffffffff",
       [RAILWAY_QUALIFICATION_BOOTSTRAP_ARTIFACT_EXPECTED_MANIFEST_DIGEST_ENV]: `sha256:${"e".repeat(64)}`,
-    });
+    };
+    const result = await resolveRailwayQualificationRelease(validInput);
     expect(result.state).toBe("verified");
     if (result.state === "verified") {
       expect(result.channel).toBe("qualification");
       expect(result.manifest.releaseId).toBe("qualification-local");
     }
+    await allowOtherReaders(trustRootPath);
+    expect(await resolveRailwayQualificationRelease(validInput)).toEqual({ state: "invalid" });
+    await secureFilesystemPath(trustRootPath);
+    expect((await resolveRailwayQualificationRelease(validInput)).state).toBe("verified");
     const complete = {
       [RAILWAY_QUALIFICATION_MANIFEST_PATH_ENV]: manifestPath,
       [RAILWAY_QUALIFICATION_TRUST_ROOT_PATH_ENV]: trustRootPath,
@@ -247,11 +255,12 @@ describe("Railway qualification release source", () => {
     })).toEqual({ state: "invalid" });
     expect(await resolveRailwayQualificationRelease(complete)).toEqual({ state: "invalid" });
 
-    await chmod(manifestPath, 0o644);
+    await allowOtherReaders(manifestPath);
     expect(await resolveRailwayQualificationRelease(complete)).toEqual({ state: "invalid" });
-    await chmod(manifestPath, 0o600);
+    await secureFilesystemPath(manifestPath);
     const linkedPath = join(root, "linked.json");
-    await symlink(manifestPath, linkedPath);
+    await symlink(process.platform === "win32" ? root : manifestPath, linkedPath,
+      process.platform === "win32" ? "junction" : "file");
     expect(await resolveRailwayQualificationRelease({
       ...complete,
       [RAILWAY_QUALIFICATION_MANIFEST_PATH_ENV]: linkedPath,

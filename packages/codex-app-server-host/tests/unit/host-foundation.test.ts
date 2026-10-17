@@ -1,11 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { lstat as nodeLstat, mkdir as nodeMkdir, mkdtemp, open as nodeOpen, realpath as nodeRealpath, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, symlink as nodeSymlink, writeFile as nodeWriteFile } from "node:fs/promises";
-import { join, normalize } from "node:path";
+import { join, normalize, parse } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { CodexBindingRegistry, CodexProfileHomeRegistry, CodexProfileSupervisor, CodexRelayHostPort, CodexServiceDirectory, CodexWorkspaceReceiptAuthority, InMemoryCodexBindingStore, sameReservationAuthority, toRelayWorkspaceReceipt, type AppServerClient, type AppServerClientFactory, type BindingRequest, type ChildStdio, type CodexBindingStore, type CurrentFolderSnapshot, type HostClock, type HostFilesystem, type HostFileStat, type HostTimer, type HostTimerHandle, type ManagedChildProcess, type OpaqueHandle, type ProcessHost, type RuntimeLease, type RuntimeProvider, type SupervisorRequest } from "../../src/internal";
 import { nodeProfileHomeRemovalFilesystem } from "../../src/node";
+
+function fixturePath(value: string): string {
+  return process.platform === "win32"
+    ? parse(process.cwd()).root + value.slice(1).replaceAll("/", "\\")
+    : value;
+}
 
 const handle = (value: string): OpaqueHandle => value as OpaqueHandle;
 const removalGate = (assertDrained: (child: import("../../src/internal").ChildIdentity) => void | Promise<void> = () => undefined) => ({
@@ -16,7 +22,7 @@ const removalGate = (assertDrained: (child: import("../../src/internal").ChildId
 
 describe("workspace receipt authority", () => {
   test("binds the complete live v8 scope, uses two reads, and translates without a path", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/workspace");
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/workspace"));
     const source = new Snapshots([snap()]);
     const authority = new CodexWorkspaceReceiptAuthority({ snapshots: source, filesystem: fs, clock: new Clock(), newHandle: () => handle("receipt"), hmacKey: "persistent-host-key" });
     const receipt = await authority.mint();
@@ -26,7 +32,7 @@ describe("workspace receipt authority", () => {
     await rejects(authority.resolve(receipt), "WORKSPACE_STALE");
   });
   test("rejects an alias swapped between the pre- and post-resolution lstats", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/workspace"); fs.swapAliasOnSecondLstat = true;
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/workspace")); fs.swapAliasOnSecondLstat = true;
     const authority = new CodexWorkspaceReceiptAuthority({ snapshots: new Snapshots([snap()]), filesystem: fs, clock: new Clock(), hmacKey: "key" });
     await rejects(authority.mint(), "WORKSPACE_STALE");
   });
@@ -34,39 +40,39 @@ describe("workspace receipt authority", () => {
 
 describe("profile homes", () => {
   test("never chmods a pre-existing symlink and creates marked owner-only homes", async () => {
-    const trap = new FakeFilesystem(); trap.dir("/"); trap.symlink("/profiles", "/elsewhere");
-    const registry = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: trap, currentUid: () => 501 });
+    const trap = new FakeFilesystem(); trap.dir(fixturePath("/")); trap.symlink(fixturePath("/profiles"), fixturePath("/elsewhere"));
+    const registry = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: trap, currentUid: () => 501 });
     await rejects(registry.ensure(profile("p")), "PROFILE_HOME_INVALID");
     expect(trap.chmods).toEqual([]);
 
-    const fs = new FakeFilesystem(); fs.dir("/");
-    const safe = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: fs, currentUid: () => 501 });
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/"));
+    const safe = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501 });
     const home = await safe.ensure(profile("p"));
-    const path = await safe.resolveForLaunch(home); expect(path).toStartWith("/profiles/");
+    const path = await safe.resolveForLaunch(home); expect(path).toStartWith(fixturePath("/profiles/"));
     fs.mutate(path, { uid: 999 }); await rejects(safe.resolveForLaunch(home), "PROFILE_HOME_INVALID");
     fs.mutate(path, { uid: 501, mode: 0o755 }); await rejects(safe.resolveForLaunch(home), "PROFILE_HOME_INVALID");
     fs.mutate(path, { mode: 0o700, ino: 999 }); await rejects(safe.resolveForLaunch(home), "PROFILE_HOME_INVALID");
-    const stableFs = new FakeFilesystem(); stableFs.dir("/"); const stable = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: stableFs, currentUid: () => 501 });
+    const stableFs = new FakeFilesystem(); stableFs.dir(fixturePath("/")); const stable = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: stableFs, currentUid: () => 501 });
     const one = await stable.ensure(profile("stable")); const stablePath = await stable.resolveForLaunch(one); const two = await stable.ensure({ ...profile("stable"), profileGeneration: 2 });
     expect(stablePath).toBe(await stable.resolveForLaunch(two));
   });
   test("does not mutate through an intermediate trusted-parent symlink", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/"); fs.symlink("/trusted", "/elsewhere");
-    const registry = new CodexProfileHomeRegistry({ rootPath: "/trusted/profiles", trustedParentPath: "/trusted", filesystem: fs, currentUid: () => 501 });
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/")); fs.symlink(fixturePath("/trusted"), fixturePath("/elsewhere"));
+    const registry = new CodexProfileHomeRegistry({ rootPath: fixturePath("/trusted/profiles"), trustedParentPath: fixturePath("/trusted"), filesystem: fs, currentUid: () => 501 });
     await rejects(registry.ensure(profile("p")), "PROFILE_HOME_INVALID"); expect(fs.mkdirs).toEqual([]);
   });
 
   test("removes only an exact drained marker-owned profile home", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/");
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/"));
     const removals: Array<import("../../src/internal").ProfileHomeRemovalSpec> = []; let drained = 0;
-    const registry = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { removals.push(input); input.assertAuthorizedNow(); input.commitDestruction(); } } });
+    const registry = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { removals.push(input); input.assertAuthorizedNow(); input.commitDestruction(); } } });
     const home = await registry.ensure(profile("remove"));
     const child = { profile: home.identity, accountGeneration: 2, runtimeGeneration: 7, childGeneration: 1 };
-    const context = { drainedChild: child, serviceDirectoryPath: "/service", runtimeCanonicalPaths: ["/runtime/codex"] };
+    const context = { drainedChild: child, serviceDirectoryPath: fixturePath("/service"), runtimeCanonicalPaths: [fixturePath("/runtime/codex")] };
     await registry.removeAfterDrain(home, context, removalGate(async (identity) => { expect(identity).toEqual(child); drained += 1; }));
     expect(drained).toBe(2); expect(removals).toHaveLength(1);
-    expect(removals[0]).toMatchObject({ containmentRoot: "/profiles", expectedIdentity: home.identity, markerName: ".nautilo-codex-profile.json", expectedMarker: { schemaVersion: 1, actorId: "human", profileGeneration: 1 } });
-    expect(removals[0]?.path).toStartWith("/profiles/");
+    expect(removals[0]).toMatchObject({ containmentRoot: fixturePath("/profiles"), expectedIdentity: home.identity, markerName: ".nautilo-codex-profile.json", expectedMarker: { schemaVersion: 1, actorId: "human", profileGeneration: 1 } });
+    expect(removals[0]?.path).toStartWith(fixturePath("/profiles/"));
 
     const other = await registry.ensure(profile("other"));
     const otherContext = { ...context, drainedChild: { ...child, profile: other.identity } };
@@ -76,33 +82,33 @@ describe("profile homes", () => {
     await rejects(registry.removeAfterDrain(other, { ...otherContext, serviceDirectoryPath: otherPath }, removalGate()), "PROFILE_HOME_INVALID");
     await rejects(registry.removeAfterDrain(other, { ...otherContext, runtimeCanonicalPaths: [otherPath] }, removalGate()), "PROFILE_HOME_INVALID");
     await rejectsFailure(registry.removeAfterDrain(other, otherContext, removalGate((candidate) => { if (candidate.childGeneration < 2) throw new Error("newer child exists"); })));
-    fs.symlink("/profiles", "/elsewhere");
+    fs.symlink(fixturePath("/profiles"), fixturePath("/elsewhere"));
     await rejects(registry.removeAfterDrain(other, otherContext, removalGate()), "PROFILE_HOME_INVALID");
     expect(removals).toHaveLength(1);
   });
 
   test("keeps a home registered when the final deletion adapter detects an identity race", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/"); let raced = true; let calls = 0;
-    const registry = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { calls += 1; if (raced) throw new Error("final identity mismatch"); input.assertAuthorizedNow(); input.commitDestruction(); } } });
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/")); let raced = true; let calls = 0;
+    const registry = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { calls += 1; if (raced) throw new Error("final identity mismatch"); input.assertAuthorizedNow(); input.commitDestruction(); } } });
     const home = await registry.ensure(profile("race")); const child = { profile: home.identity, accountGeneration: 2, runtimeGeneration: 7, childGeneration: 4 };
-    const context = { drainedChild: child, serviceDirectoryPath: "/service", runtimeCanonicalPaths: ["/runtime/codex"] };
+    const context = { drainedChild: child, serviceDirectoryPath: fixturePath("/service"), runtimeCanonicalPaths: [fixturePath("/runtime/codex")] };
     await rejectsFailure(registry.removeAfterDrain(home, context, removalGate(async (candidate) => { expect(candidate).toEqual(child); })));
     raced = false;
     await registry.removeAfterDrain(home, context, removalGate());
     expect(calls).toBe(2);
   });
   test("rejects a custom deletion adapter that returns without an exact commit", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/"); let calls = 0;
-    const registry = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async () => { calls += 1; } } });
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/")); let calls = 0;
+    const registry = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async () => { calls += 1; } } });
     const home = await registry.ensure(profile("uncommitted")); const child = { profile: home.identity, accountGeneration: 2, runtimeGeneration: 7, childGeneration: 1 };
-    await rejects(registry.removeAfterDrain(home, { drainedChild: child, serviceDirectoryPath: "/service", runtimeCanonicalPaths: ["/runtime"] }, removalGate()), "PROFILE_HOME_INVALID");
-    expect(calls).toBe(1); expect(await registry.resolveForLaunch(home)).toContain("/profiles/");
+    await rejects(registry.removeAfterDrain(home, { drainedChild: child, serviceDirectoryPath: fixturePath("/service"), runtimeCanonicalPaths: [fixturePath("/runtime")] }, removalGate()), "PROFILE_HOME_INVALID");
+    expect(calls).toBe(1); expect(await registry.resolveForLaunch(home)).toContain(fixturePath("/profiles/"));
   });
   test("revokes a delayed deletion adapter before it can delete or unregister", async () => {
-    const fs = new FakeFilesystem(); fs.dir("/"); const delayed = deferred<void>(); let authorized = true; let called = 0;
-    const registry = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { await delayed.promise; await input.assertAuthorized(); called += 1; } } });
-    const home = await registry.ensure(profile("revoked-adapter")); const child = { profile: home.identity, accountGeneration: 2, runtimeGeneration: 7, childGeneration: 1 }; const context = { drainedChild: child, serviceDirectoryPath: "/service", runtimeCanonicalPaths: ["/runtime"] };
-    const removing = registry.removeAfterDrain(home, context, removalGate(async () => { if (!authorized) throw new Error("revoked"); })); authorized = false; delayed.resolve(); await rejectsFailure(removing); expect(called).toBe(0); expect(await registry.resolveForLaunch(home)).toContain("/profiles/");
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/")); const delayed = deferred<void>(); let authorized = true; let called = 0;
+    const registry = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { await delayed.promise; await input.assertAuthorized(); called += 1; } } });
+    const home = await registry.ensure(profile("revoked-adapter")); const child = { profile: home.identity, accountGeneration: 2, runtimeGeneration: 7, childGeneration: 1 }; const context = { drainedChild: child, serviceDirectoryPath: fixturePath("/service"), runtimeCanonicalPaths: [fixturePath("/runtime")] };
+    const removing = registry.removeAfterDrain(home, context, removalGate(async () => { if (!authorized) throw new Error("revoked"); })); authorized = false; delayed.resolve(); await rejectsFailure(removing); expect(called).toBe(0); expect(await registry.resolveForLaunch(home)).toContain(fixturePath("/profiles/"));
   });
 });
 
@@ -123,7 +129,7 @@ describe("node profile-home removal adapter", () => {
       // remove-then-mkdir sequence may legally reuse the same inode on ext4,
       // which made this identity-race fixture nondeterministic in Linux CI.
       const inode = await create("inode"); const replacementPath = join(root, "inode-replacement"); await nodeMkdir(replacementPath, { mode: 0o700 }); await nodeWriteFile(join(replacementPath, ".nautilo-codex-profile.json"), JSON.stringify(inode.spec.expectedMarker), { mode: 0o600 }); const replacementInode = Number((await nodeLstat(replacementPath)).ino); expect(replacementInode).not.toBe(inode.spec.expectedInode); await nodeRm(inode.path, { recursive: true }); await nodeRename(replacementPath, inode.path); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(inode.spec), "PROFILE_HOME_INVALID"); expect(Number((await nodeLstat(inode.path)).ino)).toBe(replacementInode);
-      const link = await create("link"); await nodeRm(link.path, { recursive: true }); await nodeSymlink(root, link.path); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(link.spec), "PROFILE_HOME_INVALID");
+      const link = await create("link"); await nodeRm(link.path, { recursive: true }); await nodeSymlink(root, link.path, process.platform === "win32" ? "junction" : "dir"); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(link.spec), "PROFILE_HOME_INVALID");
     } finally { await nodeRm(root, { recursive: true, force: true }); }
   });
   test("enforces exact N/N+1 tree bounds and restores an unsafe quarantine without overwriting a target", async () => {
@@ -147,7 +153,18 @@ describe("node profile-home removal adapter", () => {
 
       const bytesAtLimit = await create("bytes-at-limit"); const markerSize = Number((await nodeLstat(join(bytesAtLimit.path, ".nautilo-codex-profile.json"))).size); const exactBytes = await nodeOpen(join(bytesAtLimit.path, "payload"), "w"); await exactBytes.truncate((64 * 1024 * 1024) - markerSize); await exactBytes.close(); await nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(bytesAtLimit.spec); await rejectsFailure(nodeLstat(bytesAtLimit.path));
       const bytesOver = await create("bytes-over"); const over = await nodeOpen(join(bytesOver.path, "payload"), "w"); await over.truncate((64 * 1024 * 1024)); await over.close(); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(bytesOver.spec), "PROFILE_HOME_INVALID"); expect((await nodeLstat(bytesOver.path)).ino).toBe(bytesOver.spec.expectedInode);
-      const special = await create("special-file"); const socket = createServer(); const shortSocketPath = join("/tmp", `n-${randomUUID()}`); await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(shortSocketPath, resolve); }); await nodeRename(shortSocketPath, join(special.path, "socket")); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(special.spec), "PROFILE_HOME_INVALID"); await new Promise<void>((resolve) => socket.close(() => resolve())); expect((await nodeLstat(special.path)).ino).toBe(special.spec.expectedInode);
+      const special = await create("special-file");
+      const socket = createServer();
+      // Keep the short bind path on the fixture's filesystem before rename.
+      const shortSocketPath = join(root, "s");
+      await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(shortSocketPath, resolve); });
+      try {
+        await nodeRename(shortSocketPath, join(special.path, "socket"));
+        await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(special.spec), "PROFILE_HOME_INVALID");
+      } finally {
+        await new Promise<void>((resolve) => socket.close(() => resolve()));
+      }
+      expect((await nodeLstat(special.path)).ino).toBe(special.spec.expectedInode);
 
       // No unrelated sibling is ever a deletion target; restored failures do
       // not leave guessed quarantine names behind.
@@ -178,14 +195,14 @@ describe("node profile-home removal adapter", () => {
 
 describe("account-only service directory", () => {
   test("requires a private marked owner-only non-symlink cwd", async () => {
-    const trap = new FakeFilesystem(); trap.dir("/"); trap.symlink("/service", "/elsewhere");
-    const unsafe = new CodexServiceDirectory({ path: "/service", trustedParentPath: "/", filesystem: trap, currentUid: () => 501 });
+    const trap = new FakeFilesystem(); trap.dir(fixturePath("/")); trap.symlink(fixturePath("/service"), fixturePath("/elsewhere"));
+    const unsafe = new CodexServiceDirectory({ path: fixturePath("/service"), trustedParentPath: fixturePath("/"), filesystem: trap, currentUid: () => 501 });
     await rejects(unsafe.ensure(), "SUPERVISOR_UNAVAILABLE");
 
-    const fs = new FakeFilesystem(); fs.dir("/"); const service = new CodexServiceDirectory({ path: "/service", trustedParentPath: "/", filesystem: fs, currentUid: () => 501 });
-    const directory = await service.ensure(); expect(await service.resolveForLaunch(directory, ["/profiles", "/runtime"])).toBe("/service");
-    await rejects(service.resolveForLaunch(directory, ["/service/nested"]), "SUPERVISOR_UNAVAILABLE");
-    fs.mutate("/service", { ino: 99 }); await rejects(service.resolveForLaunch(directory, ["/profiles", "/runtime"]), "SUPERVISOR_UNAVAILABLE");
+    const fs = new FakeFilesystem(); fs.dir(fixturePath("/")); const service = new CodexServiceDirectory({ path: fixturePath("/service"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501 });
+    const directory = await service.ensure(); expect(await service.resolveForLaunch(directory, [fixturePath("/profiles"), fixturePath("/runtime")])).toBe(fixturePath("/service"));
+    await rejects(service.resolveForLaunch(directory, [fixturePath("/service/nested")]), "SUPERVISOR_UNAVAILABLE");
+    fs.mutate(fixturePath("/service"), { ino: 99 }); await rejects(service.resolveForLaunch(directory, [fixturePath("/profiles"), fixturePath("/runtime")]), "SUPERVISOR_UNAVAILABLE");
   });
 });
 
@@ -193,7 +210,7 @@ describe("relay adapter and boundary", () => {
   test("projects an exact negotiated v8+ scope through a local opaque receipt and has no sandbox/grants imports", async () => {
     const receipt = { handle: handle("local"), actorId: "human", relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop", pairingGenerationRef: "pairing-ref", capabilityRevision: 3, revision: 4, fingerprint: "fp", issuedAt: 0, expiresAt: 10 };
     let seen: SupervisorRequest | undefined;
-    const port = new CodexRelayHostPort({ ensure: async (request: SupervisorRequest) => { seen = request; return { profile: request.profile, accountGeneration: request.accountGeneration, runtimeGeneration: request.runtimeGeneration, childGeneration: 1 }; } } as unknown as CodexProfileSupervisor, { resolve: async () => ({ actorId: "human", workspace: receipt }) }, { resolve: async (requested) => requested ?? "/workspace" });
+    const port = new CodexRelayHostPort({ ensure: async (request: SupervisorRequest) => { seen = request; return { profile: request.profile, accountGeneration: request.accountGeneration, runtimeGeneration: request.runtimeGeneration, childGeneration: 1 }; } } as unknown as CodexProfileSupervisor, { resolve: async () => ({ actorId: "human", workspace: receipt }) }, { resolve: async (requested) => requested ?? fixturePath("/workspace") });
     await port.ensure({ relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop", pairingGenerationRef: "pairing-ref", selectedProtocolVersion: 9, capabilityRevision: 3, profileHandle: "p", profileGeneration: 1, accountGeneration: 2, runtimeGeneration: 7 }, { workspaceRef: "wire", revision: 4, fingerprint: "fp", issuedAt: "1970-01-01T00:00:00.000Z", expiresAt: "1970-01-01T00:00:00.010Z" });
     expect(seen?.workspace.handle).toBe(handle("local"));
     const packageText = await Bun.file(new URL("../../package.json", import.meta.url)).text();
@@ -222,7 +239,7 @@ describe("relay adapter and boundary", () => {
       },
     } as unknown as CodexProfileSupervisor, {
       resolve: async () => ({ actorId: "human", workspace: receipt }),
-    }, { resolve: async (requested) => requested ?? "/workspace" });
+    }, { resolve: async (requested) => requested ?? fixturePath("/workspace") });
     const scope = {
       relayId: "relay",
       relaySessionId: "relay-session",
@@ -249,9 +266,9 @@ describe("relay adapter and boundary", () => {
     };
     await port.open(scope, {
       posture: { kind: "codex_default", anchorMode: "default" },
-      workingDirectory: "/projects/nautilo",
+      workingDirectory: fixturePath("/projects/nautilo"),
     });
-    expect(opened?.workingDirectory).toBe("/projects/nautilo");
+    expect(opened?.workingDirectory).toBe(fixturePath("/projects/nautilo"));
   });
 
   test("releases only the exact authenticated binding through supervisor admission", async () => {
@@ -261,7 +278,7 @@ describe("relay adapter and boundary", () => {
       releaseBindingExact: async (...input: unknown[]) => { calls.push(input); },
     } as unknown as CodexProfileSupervisor, {
       resolve: async () => ({ actorId: "human", workspace: receipt }),
-    }, { resolve: async (requested) => requested ?? "/workspace" });
+    }, { resolve: async (requested) => requested ?? fixturePath("/workspace") });
     await port.release({
       relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop",
       pairingGenerationRef: "pairing-ref", selectedProtocolVersion: 9, capabilityRevision: 3,
@@ -296,7 +313,7 @@ describe("relay adapter and boundary", () => {
       },
     } as unknown as CodexProfileSupervisor, {
       resolve: async () => ({ actorId: "human", workspace: receipt }),
-    }, { resolve: async (requested) => requested ?? "/workspace" });
+    }, { resolve: async (requested) => requested ?? fixturePath("/workspace") });
     await port.interrupt({
       relayId: "relay",
       relaySessionId: "relay-session",
@@ -349,7 +366,7 @@ describe("relay adapter and boundary", () => {
       },
     } as unknown as CodexProfileSupervisor, {
       resolve: async () => ({ actorId: "human", workspace: receipt }),
-    }, { resolve: async (requested) => requested ?? "/workspace" });
+    }, { resolve: async (requested) => requested ?? fixturePath("/workspace") });
     await port.steer({
       relayId: "relay",
       relaySessionId: "relay-session",
@@ -485,13 +502,13 @@ describe("profile supervisor", () => {
     expect(h.faults).toEqual([{ kind: "child_crashed", child: successor }]);
   });
   test("prepends only verified runtime PATH entries and leaves external PATH baseline unchanged", async () => {
-    const managed = await harness({ environment: { PATH: "baseline", SAFE: "yes" }, pathDelimiter: "|" }); const entries = Object.freeze(["/managed/bin", "/managed/tools"]); managed.runtime.pathEntries = entries;
-    await managed.supervisor.ensure(managed.request); expect(managed.processes.specs[0]?.env["PATH"]).toBe("/managed/bin|/managed/tools|baseline"); expect(managed.processes.specs[0]?.env["SAFE"]).toBe("yes"); expect(Object.isFrozen(entries)).toBe(true);
+    const managed = await harness({ environment: { PATH: "baseline", SAFE: "yes" }, pathDelimiter: "|" }); const entries = Object.freeze([fixturePath("/managed/bin"), fixturePath("/managed/tools")]); managed.runtime.pathEntries = entries;
+    await managed.supervisor.ensure(managed.request); expect(managed.processes.specs[0]?.env["PATH"]).toBe([fixturePath("/managed/bin"), fixturePath("/managed/tools"), "baseline"].join("|")); expect(managed.processes.specs[0]?.env["SAFE"]).toBe("yes"); expect(Object.isFrozen(entries)).toBe(true);
     const external = await harness({ environment: { PATH: "baseline", SAFE: "yes" }, pathDelimiter: "|" }); await external.supervisor.ensure(external.request); expect(external.processes.specs[0]?.env["PATH"]).toBe("baseline");
     const mainBarrel = await Bun.file(new URL("../../src/index.ts", import.meta.url)).text(); expect(mainBarrel).not.toContain("RuntimeLaunchSpec"); expect(mainBarrel).not.toContain("pathEntries");
   });
   test("rejects a child that reports a different CODEX_HOME and tears it down", async () => {
-    const h = await harness(); h.clients.codexHomeOverride = "/not-the-profile-home"; h.processes.cooperateNext = true;
+    const h = await harness(); h.clients.codexHomeOverride = fixturePath("/not-the-profile-home"); h.processes.cooperateNext = true;
     const work = h.supervisor.ensure(h.request); await flush(h.timer); await rejects(work, "PROFILE_HOME_INVALID");
     expect(h.processes.children[0]?.signals).toEqual(["SIGTERM"]); expect(h.runtime.releases).toBe(1);
   });
@@ -508,7 +525,7 @@ describe("profile supervisor", () => {
     const request = { bindingId: handle("rebind"), bindingGeneration: 1, taskId: "task-a", jobId: "job-a", threadId: opened.threadId, successorWorkspace: h.receipt, nextBindingGeneration: 2 };
     const both = Promise.all([h.supervisor.rebind(h.request, request), h.supervisor.rebind(h.request, request)]);
     await Promise.resolve(); release(); const rebound = await both;
-    expect(rebound.map((entry) => entry.bindingGeneration)).toEqual([2, 2]); expect(h.clients.resumedCwds).toEqual(["/workspace"]);
+    expect(rebound.map((entry) => entry.bindingGeneration)).toEqual([2, 2]); expect(h.clients.resumedCwds).toEqual([fixturePath("/workspace")]);
   });
   test("uses stable workspace identity across reconnects but rejects changed pairing or fingerprint", async () => {
     const h = await harness(); const opened = await h.supervisor.open(h.request, binding("reconnect", h.receipt, 1));
@@ -524,7 +541,7 @@ describe("profile supervisor", () => {
     await h.supervisor.open(h.request, request);
     h.snapshots.push(snap({ desktopSessionId: "replaced-desktop" }));
     await rejects(h.supervisor.open(h.request, request), "WORKSPACE_STALE");
-    expect(h.clients.startedCwds).toEqual(["/workspace"]);
+    expect(h.clients.startedCwds).toEqual([fixturePath("/workspace")]);
   });
   test("holds an exact-child lease through final workspace resolution", async () => {
     const existing = await harness(); existing.processes.cooperateNext = true;
@@ -624,13 +641,13 @@ describe("profile supervisor", () => {
     const request = binding("same", h.receipt, 1);
     const opened = await Promise.all(Array.from({ length: 12 }, () => h.supervisor.open(h.request, request)));
     expect(new Set(opened.map((entry) => entry.threadId))).toEqual(new Set(["host-thread-1"]));
-    expect(h.clients.startedCwds).toEqual(["/workspace"]);
+    expect(h.clients.startedCwds).toEqual([fixturePath("/workspace")]);
     await rejects(h.supervisor.resume(h.request, { ...request, threadId: "host-thread-1", jobId: "wrong-job" }), "CHILD_GENERATION_STALE");
     const rebound = await h.supervisor.rebind(h.request, { ...request, threadId: "host-thread-1", successorWorkspace: h.receipt, nextBindingGeneration: 2 });
     expect(rebound.bindingGeneration).toBe(2);
     await rejects(h.supervisor.rebind(h.request, { ...request, threadId: "host-thread-1", successorWorkspace: h.receipt, nextBindingGeneration: 2 }), "CHILD_GENERATION_STALE");
     await rejects(h.supervisor.open(h.request, { ...request, bindingGeneration: 2, model: "different-model" }), "CHILD_GENERATION_STALE");
-    expect(h.clients.startedCwds).toEqual(["/workspace"]);
+    expect(h.clients.startedCwds).toEqual([fixturePath("/workspace")]);
   });
 
   test("singleflights 20 ensures, uses host-minted distinct threads, and replaces old generations", async () => {
@@ -641,7 +658,7 @@ describe("profile supervisor", () => {
     const first = await h.supervisor.open(h.request, binding("a", h.receipt, 1));
     const second = await h.supervisor.open(h.request, binding("b", h.receipt, 1));
     expect([first.threadId, second.threadId]).toEqual(["host-thread-1", "host-thread-2"]);
-    expect(h.clients.startedCwds).toEqual(["/workspace", "/workspace"]);
+    expect(h.clients.startedCwds).toEqual([fixturePath("/workspace"), fixturePath("/workspace")]);
     h.processes.cooperateNext = true;
     const nextRequest = { ...h.request, runtimeGeneration: 8 };
     const replacing = h.supervisor.ensure(nextRequest); await flush(h.timer); const replacement = await replacing;
@@ -653,7 +670,7 @@ describe("profile supervisor", () => {
     const h = await harness();
     h.runtime.afterAcquire = () => h.snapshots.push(snap({ capabilityRevision: 9 }));
     const start = await h.supervisor.ensure({ profile: h.request.profile, accountGeneration: h.request.accountGeneration, runtimeGeneration: h.request.runtimeGeneration });
-    expect(start.childGeneration).toBe(1); expect(h.processes.specs[0]?.cwd).toBe("/service");
+    expect(start.childGeneration).toBe(1); expect(h.processes.specs[0]?.cwd).toBe(fixturePath("/service"));
 
     const good = await harness();
     good.processes.cooperateNext = true;
@@ -670,15 +687,15 @@ describe("profile supervisor", () => {
     expect(hard.processes.children[0]?.signals).toEqual(["SIGTERM", "SIGKILL"]);
   });
   test("rejects service cwd overlap with profile/runtime and workspace overlap with host storage", async () => {
-    const profileOverlap = await harness({ servicePath: "/profiles" });
+    const profileOverlap = await harness({ servicePath: fixturePath("/profiles") });
     await rejects(profileOverlap.supervisor.ensure(profileOverlap.request), "SUPERVISOR_UNAVAILABLE");
     expect(profileOverlap.processes.children).toHaveLength(0);
 
-    const runtimeOverlap = await harness({ servicePath: "/verified" });
+    const runtimeOverlap = await harness({ servicePath: fixturePath("/verified") });
     await rejects(runtimeOverlap.supervisor.ensure(runtimeOverlap.request), "SUPERVISOR_UNAVAILABLE");
     expect(runtimeOverlap.processes.children).toHaveLength(0);
 
-    const workspaceOverlap = await harness({ servicePath: "/workspace" });
+    const workspaceOverlap = await harness({ servicePath: fixturePath("/workspace") });
     await workspaceOverlap.supervisor.ensure(workspaceOverlap.request);
     await rejects(workspaceOverlap.supervisor.open(workspaceOverlap.request, binding("overlap", workspaceOverlap.receipt, 1)), "WORKSPACE_UNAVAILABLE");
     expect(workspaceOverlap.clients.startedCwds).toEqual([]);
@@ -826,7 +843,7 @@ describe("profile supervisor", () => {
   test("account-only child initialization does not read Current Folder", async () => {
     const h = await harness(); h.snapshots.blockNext();
     const child = await h.supervisor.ensure({ profile: h.request.profile, accountGeneration: h.request.accountGeneration, runtimeGeneration: h.request.runtimeGeneration });
-    expect(child.childGeneration).toBe(1); expect(h.processes.specs[0]?.cwd).toBe("/service");
+    expect(child.childGeneration).toBe(1); expect(h.processes.specs[0]?.cwd).toBe(fixturePath("/service"));
   });
   test("contains the exact child without trusting the provider interrupt RPC", async () => {
     const h = await harness(); const child = await h.supervisor.ensure(h.request); await h.supervisor.open(h.request, binding("a", h.receipt, 1)); await h.supervisor.updateBindingActivity(child, handle("a"), { activeTurns: 1, pendingRequests: 0, outstandingRpcs: 0 }); h.clients.rejectInterrupt = true; const work = h.supervisor.interrupt(child, handle("a"), "turn"); await flush(h.timer); try { await work; } catch { /* expected uncertain process proof */ } expect(h.processes.children[0]?.signals).toEqual(["SIGTERM", "SIGKILL"]); expect(h.clients.interrupted).toEqual([]);
@@ -1023,19 +1040,19 @@ describe("profile supervisor", () => {
 });
 
 async function harness(config: { readonly environment?: Readonly<Record<string, string>>; readonly pathDelimiter?: string; readonly servicePath?: string; readonly bindings?: CodexBindingStore; readonly removalTurnCoordinator?: import("../../src/internal").ProfileRemovalTurnCoordinator; readonly removalFails?: boolean; readonly profileRemovalTimeoutMs?: number } = {}) {
-  const fs = new FakeFilesystem(); fs.dir("/"); fs.dir("/workspace");
+  const fs = new FakeFilesystem(); fs.dir(fixturePath("/")); fs.dir(fixturePath("/workspace"));
   const snapshots = new Snapshots([snap()]); const clock = new Clock(); const timer = new Timer();
   const authority = new CodexWorkspaceReceiptAuthority({ snapshots, filesystem: fs, clock, newHandle: () => handle("receipt"), hmacKey: "persistent-host-key" });
   const receipt = await authority.mint(); const runtime = new Runtime(); const processes = new Processes(); const clients = new Clients(); const bindings = config.bindings ?? new InMemoryCodexBindingStore(); let removals = 0;
   const terminal = { result: true, never: false }; const faults: unknown[] = [];
-  const homes = new CodexProfileHomeRegistry({ rootPath: "/profiles", trustedParentPath: "/", filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { removals += 1; if (config.removalFails && removals === 1) throw new Error("delete failed"); input.assertAuthorizedNow(); input.commitDestruction(); } } });
-  const supervisor = new CodexProfileSupervisor({ workspaces: authority, homes, serviceDirectory: new CodexServiceDirectory({ path: config.servicePath ?? "/service", trustedParentPath: "/", filesystem: fs, currentUid: () => 501 }), runtimes: runtime, processes, clients, bindings, clock, timer, idleReapMs: 60_000, initializeTimeoutMs: 10, interruptGraceMs: 1, ...(config.profileRemovalTimeoutMs ? { profileRemovalTimeoutMs: config.profileRemovalTimeoutMs } : {}), ...(config.environment ? { environment: config.environment } : {}), ...(config.pathDelimiter ? { pathDelimiter: config.pathDelimiter } : {}), ...(config.removalTurnCoordinator ? { removalTurnCoordinator: config.removalTurnCoordinator } : {}), turnTerminal: { wait: async () => terminal.never ? new Promise<boolean>(() => undefined) : terminal.result }, onFault: async (fault) => { faults.push(fault); } });
+  const homes = new CodexProfileHomeRegistry({ rootPath: fixturePath("/profiles"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501, removalFilesystem: { removeOwnedProfileHome: async (input) => { removals += 1; if (config.removalFails && removals === 1) throw new Error("delete failed"); input.assertAuthorizedNow(); input.commitDestruction(); } } });
+  const supervisor = new CodexProfileSupervisor({ workspaces: authority, homes, serviceDirectory: new CodexServiceDirectory({ path: config.servicePath ?? fixturePath("/service"), trustedParentPath: fixturePath("/"), filesystem: fs, currentUid: () => 501 }), runtimes: runtime, processes, clients, bindings, clock, timer, idleReapMs: 60_000, initializeTimeoutMs: 10, interruptGraceMs: 1, ...(config.profileRemovalTimeoutMs ? { profileRemovalTimeoutMs: config.profileRemovalTimeoutMs } : {}), ...(config.environment ? { environment: config.environment } : {}), ...(config.pathDelimiter ? { pathDelimiter: config.pathDelimiter } : {}), ...(config.removalTurnCoordinator ? { removalTurnCoordinator: config.removalTurnCoordinator } : {}), turnTerminal: { wait: async () => terminal.never ? new Promise<boolean>(() => undefined) : terminal.result }, onFault: async (fault) => { faults.push(fault); } });
   return { supervisor, homes, bindings, removals: () => removals, authority, receipt, runtime, processes, clients, timer, snapshots, terminal, faults, request: { profile: profile("p"), accountGeneration: 2, runtimeGeneration: 7, workspace: receipt } satisfies SupervisorRequest };
 }
 function accountOnly(request: SupervisorRequest) { return { profile: request.profile, accountGeneration: request.accountGeneration, runtimeGeneration: request.runtimeGeneration }; }
-function snap(overrides: Partial<CurrentFolderSnapshot> = {}): CurrentFolderSnapshot { return { actorId: "human", relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop", pairingGenerationRef: "pairing-ref", capabilityRevision: 3, revision: 4, selectedPath: "/workspace", ...overrides }; }
+function snap(overrides: Partial<CurrentFolderSnapshot> = {}): CurrentFolderSnapshot { return { actorId: "human", relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop", pairingGenerationRef: "pairing-ref", capabilityRevision: 3, revision: 4, selectedPath: fixturePath("/workspace"), ...overrides }; }
 function profile(id: string) { return { actorId: "human", profileHandle: handle(id), profileGeneration: 1 }; }
-function binding(id: string, workspace: SupervisorRequest["workspace"], generation: number) { return { bindingId: handle(id), bindingGeneration: generation, workspace, taskId: "task-a", jobId: "job-a", workingDirectory: "/workspace", threadId: "host-thread-1", posture: { kind: "codex_default" } as const }; }
+function binding(id: string, workspace: SupervisorRequest["workspace"], generation: number) { return { bindingId: handle(id), bindingGeneration: generation, workspace, taskId: "task-a", jobId: "job-a", workingDirectory: fixturePath("/workspace"), threadId: "host-thread-1", posture: { kind: "codex_default" } as const }; }
 async function rejects(work: Promise<unknown>, code: string) { try { await work; } catch (error) { expect(error).toMatchObject({ code }); return; } throw new Error(`Expected ${code}`); }
 async function rejectsFailure(work: Promise<unknown>) { try { await work; } catch { return; } throw new Error("Expected failure"); }
 async function flush(timer: Timer) { for (let i = 0; i < 32; i += 1) { await Promise.resolve(); timer.next(); } }
@@ -1070,7 +1087,7 @@ class GatedBindingStore extends InMemoryCodexBindingStore {
     this.rebindCompleting = true; await this.completeRebindGate; return super.completeRebind(...args);
   }
 }
-class Runtime implements RuntimeProvider { afterAcquire: (() => void) | undefined; pathEntries: readonly string[] | undefined; releases = 0; async acquire(generation: number) { this.afterAcquire?.(); return { launch: { executablePath: "/verified/codex", args: ["app-server"], ...(this.pathEntries ? { pathEntries: this.pathEntries } : {}), runtimeGeneration: generation }, lease: { release: async () => { this.releases += 1; } } satisfies RuntimeLease }; } }
+class Runtime implements RuntimeProvider { afterAcquire: (() => void) | undefined; pathEntries: readonly string[] | undefined; releases = 0; async acquire(generation: number) { this.afterAcquire?.(); return { launch: { executablePath: fixturePath("/verified/codex"), args: ["app-server"], ...(this.pathEntries ? { pathEntries: this.pathEntries } : {}), runtimeGeneration: generation }, lease: { release: async () => { this.releases += 1; } } satisfies RuntimeLease }; } }
 const emptyStream: AsyncIterable<Uint8Array> = { [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ done: true as const, value: undefined }) }) };
 class Process implements ManagedChildProcess { readonly stdio: ChildStdio = { stdin: { write: async () => undefined, end: async () => undefined }, stdout: emptyStream, stderr: emptyStream }; readonly signals: string[] = []; private resolve!: (value: { code: number | null; signal: string | null }) => void; private exitedState = false; readonly exited = new Promise<{ code: number | null; signal: string | null }>((resolve) => { this.resolve = (value) => { this.exitedState = true; resolve(value); }; }); constructor(readonly pid: number, private readonly cooperate: boolean, private readonly groupLive: boolean, private stallSignals: boolean, private readonly rejectSignals: boolean, readonly codexHome: string) {} releaseSignalStalls() { this.stallSignals = false; } exit() { this.resolve({ code: 0, signal: null }); } async isProcessGroupGone() { return this.exitedState && !this.groupLive; } async sendInterrupt() { this.signals.push("SIGINT"); if (this.rejectSignals) throw Object.assign(new Error("denied"), { code: "EPERM" }); if (this.stallSignals) await new Promise<void>(() => undefined); if (this.cooperate || this.groupLive) this.resolve({ code: 0, signal: "SIGINT" }); } async signalProcessGroup(signal: "SIGTERM" | "SIGKILL") { this.signals.push(signal); if (this.rejectSignals) throw Object.assign(new Error("denied"), { code: "EPERM" }); if (this.stallSignals) await new Promise<void>(() => undefined); if (this.cooperate && signal === "SIGTERM") this.resolve({ code: 0, signal }); } }
 class Processes implements ProcessHost { readonly children: Process[] = []; readonly specs: import("../../src/internal").SpawnSpec[] = []; cooperateNext = false; leaderExitGroupLiveNext = false; stallSignalsNext = false; rejectSignalsNext = false; async spawn(spec: import("../../src/internal").SpawnSpec) { this.specs.push(spec); const child = new Process(this.children.length + 1, this.cooperateNext, this.leaderExitGroupLiveNext, this.stallSignalsNext, this.rejectSignalsNext, spec.env["CODEX_HOME"]!); this.cooperateNext = false; this.leaderExitGroupLiveNext = false; this.stallSignalsNext = false; this.rejectSignalsNext = false; this.children.push(child); return child; } }

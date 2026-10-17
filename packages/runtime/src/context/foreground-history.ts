@@ -1,4 +1,5 @@
 import type { BaseMessage } from "@langchain/core/messages";
+import { readCurrentOrdinaryTranscriptExposureRows } from "@nautilo/agent";
 import { RECENT_CONVERSATION_LIMIT_DEFAULT } from "@nautilo/db";
 import { buildTranscriptContext, type BuildTranscriptContextDeps } from "./build-transcript-context";
 import { defaultBuildTranscriptContextDeps } from "./build-transcript-context-deps";
@@ -7,6 +8,7 @@ import { recentConversationWindow, type RoomHistoryHit } from "../conductor/hist
 import { assembleCompositeContextBlock } from "../conductor/context-block";
 import { imageAssistanceHistory } from "../executors/image-assistance";
 import type { TurnKind } from "../executors/turn-kind";
+import { ordinaryTranscriptModelExposure } from "./ordinary-source-model-exposure";
 
 export interface ForegroundHistoryOptions {
   roomId: string;
@@ -153,6 +155,7 @@ export async function buildForegroundHistoryMessages(
       ? deps
       : {
         ...deps,
+        readOrdinaryModelExposure: () => Promise.resolve(Object.freeze({ status: "incomplete" as const })),
         readRoomTranscript: async (scope) =>
           protectLiveShadowForegroundHistory(
             await deps.readRoomTranscript(scope),
@@ -170,6 +173,20 @@ export async function buildForegroundHistoryMessages(
       };
   const authorizedDeps: BuildTranscriptContextDeps = {
     ...effectiveDeps,
+    ...(effectiveDeps.readOrdinaryModelExposure !== undefined
+      ? {}
+      : depsOverride === undefined && liveShadowContext?.session == null
+        ? {
+            readOrdinaryModelExposure: async (scope, hits) => scope.agentId === undefined
+              ? Object.freeze({ status: "incomplete" as const })
+              : ordinaryTranscriptModelExposure(await readCurrentOrdinaryTranscriptExposureRows({
+                  ownerId: scope.ownerId,
+                  agentId: scope.agentId,
+                  roomIds: [scope.roomId, ...(scope.subthread ? [scope.subthread.parentRoomId] : [])],
+                  messageIds: hits.map((hit) => hit.messageId),
+                })),
+          }
+        : {}),
     readRoomTranscript: async (scope) => {
       let timeline: RoomHistoryHit[];
       if (

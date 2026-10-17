@@ -1,14 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
-  mkdir,
   readdir,
   readFile,
   rename,
   unlink,
 } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { once } from "node:events";
+import { ensurePrivateDirectory } from "@nautilo/config/private-filesystem";
 
 import { atomicWritePrivateFile } from "../file-vault.ts";
 import {
@@ -117,7 +117,9 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
   readonly #directory: string;
 
   constructor(rootDirectory: string) {
-    this.#directory = join(rootDirectory, DIRECTORY);
+    // A relative root is anchored once so every private-directory check,
+    // sidecar path, and serialization key names the same absolute location.
+    this.#directory = resolve(rootDirectory, DIRECTORY);
   }
 
   stage(input: Readonly<{
@@ -128,7 +130,7 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
     ciphertext: AsyncIterable<Uint8Array>;
   }>): Promise<StagedArtifactCiphertextSidecarReference> {
     return this.#exclusive(async () => {
-      await mkdir(this.#directory, { recursive: true, mode: 0o700 });
+      await ensurePrivateDirectory(this.#directory);
       const metaPath = metadataPath(this.#directory, input.operationId);
       if (await readReference(metaPath) !== undefined) {
         throw new Error("Prepared Artifact ciphertext stage already exists");
@@ -235,7 +237,7 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
   }>): Promise<"inserted" | "exact_duplicate" | "collision"> {
     assertPreparedArtifactCiphertextSidecarReference(input.reference);
     return this.#exclusive(async () => {
-      await mkdir(this.#directory, { recursive: true, mode: 0o700 });
+      await ensurePrivateDirectory(this.#directory);
       const metaPath = metadataPath(this.#directory, input.reference.operationId);
       const blobPath = ciphertextPath(this.#directory, input.reference.operationId);
       const existing = await readReference(metaPath);
@@ -283,7 +285,7 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
 
   list(): Promise<readonly PreparedArtifactCiphertextSidecarReference[]> {
     return this.#exclusive(async () => {
-      await mkdir(this.#directory, { recursive: true, mode: 0o700 });
+      await ensurePrivateDirectory(this.#directory);
       const names = await readdir(this.#directory);
       const references: PreparedArtifactCiphertextSidecarReference[] = [];
       for (const name of names.filter((value) => value.endsWith(".json")).sort()) {
@@ -338,7 +340,7 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
 
   async reconcileUnindexedFiles(): Promise<number> {
     return this.#exclusive(async () => {
-      await mkdir(this.#directory, { recursive: true, mode: 0o700 });
+      await ensurePrivateDirectory(this.#directory);
       const names = await readdir(this.#directory);
       const metadataStems = new Set(
         names.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)),

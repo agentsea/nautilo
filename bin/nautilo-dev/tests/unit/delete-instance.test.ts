@@ -113,13 +113,14 @@ describe("delete-instance", () => {
       const outside = join(home, "outside");
       mkdirSync(outside);
       mkdirSync(join(home, ".nautilo"));
-      symlinkSync(outside, join(home, ".nautilo", "profiles"));
+      symlinkSync(outside, join(home, ".nautilo", "profiles"), process.platform === "win32" ? "junction" : "dir");
       expect(() => persistDurableProfileAuthority(home, "kept")).toThrow("linked profiles authority root");
-      rmSync(join(home, ".nautilo", "profiles"));
+      rmSync(join(home, ".nautilo", "profiles"), { recursive: true });
       mkdirSync(join(home, ".nautilo", "profiles"));
       const target = join(outside, "kept.toml");
       writeFileSync(target, 'transport = "local"\nlifecycle = "compose"\ninstance_id = "kept"\n');
-      symlinkSync(target, join(home, ".nautilo", "profiles", "kept.toml"));
+      symlinkSync(process.platform === "win32" ? outside : target, join(home, ".nautilo", "profiles", "kept.toml"),
+        process.platform === "win32" ? "junction" : "file");
       expect(() => persistDurableProfileAuthority(home, "kept")).toThrow("non-regular profile");
     } finally {
       rmSync(home, { recursive: true, force: true });

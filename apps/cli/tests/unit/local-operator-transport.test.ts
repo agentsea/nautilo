@@ -1,11 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import type { ComposeDriverProfile } from "@nautilo/compose-driver";
+import { ComposeDriver, type ComposeDriverProfile } from "@nautilo/compose-driver";
 import {
   buildComposeOperatorTransport,
   buildReleaseActiveWorkReadiness,
+  createDriverForCli,
 } from "../../src/lib/compose-driver-factory.ts";
 import { buildLocalContainerFetch } from "../../src/lib/remote-operator-transport.ts";
 
@@ -60,8 +61,42 @@ function fakeSpawn(results: readonly ProcessResult[]): {
 const project = "nautilo-qa-local-1";
 const containerId = "a1b2c3d4e5f6";
 const statusUrl = "http://127.0.0.1:3001/api/operator/maintenance/status";
+const custodyUrl = "http://127.0.0.1:3001/api/health/personal-provider-custody";
 
 describe("buildLocalContainerFetch", () => {
+  test("the production CLI factory wires only the transport owned by each profile", () => {
+    const localProbe = spyOn(ComposeDriver.prototype, "setLocalRestoreCustodyProbe");
+    const remoteAcceptance = spyOn(
+      ComposeDriver.prototype,
+      "setRemoteRuntimeAcceptanceTransport",
+    );
+    try {
+      createDriverForCli({
+        name: "factory-local",
+        transport: "local",
+        lifecycle: "compose",
+        instance_id: "factory-local",
+      }, { templateDirOverride: import.meta.dirname });
+      expect(localProbe).toHaveBeenCalledTimes(1);
+      expect(remoteAcceptance).not.toHaveBeenCalled();
+      expect(typeof localProbe.mock.calls[0]?.[0]).toBe("function");
+
+      createDriverForCli({
+        name: "factory-remote",
+        transport: "remote",
+        lifecycle: "compose",
+        instance_id: "factory-remote",
+        ssh: { host: "remote.example", user: "root" },
+      }, { templateDirOverride: import.meta.dirname });
+      expect(localProbe).toHaveBeenCalledTimes(1);
+      expect(remoteAcceptance).toHaveBeenCalledTimes(1);
+      expect(remoteAcceptance.mock.calls[0]?.[0]).toBeDefined();
+    } finally {
+      localProbe.mockRestore();
+      remoteAcceptance.mockRestore();
+    }
+  });
+
   test("the local Compose transport drives readiness and maintenance through container loopback", async () => {
     const profile: ComposeDriverProfile = {
       name: "qa-local-1",
@@ -166,6 +201,32 @@ describe("buildLocalContainerFetch", () => {
     expect(await response.json()).toEqual({ error: "Operator authorization required" });
   });
 
+  test("allows only the exact GET custody probe through the canonical container transport", async () => {
+    const body = JSON.stringify({
+      status: "ready",
+      recordsExist: true,
+      keyId: "123e4567-e89b-42d3-a456-426614174000",
+    });
+    const fake = fakeSpawn([
+      { stdout: `${containerId}\n`, code: 0 },
+      { stdout: `${body}\n200`, code: 0 },
+    ]);
+
+    const response = await buildLocalContainerFetch({
+      composeProjectName: project,
+      spawnFn: fake.spawnFn,
+    })(custodyUrl, {
+      method: "GET",
+      headers: { authorization: "Bearer must-not-enter-container" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(JSON.parse(body));
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]?.args.join(" ")).toContain(custodyUrl);
+    expect(fake.calls[1]?.args.join(" ").toLowerCase()).not.toContain("authorization");
+  });
+
   test.each([
     ["missing", ""],
     ["ambiguous", `${containerId}\ndeadbeef\n`],
@@ -212,12 +273,39 @@ describe("buildLocalContainerFetch", () => {
     "http://127.0.0.1:3001/api/operator/maintenance/status?detail=true",
     "http://127.0.0.1:3001/api/operator/maintenance/status#fragment",
     "http://user@127.0.0.1:3001/api/operator/maintenance/status",
+    "http://127.0.0.1:3001/api/health/personal-provider-custody?detail=true",
+    "http://127.0.0.1:3001/api/health/personal-provider-custody#fragment",
+    "http://127.0.0.1:3001/health",
   ])("rejects a non-canonical target before spawning Docker: %s", async (url) => {
     const { calls, spawnFn } = fakeSpawn([]);
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
     await expect(
       buildLocalContainerFetch({ composeProjectName: project, spawnFn })(url),
     ).rejects.toThrow(/container-loopback operator URL/);
+    expect(calls).toEqual([]);
+  });
+
+  test.each(["POST", "PUT", "DELETE"])(
+    "rejects %s for the custody probe before spawning Docker",
+    async (method) => {
+      const { calls, spawnFn } = fakeSpawn([]);
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(
+        buildLocalContainerFetch({ composeProjectName: project, spawnFn })(custodyUrl, { method }),
+      ).rejects.toThrow(/exact GET custody probe/);
+      expect(calls).toEqual([]);
+    },
+  );
+
+  test("rejects a request body on the custody probe before spawning Docker", async () => {
+    const { calls, spawnFn } = fakeSpawn([]);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(
+      buildLocalContainerFetch({ composeProjectName: project, spawnFn })(custodyUrl, {
+        method: "GET",
+        body: "unexpected",
+      }),
+    ).rejects.toThrow(/exact GET custody probe/);
     expect(calls).toEqual([]);
   });
 

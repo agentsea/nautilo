@@ -9,9 +9,8 @@ import { CodexManagedRuntimeManager, type ManagedRuntimeHost, type ManagedRuntim
 import { ExternalCodexRuntimeManager } from "./external-manager.ts";
 import type { CodexRuntimeHost } from "./contracts.ts";
 import { REVIEWED_CODEX_RUNTIME_MANIFEST } from "./release-manifest.ts";
-import { dirname, join } from "node:path";
 import type { RuntimeProvider } from "@nautilo/codex-app-server-host/internal";
-import { CODEX_REVIEWED_RUNTIME_ARTIFACT_REF } from "@nautilo/relay";
+import { CODEX_REVIEWED_RUNTIME_ARTIFACT_REF, pathApiForRelayPath } from "@nautilo/relay";
 
 export interface CodexRuntimeControllerAdapter {
   inspect(input?: { readonly signal?: AbortSignal }): Promise<RuntimeControllerDetails>;
@@ -201,13 +200,14 @@ export function resolveCodexRuntimeLaunchSpecForSupervisor(
     ? state.managed.internalLaunchTarget(route.handle)
     : state.external.internalLaunchTarget(route.handle);
   if (!command) return null;
+  const paths = pathApiForRelayPath(command);
   return Object.freeze({
     command,
     argv: Object.freeze(route.source === "external" ? ["app-server", "--listen", "stdio://"] : ["--listen", "stdio://"]),
     // The managed package's reviewed companion binaries live beside `bin/`.
     // Keep this launch-only and out of CodexRuntimeDetails/public barrels.
     pathEntries: Object.freeze(route.source === "managed"
-      ? [join(dirname(dirname(command)), "codex-path")]
+      ? [paths.join(paths.dirname(paths.dirname(command)), "codex-path")]
       : []),
   });
 }

@@ -96,6 +96,7 @@ export const NAUTILO_DESKTOP_SURFACE = [
   "passwords",
   "toolRuntimes",
   "googleWorkspace",
+  "chatGPT",
   "terminal",
   "localExecution",
   "desktopFilesystemGrants",
@@ -135,6 +136,12 @@ export const NAUTILO_COMPANION_OWNER_SURFACE = [
   "publish",
 ] as const;
 
+export const NAUTILO_CHATGPT_SURFACE = [
+  "cancel",
+  "prepare",
+  "receive",
+] as const;
+
 export const NAUTILO_FIRST_RUN_SURFACE = [
   "getConnectTargets",
   "commit",
@@ -167,7 +174,9 @@ function parseCli(argv: string[]): CliOptions {
     process.env.SMOKE_UNPACKAGED === "1" ||
     argv.includes("--unpackaged");
   const opts: CliOptions = {
-    appPath: unpackaged ? "dist/main.js" : "release/mac-arm64/Nautilo.app",
+    appPath: unpackaged
+      ? process.env.SMOKE_MAIN_JS?.trim() || "dist/main.js"
+      : process.env.SMOKE_APP_PATH?.trim() || "release/mac-arm64/Nautilo.app",
     unpackaged,
     portsMatrix: false,
     cdp: true,
@@ -398,6 +407,10 @@ interface SurfaceAuditResult {
     keys: string[];
     methods: string[];
   };
+  chatGPTProbe?: {
+    keys: string[];
+    methods: string[];
+  };
   binaryReadProbe?: string[];
   miniAppRecoveryProbe?: {
     methods: string[];
@@ -416,6 +429,17 @@ export function surfaceContractMismatch(
   return {
     undocumented: actual.filter((key) => !expected.includes(key)),
     missing: expected.filter((key) => !actual.includes(key)),
+  };
+}
+
+export function methodSurfaceContractMismatch(
+  actual: readonly string[],
+  methodTypes: readonly string[],
+  expected: readonly string[],
+): { undocumented: string[]; missing: string[]; nonFunctions: string[] } {
+  return {
+    ...surfaceContractMismatch(actual, expected),
+    nonFunctions: actual.filter((_, index) => methodTypes[index] !== "function"),
   };
 }
 
@@ -604,6 +628,33 @@ async function auditPreloadSurface(
         result.reason =
           (result.reason ? result.reason + "; " : "") +
           `companion owner API mismatch keys=[${companionProbe.keys.join(", ")}], methods=[${companionProbe.methods.join(", ")}]`;
+      }
+    }
+
+    if (keys.includes("chatGPT")) {
+      const chatGPTProbe = (await evaluateExpectedSurface(
+        `({
+          keys: Object.keys(window.nautiloDesktop.chatGPT).sort(),
+          methods: Object.keys(window.nautiloDesktop.chatGPT).sort().map(
+            method => typeof window.nautiloDesktop.chatGPT[method]
+          )
+        })`,
+      )) as { keys: string[]; methods: string[] };
+      result.chatGPTProbe = chatGPTProbe;
+      const mismatch = methodSurfaceContractMismatch(
+        chatGPTProbe.keys,
+        chatGPTProbe.methods,
+        NAUTILO_CHATGPT_SURFACE,
+      );
+      if (
+        mismatch.undocumented.length > 0 ||
+        mismatch.missing.length > 0 ||
+        mismatch.nonFunctions.length > 0
+      ) {
+        result.ok = false;
+        result.reason =
+          (result.reason ? result.reason + "; " : "") +
+          `chatGPT API mismatch keys=[${chatGPTProbe.keys.join(", ")}], methods=[${chatGPTProbe.methods.join(", ")}]`;
       }
     }
 
@@ -952,6 +1003,7 @@ async function runDefault(opts: CliOptions): Promise<CaseReport[]> {
             `exposedRoot=[${s.exposedRoot?.join(", ") ?? ""}]\n` +
             `nautiloDesktop=[${s.desktopKeys?.join(", ") ?? ""}]\n` +
             `companion=[${s.companionProbe?.keys.join(", ") ?? ""}], methods=[${s.companionProbe?.methods.join(", ") ?? ""}]\n` +
+            `chatGPT=[${s.chatGPTProbe?.keys.join(", ") ?? ""}], methods=[${s.chatGPTProbe?.methods.join(", ") ?? ""}]\n` +
             `miniAppRecovery(open/read/write/close)=[${s.miniAppRecoveryProbe?.methods.join(", ") ?? ""}], invalidReadRejected=${s.miniAppRecoveryProbe?.invalidReadRejected ?? false}\n` +
             `binaryRead(open/read/close)=[${s.binaryReadProbe?.join(", ") ?? ""}]\n` +
             (s.reason ? `reason=${s.reason}` : "")

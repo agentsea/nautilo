@@ -83,16 +83,19 @@ export function createAgentTurnTaskCreationProvenance(input: Readonly<{
   if (input.invocation !== null && input.invocation.ownerId !== ownerId) {
     throw new TypeError("Task creation provenance owner mismatch");
   }
+  const inheritsTaskLineage = input.invocation?.entrypoint === "background.task"
+    || input.invocation?.entrypoint === "foreground.task_report_back"
+    || input.invocation?.entrypoint === "foreground.subagent";
   return recognized(Object.freeze({
     kind: "agent_turn" as const,
     ownerId,
     roomId: input.invocation?.roomId ?? null,
     entrypoint: input.invocation?.entrypoint ?? null,
-    parentTaskId: input.invocation?.entrypoint === "background.task"
-      ? input.invocation.taskId ?? null
+    parentTaskId: inheritsTaskLineage
+      ? input.invocation?.taskId ?? null
       : null,
-    parentTaskRunId: input.invocation?.entrypoint === "background.task"
-      ? input.invocation.taskRunId ?? null
+    parentTaskRunId: inheritsTaskLineage
+      ? input.invocation?.taskRunId ?? null
       : null,
   }));
 }

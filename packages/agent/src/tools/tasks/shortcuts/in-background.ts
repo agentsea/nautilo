@@ -1,5 +1,5 @@
-import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { DynamicStructuredTool } from "@langchain/core/tools";
+import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import { log } from "@nautilo/logger";
 import { z } from "zod";
 import {
@@ -69,13 +69,6 @@ const inBackgroundSchema = z.object({
   model_id: modelIdParam,
 });
 
-const personalInBackgroundSchema = inBackgroundSchema.pick({
-  brief: true,
-  result_delivery: true,
-  model_selection: true,
-  model_id: true,
-});
-
 type InBackgroundArgs = z.infer<typeof inBackgroundSchema>;
 
 /** Mirror of the `task` tool's tools→mode mapping (dispatch.ts). */
@@ -101,7 +94,7 @@ export function createInBackgroundTool(context?: unknown) {
   return new DynamicStructuredTool({
     name: "in_background",
     description: IN_BACKGROUND_DESCRIPTION,
-    schema: personalTaskControls ? personalInBackgroundSchema : inBackgroundSchema,
+    schema: inBackgroundSchema,
     func: async (args: InBackgroundArgs) => {
       log(`[in_background]`);
       if (!ctx.ownerId || !ctx.agentId) {
@@ -136,17 +129,12 @@ export function createInBackgroundTool(context?: unknown) {
             : { selectionProfile: args.model_selection }),
         });
       const personalOnlyCreate = exactPersonalOnlyCreate || resolvedPersonalOnlyCreate;
-      const callerFundedToolFree = !getCapabilityFundingSession() && (personalTaskControls || personalOnlyCreate);
-      if (callerFundedToolFree && ctx.currentTaskId) {
-        return "Personal background Tasks can only be created from the foreground parent chat.";
-      }
-      const lineage = callerFundedToolFree
-        ? { ok: true as const, depth: 0, parentTaskId: undefined }
-        : await resolveTaskToolCreateLineage({
-            ownerId: ctx.ownerId,
-            db: rt.db,
-            ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
-          });
+      const callerFundedNative = personalTaskControls || personalOnlyCreate;
+      const lineage = await resolveTaskToolCreateLineage({
+        ownerId: ctx.ownerId,
+        db: rt.db,
+        ...(ctx.currentTaskId ? { currentTaskId: ctx.currentTaskId } : {}),
+      });
       if (!lineage.ok) return lineage.message;
       if (args.harness === "codex") {
         if (
@@ -204,10 +192,9 @@ export function createInBackgroundTool(context?: unknown) {
           return "Cannot start Native background task: working_directory must exactly match the selected Current Folder; omit it to inherit the Current Folder automatically.";
         }
       }
-      const toolsFields = callerFundedToolFree
-        ? { toolsMode: "none" as const, toolsWhitelist: [] }
-        : toolsFieldsFromArgs(args.tools);
-      const selectionError = callerFundedToolFree ? null : validateTaskModelSelectionForCreate({
+      const toolsFields = toolsFieldsFromArgs(args.tools);
+      const selectionError = callerFundedNative || getCapabilityFundingSession()
+        ? null : validateTaskModelSelectionForCreate({
         requestedModelId: args.model_id,
         profile: args.model_selection,
         toolsMode: toolsFields.toolsMode,

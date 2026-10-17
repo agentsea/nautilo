@@ -632,6 +632,29 @@ describe("M275 selected Room-history Shadow projection", () => {
     },
   );
 
+  test("Full selection suppresses sponsor authorship using only the durable structural marker", async () => {
+    const { project, connection } = await subject([[productRow(0, 27, {
+      content: null, external_authorship: true,
+    })]]);
+    const result = await project({ subjectUserId: USER_ID, subjectHumanId: HUMAN_ID,
+      readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(27)], representationMode: "protected-only" });
+    expect(result.status).toBe("ready");
+    if (result.status !== "ready") throw new Error("expected protected projection");
+    expect(result.records[0]).toMatchObject({ selectedSource: {
+      role: "user", externalAttributionInvalid: true,
+    } });
+    expect(result.records[0]).not.toHaveProperty("selectedSource.sourceUserId");
+    expect(result.records[0]).not.toHaveProperty("selectedSource.authorAgentId");
+    expect(result.records[0]!.protectedMessage.projection).not.toHaveProperty("sourceUserId");
+    expect(result.records[0]!.protectedMessage.projection).not.toHaveProperty("authorAgentId");
+    expect(result.records[0]).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+    expect(result.records[0]).not.toHaveProperty("externalOrigin");
+    expect(connection.queries[1]!.statement).toContain('"session_messages"."external_authorship"');
+    expect(connection.queries[1]!.statement).not.toContain('"session_messages"."metadata"');
+    expect(connection.queries[1]!.statement).not.toContain('"session_messages"."content"');
+  });
+
   test.each([true, false])("Runtime repairs retain authenticated Namespace evidence for reverse reads: %s", async (available) => {
     const crypto = new LatticeCrypto(seededRng(313_279));
     const execution = sharedHistoryExecution(crypto, {

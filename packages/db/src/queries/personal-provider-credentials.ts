@@ -1,5 +1,6 @@
+import { chatgptRegistrations } from "../schema/chatgpt-registrations";
 import { randomUUID } from "node:crypto";
-import { and, asc, count, eq, gt } from "drizzle-orm";
+import { and, asc, count, eq, gt, sql } from "drizzle-orm";
 import type { Database } from "../config/database";
 import {
   personalProviderCredentials,
@@ -335,9 +336,15 @@ export async function getPersonalProviderCredentialCustodyEvidence(
     .selectDistinct({ keyId: personalProviderCredentials.keyId })
     .from(personalProviderCredentials)
     .orderBy(asc(personalProviderCredentials.keyId));
+  const [registrationCount] = await db.select({ value: count() }).from(chatgptRegistrations);
+  const registrationKeys = await db.selectDistinct({
+    identityKey: sql<string>`${chatgptRegistrations.identityEnvelope}->>'keyId'`,
+    tokenKey: sql<string | null>`${chatgptRegistrations.envelope}->>'keyId'`,
+  }).from(chatgptRegistrations);
   return {
-    recordCount: Number(recordCountRow?.value ?? 0),
-    keyIds: keyRows.map((row) => row.keyId),
+    recordCount: Number(recordCountRow?.value ?? 0) + Number(registrationCount?.value ?? 0),
+    keyIds: [...new Set([...keyRows.map(row => row.keyId), ...registrationKeys.flatMap(row =>
+      row.tokenKey === null ? [row.identityKey] : [row.identityKey, row.tokenKey])])],
   };
 }
 
@@ -396,6 +403,7 @@ export async function clearPersonalProviderCredentialsForClone(
         "Refusing clone credential clearing because target database identity does not match",
       );
     }
+    await tx.delete(chatgptRegistrations);
     const deleted = await tx.delete(personalProviderCredentials);
     return { deletedCount: deleted.count };
   });

@@ -1,4 +1,5 @@
 import { getSharedDirectDb, type DirectDatabase } from "@nautilo/db";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { error as logError, log, warn } from "@nautilo/logger";
 import type {
   StenographerCompactionAdapterInput,
@@ -27,6 +28,8 @@ import {
   mapModelFailure,
 } from "./model-invoker";
 import {
+  compactionModelExposureDependencies,
+  extractionModelExposureDependencies,
   runCompactionModel,
   runExtractionModel,
 } from "./semantic-adapter";
@@ -45,6 +48,7 @@ type ExtractionPublisher = (input: Readonly<{
   now?: Date;
   db?: DirectDatabase;
   ordinaryFallbackReason?: "device" | "authority";
+  modelExposureDependencies?: readonly DurableModelExposureDependency[];
 }>) => Promise<{ published: boolean; eventsWritten: number }>;
 
 type LegacyConverter = (input: Readonly<{ now: Date }>) => Promise<Readonly<{
@@ -53,7 +57,15 @@ type LegacyConverter = (input: Readonly<{ now: Date }>) => Promise<Readonly<{
   completedRoom: boolean;
 }>>;
 
+export interface AdmittedStenographerModel {
+  readonly modelId: string;
+  readonly invoke: (prompt: string, signal?: AbortSignal) => Promise<string>;
+  assertCurrent(): Promise<void>;
+}
+
 export interface OrdinaryStenographerIntentAdapterOptions {
+  readonly admitExtractionModel?: (claim: ExtractionClaim, dependencies: readonly DurableModelExposureDependency[] | undefined) => Promise<AdmittedStenographerModel>;
+  readonly admitCompactionModel?: (claim: CompactionClaim, dependencies: readonly DurableModelExposureDependency[] | undefined) => Promise<AdmittedStenographerModel>;
   readonly publishExtraction: ExtractionPublisher;
   readonly convertNextLegacy?: LegacyConverter;
   readonly db?: DirectDatabase;
@@ -247,7 +259,7 @@ export function createOrdinaryStenographerIntentAdapter(
       if (claim === null) {
         return { publish: () => Promise.resolve(unavailable()) };
       }
-      const modelId = input.modelId;
+      let modelId = input.modelId;
       if (claim.plan.trigger === "skip_excluded") {
         return {
           publish: async (context: StenographerPublicationContext) => {
@@ -297,7 +309,9 @@ export function createOrdinaryStenographerIntentAdapter(
       }
 
       try {
-        const rawInvoke = invoker({
+        const admitted = await options.admitExtractionModel?.(claim, extractionModelExposureDependencies(claim));
+        if (admitted !== undefined) modelId = admitted.modelId;
+        const rawInvoke = admitted?.invoke ?? invoker({
           modelId,
           userId: claim.ownerId,
           roomId: claim.roomId,
@@ -307,7 +321,7 @@ export function createOrdinaryStenographerIntentAdapter(
         });
         const result = await runExtractionModel({
           claim,
-          invoke: (prompt) => rawInvoke(prompt, input.signal),
+          invoke: async (prompt) => { await admitted?.assertCurrent(); return rawInvoke(prompt, input.signal); },
         });
         if (!result.ok) {
           await failExtractionWork({
@@ -324,6 +338,7 @@ export function createOrdinaryStenographerIntentAdapter(
         return {
           publish: async (context: StenographerPublicationContext) => {
             try {
+              await admitted?.assertCurrent();
               const published = await options.publishExtraction({
                 claim,
                 operations: result.output.operations,
@@ -332,6 +347,12 @@ export function createOrdinaryStenographerIntentAdapter(
                 ...(context.ordinaryFallbackReason === undefined
                   ? {}
                   : { ordinaryFallbackReason: context.ordinaryFallbackReason }),
+                ...(result.modelExposureDependencies === undefined
+                  ? {}
+                  : {
+                      modelExposureDependencies:
+                        result.modelExposureDependencies,
+                    }),
               });
               if (!published.published) {
                 logger.warn("[stenographer] lease lost before publish", {
@@ -388,9 +409,11 @@ export function createOrdinaryStenographerIntentAdapter(
       if (claim === null) {
         return { publish: () => Promise.resolve(unavailable()) };
       }
-      const modelId = input.modelId;
+      let modelId = input.modelId;
       try {
-        const rawInvoke = invoker({
+        const admitted = await options.admitCompactionModel?.(claim, compactionModelExposureDependencies(claim));
+        if (admitted !== undefined) modelId = admitted.modelId;
+        const rawInvoke = admitted?.invoke ?? invoker({
           modelId,
           userId: claim.ownerId,
           roomId: claim.roomId,
@@ -400,7 +423,7 @@ export function createOrdinaryStenographerIntentAdapter(
         });
         const result = await runCompactionModel({
           claim,
-          invoke: (prompt) => rawInvoke(prompt, input.signal),
+          invoke: async (prompt) => { await admitted?.assertCurrent(); return rawInvoke(prompt, input.signal); },
         });
         if (!result.ok) {
           await failCompactionWork({
@@ -417,6 +440,7 @@ export function createOrdinaryStenographerIntentAdapter(
         return {
           publish: async (context: StenographerPublicationContext) => {
             try {
+              await admitted?.assertCurrent();
               const published = await publishCompactionWork({
                 claim,
                 content: result.content,
@@ -425,6 +449,12 @@ export function createOrdinaryStenographerIntentAdapter(
                 ...(context.ordinaryFallbackReason === undefined
                   ? {}
                   : { ordinaryFallbackReason: context.ordinaryFallbackReason }),
+                ...(result.modelExposureDependencies === undefined
+                  ? {}
+                  : {
+                      modelExposureDependencies:
+                        result.modelExposureDependencies,
+                    }),
                 ...(options.db === undefined ? {} : { db: options.db }),
               });
               if (!published) {

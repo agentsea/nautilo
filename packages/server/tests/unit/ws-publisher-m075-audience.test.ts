@@ -10,6 +10,8 @@ import { setLogLevel, setLogOutput } from "@nautilo/logger";
 import {
   addClient,
   broadcast,
+  audienceForBridgedServerEvent,
+  publishBolterStateChanged,
   publishDomainKeyCatchUpDelivered,
   publishDomainKeyCatchUpRequested,
   publishEncryptionPolicyChanged,
@@ -73,6 +75,23 @@ afterEach(() => {
 });
 
 describe("ws-publisher M075 audience", () => {
+  test("Bolter invalidation is identifier-free and strictly owner-private", () => {
+    const owner = makeClient();
+    const other = makeClient();
+    addClient(owner as unknown as WsWebSocket, metaFor("bolter-owner", [ROOM_A]));
+    addClient(other as unknown as WsWebSocket, metaFor("bolter-other", [ROOM_A]));
+    const event = { type: "bolter.state.changed" } as const;
+    broadcast(event, audienceForBridgedServerEvent(event));
+    broadcast(event, { kind: "all", acknowledgedGlobalLeak: true });
+    broadcast(event, { kind: "room", roomId: ROOM_A });
+    publishBolterStateChanged("");
+    expect(owner.sent).toEqual([]);
+    expect(other.sent).toEqual([]);
+    publishBolterStateChanged("bolter-owner");
+    expect(owner.sent).toEqual([JSON.stringify(event)]);
+    expect(other.sent).toEqual([]);
+  });
+
   test("encryption policy invalidation reaches every admitted socket without content", () => {
     const first = makeClient(true);
     const second = makeClient(true);

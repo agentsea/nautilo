@@ -1,5 +1,5 @@
-import { normalizedRoomLabelSql, sql, usersPublic, type SQL } from "@nautilo/db";
-import { logicalMessageKey } from "@nautilo/types";
+import { getBolterCanonicalAttributions, normalizedRoomLabelSql, sql, usersPublic, type SQL } from "@nautilo/db";
+import { externalMessageAttributionFields, logicalMessageKey, type ExternalMessageAttributionFields } from "@nautilo/types";
 import {
   projectRoomHistorySelectedMessageCoordinate,
   type RoomHistorySelectedMessageCoordinate,
@@ -20,13 +20,13 @@ export interface RoomMessageCursor {
   messageId: number;
 }
 
-export interface RoomMessageSearchHit {
+export interface RoomMessageSearchHit extends ExternalMessageAttributionFields {
   messageId: number;
   createdAt: Date;
   role: string;
   snippet: string;
   toolName: string | null;
-  sourceUserId: string;
+  sourceUserId?: string | undefined;
   authorAgentId: string | null;
   authorActorId: string | null;
   authorDisplayName: string | null;
@@ -41,9 +41,9 @@ export interface RoomMessageSearchPage {
 }
 
 /**
- * Store-side form of the D470 Chats search response. Dates and numeric IDs
+ * Store-side form of the Chats search response. Dates and numeric IDs
  * stay native here; the HTTP route owns wire serialization just as it does
- * for D430's Room-scoped reader.
+ * for the Room-scoped reader.
  */
 export interface ChatSearchConversationHit {
   room: {
@@ -118,6 +118,9 @@ interface RawHumanRoomMessageRow extends Record<string, unknown> {
   user_actor_id: string | null;
   user_display_name: string | null;
   user_handle: string | null;
+  metadata?: unknown;
+  external_authorship?: boolean;
+  externalAttribution?: ExternalMessageAttributionFields;
 }
 
 function clampRoomSearchLimit(limit: number | undefined): number {
@@ -159,7 +162,7 @@ async function queryVisibleHumanRoomMessages(args: {
   limit: number;
   order?: "newest" | "oldest";
 }): Promise<RawHumanRoomMessageRow[]> {
-  return withAgentTrustContext({ userId: args.ownerId }, async (tx) => {
+  const selected = await withAgentTrustContext({ userId: args.ownerId }, async (tx) => {
     const matchPredicate = args.matchPredicate ?? sql``;
     const candidatePredicate = args.candidatePredicate ?? sql``;
     const boundaryPredicate = args.boundaryPredicate ?? sql``;
@@ -199,6 +202,8 @@ async function queryVisibleHumanRoomMessages(args: {
           sm.session_id,
           sm.role,
           sm.content,
+          sm.metadata,
+          sm.external_authorship,
           sm.content_search,
           sm.tool_calls,
           sm.metadata->'nautilo_tool_result' AS tool_presentation,
@@ -257,8 +262,16 @@ async function queryVisibleHumanRoomMessages(args: {
       ORDER BY d.created_at ${order}, d.message_id ${order}
       LIMIT ${args.limit}
     `);
-    return rowsFromTrustExecute(result);
+    return rowsFromTrustExecute<RawHumanRoomMessageRow>(result);
   });
+  // Release the viewer transaction before owner-scoped provenance reads.
+  const canonical = new Map<number, import("@nautilo/types").ExternalMessageAttribution>();
+  const owners = new Set(selected.filter(row => row.role === "user").map(row => row.source_user_id));
+  for (const userId of owners) {
+    const values = await getBolterCanonicalAttributions({ userId }, selected.filter(row => row.role === "user" && row.source_user_id === userId).map(row => Number(row.message_id)));
+    for (const [id, value] of values) canonical.set(id, value);
+  }
+  return selected.map(row => ({ ...row, externalAttribution: externalMessageAttributionFields(row.role, row.metadata, canonical.get(Number(row.message_id)), row.external_authorship) }));
 }
 
 function dateOf(value: Date | string): Date {
@@ -282,23 +295,27 @@ function escapedSnippet(content: string): string {
 
 function toRoomSearchHit(row: RawHumanRoomMessageRow): RoomMessageSearchHit {
   const agentAuthored = row.role === "assistant" || row.role === "tool";
+  const external = row.externalAttribution ?? externalMessageAttributionFields(row.role, row.metadata, undefined, row.external_authorship);
+  const isExternal = Boolean(external.externalOrigin || external.externalAttributionInvalid);
   return {
     messageId: Number(row.message_id),
     createdAt: dateOf(row.created_at),
     role: row.role,
     snippet: escapedSnippet(row.content),
     toolName: row.tool_name,
-    sourceUserId: row.source_user_id,
-    authorAgentId: row.session_agent_id,
-    authorActorId: agentAuthored ? row.agent_actor_id : row.user_actor_id,
-    authorDisplayName: agentAuthored ? row.agent_display_name : row.user_display_name,
-    authorHandle: agentAuthored ? row.agent_handle : row.user_handle,
+    ...external,
+    ...(isExternal ? {} : { sourceUserId: row.source_user_id }),
+    authorAgentId: isExternal ? null : row.session_agent_id,
+    authorActorId: isExternal ? null : agentAuthored ? row.agent_actor_id : row.user_actor_id,
+    authorDisplayName: isExternal ? external.externalOrigin?.senderLabel ?? "External participant" : agentAuthored ? row.agent_display_name : row.user_display_name,
+    authorHandle: isExternal ? null : agentAuthored ? row.agent_handle : row.user_handle,
   };
 }
 
 function toSessionMessage(row: RawHumanRoomMessageRow): SessionMessage {
   const createdAt = dateOf(row.created_at);
   const lastReplyAt = row.last_reply_at ? dateOf(row.last_reply_at) : null;
+  const external = row.externalAttribution ?? externalMessageAttributionFields(row.role, row.metadata, undefined, row.external_authorship);
   return {
     id: String(row.message_id),
     logicalMessageKey: logicalMessageKey({
@@ -319,7 +336,8 @@ function toSessionMessage(row: RawHumanRoomMessageRow): SessionMessage {
     replyCount: row.reply_count,
     lastReplyAt,
     summaryRevision: row.summary_revision,
-    sourceUserId: row.source_user_id,
+    ...external,
+    ...(external.externalOrigin || external.externalAttributionInvalid ? {} : { sourceUserId: row.source_user_id }),
     ...(row.role === "assistant" || row.role === "tool"
       ? row.session_agent_id ? { authorAgentId: row.session_agent_id } : {}
       : {}),
@@ -327,7 +345,7 @@ function toSessionMessage(row: RawHumanRoomMessageRow): SessionMessage {
   };
 }
 
-/** D430 — cursor-paged search of the canonical Human-visible Room corpus. */
+/** cursor-paged search of the canonical Human-visible Room corpus. */
 export async function searchRoomMessages(args: {
   ownerId: string;
   roomId: string;
@@ -480,11 +498,11 @@ function parseChatSearchMessages(value: unknown): ChatSearchMessageHit[] {
 }
 
 /**
- * D470 — one set-wise, exact-membership Chats query.
+ * one set-wise, exact-membership Chats query.
  *
  * `authorized_room_ids` is MATERIALIZED once from the authenticated Human
  * actor (and cross-checked to ownerId), then feeds both result branches. The
- * message branch intentionally mirrors D430's candidate-before-dedupe shape:
+ * message branch intentionally mirrors the Room reader's candidate-before-dedupe shape:
  * a newer nonmatching duplicate suppresses an older matching duplicate.
  */
 export async function searchChats(args: {
@@ -522,7 +540,7 @@ export async function searchChats(args: {
       : sql`r.archived_at IS NULL`;
 
   // `users_public` is the deliberately sanitized user identity projection
-  // granted to nautilo_agent, so the complete read remains in D430's normal
+  // granted to nautilo_agent, so the complete read remains in the normal Room reader's
   // RLS-protected agent trust context.
   const rows = await withAgentTrustContext({ userId: args.ownerId }, async (tx) => {
     const result = await tx.execute<RawChatSearchRow>(sql`
@@ -604,6 +622,8 @@ export async function searchChats(args: {
           parent.label AS parent_room_label,
           sm.role,
           sm.content,
+          sm.metadata,
+          sm.external_authorship,
           sm.tool_name,
           sm.created_at,
           s.owner_id AS source_user_id,
@@ -682,6 +702,8 @@ export async function searchChats(args: {
             'snippet', content,
             'toolName', tool_name,
             'sourceUserId', source_user_id,
+            'metadata', metadata,
+            'externalAuthorship', external_authorship,
             'authorAgentId', session_agent_id,
             'authorActorId', CASE WHEN role IN ('assistant', 'tool') THEN agent_actor_id ELSE user_actor_id END,
             'authorDisplayName', CASE WHEN role IN ('assistant', 'tool') THEN agent_display_name ELSE user_display_name END,
@@ -701,10 +723,23 @@ export async function searchChats(args: {
   const row = rows[0];
   const conversations = parseChatSearchConversations(row?.conversations).slice(0, 20);
   const messageProbe = parseChatSearchMessages(row?.messages);
-  const messages = messageProbe.slice(0, limit).map((hit) => ({
-    ...hit,
-    snippet: escapedSnippet(hit.snippet),
-  }));
+  const selected = messageProbe.slice(0, limit);
+  const canonical = new Map<number, import("@nautilo/types").ExternalMessageAttribution>();
+  const owners = new Set(selected.filter(hit => hit.role === "user" && hit.sourceUserId).map(hit => hit.sourceUserId!));
+  for (const userId of owners) {
+    const values = await getBolterCanonicalAttributions({ userId }, selected.filter(hit => hit.role === "user" && hit.sourceUserId === userId).map(hit => hit.messageId));
+    for (const [id, value] of values) canonical.set(id, value);
+  }
+  const rawMessages = Array.isArray(row?.messages) ? row.messages as Record<string, unknown>[] : [];
+  const metadata = new Map(rawMessages.map(value => [Number(value["messageId"]), value["metadata"]]));
+  const markers = new Map(rawMessages.map(value => [Number(value["messageId"]), value["externalAuthorship"] === true]));
+  const messages = selected.map((hit) => {
+    const external = externalMessageAttributionFields(hit.role, metadata.get(hit.messageId), canonical.get(hit.messageId), markers.get(hit.messageId));
+    const isExternal = Boolean(external.externalOrigin || external.externalAttributionInvalid);
+    return { ...hit, ...external, snippet: escapedSnippet(hit.snippet),
+      ...(isExternal ? { sourceUserId: undefined, authorAgentId: null, authorActorId: null,
+        authorDisplayName: external.externalOrigin?.senderLabel ?? "External participant", authorHandle: null } : {}) };
+  });
   return {
     conversations,
     conversationsTruncated: numberOf(row?.conversation_count) > 20,
@@ -715,7 +750,7 @@ export async function searchChats(args: {
   };
 }
 
-/** D430 — bounded chronological Human transcript window around one exact row. */
+/** bounded chronological Human transcript window around one exact row. */
 export async function getRoomMessagesAround(args: {
   ownerId: string;
   roomId: string;

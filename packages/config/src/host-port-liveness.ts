@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { accessSync, constants, existsSync, lstatSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PROBE_TIMEOUT_MS = 5000;
@@ -30,7 +30,7 @@ export function setHostPortLivenessProbeExecutableForProcess(path: string | unde
     packagedProbeExecutableOverride = undefined;
     return;
   }
-  if (!path.startsWith("/")) {
+  if (!isAbsolute(path)) {
     throw new Error("Host port probe override must be an absolute path.");
   }
   let details;
@@ -42,9 +42,11 @@ export function setHostPortLivenessProbeExecutableForProcess(path: string | unde
   if (details.isSymbolicLink() || !details.isFile()) {
     throw new Error(`Host port probe override must be a regular non-symlink file: ${path}.`);
   }
-  if ((details.mode & 0o111) === 0) {
+  // Windows execution is governed by ACLs and the loader, not POSIX mode bits.
+  if (process.platform !== "win32" && (details.mode & 0o111) === 0) {
     throw new Error(`Host port probe override must be executable: ${path}.`);
   }
+  accessSync(path, constants.X_OK);
   packagedProbeExecutableOverride = path;
 }
 

@@ -20,8 +20,8 @@
 // OfficeCLI core. Node-only subpath — uses node:child_process / node:fs.
 
 import { spawn as spawnCb, type ChildProcess } from "node:child_process";
-import { accessSync, constants } from "node:fs";
-import { delimiter as pathDelimiter, isAbsolute, join, resolve as pathResolve } from "node:path";
+import { accessSync, constants, statSync } from "node:fs";
+import { delimiter as pathDelimiter, isAbsolute, resolve as pathResolve } from "node:path";
 import {
   OFFICECLI_RUNNER_OUTPUT_LIMITS,
   OFFICECLI_STDIO_MAX_BYTES,
@@ -51,7 +51,7 @@ export interface OfficeCliPathInput {
  * Precedence (first non-empty wins):
  *   1. `input.override`
  *   2. `env.OFFICECLI_PATH`
- *   3. `officecli` found on `env.PATH` (executable bit checked)
+ *   3. The native OfficeCLI executable found on `env.PATH`
  *   4. `null` — caller surfaces a clear "not installed" error
  *
  * Override / OFFICECLI_PATH are returned resolved against `cwd` when
@@ -73,7 +73,7 @@ export function resolveOfficeCliPath(input: OfficeCliPathInput = {}): string | n
   if (pathEnv.length > 0) {
     for (const dir of pathEnv.split(pathDelimiter)) {
       if (dir.length === 0) continue;
-      const candidate = join(dir, "officecli");
+      const candidate = pathResolve(cwd, dir, process.platform === "win32" ? "officecli.exe" : "officecli");
       if (isExecutableFile(candidate)) return candidate;
     }
   }
@@ -88,6 +88,7 @@ function normalizeNonEmpty(value: string | undefined): string | null {
 
 function isExecutableFile(p: string): boolean {
   try {
+    if (!statSync(p).isFile()) return false;
     accessSync(p, constants.X_OK);
     return true;
   } catch {

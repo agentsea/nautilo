@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, resolve } from "node:path";
+import { containsHostPath as isWithin } from "./host-paths";
 import {
   CodexHostError,
   type HostFilesystem,
@@ -214,7 +215,6 @@ function digestSegment(identity: ProfileIdentity): string {
   return createHash("sha256").update(identity.actorId).update("\u0000").update(identity.profileHandle).digest("hex");
 }
 function identityFingerprint(dev: number, ino: number): string { return createHash("sha256").update(`${dev}:${ino}`).digest("hex"); }
-function isWithin(root: string, path: string): boolean { return root === sep ? path.startsWith(sep) : path === root || path.startsWith(`${root}${sep}`); }
 function sameHome(left: ProfileHome, right: ProfileHome): boolean { return left.handle === right.handle && left.identityFingerprint === right.identityFingerprint && left.identity.actorId === right.identity.actorId && left.identity.profileHandle === right.identity.profileHandle && left.identity.profileGeneration === right.identity.profileGeneration; }
 function sameProfile(left: ProfileIdentity, right: ProfileIdentity): boolean { return left.actorId === right.actorId && left.profileHandle === right.profileHandle && left.profileGeneration === right.profileGeneration; }
 function overlaps(left: string, right: string): boolean { return left === right || isWithin(left, right) || isWithin(right, left); }
