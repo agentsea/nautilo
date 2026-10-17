@@ -412,6 +412,7 @@ describe("M281 GitHub Actions cost controls", () => {
       "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm",
       "native/apply-patch/Cargo.toml",
       "patches/dependency.patch",
+      "THIRD_PARTY_NOTICES.md",
       "package.json",
       "packages/config/package.json",
       "bun.lock",
