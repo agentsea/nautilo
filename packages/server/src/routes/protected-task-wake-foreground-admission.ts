@@ -75,6 +75,18 @@ function sameIds(left: readonly string[], right: readonly string[]): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
+function validWakeInput(
+  intent: ProtectedTaskOutputReadIntent,
+  subject: Subject,
+): boolean {
+  return intent.invocation.kind === "wake"
+    && intent.requesterUserId === subject.userId
+    && intent.requesterHumanId === subject.humanActorId
+    && UUID.test(subject.userId) && UUID.test(subject.humanActorId)
+    && UUID.test(intent.agentId) && UUID.test(intent.invocation.roomId)
+    && UUID.test(intent.invocation.sessionId);
+}
+
 async function readRoomCoordinate(
   transaction: CanonicalTranscriptTx,
   roomId: string,
@@ -208,41 +220,37 @@ async function validateExactDestination(input: Readonly<{
 }
 
 async function readHeldInventory(input: Readonly<{
-  resolver: PolicyResolver;
   product: PostgresJsBridgeConnection;
   transaction: CanonicalTranscriptTx;
   intent: ProtectedTaskOutputReadIntent;
   subject: Subject;
-  expectedNamespaceIds?: readonly string[];
+  expectedCoordinate?: Readonly<{
+    roomId: string;
+    namespaceId: string;
+    topLevelRoomId: string;
+  }>;
+  expectedNamespaceIds: readonly string[];
   retainedNamespaceIds?: readonly string[];
   createNamespaceAuthority(product: PostgresJsBridgeConnection): NamespaceAuthority;
 }>): Promise<ProtectedTaskWakeForegroundInventory | null> {
   const { intent, subject, transaction } = input;
-  if (intent.invocation.kind !== "wake"
-    || intent.requesterUserId !== subject.userId
-    || intent.requesterHumanId !== subject.humanActorId
-    || !UUID.test(subject.userId) || !UUID.test(subject.humanActorId)
-    || !UUID.test(intent.agentId) || !UUID.test(intent.invocation.roomId)
-    || !UUID.test(intent.invocation.sessionId)) return null;
-  const expectedNamespaceIds = input.expectedNamespaceIds === undefined
-    ? undefined : exactExpectedNamespaceIds(input.expectedNamespaceIds);
+  if (!validWakeInput(intent, subject)) return null;
+  const expectedNamespaceIds = exactExpectedNamespaceIds(
+    input.expectedNamespaceIds,
+  );
   if (expectedNamespaceIds === null) return null;
   const coordinate = await readRoomCoordinate(transaction, intent.invocation.roomId);
-  if (coordinate === null) return null;
-  const canonicalIds = await resolveOrdinaryForegroundNamespaces({
-    resolver: input.resolver,
-    intent,
-    subject,
-    topLevelRoomId: coordinate.topLevelRoomId,
-    destinationNamespaceId: coordinate.namespaceId,
-  });
-  if (canonicalIds === null) return null;
+  if (coordinate === null
+    || input.expectedCoordinate !== undefined && (
+      coordinate.roomId !== input.expectedCoordinate.roomId
+      || coordinate.namespaceId !== input.expectedCoordinate.namespaceId
+      || coordinate.topLevelRoomId !== input.expectedCoordinate.topLevelRoomId
+    )) return null;
   const restriction = intent.continuation?.retainedSourceNamespaceIds ?? input.retainedNamespaceIds;
-  const namespaceIds = restriction === undefined ? canonicalIds : exactExpectedNamespaceIds(restriction);
+  const namespaceIds = restriction === undefined
+    ? expectedNamespaceIds : exactExpectedNamespaceIds(restriction);
   if (namespaceIds === null || !namespaceIds.includes(coordinate.namespaceId)
-    || namespaceIds.some(id => !canonicalIds.includes(id))
-    || expectedNamespaceIds !== undefined
-      && !sameIds(namespaceIds, expectedNamespaceIds)) return null;
+    || !sameIds(namespaceIds, expectedNamespaceIds)) return null;
   return input.createNamespaceAuthority(input.product)
     .withCurrentReadableNamespaceSet({
       subjectUserId: subject.userId,
@@ -275,16 +283,41 @@ export function createProtectedTaskWakeForegroundAdmission(
   const deps = Object.freeze({ ...dependencies, ...overrides });
   return Object.freeze({
     async discover(operation) {
+      if (!validWakeInput(operation.intent, operation.subject)) return null;
       const context = await deps.createProductContext(
         operation.subject.userId,
         input.db,
       );
+      const coordinate = await context.canonicalRunner.transaction(
+        transaction => readRoomCoordinate(
+          transaction,
+          operation.intent.invocation.roomId,
+        ),
+        { isolationLevel: "read committed" },
+      );
+      if (coordinate === null) return null;
+      const canonicalIds = await resolveOrdinaryForegroundNamespaces({
+        resolver: input.resolver,
+        intent: operation.intent,
+        subject: operation.subject,
+        topLevelRoomId: coordinate.topLevelRoomId,
+        destinationNamespaceId: coordinate.namespaceId,
+      });
+      if (canonicalIds === null) return null;
+      const restriction = operation.intent.continuation
+        ?.retainedSourceNamespaceIds;
+      const namespaceIds = restriction === undefined
+        ? canonicalIds : exactExpectedNamespaceIds(restriction);
+      if (namespaceIds === null
+        || !namespaceIds.includes(coordinate.namespaceId)
+        || namespaceIds.some(id => !canonicalIds.includes(id))) return null;
       return context.canonicalRunner.transaction(
         (transaction, executor) => readHeldInventory({
           ...operation,
-          resolver: input.resolver,
           product: inTransaction(executor),
           transaction,
+          expectedCoordinate: coordinate,
+          expectedNamespaceIds: namespaceIds,
           createNamespaceAuthority: deps.createNamespaceAuthority,
         }),
         { isolationLevel: "read committed" },
@@ -293,7 +326,6 @@ export function createProtectedTaskWakeForegroundAdmission(
     readCurrent(operation) {
       return readHeldInventory({
         ...operation,
-        resolver: input.resolver,
         createNamespaceAuthority: deps.createNamespaceAuthority,
       });
     },

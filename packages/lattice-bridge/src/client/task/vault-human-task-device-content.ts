@@ -824,30 +824,45 @@ export function createVaultHumanTaskDeviceContentPortV1(
         payload?.ciphertext.fill(0);
         namespaceEnvelope?.wrappedDek.fill(0);
       }
-      let advanced: boolean;
+      let currentAnchor: TrustedMinimumObjectAccessHead | null = null;
       try {
-        advanced = await dependencies.accessAnchors.advance({
+        const advanced = await dependencies.accessAnchors.advance({
           expected: retainedAnchor,
           next: result.nextAnchor,
         });
+        if (!advanced) {
+          currentAnchor = await dependencies.accessAnchors.load(
+            result.nextAnchor.objectId,
+          );
+          if (
+            currentAnchor === null
+            || currentAnchor.objectId !== result.nextAnchor.objectId
+            || currentAnchor.accessRevision !== result.nextAnchor.accessRevision
+            || !equalBytes(
+              currentAnchor.payloadHash,
+              result.nextAnchor.payloadHash,
+            )
+            || !equalBytes(
+              currentAnchor.manifestHash,
+              result.nextAnchor.manifestHash,
+            )
+          ) {
+            throw new ClassifiedDataOperationError(
+              "stale",
+              "Protected Task trusted access anchor changed concurrently",
+            );
+          }
+        }
+        return plaintext;
       } catch (error) {
         plaintext.fill(0);
-        result.nextAnchor.payloadHash.fill(0);
-        result.nextAnchor.manifestHash.fill(0);
         throw error;
-      }
-      if (!advanced) {
-        plaintext.fill(0);
+      } finally {
+        currentAnchor?.payloadHash.fill(0);
+        currentAnchor?.manifestHash.fill(0);
         result.nextAnchor.payloadHash.fill(0);
         result.nextAnchor.manifestHash.fill(0);
-        throw new ClassifiedDataOperationError(
-          "stale",
-          "Protected Task trusted access anchor changed concurrently",
-        );
       }
-      result.nextAnchor.payloadHash.fill(0);
-      result.nextAnchor.manifestHash.fill(0);
-      return plaintext;
     },
   });
 }

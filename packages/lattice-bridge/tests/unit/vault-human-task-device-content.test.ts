@@ -70,6 +70,32 @@ const AGENT_ID = "60000000-0000-4000-8000-000000000248";
 const BINDING_HASH = new Uint8Array(32).fill(0x19);
 const NAMESPACE_KEY = new Uint8Array(32).fill(0x48);
 
+function copyTrustedAnchor(
+  anchor: TrustedMinimumObjectAccessHead,
+): TrustedMinimumObjectAccessHead {
+  return {
+    ...anchor,
+    payloadHash: anchor.payloadHash.slice(),
+    manifestHash: anchor.manifestHash.slice(),
+  };
+}
+
+function equalTrustedAnchors(
+  left: TrustedMinimumObjectAccessHead | null,
+  right: TrustedMinimumObjectAccessHead | null,
+): boolean {
+  return left === right || (
+    left !== null
+    && right !== null
+    && left.objectId === right.objectId
+    && left.accessRevision === right.accessRevision
+    && left.payloadHash.length === right.payloadHash.length
+    && left.payloadHash.every((byte, index) => byte === right.payloadHash[index])
+    && left.manifestHash.length === right.manifestHash.length
+    && left.manifestHash.every((byte, index) => byte === right.manifestHash[index])
+  );
+}
+
 function seededRng(seed: number): (length: number) => Uint8Array {
   let state = seed >>> 0;
   return (length) => Uint8Array.from({ length }, () => {
@@ -422,18 +448,17 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
       },
     },
     accessAnchors: {
-      load: (cryptoObjectId: string) => Promise.resolve(anchors.get(cryptoObjectId) ?? null),
+      load: (cryptoObjectId: string) => {
+        const anchor = anchors.get(cryptoObjectId);
+        return Promise.resolve(anchor === undefined ? null : copyTrustedAnchor(anchor));
+      },
       advance: ({ expected, next }: Readonly<{
         expected: TrustedMinimumObjectAccessHead | null;
         next: TrustedMinimumObjectAccessHead;
       }>) => {
         const current = anchors.get(next.objectId) ?? null;
-        if (current !== expected) return Promise.resolve(false);
-        anchors.set(next.objectId, {
-          ...next,
-          payloadHash: next.payloadHash.slice(),
-          manifestHash: next.manifestHash.slice(),
-        });
+        if (!equalTrustedAnchors(current, expected)) return Promise.resolve(false);
+        anchors.set(next.objectId, copyTrustedAnchor(next));
         return Promise.resolve(true);
       },
     },
@@ -450,6 +475,71 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     setOmitSelectedGeneration(value: boolean) { omitSelectedGeneration = value; },
     setSelectedGenerationKey(value: Uint8Array) { selectedGenerationKey = value; },
   };
+}
+
+async function preparedHumanTask(
+  writer: Awaited<ReturnType<typeof setup>>,
+  operationId: string,
+) {
+  const prepared = await writer.content.prepareCreate({
+    plan: {
+      planVersion: 1,
+      operation: "create",
+      operationId,
+      taskId: TASK_ID,
+      expectedContentRevision: 0,
+      nextContentRevision: 1,
+      expectedCryptoAccessRevision: 0,
+      planDigestBase64url: base64url(new Uint8Array(32).fill(0x31)),
+      authority: {
+        requesterHumanId: HUMAN_ID,
+        sourceRoomId: ROOM_ID,
+        namespaceId: NAMESPACE_ID,
+        domainId: "domain:1",
+        expectedAccessRevision: 9,
+        expectedPolicyRevision: 1,
+        bindingHashBase64url: base64url(BINDING_HASH),
+        keyGeneration: 2,
+      },
+    },
+    payload: {
+      formatVersion: 1,
+      prompt: "concurrent private prompt",
+      expectedOutput: "concurrent private answer",
+      protectedMetadata: {},
+    },
+    task: {},
+  });
+  const reference = {
+    dtoVersion: 1 as const,
+    status: "protected" as const,
+    objectId: prepared.cryptoObjectId,
+    contentRevision: 1,
+    cryptoAccessRevision: 0,
+  };
+  const envelope = {
+    readVersion: 1 as const,
+    taskId: TASK_ID,
+    objectId: prepared.cryptoObjectId,
+    contentRevision: 1,
+    cryptoAccessRevision: 0,
+    namespaceId: NAMESPACE_ID,
+    readAuthority: taskReadAuthority(),
+    encryptedPayloadBytes: decodeBase64url(prepared.encryptedPayloadBytesBase64url),
+    accessManifestBytes: decodeBase64url(prepared.accessManifestBytesBase64url),
+    accessManifestProofBytes: [],
+    namespaceEnvelopeBytes: decodeBase64url(
+      prepared.namespaceEnvelopes[0].envelopeBytesBase64url,
+    ),
+    signerEvidence: [{
+      kind: "human_device" as const,
+      subjectHumanId: HUMAN_ID,
+      committerDeviceId: writer.contentDependencies.coordinates.deviceId,
+      hostAuthorizationRevision: 11,
+      signingPublicKeyBase64url: base64url(writer.signing.publicKey),
+    }],
+  };
+  return { prepared, reference, envelope };
 }
 
 test("vault-backed Task prepare/open authenticates local custody and rejects forged signer evidence", async () => {
@@ -675,6 +765,245 @@ test("vault-backed Task prepare/open authenticates local custody and rejects for
   expect((wrongAuthority as ClassifiedDataOperationError).failureClass)
     .toBe("integrity");
   expect(pendingReader.anchors.has(prepared.cryptoObjectId)).toBe(false);
+});
+
+test("vault-backed Task open accepts an identical concurrent access-anchor winner", async () => {
+  const writer = await setup("device:anchor-race-writer", 0x261);
+  const reader = await setup("device:anchor-race-reader", 0x262, {
+    deviceId: "device:anchor-race-writer",
+    signingPublicKey: writer.signing.publicKey,
+    includeLegacyKeyring: false,
+  });
+  const { reference, envelope } = await preparedHumanTask(
+    writer,
+    "task:anchor-race:create",
+  );
+  let current: TrustedMinimumObjectAccessHead | null = null;
+  let initialLoads = 0;
+  let successfulAdvances = 0;
+  let rejectedAdvances = 0;
+  let fallbackAnchor: TrustedMinimumObjectAccessHead | null = null;
+  let releaseInitialLoads!: () => void;
+  const bothInitialLoads = new Promise<void>(resolve => {
+    releaseInitialLoads = resolve;
+  });
+  const content = createVaultHumanTaskDeviceContentPortV1({
+    ...reader.contentDependencies,
+    accessAnchors: {
+      load: async () => {
+        if (current === null && initialLoads < 2) {
+          initialLoads += 1;
+          if (initialLoads === 2) releaseInitialLoads();
+          await bothInitialLoads;
+          return null;
+        }
+        fallbackAnchor = current === null ? null : copyTrustedAnchor(current);
+        return fallbackAnchor;
+      },
+      advance: ({ expected, next }) => {
+        if (!equalTrustedAnchors(current, expected)) {
+          rejectedAdvances += 1;
+          return Promise.resolve(false);
+        }
+        current = copyTrustedAnchor(next);
+        successfulAdvances += 1;
+        return Promise.resolve(true);
+      },
+    },
+  });
+
+  const opened = await Promise.all([
+    content.openExact({ reference, envelope }),
+    content.openExact({ reference, envelope }),
+  ]);
+  try {
+    expect(opened.map(value => decodeTaskPayloadV1(value).prompt)).toEqual([
+      "concurrent private prompt",
+      "concurrent private prompt",
+    ]);
+    expect(successfulAdvances).toBe(1);
+    expect(rejectedAdvances).toBe(1);
+    expect(current).not.toBeNull();
+    expect(current!.payloadHash.some(byte => byte !== 0)).toBe(true);
+    expect(current!.manifestHash.some(byte => byte !== 0)).toBe(true);
+    expect(fallbackAnchor).not.toBeNull();
+    expect(fallbackAnchor!.payloadHash.every(byte => byte === 0)).toBe(true);
+    expect(fallbackAnchor!.manifestHash.every(byte => byte === 0)).toBe(true);
+  } finally {
+    opened.forEach(value => value.fill(0));
+  }
+});
+
+test("vault-backed Task open accepts only the exact concurrently retained next anchor", async () => {
+  const writer = await setup("device:anchor-next-writer", 0x263);
+  const reader = await setup("device:anchor-next-reader", 0x264, {
+    deviceId: "device:anchor-next-writer",
+    signingPublicKey: writer.signing.publicKey,
+    includeLegacyKeyring: false,
+  });
+  const { reference, envelope } = await preparedHumanTask(
+    writer,
+    "task:anchor-next:create",
+  );
+  const genesisPlaintext = await reader.content.openExact({ reference, envelope });
+  genesisPlaintext.fill(0);
+  const retained = copyTrustedAnchor(reader.anchors.get(reference.objectId)!);
+  const genesis = decodeObjectAccessManifestV5(envelope.accessManifestBytes);
+  const previousManifestHash = writer.crypto.hash(envelope.accessManifestBytes);
+  const accessUpdate = createCommonHumanObjectAccessManifest(writer.crypto, {
+    objectId: genesis.objectId,
+    payloadHash: genesis.payloadHash,
+    accessRevision: accessRevision(1),
+    previousManifestHash,
+    envelopeHashes: genesis.envelopeHashes,
+    signer: {
+      kind: "human_device",
+      subjectHumanId: humanId(HUMAN_ID),
+      committerDeviceId: cryptoDeviceId("device:anchor-next-writer"),
+    },
+    signerAuthorizationHash: null,
+    hostAuthorizationRevision: authorizationRevision(11),
+  }, writer.signing.privateKey);
+  const nextReference = { ...reference, cryptoAccessRevision: 1 };
+  const nextEnvelope = {
+    ...envelope,
+    cryptoAccessRevision: 1,
+    accessManifestBytes: accessUpdate.bytes,
+    accessManifestProofBytes: [envelope.accessManifestBytes],
+  };
+
+  let winningAnchor: TrustedMinimumObjectAccessHead | null = null;
+  let exactLoadCount = 0;
+  let exactFallbackAnchor: TrustedMinimumObjectAccessHead | null = null;
+  const exactContent = createVaultHumanTaskDeviceContentPortV1({
+    ...reader.contentDependencies,
+    accessAnchors: {
+      load: () => {
+        exactLoadCount += 1;
+        if (exactLoadCount === 1) return Promise.resolve(copyTrustedAnchor(retained));
+        exactFallbackAnchor = copyTrustedAnchor(winningAnchor!);
+        return Promise.resolve(exactFallbackAnchor);
+      },
+      advance: ({ next }) => {
+        winningAnchor = copyTrustedAnchor(next);
+        return Promise.resolve(false);
+      },
+    },
+  });
+  const exact = await exactContent.openExact({
+    reference: nextReference,
+    envelope: nextEnvelope,
+  });
+  try {
+    expect(decodeTaskPayloadV1(exact).prompt).toBe("concurrent private prompt");
+    expect(exactFallbackAnchor!.payloadHash.every(byte => byte === 0)).toBe(true);
+    expect(exactFallbackAnchor!.manifestHash.every(byte => byte === 0)).toBe(true);
+  } finally {
+    exact.fill(0);
+  }
+
+  const staleCases = [
+    {
+      name: "missing",
+      change: (_next: TrustedMinimumObjectAccessHead) => null,
+    },
+    {
+      name: "foreign object",
+      change: (next: TrustedMinimumObjectAccessHead) => ({
+        ...copyTrustedAnchor(next),
+        objectId: `${next.objectId}:foreign` as typeof next.objectId,
+      }),
+    },
+    {
+      name: "older revision",
+      change: (next: TrustedMinimumObjectAccessHead) => ({
+        ...copyTrustedAnchor(next),
+        accessRevision: accessRevision(0),
+      }),
+    },
+    {
+      name: "newer revision",
+      change: (next: TrustedMinimumObjectAccessHead) => ({
+        ...copyTrustedAnchor(next),
+        accessRevision: accessRevision(2),
+      }),
+    },
+    {
+      name: "different payload hash length",
+      change: (next: TrustedMinimumObjectAccessHead) => ({
+        ...copyTrustedAnchor(next),
+        payloadHash: next.payloadHash.subarray(0, next.payloadHash.length - 1),
+      }),
+    },
+    {
+      name: "different manifest hash",
+      change: (next: TrustedMinimumObjectAccessHead) => ({
+        ...copyTrustedAnchor(next),
+        manifestHash: new Uint8Array(next.manifestHash).fill(0xee),
+      }),
+    },
+  ] as const;
+  for (const staleCase of staleCases) {
+    let loadCount = 0;
+    let proposed: TrustedMinimumObjectAccessHead | null = null;
+    const staleContent = createVaultHumanTaskDeviceContentPortV1({
+      ...reader.contentDependencies,
+      accessAnchors: {
+        load: () => {
+          loadCount += 1;
+          return Promise.resolve(loadCount === 1
+            ? copyTrustedAnchor(retained)
+            : staleCase.change(proposed!));
+        },
+        advance: ({ next }) => {
+          proposed = copyTrustedAnchor(next);
+          return Promise.resolve(false);
+        },
+      },
+    });
+    const stale = await staleContent.openExact({
+      reference: nextReference,
+      envelope: nextEnvelope,
+    }).catch((cause: unknown) => cause);
+    expect(staleCase.name).toBeString();
+    expect(stale).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((stale as ClassifiedDataOperationError).failureClass).toBe("stale");
+  }
+
+  const unavailable = new ClassifiedDataOperationError(
+    "key_waiting",
+    "Client profile is unavailable",
+  );
+  let unavailableLoadCount = 0;
+  const unavailableContent = createVaultHumanTaskDeviceContentPortV1({
+    ...reader.contentDependencies,
+    accessAnchors: {
+      load: () => {
+        unavailableLoadCount += 1;
+        if (unavailableLoadCount === 1) {
+          return Promise.resolve(copyTrustedAnchor(retained));
+        }
+        return Promise.reject(unavailable);
+      },
+      advance: () => Promise.resolve(false),
+    },
+  });
+  const unavailableResult = await unavailableContent.openExact({
+    reference: nextReference,
+    envelope: nextEnvelope,
+  }).catch((cause: unknown) => cause);
+  expect(unavailableResult).toBe(unavailable);
+
+  retained.payloadHash.fill(0);
+  retained.manifestHash.fill(0);
+  previousManifestHash.fill(0);
+  genesis.payloadHash.fill(0);
+  genesis.previousManifestHash?.fill(0);
+  genesis.envelopeHashes.forEach(hash => hash.fill(0));
+  genesis.signerAuthorizationHash?.fill(0);
+  genesis.signature.fill(0);
+  accessUpdate.bytes.fill(0);
+  accessUpdate.hash.fill(0);
 });
 
 test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime signer", async () => {

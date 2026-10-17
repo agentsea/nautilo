@@ -86,6 +86,8 @@ type Options = Readonly<{
   sessionAgentId?: string;
   scopeEnvelope?: boolean;
   resolverUnavailable?: boolean;
+  heldParentRoomId?: string | null;
+  heldDestinationNamespaceId?: string;
 }>;
 
 function fixture(options: Options = {}) {
@@ -120,8 +122,14 @@ function fixture(options: Options = {}) {
     },
   ];
   const events: string[] = [];
-  let roomReads = 0;
-  const transaction = {
+  let canonicalHeld = false;
+  let canonicalTransactions = 0;
+  const createTransaction = (
+    currentParentRoomId: string | null,
+    destinationNamespaceId: string,
+  ) => {
+    let roomReads = 0;
+    return {
     select() {
       let table: unknown;
       const builder = {
@@ -136,14 +144,14 @@ function fixture(options: Options = {}) {
             roomReads += 1;
             return Promise.resolve(resolve(roomReads % 2 === 1 ? [{
               id: CHILD,
-              namespaceId: DESTINATION_NAMESPACE,
-              parentRoomId,
+              namespaceId: destinationNamespaceId,
+              parentRoomId: currentParentRoomId,
             }] : [{
               id: CHILD,
               ownerId: ROOM_OWNER,
-              namespaceId: DESTINATION_NAMESPACE,
-              parentRoomId,
-              kind: parentRoomId === null ? "group" : "subthread",
+              namespaceId: destinationNamespaceId,
+              parentRoomId: currentParentRoomId,
+              kind: currentParentRoomId === null ? "group" : "subthread",
               archivedAt: null,
               graphThreadId: `room:${CHILD}`,
             }]));
@@ -163,7 +171,14 @@ function fixture(options: Options = {}) {
       };
       return builder;
     },
-  } as unknown as CanonicalTranscriptTx;
+    } as unknown as CanonicalTranscriptTx;
+  };
+  const transaction = createTransaction(
+    options.heldParentRoomId === undefined
+      ? parentRoomId : options.heldParentRoomId,
+    options.heldDestinationNamespaceId ?? DESTINATION_NAMESPACE,
+  );
+  const optimistic = createTransaction(parentRoomId, DESTINATION_NAMESPACE);
   const product: PostgresJsBridgeConnection = {
     query: async () => [],
     transaction: async use => use(product),
@@ -173,6 +188,9 @@ function fixture(options: Options = {}) {
     buildEnvelope: async (_actor: string, lane: string, agentId: string,
       roomId: string) => {
       events.push(`resolver:${lane}:${roomId}:${agentId}`);
+      if (canonicalHeld) {
+        throw new Error("resolver called while canonical transaction is held");
+      }
       if (options.resolverUnavailable === true) {
         throw new Error("policy unavailable");
       }
@@ -201,8 +219,9 @@ function fixture(options: Options = {}) {
   } as unknown as PolicyResolver;
   const held = options.held ?? [DESTINATION_NAMESPACE, EXTRA_NAMESPACE];
   let authorityProduct: PostgresJsBridgeConnection | undefined;
+  let authorityNamespaceIds: readonly string[] | undefined;
   const admission = createProtectedTaskWakeForegroundAdmission({
-    db: {} as never,
+    db: optimistic as never,
     resolver,
   }, {
     createProductContext: (async () => ({
@@ -211,7 +230,21 @@ function fixture(options: Options = {}) {
         transaction: async (use: (tx: CanonicalTranscriptTx,
           executor: PostgresJsBridgeConnection) => Promise<unknown>) => {
           events.push("discover-transaction");
-          return use(transaction, product);
+          canonicalTransactions += 1;
+          canonicalHeld = true;
+          try {
+            return await use(createTransaction(
+              canonicalTransactions === 1
+                ? parentRoomId
+                : options.heldParentRoomId === undefined
+                ? parentRoomId : options.heldParentRoomId,
+              canonicalTransactions === 1
+                ? DESTINATION_NAMESPACE
+                : options.heldDestinationNamespaceId ?? DESTINATION_NAMESPACE,
+            ), product);
+          } finally {
+            canonicalHeld = false;
+          }
         },
       },
     })) as never,
@@ -220,10 +253,7 @@ function fixture(options: Options = {}) {
       return {
         withCurrentReadableNamespaceSet: async operation => {
           events.push(`owner:${operation.sourceRoomId}:${operation.destinationRoom?.roomId}`);
-          expect(operation.namespaceIds).toEqual([
-            DESTINATION_NAMESPACE,
-            EXTRA_NAMESPACE,
-          ]);
+          authorityNamespaceIds = operation.namespaceIds;
           const entries = held.map(namespaceId => ({
             namespaceId,
             authority: Object.freeze({}),
@@ -240,6 +270,7 @@ function fixture(options: Options = {}) {
     transaction,
     topLevelRoomId,
     authorityProduct: () => authorityProduct,
+    authorityNamespaceIds: () => authorityNamespaceIds,
   };
 }
 
@@ -251,6 +282,7 @@ describe("protected Task wake foreground admission", () => {
     expect(value.events).toEqual([
       "discover-transaction",
       `resolver:room:${PARENT}:${PARENT}:${AGENT}`,
+      "discover-transaction",
       `owner:${PARENT}:${CHILD}`,
     ]);
     expect(value.authorityProduct()).toBeDefined();
@@ -269,10 +301,8 @@ describe("protected Task wake foreground admission", () => {
     expect(value.events).not.toContain("discover-transaction");
   });
 
-  test("rejects current proposal drift before entering another Namespace owner", async () => {
-    const value = fixture({
-      readable: [EXPANDED_NAMESPACE, EXTRA_NAMESPACE, DESTINATION_NAMESPACE],
-    });
+  test("revalidates the expected current set without calling the resolver", async () => {
+    const value = fixture({ held: [DESTINATION_NAMESPACE, EXPANDED_NAMESPACE] });
     expect(await value.admission.readCurrent({
       intent: intent(),
       subject,
@@ -281,9 +311,9 @@ describe("protected Task wake foreground admission", () => {
       expectedNamespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE],
     })).toBeNull();
     expect(value.events).toEqual([
-      `resolver:room:${PARENT}:${PARENT}:${AGENT}`,
+      `owner:${PARENT}:${CHILD}`,
     ]);
-    expect(value.authorityProduct()).toBeUndefined();
+    expect(value.authorityProduct()).toBe(value.product);
   });
 
   test("keeps a top-level destination as both entry Room and Namespace authority", async () => {
@@ -295,10 +325,35 @@ describe("protected Task wake foreground admission", () => {
     );
   });
 
+  test("rejects Room coordinate and Namespace drift under the held owner", async () => {
+    expect(await fixture({ heldParentRoomId: CHILD }).admission.discover({
+      intent: intent(), subject,
+    })).toBeNull();
+    expect(await fixture({
+      heldDestinationNamespaceId: EXPANDED_NAMESPACE,
+    }).admission.discover({ intent: intent(), subject })).toBeNull();
+  });
+
   test("does not silently narrow the ordinary foreground Namespace proposal", async () => {
     const value = fixture({ held: [DESTINATION_NAMESPACE] });
     expect(await value.admission.discover({ intent: intent(), subject }))
       .toBeNull();
+  });
+
+  test("retains an exact subset when the ordinary inventory has expanded", async () => {
+    const selected = Object.freeze({
+      ...intent(),
+      continuation: Object.freeze({
+        retainedSourceNamespaceIds: [DESTINATION_NAMESPACE],
+      }) as never,
+    });
+    const value = fixture({
+      readable: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE, EXPANDED_NAMESPACE],
+      held: [DESTINATION_NAMESPACE],
+    });
+    expect(await value.admission.discover({ intent: selected, subject }))
+      .toEqual({ namespaceIds: [DESTINATION_NAMESPACE] });
+    expect(value.authorityNamespaceIds()).toEqual([DESTINATION_NAMESPACE]);
   });
 
   test("rejects Scope inheritance, a removed requester, and target-Agent substitution", async () => {
@@ -330,18 +385,27 @@ describe("protected Task wake foreground admission", () => {
 });
 
 
-test("held accepted inventory excludes newly visible Namespaces and requires every original source", async () => {
+test("held accepted inventory requires the exact retained source set", async () => {
   const value = fixture({ readable: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE, EXPANDED_NAMESPACE] });
   expect(await value.admission.readCurrent({ intent: intent(), subject,
     product: value.product, transaction: value.transaction,
     expectedNamespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE],
     retainedNamespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE],
   })).toEqual({ namespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE] });
-  const revoked = fixture({ readable: [DESTINATION_NAMESPACE, EXPANDED_NAMESPACE] });
+  const revoked = fixture({ held: [DESTINATION_NAMESPACE, EXPANDED_NAMESPACE] });
   expect(await revoked.admission.readCurrent({ intent: intent(), subject,
     product: revoked.product, transaction: revoked.transaction,
     expectedNamespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE],
     retainedNamespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE],
   })).toBeNull();
-  expect(revoked.authorityProduct()).toBeUndefined();
+  expect(revoked.authorityProduct()).toBe(revoked.product);
+});
+
+test("current admission rejects held audience drift without resolving policy", async () => {
+  const value = fixture({ requesterPresent: false });
+  expect(await value.admission.readCurrent({ intent: intent(), subject,
+    product: value.product, transaction: value.transaction,
+    expectedNamespaceIds: [DESTINATION_NAMESPACE, EXTRA_NAMESPACE],
+  })).toBeNull();
+  expect(value.events).toEqual([`owner:${PARENT}:${CHILD}`]);
 });
